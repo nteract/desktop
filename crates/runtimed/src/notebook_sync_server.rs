@@ -292,7 +292,7 @@ fn build_launched_config(
                 }
             }
         }
-        "pixi:inline" => {
+        "pixi:inline" | "pixi:pep723" => {
             // Store pixi deps for drift detection
             config.pixi_deps = inline_deps.map(|d| d.to_vec());
         }
@@ -3090,11 +3090,16 @@ async fn auto_launch_kernel(
         let cells = room.doc.read().await.get_cells();
         match notebook_doc::pep723::find_pep723_in_cells(&cells) {
             Ok(Some(meta)) if !meta.dependencies.is_empty() => {
+                // Route PEP 723 deps based on user's default Python env
+                let pep723_source = match default_python_env {
+                    crate::settings_doc::PythonEnvType::Pixi => "pixi:pep723",
+                    _ => "uv:pep723",
+                };
                 info!(
-                    "[notebook-sync] Auto-launch: found PEP 723 deps: {:?}",
-                    meta.dependencies
+                    "[notebook-sync] Auto-launch: found PEP 723 deps ({}) : {:?}",
+                    pep723_source, meta.dependencies
                 );
-                (Some("uv:pep723".to_string()), Some(meta.dependencies))
+                (Some(pep723_source.to_string()), Some(meta.dependencies))
             }
             Ok(_) => (None, None),
             Err(e) => {
@@ -3179,6 +3184,7 @@ async fn auto_launch_kernel(
                 || env_source == "conda:inline"
                 || env_source == "pixi:toml"
                 || env_source == "pixi:inline"
+                || env_source == "pixi:pep723"
             {
                 info!(
                     "[notebook-sync] Auto-launch: {} prepares its own env, no pool env needed",
@@ -3458,6 +3464,14 @@ async fn auto_launch_kernel(
         if !deps.is_empty() {
             info!("[notebook-sync] pixi:inline deps for pixi exec: {:?}", deps);
             (None, Some(deps))
+        } else {
+            (pooled_env, None)
+        }
+    } else if env_source == "pixi:pep723" {
+        // PEP 723 deps via pixi exec -w (same mechanism as pixi:inline)
+        if let Some(ref deps) = pep723_deps {
+            info!("[notebook-sync] pixi:pep723 deps for pixi exec: {:?}", deps);
+            (None, Some(deps.clone()))
         } else {
             (pooled_env, None)
         }
@@ -3984,7 +3998,8 @@ async fn handle_notebook_request(
                 } else {
                     // Priority 2: Check PEP 723 script blocks in cell source
                     // Only parsed if metadata check above didn't find inline deps (lazy evaluation).
-                    // Skipped for conda scope — we only have uv:pep723 today (#1176).
+                    // Skipped for conda scope — conda doesn't have a PEP 723 handler.
+                    // Pixi and UV both support PEP 723 via their exec/run paths.
                     let has_pep723_deps = if auto_scope == Some("conda") {
                         false
                     } else {
@@ -4003,8 +4018,16 @@ async fn handle_notebook_request(
                     };
 
                     if has_pep723_deps {
-                        info!("[notebook-sync] Found PEP 723 deps in cell source");
-                        "uv:pep723".to_string()
+                        let default_env = daemon.default_python_env().await;
+                        let pep723_source = match default_env {
+                            crate::settings_doc::PythonEnvType::Pixi => "pixi:pep723",
+                            _ => "uv:pep723",
+                        };
+                        info!(
+                            "[notebook-sync] Found PEP 723 deps in cell source ({})",
+                            pep723_source
+                        );
+                        pep723_source.to_string()
                     }
                     // Priority 3: Detect project files near notebook path
                     else if let Some(detected) =
@@ -4119,7 +4142,7 @@ async fn handle_notebook_request(
                         }
                     },
                     "uv:pyproject" | "uv:inline" | "uv:pep723" | "conda:inline" | "pixi:toml"
-                    | "pixi:inline" => {
+                    | "pixi:inline" | "pixi:pep723" => {
                         // These sources prepare their own environments, no pooled env needed
                         info!(
                             "[notebook-sync] LaunchKernel: {} prepares its own env, no pool env",
@@ -4313,6 +4336,19 @@ async fn handle_notebook_request(
                     (None, Some(deps))
                 } else {
                     (pooled_env, None)
+                }
+            } else if resolved_env_source == "pixi:pep723" {
+                // PEP 723 deps via pixi exec -w
+                let cells = room.doc.read().await.get_cells();
+                match notebook_doc::pep723::find_pep723_in_cells(&cells) {
+                    Ok(Some(meta)) if !meta.dependencies.is_empty() => {
+                        info!(
+                            "[notebook-sync] LaunchKernel: pixi:pep723 deps: {:?}",
+                            meta.dependencies
+                        );
+                        (None, Some(meta.dependencies))
+                    }
+                    _ => (pooled_env, None),
                 }
             } else {
                 (pooled_env, None)

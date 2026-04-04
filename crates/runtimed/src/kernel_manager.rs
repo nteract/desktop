@@ -988,7 +988,7 @@ impl RoomKernel {
                             cmd
                         }
                     }
-                    "pixi:inline" | "pixi:prewarmed" => {
+                    "pixi:inline" | "pixi:prewarmed" | "pixi:pep723" => {
                         // Use pixi exec with -w flags. For pixi:inline, includes
                         // user deps from notebook metadata. For pixi:prewarmed,
                         // just the base packages. Pixi caches environments at
