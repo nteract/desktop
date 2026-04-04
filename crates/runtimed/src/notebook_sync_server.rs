@@ -81,12 +81,41 @@ pub(crate) fn catch_automerge_panic<T>(label: &str, f: impl FnOnce() -> T) -> Re
     }
 }
 
+/// Sender half of the agent RPC channel.
+type AgentRequestSender = tokio::sync::mpsc::Sender<(
+    notebook_protocol::protocol::AgentRequest,
+    tokio::sync::oneshot::Sender<notebook_protocol::protocol::AgentResponse>,
+)>;
+
 /// Check if agent mode is enabled.
 ///
 /// Reads from the daemon's in-memory flag, which is initialized from
 /// the persisted settings doc and toggled via `runt agent enable/disable`.
 fn is_agent_mode_enabled(daemon: &crate::daemon::Daemon) -> bool {
     daemon.agent_mode.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Send an RPC request to the agent via its sync connection.
+///
+/// The agent's sync handler receives the request as a frame 0x01 and sends
+/// the response as frame 0x02. Returns error if no agent is connected.
+async fn send_agent_request(
+    room: &NotebookRoom,
+    request: notebook_protocol::protocol::AgentRequest,
+) -> anyhow::Result<notebook_protocol::protocol::AgentResponse> {
+    let tx = {
+        let guard = room.agent_request_tx.lock().await;
+        guard
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Agent not connected"))?
+    };
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    tx.send((request, reply_tx))
+        .await
+        .map_err(|_| anyhow::anyhow!("Agent disconnected"))?;
+    reply_rx
+        .await
+        .map_err(|_| anyhow::anyhow!("Agent dropped reply"))
 }
 
 /// Trust state for a notebook room.
@@ -889,10 +918,21 @@ pub struct NotebookRoom {
     /// Optional agent handle for process-isolated kernel execution.
     /// When set, kernel requests are routed to the agent subprocess
     /// instead of the local `RoomKernel`. Set by `LaunchKernel` when
-    /// `RUNT_AGENT_MODE=1`.
+    /// agent mode is enabled.
     pub agent_handle: Arc<Mutex<Option<crate::agent_handle::AgentHandle>>>,
     /// Environment path used by an agent-backed kernel, for GC protection.
     pub agent_env_path: Arc<RwLock<Option<PathBuf>>>,
+    /// Channel for sending RPC requests (LaunchKernel, Interrupt, etc.) to the
+    /// agent's sync connection. Set when agent connects via socket, cleared on
+    /// agent disconnect.
+    pub agent_request_tx: Arc<Mutex<Option<AgentRequestSender>>>,
+    /// Fires when the agent establishes its sync connection.
+    /// Uses `watch(false)` → `true` to avoid lost wakeups.
+    agent_connected_tx: Arc<tokio::sync::watch::Sender<bool>>,
+    /// Monotonic counter for execution queue ordering.
+    /// The coordinator bumps this for each ExecuteCell and stamps the seq
+    /// on the execution entry. The agent sorts by seq to determine order.
+    pub next_queue_seq: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Maximum number of snapshots to keep per notebook hash.
@@ -1077,6 +1117,12 @@ impl NotebookRoom {
             state_changed_tx,
             agent_handle: Arc::new(Mutex::new(None)),
             agent_env_path: Arc::new(RwLock::new(None)),
+            agent_request_tx: Arc::new(Mutex::new(None)),
+            agent_connected_tx: {
+                let (tx, _) = tokio::sync::watch::channel(false);
+                Arc::new(tx)
+            },
+            next_queue_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 
@@ -1142,6 +1188,12 @@ impl NotebookRoom {
             state_changed_tx,
             agent_handle: Arc::new(Mutex::new(None)),
             agent_env_path: Arc::new(RwLock::new(None)),
+            agent_request_tx: Arc::new(Mutex::new(None)),
+            agent_connected_tx: {
+                let (tx, _) = tokio::sync::watch::channel(false);
+                Arc::new(tx)
+            },
+            next_queue_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 
@@ -1289,6 +1341,229 @@ pub fn get_or_create_room(
 /// doc bytes are flushed via debounced persistence.
 ///
 /// Uses v2 typed frames protocol (with first-byte type indicator).
+/// Handle an agent subprocess that connected back to the daemon's Unix socket.
+///
+/// The agent is a special peer that owns the kernel for this notebook room.
+/// It receives RPC requests (LaunchKernel, Interrupt, etc.) via frame 0x01
+/// and watches RuntimeStateDoc for queued executions via frame 0x05.
+///
+/// This handler:
+/// 1. Performs initial NotebookDoc + RuntimeStateDoc sync
+/// 2. Sets up the `agent_request_tx` channel on the room
+/// 3. Fires `agent_connected` to unblock LaunchKernel
+/// 4. Enters a sync loop relaying frames bidirectionally
+pub async fn handle_agent_sync_connection<R, W>(
+    mut reader: R,
+    mut writer: W,
+    room: Arc<NotebookRoom>,
+    notebook_id: String,
+    agent_id: String,
+) where
+    R: tokio::io::AsyncRead + Unpin + Send,
+    W: tokio::io::AsyncWrite + Unpin + Send,
+{
+    use notebook_protocol::connection::{recv_typed_frame, send_typed_frame, NotebookFrameType};
+    use notebook_protocol::protocol::{AgentRequest, AgentResponse};
+
+    info!(
+        "[notebook-sync] Agent sync connection: notebook={} agent={}",
+        notebook_id, agent_id
+    );
+
+    // ── 1. Initial NotebookDoc sync ──────────────────────────────────
+    let mut doc_sync_state = automerge::sync::State::new();
+    {
+        let mut doc = room.doc.write().await;
+        // Generate our sync message (full doc state for fresh peer)
+        if let Some(msg) = doc.generate_sync_message(&mut doc_sync_state) {
+            let encoded = msg.encode();
+            if let Err(e) =
+                send_typed_frame(&mut writer, NotebookFrameType::AutomergeSync, &encoded).await
+            {
+                warn!("[notebook-sync] Agent initial doc sync send failed: {}", e);
+                return;
+            }
+        }
+    }
+
+    // ── 2. Initial RuntimeStateDoc sync ──────────────────────────────
+    let mut state_sync_state = automerge::sync::State::new();
+    {
+        let mut sd = room.state_doc.write().await;
+        if let Some(msg) = sd.generate_sync_message(&mut state_sync_state) {
+            let encoded = msg.encode();
+            if let Err(e) =
+                send_typed_frame(&mut writer, NotebookFrameType::RuntimeStateSync, &encoded).await
+            {
+                warn!(
+                    "[notebook-sync] Agent initial state sync send failed: {}",
+                    e
+                );
+                return;
+            }
+        }
+    }
+
+    // ── 3. Set up request channel ────────────────────────────────────
+    let (agent_tx, mut agent_rx) = tokio::sync::mpsc::channel::<(
+        AgentRequest,
+        tokio::sync::oneshot::Sender<AgentResponse>,
+    )>(16);
+    {
+        let mut tx_guard = room.agent_request_tx.lock().await;
+        *tx_guard = Some(agent_tx);
+    }
+
+    // ── 4. Signal that the agent is connected ────────────────────────
+    let _ = room.agent_connected_tx.send(true);
+    info!("[notebook-sync] Agent connected and ready: {}", agent_id);
+
+    // ── 5. Sync loop ─────────────────────────────────────────────────
+    let mut changed_rx = room.changed_tx.subscribe();
+    let mut state_changed_rx = room.state_changed_tx.subscribe();
+    let mut pending_reply: Option<tokio::sync::oneshot::Sender<AgentResponse>> = None;
+
+    loop {
+        tokio::select! {
+            // Frames from agent
+            frame = recv_typed_frame(&mut reader) => {
+                match frame {
+                    Ok(Some(typed_frame)) => {
+                        match typed_frame.frame_type {
+                            NotebookFrameType::AutomergeSync => {
+                                if let Ok(msg) = automerge::sync::Message::decode(&typed_frame.payload) {
+                                    let mut doc = room.doc.write().await;
+                                    if doc.receive_sync_message(&mut doc_sync_state, msg).is_ok() {
+                                        let _ = room.changed_tx.send(());
+                                    }
+                                    // Send sync reply
+                                    if let Some(reply) = doc.generate_sync_message(&mut doc_sync_state) {
+                                        let encoded = reply.encode();
+                                        let _ = send_typed_frame(
+                                            &mut writer,
+                                            NotebookFrameType::AutomergeSync,
+                                            &encoded,
+                                        ).await;
+                                    }
+                                }
+                            }
+                            NotebookFrameType::RuntimeStateSync => {
+                                if let Ok(msg) = automerge::sync::Message::decode(&typed_frame.payload) {
+                                    let mut sd = room.state_doc.write().await;
+                                    if let Ok(changed) = sd.receive_sync_message_with_changes(
+                                        &mut state_sync_state, msg,
+                                    ) {
+                                        if changed {
+                                            let _ = room.state_changed_tx.send(());
+                                        }
+                                    }
+                                    // Send sync reply
+                                    if let Some(reply) = sd.generate_sync_message(&mut state_sync_state) {
+                                        let encoded = reply.encode();
+                                        let _ = send_typed_frame(
+                                            &mut writer,
+                                            NotebookFrameType::RuntimeStateSync,
+                                            &encoded,
+                                        ).await;
+                                    }
+                                }
+                            }
+                            NotebookFrameType::Response => {
+                                // Agent responded to an RPC request
+                                if let Ok(response) = serde_json::from_slice::<AgentResponse>(&typed_frame.payload) {
+                                    if let Some(reply) = pending_reply.take() {
+                                        let _ = reply.send(response);
+                                    } else {
+                                        warn!("[notebook-sync] Agent response with no pending request");
+                                    }
+                                }
+                            }
+                            _ => {
+                                debug!("[notebook-sync] Agent sent unexpected frame type: {:?}", typed_frame.frame_type);
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        info!("[notebook-sync] Agent disconnected (EOF)");
+                        break;
+                    }
+                    Err(e) => {
+                        info!("[notebook-sync] Agent disconnected: {}", e);
+                        break;
+                    }
+                }
+            }
+
+            // NotebookDoc changes (from other peers) → sync to agent
+            _ = changed_rx.recv() => {
+                while changed_rx.try_recv().is_ok() {}
+                let mut doc = room.doc.write().await;
+                if let Some(msg) = doc.generate_sync_message(&mut doc_sync_state) {
+                    let encoded = msg.encode();
+                    if let Err(e) = send_typed_frame(
+                        &mut writer,
+                        NotebookFrameType::AutomergeSync,
+                        &encoded,
+                    ).await {
+                        warn!("[notebook-sync] Failed to sync doc to agent: {}", e);
+                        break;
+                    }
+                }
+            }
+
+            // RuntimeStateDoc changes → sync to agent
+            _ = state_changed_rx.recv() => {
+                while state_changed_rx.try_recv().is_ok() {}
+                let mut sd = room.state_doc.write().await;
+                if let Some(msg) = sd.generate_sync_message(&mut state_sync_state) {
+                    let encoded = msg.encode();
+                    if let Err(e) = send_typed_frame(
+                        &mut writer,
+                        NotebookFrameType::RuntimeStateSync,
+                        &encoded,
+                    ).await {
+                        warn!("[notebook-sync] Failed to sync state to agent: {}", e);
+                        break;
+                    }
+                }
+            }
+
+            // RPC requests to forward to agent (only accept when no reply is pending
+            // to serialize RPCs and prevent overwriting the reply slot)
+            Some((request, reply_tx)) = agent_rx.recv(), if pending_reply.is_none() => {
+                let json = match serde_json::to_vec(&request) {
+                    Ok(j) => j,
+                    Err(e) => {
+                        let _ = reply_tx.send(AgentResponse::Error {
+                            error: format!("Serialize error: {}", e),
+                        });
+                        continue;
+                    }
+                };
+                if let Err(e) = send_typed_frame(
+                    &mut writer,
+                    NotebookFrameType::Request,
+                    &json,
+                ).await {
+                    let _ = reply_tx.send(AgentResponse::Error {
+                        error: format!("Send error: {}", e),
+                    });
+                    break;
+                }
+                pending_reply = Some(reply_tx);
+            }
+        }
+    }
+
+    // Cleanup: clear the request channel and reset connected signal
+    {
+        let mut tx_guard = room.agent_request_tx.lock().await;
+        *tx_guard = None;
+    }
+    let _ = room.agent_connected_tx.send(false);
+    info!("[notebook-sync] Agent sync connection closed: {}", agent_id);
+}
+
 ///
 /// If `skip_capabilities` is true, the ProtocolCapabilities frame is not sent.
 /// This is used for OpenNotebook/CreateNotebook handshakes where the protocol
@@ -3069,42 +3344,59 @@ async fn auto_launch_kernel(
 
         let nb_id = notebook_id.to_string();
         let agent_id = format!("rt:agent:{}", &uuid::Uuid::new_v4().to_string()[..8]);
+        let socket_path = daemon.socket_path().clone();
 
         match crate::agent_handle::AgentHandle::spawn(
             nb_id,
-            agent_id,
+            agent_id.clone(),
             room.blob_store.root().to_path_buf(),
-            room.state_doc.clone(),
-            room.state_changed_tx.clone(),
-            room.kernel_broadcast_tx.clone(),
+            socket_path,
         )
         .await
         {
-            Ok(mut agent) => {
-                // Send LaunchKernel to the agent
-                match agent
-                    .launch_kernel(
-                        kernel_type,
-                        &env_source,
-                        notebook_path_opt
-                            .as_deref()
-                            .map(|p| p.to_str().unwrap_or("")),
-                        launched_config.clone(),
-                    )
-                    .await
+            Ok(agent) => {
+                // Store handle and wait for agent to connect back via socket
                 {
+                    let mut agent_guard = room.agent_handle.lock().await;
+                    *agent_guard = Some(agent);
+                }
+
+                // Wait for agent to establish its sync connection
+                match tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                    room.agent_connected_tx
+                        .subscribe()
+                        .wait_for(|v| *v)
+                        .await
+                        .map(|_| ())
+                })
+                .await
+                {
+                    Ok(Ok(_)) => {
+                        info!("[notebook-sync] Agent connected, sending LaunchKernel");
+                    }
+                    Ok(Err(_)) | Err(_) => {
+                        warn!("[notebook-sync] Agent failed to connect within 30s");
+                        reset_starting_state(room).await;
+                        return;
+                    }
+                }
+
+                // Send LaunchKernel RPC via the agent's sync connection
+                let launch_request = notebook_protocol::protocol::AgentRequest::LaunchKernel {
+                    kernel_type: kernel_type.to_string(),
+                    env_source: env_source.clone(),
+                    notebook_path: notebook_path_opt
+                        .as_deref()
+                        .map(|p| p.to_str().unwrap_or("").to_string()),
+                    launched_config: launched_config.clone(),
+                    env_vars: Default::default(),
+                };
+
+                match send_agent_request(room, launch_request).await {
                     Ok(notebook_protocol::protocol::AgentResponse::KernelLaunched {
                         env_source: es,
                     }) => {
-                        // No state_doc replacement needed — the agent bootstrapped
-                        // FROM the coordinator's doc (like frontend NotebookDoc).
-                        // The coordinator keeps its scaffolded doc; the agent
-                        // writes with a different actor. No DuplicateSeqNumber.
-
-                        let mut agent_guard = room.agent_handle.lock().await;
-                        *agent_guard = Some(agent);
                         drop(kernel_guard);
-                        drop(agent_guard);
 
                         // Store env path for GC protection
                         if let Some(ref env) = pooled_env {
@@ -3122,15 +3414,19 @@ async fn auto_launch_kernel(
                         return;
                     }
                     Ok(notebook_protocol::protocol::AgentResponse::Error { error }) => {
-                        warn!(
-                            "[notebook-sync] Agent kernel launch failed: {} — falling back to local",
-                            error
-                        );
-                        // Fall through to local launch below
+                        warn!("[notebook-sync] Agent kernel launch failed: {}", error);
+                        reset_starting_state(room).await;
+                        return;
                     }
-                    _ => {
-                        warn!("[notebook-sync] Unexpected agent response — falling back to local");
-                        // Fall through to local launch below
+                    Ok(_) => {
+                        warn!("[notebook-sync] Unexpected agent response during auto-launch");
+                        reset_starting_state(room).await;
+                        return;
+                    }
+                    Err(e) => {
+                        warn!("[notebook-sync] Agent communication error: {}", e);
+                        reset_starting_state(room).await;
+                        return;
                     }
                 }
             }
@@ -3876,44 +4172,63 @@ async fn handle_notebook_request(
             }
 
             // Check if agent mode is enabled.
-            // Default: ON in dev mode (RUNTIMED_DEV=1), OFF in production.
-            // Override: RUNT_AGENT_MODE=1 to force on, RUNT_AGENT_MODE=0 to force off.
             if is_agent_mode_enabled(&daemon) {
-                info!("[notebook-sync] RUNT_AGENT_MODE=1: spawning agent subprocess");
+                info!("[notebook-sync] Agent mode: spawning agent subprocess");
 
                 let notebook_id = room.notebook_path.read().await.display().to_string();
                 let agent_id = format!("rt:agent:{}", &uuid::Uuid::new_v4().to_string()[..8]);
+                let socket_path = daemon.socket_path().clone();
 
                 match crate::agent_handle::AgentHandle::spawn(
                     notebook_id,
                     agent_id,
                     room.blob_store.root().to_path_buf(),
-                    room.state_doc.clone(),
-                    room.state_changed_tx.clone(),
-                    room.kernel_broadcast_tx.clone(),
+                    socket_path,
                 )
                 .await
                 {
-                    Ok(mut agent) => {
-                        // Send LaunchKernel to the agent
-                        match agent
-                            .launch_kernel(
-                                &resolved_kernel_type,
-                                &resolved_env_source,
-                                notebook_path.as_deref().map(|p| p.to_str().unwrap_or("")),
-                                launched_config.clone(),
-                            )
-                            .await
+                    Ok(agent) => {
                         {
+                            let mut agent_guard = room.agent_handle.lock().await;
+                            *agent_guard = Some(agent);
+                        }
+
+                        // Wait for agent to connect back via socket
+                        match tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                            room.agent_connected_tx
+                                .subscribe()
+                                .wait_for(|v| *v)
+                                .await
+                                .map(|_| ())
+                        })
+                        .await
+                        {
+                            Ok(Ok(_)) => {}
+                            Ok(Err(_)) | Err(_) => {
+                                reset_starting_state(room).await;
+                                return NotebookResponse::Error {
+                                    error: "Agent failed to connect within 30s".to_string(),
+                                };
+                            }
+                        }
+
+                        // Send LaunchKernel RPC
+                        let launch_request =
+                            notebook_protocol::protocol::AgentRequest::LaunchKernel {
+                                kernel_type: resolved_kernel_type.clone(),
+                                env_source: resolved_env_source.clone(),
+                                notebook_path: notebook_path
+                                    .as_deref()
+                                    .map(|p| p.to_str().unwrap_or("").to_string()),
+                                launched_config: launched_config.clone(),
+                                env_vars: Default::default(),
+                            };
+
+                        match send_agent_request(room, launch_request).await {
                             Ok(notebook_protocol::protocol::AgentResponse::KernelLaunched {
                                 env_source: es,
                             }) => {
-                                // Agent launched — replace state_doc with empty
-                                // to avoid DuplicateSeqNumber with agent's doc.
-                                let mut agent_guard = room.agent_handle.lock().await;
-                                *agent_guard = Some(agent);
                                 drop(kernel_guard);
-                                drop(agent_guard);
 
                                 publish_kernel_state_presence(
                                     room,
@@ -3923,7 +4238,7 @@ async fn handle_notebook_request(
                                 .await;
 
                                 // Write kernel status + info + prewarmed packages
-                                // to RuntimeStateDoc (mirrors the local launch path)
+                                // to RuntimeStateDoc
                                 {
                                     let mut sd = room.state_doc.write().await;
                                     let mut changed = false;
@@ -4106,36 +4421,64 @@ async fn handle_notebook_request(
                 };
             }
 
-            // Check for agent-backed kernel first
+            // Agent-backed kernel: write execution to RuntimeStateDoc queue.
+            // The agent discovers it via CRDT sync and executes.
+            // Check agent_request_tx (not agent_handle) to ensure the agent's
+            // sync connection is still live — a stale handle with no connection
+            // would leave queued executions orphaned.
             {
-                let mut agent_guard = room.agent_handle.lock().await;
-                if let Some(ref mut agent) = *agent_guard {
+                let has_agent = room.agent_request_tx.lock().await.is_some();
+                if has_agent {
                     let execution_id = uuid::Uuid::new_v4().to_string();
-                    // Stamp execution_id on the cell before sending to agent
+                    let seq = room
+                        .next_queue_seq
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+                    // Stamp execution_id on the cell in NotebookDoc
                     {
                         let mut doc = room.doc.write().await;
                         let _ = doc.set_execution_id(&cell_id, Some(&execution_id));
                         let _ = room.changed_tx.send(());
                     }
-                    return match agent.execute_cell(&cell_id, &source, &execution_id).await {
-                        Ok(resp) => match resp {
-                            notebook_protocol::protocol::AgentResponse::CellQueued {
-                                cell_id,
-                                execution_id,
-                            } => NotebookResponse::CellQueued {
-                                cell_id,
-                                execution_id,
-                            },
-                            notebook_protocol::protocol::AgentResponse::Error { error } => {
-                                NotebookResponse::Error { error }
+
+                    // Write execution entry with source to RuntimeStateDoc
+                    {
+                        let mut sd = room.state_doc.write().await;
+                        sd.create_execution_with_source(&execution_id, &cell_id, &source, seq);
+                        let _ = room.state_changed_tx.send(());
+                    }
+
+                    // Best-effort background formatting via fork+merge
+                    let fork = {
+                        let mut doc = room.doc.write().await;
+                        doc.fork()
+                    };
+                    let room_clone = Arc::clone(room);
+                    let cell_id_clone = cell_id.clone();
+                    let source_clone = source.clone();
+                    tokio::spawn(async move {
+                        if let Some(runtime) = detect_room_runtime(&room_clone).await {
+                            if let Some(formatted) = format_source(&source_clone, &runtime).await {
+                                let mut fork = fork;
+                                let actor = formatter_actor(&runtime);
+                                fork.set_actor(&actor);
+                                if fork.update_source(&cell_id_clone, &formatted).is_ok() {
+                                    let mut doc = room_clone.doc.write().await;
+                                    if let Err(e) = catch_automerge_panic("format-merge", || {
+                                        doc.merge(&mut fork)
+                                    }) {
+                                        warn!("{}", e);
+                                        doc.rebuild_from_save();
+                                    }
+                                    let _ = room_clone.changed_tx.send(());
+                                }
                             }
-                            _ => NotebookResponse::Error {
-                                error: "Unexpected agent response".to_string(),
-                            },
-                        },
-                        Err(e) => NotebookResponse::Error {
-                            error: format!("Agent error: {}", e),
-                        },
+                        }
+                    });
+
+                    return NotebookResponse::CellQueued {
+                        cell_id,
+                        execution_id,
                     };
                 }
             }
@@ -4256,11 +4599,16 @@ async fn handle_notebook_request(
         }
 
         NotebookRequest::InterruptExecution {} => {
-            // Agent path
+            // Agent path: send RPC via sync connection
             {
-                let mut agent_guard = room.agent_handle.lock().await;
-                if let Some(ref mut agent) = *agent_guard {
-                    return match agent.interrupt().await {
+                let has_agent = room.agent_request_tx.lock().await.is_some();
+                if has_agent {
+                    return match send_agent_request(
+                        room,
+                        notebook_protocol::protocol::AgentRequest::InterruptExecution,
+                    )
+                    .await
+                    {
                         Ok(_) => NotebookResponse::InterruptSent {},
                         Err(e) => NotebookResponse::Error {
                             error: format!("Agent interrupt error: {}", e),
@@ -4283,12 +4631,21 @@ async fn handle_notebook_request(
         }
 
         NotebookRequest::ShutdownKernel {} => {
-            // Agent path
+            // Agent path: send shutdown RPC, then clear handle
             {
-                let mut agent_guard = room.agent_handle.lock().await;
-                if let Some(ref mut agent) = *agent_guard {
-                    agent.shutdown().await;
-                    *agent_guard = None;
+                let has_agent = room.agent_request_tx.lock().await.is_some();
+                if has_agent {
+                    let _ = send_agent_request(
+                        room,
+                        notebook_protocol::protocol::AgentRequest::ShutdownKernel,
+                    )
+                    .await;
+                    // Clear both handle and request channel so subsequent
+                    // ExecuteCell/Complete/etc. fall through to NoKernel
+                    let mut guard = room.agent_handle.lock().await;
+                    *guard = None;
+                    let mut tx_guard = room.agent_request_tx.lock().await;
+                    *tx_guard = None;
                     return NotebookResponse::KernelShuttingDown {};
                 }
             }
@@ -4408,51 +4765,39 @@ async fn handle_notebook_request(
         }
 
         NotebookRequest::RunAllCells {} => {
-            // Agent path — read all cells, send each to agent
+            // Agent path — write all cells to RuntimeStateDoc queue
             {
-                let mut agent_guard = room.agent_handle.lock().await;
-                if let Some(ref mut agent) = *agent_guard {
+                let has_agent = room.agent_request_tx.lock().await.is_some();
+                if has_agent {
                     let cells = {
                         let doc = room.doc.read().await;
                         doc.get_cells()
                     };
 
                     let mut queued = Vec::new();
-                    for cell in cells {
-                        if cell.cell_type == "code" {
-                            let execution_id = uuid::Uuid::new_v4().to_string();
-                            match agent
-                                .execute_cell(&cell.id, &cell.source, &execution_id)
-                                .await
-                            {
-                                Ok(notebook_protocol::protocol::AgentResponse::CellQueued {
-                                    cell_id,
+                    {
+                        let mut sd = room.state_doc.write().await;
+                        let mut doc = room.doc.write().await;
+                        for cell in &cells {
+                            if cell.cell_type == "code" {
+                                let execution_id = uuid::Uuid::new_v4().to_string();
+                                let seq = room
+                                    .next_queue_seq
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                sd.create_execution_with_source(
+                                    &execution_id,
+                                    &cell.id,
+                                    &cell.source,
+                                    seq,
+                                );
+                                let _ = doc.set_execution_id(&cell.id, Some(&execution_id));
+                                queued.push(QueueEntry {
+                                    cell_id: cell.id.clone(),
                                     execution_id,
-                                }) => {
-                                    queued.push(QueueEntry {
-                                        cell_id,
-                                        execution_id,
-                                    });
-                                }
-                                Ok(notebook_protocol::protocol::AgentResponse::Error { error }) => {
-                                    return NotebookResponse::Error {
-                                        error: format!(
-                                            "Agent failed to queue cell {}: {}",
-                                            cell.id, error
-                                        ),
-                                    };
-                                }
-                                _ => {}
+                                });
                             }
                         }
-                    }
-
-                    // Stamp execution_ids in NotebookDoc
-                    {
-                        let mut doc = room.doc.write().await;
-                        for entry in &queued {
-                            let _ = doc.set_execution_id(&entry.cell_id, Some(&entry.execution_id));
-                        }
+                        let _ = room.state_changed_tx.send(());
                         let _ = room.changed_tx.send(());
                     }
 
@@ -4550,9 +4895,16 @@ async fn handle_notebook_request(
         NotebookRequest::SendComm { message } => {
             // Agent path
             {
-                let mut agent_guard = room.agent_handle.lock().await;
-                if let Some(ref mut agent) = *agent_guard {
-                    return match agent.send_comm(message).await {
+                let has_agent = room.agent_request_tx.lock().await.is_some();
+                if has_agent {
+                    return match send_agent_request(
+                        room,
+                        notebook_protocol::protocol::AgentRequest::SendComm {
+                            message: message.clone(),
+                        },
+                    )
+                    .await
+                    {
                         Ok(_) => NotebookResponse::Ok {},
                         Err(e) => NotebookResponse::Error {
                             error: format!("Agent comm error: {}", e),
@@ -4600,9 +4952,18 @@ async fn handle_notebook_request(
         NotebookRequest::GetHistory { pattern, n, unique } => {
             // Agent path
             {
-                let mut agent_guard = room.agent_handle.lock().await;
-                if let Some(ref mut agent) = *agent_guard {
-                    return match agent.get_history(pattern.as_deref(), n, unique).await {
+                let has_agent = room.agent_request_tx.lock().await.is_some();
+                if has_agent {
+                    return match send_agent_request(
+                        room,
+                        notebook_protocol::protocol::AgentRequest::GetHistory {
+                            pattern: pattern.clone(),
+                            n,
+                            unique,
+                        },
+                    )
+                    .await
+                    {
                         Ok(notebook_protocol::protocol::AgentResponse::HistoryResult {
                             entries,
                         }) => NotebookResponse::HistoryResult { entries },
@@ -4635,9 +4996,17 @@ async fn handle_notebook_request(
         NotebookRequest::Complete { code, cursor_pos } => {
             // Agent path
             {
-                let mut agent_guard = room.agent_handle.lock().await;
-                if let Some(ref mut agent) = *agent_guard {
-                    return match agent.complete(&code, cursor_pos).await {
+                let has_agent = room.agent_request_tx.lock().await.is_some();
+                if has_agent {
+                    return match send_agent_request(
+                        room,
+                        notebook_protocol::protocol::AgentRequest::Complete {
+                            code: code.clone(),
+                            cursor_pos,
+                        },
+                    )
+                    .await
+                    {
                         Ok(notebook_protocol::protocol::AgentResponse::CompletionResult {
                             items,
                             cursor_start,
@@ -7751,6 +8120,12 @@ mod tests {
             state_changed_tx,
             agent_handle: Arc::new(Mutex::new(None)),
             agent_env_path: Arc::new(RwLock::new(None)),
+            agent_request_tx: Arc::new(Mutex::new(None)),
+            agent_connected_tx: {
+                let (tx, _) = tokio::sync::watch::channel(false);
+                Arc::new(tx)
+            },
+            next_queue_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         };
 
         (room, notebook_path)

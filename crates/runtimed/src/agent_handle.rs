@@ -1,8 +1,8 @@
 //! Coordinator-side management of a runtime agent subprocess.
 //!
-//! `AgentHandle` spawns a `runtimed agent` child process and communicates
-//! via framed protocol on stdin/stdout. A reader task reads all frames
-//! from the agent's stdout and routes them via channels.
+//! `AgentHandle` spawns a `runtimed agent` child process that connects back
+//! to the daemon's Unix socket as a regular peer. The handle only monitors
+//! the child process lifecycle — all communication happens via the socket.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,311 +10,79 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use log::{info, warn};
-use notebook_doc::runtime_state::RuntimeStateDoc;
-use notebook_protocol::connection::{
-    recv_frame, recv_preamble, send_json_frame, send_preamble, send_typed_frame, Handshake,
-    NotebookFrameType,
-};
-use notebook_protocol::protocol::{
-    AgentNotification, AgentRequest, AgentResponse, LaunchedEnvConfig,
-};
-use tokio::process::ChildStdin;
-use tokio::sync::{broadcast, mpsc, oneshot, Mutex, RwLock};
 
 /// Handle to a running agent subprocess.
+///
+/// The agent connects back to the daemon's Unix socket as a peer.
+/// This handle only spawns and monitors the child process — it does
+/// not manage any communication channels.
 pub struct AgentHandle {
-    /// Writer to agent's stdin (protected by mutex for concurrent access)
-    writer: Arc<Mutex<ChildStdin>>,
-    /// Channel for requesting a response from the reader task
-    response_request_tx: mpsc::Sender<oneshot::Sender<AgentResponse>>,
     alive: Arc<AtomicBool>,
 }
 
 impl AgentHandle {
+    /// Spawn an agent subprocess that will connect back to the daemon socket.
+    ///
+    /// The agent is given the socket path, notebook ID, agent ID, and blob root
+    /// as CLI arguments. It connects to the daemon socket and joins the notebook
+    /// room as a `RuntimeAgent` peer.
     pub async fn spawn(
         notebook_id: String,
         agent_id: String,
         blob_root: PathBuf,
-        state_doc: Arc<RwLock<RuntimeStateDoc>>,
-        state_changed_tx: broadcast::Sender<()>,
-        _broadcast_tx: broadcast::Sender<notebook_protocol::protocol::NotebookBroadcast>,
+        socket_path: PathBuf,
     ) -> Result<Self> {
         let exe = std::env::current_exe()?;
         info!(
-            "[agent-handle] Spawning agent: {} agent (notebook_id={})",
+            "[agent-handle] Spawning agent: {} agent --notebook-id {} (socket: {})",
             exe.display(),
-            notebook_id
+            notebook_id,
+            socket_path.display(),
         );
 
         let mut child = tokio::process::Command::new(&exe)
             .arg("agent")
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
+            .arg("--notebook-id")
+            .arg(&notebook_id)
+            .arg("--agent-id")
+            .arg(&agent_id)
+            .arg("--blob-root")
+            .arg(blob_root.as_os_str())
+            .arg("--socket")
+            .arg(socket_path.as_os_str())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::inherit())
             .kill_on_drop(true)
             .spawn()?;
 
-        let mut writer = child
-            .stdin
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("Failed to capture agent stdin"))?;
-        let mut reader = child
-            .stdout
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("Failed to capture agent stdout"))?;
-
-        // Preamble + handshake exchange (before wrapping writer in Arc<Mutex>)
-        send_preamble(&mut writer).await?;
-        send_json_frame(
-            &mut writer,
-            &Handshake::RuntimeAgent {
-                notebook_id,
-                agent_id,
-                blob_root: blob_root.to_string_lossy().to_string(),
-            },
-        )
-        .await?;
-        recv_preamble(&mut reader).await?;
-
-        // Both coordinator and agent have their own scaffolded RuntimeStateDoc
-        // with different actors. No bootstrap sync needed — the reader task
-        // handles bidirectional sync once it starts. The docs will merge
-        // naturally via Automerge CRDT (same structure, different actors).
-        info!("[agent-handle] Agent spawned — sync via reader task");
-
-        // Now wrap writer in Arc<Mutex> for shared access with reader task
-        let writer = Arc::new(Mutex::new(writer));
+        info!("[agent-handle] Agent spawned (pid={:?})", child.id());
 
         let alive = Arc::new(AtomicBool::new(true));
-        let (response_request_tx, mut response_request_rx) =
-            mpsc::channel::<oneshot::Sender<AgentResponse>>(8);
-        // No unsolicited response channel needed — all responses go through oneshot
 
-        // Spawn reader task — reads ALL frames from agent stdout.
-        // This task owns `reader` and never gives it up. Frames are routed
-        // via channels. This works because the task is spawned from the same
-        // async context where `reader` was created.
+        // Monitor child process exit
         let alive_clone = alive.clone();
-        let state_doc_clone = state_doc.clone();
-        let state_changed_clone = state_changed_tx.clone();
-        let writer_clone = writer.clone();
+        let agent_id_clone = agent_id.clone();
         tokio::spawn(async move {
-            let mut agent_sync_state = automerge::sync::State::new();
-            let mut pending_reply: Option<oneshot::Sender<AgentResponse>> = None;
-
-            // Subscribe to coordinator state changes for reverse sync
-            let mut state_changed_rx = state_changed_clone.subscribe();
-
-            // Also wait on the child process
-            let mut child_wait = Box::pin(child.wait());
-
-            loop {
-                tokio::select! {
-                    biased;
-
-                    // Read frames from agent stdout
-                    frame = recv_frame(&mut reader) => {
-                        match frame {
-                            Ok(Some(data)) if !data.is_empty() => {
-                                let frame_type = data[0];
-                                let payload = &data[1..];
-
-                                match frame_type {
-                                    // AgentResponse
-                                    0x02 => {
-                                        if let Ok(response) = serde_json::from_slice::<AgentResponse>(payload) {
-                                            if let Some(reply) = pending_reply.take() {
-                                                let _ = reply.send(response);
-                                            } else {
-                                                warn!("[agent-handle] Response with no pending request");
-                                            }
-                                        }
-                                    }
-                                    // RuntimeStateSync
-                                    0x05 => {
-                                        if let Ok(msg) = automerge::sync::Message::decode(payload) {
-                                            let mut sd = state_doc_clone.write().await;
-                                            if let Ok(changed) = sd.receive_sync_message_with_changes(
-                                                &mut agent_sync_state, msg,
-                                            ) {
-                                                if changed {
-                                                    let _ = state_changed_clone.send(());
-                                                }
-                                            }
-                                            // Send sync reply
-                                            if let Some(reply_msg) = sd.generate_sync_message(&mut agent_sync_state) {
-                                                let encoded = reply_msg.encode();
-                                                let mut w = writer_clone.lock().await;
-                                                let _ = send_typed_frame(&mut *w, NotebookFrameType::RuntimeStateSync, &encoded).await;
-                                            }
-                                        }
-                                    }
-                                    // AgentNotification
-                                    0x03 => {
-                                        if let Ok(AgentNotification::KernelDied) = serde_json::from_slice(payload) {
-                                            warn!("[agent-handle] Agent kernel died");
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            _ => {
-                                info!("[agent-handle] Agent stdout closed");
-                                break;
-                            }
-                        }
-                    }
-
-                    // Accept response request from send_request callers
-                    req = response_request_rx.recv() => {
-                        match req {
-                            Some(reply_tx) => {
-                                pending_reply = Some(reply_tx);
-                            }
-                            None => break,
-                        }
-                    }
-
-                    // Forward coordinator RuntimeStateDoc changes to agent
-                    _ = state_changed_rx.recv() => {
-                        // Drain buffered notifications
-                        while state_changed_rx.try_recv().is_ok() {}
-
-                        let mut sd = state_doc_clone.write().await;
-                        if let Some(msg) = sd.generate_sync_message(&mut agent_sync_state) {
-                            let encoded = msg.encode();
-                            let mut w = writer_clone.lock().await;
-                            if let Err(e) = send_typed_frame(
-                                &mut *w,
-                                NotebookFrameType::RuntimeStateSync,
-                                &encoded,
-                            ).await {
-                                warn!("[agent-handle] Failed to send reverse sync: {}", e);
-                                break;
-                            }
-                        }
-                    }
-
-                    // Wait for child exit
-                    _ = &mut child_wait => {
-                        info!("[agent-handle] Agent process exited");
-                        break;
-                    }
+            match child.wait().await {
+                Ok(status) => {
+                    info!(
+                        "[agent-handle] Agent {} exited with status: {}",
+                        agent_id_clone, status
+                    );
+                }
+                Err(e) => {
+                    warn!("[agent-handle] Agent {} wait error: {}", agent_id_clone, e);
                 }
             }
-
             alive_clone.store(false, Ordering::Relaxed);
         });
 
-        info!("[agent-handle] Agent spawned — reader task started");
-
-        Ok(Self {
-            writer,
-            response_request_tx,
-            alive,
-        })
+        Ok(Self { alive })
     }
 
-    async fn send_request(&mut self, request: AgentRequest) -> Result<AgentResponse> {
-        if !self.alive.load(Ordering::Relaxed) {
-            return Ok(AgentResponse::Error {
-                error: "Agent is not running".to_string(),
-            });
-        }
-
-        // Register for the response BEFORE sending the request
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.response_request_tx
-            .send(reply_tx)
-            .await
-            .map_err(|_| anyhow::anyhow!("Reader task closed"))?;
-
-        // Send request
-        let json = serde_json::to_vec(&request)?;
-        {
-            let mut w = self.writer.lock().await;
-            send_typed_frame(&mut *w, NotebookFrameType::Request, &json).await?;
-        }
-
-        // Wait for response
-        reply_rx
-            .await
-            .map_err(|_| anyhow::anyhow!("Reader task dropped response"))
-    }
-
-    pub async fn launch_kernel(
-        &mut self,
-        kernel_type: &str,
-        env_source: &str,
-        notebook_path: Option<&str>,
-        launched_config: LaunchedEnvConfig,
-    ) -> Result<AgentResponse> {
-        self.send_request(AgentRequest::LaunchKernel {
-            kernel_type: kernel_type.to_string(),
-            env_source: env_source.to_string(),
-            notebook_path: notebook_path.map(String::from),
-            launched_config,
-            env_vars: Default::default(),
-        })
-        .await
-    }
-
-    pub async fn execute_cell(
-        &mut self,
-        cell_id: &str,
-        code: &str,
-        execution_id: &str,
-    ) -> Result<AgentResponse> {
-        self.send_request(AgentRequest::ExecuteCell {
-            cell_id: cell_id.to_string(),
-            code: code.to_string(),
-            execution_id: execution_id.to_string(),
-        })
-        .await
-    }
-
-    pub async fn interrupt(&mut self) -> Result<AgentResponse> {
-        self.send_request(AgentRequest::InterruptExecution).await
-    }
-
-    pub async fn shutdown_kernel(&mut self) -> Result<AgentResponse> {
-        self.send_request(AgentRequest::ShutdownKernel).await
-    }
-
-    pub async fn send_comm(&mut self, message: serde_json::Value) -> Result<AgentResponse> {
-        self.send_request(AgentRequest::SendComm { message }).await
-    }
-
-    pub async fn complete(&mut self, code: &str, cursor_pos: usize) -> Result<AgentResponse> {
-        self.send_request(AgentRequest::Complete {
-            code: code.to_string(),
-            cursor_pos,
-        })
-        .await
-    }
-
-    pub async fn get_history(
-        &mut self,
-        pattern: Option<&str>,
-        n: i32,
-        unique: bool,
-    ) -> Result<AgentResponse> {
-        self.send_request(AgentRequest::GetHistory {
-            pattern: pattern.map(String::from),
-            n,
-            unique,
-        })
-        .await
-    }
-
+    /// Check if the agent process is still running.
     pub fn is_alive(&self) -> bool {
         self.alive.load(Ordering::Relaxed)
-    }
-
-    pub async fn shutdown(&mut self) {
-        if self.is_alive() {
-            let _ = self.shutdown_kernel().await;
-        }
-        self.alive.store(false, Ordering::Relaxed);
     }
 }

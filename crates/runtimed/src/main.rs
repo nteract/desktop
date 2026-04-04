@@ -105,7 +105,20 @@ enum Commands {
 
     /// Run as a runtime agent subprocess (internal, used by coordinator)
     #[command(hide = true)]
-    Agent,
+    Agent {
+        /// Daemon socket path to connect to
+        #[arg(long)]
+        socket: PathBuf,
+        /// Notebook ID to attach to
+        #[arg(long)]
+        notebook_id: String,
+        /// Agent ID
+        #[arg(long)]
+        agent_id: String,
+        /// Blob store root path
+        #[arg(long)]
+        blob_root: PathBuf,
+    },
 }
 
 /// Get a log path that works even when HOME is not set.
@@ -335,32 +348,17 @@ async fn main() -> anyhow::Result<()> {
             );
             flush_pool().await
         }
-        Some(Commands::Agent) => {
-            // Agent mode: communicate over stdin/stdout using framed protocol.
-            #[cfg(unix)]
-            {
-                // Use tokio::fs::File from raw fd to avoid tokio::io::stdout()
-                // buffering issues that prevent frames from being read by the parent.
-                use std::os::unix::io::FromRawFd;
-                let stdin = unsafe { tokio::fs::File::from_raw_fd(0) };
-                let stdout = unsafe { tokio::fs::File::from_raw_fd(1) };
-                runtimed::agent::run_agent(stdin, stdout)
-                    .await
-                    .map_err(|e| {
-                        eprintln!("[agent] Fatal: {}", e);
-                        e
-                    })
-            }
-            #[cfg(not(unix))]
-            {
-                runtimed::agent::run_agent(tokio::io::stdin(), tokio::io::stdout())
-                    .await
-                    .map_err(|e| {
-                        eprintln!("[agent] Fatal: {}", e);
-                        e
-                    })
-            }
-        }
+        Some(Commands::Agent {
+            socket,
+            notebook_id,
+            agent_id,
+            blob_root,
+        }) => runtimed::agent::run_agent(socket, notebook_id, agent_id, blob_root)
+            .await
+            .map_err(|e| {
+                eprintln!("[agent] Fatal: {}", e);
+                e
+            }),
     }
 }
 
