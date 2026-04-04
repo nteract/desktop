@@ -375,14 +375,14 @@ function AppContent() {
           ? "uv"
           : isCondaConfigured || environmentYmlInfo?.has_dependencies
             ? "conda"
-            : pixiInfo?.has_dependencies
+            : pixiInfo?.has_dependencies || pixiInfo?.has_pypi_dependencies
               ? "pixi"
               : null;
 
   // Pre-start hint for the env badge (more specific than envType: distinguishes pixi)
   const envTypeHint = envSource
     ? null // backend has spoken, no hint needed
-    : pixiInfo?.has_dependencies
+    : pixiInfo?.has_dependencies || pixiInfo?.has_pypi_dependencies
       ? ("pixi" as const)
       : envType === "conda"
         ? ("conda" as const)
