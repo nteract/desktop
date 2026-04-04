@@ -352,6 +352,27 @@ fn compute_env_sync_diff(
         }
     }
 
+    // Check pixi deps
+    if let Some(ref launched_pixi) = launched.pixi_deps {
+        let current_pixi = current
+            .runt
+            .pixi
+            .as_ref()
+            .map(|p| &p.dependencies[..])
+            .unwrap_or(&[]);
+
+        for dep in current_pixi {
+            if !launched_pixi.contains(dep) {
+                added.push(dep.clone());
+            }
+        }
+        for dep in launched_pixi {
+            if !current_pixi.contains(dep) {
+                removed.push(dep.clone());
+            }
+        }
+    }
+
     // Check deno config
     if let Some(ref launched_deno) = launched.deno_config {
         if let Some(ref current_deno) = current.runt.deno {
@@ -480,6 +501,7 @@ async fn check_and_broadcast_sync_state(room: &NotebookRoom) {
     // Check if we're tracking inline deps or deno config
     let is_tracking = launched.uv_deps.is_some()
         || launched.conda_deps.is_some()
+        || launched.pixi_deps.is_some()
         || launched.deno_config.is_some();
 
     if is_tracking {
@@ -4175,6 +4197,22 @@ async fn handle_notebook_request(
                             };
                         }
                     }
+                } else {
+                    (pooled_env, None)
+                }
+            } else if resolved_env_source == "pixi:inline" {
+                // pixi exec handles its own caching — just extract deps for -w flags
+                let deps = metadata_snapshot
+                    .as_ref()
+                    .and_then(|s| s.runt.pixi.as_ref())
+                    .map(|p| p.dependencies.clone())
+                    .unwrap_or_default();
+                if !deps.is_empty() {
+                    info!(
+                        "[notebook-sync] LaunchKernel: pixi:inline deps for pixi exec: {:?}",
+                        deps
+                    );
+                    (None, Some(deps))
                 } else {
                     (pooled_env, None)
                 }
