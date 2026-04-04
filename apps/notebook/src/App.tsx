@@ -32,6 +32,7 @@ import { DependencyHeader } from "./components/DependencyHeader";
 import { GlobalFindBar } from "./components/GlobalFindBar";
 import { NotebookToolbar } from "./components/NotebookToolbar";
 import { NotebookView } from "./components/NotebookView";
+import { PixiDependencyHeader } from "./components/PixiDependencyHeader";
 import { PoolErrorBanner } from "./components/PoolErrorBanner";
 import { TrustDialog } from "./components/TrustDialog";
 import { UntrustedBanner } from "./components/UntrustedBanner";
@@ -45,6 +46,7 @@ import { type EnvSyncState, useDependencies } from "./hooks/useDependencies";
 import { useEnvProgress } from "./hooks/useEnvProgress";
 import { useDaemonInfo, useGitInfo } from "./hooks/useGitInfo";
 import { useGlobalFind } from "./hooks/useGlobalFind";
+import { usePixiDependencies } from "./hooks/usePixiDependencies";
 import { usePoolState } from "./hooks/usePoolState";
 import { useTrust } from "./hooks/useTrust";
 import { useUpdater } from "./hooks/useUpdater";
@@ -240,9 +242,10 @@ function AppContent() {
     setPython: setCondaPython,
     environmentYmlInfo,
     environmentYmlDeps,
-    pixiInfo,
-    importFromPixi,
   } = useCondaDependencies();
+
+  // Pixi project detection
+  const { pixiInfo } = usePixiDependencies();
 
   // Deno config detection and settings
   const { denoConfigInfo, flexibleNpmImports, setFlexibleNpmImports } =
@@ -366,11 +369,15 @@ function AppContent() {
     ? "conda"
     : envSource?.startsWith("uv:")
       ? "uv"
-      : isUvConfigured
-        ? "uv"
-        : isCondaConfigured || environmentYmlInfo?.has_dependencies
-          ? "conda"
-          : null;
+      : envSource?.startsWith("pixi:")
+        ? "pixi"
+        : isUvConfigured
+          ? "uv"
+          : isCondaConfigured || environmentYmlInfo?.has_dependencies
+            ? "conda"
+            : pixiInfo?.has_dependencies
+              ? "pixi"
+              : null;
 
   // Pre-start hint for the env badge (more specific than envType: distinguishes pixi)
   const envTypeHint = envSource
@@ -1191,14 +1198,16 @@ function AppContent() {
               onResetProgress={envProgress.reset}
               environmentYmlInfo={environmentYmlInfo}
               environmentYmlDeps={environmentYmlDeps}
-              pixiInfo={pixiInfo}
-              onImportFromPixi={importFromPixi}
               justSynced={justSynced}
             />
           )}
+        {dependencyHeaderOpen && runtime === "python" && envType === "pixi" && (
+          <PixiDependencyHeader pixiInfo={pixiInfo} />
+        )}
         {dependencyHeaderOpen &&
           runtime === "python" &&
-          envType !== "conda" && (
+          envType !== "conda" &&
+          envType !== "pixi" && (
             <DependencyHeader
               dependencies={dependencies?.dependencies ?? []}
               requiresPython={dependencies?.requires_python ?? null}

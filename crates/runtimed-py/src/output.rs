@@ -839,7 +839,7 @@ pub struct PyKernelState {
     pub name: String,
     /// Kernel language (e.g. "python", "typescript")
     pub language: String,
-    /// Environment source label (e.g. "uv:prewarmed", "conda:pixi")
+    /// Environment source label (e.g. "uv:prewarmed", "pixi:toml")
     pub env_source: String,
 }
 

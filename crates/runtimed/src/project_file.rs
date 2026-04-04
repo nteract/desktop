@@ -111,6 +111,27 @@ pub fn detect_project_file(notebook_path: &Path) -> Option<DetectedProjectFile> 
     find_nearest_project_file(notebook_path, &all_kinds)
 }
 
+/// Check if a pixi.toml file declares ipykernel in its dependencies.
+///
+/// Reads the file and checks for `ipykernel` as a TOML key in the
+/// `[dependencies]` or `[pypi-dependencies]` tables. Uses a simple
+/// text scan — if the line starts with `ipykernel` followed by `=` or
+/// whitespace, it's a match. This avoids requiring a TOML parser dep.
+pub fn pixi_toml_has_ipykernel(path: &Path) -> bool {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("ipykernel")
+            && trimmed["ipykernel".len()..].starts_with(['=', ' ', '\t'])
+        {
+            return true;
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -163,5 +184,45 @@ mod tests {
         let found = detect_project_file(temp.path());
         assert!(found.is_some());
         assert_eq!(found.unwrap().to_env_source(), "conda:env_yml");
+    }
+
+    #[test]
+    fn test_pixi_toml_has_ipykernel_in_deps() {
+        let temp = TempDir::new().unwrap();
+        write_file(
+            temp.path(),
+            "pixi.toml",
+            "[project]\nname = \"test\"\n\n[dependencies]\npython = \">=3.11\"\nipykernel = \"*\"\n",
+        );
+        assert!(pixi_toml_has_ipykernel(&temp.path().join("pixi.toml")));
+    }
+
+    #[test]
+    fn test_pixi_toml_has_ipykernel_in_pypi_deps() {
+        let temp = TempDir::new().unwrap();
+        write_file(
+            temp.path(),
+            "pixi.toml",
+            "[project]\nname = \"test\"\n\n[pypi-dependencies]\nipykernel = \">=6.0\"\n",
+        );
+        assert!(pixi_toml_has_ipykernel(&temp.path().join("pixi.toml")));
+    }
+
+    #[test]
+    fn test_pixi_toml_missing_ipykernel() {
+        let temp = TempDir::new().unwrap();
+        write_file(
+            temp.path(),
+            "pixi.toml",
+            "[project]\nname = \"test\"\n\n[dependencies]\npython = \">=3.11\"\nnumpy = \"*\"\n",
+        );
+        assert!(!pixi_toml_has_ipykernel(&temp.path().join("pixi.toml")));
+    }
+
+    #[test]
+    fn test_pixi_toml_has_ipykernel_nonexistent_file() {
+        assert!(!pixi_toml_has_ipykernel(Path::new(
+            "/nonexistent/pixi.toml"
+        )));
     }
 }

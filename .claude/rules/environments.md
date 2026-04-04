@@ -50,7 +50,7 @@ Walk-up stops at `.git` boundaries and user's home directory.
 | Project file | Backend | Environment Type |
 |-------------|---------|-----------------|
 | `pyproject.toml` | `uv run --with ipykernel` in project dir | Project `.venv/` |
-| `pixi.toml` | Convert pixi deps to `CondaDependencies`, use rattler | Cached by dep hash |
+| `pixi.toml` | `pixi run python -m ipykernel_launcher` in project dir | Pixi-managed env |
 | `environment.yml` | Parse deps, use rattler | Cached by dep hash |
 
 ### Deno Kernel Launching
@@ -63,7 +63,8 @@ Deno kernels do not use environment pools:
 
 The daemon returns an `env_source` string with `KernelLaunched`:
 - `"uv:inline"` / `"uv:pyproject"` / `"uv:prewarmed"`
-- `"conda:inline"` / `"conda:env_yml"` / `"conda:pixi"` / `"conda:prewarmed"`
+- `"conda:inline"` / `"conda:env_yml"` / `"conda:prewarmed"`
+- `"pixi:toml"`
 
 ## Kernel Starting Phases
 
@@ -162,7 +163,8 @@ Changes to dependency metadata structure require updating `crates/runt-trust/src
 | Component | Hook | Manages |
 |-----------|------|---------|
 | `DependencyHeader.tsx` | `useDependencies.ts` | UV deps, pyproject.toml detection |
-| `CondaDependencyHeader.tsx` | `useCondaDependencies.ts` | Conda deps, environment.yml and pixi.toml detection |
+| `CondaDependencyHeader.tsx` | `useCondaDependencies.ts` | Conda deps, environment.yml detection |
+| `PixiDependencyHeader.tsx` | `usePixiDependencies.ts` | Pixi project detection, read-only dep display |
 | `DenoDependencyHeader.tsx` | `useDenoDependencies.ts` | Deno configuration and deno.json detection |
 
 ## Key Files

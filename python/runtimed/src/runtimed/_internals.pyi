@@ -267,7 +267,7 @@ class KernelState:
         ...
     @property
     def env_source(self) -> str:
-        """Environment source label (e.g. "uv:prewarmed", "conda:pixi")."""
+        """Environment source label (e.g. "uv:prewarmed", "pixi:toml")."""
         ...
 
 class EnvState:

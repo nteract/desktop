@@ -9,7 +9,6 @@ import {
   setCondaPython as setCondaPythonWasm,
   useCondaDeps,
 } from "../lib/notebook-metadata";
-import type { PixiInfo } from "../types";
 
 export interface CondaDependencies {
   dependencies: string[];
@@ -50,8 +49,6 @@ export type CondaSyncState =
 
 export function useCondaDependencies() {
   const [loading, setLoading] = useState(false);
-  // pixi.toml detection
-  const [pixiInfo, setPixiInfo] = useState<PixiInfo | null>(null);
 
   // environment.yml detection state
   const [environmentYmlInfo, setEnvironmentYmlInfo] =
@@ -82,12 +79,11 @@ export function useCondaDependencies() {
     }
   }, []);
 
-  // Detect environment.yml and pixi.toml on mount
+  // Detect environment.yml on mount
   useEffect(() => {
     invoke<EnvironmentYmlInfo | null>("detect_environment_yml").then(
       setEnvironmentYmlInfo,
     );
-    invoke<PixiInfo | null>("detect_pixi_toml").then(setPixiInfo);
   }, []);
 
   // Load environment.yml deps when we detect one
@@ -187,31 +183,16 @@ export function useCondaDependencies() {
   // True if conda metadata exists (even with empty deps)
   const isCondaConfigured = dependencies !== null;
 
-  // Import pixi.toml deps into notebook conda metadata
-  const importFromPixi = useCallback(async () => {
-    setLoading(true);
-    try {
-      await invoke("import_pixi_dependencies");
-      await resignTrust();
-    } catch (e) {
-      logger.error("Failed to import pixi dependencies:", e);
-    } finally {
-      setLoading(false);
-    }
-  }, [resignTrust]);
-
   return {
     dependencies,
     hasDependencies,
     isCondaConfigured,
     loading,
-    pixiInfo,
     addDependency,
     removeDependency,
     clearAllDependencies,
     setChannels,
     setPython,
-    importFromPixi,
     // environment.yml support
     environmentYmlInfo,
     environmentYmlDeps,

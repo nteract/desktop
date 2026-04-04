@@ -815,7 +815,7 @@ Detection priority:
 | `metadata.runt.uv.dependencies` | `uv:inline` |
 | `metadata.runt.conda.dependencies` | `conda:inline` |
 | `pyproject.toml` | `uv:pyproject` |
-| `pixi.toml` | `conda:pixi` |
+| `pixi.toml` | `pixi:toml` |
 | `environment.yml` | `conda:env_yml` |
 | No match | `uv:prewarmed` (or `conda:prewarmed` per user pref) |
 

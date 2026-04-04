@@ -317,6 +317,20 @@ impl PixiConfig {
     pub fn has_pypi_dependencies(&self) -> bool {
         !self.pypi_dependencies.is_empty()
     }
+
+    /// Check if ipykernel is declared in either conda or pypi dependencies.
+    pub fn has_ipykernel(&self) -> bool {
+        let check = |deps: &[String]| {
+            deps.iter().any(|d| {
+                let name = d
+                    .split(['=', ' ', '<', '>', '!', ';', '['])
+                    .next()
+                    .unwrap_or(d);
+                name.trim() == "ipykernel"
+            })
+        };
+        check(&self.dependencies) || check(&self.pypi_dependencies)
+    }
 }
 
 #[cfg(test)]
@@ -562,5 +576,57 @@ platforms = ["linux-64"]
         let found = find_pixi_toml(&deep_dir);
         assert!(found.is_some());
         assert_eq!(found.unwrap(), temp.path().join("pixi.toml"));
+    }
+
+    #[test]
+    fn test_has_ipykernel_in_conda_deps() {
+        let config = PixiConfig {
+            path: PathBuf::from("pixi.toml"),
+            workspace_name: None,
+            channels: vec![],
+            dependencies: vec!["python>=3.11".to_string(), "ipykernel".to_string()],
+            pypi_dependencies: vec![],
+            python: None,
+        };
+        assert!(config.has_ipykernel());
+    }
+
+    #[test]
+    fn test_has_ipykernel_in_pypi_deps() {
+        let config = PixiConfig {
+            path: PathBuf::from("pixi.toml"),
+            workspace_name: None,
+            channels: vec![],
+            dependencies: vec!["python>=3.11".to_string()],
+            pypi_dependencies: vec!["ipykernel>=6.0".to_string()],
+            python: None,
+        };
+        assert!(config.has_ipykernel());
+    }
+
+    #[test]
+    fn test_has_ipykernel_missing() {
+        let config = PixiConfig {
+            path: PathBuf::from("pixi.toml"),
+            workspace_name: None,
+            channels: vec![],
+            dependencies: vec!["python>=3.11".to_string(), "numpy".to_string()],
+            pypi_dependencies: vec!["pandas".to_string()],
+            python: None,
+        };
+        assert!(!config.has_ipykernel());
+    }
+
+    #[test]
+    fn test_has_ipykernel_with_version_constraint() {
+        let config = PixiConfig {
+            path: PathBuf::from("pixi.toml"),
+            workspace_name: None,
+            channels: vec![],
+            dependencies: vec!["ipykernel=6.29".to_string()],
+            pypi_dependencies: vec![],
+            python: None,
+        };
+        assert!(config.has_ipykernel());
     }
 }

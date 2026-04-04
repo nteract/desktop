@@ -2969,16 +2969,18 @@ async fn auto_launch_kernel(
     let detection_path = notebook_path_opt
         .as_ref()
         .or(working_dir_for_detection.as_ref());
-    let project_source = detection_path
-        .and_then(|path| crate::project_file::detect_project_file(path))
-        .map(|detected| {
-            info!(
-                "[notebook-sync] Auto-launch: detected project file {:?} -> {}",
-                detected.path,
-                detected.to_env_source()
-            );
-            detected.to_env_source().to_string()
-        });
+    let detected_project_file =
+        detection_path.and_then(|path| crate::project_file::detect_project_file(path));
+    if let Some(ref detected) = detected_project_file {
+        info!(
+            "[notebook-sync] Auto-launch: detected project file {:?} -> {}",
+            detected.path,
+            detected.to_env_source()
+        );
+    }
+    let project_source = detected_project_file
+        .as_ref()
+        .map(|d| d.to_env_source().to_string());
 
     // Determine kernel type and environment
     let (kernel_type, env_source, pooled_env) = match notebook_kernel_type.as_deref() {
@@ -3131,6 +3133,25 @@ async fn auto_launch_kernel(
             ("python", prewarmed.to_string(), pooled_env)
         }
     };
+
+    // For pixi:toml, verify ipykernel is in pixi.toml before launching
+    if env_source == "pixi:toml" {
+        if let Some(ref detected) = detected_project_file {
+            if !crate::project_file::pixi_toml_has_ipykernel(&detected.path) {
+                warn!(
+                    "[notebook-sync] pixi.toml at {:?} does not declare ipykernel — cannot launch kernel",
+                    detected.path
+                );
+                {
+                    let mut sd = room.state_doc.write().await;
+                    sd.set_kernel_status("error");
+                    sd.set_kernel_info("python", "python", &env_source);
+                    let _ = room.state_changed_tx.send(());
+                }
+                return;
+            }
+        }
+    }
 
     // Transition to "preparing_env" phase now that runtime/env has been resolved
     {
@@ -3857,6 +3878,27 @@ async fn handle_notebook_request(
                 // Use explicit env_source (e.g., "uv:inline", "conda:inline")
                 env_source.clone()
             };
+
+            // For pixi:toml, verify ipykernel is declared before launching
+            if resolved_env_source == "pixi:toml" {
+                let pixi_path = notebook_path.as_ref().and_then(|nb| {
+                    crate::project_file::detect_project_file(nb)
+                        .filter(|d| d.kind == crate::project_file::ProjectFileKind::PixiToml)
+                        .map(|d| d.path)
+                });
+                if let Some(ref path) = pixi_path {
+                    if !crate::project_file::pixi_toml_has_ipykernel(path) {
+                        warn!(
+                            "[notebook-sync] pixi.toml at {:?} does not declare ipykernel",
+                            path
+                        );
+                        reset_starting_state(room).await;
+                        return NotebookResponse::Error {
+                            error: "ipykernel not found in pixi.toml — run `pixi add ipykernel` in your project directory".to_string(),
+                        };
+                    }
+                }
+            }
 
             // Transition to "preparing_env" phase
             {

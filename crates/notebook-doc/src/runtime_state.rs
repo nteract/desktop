@@ -12,7 +12,7 @@
 //!     starting_phase: Str  ("" | "resolving" | "preparing_env" | "launching" | "connecting")
 //!     name: Str            (e.g. "charming-toucan")
 //!     language: Str        (e.g. "python", "typescript")
-//!     env_source: Str      (e.g. "uv:prewarmed", "conda:pixi", "deno")
+//!     env_source: Str      (e.g. "uv:prewarmed", "pixi:toml", "deno")
 //!   queue/
 //!     executing: Str|null              (cell_id currently executing)
 //!     executing_execution_id: Str|null (execution_id for the executing cell)
