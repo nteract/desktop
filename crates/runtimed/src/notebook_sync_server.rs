@@ -2484,8 +2484,9 @@ where
                                     };
 
                                     // If client sent changes, notify all peers.
-                                    // Comm state forwarding to kernel is handled by the
-                                    // agent via RuntimeStateDoc sync (agent mode is unconditional).
+                                    // Comm state forwarding to kernel: the agent diffs
+                                    // comm state before/after each RuntimeStateSync and
+                                    // sends changed properties to the kernel via send_comm_update.
                                     if had_changes {
                                         let _ = room.state_changed_tx.send(());
                                     }
