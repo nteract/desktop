@@ -22,6 +22,7 @@ import { Button } from "@/components/ui/button";
 import type { Runtime } from "@/hooks/useSyncedSettings";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { cn } from "@/lib/utils";
+import { usePresenceContext } from "../contexts/PresenceContext";
 import {
   EditorRegistryProvider,
   useEditorRegistry,
@@ -365,6 +366,7 @@ function NotebookViewContent({
   onSetCellSourceHidden,
   onSetCellOutputsHidden,
 }: NotebookViewProps) {
+  const presence = usePresenceContext();
   const containerRef = useRef<HTMLDivElement>(null);
   // Track whether focus change was keyboard-driven (should scroll) or mouse-driven (already visible)
   const focusSourceRef = useRef<"mouse" | "keyboard">("keyboard");
@@ -588,6 +590,7 @@ function NotebookViewContent({
             `[cell-nav] Focusing previous: ${prevCellId.slice(0, 8)}`,
           );
           onFocusCell(prevCellId);
+          presence?.setFocus(prevCellId);
           focusCell(prevCellId, cursorPosition);
         } else {
           logger.debug("[cell-nav] No previous cell (index=0)");
@@ -610,6 +613,7 @@ function NotebookViewContent({
           const nextCellId = cellIdsRef.current[nextIndex];
           logger.debug(`[cell-nav] Focusing next: ${nextCellId.slice(0, 8)}`);
           onFocusCell(nextCellId);
+          presence?.setFocus(nextCellId);
           focusCell(nextCellId, cursorPosition);
         } else {
           logger.debug("[cell-nav] No next cell (at end)");
@@ -683,6 +687,7 @@ function NotebookViewContent({
             onFocus={() => {
               focusSourceRef.current = "mouse";
               onFocusCell(cell.id);
+              presence?.setFocus(cell.id);
             }}
             onExecute={() => onExecuteCell(cell.id)}
             onInterrupt={onInterruptKernel}
@@ -738,6 +743,7 @@ function NotebookViewContent({
             onFocus={() => {
               focusSourceRef.current = "mouse";
               onFocusCell(cell.id);
+              presence?.setFocus(cell.id);
             }}
             onDelete={() => onDeleteCell(cell.id)}
             onFocusPrevious={onFocusPrevious}
@@ -759,6 +765,7 @@ function NotebookViewContent({
           onFocus={() => {
             focusSourceRef.current = "mouse";
             onFocusCell(cell.id);
+            presence?.setFocus(cell.id);
           }}
           onDelete={() => onDeleteCell(cell.id)}
           onFocusPrevious={onFocusPrevious}
@@ -782,6 +789,7 @@ function NotebookViewContent({
       onSetCellSourceHidden,
       onSetCellOutputsHidden,
       focusCell,
+      presence,
     ],
   );
 

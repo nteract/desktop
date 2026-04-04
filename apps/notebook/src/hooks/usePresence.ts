@@ -3,6 +3,7 @@ import { frame_types, sendFrame } from "../lib/frame-types";
 import { logger } from "../lib/logger";
 import {
   encode_cursor_presence,
+  encode_focus_presence,
   encode_selection_presence,
 } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 
@@ -69,10 +70,28 @@ export function usePresence(
     [peerId, peerLabel, actorLabel],
   );
 
+  const setFocus = useCallback(
+    (cellId: string) => {
+      if (!peerId) return;
+      const payload = encode_focus_presence(
+        peerId,
+        peerLabel,
+        actorLabel,
+        cellId,
+      );
+      sendFrame(frame_types.PRESENCE, payload).catch((e: unknown) =>
+        logger.warn("[presence] send focus failed:", e),
+      );
+    },
+    [peerId, peerLabel, actorLabel],
+  );
+
   return {
     /** Set the local cursor position (fire-and-forget). */
     setCursor,
     /** Set the local selection range (fire-and-forget). */
     setSelection,
+    /** Set cell-level focus presence (no cursor position). */
+    setFocus,
   };
 }

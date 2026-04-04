@@ -36,6 +36,7 @@ import {
   NTERACT_SEARCH_NAVIGATE,
   NTERACT_SEARCH_RESULTS,
   NTERACT_THEME,
+  NTERACT_MOUSE_DOWN,
   NTERACT_WIDGET_COMM_CLOSE,
   NTERACT_WIDGET_COMM_MSG,
   NTERACT_WIDGET_READY,
@@ -99,6 +100,13 @@ export interface IsolatedFrameProps {
    * Callback when a link is clicked in the iframe.
    */
   onLinkClick?: (url: string, newTab: boolean) => void;
+
+  /**
+   * Callback when the user clicks (mousedown) inside the iframe.
+   * Fires before any other click handling — does not interfere
+   * with text selection, links, or widget interactions.
+   */
+  onMouseDown?: () => void;
 
   /**
    * Callback when the user double-clicks in the iframe.
@@ -258,6 +266,7 @@ export const IsolatedFrame = forwardRef<
     onReady,
     onResize,
     onLinkClick,
+    onMouseDown,
     onDoubleClick,
     onWidgetUpdate,
     onError,
@@ -305,6 +314,7 @@ export const IsolatedFrame = forwardRef<
   const onReadyRef = useRef(onReady);
   const onResizeRef = useRef(onResize);
   const onLinkClickRef = useRef(onLinkClick);
+  const onMouseDownRef = useRef(onMouseDown);
   const onDoubleClickRef = useRef(onDoubleClick);
   const onWidgetUpdateRef = useRef(onWidgetUpdate);
   const onErrorRef = useRef(onError);
@@ -314,6 +324,7 @@ export const IsolatedFrame = forwardRef<
   onReadyRef.current = onReady;
   onResizeRef.current = onResize;
   onLinkClickRef.current = onLinkClick;
+  onMouseDownRef.current = onMouseDown;
   onDoubleClickRef.current = onDoubleClick;
   onWidgetUpdateRef.current = onWidgetUpdate;
   onErrorRef.current = onError;
@@ -503,6 +514,9 @@ export const IsolatedFrame = forwardRef<
               if (p.url) {
                 onLinkClickRef.current?.(p.url, p.newTab ?? false);
               }
+            });
+            transport.onNotification(NTERACT_MOUSE_DOWN, () => {
+              onMouseDownRef.current?.();
             });
             transport.onNotification(NTERACT_DOUBLE_CLICK, () => {
               onDoubleClickRef.current?.();

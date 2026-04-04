@@ -497,6 +497,7 @@ export const MarkdownCell = memo(function MarkdownCell({
                 revealOnRender
                 onReady={handleFrameReady}
                 onLinkClick={handleLinkClick}
+                onMouseDown={onFocus}
                 onDoubleClick={handleDoubleClick}
                 onError={handleIframeError}
                 className="w-full"
