@@ -23,6 +23,9 @@ export function EditorRegistryProvider({ children }: { children: ReactNode }) {
         return;
       }
 
+      // Scroll the cell container into the notebook viewport
+      cellElement.scrollIntoView({ block: "nearest", behavior: "smooth" });
+
       // Find CodeMirror's content element inside the cell
       const cmContent = cellElement.querySelector(".cm-content");
       if (!cmContent) {
