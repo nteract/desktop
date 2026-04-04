@@ -21,6 +21,7 @@ export const NTERACT_SEARCH = "nteract/search" as const;
 
 // Host → Iframe (Notifications — fire-and-forget)
 export const NTERACT_RENDER_OUTPUT = "nteract/renderOutput" as const;
+export const NTERACT_RENDER_BATCH = "nteract/renderBatch" as const;
 export const NTERACT_CLEAR_OUTPUTS = "nteract/clearOutputs" as const;
 export const NTERACT_SEARCH_NAVIGATE = "nteract/searchNavigate" as const;
 export const NTERACT_COMM_OPEN = "nteract/commOpen" as const;
@@ -82,6 +83,10 @@ export interface NteractRenderOutputParams {
   outputIndex?: number;
   append?: boolean;
   replace?: boolean;
+}
+
+export interface NteractRenderBatchParams {
+  outputs: NteractRenderOutputParams[];
 }
 
 export interface NteractSearchNavigateParams {

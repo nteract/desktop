@@ -122,9 +122,16 @@ export async function resolveDataBundle(
   data: Record<string, ContentRef>,
   blobPort: number,
 ): Promise<Record<string, unknown>> {
+  const entries = Object.entries(data);
+  const contents = await Promise.all(
+    entries.map(([mimeType, ref]) =>
+      resolveContentRef(ref, blobPort, mimeType),
+    ),
+  );
   const resolved: Record<string, unknown> = {};
-  for (const [mimeType, ref] of Object.entries(data)) {
-    const content = await resolveContentRef(ref, blobPort, mimeType);
+  for (let i = 0; i < entries.length; i++) {
+    const [mimeType] = entries[i];
+    const content = contents[i];
     if (mimeType.includes("json")) {
       try {
         resolved[mimeType] = JSON.parse(content);

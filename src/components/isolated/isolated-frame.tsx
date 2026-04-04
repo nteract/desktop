@@ -28,6 +28,7 @@ import {
   NTERACT_EVAL_RESULT,
   NTERACT_LINK_CLICK,
   NTERACT_PING,
+  NTERACT_RENDER_BATCH,
   NTERACT_RENDER_COMPLETE,
   NTERACT_RENDER_OUTPUT,
   NTERACT_RENDERER_READY,
@@ -149,6 +150,12 @@ export interface IsolatedFrameHandle {
   render: (payload: RenderPayload) => void;
 
   /**
+   * Atomically replace all outputs with a batch.
+   * Uses stable IDs from cellId + outputIndex for smooth React reconciliation.
+   */
+  renderBatch: (outputs: RenderPayload[]) => void;
+
+  /**
    * Evaluate code in the iframe (for bootstrap/injection).
    */
   eval: (code: string) => void;
@@ -189,6 +196,7 @@ export interface IsolatedFrameHandle {
 
 const TYPE_TO_METHOD: Record<string, string> = {
   render: NTERACT_RENDER_OUTPUT,
+  render_batch: NTERACT_RENDER_BATCH,
   theme: NTERACT_THEME,
   clear: NTERACT_CLEAR_OUTPUTS,
   eval: NTERACT_EVAL,
@@ -698,6 +706,8 @@ export const IsolatedFrame = forwardRef<
     () => ({
       send,
       render: (payload: RenderPayload) => send({ type: "render", payload }),
+      renderBatch: (outputs: RenderPayload[]) =>
+        send({ type: "render_batch", payload: { outputs } }),
       eval: (code: string) => send({ type: "eval", payload: { code } }),
       setTheme: (isDark: boolean) =>
         send({ type: "theme", payload: { isDark } }),

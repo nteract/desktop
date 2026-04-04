@@ -32,6 +32,18 @@ export interface RenderPayload {
 }
 
 /**
+ * Atomically replace all outputs in the iframe with a batch.
+ * Uses stable IDs from cellId + outputIndex for React reconciliation,
+ * avoiding DOM teardown on updates (e.g., interactive widget slider changes).
+ */
+export interface RenderBatchMessage {
+  type: "render_batch";
+  payload: {
+    outputs: RenderPayload[];
+  };
+}
+
+/**
  * Update widget state in the iframe.
  */
 export interface WidgetStateMessage {
@@ -188,6 +200,7 @@ export interface SearchNavigateMessage {
 export type ParentToIframeMessage =
   | EvalMessage
   | RenderMessage
+  | RenderBatchMessage
   | WidgetStateMessage
   | ThemeMessage
   | PingMessage

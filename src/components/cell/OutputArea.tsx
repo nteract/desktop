@@ -39,6 +39,10 @@ interface OutputAreaProps {
    */
   outputs: JupyterOutput[];
   /**
+   * Cell ID for stable output keys in the iframe (enables smooth updates).
+   */
+  cellId?: string;
+  /**
    * Whether the output area is collapsed.
    */
   collapsed?: boolean;
@@ -253,6 +257,7 @@ function renderOutput(
  */
 export function OutputArea({
   outputs,
+  cellId,
   collapsed = false,
   onToggleCollapse,
   maxHeight,
@@ -364,40 +369,39 @@ export function OutputArea({
       if (gen !== renderGenRef.current) return;
     }
 
-    // Clear existing content
-    frameRef.current.clear();
+    // Build batch of render payloads and send atomically.
+    // This avoids the clear+re-render cycle that causes DOM thrashing
+    // (visible as flickering when interactive widgets update rapidly).
+    const batch: import("@/components/isolated/frame-bridge").RenderPayload[] =
+      [];
 
-    // Render each output
     outputs.forEach((output, index) => {
-      const append = index > 0;
-
       if (
         output.output_type === "execute_result" ||
         output.output_type === "display_data"
       ) {
         const mimeType = selectMimeType(output.data, priority);
         if (mimeType) {
-          frameRef.current?.render({
+          batch.push({
             mimeType,
             data: output.data[mimeType],
             metadata: output.metadata?.[mimeType] as
               | Record<string, unknown>
               | undefined,
+            cellId,
             outputIndex: index,
-            append,
           });
         }
       } else if (output.output_type === "stream") {
-        frameRef.current?.render({
+        batch.push({
           mimeType: "text/plain",
           data: normalizeText(output.text),
           metadata: { streamName: output.name },
+          cellId,
           outputIndex: index,
-          append,
         });
       } else if (output.output_type === "error") {
-        // Render error with metadata so iframe can use AnsiErrorOutput
-        frameRef.current?.render({
+        batch.push({
           mimeType: "text/plain",
           data: output.traceback.join("\n"),
           metadata: {
@@ -406,11 +410,13 @@ export function OutputArea({
             evalue: output.evalue,
             traceback: output.traceback,
           },
+          cellId,
           outputIndex: index,
-          append,
         });
       }
     });
+
+    frameRef.current.renderBatch(batch);
 
     // Re-apply search highlights after rendering new content
     if (searchQueryRef.current) {

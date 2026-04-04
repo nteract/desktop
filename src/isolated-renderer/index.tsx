@@ -19,6 +19,7 @@ import type { RenderPayload } from "@/components/isolated/frame-bridge";
 import { JsonRpcTransport } from "@/components/isolated/jsonrpc-transport";
 import {
   NTERACT_CLEAR_OUTPUTS,
+  NTERACT_RENDER_BATCH,
   NTERACT_RENDER_COMPLETE,
   NTERACT_RENDER_OUTPUT,
   NTERACT_RENDERER_READY,
@@ -128,6 +129,9 @@ function setupMessageListener() {
   rpcTransport.onNotification(NTERACT_RENDER_OUTPUT, (params) => {
     messageHandler?.("render", params);
   });
+  rpcTransport.onNotification(NTERACT_RENDER_BATCH, (params) => {
+    messageHandler?.("renderBatch", params);
+  });
   rpcTransport.onNotification(NTERACT_CLEAR_OUTPUTS, () => {
     messageHandler?.("clear", undefined);
   });
@@ -184,6 +188,30 @@ function IsolatedRendererApp() {
         });
 
         // Notify parent of render completion after next paint
+        requestAnimationFrame(() => {
+          window.parent.postMessage(
+            {
+              type: "render_complete",
+              payload: { height: document.body.scrollHeight },
+            },
+            "*",
+          );
+        });
+        break;
+      }
+
+      case "renderBatch": {
+        const batchPayload = payload as { outputs: RenderPayload[] };
+        const entries: OutputEntry[] = (batchPayload.outputs ?? []).map(
+          (p, i) => ({
+            id: p.cellId
+              ? `${p.cellId}-${p.outputIndex ?? i}`
+              : `output-${i}`,
+            payload: p,
+          }),
+        );
+        setState((prev) => ({ ...prev, outputs: entries }));
+
         requestAnimationFrame(() => {
           window.parent.postMessage(
             {

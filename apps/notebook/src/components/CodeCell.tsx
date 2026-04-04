@@ -388,6 +388,7 @@ export const CodeCell = memo(function CodeCell({
           ) : (
             <OutputArea
               outputs={cell.outputs}
+              cellId={cell.id}
               preloadIframe
               searchQuery={searchQuery}
               onSearchMatchCount={onSearchMatchCount}
