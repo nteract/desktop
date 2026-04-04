@@ -9,11 +9,9 @@ use serde::Deserialize;
 
 use crate::editing;
 use crate::execution;
-use crate::formatting;
-use crate::structured;
 use crate::NteractMcp;
 
-use super::{arg_str, tool_error};
+use super::{arg_str, require_handle, tool_error};
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -84,20 +82,7 @@ pub async fn replace_match(
         .and_then(|v| v.as_f64())
         .unwrap_or(30.0);
 
-    // Clone handle, then drop session lock so other tools
-    // (interrupt_kernel, etc.) aren't blocked during execution.
-    let handle = {
-        let session = server.session.read().await;
-        let session = match session.as_ref() {
-            Some(s) => s,
-            None => {
-                return tool_error(
-                    "No active notebook session. Call join_notebook or open_notebook first.",
-                )
-            }
-        };
-        session.handle.clone()
-    };
+    let handle = require_handle!(server);
 
     let source = match handle.get_cell_source(cell_id) {
         Some(s) => s,
@@ -140,7 +125,7 @@ pub async fn replace_match(
             &server.blob_store_path,
         )
         .await;
-        return build_execution_result(&result, &handle, server).await;
+        return super::build_execution_result(&result, &handle, server).await;
     }
 
     // Return diff
@@ -174,19 +159,7 @@ pub async fn replace_regex(
         .and_then(|v| v.as_f64())
         .unwrap_or(30.0);
 
-    // Clone handle, then drop session lock
-    let handle = {
-        let session = server.session.read().await;
-        let session = match session.as_ref() {
-            Some(s) => s,
-            None => {
-                return tool_error(
-                    "No active notebook session. Call join_notebook or open_notebook first.",
-                )
-            }
-        };
-        session.handle.clone()
-    };
+    let handle = require_handle!(server);
 
     let source = match handle.get_cell_source(cell_id) {
         Some(s) => s,
@@ -229,7 +202,7 @@ pub async fn replace_regex(
             &server.blob_store_path,
         )
         .await;
-        return build_execution_result(&result, &handle, server).await;
+        return super::build_execution_result(&result, &handle, server).await;
     }
 
     // Return diff
@@ -256,63 +229,4 @@ fn format_edit_diff(cell_id: &str, old_text: &str, new_text: &str) -> String {
     }
 
     diff_parts.join("\n")
-}
-
-/// Build a CallToolResult from an ExecutionResult with structured content.
-async fn build_execution_result(
-    result: &execution::ExecutionResult,
-    handle: &notebook_sync::handle::DocHandle,
-    server: &NteractMcp,
-) -> Result<CallToolResult, McpError> {
-    let header = formatting::format_cell_header(
-        &result.cell_id,
-        "code",
-        result.execution_count.as_deref(),
-        Some(&result.status),
-    );
-
-    let output_text = formatting::format_outputs_text(&result.outputs);
-    let text = if !output_text.is_empty() {
-        format!("{header}\n\n{output_text}")
-    } else {
-        header
-    };
-
-    let items = vec![Content::text(text)];
-
-    // Build structured content for MCP Apps widget using the protocol's
-    // structured_content field instead of a text-based fallback.
-    // Only send structured content when there are outputs to render.
-    let cell_snapshot = handle.get_cell(&result.cell_id);
-    let structured_content = if let Some(snap) = cell_snapshot {
-        if snap.outputs.is_empty() {
-            None
-        } else {
-            let outputs = runtimed_client::output_resolver::resolve_cell_outputs(
-                &snap.outputs,
-                &server.blob_base_url,
-                &server.blob_store_path,
-            )
-            .await;
-            let resolved = runtimed_client::resolved_output::ResolvedCell {
-                id: snap.id,
-                cell_type: snap.cell_type,
-                position: snap.position,
-                source: snap.source,
-                execution_count: snap.execution_count.parse().ok(),
-                outputs,
-                metadata_json: serde_json::to_string(&snap.metadata).unwrap_or_default(),
-            };
-            Some(structured::cell_structured_content(
-                &resolved,
-                &result.status,
-            ))
-        }
-    } else {
-        None
-    };
-
-    let mut call_result = CallToolResult::success(items);
-    call_result.structured_content = structured_content;
-    Ok(call_result)
 }

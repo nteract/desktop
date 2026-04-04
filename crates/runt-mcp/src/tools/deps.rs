@@ -9,7 +9,7 @@ use notebook_protocol::protocol::{NotebookRequest, NotebookResponse};
 
 use crate::NteractMcp;
 
-use super::{arg_str, tool_error, tool_success};
+use super::{arg_str, require_handle, tool_error, tool_success};
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -41,23 +41,14 @@ pub async fn add_dependency(
     let package = arg_str(request, "package")
         .ok_or_else(|| McpError::invalid_params("Missing required parameter: package", None))?;
 
-    let session = server.session.read().await;
-    let session = match session.as_ref() {
-        Some(s) => s,
-        None => {
-            return tool_error(
-                "No active notebook session. Call join_notebook or open_notebook first.",
-            )
-        }
-    };
+    let handle = require_handle!(server);
 
-    session
-        .handle
+    handle
         .add_uv_dependency(package)
         .map_err(|e| McpError::internal_error(format!("Failed to add dependency: {e}"), None))?;
 
     // Read back current dependencies
-    let deps = get_deps_list(&session.handle);
+    let deps = get_deps_list(&handle);
 
     let result = serde_json::json!({
         "dependencies": deps,
@@ -74,22 +65,13 @@ pub async fn remove_dependency(
     let package = arg_str(request, "package")
         .ok_or_else(|| McpError::invalid_params("Missing required parameter: package", None))?;
 
-    let session = server.session.read().await;
-    let session = match session.as_ref() {
-        Some(s) => s,
-        None => {
-            return tool_error(
-                "No active notebook session. Call join_notebook or open_notebook first.",
-            )
-        }
-    };
+    let handle = require_handle!(server);
 
-    session
-        .handle
+    handle
         .remove_uv_dependency(package)
         .map_err(|e| McpError::internal_error(format!("Failed to remove dependency: {e}"), None))?;
 
-    let deps = get_deps_list(&session.handle);
+    let deps = get_deps_list(&handle);
 
     let result = serde_json::json!({
         "dependencies": deps,
@@ -103,21 +85,12 @@ pub async fn get_dependencies(
     server: &NteractMcp,
     _request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
-    let session = server.session.read().await;
-    let session = match session.as_ref() {
-        Some(s) => s,
-        None => {
-            return tool_error(
-                "No active notebook session. Call join_notebook or open_notebook first.",
-            )
-        }
-    };
+    let handle = require_handle!(server);
 
-    let deps = get_deps_list(&session.handle);
+    let deps = get_deps_list(&handle);
 
     // Include prewarmed packages from RuntimeStateDoc when available
-    let prewarmed = session
-        .handle
+    let prewarmed = handle
         .get_runtime_state()
         .ok()
         .map(|s| s.env.prewarmed_packages)
@@ -135,17 +108,7 @@ pub async fn sync_environment(
     server: &NteractMcp,
     _request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
-    let session = server.session.read().await;
-    let session = match session.as_ref() {
-        Some(s) => s,
-        None => {
-            return tool_error(
-                "No active notebook session. Call join_notebook or open_notebook first.",
-            )
-        }
-    };
-
-    let handle = &session.handle;
+    let handle = require_handle!(server);
 
     // Ensure daemon has latest metadata
     if let Err(e) = handle.confirm_sync().await {

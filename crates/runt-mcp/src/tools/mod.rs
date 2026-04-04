@@ -9,6 +9,23 @@ use serde::Deserialize;
 
 use crate::NteractMcp;
 
+/// Acquire the active session's `DocHandle`, or early-return a "no session" tool error.
+/// Clones the handle and drops the session read-lock so other tools aren't blocked.
+macro_rules! require_handle {
+    ($server:expr) => {{
+        let guard = $server.session.read().await;
+        match guard.as_ref() {
+            Some(s) => s.handle.clone(),
+            None => {
+                return $crate::tools::tool_error(
+                    "No active notebook session. Call join_notebook or open_notebook first.",
+                )
+            }
+        }
+    }};
+}
+pub(crate) use require_handle;
+
 /// The MCP Apps resource URI for the output widget.
 const OUTPUT_RESOURCE_URI: &str = "ui://nteract/output.html";
 
@@ -367,4 +384,57 @@ pub fn tool_success(msg: &str) -> Result<CallToolResult, McpError> {
     Ok(CallToolResult::success(vec![Content::text(
         msg.to_string(),
     )]))
+}
+
+/// Build a `CallToolResult` from an execution result, including structured content
+/// for the MCP Apps widget. Shared by cell_crud, editing, and execution tools.
+pub async fn build_execution_result(
+    result: &crate::execution::ExecutionResult,
+    handle: &notebook_sync::handle::DocHandle,
+    server: &NteractMcp,
+) -> Result<CallToolResult, McpError> {
+    let header = crate::formatting::format_cell_header(
+        &result.cell_id,
+        "code",
+        result.execution_count.as_deref(),
+        Some(&result.status),
+    );
+
+    let mut items = vec![Content::text(header)];
+    items.extend(crate::formatting::outputs_to_content_items(&result.outputs));
+
+    // Build structured content for MCP Apps widget.
+    // Only send structured content when there are outputs to render.
+    let cell_snapshot = handle.get_cell(&result.cell_id);
+    let structured_content = if let Some(snap) = cell_snapshot {
+        if snap.outputs.is_empty() {
+            None
+        } else {
+            let outputs = runtimed_client::output_resolver::resolve_cell_outputs(
+                &snap.outputs,
+                &server.blob_base_url,
+                &server.blob_store_path,
+            )
+            .await;
+            let resolved = runtimed_client::resolved_output::ResolvedCell {
+                id: snap.id,
+                cell_type: snap.cell_type,
+                position: snap.position,
+                source: snap.source,
+                execution_count: snap.execution_count.parse().ok(),
+                outputs,
+                metadata_json: serde_json::to_string(&snap.metadata).unwrap_or_default(),
+            };
+            Some(crate::structured::cell_structured_content(
+                &resolved,
+                &result.status,
+            ))
+        }
+    } else {
+        None
+    };
+
+    let mut call_result = CallToolResult::success(items);
+    call_result.structured_content = structured_content;
+    Ok(call_result)
 }

@@ -15,7 +15,7 @@ use crate::NteractMcp;
 
 use notebook_protocol::protocol::{NotebookRequest, NotebookResponse};
 
-use super::{arg_str, tool_error, tool_success};
+use super::{arg_str, require_handle, tool_error, tool_success};
 
 /// Collect runtime info from RuntimeStateDoc, polling briefly for it to sync.
 /// Matches Python's `_collect_runtime_info()`.
@@ -393,18 +393,8 @@ pub async fn save_notebook(
 ) -> Result<CallToolResult, McpError> {
     let path = arg_str(request, "path").map(|s| s.to_string());
 
-    // Clone the handle and notebook_id so we can drop the read guard
-    let (handle, notebook_id) = {
-        let session = server.session.read().await;
-        match session.as_ref() {
-            Some(s) => (s.handle.clone(), s.notebook_id.clone()),
-            None => {
-                return tool_error(
-                    "No active notebook session. Call join_notebook or open_notebook first.",
-                )
-            }
-        }
-    };
+    let handle = require_handle!(server);
+    let notebook_id = handle.notebook_id().to_string();
 
     // Ensure daemon has latest
     if let Err(e) = handle.confirm_sync().await {
