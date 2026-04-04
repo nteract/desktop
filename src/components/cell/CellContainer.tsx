@@ -79,6 +79,11 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
         data-slot="cell-container"
         data-cell-id={id}
         data-cell-type={cellType}
+        onFocusCapture={(e) => {
+          if (e.target instanceof HTMLIFrameElement) {
+            onFocus?.();
+          }
+        }}
         className={cn(
           "cell-container group flex transition-colors duration-150",
           bgColor,

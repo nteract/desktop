@@ -25,6 +25,8 @@ export interface PresenceContextValue {
     headLine: number,
     headCol: number,
   ) => void;
+  /** Send cell-level focus (no cursor position) */
+  setFocus: (cellId: string) => void;
   /** The local peer's ID */
   peerId: string | null;
 }
@@ -66,13 +68,21 @@ export function PresenceProvider({
     [presence],
   );
 
+  const setFocus = useCallback(
+    (cellId: string) => {
+      presence.setFocus(cellId);
+    },
+    [presence],
+  );
+
   const value = useMemo<PresenceContextValue>(
     () => ({
       setCursor,
       setSelection,
+      setFocus,
       peerId,
     }),
-    [setCursor, setSelection, peerId],
+    [setCursor, setSelection, setFocus, peerId],
   );
 
   return (
