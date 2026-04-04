@@ -408,7 +408,7 @@ impl Daemon {
         Ok(Arc::new(Self {
             uv_pool: Mutex::new(Pool::new(config.uv_pool_size, config.max_age_secs)),
             conda_pool: Mutex::new(Pool::new(config.conda_pool_size, config.max_age_secs)),
-            pixi_pool: Mutex::new(Pool::new(0, config.max_age_secs)), // pixi pool size 0 for now — warming implemented in commit 3
+            pixi_pool: Mutex::new(Pool::new(0, config.max_age_secs)), // TODO: configurable pixi pool size
             config,
             shutdown: Arc::new(Mutex::new(false)),
             shutdown_notify: Arc::new(Notify::new()),

@@ -2816,12 +2816,13 @@ async fn acquire_pool_env_for_source(
                 return Some(Some(env));
             }
             None => {
-                // Pixi pool empty — fall through to conda pool as fallback
-                info!("[notebook-sync] Pixi pool empty, falling back to conda pool");
+                // Pixi pool empty — launch on demand via pixi exec (no pooled env needed)
+                info!("[notebook-sync] Pixi pool empty, will launch on demand via pixi exec");
+                return Some(None);
             }
         }
     }
-    if env_source.starts_with("conda:") || env_source == "pixi:prewarmed" {
+    if env_source.starts_with("conda:") {
         match daemon.take_conda_env().await {
             Some(env) => {
                 info!(

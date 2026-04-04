@@ -923,8 +923,11 @@ impl RoomKernel {
                         }
                         cmd
                     }
-                    "pixi:inline" => {
-                        // Use pixi exec with -w flags for each inline dependency
+                    "pixi:inline" | "pixi:prewarmed" => {
+                        // Use pixi exec with -w flags. For pixi:inline, includes
+                        // user deps from notebook metadata. For pixi:prewarmed,
+                        // just the base packages. Pixi caches environments at
+                        // ~/.pixi/cache/cached-envs-v0/ so repeated launches are instant.
                         let pixi_path = kernel_launch::tools::get_pixi_path().await?;
                         info!(
                             "[kernel-manager] Starting Python kernel with pixi exec (env_source: {})",
@@ -932,13 +935,19 @@ impl RoomKernel {
                         );
                         let mut cmd = tokio::process::Command::new(&pixi_path);
                         cmd.arg("exec");
-                        // Always include ipykernel
-                        cmd.args(["-w", "ipykernel"]);
-                        // Add inline deps from launched_config
+                        // Always include ipykernel and common notebook packages
+                        for pkg in ["ipykernel", "ipywidgets", "anywidget", "nbformat"] {
+                            cmd.args(["-w", pkg]);
+                        }
+                        // Add user's inline deps (pixi:inline only; empty for pixi:prewarmed)
                         if let Some(ref deps) = self.launched_config.pixi_deps {
                             for dep in deps {
                                 cmd.args(["-w", dep]);
                             }
+                        }
+                        // Add user's default pixi packages from settings
+                        for pkg in &self.launched_config.prewarmed_packages {
+                            cmd.args(["-w", pkg]);
                         }
                         cmd.args([
                             "python",
