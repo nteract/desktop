@@ -210,14 +210,7 @@ interface FeatureFlag {
   settingKey: "agentMode";
 }
 
-const FEATURE_FLAGS: FeatureFlag[] = [
-  {
-    id: "agent_mode",
-    label: "Agent Process",
-    description: "Run kernels in isolated subprocesses",
-    settingKey: "agentMode",
-  },
-];
+const FEATURE_FLAGS: FeatureFlag[] = [];
 
 const themeOptions: { value: ThemeMode; label: string; icon: typeof Sun }[] = [
   { value: "light", label: "Light", icon: Sun },
@@ -435,21 +428,17 @@ export default function App() {
         {/* Advanced */}
         <KeepAliveSlider value={keepAliveSecs} onChange={setKeepAliveSecs} />
 
-        {/* Feature Flags */}
-        <Collapsible className="space-y-2 pt-4 border-t border-border/50">
-          <CollapsibleTrigger className="flex items-center gap-1.5 w-full group">
-            <ChevronDown className="h-3.5 w-3.5 text-muted-foreground transition-transform group-data-[state=closed]:-rotate-90" />
-            <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-              Feature Flags
-            </span>
-          </CollapsibleTrigger>
-          <CollapsibleContent className="space-y-3">
-            {FEATURE_FLAGS.length === 0 ? (
-              <p className="text-[11px] text-muted-foreground/70 pl-5">
-                No feature flags available
-              </p>
-            ) : (
-              FEATURE_FLAGS.map((flag) => (
+        {/* Feature Flags — only shown when there are flags to display */}
+        {FEATURE_FLAGS.length > 0 && (
+          <Collapsible className="space-y-2 pt-4 border-t border-border/50">
+            <CollapsibleTrigger className="flex items-center gap-1.5 w-full group">
+              <ChevronDown className="h-3.5 w-3.5 text-muted-foreground transition-transform group-data-[state=closed]:-rotate-90" />
+              <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                Feature Flags
+              </span>
+            </CollapsibleTrigger>
+            <CollapsibleContent className="space-y-3">
+              {FEATURE_FLAGS.map((flag) => (
                 <div
                   key={flag.id}
                   className="flex items-center justify-between pl-5"
@@ -473,10 +462,10 @@ export default function App() {
                     }}
                   />
                 </div>
-              ))
-            )}
-          </CollapsibleContent>
-        </Collapsible>
+              ))}
+            </CollapsibleContent>
+          </Collapsible>
+        )}
       </div>
     </div>
   );
