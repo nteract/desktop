@@ -207,7 +207,7 @@ interface FeatureFlag {
   id: string;
   label: string;
   description: string;
-  settingKey: "agentMode";
+  settingKey: string;
 }
 
 const FEATURE_FLAGS: FeatureFlag[] = [];
@@ -235,8 +235,6 @@ export default function App() {
     setDefaultCondaPackages,
     keepAliveSecs,
     setKeepAliveSecs,
-    agentMode,
-    setAgentMode,
   } = useSyncedSettings();
 
   return (
@@ -452,14 +450,8 @@ export default function App() {
                     </p>
                   </div>
                   <Switch
-                    checked={
-                      flag.settingKey === "agentMode" ? agentMode : false
-                    }
-                    onCheckedChange={(checked) => {
-                      if (flag.settingKey === "agentMode") {
-                        setAgentMode(checked);
-                      }
-                    }}
+                    checked={false}
+                    onCheckedChange={() => {}}
                   />
                 </div>
               ))}

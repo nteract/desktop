@@ -184,11 +184,6 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Runtime agent management (process-isolated kernels)
-    Agent {
-        #[command(subcommand)]
-        command: AgentCommands,
-    },
     /// Stop a notebook's kernel and evict its room
     #[command(alias = "shutdown")]
     Stop {
@@ -458,16 +453,6 @@ enum DaemonCommands {
     Ping,
 }
 
-#[derive(Subcommand)]
-enum AgentCommands {
-    /// Enable agent mode (process-isolated kernels)
-    Enable,
-    /// Disable agent mode (local kernels)
-    Disable,
-    /// Show agent mode status
-    Status,
-}
-
 /// Development commands (only shown when RUNTIMED_DEV=1)
 #[derive(Subcommand)]
 enum DevCommands {
@@ -574,29 +559,6 @@ async fn async_main(command: Option<Commands>) -> Result<()> {
         Some(Commands::Jupyter { command }) => jupyter_command(command).await?,
         Some(Commands::Daemon { command }) => daemon_command(command).await?,
         Some(Commands::Ps { json }) => list_notebooks(json).await?,
-        Some(Commands::Agent { command }) => match command {
-            AgentCommands::Enable => {
-                let client = runtimed::client::PoolClient::new(runtimed::default_socket_path());
-                client.set_agent_mode(true).await?;
-                println!("Agent mode enabled — new kernels will run in subprocess");
-            }
-            AgentCommands::Disable => {
-                let client = runtimed::client::PoolClient::new(runtimed::default_socket_path());
-                client.set_agent_mode(false).await?;
-                println!("Agent mode disabled — new kernels will run in-process");
-            }
-            AgentCommands::Status => {
-                // Read from settings doc (persisted)
-                let settings_path = runtimed::default_settings_doc_path();
-                let settings =
-                    runtimed::settings_doc::SettingsDoc::load_or_create(&settings_path, None);
-                let enabled = settings.get_all().agent_mode;
-                println!(
-                    "Agent mode: {}",
-                    if enabled { "enabled" } else { "disabled" }
-                );
-            }
-        },
         Some(Commands::Stop { path }) => shutdown_notebook(&path).await?,
         Some(Commands::Recover { path, output, list }) => {
             recover_notebook(path.as_deref(), output.as_deref(), list)?

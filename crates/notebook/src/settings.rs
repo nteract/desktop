@@ -80,10 +80,6 @@ pub fn load_settings() -> SyncedSettings {
             .get("onboarding_completed")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or(true),
-        agent_mode: json
-            .get("agent_mode")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or(false),
     }
 }
 
@@ -114,7 +110,6 @@ mod tests {
             conda: CondaDefaults::default(),
             keep_alive_secs: 30,
             onboarding_completed: false,
-            agent_mode: false,
         };
 
         let json = serde_json::to_string(&settings).unwrap();
@@ -258,10 +253,6 @@ mod tests {
                 .get("onboarding_completed")
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or(defaults.onboarding_completed),
-            agent_mode: json_val
-                .get("agent_mode")
-                .and_then(|v| serde_json::from_value(v.clone()).ok())
-                .unwrap_or(defaults.agent_mode),
         };
         // Valid fields are preserved
         assert_eq!(settings.theme, ThemeMode::Dark);
