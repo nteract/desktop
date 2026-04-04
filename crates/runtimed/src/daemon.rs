@@ -594,17 +594,24 @@ impl Daemon {
         };
 
         for (notebook_id, room) in drained_rooms {
-            if let Some(mut kernel) = room.kernel.lock().await.take() {
-                info!(
-                    "[runtimed] Shutting down kernel for notebook on exit: {}",
-                    notebook_id
-                );
-                if let Err(e) = kernel.shutdown().await {
-                    warn!(
-                        "[runtimed] Error shutting down kernel for {}: {}",
-                        notebook_id, e
+            // Shut down agent via RPC before dropping handle
+            {
+                let has_agent = room.agent_request_tx.lock().await.is_some();
+                if has_agent {
+                    info!(
+                        "[runtimed] Shutting down agent for notebook on exit: {}",
+                        notebook_id
                     );
+                    let _ = crate::notebook_sync_server::send_agent_request(
+                        &room,
+                        notebook_protocol::protocol::AgentRequest::ShutdownKernel,
+                    )
+                    .await;
                 }
+                let mut agent_guard = room.agent_handle.lock().await;
+                *agent_guard = None;
+                let mut tx = room.agent_request_tx.lock().await;
+                *tx = None;
             }
         }
 
@@ -1884,15 +1891,26 @@ impl Daemon {
             Request::ShutdownNotebook { notebook_id } => {
                 let mut rooms = self.notebook_rooms.lock().await;
                 if let Some(room) = rooms.remove(&notebook_id) {
-                    // Shutdown kernel if running
-                    if let Some(mut kernel) = room.kernel.lock().await.take() {
-                        info!(
-                            "[runtimed] Shutting down kernel for notebook: {}",
-                            notebook_id
-                        );
-                        if let Err(e) = kernel.shutdown().await {
-                            warn!("[runtimed] Error shutting down kernel: {}", e);
+                    // Shut down agent via RPC before dropping handle.
+                    // AgentHandle doesn't own the Child (it's in a background
+                    // task), so dropping the handle alone doesn't kill it.
+                    {
+                        let has_agent = room.agent_request_tx.lock().await.is_some();
+                        if has_agent {
+                            info!(
+                                "[runtimed] Shutting down agent for notebook: {}",
+                                notebook_id
+                            );
+                            let _ = crate::notebook_sync_server::send_agent_request(
+                                &room,
+                                notebook_protocol::protocol::AgentRequest::ShutdownKernel,
+                            )
+                            .await;
                         }
+                        let mut agent_guard = room.agent_handle.lock().await;
+                        *agent_guard = None;
+                        let mut tx = room.agent_request_tx.lock().await;
+                        *tx = None;
                     }
                     info!("[runtimed] Evicted room for notebook: {}", notebook_id);
                     Response::NotebookShutdown { found: true }
@@ -1914,17 +1932,6 @@ impl Daemon {
         let mut paths = std::collections::HashSet::new();
         let rooms = self.notebook_rooms.lock().await;
         for room in rooms.values() {
-            // Check local kernel
-            let kernel_guard = room.kernel.lock().await;
-            if let Some(ref kernel) = *kernel_guard {
-                if kernel.is_running() {
-                    if let Some(ref env_path) = kernel.env_path {
-                        paths.insert(env_path.clone());
-                    }
-                }
-            }
-            drop(kernel_guard);
-
             // Check agent-backed kernel
             if let Some(ref env_path) = *room.agent_env_path.read().await {
                 paths.insert(env_path.clone());

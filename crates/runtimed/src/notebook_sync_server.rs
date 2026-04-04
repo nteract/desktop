@@ -91,7 +91,7 @@ type AgentRequestSender = tokio::sync::mpsc::Sender<(
 ///
 /// The agent's sync handler receives the request as a frame 0x01 and sends
 /// the response as frame 0x02. Returns error if no agent is connected.
-async fn send_agent_request(
+pub(crate) async fn send_agent_request(
     room: &NotebookRoom,
     request: notebook_protocol::protocol::AgentRequest,
 ) -> anyhow::Result<notebook_protocol::protocol::AgentResponse> {
@@ -766,9 +766,6 @@ pub struct NotebookRoom {
     pub active_peers: AtomicUsize,
     /// Whether at least one peer has ever connected to this room.
     pub had_peers: AtomicBool,
-    /// Optional kernel for this room (Phase 8: daemon-owned execution).
-    /// Arc-wrapped so spawned command processor task can access it.
-    pub kernel: Arc<Mutex<Option<RoomKernel>>>,
     /// Blob store for output manifests.
     pub blob_store: Arc<BlobStore>,
     /// Trust state for this notebook (for auto-launch decisions).
@@ -1011,7 +1008,6 @@ impl NotebookRoom {
             persist_path,
             active_peers: AtomicUsize::new(0),
             had_peers: AtomicBool::new(false),
-            kernel: Arc::new(Mutex::new(None)),
             blob_store,
             trust_state: Arc::new(RwLock::new(trust_state)),
             notebook_path: RwLock::new(notebook_path),
@@ -1083,7 +1079,6 @@ impl NotebookRoom {
             persist_path,
             active_peers: AtomicUsize::new(0),
             had_peers: AtomicBool::new(false),
-            kernel: Arc::new(Mutex::new(None)),
             blob_store,
             trust_state: Arc::new(RwLock::new(trust_state)),
             notebook_path: RwLock::new(notebook_path),
@@ -2755,6 +2750,9 @@ async fn reset_starting_state(room: &NotebookRoom) {
     if changed {
         let _ = room.state_changed_tx.send(());
     }
+    // Clear stale agent handle so auto-launch can retry
+    let mut guard = room.agent_handle.lock().await;
+    *guard = None;
 }
 
 /// Auto-launch kernel for a trusted notebook when first peer connects.
@@ -2800,12 +2798,20 @@ async fn auto_launch_kernel(
     // Resolve metadata snapshot: try Automerge doc first, fall back to disk
     let metadata_snapshot = resolve_metadata_snapshot(room, notebook_path_opt.as_deref()).await;
 
-    // Acquire kernel lock for launch serialization (prevents concurrent launches)
-    let kernel_guard = room.kernel.lock().await;
+    // Check RuntimeStateDoc — skip if already starting or running
+    {
+        // Skip if agent already exists (another auto-launch won the race)
+        // or kernel is already running
+        let has_agent = room.agent_handle.lock().await.is_some();
+        if has_agent {
+            debug!("[notebook-sync] Auto-launch skipped: agent already exists");
+            return;
+        }
+    }
 
-    // Re-check peers after acquiring lock (another race check)
+    // Re-check peers (another race check)
     if room.active_peers.load(std::sync::atomic::Ordering::Relaxed) == 0 {
-        debug!("[notebook-sync] Auto-launch aborted: no peers (after lock)");
+        debug!("[notebook-sync] Auto-launch aborted: no peers (after status check)");
         reset_starting_state(room).await;
         return;
     }
@@ -3221,6 +3227,14 @@ async fn auto_launch_kernel(
                     *id = Some(agent_id.clone());
                 }
 
+                // Write "connecting" phase — fills the gap between spawn and connect
+                {
+                    let mut sd = room.state_doc.write().await;
+                    if sd.set_starting_phase("connecting") {
+                        let _ = room.state_changed_tx.send(());
+                    }
+                }
+
                 // Wait for agent to establish its sync connection
                 match tokio::time::timeout(std::time::Duration::from_secs(30), async {
                     room.agent_connected_tx
@@ -3256,8 +3270,6 @@ async fn auto_launch_kernel(
                     Ok(notebook_protocol::protocol::AgentResponse::KernelLaunched {
                         env_source: es,
                     }) => {
-                        drop(kernel_guard);
-
                         // Store env path for GC protection
                         if let Some(ref env) = pooled_env {
                             let mut ep = room.agent_env_path.write().await;
@@ -3507,28 +3519,69 @@ async fn handle_notebook_request(
             env_source,
             notebook_path,
         } => {
-            // Acquire kernel lock for launch serialization (prevents concurrent launches)
-            let kernel_guard = room.kernel.lock().await;
-
-            // Clear any stale comm state from a previous kernel (in case it crashed)
-
+            // Check RuntimeStateDoc for launch serialization.
+            // Uses write lock so we can atomically check + set "starting"
+            // to prevent two concurrent LaunchKernel requests from both
+            // proceeding past this gate.
             {
                 let mut sd = room.state_doc.write().await;
-                if sd.clear_comms() {
-                    let _ = room.state_changed_tx.send(());
-                }
-            }
+                let status = sd.read_state().kernel.status.clone();
+                match status.as_str() {
+                    "idle" | "busy" => {
+                        drop(sd);
+                        // Agent already has a running kernel — check for restart path below
+                    }
+                    "starting" => {
+                        drop(sd);
+                        // Another launch in progress — wait for it to complete
+                        let wait_result =
+                            tokio::time::timeout(std::time::Duration::from_secs(60), async {
+                                loop {
+                                    let s = room
+                                        .state_doc
+                                        .read()
+                                        .await
+                                        .read_state()
+                                        .kernel
+                                        .status
+                                        .clone();
+                                    if s == "idle"
+                                        || s == "busy"
+                                        || s == "error"
+                                        || s == "shutdown"
+                                        || s == "not_started"
+                                    {
+                                        return s;
+                                    }
+                                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                                }
+                            })
+                            .await;
 
-            // Trust is approved if user explicitly launches kernel — update RuntimeStateDoc
-            // Also set "starting" + "resolving" phase immediately
-            {
-                let mut sd = room.state_doc.write().await;
-                let mut changed = false;
-                changed |= sd.set_trust("trusted", false);
-                changed |= sd.set_kernel_status("starting");
-                changed |= sd.set_starting_phase("resolving");
-                if changed {
-                    let _ = room.state_changed_tx.send(());
+                        match wait_result {
+                            Ok(ref s) if s == "idle" || s == "busy" => {
+                                // Launch completed — fall through to restart check below
+                            }
+                            Ok(_) | Err(_) => {
+                                return NotebookResponse::Error {
+                                    error: "Kernel launch timed out or failed".to_string(),
+                                };
+                            }
+                        }
+                    }
+                    _ => {
+                        // not_started, error, shutdown — atomically claim the
+                        // launch by writing "starting" while we hold the write lock.
+                        // This prevents a concurrent LaunchKernel from also proceeding.
+                        let mut changed = false;
+                        changed |= sd.clear_comms();
+                        changed |= sd.set_trust("trusted", false);
+                        changed |= sd.set_kernel_status("starting");
+                        changed |= sd.set_starting_phase("resolving");
+                        if changed {
+                            let _ = room.state_changed_tx.send(());
+                        }
+                    }
                 }
             }
 
@@ -4032,6 +4085,14 @@ async fn handle_notebook_request(
                             *agent_guard = Some(agent);
                         }
 
+                        // Write "connecting" phase — fills the gap between spawn and connect
+                        {
+                            let mut sd = room.state_doc.write().await;
+                            if sd.set_starting_phase("connecting") {
+                                let _ = room.state_changed_tx.send(());
+                            }
+                        }
+
                         // Wait for agent to connect back via socket
                         match tokio::time::timeout(std::time::Duration::from_secs(30), async {
                             room.agent_connected_tx
@@ -4067,8 +4128,6 @@ async fn handle_notebook_request(
                             Ok(notebook_protocol::protocol::AgentResponse::KernelLaunched {
                                 env_source: es,
                             }) => {
-                                drop(kernel_guard);
-
                                 publish_kernel_state_presence(
                                     room,
                                     presence::KernelStatus::Idle,
@@ -7373,7 +7432,6 @@ mod tests {
             persist_path,
             active_peers: AtomicUsize::new(0),
             had_peers: AtomicBool::new(false),
-            kernel: Arc::new(Mutex::new(None)),
             blob_store,
             trust_state: Arc::new(RwLock::new(TrustState {
                 status: runt_trust::TrustStatus::Untrusted,
