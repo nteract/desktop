@@ -16,6 +16,7 @@ members = [
     "crates/runtimed-wasm",
     "crates/mcp-supervisor",
     "crates/runt-mcp",
+    "crates/repr-llm",
 ]
 default-members = ["crates/notebook"]
 resolver = "2"

@@ -272,6 +272,28 @@ pub fn json_data_to_datavalues(
         );
     }
 
+    // Synthesize text/llm+plain for visualization specs (Plotly, Vega-Lite, Vega)
+    if !output_data.contains_key("text/llm+plain") {
+        let viz_summary = output_data.iter().find_map(|(mime, dv)| {
+            if let DataValue::Json(ref spec) = dv {
+                repr_llm::summarize_viz(mime, spec)
+            } else {
+                None
+            }
+        });
+        if let Some(summary) = viz_summary {
+            let mut parts: Vec<String> = Vec::new();
+            if let Some(DataValue::Text(ref plain)) = output_data.get("text/plain") {
+                parts.push(plain.clone());
+            }
+            parts.push(summary);
+            output_data.insert(
+                "text/llm+plain".to_string(),
+                DataValue::Text(parts.join("\n")),
+            );
+        }
+    }
+
     output_data
 }
 
@@ -351,6 +373,28 @@ pub async fn output_from_manifest(
                     "text/llm+plain".to_string(),
                     DataValue::Text(parts.join("\n")),
                 );
+            }
+
+            // Synthesize text/llm+plain for visualization specs (Plotly, Vega-Lite, Vega)
+            if !output_data.contains_key("text/llm+plain") {
+                let viz_summary = output_data.iter().find_map(|(mime, dv)| {
+                    if let DataValue::Json(ref spec) = dv {
+                        repr_llm::summarize_viz(mime, spec)
+                    } else {
+                        None
+                    }
+                });
+                if let Some(summary) = viz_summary {
+                    let mut parts: Vec<String> = Vec::new();
+                    if let Some(DataValue::Text(ref plain)) = output_data.get("text/plain") {
+                        parts.push(plain.clone());
+                    }
+                    parts.push(summary);
+                    output_data.insert(
+                        "text/llm+plain".to_string(),
+                        DataValue::Text(parts.join("\n")),
+                    );
+                }
             }
 
             let mut output = if output_type == "execute_result" {

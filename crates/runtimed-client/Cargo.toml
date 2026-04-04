@@ -13,6 +13,7 @@ workspace = true
 notebook-protocol = { path = "../notebook-protocol" }
 notebook-doc = { path = "../notebook-doc" }
 runt-workspace = { path = "../runt-workspace" }
+repr-llm = { path = "../repr-llm" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

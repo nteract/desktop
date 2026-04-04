@@ -5671,6 +5671,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "repr-llm"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "serde_json",
+]
+
+[[package]]
 name = "reqwest"
 version = "0.12.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6115,6 +6123,7 @@ dependencies = [
  "log",
  "notebook-doc",
  "notebook-protocol",
+ "repr-llm",
  "reqwest 0.12.28",
  "runt-workspace",
  "schemars 1.2.1",
