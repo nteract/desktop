@@ -206,6 +206,7 @@ fn build_launched_config(
     venv_path: Option<PathBuf>,
     python_path: Option<PathBuf>,
     prewarmed_packages: Option<&[String]>,
+    notebook_path: Option<&std::path::Path>,
 ) -> LaunchedEnvConfig {
     let mut config = LaunchedEnvConfig::default();
 
@@ -239,6 +240,41 @@ fn build_launched_config(
             config.python_path = python_path;
             if let Some(pkgs) = prewarmed_packages {
                 config.prewarmed_packages = pkgs.to_vec();
+            }
+        }
+        "pixi:toml" => {
+            // Store pixi.toml deps baseline for drift detection.
+            // Read the pixi.toml (or pyproject.toml with [tool.pixi]) and
+            // extract all dependency names for later comparison.
+            if let Some(nb_path) = notebook_path {
+                if let Some(detected) = crate::project_file::detect_project_file(nb_path) {
+                    if detected.kind == crate::project_file::ProjectFileKind::PixiToml {
+                        if let Ok(content) = std::fs::read_to_string(&detected.path) {
+                            let mut deps: Vec<String> = content
+                                .lines()
+                                .filter(|line| {
+                                    let t = line.trim();
+                                    !t.is_empty()
+                                        && !t.starts_with('#')
+                                        && !t.starts_with('[')
+                                        && t.contains('=')
+                                        && !t.starts_with("name")
+                                        && !t.starts_with("version")
+                                        && !t.starts_with("channels")
+                                        && !t.starts_with("platforms")
+                                })
+                                .filter_map(|line| {
+                                    line.split('=').next().map(|n| n.trim().to_string())
+                                })
+                                .filter(|n| !n.is_empty())
+                                .collect();
+                            deps.sort();
+                            deps.dedup();
+                            config.pixi_toml_deps = Some(deps);
+                            config.pixi_toml_path = Some(detected.path);
+                        }
+                    }
+                }
             }
         }
         "pixi:inline" => {
@@ -373,6 +409,43 @@ fn compute_env_sync_diff(
         }
     }
 
+    // Check pixi:toml deps (file-based drift)
+    if let Some(ref launched_toml_deps) = launched.pixi_toml_deps {
+        if let Some(ref toml_path) = launched.pixi_toml_path {
+            if let Ok(content) = std::fs::read_to_string(toml_path) {
+                let mut current_deps: Vec<String> = content
+                    .lines()
+                    .filter(|line| {
+                        let t = line.trim();
+                        !t.is_empty()
+                            && !t.starts_with('#')
+                            && !t.starts_with('[')
+                            && t.contains('=')
+                            && !t.starts_with("name")
+                            && !t.starts_with("version")
+                            && !t.starts_with("channels")
+                            && !t.starts_with("platforms")
+                    })
+                    .filter_map(|line| line.split('=').next().map(|n| n.trim().to_string()))
+                    .filter(|n| !n.is_empty())
+                    .collect();
+                current_deps.sort();
+                current_deps.dedup();
+
+                for dep in &current_deps {
+                    if !launched_toml_deps.contains(dep) {
+                        added.push(dep.clone());
+                    }
+                }
+                for dep in launched_toml_deps {
+                    if !current_deps.contains(dep) {
+                        removed.push(dep.clone());
+                    }
+                }
+            }
+        }
+    }
+
     // Check deno config
     if let Some(ref launched_deno) = launched.deno_config {
         if let Some(ref current_deno) = current.runt.deno {
@@ -502,6 +575,7 @@ async fn check_and_broadcast_sync_state(room: &NotebookRoom) {
     let is_tracking = launched.uv_deps.is_some()
         || launched.conda_deps.is_some()
         || launched.pixi_deps.is_some()
+        || launched.pixi_toml_deps.is_some()
         || launched.deno_config.is_some();
 
     if is_tracking {
@@ -3384,6 +3458,7 @@ async fn auto_launch_kernel(
         venv_path,
         python_path,
         prewarmed_pkgs.as_deref(),
+        notebook_path_opt.as_deref(),
     );
 
     // Transition to "launching" phase before starting the kernel process
@@ -4232,6 +4307,7 @@ async fn handle_notebook_request(
                 venv_path,
                 python_path,
                 prewarmed_pkgs.as_deref(),
+                notebook_path.as_deref(),
             );
 
             // Transition to "launching" phase before starting the kernel process
@@ -9454,6 +9530,8 @@ mod tests {
             conda_deps: None,
             conda_channels: None,
             pixi_deps: None,
+            pixi_toml_deps: None,
+            pixi_toml_path: None,
             deno_config: None,
             venv_path: None,
             python_path: None,
@@ -9474,6 +9552,8 @@ mod tests {
             conda_deps: None,
             conda_channels: None,
             pixi_deps: None,
+            pixi_toml_deps: None,
+            pixi_toml_path: None,
             deno_config: None,
             venv_path: None,
             python_path: None,
@@ -9494,6 +9574,8 @@ mod tests {
             conda_deps: None,
             conda_channels: None,
             pixi_deps: None,
+            pixi_toml_deps: None,
+            pixi_toml_path: None,
             deno_config: None,
             venv_path: None,
             python_path: None,
@@ -9513,6 +9595,8 @@ mod tests {
             conda_deps: None,
             conda_channels: None,
             pixi_deps: None,
+            pixi_toml_deps: None,
+            pixi_toml_path: None,
             deno_config: None,
             venv_path: None,
             python_path: None,
@@ -9532,6 +9616,8 @@ mod tests {
             conda_deps: Some(vec!["scipy".to_string()]),
             conda_channels: Some(vec!["conda-forge".to_string()]),
             pixi_deps: None,
+            pixi_toml_deps: None,
+            pixi_toml_path: None,
             deno_config: None,
             venv_path: None,
             python_path: None,
@@ -9570,6 +9656,7 @@ mod tests {
             Some(venv.clone()),
             Some(python.clone()),
             Some(&pkgs),
+            None,
         );
         assert_eq!(config.venv_path.as_ref(), Some(&venv));
         assert_eq!(config.python_path.as_ref(), Some(&python));
@@ -9607,6 +9694,7 @@ mod tests {
             None,
             Some(venv.clone()),
             Some(python.clone()),
+            None,
             None,
         );
         assert_eq!(config.venv_path.as_ref(), Some(&venv));

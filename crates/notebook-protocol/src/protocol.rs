@@ -29,6 +29,15 @@ pub struct LaunchedEnvConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pixi_deps: Option<Vec<String>>,
 
+    /// Pixi project deps snapshot for drift detection (pixi:toml only).
+    /// Combined sorted list of conda + pypi dependency names from pixi.toml.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pixi_toml_deps: Option<Vec<String>>,
+
+    /// Path to the pixi.toml or pyproject.toml with [tool.pixi] (pixi:toml only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pixi_toml_path: Option<PathBuf>,
+
     /// Deno config (if kernel_type is "deno")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deno_config: Option<DenoLaunchedConfig>,
