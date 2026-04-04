@@ -1684,7 +1684,23 @@ where
             let mut rooms_guard = rooms_for_eviction.lock().await;
             // Re-check under lock
             if room_for_eviction.active_peers.load(Ordering::Relaxed) == 0 {
-                // Agent subprocess handles its own shutdown via kill_on_drop(true)
+                // Shut down agent subprocess if running. AgentHandle::spawn
+                // moves Child into a background task, so kill_on_drop doesn't
+                // trigger on room drop — we need explicit shutdown via RPC.
+                {
+                    let has_agent = room_for_eviction.agent_request_tx.lock().await.is_some();
+                    if has_agent {
+                        let _ = send_agent_request(
+                            &room_for_eviction,
+                            notebook_protocol::protocol::AgentRequest::ShutdownKernel,
+                        )
+                        .await;
+                        let mut guard = room_for_eviction.agent_handle.lock().await;
+                        *guard = None;
+                        let mut tx = room_for_eviction.agent_request_tx.lock().await;
+                        *tx = None;
+                    }
+                }
 
                 // Stop file watcher if running
                 if let Some(shutdown_tx) = room_for_eviction.watcher_shutdown_tx.lock().await.take()
@@ -4506,11 +4522,11 @@ async fn handle_notebook_request(
 /// Only supported for UV inline dependencies when there are only additions (no removals).
 /// Conda and other env types fall back to restart.
 async fn handle_sync_environment(_room: &NotebookRoom) -> NotebookResponse {
-    // In agent mode, environment sync is handled by the agent subprocess.
-    // The local kernel field is always None, so hot-sync is not applicable here.
+    // TODO(#1436): Add AgentRequest::SyncEnvironment to the agent protocol
+    // so the coordinator can forward hot-install requests to the agent subprocess.
+    // Currently, env sync requires a kernel restart in agent mode.
     NotebookResponse::SyncEnvironmentFailed {
-        error: "Environment sync is handled by the agent — use restart to apply changes"
-            .to_string(),
+        error: "Environment sync requires kernel restart in agent mode".to_string(),
         needs_restart: true,
     }
 }
