@@ -4640,8 +4640,12 @@ async fn handle_notebook_request(
                         notebook_protocol::protocol::AgentRequest::ShutdownKernel,
                     )
                     .await;
+                    // Clear both handle and request channel so subsequent
+                    // ExecuteCell/Complete/etc. fall through to NoKernel
                     let mut guard = room.agent_handle.lock().await;
                     *guard = None;
+                    let mut tx_guard = room.agent_request_tx.lock().await;
+                    *tx_guard = None;
                     return NotebookResponse::KernelShuttingDown {};
                 }
             }
