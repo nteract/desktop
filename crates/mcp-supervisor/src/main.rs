@@ -704,6 +704,8 @@ impl Supervisor {
                 }
 
                 info!("nteract MCP server restarted successfully");
+                // Unblock any call_tool waiting for the child
+                self.child_ready.notify_waiters();
                 Ok(())
             }
             Err(e) => {
@@ -1820,20 +1822,20 @@ impl ServerHandler for Supervisor {
             // If the child isn't connected yet (tools served from cache),
             // wait for it to come up before forwarding.
             _ => {
-                {
+                // Register the notified future BEFORE checking is_none to
+                // avoid a lost-wakeup race where notify_waiters() fires
+                // between our check and the await.
+                let notified = self.child_ready.notified();
+                let needs_wait = {
                     let state = self.state.read().await;
-                    if state.child_client.is_none() {
-                        drop(state);
-                        info!(
-                            "Tool '{}' called before child ready, waiting...",
-                            request.name
-                        );
-                        let _ = tokio::time::timeout(
-                            Duration::from_secs(60),
-                            self.child_ready.notified(),
-                        )
-                        .await;
-                    }
+                    state.child_client.is_none()
+                };
+                if needs_wait {
+                    info!(
+                        "Tool '{}' called before child ready, waiting...",
+                        request.name
+                    );
+                    let _ = tokio::time::timeout(Duration::from_secs(60), notified).await;
                 }
                 self.forward_tool_call(request).await
             }
