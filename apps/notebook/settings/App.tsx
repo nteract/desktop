@@ -18,6 +18,7 @@ import { cn } from "@/lib/utils";
 import {
   CondaIcon,
   DenoIcon,
+  PixiIcon,
   PythonIcon,
   UvIcon,
 } from "../src/components/icons";
@@ -377,6 +378,19 @@ export default function App() {
                 <CondaIcon className="h-3 w-3" />
                 Conda
               </button>
+              <button
+                type="button"
+                onClick={() => setDefaultPythonEnv("pixi")}
+                className={cn(
+                  "flex items-center gap-1.5 rounded-sm px-2.5 py-1 text-xs transition-colors",
+                  defaultPythonEnv === "pixi"
+                    ? "bg-amber-500/15 text-amber-600 dark:text-amber-400 shadow-sm"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                <PixiIcon className="h-3 w-3" />
+                Pixi
+              </button>
             </div>
             {defaultPythonEnv && !isKnownPythonEnv(defaultPythonEnv) && (
               <div className="flex items-start gap-2 text-xs text-amber-700 dark:text-amber-400 col-span-2 mt-1">
@@ -385,7 +399,7 @@ export default function App() {
                   <span className="font-medium">
                     &ldquo;{defaultPythonEnv}&rdquo;
                   </span>{" "}
-                  is not a recognized environment. Click uv or Conda above, or
+                  is not a recognized environment. Click uv, Conda, or Pixi above, or
                   edit{" "}
                   <code className="rounded bg-amber-500/20 px-1">
                     settings.json
@@ -418,6 +432,17 @@ export default function App() {
                   onChange={setDefaultCondaPackages}
                   placeholder="Add packages..."
                 />
+              </>
+            )}
+            {defaultPythonEnv === "pixi" && (
+              <>
+                <span className="text-sm text-muted-foreground whitespace-nowrap self-center text-right">
+                  Info
+                </span>
+                <span className="text-xs text-muted-foreground self-center">
+                  Pixi environments are managed via pixi.toml. Prewarmed
+                  environments include ipykernel and common packages.
+                </span>
               </>
             )}
           </div>
