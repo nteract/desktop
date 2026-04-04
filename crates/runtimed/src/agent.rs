@@ -28,13 +28,13 @@
 //! 5. Watches for new `status=queued` execution entries after each sync
 //! 6. On shutdown or daemon disconnect, agent exits
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use log::{debug, info, warn};
 use notebook_doc::presence::PresenceState;
-use notebook_doc::runtime_state::RuntimeStateDoc;
+use notebook_doc::runtime_state::{CommDocEntry, RuntimeStateDoc};
 use notebook_protocol::connection::{
     recv_typed_frame, send_json_frame, send_preamble, send_typed_frame, Handshake,
     NotebookFrameType,
@@ -166,9 +166,15 @@ pub async fn run_agent(
                             }
 
                             // RuntimeStateSync — apply coordinator's changes, check for new queue entries
+                            // and forward frontend-originated comm state changes to kernel
                             NotebookFrameType::RuntimeStateSync => {
                                 if let Ok(msg) = automerge::sync::Message::decode(&typed_frame.payload) {
                                     let mut sd = ctx.state_doc.write().await;
+
+                                    // Snapshot comm state before applying sync so we can
+                                    // detect frontend-originated widget state changes.
+                                    let comms_before = sd.read_state().comms;
+
                                     if let Ok(changed) = sd.receive_sync_message_with_changes(
                                         &mut coordinator_sync_state,
                                         msg,
@@ -176,10 +182,24 @@ pub async fn run_agent(
                                         if changed {
                                             let _ = ctx.state_changed_tx.send(());
 
-                                            // Check for new queued executions
+                                            // Diff comm state — forward changes to kernel
+                                            let comms_after = sd.read_state().comms;
                                             let queued = sd.get_queued_executions();
-                                            drop(sd); // release write lock before queuing
+                                            drop(sd); // release write lock before kernel interaction
 
+                                            let comm_updates = diff_comm_state(&comms_before, &comms_after);
+                                            if !comm_updates.is_empty() {
+                                                let mut guard = ctx.kernel.lock().await;
+                                                if let Some(ref mut k) = *guard {
+                                                    for (comm_id, delta) in &comm_updates {
+                                                        if let Err(e) = k.send_comm_update(comm_id, delta.clone()).await {
+                                                            warn!("[agent] Failed to forward comm state to kernel: {}", e);
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            // Check for new queued executions
                                             let mut seen = ctx.seen_execution_ids.lock().await;
                                             for (eid, exec) in queued {
                                                 if seen.insert(eid.clone()) {
@@ -625,4 +645,38 @@ async fn handle_queue_command(command: QueueCommand, ctx: &AgentContext) -> anyh
     }
 
     Ok(())
+}
+
+/// Diff two comm state snapshots, returning `(comm_id, changed_properties)` pairs.
+///
+/// Only diffs existing comms (new comms originate from kernel `comm_open` and
+/// don't need forwarding back). Returns a minimal delta per comm — only
+/// properties whose values actually changed.
+fn diff_comm_state(
+    before: &HashMap<String, CommDocEntry>,
+    after: &HashMap<String, CommDocEntry>,
+) -> Vec<(String, serde_json::Value)> {
+    let mut updates = Vec::new();
+    for (comm_id, after_entry) in after {
+        if let Some(before_entry) = before.get(comm_id) {
+            if let (Some(before_obj), Some(after_obj)) = (
+                before_entry.state.as_object(),
+                after_entry.state.as_object(),
+            ) {
+                let mut delta = serde_json::Map::new();
+                for (key, after_val) in after_obj {
+                    match before_obj.get(key) {
+                        Some(before_val) if before_val == after_val => {}
+                        _ => {
+                            delta.insert(key.clone(), after_val.clone());
+                        }
+                    }
+                }
+                if !delta.is_empty() {
+                    updates.push((comm_id.clone(), serde_json::Value::Object(delta)));
+                }
+            }
+        }
+    }
+    updates
 }

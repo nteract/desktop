@@ -13,6 +13,7 @@
 
 import { useCallback, useEffect, useRef } from "react";
 import { applyBufferPaths } from "./buffer-utils";
+import { getCrdtCommWriter } from "./crdt-comm-writer";
 import type { WidgetStore } from "./widget-store";
 
 // === Message Types ===
@@ -326,10 +327,17 @@ export function useCommRouter({
     ) => {
       // Optimistic update: apply locally first for responsive UI
       storeRef.current.updateModel(commId, state, buffers);
-      // Then send to kernel
-      sendMessageRef.current(
-        createUpdateMessage(commId, state, buffers, usernameRef.current),
-      );
+      // Try CRDT path first (writes directly to RuntimeStateDoc via WASM,
+      // no SendComm round-trip). Falls back to SendComm if CRDT writer
+      // isn't available or binary buffers are present.
+      const writer = getCrdtCommWriter();
+      if (writer && !buffers?.length) {
+        writer(commId, state);
+      } else {
+        sendMessageRef.current(
+          createUpdateMessage(commId, state, buffers, usernameRef.current),
+        );
+      }
     },
     [],
   );
