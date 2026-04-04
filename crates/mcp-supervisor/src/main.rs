@@ -494,6 +494,36 @@ impl ManagedProcess {
     }
 }
 
+const TOOL_CACHE_FILENAME: &str = "tool-cache.json";
+
+/// Load cached child tool definitions from disk.
+fn load_cached_tools(project_root: &Path) -> Option<Vec<Tool>> {
+    let path = project_root.join(".context").join(TOOL_CACHE_FILENAME);
+    let data = std::fs::read_to_string(&path).ok()?;
+    match serde_json::from_str::<Vec<Tool>>(&data) {
+        Ok(tools) => Some(tools),
+        Err(e) => {
+            warn!("Failed to parse tool cache at {}: {e}", path.display());
+            None
+        }
+    }
+}
+
+/// Save child tool definitions to disk for optimistic serving on next startup.
+fn save_tool_cache(project_root: &Path, tools: &[Tool]) {
+    let path = project_root.join(".context").join(TOOL_CACHE_FILENAME);
+    match serde_json::to_string_pretty(tools) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(&path, json) {
+                warn!("Failed to write tool cache to {}: {e}", path.display());
+            } else {
+                info!("Saved {} tools to cache at {}", tools.len(), path.display());
+            }
+        }
+        Err(e) => warn!("Failed to serialize tool cache: {e}"),
+    }
+}
+
 /// Shared state for the supervisor.
 struct SupervisorState {
     /// rmcp client connected to the nteract child process.
@@ -521,6 +551,9 @@ struct SupervisorState {
     tool_list_changed_tx: Option<mpsc::Sender<()>>,
     /// Managed long-running processes (vite dev server, notebook app, etc.).
     managed: HashMap<String, ManagedProcess>,
+    /// Cached child tool definitions, loaded from disk at startup.
+    /// Served optimistically before the child connects.
+    cached_tools: Option<Vec<Tool>>,
 }
 
 impl SupervisorState {
@@ -557,6 +590,12 @@ impl Supervisor {
     fn new_empty(project_root: PathBuf, tool_list_changed_tx: mpsc::Sender<()>) -> Self {
         let log_dir = project_root.join(".context");
         let _ = std::fs::create_dir_all(&log_dir);
+        let cached_tools = load_cached_tools(&project_root);
+        if let Some(ref tools) = cached_tools {
+            info!("Loaded {} cached child tools from disk", tools.len());
+        } else {
+            info!("No tool cache found — child tools will appear after startup");
+        }
         Self {
             state: Arc::new(RwLock::new(SupervisorState {
                 child_client: None,
@@ -571,6 +610,7 @@ impl Supervisor {
                 daemon_child: None,
                 tool_list_changed_tx: Some(tool_list_changed_tx),
                 managed: HashMap::new(),
+                cached_tools,
             })),
             child_ready: Arc::new(Notify::new()),
         }
@@ -649,7 +689,23 @@ impl Supervisor {
                 state.child_client = Some(client);
                 state.restart_count += 1;
                 state.last_error = None;
+
+                // Refresh the tool cache from the new child
+                if let Some(ref client) = state.child_client {
+                    match client.list_tools(None).await {
+                        Ok(child_tools) => {
+                            save_tool_cache(&state.project_root, &child_tools.tools);
+                            state.cached_tools = Some(child_tools.tools);
+                        }
+                        Err(e) => {
+                            warn!("Failed to refresh tool cache after restart: {e}");
+                        }
+                    }
+                }
+
                 info!("nteract MCP server restarted successfully");
+                // Unblock any call_tool waiting for the child
+                self.child_ready.notify_waiters();
                 Ok(())
             }
             Err(e) => {
@@ -1272,32 +1328,29 @@ impl ServerHandler for Supervisor {
                 .unwrap_or_default(),
         ));
 
-        // Wait for the child to be ready if it hasn't connected yet.
-        // This blocks the first tools/list call (typically right after
-        // initialize) until the background init finishes, so the client
-        // sees the full tool set from the start.
-        {
-            let state = self.state.read().await;
-            if state.child_client.is_none() {
-                drop(state);
-                info!("Waiting for child MCP server to connect...");
-                let _ = tokio::time::timeout(Duration::from_secs(30), self.child_ready.notified())
-                    .await;
-            }
-        }
-
-        // Forward to child for its tools
+        // Serve child tools optimistically: live from child if connected,
+        // otherwise from the disk cache. Never block waiting for the child —
+        // the agent sees tools instantly and can plan while the child starts.
         let state = self.state.read().await;
         if let Some(ref client) = state.child_client {
+            // Child is connected — query live tools
             match client.list_tools(None).await {
                 Ok(child_tools) => {
                     tools.extend(child_tools.tools);
                 }
                 Err(e) => {
                     warn!("Failed to list child tools: {e}");
-                    // Still return supervisor tools even if child is down
+                    // Fall back to cache if live query fails
+                    if let Some(ref cached) = state.cached_tools {
+                        info!("Serving {} cached tools (child query failed)", cached.len());
+                        tools.extend(cached.iter().cloned());
+                    }
                 }
             }
+        } else if let Some(ref cached) = state.cached_tools {
+            // Child not ready yet — serve cached tools immediately
+            info!("Serving {} cached tools (child not ready)", cached.len());
+            tools.extend(cached.iter().cloned());
         }
 
         Ok(ListToolsResult {
@@ -1765,8 +1818,27 @@ impl ServerHandler for Supervisor {
                     }
                 }
             }
-            // Everything else → forward to child
-            _ => self.forward_tool_call(request).await,
+            // Everything else → forward to child.
+            // If the child isn't connected yet (tools served from cache),
+            // wait for it to come up before forwarding.
+            _ => {
+                // Register the notified future BEFORE checking is_none to
+                // avoid a lost-wakeup race where notify_waiters() fires
+                // between our check and the await.
+                let notified = self.child_ready.notified();
+                let needs_wait = {
+                    let state = self.state.read().await;
+                    state.child_client.is_none()
+                };
+                if needs_wait {
+                    info!(
+                        "Tool '{}' called before child ready, waiting...",
+                        request.name
+                    );
+                    let _ = tokio::time::timeout(Duration::from_secs(60), notified).await;
+                }
+                self.forward_tool_call(request).await
+            }
         }
     }
 }
@@ -2192,7 +2264,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         };
 
-        // 2d: Populate state with child client, socket, daemon, and upstream info
+        // 2d: Populate state with child client, socket, daemon, and upstream info.
+        // Then fetch live tools, update the cache, and notify the client.
         {
             let mut state = state_for_init.write().await;
             state.child_client = Some(child_client);
@@ -2200,11 +2273,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             state.daemon_child = daemon_child;
             state.upstream_name = upstream_name;
             state.upstream_title = upstream_title;
+
+            // Fetch live tools from the child and update the disk cache
+            if let Some(ref client) = state.child_client {
+                match client.list_tools(None).await {
+                    Ok(child_tools) => {
+                        save_tool_cache(&state.project_root, &child_tools.tools);
+                        state.cached_tools = Some(child_tools.tools);
+                    }
+                    Err(e) => {
+                        warn!("Failed to fetch child tools for cache: {e}");
+                    }
+                }
+            }
         }
-        // Unblock any list_tools call waiting for the child
+        // Unblock any call_tool waiting for the child
         child_ready.notify_waiters();
 
-        // 2e: Notify the client that tools/resources are now available
+        // 2e: Notify the client that tools/resources are now available.
+        // Even if cached tools matched, the child is now live so tool calls work.
         if let Err(e) = peer_for_init.notify_tool_list_changed().await {
             warn!("Failed to send tools/list_changed after init: {e}");
         } else {

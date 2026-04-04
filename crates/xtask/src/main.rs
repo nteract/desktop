@@ -1223,8 +1223,9 @@ fn cmd_install_daemon() {
 /// This enables isolated daemon instances per git worktree, useful when
 /// developing/testing daemon code across multiple worktrees simultaneously.
 fn cmd_mcp(print_config: bool, release: bool) {
-    ensure_python_env();
-    ensure_maturin_develop();
+    // Skip ensure_python_env/ensure_maturin_develop here — the supervisor
+    // handles maturin develop asynchronously in its background init task.
+    // Removing these saves 5-15s of startup time.
 
     // Build the daemon in the requested mode so the supervisor finds it
     if release {
