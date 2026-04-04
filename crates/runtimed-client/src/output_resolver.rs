@@ -273,26 +273,10 @@ pub fn json_data_to_datavalues(
     }
 
     // Synthesize text/llm+plain for visualization specs (Plotly, Vega-Lite, Vega)
-    if !output_data.contains_key("text/llm+plain") {
-        let viz_summary = output_data.iter().find_map(|(mime, dv)| {
-            if let DataValue::Json(ref spec) = dv {
-                repr_llm::summarize_viz(mime, spec)
-            } else {
-                None
-            }
-        });
-        if let Some(summary) = viz_summary {
-            let mut parts: Vec<String> = Vec::new();
-            if let Some(DataValue::Text(ref plain)) = output_data.get("text/plain") {
-                parts.push(plain.clone());
-            }
-            parts.push(summary);
-            output_data.insert(
-                "text/llm+plain".to_string(),
-                DataValue::Text(parts.join("\n")),
-            );
-        }
-    }
+    synthesize_llm_plain_for_viz(&mut output_data);
+
+    // Synthesize text/llm+plain for other heavy types (SVG, HTML, large JSON)
+    synthesize_llm_plain_for_heavy_types(&mut output_data);
 
     output_data
 }
@@ -376,26 +360,10 @@ pub async fn output_from_manifest(
             }
 
             // Synthesize text/llm+plain for visualization specs (Plotly, Vega-Lite, Vega)
-            if !output_data.contains_key("text/llm+plain") {
-                let viz_summary = output_data.iter().find_map(|(mime, dv)| {
-                    if let DataValue::Json(ref spec) = dv {
-                        repr_llm::summarize_viz(mime, spec)
-                    } else {
-                        None
-                    }
-                });
-                if let Some(summary) = viz_summary {
-                    let mut parts: Vec<String> = Vec::new();
-                    if let Some(DataValue::Text(ref plain)) = output_data.get("text/plain") {
-                        parts.push(plain.clone());
-                    }
-                    parts.push(summary);
-                    output_data.insert(
-                        "text/llm+plain".to_string(),
-                        DataValue::Text(parts.join("\n")),
-                    );
-                }
-            }
+            synthesize_llm_plain_for_viz(&mut output_data);
+
+            // Synthesize text/llm+plain for other heavy types (SVG, HTML, large JSON)
+            synthesize_llm_plain_for_heavy_types(&mut output_data);
 
             let mut output = if output_type == "execute_result" {
                 let execution_count = manifest.get("execution_count")?.as_i64()?;
@@ -558,4 +526,81 @@ pub async fn resolve_cell_outputs(
         }
     }
     outputs
+}
+
+/// Synthesize `text/llm+plain` from visualization specs (Plotly, Vega-Lite, Vega).
+///
+/// Skips if `text/llm+plain` already exists (author-provided summaries win).
+fn synthesize_llm_plain_for_viz(output_data: &mut HashMap<String, DataValue>) {
+    if output_data.contains_key("text/llm+plain") {
+        return;
+    }
+    let viz_summary = output_data.iter().find_map(|(mime, dv)| {
+        if let DataValue::Json(ref spec) = dv {
+            repr_llm::summarize_viz(mime, spec)
+        } else {
+            None
+        }
+    });
+    if let Some(summary) = viz_summary {
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(DataValue::Text(ref plain)) = output_data.get("text/plain") {
+            parts.push(plain.clone());
+        }
+        parts.push(summary);
+        output_data.insert(
+            "text/llm+plain".to_string(),
+            DataValue::Text(parts.join("\n")),
+        );
+    }
+}
+
+/// Synthesize `text/llm+plain` for heavy non-viz media types.
+///
+/// Handles:
+/// - `image/svg+xml` — always summarize (raw XML is never useful to LLMs)
+/// - `text/html` — summarize only when `text/plain` also exists
+/// - `application/json` — structural summary for large (> 2KB) values
+///
+/// Skips if `text/llm+plain` already exists.
+fn synthesize_llm_plain_for_heavy_types(output_data: &mut HashMap<String, DataValue>) {
+    if output_data.contains_key("text/llm+plain") {
+        return;
+    }
+
+    let has_text_plain = output_data.contains_key("text/plain");
+    let mut descriptions: Vec<String> = Vec::new();
+
+    // SVG: always describe — raw XML is useless to LLMs
+    if let Some(DataValue::Text(ref svg)) = output_data.get("image/svg+xml") {
+        descriptions.push(format!("SVG image output ({} KB)", svg.len() / 1024));
+    }
+
+    // HTML: describe only when text/plain exists (otherwise HTML may be the only repr)
+    if has_text_plain {
+        if let Some(DataValue::Text(ref html)) = output_data.get("text/html") {
+            descriptions.push(format!("HTML output ({} KB)", html.len() / 1024));
+        }
+    }
+
+    // Large JSON: structural summary via repr-llm
+    if let Some(DataValue::Json(ref val)) = output_data.get("application/json") {
+        if let Some(summary) = repr_llm::summarize_json(val) {
+            descriptions.push(summary);
+        }
+    }
+
+    if descriptions.is_empty() {
+        return;
+    }
+
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(DataValue::Text(ref plain)) = output_data.get("text/plain") {
+        parts.push(plain.clone());
+    }
+    parts.extend(descriptions);
+    output_data.insert(
+        "text/llm+plain".to_string(),
+        DataValue::Text(parts.join("\n")),
+    );
 }

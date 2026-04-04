@@ -20,12 +20,15 @@
 //! assert!(summary.is_some());
 //! ```
 
+pub mod json;
 pub mod plotly;
 pub(crate) mod stats;
 pub mod vega;
 pub mod vegalite;
 
 use serde_json::Value;
+
+pub use json::summarize_json;
 
 /// Attempt to produce an LLM-friendly text summary from a visualization spec.
 ///

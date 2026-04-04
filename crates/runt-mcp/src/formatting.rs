@@ -23,6 +23,10 @@ const TEXT_MIME_PRIORITY: &[&str] = &[
     "application/json",
 ];
 
+/// Maximum text size (bytes) before truncation in `best_text_from_data`.
+/// Acts as a safety net for heavy types that don't have `text/llm+plain` synthesis.
+const MAX_TEXT_BYTES: usize = 8 * 1024;
+
 /// Strip ANSI escape codes from text.
 pub fn strip_ansi(text: &str) -> String {
     ANSI_RE.replace_all(text, "").to_string()
@@ -30,17 +34,34 @@ pub fn strip_ansi(text: &str) -> String {
 
 /// Extract the best text representation from an output's data dictionary.
 /// Returns None if no suitable text MIME type is found.
+///
+/// Text exceeding 8 KB is truncated with a size note appended.
 pub fn best_text_from_data(data: &std::collections::HashMap<String, DataValue>) -> Option<String> {
     for mime in TEXT_MIME_PRIORITY {
         if let Some(value) = data.get(*mime) {
-            return match value {
+            let text = match value {
                 DataValue::Text(s) => Some(s.clone()),
                 DataValue::Json(v) => Some(serde_json::to_string_pretty(v).unwrap_or_default()),
                 DataValue::Binary(_) => None,
             };
+            return text.map(|s| truncate_text(&s));
         }
     }
     None
+}
+
+/// Truncate text to `MAX_TEXT_BYTES`, appending a size note if truncated.
+fn truncate_text(s: &str) -> String {
+    if s.len() <= MAX_TEXT_BYTES {
+        return s.to_string();
+    }
+    // Find a char boundary at or before MAX_TEXT_BYTES
+    let mut end = MAX_TEXT_BYTES;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    let total_kb = s.len() / 1024;
+    format!("{}\n... [truncated, {} KB total]", &s[..end], total_kb)
 }
 
 /// Format a single output as text for LLM consumption.
