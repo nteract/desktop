@@ -520,22 +520,22 @@ pub enum NotebookBroadcast {
     },
 }
 
-// ── Agent protocol types ───────────────────────────────────────────────────
+// ── Runtime agent protocol types ──────────────────────────────────────────
 //
-// These types define the coordinator↔agent wire contract for process-isolated
-// runtime agents (#1333). The agent subprocess communicates over stdin/stdout
-// using the same framed protocol (frame types 0x01/0x02/0x03 for JSON,
-// 0x05 for RuntimeStateDoc sync).
+// These types define the coordinator↔runtime-agent wire contract for
+// process-isolated runtime agents (#1333). The runtime agent subprocess
+// communicates over stdin/stdout using the same framed protocol (frame
+// types 0x01/0x02/0x03 for JSON, 0x05 for RuntimeStateDoc sync).
 
 /// Requests from coordinator to runtime agent (frame type 0x01).
 ///
-/// The coordinator mediates between frontend requests and the agent.
-/// Environment preparation happens in the coordinator; the agent receives
-/// a ready-to-launch configuration.
+/// The coordinator mediates between frontend requests and the runtime agent.
+/// Environment preparation happens in the coordinator; the runtime agent
+/// receives a ready-to-launch configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 #[allow(clippy::large_enum_variant)]
-pub enum AgentRequest {
+pub enum RuntimeAgentRequest {
     /// Launch a kernel with the given configuration.
     /// Environment is already prepared by the coordinator.
     LaunchKernel {
@@ -552,12 +552,13 @@ pub enum AgentRequest {
     /// Interrupt the currently executing cell.
     InterruptExecution,
 
-    /// Shutdown the kernel. The agent process stays alive for potential restart.
+    /// Shutdown the kernel. The runtime agent process stays alive for potential restart.
     ShutdownKernel,
 
     /// Restart the kernel: shut down the current kernel, create a new one,
-    /// re-launch. Same agent process, same socket connection. The coordinator
-    /// sends this instead of spawning a new agent when one is already connected.
+    /// re-launch. Same runtime agent process, same socket connection. The
+    /// coordinator sends this instead of spawning a new runtime agent when
+    /// one is already connected.
     RestartKernel {
         kernel_type: String,
         env_source: String,
@@ -589,11 +590,11 @@ pub enum AgentRequest {
 /// Responses from runtime agent to coordinator (frame type 0x02).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
-pub enum AgentResponse {
+pub enum RuntimeAgentResponse {
     /// Kernel launched successfully.
     KernelLaunched { env_source: String },
 
-    /// Kernel restarted successfully (same agent, new kernel).
+    /// Kernel restarted successfully (same runtime agent, new kernel).
     KernelRestarted { env_source: String },
 
     /// Code completion result.

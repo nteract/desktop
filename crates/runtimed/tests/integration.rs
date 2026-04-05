@@ -1333,17 +1333,17 @@ async fn test_pipe_mode_preserves_frame_order() {
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
 }
 
-/// Test that agent mode spawns a subprocess and can dispatch cell execution.
+/// Test that runtime agent mode spawns a subprocess and can dispatch cell execution.
 ///
-/// Sets RUNT_AGENT_MODE=1, creates a notebook, connects, and verifies
-/// the agent mode code path is exercised. Note: actual kernel execution
+/// Sets RUNT_RUNTIME_AGENT_MODE=1, creates a notebook, connects, and verifies
+/// the runtime agent code path is exercised. Note: actual kernel execution
 /// requires a Python env (pool size is 0 in test config), so we verify
 /// the dispatch path rather than full execution.
 #[tokio::test]
 #[cfg(unix)]
-async fn test_agent_mode_dispatch() {
-    // Enable agent mode for this test
-    std::env::set_var("RUNT_AGENT_MODE", "1");
+async fn test_runtime_agent_dispatch() {
+    // Enable runtime agent mode for this test
+    std::env::set_var("RUNT_RUNTIME_AGENT_MODE", "1");
 
     let temp_dir = TempDir::new().unwrap();
     let config = test_config(&temp_dir);
@@ -1365,7 +1365,9 @@ async fn test_agent_mode_dispatch() {
 
     // Add a cell
     client.add_cell_after("c1", "code", None).unwrap();
-    client.update_source("c1", "print('agent test')").unwrap();
+    client
+        .update_source("c1", "print('runtime agent test')")
+        .unwrap();
 
     // Wait for sync
     let mut watcher = client.subscribe();
@@ -1382,7 +1384,7 @@ async fn test_agent_mode_dispatch() {
     assert_eq!(cells[0].id, "c1");
 
     // Try to execute — may fail with NoKernel since pool is empty,
-    // but the agent dispatch path should be exercised
+    // but the runtime agent dispatch path should be exercised
     let response = client
         .send_request(NotebookRequest::ExecuteCell {
             cell_id: "c1".to_string(),
@@ -1390,23 +1392,23 @@ async fn test_agent_mode_dispatch() {
         .await
         .unwrap();
 
-    // With pool_size=0, we expect NoKernel (no env to give the agent)
-    // or an error from the agent failing to launch.
+    // With pool_size=0, we expect NoKernel (no env to give the runtime agent)
+    // or an error from the runtime agent failing to launch.
     // The important thing is we didn't panic.
     match &response {
         NotebookResponse::CellQueued { .. } => {
-            // Agent launched and queued — great!
+            // Runtime agent launched and queued — great!
         }
         NotebookResponse::NoKernel {} | NotebookResponse::Error { .. } => {
-            // Expected with empty pool — agent couldn't get an env
+            // Expected with empty pool — runtime agent couldn't get an env
         }
         _ => {
-            panic!("Unexpected response in agent mode: {:?}", response);
+            panic!("Unexpected response in runtime agent mode: {:?}", response);
         }
     }
 
     // Cleanup
-    std::env::remove_var("RUNT_AGENT_MODE");
+    std::env::remove_var("RUNT_RUNTIME_AGENT_MODE");
     pool_client.shutdown().await.ok();
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
 }

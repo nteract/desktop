@@ -18,8 +18,6 @@ pub use runtimed_client::*;
 // Server-only modules (not in runtimed-client)
 // ============================================================================
 
-pub mod agent;
-pub mod agent_handle;
 pub mod blob_server;
 pub mod blob_store;
 pub mod daemon;
@@ -30,6 +28,8 @@ pub mod markdown_assets;
 pub mod notebook_sync_server;
 pub mod output_store;
 pub mod project_file;
+pub mod runtime_agent;
+pub mod runtime_agent_handle;
 pub mod singleton;
 pub mod stream_terminal;
 pub mod sync_server;

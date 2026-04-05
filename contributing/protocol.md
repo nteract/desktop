@@ -339,7 +339,7 @@ The daemon writes kernel status, execution queue, and environment sync drift. Cl
 
 ### Comms in doc (#761) — Done
 
-Widget state now lives in `doc.comms/` in RuntimeStateDoc. The daemon writes comm entries from kernel IOPub, and new clients receive widget state via normal CRDT sync. `CommSync` broadcast has been removed. The `Comm` broadcast variant is limited to custom messages (ephemeral events like button clicks). Frontend-originated widget state updates write to the CRDT, and the agent diffs comm state on each sync to forward deltas to the kernel.
+Widget state now lives in `doc.comms/` in RuntimeStateDoc. The daemon writes comm entries from kernel IOPub, and new clients receive widget state via normal CRDT sync. `CommSync` broadcast has been removed. The `Comm` broadcast variant is limited to custom messages (ephemeral events like button clicks). Frontend-originated widget state updates write to the CRDT, and the runtime agent diffs comm state on each sync to forward deltas to the kernel.
 
 ## Key Source Files
 

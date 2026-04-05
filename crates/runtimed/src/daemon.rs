@@ -614,23 +614,23 @@ impl Daemon {
         };
 
         for (notebook_id, room) in drained_rooms {
-            // Shut down agent via RPC before dropping handle
+            // Shut down runtime agent via RPC before dropping handle
             {
-                let has_agent = room.agent_request_tx.lock().await.is_some();
-                if has_agent {
+                let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
+                if has_runtime_agent {
                     info!(
-                        "[runtimed] Shutting down agent for notebook on exit: {}",
+                        "[runtimed] Shutting down runtime agent for notebook on exit: {}",
                         notebook_id
                     );
-                    let _ = crate::notebook_sync_server::send_agent_request(
+                    let _ = crate::notebook_sync_server::send_runtime_agent_request(
                         &room,
-                        notebook_protocol::protocol::AgentRequest::ShutdownKernel,
+                        notebook_protocol::protocol::RuntimeAgentRequest::ShutdownKernel,
                     )
                     .await;
                 }
-                let mut agent_guard = room.agent_handle.lock().await;
-                *agent_guard = None;
-                let mut tx = room.agent_request_tx.lock().await;
+                let mut ra_guard = room.runtime_agent_handle.lock().await;
+                *ra_guard = None;
+                let mut tx = room.runtime_agent_request_tx.lock().await;
                 *tx = None;
             }
         }
@@ -1216,12 +1216,12 @@ impl Daemon {
             }
             Handshake::RuntimeAgent {
                 notebook_id,
-                agent_id,
+                runtime_agent_id,
                 blob_root: _,
             } => {
                 info!(
-                    "[runtimed] Agent connecting via socket: notebook={} agent={}",
-                    notebook_id, agent_id
+                    "[runtimed] Runtime agent connecting via socket: notebook={} runtime_agent={}",
+                    notebook_id, runtime_agent_id
                 );
                 let room = {
                     let rooms = self.notebook_rooms.lock().await;
@@ -1230,12 +1230,12 @@ impl Daemon {
                 match room {
                     Some(room) => {
                         let (reader, writer) = tokio::io::split(stream);
-                        crate::notebook_sync_server::handle_agent_sync_connection(
+                        crate::notebook_sync_server::handle_runtime_agent_sync_connection(
                             reader,
                             writer,
                             room,
                             notebook_id,
-                            agent_id,
+                            runtime_agent_id,
                         )
                         .await;
                         Ok(())
@@ -1983,25 +1983,26 @@ impl Daemon {
             Request::ShutdownNotebook { notebook_id } => {
                 let mut rooms = self.notebook_rooms.lock().await;
                 if let Some(room) = rooms.remove(&notebook_id) {
-                    // Shut down agent via RPC before dropping handle.
-                    // AgentHandle doesn't own the Child (it's in a background
+                    // Shut down runtime agent via RPC before dropping handle.
+                    // RuntimeAgentHandle doesn't own the Child (it's in a background
                     // task), so dropping the handle alone doesn't kill it.
                     {
-                        let has_agent = room.agent_request_tx.lock().await.is_some();
-                        if has_agent {
+                        let has_runtime_agent =
+                            room.runtime_agent_request_tx.lock().await.is_some();
+                        if has_runtime_agent {
                             info!(
-                                "[runtimed] Shutting down agent for notebook: {}",
+                                "[runtimed] Shutting down runtime agent for notebook: {}",
                                 notebook_id
                             );
-                            let _ = crate::notebook_sync_server::send_agent_request(
+                            let _ = crate::notebook_sync_server::send_runtime_agent_request(
                                 &room,
-                                notebook_protocol::protocol::AgentRequest::ShutdownKernel,
+                                notebook_protocol::protocol::RuntimeAgentRequest::ShutdownKernel,
                             )
                             .await;
                         }
-                        let mut agent_guard = room.agent_handle.lock().await;
-                        *agent_guard = None;
-                        let mut tx = room.agent_request_tx.lock().await;
+                        let mut ra_guard = room.runtime_agent_handle.lock().await;
+                        *ra_guard = None;
+                        let mut tx = room.runtime_agent_request_tx.lock().await;
                         *tx = None;
                     }
                     info!("[runtimed] Evicted room for notebook: {}", notebook_id);
@@ -2024,8 +2025,8 @@ impl Daemon {
         let mut paths = std::collections::HashSet::new();
         let rooms = self.notebook_rooms.lock().await;
         for room in rooms.values() {
-            // Check agent-backed kernel
-            if let Some(ref env_path) = *room.agent_env_path.read().await {
+            // Check runtime-agent-backed kernel
+            if let Some(ref env_path) = *room.runtime_agent_env_path.read().await {
                 paths.insert(env_path.clone());
             }
         }

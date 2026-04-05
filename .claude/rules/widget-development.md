@@ -20,7 +20,7 @@ Widget state lives in the **RuntimeStateDoc** CRDT (`doc.comms/` Automerge map).
 
 - **Daemon:** Writes comm state on `comm_open`/`comm_msg(update)`/`comm_close` from kernel IOPub. State updates go through a 16ms coalescing writer to avoid overwhelming CRDT sync.
 - **Frontend:** `WidgetStore` in `widget-store.ts` -- per-model subscriptions, IPY_MODEL_ reference resolution, custom message buffering. Populated by a CRDT watcher in `useDaemonKernel.ts` that diffs `runtimeState.comms` and synthesizes Jupyter comm messages.
-- **Frontend → Kernel:** Built-in widget state updates write to RuntimeStateDoc via `getCrdtCommWriter()`. The agent diffs comm state on each sync and forwards deltas to the kernel.
+- **Frontend → Kernel:** Built-in widget state updates write to RuntimeStateDoc via `getCrdtCommWriter()`. The runtime agent diffs comm state on each sync and forwards deltas to the kernel.
 
 New clients receive widget state via normal RuntimeStateDoc CRDT sync (frame `0x05`). Custom widget messages (button clicks, etc.) still use `NotebookBroadcast::Comm` since they're ephemeral events, not persistent state.
 

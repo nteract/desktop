@@ -147,7 +147,7 @@ Settings (theme, default_runtime, etc.) sync via a **separate Automerge document
 Widget state lives in **RuntimeStateDoc** (`doc.comms/` Automerge map):
 - **Daemon:** Writes comm state from kernel IOPub (`comm_open`/`comm_msg(update)`/`comm_close`). State updates coalesce in a 16ms batch writer.
 - **Frontend:** `WidgetStore` in `widget-store.ts` -- per-model subscriptions, IPY_MODEL_ reference resolution. Populated by a CRDT watcher that diffs `runtimeState.comms` and synthesizes Jupyter comm messages.
-- **Frontend → Kernel:** State updates write to RuntimeStateDoc via CRDT writer. The agent diffs comm state on each sync and forwards deltas to the kernel.
+- **Frontend → Kernel:** State updates write to RuntimeStateDoc via CRDT writer. The runtime agent diffs comm state on each sync and forwards deltas to the kernel.
 
 New clients receive widget state via normal RuntimeStateDoc CRDT sync (frame `0x05`). Custom widget messages (buttons, etc.) still use `NotebookBroadcast::Comm` as ephemeral events.
 

@@ -104,17 +104,17 @@ enum Commands {
     FlushPool,
 
     /// Run as a runtime agent subprocess (internal, used by coordinator)
-    #[command(hide = true)]
-    Agent {
+    #[command(hide = true, name = "runtime-agent")]
+    RuntimeAgent {
         /// Daemon socket path to connect to
         #[arg(long)]
         socket: PathBuf,
         /// Notebook ID to attach to
         #[arg(long)]
         notebook_id: String,
-        /// Agent ID
+        /// Runtime agent ID
         #[arg(long)]
-        agent_id: String,
+        runtime_agent_id: String,
         /// Blob store root path
         #[arg(long)]
         blob_root: PathBuf,
@@ -348,17 +348,22 @@ async fn main() -> anyhow::Result<()> {
             );
             flush_pool().await
         }
-        Some(Commands::Agent {
+        Some(Commands::RuntimeAgent {
             socket,
             notebook_id,
-            agent_id,
+            runtime_agent_id,
             blob_root,
-        }) => runtimed::agent::run_agent(socket, notebook_id, agent_id, blob_root)
-            .await
-            .map_err(|e| {
-                eprintln!("[agent] Fatal: {}", e);
-                e
-            }),
+        }) => runtimed::runtime_agent::run_runtime_agent(
+            socket,
+            notebook_id,
+            runtime_agent_id,
+            blob_root,
+        )
+        .await
+        .map_err(|e| {
+            eprintln!("[runtime-agent] Fatal: {}", e);
+            e
+        }),
     }
 }
 

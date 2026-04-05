@@ -70,10 +70,10 @@ pub struct KernelState {
     pub language: String,
     #[serde(default)]
     pub env_source: String,
-    /// ID of the agent subprocess that owns this kernel (e.g., "rt:agent:a1b2c3d4").
-    /// Used for provenance — identifying which agent is running and detecting stale agents.
+    /// ID of the runtime agent subprocess that owns this kernel (e.g., "rt:agent:a1b2c3d4").
+    /// Used for provenance — identifying which runtime agent is running and detecting stale ones.
     #[serde(default)]
-    pub agent_id: String,
+    pub runtime_agent_id: String,
 }
 
 impl Default for KernelState {
@@ -84,7 +84,7 @@ impl Default for KernelState {
             name: String::new(),
             language: String::new(),
             env_source: String::new(),
-            agent_id: String::new(),
+            runtime_agent_id: String::new(),
         }
     }
 }
@@ -127,7 +127,7 @@ pub struct ExecutionState {
     #[serde(default)]
     pub source: Option<String>,
     /// Queue sequence number for ordering.
-    /// Monotonic counter owned by the coordinator; the agent sorts
+    /// Monotonic counter owned by the coordinator; the runtime agent sorts
     /// queued entries by this to determine execution order.
     #[serde(default)]
     pub seq: Option<u64>,
@@ -253,8 +253,8 @@ impl RuntimeStateDoc {
             .expect("scaffold kernel.language");
         doc.put(&kernel, "env_source", "")
             .expect("scaffold kernel.env_source");
-        doc.put(&kernel, "agent_id", "")
-            .expect("scaffold kernel.agent_id");
+        doc.put(&kernel, "runtime_agent_id", "")
+            .expect("scaffold kernel.runtime_agent_id");
         doc.put(&kernel, "starting_phase", "")
             .expect("scaffold kernel.starting_phase");
 
@@ -333,8 +333,8 @@ impl RuntimeStateDoc {
             .expect("scaffold kernel.language");
         doc.put(&kernel, "env_source", "")
             .expect("scaffold kernel.env_source");
-        doc.put(&kernel, "agent_id", "")
-            .expect("scaffold kernel.agent_id");
+        doc.put(&kernel, "runtime_agent_id", "")
+            .expect("scaffold kernel.runtime_agent_id");
         doc.put(&kernel, "starting_phase", "")
             .expect("scaffold kernel.starting_phase");
 
@@ -682,17 +682,17 @@ impl RuntimeStateDoc {
         true
     }
 
-    /// Set the agent ID that owns this kernel. Returns `true` if mutated.
+    /// Set the runtime agent ID that owns this kernel. Returns `true` if mutated.
     #[allow(clippy::expect_used)]
-    pub fn set_agent_id(&mut self, agent_id: &str) -> bool {
+    pub fn set_runtime_agent_id(&mut self, runtime_agent_id: &str) -> bool {
         let kernel = self.get_map("kernel").expect("kernel map must exist");
-        let current = self.read_str(&kernel, "agent_id");
-        if current == agent_id {
+        let current = self.read_str(&kernel, "runtime_agent_id");
+        if current == runtime_agent_id {
             return false;
         }
         self.doc
-            .put(&kernel, "agent_id", agent_id)
-            .expect("put kernel.agent_id");
+            .put(&kernel, "runtime_agent_id", runtime_agent_id)
+            .expect("put kernel.runtime_agent_id");
         true
     }
 
@@ -834,9 +834,10 @@ impl RuntimeStateDoc {
 
     /// Create a new execution entry with source code and queue sequence number.
     ///
-    /// Used by the coordinator to queue executions for the agent. The source is
-    /// stored as an audit log, and `seq` determines execution order. The agent
-    /// discovers new entries via CRDT sync and processes them in `seq` order.
+    /// Used by the coordinator to queue executions for the runtime agent. The
+    /// source is stored as an audit log, and `seq` determines execution order.
+    /// The runtime agent discovers new entries via CRDT sync and processes them
+    /// in `seq` order.
     pub fn create_execution_with_source(
         &mut self,
         execution_id: &str,
@@ -1018,7 +1019,7 @@ impl RuntimeStateDoc {
 
     /// Get execution entries with `status == "queued"`, sorted by `seq`.
     ///
-    /// Used by the agent to discover new work via CRDT sync. Returns
+    /// Used by the runtime agent to discover new work via CRDT sync. Returns
     /// `(execution_id, ExecutionState)` pairs in execution order.
     pub fn get_queued_executions(&self) -> Vec<(String, ExecutionState)> {
         let state = self.read_state();
@@ -1726,7 +1727,7 @@ impl RuntimeStateDoc {
                 name: self.read_str(k, "name"),
                 language: self.read_str(k, "language"),
                 env_source: self.read_str(k, "env_source"),
-                agent_id: self.read_str(k, "agent_id"),
+                runtime_agent_id: self.read_str(k, "runtime_agent_id"),
             })
             .unwrap_or_default();
 

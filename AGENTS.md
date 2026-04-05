@@ -293,7 +293,7 @@ The supervisor watches source directories and auto-restarts the child on changes
 
 | Crate | Purpose |
 |-------|---------|
-| `runtimed` | Central daemon — env pools, notebook sync, agent subprocess coordination |
+| `runtimed` | Central daemon — env pools, notebook sync, runtime agent subprocess coordination |
 | `runtimed-client` | Shared client library — output resolution, daemon paths, pool client |
 | `runtimed-py` | Python bindings for daemon (PyO3/maturin) |
 | `runtimed-wasm` | WASM bindings for notebook doc (Automerge, used by frontend) |
@@ -466,10 +466,10 @@ The rule: `image/*` → binary (EXCEPT `image/svg+xml` — that's text). `audio/
 | Cell source | Frontend WASM | Local-first, character-level merge |
 | Cell position, type, metadata | Frontend WASM | User-initiated via UI |
 | Notebook metadata (deps, runtime) | Frontend WASM | User edits deps, runtime picker |
-| Cell outputs (manifest hashes) | Agent subprocess | Kernel IOPub → blob store → hash in RuntimeStateDoc |
-| Execution count | Agent subprocess | Set on `execute_input` from kernel |
-| Execution queue (source, seq, status) | Coordinator writes `queued`, agent transitions to `running`/`done` | CRDT-driven execution — no RPC for cell execution |
-| RuntimeStateDoc (kernel, queue, executions, env, trust) | Agent + Coordinator | Separate Automerge doc, frame type `0x05` |
+| Cell outputs (manifest hashes) | Runtime agent subprocess | Kernel IOPub → blob store → hash in RuntimeStateDoc |
+| Execution count | Runtime agent subprocess | Set on `execute_input` from kernel |
+| Execution queue (source, seq, status) | Coordinator writes `queued`, runtime agent transitions to `running`/`done` | CRDT-driven execution — no RPC for cell execution |
+| RuntimeStateDoc (kernel, queue, executions, env, trust) | Runtime agent + Coordinator | Separate Automerge doc, frame type `0x05` |
 
 **Never write to the CRDT in response to a daemon broadcast.** The daemon already wrote. Writing again creates redundant sync traffic and incorrectly marks the notebook as dirty.
 

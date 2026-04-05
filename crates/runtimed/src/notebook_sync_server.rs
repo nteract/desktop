@@ -81,33 +81,34 @@ pub(crate) fn catch_automerge_panic<T>(label: &str, f: impl FnOnce() -> T) -> Re
     }
 }
 
-/// Sender half of the agent RPC channel.
-type AgentRequestSender = tokio::sync::mpsc::Sender<(
-    notebook_protocol::protocol::AgentRequest,
-    tokio::sync::oneshot::Sender<notebook_protocol::protocol::AgentResponse>,
+/// Sender half of the runtime agent RPC channel.
+type RuntimeAgentRequestSender = tokio::sync::mpsc::Sender<(
+    notebook_protocol::protocol::RuntimeAgentRequest,
+    tokio::sync::oneshot::Sender<notebook_protocol::protocol::RuntimeAgentResponse>,
 )>;
 
-/// Send an RPC request to the agent via its sync connection.
+/// Send an RPC request to the runtime agent via its sync connection.
 ///
-/// The agent's sync handler receives the request as a frame 0x01 and sends
-/// the response as frame 0x02. Returns error if no agent is connected.
-pub(crate) async fn send_agent_request(
+/// The runtime agent's sync handler receives the request as a frame 0x01 and
+/// sends the response as frame 0x02. Returns error if no runtime agent is
+/// connected.
+pub(crate) async fn send_runtime_agent_request(
     room: &NotebookRoom,
-    request: notebook_protocol::protocol::AgentRequest,
-) -> anyhow::Result<notebook_protocol::protocol::AgentResponse> {
+    request: notebook_protocol::protocol::RuntimeAgentRequest,
+) -> anyhow::Result<notebook_protocol::protocol::RuntimeAgentResponse> {
     let tx = {
-        let guard = room.agent_request_tx.lock().await;
+        let guard = room.runtime_agent_request_tx.lock().await;
         guard
             .clone()
-            .ok_or_else(|| anyhow::anyhow!("Agent not connected"))?
+            .ok_or_else(|| anyhow::anyhow!("Runtime agent not connected"))?
     };
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     tx.send((request, reply_tx))
         .await
-        .map_err(|_| anyhow::anyhow!("Agent disconnected"))?;
+        .map_err(|_| anyhow::anyhow!("Runtime agent disconnected"))?;
     reply_rx
         .await
-        .map_err(|_| anyhow::anyhow!("Agent dropped reply"))
+        .map_err(|_| anyhow::anyhow!("Runtime agent dropped reply"))
 }
 
 /// Trust state for a notebook room.
@@ -310,7 +311,7 @@ fn build_launched_config(
         }
         _ => {
             // All other Python env sources (conda:env_yml, etc.)
-            // use pooled environments — store paths so the agent can reconstruct.
+            // use pooled environments — store paths so the runtime agent can reconstruct.
             config.venv_path = venv_path;
             config.python_path = python_path;
             if let Some(pkgs) = prewarmed_packages {
@@ -569,8 +570,8 @@ async fn check_and_broadcast_sync_state(room: &NotebookRoom) {
         return;
     };
 
-    // Read launched_config from room (set when agent launched/restarted)
-    let launched_guard = room.agent_launched_config.read().await;
+    // Read launched_config from room (set when runtime agent launched/restarted)
+    let launched_guard = room.runtime_agent_launched_config.read().await;
     let Some(ref launched) = *launched_guard else {
         return;
     };
@@ -1040,29 +1041,30 @@ pub struct NotebookRoom {
     /// Notification channel for RuntimeStateDoc changes.
     /// Peer sync loops subscribe to push RuntimeStateSync frames.
     pub state_changed_tx: broadcast::Sender<()>,
-    /// Handle to the agent subprocess that owns this notebook's kernel.
-    /// Set by `LaunchKernel` or `auto_launch_kernel` when the agent is spawned.
-    pub agent_handle: Arc<Mutex<Option<crate::agent_handle::AgentHandle>>>,
-    /// Environment path used by an agent-backed kernel, for GC protection.
-    pub agent_env_path: Arc<RwLock<Option<PathBuf>>>,
+    /// Handle to the runtime agent subprocess that owns this notebook's kernel.
+    /// Set by `LaunchKernel` or `auto_launch_kernel` when spawned.
+    pub runtime_agent_handle: Arc<Mutex<Option<crate::runtime_agent_handle::RuntimeAgentHandle>>>,
+    /// Environment path used by a runtime-agent-backed kernel, for GC protection.
+    pub runtime_agent_env_path: Arc<RwLock<Option<PathBuf>>>,
     /// The environment config used at kernel launch. Stored so
     /// check_and_broadcast_sync_state can detect dependency drift
-    /// without accessing the agent's kernel directly.
-    pub agent_launched_config: Arc<RwLock<Option<LaunchedEnvConfig>>>,
+    /// without accessing the runtime agent's kernel directly.
+    pub runtime_agent_launched_config: Arc<RwLock<Option<LaunchedEnvConfig>>>,
     /// Channel for sending RPC requests (LaunchKernel, Interrupt, etc.) to the
-    /// agent's sync connection. Set when agent connects via socket, cleared on
-    /// agent disconnect.
-    pub agent_request_tx: Arc<Mutex<Option<AgentRequestSender>>>,
-    /// Fires when the agent establishes its sync connection.
+    /// runtime agent's sync connection. Set when runtime agent connects via
+    /// socket, cleared on disconnect.
+    pub runtime_agent_request_tx: Arc<Mutex<Option<RuntimeAgentRequestSender>>>,
+    /// Fires when the runtime agent establishes its sync connection.
     /// Uses `watch(false)` → `true` to avoid lost wakeups.
-    agent_connected_tx: Arc<tokio::sync::watch::Sender<bool>>,
+    runtime_agent_connected_tx: Arc<tokio::sync::watch::Sender<bool>>,
     /// Monotonic counter for execution queue ordering.
     /// The coordinator bumps this for each ExecuteCell and stamps the seq
-    /// on the execution entry. The agent sorts by seq to determine order.
+    /// on the execution entry. The runtime agent sorts by seq to determine order.
     pub next_queue_seq: Arc<std::sync::atomic::AtomicU64>,
-    /// The agent_id of the currently expected agent. Used by the sync handler
-    /// to validate connections and prevent stale cleanup from clobbering state.
-    pub current_agent_id: Arc<RwLock<Option<String>>>,
+    /// The runtime_agent_id of the currently expected runtime agent. Used by the
+    /// sync handler to validate connections and prevent stale cleanup from
+    /// clobbering state.
+    pub current_runtime_agent_id: Arc<RwLock<Option<String>>>,
 }
 
 /// Maximum number of snapshots to keep per notebook hash.
@@ -1244,16 +1246,16 @@ impl NotebookRoom {
             watcher_shutdown_tx: Mutex::new(None),
             state_doc,
             state_changed_tx,
-            agent_handle: Arc::new(Mutex::new(None)),
-            agent_env_path: Arc::new(RwLock::new(None)),
-            agent_launched_config: Arc::new(RwLock::new(None)),
-            agent_request_tx: Arc::new(Mutex::new(None)),
-            agent_connected_tx: {
+            runtime_agent_handle: Arc::new(Mutex::new(None)),
+            runtime_agent_env_path: Arc::new(RwLock::new(None)),
+            runtime_agent_launched_config: Arc::new(RwLock::new(None)),
+            runtime_agent_request_tx: Arc::new(Mutex::new(None)),
+            runtime_agent_connected_tx: {
                 let (tx, _) = tokio::sync::watch::channel(false);
                 Arc::new(tx)
             },
             next_queue_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            current_agent_id: Arc::new(RwLock::new(None)),
+            current_runtime_agent_id: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -1316,33 +1318,33 @@ impl NotebookRoom {
             watcher_shutdown_tx: Mutex::new(None),
             state_doc,
             state_changed_tx,
-            agent_handle: Arc::new(Mutex::new(None)),
-            agent_env_path: Arc::new(RwLock::new(None)),
-            agent_launched_config: Arc::new(RwLock::new(None)),
-            agent_request_tx: Arc::new(Mutex::new(None)),
-            agent_connected_tx: {
+            runtime_agent_handle: Arc::new(Mutex::new(None)),
+            runtime_agent_env_path: Arc::new(RwLock::new(None)),
+            runtime_agent_launched_config: Arc::new(RwLock::new(None)),
+            runtime_agent_request_tx: Arc::new(Mutex::new(None)),
+            runtime_agent_connected_tx: {
                 let (tx, _) = tokio::sync::watch::channel(false);
                 Arc::new(tx)
             },
             next_queue_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            current_agent_id: Arc::new(RwLock::new(None)),
+            current_runtime_agent_id: Arc::new(RwLock::new(None)),
         }
     }
 
     /// Check if this room has an active kernel.
     pub async fn has_kernel(&self) -> bool {
-        // Check agent handle (agent mode is unconditional)
-        let agent = self.agent_handle.lock().await;
-        agent.as_ref().is_some_and(|a| a.is_alive())
+        // Check runtime agent handle
+        let ra = self.runtime_agent_handle.lock().await;
+        ra.as_ref().is_some_and(|a| a.is_alive())
     }
 
-    /// Get kernel info if a kernel is running (agent-backed).
+    /// Get kernel info if a kernel is running (runtime-agent-backed).
     ///
-    /// Reads from RuntimeStateDoc (source of truth in agent mode).
+    /// Reads from RuntimeStateDoc (source of truth for runtime agent).
     pub async fn kernel_info(&self) -> Option<(String, String, String)> {
-        // Check agent — read from RuntimeStateDoc
-        let agent = self.agent_handle.lock().await;
-        if agent.as_ref().is_some_and(|a| a.is_alive()) {
+        // Check runtime agent — read from RuntimeStateDoc
+        let ra = self.runtime_agent_handle.lock().await;
+        if ra.as_ref().is_some_and(|a| a.is_alive()) {
             let sd = self.state_doc.read().await;
             let state = sd.read_state();
             if state.kernel.status != "not_started" && !state.kernel.status.is_empty() {
@@ -1454,43 +1456,43 @@ pub fn get_or_create_room(
 /// doc bytes are flushed via debounced persistence.
 ///
 /// Uses v2 typed frames protocol (with first-byte type indicator).
-/// Handle an agent subprocess that connected back to the daemon's Unix socket.
+/// Handle a runtime agent subprocess that connected back to the daemon's Unix socket.
 ///
-/// The agent is a special peer that owns the kernel for this notebook room.
-/// It receives RPC requests (LaunchKernel, Interrupt, etc.) via frame 0x01
-/// and watches RuntimeStateDoc for queued executions via frame 0x05.
+/// The runtime agent is a special peer that owns the kernel for this notebook
+/// room. It receives RPC requests (LaunchKernel, Interrupt, etc.) via frame
+/// 0x01 and watches RuntimeStateDoc for queued executions via frame 0x05.
 ///
 /// This handler:
 /// 1. Performs initial NotebookDoc + RuntimeStateDoc sync
-/// 2. Sets up the `agent_request_tx` channel on the room
-/// 3. Fires `agent_connected` to unblock LaunchKernel
+/// 2. Sets up the `runtime_agent_request_tx` channel on the room
+/// 3. Fires `runtime_agent_connected` to unblock LaunchKernel
 /// 4. Enters a sync loop relaying frames bidirectionally
-pub async fn handle_agent_sync_connection<R, W>(
+pub async fn handle_runtime_agent_sync_connection<R, W>(
     mut reader: R,
     mut writer: W,
     room: Arc<NotebookRoom>,
     notebook_id: String,
-    agent_id: String,
+    runtime_agent_id: String,
 ) where
     R: tokio::io::AsyncRead + Unpin + Send,
     W: tokio::io::AsyncWrite + Unpin + Send,
 {
     use notebook_protocol::connection::{recv_typed_frame, send_typed_frame, NotebookFrameType};
-    use notebook_protocol::protocol::{AgentRequest, AgentResponse};
+    use notebook_protocol::protocol::{RuntimeAgentRequest, RuntimeAgentResponse};
 
     info!(
-        "[notebook-sync] Agent sync connection: notebook={} agent={}",
-        notebook_id, agent_id
+        "[notebook-sync] Runtime agent sync connection: notebook={} runtime_agent={}",
+        notebook_id, runtime_agent_id
     );
 
     // Validate provenance — reject stale agents
     {
-        let expected = room.current_agent_id.read().await;
+        let expected = room.current_runtime_agent_id.read().await;
         if let Some(ref expected_id) = *expected {
-            if *expected_id != agent_id {
+            if *expected_id != runtime_agent_id {
                 warn!(
-                    "[notebook-sync] Rejecting stale agent {} (expected {})",
-                    agent_id, expected_id
+                    "[notebook-sync] Rejecting stale runtime agent {} (expected {})",
+                    runtime_agent_id, expected_id
                 );
                 return;
             }
@@ -1532,31 +1534,34 @@ pub async fn handle_agent_sync_connection<R, W>(
     }
 
     // ── 3. Set up request channel ────────────────────────────────────
-    let (agent_tx, mut agent_rx) = tokio::sync::mpsc::channel::<(
-        AgentRequest,
-        tokio::sync::oneshot::Sender<AgentResponse>,
+    let (ra_tx, mut ra_rx) = tokio::sync::mpsc::channel::<(
+        RuntimeAgentRequest,
+        tokio::sync::oneshot::Sender<RuntimeAgentResponse>,
     )>(16);
     {
-        let mut tx_guard = room.agent_request_tx.lock().await;
-        *tx_guard = Some(agent_tx);
+        let mut tx_guard = room.runtime_agent_request_tx.lock().await;
+        *tx_guard = Some(ra_tx);
     }
 
     // ── 4. Set provenance + signal connected ──────────────────────────
     {
-        let mut id = room.current_agent_id.write().await;
-        *id = Some(agent_id.clone());
+        let mut id = room.current_runtime_agent_id.write().await;
+        *id = Some(runtime_agent_id.clone());
     }
-    let _ = room.agent_connected_tx.send(true);
-    info!("[notebook-sync] Agent connected and ready: {}", agent_id);
+    let _ = room.runtime_agent_connected_tx.send(true);
+    info!(
+        "[notebook-sync] Runtime agent connected and ready: {}",
+        runtime_agent_id
+    );
 
     // ── 5. Sync loop ─────────────────────────────────────────────────
     let mut changed_rx = room.changed_tx.subscribe();
     let mut state_changed_rx = room.state_changed_tx.subscribe();
-    let mut pending_reply: Option<tokio::sync::oneshot::Sender<AgentResponse>> = None;
+    let mut pending_reply: Option<tokio::sync::oneshot::Sender<RuntimeAgentResponse>> = None;
 
     loop {
         tokio::select! {
-            // Frames from agent
+            // Frames from runtime agent
             frame = recv_typed_frame(&mut reader) => {
                 match frame {
                     Ok(Some(typed_frame)) => {
@@ -1601,7 +1606,7 @@ pub async fn handle_agent_sync_connection<R, W>(
                             }
                             NotebookFrameType::Response => {
                                 // Agent responded to an RPC request
-                                if let Ok(response) = serde_json::from_slice::<AgentResponse>(&typed_frame.payload) {
+                                if let Ok(response) = serde_json::from_slice::<RuntimeAgentResponse>(&typed_frame.payload) {
                                     if let Some(reply) = pending_reply.take() {
                                         let _ = reply.send(response);
                                     } else {
@@ -1625,7 +1630,7 @@ pub async fn handle_agent_sync_connection<R, W>(
                 }
             }
 
-            // NotebookDoc changes (from other peers) → sync to agent
+            // NotebookDoc changes (from other peers) → sync to runtime agent
             _ = changed_rx.recv() => {
                 while changed_rx.try_recv().is_ok() {}
                 let mut doc = room.doc.write().await;
@@ -1636,13 +1641,13 @@ pub async fn handle_agent_sync_connection<R, W>(
                         NotebookFrameType::AutomergeSync,
                         &encoded,
                     ).await {
-                        warn!("[notebook-sync] Failed to sync doc to agent: {}", e);
+                        warn!("[notebook-sync] Failed to sync doc to runtime agent: {}", e);
                         break;
                     }
                 }
             }
 
-            // RuntimeStateDoc changes → sync to agent
+            // RuntimeStateDoc changes → sync to runtime agent
             _ = state_changed_rx.recv() => {
                 while state_changed_rx.try_recv().is_ok() {}
                 let mut sd = room.state_doc.write().await;
@@ -1653,19 +1658,19 @@ pub async fn handle_agent_sync_connection<R, W>(
                         NotebookFrameType::RuntimeStateSync,
                         &encoded,
                     ).await {
-                        warn!("[notebook-sync] Failed to sync state to agent: {}", e);
+                        warn!("[notebook-sync] Failed to sync state to runtime agent: {}", e);
                         break;
                     }
                 }
             }
 
-            // RPC requests to forward to agent (only accept when no reply is pending
+            // RPC requests to forward to runtime agent (only accept when no reply is pending
             // to serialize RPCs and prevent overwriting the reply slot)
-            Some((request, reply_tx)) = agent_rx.recv(), if pending_reply.is_none() => {
+            Some((request, reply_tx)) = ra_rx.recv(), if pending_reply.is_none() => {
                 let json = match serde_json::to_vec(&request) {
                     Ok(j) => j,
                     Err(e) => {
-                        let _ = reply_tx.send(AgentResponse::Error {
+                        let _ = reply_tx.send(RuntimeAgentResponse::Error {
                             error: format!("Serialize error: {}", e),
                         });
                         continue;
@@ -1676,7 +1681,7 @@ pub async fn handle_agent_sync_connection<R, W>(
                     NotebookFrameType::Request,
                     &json,
                 ).await {
-                    let _ = reply_tx.send(AgentResponse::Error {
+                    let _ = reply_tx.send(RuntimeAgentResponse::Error {
                         error: format!("Send error: {}", e),
                     });
                     break;
@@ -1686,22 +1691,25 @@ pub async fn handle_agent_sync_connection<R, W>(
         }
     }
 
-    // Cleanup: only clear state if we're still the current agent.
-    // A stale agent disconnecting after a new one connected must not
-    // clobber the new agent's channel.
+    // Cleanup: only clear state if we're still the current runtime agent.
+    // A stale runtime agent disconnecting after a new one connected must not
+    // clobber the new runtime agent's channel.
     {
-        let expected = room.current_agent_id.read().await;
-        let is_current = expected.as_deref() == Some(&agent_id);
+        let expected = room.current_runtime_agent_id.read().await;
+        let is_current = expected.as_deref() == Some(&runtime_agent_id);
         if is_current {
-            let mut tx_guard = room.agent_request_tx.lock().await;
+            let mut tx_guard = room.runtime_agent_request_tx.lock().await;
             *tx_guard = None;
-            let _ = room.agent_connected_tx.send(false);
-            // Clear agent_handle so LaunchKernel spawns a new agent
-            let mut guard = room.agent_handle.lock().await;
+            let _ = room.runtime_agent_connected_tx.send(false);
+            // Clear runtime_agent_handle so LaunchKernel spawns a new runtime agent
+            let mut guard = room.runtime_agent_handle.lock().await;
             *guard = None;
         }
     }
-    info!("[notebook-sync] Agent sync connection closed: {}", agent_id);
+    info!(
+        "[notebook-sync] Runtime agent sync connection closed: {}",
+        runtime_agent_id
+    );
 }
 
 ///
@@ -1935,20 +1943,24 @@ where
             let mut rooms_guard = rooms_for_eviction.lock().await;
             // Re-check under lock
             if room_for_eviction.active_peers.load(Ordering::Relaxed) == 0 {
-                // Shut down agent subprocess if running. AgentHandle::spawn
+                // Shut down runtime agent subprocess if running. RuntimeAgentHandle::spawn
                 // moves Child into a background task, so kill_on_drop doesn't
                 // trigger on room drop — we need explicit shutdown via RPC.
                 {
-                    let has_agent = room_for_eviction.agent_request_tx.lock().await.is_some();
-                    if has_agent {
-                        let _ = send_agent_request(
+                    let has_runtime_agent = room_for_eviction
+                        .runtime_agent_request_tx
+                        .lock()
+                        .await
+                        .is_some();
+                    if has_runtime_agent {
+                        let _ = send_runtime_agent_request(
                             &room_for_eviction,
-                            notebook_protocol::protocol::AgentRequest::ShutdownKernel,
+                            notebook_protocol::protocol::RuntimeAgentRequest::ShutdownKernel,
                         )
                         .await;
-                        let mut guard = room_for_eviction.agent_handle.lock().await;
+                        let mut guard = room_for_eviction.runtime_agent_handle.lock().await;
                         *guard = None;
-                        let mut tx = room_for_eviction.agent_request_tx.lock().await;
+                        let mut tx = room_for_eviction.runtime_agent_request_tx.lock().await;
                         *tx = None;
                     }
                 }
@@ -2488,7 +2500,7 @@ where
                                     };
 
                                     // If client sent changes, notify all peers.
-                                    // Comm state forwarding to kernel: the agent diffs
+                                    // Comm state forwarding to kernel: the runtime agent diffs
                                     // comm state before/after each RuntimeStateSync and
                                     // sends changed properties to the kernel via send_comm_update.
                                     if had_changes {
@@ -2991,8 +3003,8 @@ async fn reset_starting_state(room: &NotebookRoom) {
     if changed {
         let _ = room.state_changed_tx.send(());
     }
-    // Clear stale agent handle so auto-launch can retry
-    let mut guard = room.agent_handle.lock().await;
+    // Clear stale runtime agent handle so auto-launch can retry
+    let mut guard = room.runtime_agent_handle.lock().await;
     *guard = None;
 }
 
@@ -3041,11 +3053,11 @@ async fn auto_launch_kernel(
 
     // Check RuntimeStateDoc — skip if already starting or running
     {
-        // Skip if agent already exists (another auto-launch won the race)
+        // Skip if runtime agent already exists (another auto-launch won the race)
         // or kernel is already running
-        let has_agent = room.agent_handle.lock().await.is_some();
-        if has_agent {
-            debug!("[notebook-sync] Auto-launch skipped: agent already exists");
+        let has_runtime_agent = room.runtime_agent_handle.lock().await.is_some();
+        if has_runtime_agent {
+            debug!("[notebook-sync] Auto-launch skipped: runtime agent already exists");
             return;
         }
     }
@@ -3066,7 +3078,7 @@ async fn auto_launch_kernel(
         }
     }
 
-    // Create new kernel (used for pool env acquisition; execution is agent-backed)
+    // Create new kernel (used for pool env acquisition; execution is runtime-agent-backed)
     let _kernel = RoomKernel::new(
         room.kernel_broadcast_tx.clone(),
         room.blob_store.clone(),
@@ -3519,31 +3531,31 @@ async fn auto_launch_kernel(
         }
     }
 
-    // (prewarmed_packages no longer needed — agent handles its own launch config)
+    // (prewarmed_packages no longer needed — runtime agent handles its own launch config)
 
-    // Spawn agent subprocess for kernel execution
+    // Spawn runtime agent subprocess for kernel execution
     {
-        info!("[notebook-sync] Agent mode: spawning agent subprocess for auto-launch");
+        info!("[notebook-sync] Spawning runtime agent subprocess for auto-launch");
 
         let nb_id = notebook_id.to_string();
-        let agent_id = format!("rt:agent:{}", &uuid::Uuid::new_v4().to_string()[..8]);
+        let runtime_agent_id = format!("rt:agent:{}", &uuid::Uuid::new_v4().to_string()[..8]);
         let socket_path = daemon.socket_path().clone();
 
-        match crate::agent_handle::AgentHandle::spawn(
+        match crate::runtime_agent_handle::RuntimeAgentHandle::spawn(
             nb_id,
-            agent_id.clone(),
+            runtime_agent_id.clone(),
             room.blob_store.root().to_path_buf(),
             socket_path,
         )
         .await
         {
-            Ok(agent) => {
+            Ok(ra) => {
                 // Store handle and set provenance
                 {
-                    let mut agent_guard = room.agent_handle.lock().await;
-                    *agent_guard = Some(agent);
-                    let mut id = room.current_agent_id.write().await;
-                    *id = Some(agent_id.clone());
+                    let mut ra_guard = room.runtime_agent_handle.lock().await;
+                    *ra_guard = Some(ra);
+                    let mut id = room.current_runtime_agent_id.write().await;
+                    *id = Some(runtime_agent_id.clone());
                 }
 
                 // Write "connecting" phase — fills the gap between spawn and connect
@@ -3554,9 +3566,9 @@ async fn auto_launch_kernel(
                     }
                 }
 
-                // Wait for agent to establish its sync connection
+                // Wait for runtime agent to establish its sync connection
                 match tokio::time::timeout(std::time::Duration::from_secs(30), async {
-                    room.agent_connected_tx
+                    room.runtime_agent_connected_tx
                         .subscribe()
                         .wait_for(|v| *v)
                         .await
@@ -3574,30 +3586,31 @@ async fn auto_launch_kernel(
                     }
                 }
 
-                // Send LaunchKernel RPC via the agent's sync connection
-                let launch_request = notebook_protocol::protocol::AgentRequest::LaunchKernel {
-                    kernel_type: kernel_type.to_string(),
-                    env_source: env_source.clone(),
-                    notebook_path: notebook_path_opt
-                        .as_deref()
-                        .map(|p| p.to_str().unwrap_or("").to_string()),
-                    launched_config: launched_config.clone(),
-                    env_vars: Default::default(),
-                };
+                // Send LaunchKernel RPC via the runtime agent's sync connection
+                let launch_request =
+                    notebook_protocol::protocol::RuntimeAgentRequest::LaunchKernel {
+                        kernel_type: kernel_type.to_string(),
+                        env_source: env_source.clone(),
+                        notebook_path: notebook_path_opt
+                            .as_deref()
+                            .map(|p| p.to_str().unwrap_or("").to_string()),
+                        launched_config: launched_config.clone(),
+                        env_vars: Default::default(),
+                    };
 
-                match send_agent_request(room, launch_request).await {
-                    Ok(notebook_protocol::protocol::AgentResponse::KernelLaunched {
+                match send_runtime_agent_request(room, launch_request).await {
+                    Ok(notebook_protocol::protocol::RuntimeAgentResponse::KernelLaunched {
                         env_source: es,
                     }) => {
                         // Store env path for GC protection
                         if let Some(ref env) = pooled_env {
-                            let mut ep = room.agent_env_path.write().await;
+                            let mut ep = room.runtime_agent_env_path.write().await;
                             *ep = Some(env.venv_path.clone());
                         }
 
                         // Store launched config for env sync drift detection
                         {
-                            let mut lc = room.agent_launched_config.write().await;
+                            let mut lc = room.runtime_agent_launched_config.write().await;
                             *lc = Some(launched_config.clone());
                         }
 
@@ -3611,7 +3624,7 @@ async fn auto_launch_kernel(
                             let mut changed = false;
                             changed |= sd.set_kernel_status("idle");
                             changed |= sd.set_kernel_info(kernel_type, kernel_type, &es);
-                            changed |= sd.set_agent_id(&agent_id);
+                            changed |= sd.set_runtime_agent_id(&runtime_agent_id);
                             if changed {
                                 let _ = room.state_changed_tx.send(());
                             }
@@ -3626,16 +3639,18 @@ async fn auto_launch_kernel(
                         }
 
                         info!(
-                            "[notebook-sync] Auto-launch via agent succeeded: {} kernel with {} environment",
+                            "[notebook-sync] Auto-launch via runtime agent succeeded: {} kernel with {} environment",
                             kernel_type, es
                         );
                     }
-                    Ok(notebook_protocol::protocol::AgentResponse::Error { error }) => {
+                    Ok(notebook_protocol::protocol::RuntimeAgentResponse::Error { error }) => {
                         warn!("[notebook-sync] Agent kernel launch failed: {}", error);
                         reset_starting_state(room).await;
                     }
                     Ok(_) => {
-                        warn!("[notebook-sync] Unexpected agent response during auto-launch");
+                        warn!(
+                            "[notebook-sync] Unexpected runtime agent response during auto-launch"
+                        );
                         reset_starting_state(room).await;
                     }
                     Err(e) => {
@@ -3645,7 +3660,7 @@ async fn auto_launch_kernel(
                 }
             }
             Err(e) => {
-                warn!("[notebook-sync] Failed to spawn agent: {}", e);
+                warn!("[notebook-sync] Failed to spawn runtime agent: {}", e);
                 reset_starting_state(room).await;
             }
         }
@@ -3918,7 +3933,7 @@ async fn handle_notebook_request(
                 }
             }
 
-            // Create new kernel (used for pool env acquisition; execution is agent-backed)
+            // Create new kernel (used for pool env acquisition; execution is runtime-agent-backed)
             let _kernel = RoomKernel::new(
                 room.kernel_broadcast_tx.clone(),
                 room.blob_store.clone(),
@@ -4402,14 +4417,14 @@ async fn handle_notebook_request(
                 }
             }
 
-            // If agent is already connected, restart kernel in-place
+            // If runtime agent is already connected, restart kernel in-place
             // (handles the shutdown → launch sequence without subprocess respawn)
             {
-                let has_agent = room.agent_request_tx.lock().await.is_some();
-                if has_agent {
+                let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
+                if has_runtime_agent {
                     info!("[notebook-sync] Agent connected — sending RestartKernel");
                     let restart_request =
-                        notebook_protocol::protocol::AgentRequest::RestartKernel {
+                        notebook_protocol::protocol::RuntimeAgentRequest::RestartKernel {
                             kernel_type: resolved_kernel_type.clone(),
                             env_source: resolved_env_source.clone(),
                             notebook_path: notebook_path
@@ -4418,13 +4433,15 @@ async fn handle_notebook_request(
                             launched_config: launched_config.clone(),
                             env_vars: Default::default(),
                         };
-                    match send_agent_request(room, restart_request).await {
-                        Ok(notebook_protocol::protocol::AgentResponse::KernelRestarted {
-                            env_source: es,
-                        }) => {
+                    match send_runtime_agent_request(room, restart_request).await {
+                        Ok(
+                            notebook_protocol::protocol::RuntimeAgentResponse::KernelRestarted {
+                                env_source: es,
+                            },
+                        ) => {
                             // Store launched config for env sync drift detection
                             {
-                                let mut lc = room.agent_launched_config.write().await;
+                                let mut lc = room.runtime_agent_launched_config.write().await;
                                 *lc = Some(launched_config.clone());
                             }
 
@@ -4441,7 +4458,7 @@ async fn handle_notebook_request(
                                 );
                                 changed |=
                                     sd.set_prewarmed_packages(&launched_config.prewarmed_packages);
-                                // agent_id doesn't change on restart — same agent
+                                // runtime_agent_id doesn't change on restart — same runtime agent
                                 if changed {
                                     let _ = room.state_changed_tx.send(());
                                 }
@@ -4461,7 +4478,7 @@ async fn handle_notebook_request(
                                 launched_config,
                             };
                         }
-                        Ok(notebook_protocol::protocol::AgentResponse::Error { error }) => {
+                        Ok(notebook_protocol::protocol::RuntimeAgentResponse::Error { error }) => {
                             reset_starting_state(room).await;
                             return NotebookResponse::Error {
                                 error: format!("Agent restart failed: {}", error),
@@ -4470,40 +4487,42 @@ async fn handle_notebook_request(
                         Ok(_) => {
                             reset_starting_state(room).await;
                             return NotebookResponse::Error {
-                                error: "Unexpected agent response to RestartKernel".to_string(),
+                                error: "Unexpected runtime agent response to RestartKernel"
+                                    .to_string(),
                             };
                         }
                         Err(e) => {
                             warn!(
-                                "[notebook-sync] RestartKernel RPC failed: {} — spawning new agent",
+                                "[notebook-sync] RestartKernel RPC failed: {} — spawning new runtime agent",
                                 e
                             );
-                            // Fall through to spawn new agent below
+                            // Fall through to spawn new runtime agent below
                         }
                     }
                 }
             }
 
-            // Spawn agent subprocess for kernel execution
+            // Spawn runtime agent subprocess for kernel execution
             {
-                info!("[notebook-sync] Spawning agent subprocess");
+                info!("[notebook-sync] Spawning runtime agent subprocess");
 
                 let notebook_id = room.notebook_path.read().await.display().to_string();
-                let agent_id = format!("rt:agent:{}", &uuid::Uuid::new_v4().to_string()[..8]);
+                let runtime_agent_id =
+                    format!("rt:agent:{}", &uuid::Uuid::new_v4().to_string()[..8]);
                 let socket_path = daemon.socket_path().clone();
 
-                match crate::agent_handle::AgentHandle::spawn(
+                match crate::runtime_agent_handle::RuntimeAgentHandle::spawn(
                     notebook_id,
-                    agent_id,
+                    runtime_agent_id,
                     room.blob_store.root().to_path_buf(),
                     socket_path,
                 )
                 .await
                 {
-                    Ok(agent) => {
+                    Ok(ra) => {
                         {
-                            let mut agent_guard = room.agent_handle.lock().await;
-                            *agent_guard = Some(agent);
+                            let mut ra_guard = room.runtime_agent_handle.lock().await;
+                            *ra_guard = Some(ra);
                         }
 
                         // Write "connecting" phase — fills the gap between spawn and connect
@@ -4514,9 +4533,9 @@ async fn handle_notebook_request(
                             }
                         }
 
-                        // Wait for agent to connect back via socket
+                        // Wait for runtime agent to connect back via socket
                         match tokio::time::timeout(std::time::Duration::from_secs(30), async {
-                            room.agent_connected_tx
+                            room.runtime_agent_connected_tx
                                 .subscribe()
                                 .wait_for(|v| *v)
                                 .await
@@ -4535,7 +4554,7 @@ async fn handle_notebook_request(
 
                         // Send LaunchKernel RPC
                         let launch_request =
-                            notebook_protocol::protocol::AgentRequest::LaunchKernel {
+                            notebook_protocol::protocol::RuntimeAgentRequest::LaunchKernel {
                                 kernel_type: resolved_kernel_type.clone(),
                                 env_source: resolved_env_source.clone(),
                                 notebook_path: notebook_path
@@ -4545,13 +4564,15 @@ async fn handle_notebook_request(
                                 env_vars: Default::default(),
                             };
 
-                        match send_agent_request(room, launch_request).await {
-                            Ok(notebook_protocol::protocol::AgentResponse::KernelLaunched {
-                                env_source: es,
-                            }) => {
+                        match send_runtime_agent_request(room, launch_request).await {
+                            Ok(
+                                notebook_protocol::protocol::RuntimeAgentResponse::KernelLaunched {
+                                    env_source: es,
+                                },
+                            ) => {
                                 // Store launched config for env sync drift detection
                                 {
-                                    let mut lc = room.agent_launched_config.write().await;
+                                    let mut lc = room.runtime_agent_launched_config.write().await;
                                     *lc = Some(launched_config.clone());
                                 }
 
@@ -4576,8 +4597,10 @@ async fn handle_notebook_request(
                                     changed |= sd.set_prewarmed_packages(
                                         &launched_config.prewarmed_packages,
                                     );
-                                    if let Some(ref aid) = *room.current_agent_id.read().await {
-                                        changed |= sd.set_agent_id(aid);
+                                    if let Some(ref aid) =
+                                        *room.current_runtime_agent_id.read().await
+                                    {
+                                        changed |= sd.set_runtime_agent_id(aid);
                                     }
                                     if changed {
                                         let _ = room.state_changed_tx.send(());
@@ -4598,7 +4621,9 @@ async fn handle_notebook_request(
                                     launched_config,
                                 }
                             }
-                            Ok(notebook_protocol::protocol::AgentResponse::Error { error }) => {
+                            Ok(notebook_protocol::protocol::RuntimeAgentResponse::Error {
+                                error,
+                            }) => {
                                 reset_starting_state(room).await;
                                 NotebookResponse::Error {
                                     error: format!("Agent kernel launch failed: {}", error),
@@ -4607,7 +4632,7 @@ async fn handle_notebook_request(
                             Ok(_) => {
                                 reset_starting_state(room).await;
                                 NotebookResponse::Error {
-                                    error: "Unexpected agent response".to_string(),
+                                    error: "Unexpected runtime agent response".to_string(),
                                 }
                             }
                             Err(e) => {
@@ -4621,7 +4646,7 @@ async fn handle_notebook_request(
                     Err(e) => {
                         reset_starting_state(room).await;
                         NotebookResponse::Error {
-                            error: format!("Failed to spawn agent: {}", e),
+                            error: format!("Failed to spawn runtime agent: {}", e),
                         }
                     }
                 }
@@ -4663,13 +4688,13 @@ async fn handle_notebook_request(
             }
 
             // Agent-backed kernel: write execution to RuntimeStateDoc queue.
-            // The agent discovers it via CRDT sync and executes.
-            // Check agent_request_tx (not agent_handle) to ensure the agent's
+            // The runtime agent discovers it via CRDT sync and executes.
+            // Check runtime_agent_request_tx (not runtime_agent_handle) to ensure the runtime agent's
             // sync connection is still live — a stale handle with no connection
             // would leave queued executions orphaned.
             {
-                let has_agent = room.agent_request_tx.lock().await.is_some();
-                if has_agent {
+                let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
+                if has_runtime_agent {
                     // Check if kernel is shut down — return NoKernel instead
                     // of silently queuing into a dead kernel
                     {
@@ -4749,7 +4774,7 @@ async fn handle_notebook_request(
                 }
             }
 
-            // No agent available — kernel not running
+            // No runtime agent available — kernel not running
             NotebookResponse::NoKernel {}
         }
 
@@ -4793,11 +4818,11 @@ async fn handle_notebook_request(
 
         NotebookRequest::InterruptExecution {} => {
             // Agent path: send RPC via sync connection
-            let has_agent = room.agent_request_tx.lock().await.is_some();
-            if has_agent {
-                match send_agent_request(
+            let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
+            if has_runtime_agent {
+                match send_runtime_agent_request(
                     room,
-                    notebook_protocol::protocol::AgentRequest::InterruptExecution,
+                    notebook_protocol::protocol::RuntimeAgentRequest::InterruptExecution,
                 )
                 .await
                 {
@@ -4812,17 +4837,17 @@ async fn handle_notebook_request(
         }
 
         NotebookRequest::ShutdownKernel {} => {
-            // Send shutdown RPC but keep the agent alive — the agent stays
+            // Send shutdown RPC but keep the runtime agent alive — it stays
             // connected for potential RestartKernel. The kernel process dies
-            // but the agent subprocess and socket connection remain.
-            let has_agent = room.agent_request_tx.lock().await.is_some();
-            if has_agent {
-                let _ = send_agent_request(
+            // but the runtime agent subprocess and socket connection remain.
+            let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
+            if has_runtime_agent {
+                let _ = send_runtime_agent_request(
                     room,
-                    notebook_protocol::protocol::AgentRequest::ShutdownKernel,
+                    notebook_protocol::protocol::RuntimeAgentRequest::ShutdownKernel,
                 )
                 .await;
-                // Keep agent alive (agent_handle + agent_request_tx stay set)
+                // Keep runtime agent alive (runtime_agent_handle + runtime_agent_request_tx stay set)
                 // so LaunchKernel can send RestartKernel. ExecuteCell/RunAllCells
                 // check kernel.status from RuntimeStateDoc and return NoKernel
                 // when status is "shutdown".
@@ -4844,7 +4869,7 @@ async fn handle_notebook_request(
         }
 
         NotebookRequest::GetKernelInfo {} => {
-            // Read from RuntimeStateDoc (source of truth in agent mode)
+            // Read from RuntimeStateDoc (source of truth for runtime agent)
             let sd = room.state_doc.read().await;
             let state = sd.read_state();
             if state.kernel.status != "not_started" && !state.kernel.status.is_empty() {
@@ -4871,7 +4896,7 @@ async fn handle_notebook_request(
         }
 
         NotebookRequest::GetQueueState {} => {
-            // Read from RuntimeStateDoc (source of truth in agent mode)
+            // Read from RuntimeStateDoc (source of truth for runtime agent)
             let sd = room.state_doc.read().await;
             let state = sd.read_state();
             NotebookResponse::QueueState {
@@ -4894,8 +4919,8 @@ async fn handle_notebook_request(
         NotebookRequest::RunAllCells {} => {
             // Agent path — write all cells to RuntimeStateDoc queue
             {
-                let has_agent = room.agent_request_tx.lock().await.is_some();
-                if has_agent {
+                let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
+                if has_runtime_agent {
                     // Check if kernel is shut down
                     {
                         let sd = room.state_doc.read().await;
@@ -4941,17 +4966,17 @@ async fn handle_notebook_request(
                 }
             }
 
-            // No agent available — kernel not running
+            // No runtime agent available — kernel not running
             NotebookResponse::NoKernel {}
         }
 
         NotebookRequest::SendComm { message } => {
             // Agent path: forward comm message via RPC
-            let has_agent = room.agent_request_tx.lock().await.is_some();
-            if has_agent {
-                match send_agent_request(
+            let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
+            if has_runtime_agent {
+                match send_runtime_agent_request(
                     room,
-                    notebook_protocol::protocol::AgentRequest::SendComm {
+                    notebook_protocol::protocol::RuntimeAgentRequest::SendComm {
                         message: message.clone(),
                     },
                 )
@@ -4969,11 +4994,11 @@ async fn handle_notebook_request(
 
         NotebookRequest::GetHistory { pattern, n, unique } => {
             // Agent path: forward via RPC
-            let has_agent = room.agent_request_tx.lock().await.is_some();
-            if has_agent {
-                match send_agent_request(
+            let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
+            if has_runtime_agent {
+                match send_runtime_agent_request(
                     room,
-                    notebook_protocol::protocol::AgentRequest::GetHistory {
+                    notebook_protocol::protocol::RuntimeAgentRequest::GetHistory {
                         pattern: pattern.clone(),
                         n,
                         unique,
@@ -4981,14 +5006,14 @@ async fn handle_notebook_request(
                 )
                 .await
                 {
-                    Ok(notebook_protocol::protocol::AgentResponse::HistoryResult { entries }) => {
-                        NotebookResponse::HistoryResult { entries }
-                    }
-                    Ok(notebook_protocol::protocol::AgentResponse::Error { error }) => {
+                    Ok(notebook_protocol::protocol::RuntimeAgentResponse::HistoryResult {
+                        entries,
+                    }) => NotebookResponse::HistoryResult { entries },
+                    Ok(notebook_protocol::protocol::RuntimeAgentResponse::Error { error }) => {
                         NotebookResponse::Error { error }
                     }
                     Ok(_) => NotebookResponse::Error {
-                        error: "Unexpected agent response".to_string(),
+                        error: "Unexpected runtime agent response".to_string(),
                     },
                     Err(e) => NotebookResponse::Error {
                         error: format!("Agent error: {}", e),
@@ -5001,18 +5026,18 @@ async fn handle_notebook_request(
 
         NotebookRequest::Complete { code, cursor_pos } => {
             // Agent path: forward via RPC
-            let has_agent = room.agent_request_tx.lock().await.is_some();
-            if has_agent {
-                match send_agent_request(
+            let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
+            if has_runtime_agent {
+                match send_runtime_agent_request(
                     room,
-                    notebook_protocol::protocol::AgentRequest::Complete {
+                    notebook_protocol::protocol::RuntimeAgentRequest::Complete {
                         code: code.clone(),
                         cursor_pos,
                     },
                 )
                 .await
                 {
-                    Ok(notebook_protocol::protocol::AgentResponse::CompletionResult {
+                    Ok(notebook_protocol::protocol::RuntimeAgentResponse::CompletionResult {
                         items,
                         cursor_start,
                         cursor_end,
@@ -5021,11 +5046,11 @@ async fn handle_notebook_request(
                         cursor_start,
                         cursor_end,
                     },
-                    Ok(notebook_protocol::protocol::AgentResponse::Error { error }) => {
+                    Ok(notebook_protocol::protocol::RuntimeAgentResponse::Error { error }) => {
                         NotebookResponse::Error { error }
                     }
                     Ok(_) => NotebookResponse::Error {
-                        error: "Unexpected agent response".to_string(),
+                        error: "Unexpected runtime agent response".to_string(),
                     },
                     Err(e) => NotebookResponse::Error {
                         error: format!("Agent error: {}", e),
@@ -5148,7 +5173,7 @@ async fn handle_notebook_request(
 async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResponse {
     // Read launched config from room
     let launched = {
-        let guard = room.agent_launched_config.read().await;
+        let guard = room.runtime_agent_launched_config.read().await;
         match &*guard {
             Some(lc) => lc.clone(),
             None => {
@@ -5238,8 +5263,8 @@ async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResponse {
         };
     }
 
-    // Send SyncEnvironment to the agent
-    let sync_request = notebook_protocol::protocol::AgentRequest::SyncEnvironment {
+    // Send SyncEnvironment to the runtime agent
+    let sync_request = notebook_protocol::protocol::RuntimeAgentRequest::SyncEnvironment {
         packages: packages_to_install.clone(),
     };
 
@@ -5256,11 +5281,13 @@ async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResponse {
             }),
         });
 
-    match send_agent_request(room, sync_request).await {
-        Ok(notebook_protocol::protocol::AgentResponse::EnvironmentSynced { synced_packages }) => {
-            // Update agent_launched_config to include new packages
+    match send_runtime_agent_request(room, sync_request).await {
+        Ok(notebook_protocol::protocol::RuntimeAgentResponse::EnvironmentSynced {
+            synced_packages,
+        }) => {
+            // Update runtime_agent_launched_config to include new packages
             {
-                let mut lc = room.agent_launched_config.write().await;
+                let mut lc = room.runtime_agent_launched_config.write().await;
                 if let Some(ref mut config) = *lc {
                     // Promote prewarmed to uv:inline baseline if needed
                     if config.uv_deps.is_none() {
@@ -5293,14 +5320,14 @@ async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResponse {
 
             NotebookResponse::SyncEnvironmentComplete { synced_packages }
         }
-        Ok(notebook_protocol::protocol::AgentResponse::Error { error }) => {
+        Ok(notebook_protocol::protocol::RuntimeAgentResponse::Error { error }) => {
             NotebookResponse::SyncEnvironmentFailed {
                 error,
                 needs_restart: true,
             }
         }
         Ok(_) => NotebookResponse::SyncEnvironmentFailed {
-            error: "Unexpected agent response".to_string(),
+            error: "Unexpected runtime agent response".to_string(),
             needs_restart: true,
         },
         Err(e) => NotebookResponse::SyncEnvironmentFailed {
@@ -8059,16 +8086,16 @@ mod tests {
             watcher_shutdown_tx: Mutex::new(None),
             state_doc,
             state_changed_tx,
-            agent_handle: Arc::new(Mutex::new(None)),
-            agent_env_path: Arc::new(RwLock::new(None)),
-            agent_launched_config: Arc::new(RwLock::new(None)),
-            agent_request_tx: Arc::new(Mutex::new(None)),
-            agent_connected_tx: {
+            runtime_agent_handle: Arc::new(Mutex::new(None)),
+            runtime_agent_env_path: Arc::new(RwLock::new(None)),
+            runtime_agent_launched_config: Arc::new(RwLock::new(None)),
+            runtime_agent_request_tx: Arc::new(Mutex::new(None)),
+            runtime_agent_connected_tx: {
                 let (tx, _) = tokio::sync::watch::channel(false);
                 Arc::new(tx)
             },
             next_queue_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            current_agent_id: Arc::new(RwLock::new(None)),
+            current_runtime_agent_id: Arc::new(RwLock::new(None)),
         };
 
         (room, notebook_path)

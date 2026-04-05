@@ -1,32 +1,33 @@
 //! Process-isolated runtime agent.
 //!
-//! The agent is a subprocess spawned by the coordinator (daemon) that owns
-//! the kernel lifecycle, IOPub processing, execution queue, and RuntimeStateDoc
-//! writes. It connects back to the daemon's Unix socket as a regular peer.
+//! The runtime agent is a subprocess spawned by the coordinator (daemon) that
+//! owns the kernel lifecycle, IOPub processing, execution queue, and
+//! RuntimeStateDoc writes. It connects back to the daemon's Unix socket as a
+//! regular peer.
 //!
 //! ## CRDT-driven execution
 //!
-//! The agent does NOT receive execution requests via RPC. Instead, the
-//! coordinator writes execution entries (with source code and sequence
-//! numbers) to RuntimeStateDoc. The agent discovers new entries via
-//! Automerge sync and executes them in seq order.
+//! The runtime agent does NOT receive execution requests via RPC. Instead, the
+//! coordinator writes execution entries (with source code and sequence numbers)
+//! to RuntimeStateDoc. The runtime agent discovers new entries via Automerge
+//! sync and executes them in seq order.
 //!
 //! ## Protocol
 //!
 //! Standard peer protocol over Unix socket:
 //! - Frame 0x00: AutomergeSync (NotebookDoc sync, for completions context)
-//! - Frame 0x01: AgentRequest (coordinator → agent, for LaunchKernel/Interrupt/etc.)
-//! - Frame 0x02: AgentResponse (agent → coordinator)
+//! - Frame 0x01: RuntimeAgentRequest (coordinator → runtime agent)
+//! - Frame 0x02: RuntimeAgentResponse (runtime agent → coordinator)
 //! - Frame 0x05: RuntimeStateSync (bidirectional, carries execution queue + outputs)
 //!
 //! ## Lifecycle
 //!
-//! 1. Agent connects to daemon socket, sends `Handshake::RuntimeAgent`
+//! 1. Runtime agent connects to daemon socket, sends `Handshake::RuntimeAgent`
 //! 2. Initial sync for NotebookDoc and RuntimeStateDoc
-//! 3. Agent waits for `LaunchKernel` RPC
+//! 3. Runtime agent waits for `LaunchKernel` RPC
 //! 4. Main select loop: socket frames, QueueCommands, RuntimeStateDoc changes
 //! 5. Watches for new `status=queued` execution entries after each sync
-//! 6. On shutdown or daemon disconnect, agent exits
+//! 6. On shutdown or daemon disconnect, runtime agent exits
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -39,14 +40,14 @@ use notebook_protocol::connection::{
     recv_typed_frame, send_json_frame, send_preamble, send_typed_frame, Handshake,
     NotebookFrameType,
 };
-use notebook_protocol::protocol::{AgentRequest, AgentResponse};
+use notebook_protocol::protocol::{RuntimeAgentRequest, RuntimeAgentResponse};
 use tokio::sync::{broadcast, RwLock};
 
 use crate::blob_store::BlobStore;
 use crate::kernel_manager::{QueueCommand, RoomKernel};
 
-/// Shared agent state passed to request/command handlers.
-struct AgentContext {
+/// Shared runtime agent state passed to request/command handlers.
+struct RuntimeAgentContext {
     kernel: Arc<tokio::sync::Mutex<Option<RoomKernel>>>,
     state_doc: Arc<RwLock<RuntimeStateDoc>>,
     state_changed_tx: broadcast::Sender<()>,
@@ -58,15 +59,15 @@ struct AgentContext {
 }
 
 /// Run the runtime agent, connecting to the daemon socket as a peer.
-pub async fn run_agent(
+pub async fn run_runtime_agent(
     socket_path: PathBuf,
     notebook_id: String,
-    agent_id: String,
+    runtime_agent_id: String,
     blob_root: PathBuf,
 ) -> anyhow::Result<()> {
     info!(
-        "[agent] Starting agent_id={} notebook_id={} socket={}",
-        agent_id,
+        "[runtime-agent] Starting runtime_agent_id={} notebook_id={} socket={}",
+        runtime_agent_id,
         notebook_id,
         socket_path.display()
     );
@@ -100,17 +101,17 @@ pub async fn run_agent(
         &mut writer,
         &Handshake::RuntimeAgent {
             notebook_id: notebook_id.clone(),
-            agent_id: agent_id.clone(),
+            runtime_agent_id: runtime_agent_id.clone(),
             blob_root: blob_root.display().to_string(),
         },
     )
     .await?;
 
-    info!("[agent] Connected to daemon, handshake sent");
+    info!("[runtime-agent] Connected to daemon, handshake sent");
 
     // ── 2. Bootstrap RuntimeStateDoc ───────────────────────────────────────
 
-    let state_doc = RuntimeStateDoc::new_with_actor(&agent_id);
+    let state_doc = RuntimeStateDoc::new_with_actor(&runtime_agent_id);
     let mut coordinator_sync_state = automerge::sync::State::new();
     let state_doc = Arc::new(RwLock::new(state_doc));
     let (state_changed_tx, mut state_changed_rx) = broadcast::channel::<()>(64);
@@ -123,7 +124,7 @@ pub async fn run_agent(
     let presence = Arc::new(RwLock::new(PresenceState::new()));
     let (presence_tx, _presence_rx) = broadcast::channel::<(String, Vec<u8>)>(16);
 
-    let ctx = AgentContext {
+    let ctx = RuntimeAgentContext {
         kernel: Arc::new(tokio::sync::Mutex::new(None)),
         state_doc,
         state_changed_tx,
@@ -136,7 +137,7 @@ pub async fn run_agent(
 
     let mut cmd_rx: Option<tokio::sync::mpsc::Receiver<QueueCommand>> = None;
 
-    info!("[agent] Infrastructure ready, entering main loop");
+    info!("[runtime-agent] Infrastructure ready, entering main loop");
 
     // ── 4. Main event loop ─────────────────────────────────────────────────
 
@@ -147,13 +148,13 @@ pub async fn run_agent(
                 match frame {
                     Ok(Some(typed_frame)) => {
                         match typed_frame.frame_type {
-                            // AgentRequest (RPC: LaunchKernel, Interrupt, etc.)
+                            // RuntimeAgentRequest RPC: LaunchKernel, Interrupt, etc.
                             NotebookFrameType::Request => {
-                                if let Ok(request) = serde_json::from_slice::<AgentRequest>(&typed_frame.payload) {
-                                    let response = handle_agent_request(request, &ctx).await;
+                                if let Ok(request) = serde_json::from_slice::<RuntimeAgentRequest>(&typed_frame.payload) {
+                                    let response = handle_runtime_agent_request(request, &ctx).await;
 
                                     // After launch/restart, take cmd_rx from kernel
-                                    if matches!(response, AgentResponse::KernelLaunched { .. } | AgentResponse::KernelRestarted { .. }) {
+                                    if matches!(response, RuntimeAgentResponse::KernelLaunched { .. } | RuntimeAgentResponse::KernelRestarted { .. }) {
                                         let mut guard = ctx.kernel.lock().await;
                                         if let Some(ref mut k) = *guard {
                                             cmd_rx = k.take_cmd_rx();
@@ -193,7 +194,7 @@ pub async fn run_agent(
                                                 if let Some(ref mut k) = *guard {
                                                     for (comm_id, delta) in &comm_updates {
                                                         if let Err(e) = k.send_comm_update(comm_id, delta.clone()).await {
-                                                            warn!("[agent] Failed to forward comm state to kernel: {}", e);
+                                                            warn!("[runtime-agent] Failed to forward comm state to kernel: {}", e);
                                                         }
                                                     }
                                                 }
@@ -213,13 +214,13 @@ pub async fn run_agent(
                                                             ).await {
                                                                 Ok(_) => {
                                                                     info!(
-                                                                        "[agent] Queued cell {} (execution {})",
+                                                                        "[runtime-agent] Queued cell {} (execution {})",
                                                                         exec.cell_id, eid
                                                                     );
                                                                 }
                                                                 Err(e) => {
                                                                     warn!(
-                                                                        "[agent] Failed to queue cell {}: {}",
+                                                                        "[runtime-agent] Failed to queue cell {}: {}",
                                                                         exec.cell_id, e
                                                                     );
                                                                 }
@@ -248,23 +249,23 @@ pub async fn run_agent(
 
                             // AutomergeSync (NotebookDoc — for completions context)
                             NotebookFrameType::AutomergeSync => {
-                                // The agent doesn't need NotebookDoc state for execution
+                                // The runtime agent doesn't need NotebookDoc state for execution
                                 // (source comes from execution entries), but it may be
                                 // useful for completions context in the future.
-                                debug!("[agent] Received NotebookDoc sync frame (ignored for now)");
+                                debug!("[runtime-agent] Received NotebookDoc sync frame (ignored for now)");
                             }
 
                             _ => {
-                                debug!("[agent] Ignoring frame type {:?}", typed_frame.frame_type);
+                                debug!("[runtime-agent] Ignoring frame type {:?}", typed_frame.frame_type);
                             }
                         }
                     }
                     Ok(None) => {
-                        info!("[agent] Daemon disconnected (EOF)");
+                        info!("[runtime-agent] Daemon disconnected (EOF)");
                         break;
                     }
                     Err(e) => {
-                        info!("[agent] Socket read error: {}", e);
+                        info!("[runtime-agent] Socket read error: {}", e);
                         break;
                     }
                 }
@@ -278,7 +279,7 @@ pub async fn run_agent(
                 }
             } => {
                 if let Err(e) = handle_queue_command(command, &ctx).await {
-                    warn!("[agent] Error handling queue command: {}", e);
+                    warn!("[runtime-agent] Error handling queue command: {}", e);
                 }
             }
 
@@ -294,7 +295,7 @@ pub async fn run_agent(
                         NotebookFrameType::RuntimeStateSync,
                         &encoded,
                     ).await {
-                        warn!("[agent] Failed to send RuntimeStateSync: {}", e);
+                        warn!("[runtime-agent] Failed to send RuntimeStateSync: {}", e);
                         break;
                     }
                 }
@@ -304,7 +305,7 @@ pub async fn run_agent(
 
     // ── 5. Cleanup ─────────────────────────────────────────────────────────
 
-    info!("[agent] Shutting down");
+    info!("[runtime-agent] Shutting down");
     let mut guard = ctx.kernel.lock().await;
     if let Some(ref mut k) = *guard {
         k.shutdown().await.ok();
@@ -313,14 +314,17 @@ pub async fn run_agent(
     Ok(())
 }
 
-/// Handle an AgentRequest and return an AgentResponse.
+/// Handle a `RuntimeAgentRequest` and return a `RuntimeAgentResponse`.
 ///
 /// Note: ExecuteCell is NOT handled here — execution is CRDT-driven.
 /// The coordinator writes execution entries to RuntimeStateDoc, and the
-/// agent picks them up via sync.
-async fn handle_agent_request(request: AgentRequest, ctx: &AgentContext) -> AgentResponse {
+/// runtime agent picks them up via sync.
+async fn handle_runtime_agent_request(
+    request: RuntimeAgentRequest,
+    ctx: &RuntimeAgentContext,
+) -> RuntimeAgentResponse {
     match request {
-        AgentRequest::LaunchKernel {
+        RuntimeAgentRequest::LaunchKernel {
             kernel_type,
             env_source,
             notebook_path,
@@ -328,7 +332,7 @@ async fn handle_agent_request(request: AgentRequest, ctx: &AgentContext) -> Agen
             env_vars: _,
         } => {
             info!(
-                "[agent] LaunchKernel: type={} source={}",
+                "[runtime-agent] LaunchKernel: type={} source={}",
                 kernel_type, env_source
             );
 
@@ -373,15 +377,15 @@ async fn handle_agent_request(request: AgentRequest, ctx: &AgentContext) -> Agen
                     let es = k.env_source().to_string();
                     let mut guard = ctx.kernel.lock().await;
                     *guard = Some(k);
-                    AgentResponse::KernelLaunched { env_source: es }
+                    RuntimeAgentResponse::KernelLaunched { env_source: es }
                 }
-                Err(e) => AgentResponse::Error {
+                Err(e) => RuntimeAgentResponse::Error {
                     error: format!("Failed to launch kernel: {}", e),
                 },
             }
         }
 
-        AgentRequest::RestartKernel {
+        RuntimeAgentRequest::RestartKernel {
             kernel_type,
             env_source,
             notebook_path,
@@ -389,7 +393,7 @@ async fn handle_agent_request(request: AgentRequest, ctx: &AgentContext) -> Agen
             env_vars: _,
         } => {
             info!(
-                "[agent] RestartKernel: type={} source={}",
+                "[runtime-agent] RestartKernel: type={} source={}",
                 kernel_type, env_source
             );
 
@@ -449,100 +453,102 @@ async fn handle_agent_request(request: AgentRequest, ctx: &AgentContext) -> Agen
                     let es = k.env_source().to_string();
                     let mut guard = ctx.kernel.lock().await;
                     *guard = Some(k);
-                    AgentResponse::KernelRestarted { env_source: es }
+                    RuntimeAgentResponse::KernelRestarted { env_source: es }
                 }
-                Err(e) => AgentResponse::Error {
+                Err(e) => RuntimeAgentResponse::Error {
                     error: format!("Failed to restart kernel: {}", e),
                 },
             }
         }
 
-        AgentRequest::InterruptExecution => {
+        RuntimeAgentRequest::InterruptExecution => {
             let mut guard = ctx.kernel.lock().await;
             if let Some(ref mut k) = *guard {
                 match k.interrupt().await {
-                    Ok(()) => AgentResponse::Ok,
-                    Err(e) => AgentResponse::Error {
+                    Ok(()) => RuntimeAgentResponse::Ok,
+                    Err(e) => RuntimeAgentResponse::Error {
                         error: format!("Failed to interrupt: {}", e),
                     },
                 }
             } else {
-                AgentResponse::Error {
+                RuntimeAgentResponse::Error {
                     error: "No kernel running".to_string(),
                 }
             }
         }
 
-        AgentRequest::ShutdownKernel => {
+        RuntimeAgentRequest::ShutdownKernel => {
             let mut guard = ctx.kernel.lock().await;
             if let Some(ref mut k) = *guard {
                 k.shutdown().await.ok();
                 *guard = None;
-                AgentResponse::Ok
+                RuntimeAgentResponse::Ok
             } else {
-                AgentResponse::Ok
+                RuntimeAgentResponse::Ok
             }
         }
 
-        AgentRequest::SendComm { message } => {
+        RuntimeAgentRequest::SendComm { message } => {
             let mut guard = ctx.kernel.lock().await;
             if let Some(ref mut k) = *guard {
                 match k.send_comm_message(message).await {
-                    Ok(()) => AgentResponse::Ok,
-                    Err(e) => AgentResponse::Error {
+                    Ok(()) => RuntimeAgentResponse::Ok,
+                    Err(e) => RuntimeAgentResponse::Error {
                         error: format!("Failed to send comm: {}", e),
                     },
                 }
             } else {
-                AgentResponse::Error {
+                RuntimeAgentResponse::Error {
                     error: "No kernel running".to_string(),
                 }
             }
         }
 
-        AgentRequest::Complete { code, cursor_pos } => {
+        RuntimeAgentRequest::Complete { code, cursor_pos } => {
             let mut guard = ctx.kernel.lock().await;
             if let Some(ref mut k) = *guard {
                 match k.complete(code, cursor_pos).await {
-                    Ok((items, cursor_start, cursor_end)) => AgentResponse::CompletionResult {
-                        items,
-                        cursor_start,
-                        cursor_end,
-                    },
-                    Err(e) => AgentResponse::Error {
+                    Ok((items, cursor_start, cursor_end)) => {
+                        RuntimeAgentResponse::CompletionResult {
+                            items,
+                            cursor_start,
+                            cursor_end,
+                        }
+                    }
+                    Err(e) => RuntimeAgentResponse::Error {
                         error: format!("Failed to complete: {}", e),
                     },
                 }
             } else {
-                AgentResponse::Error {
+                RuntimeAgentResponse::Error {
                     error: "No kernel running".to_string(),
                 }
             }
         }
 
-        AgentRequest::GetHistory { pattern, n, unique } => {
+        RuntimeAgentRequest::GetHistory { pattern, n, unique } => {
             let mut guard = ctx.kernel.lock().await;
             if let Some(ref mut k) = *guard {
                 match k.get_history(pattern, n, unique).await {
-                    Ok(entries) => AgentResponse::HistoryResult { entries },
-                    Err(e) => AgentResponse::Error {
+                    Ok(entries) => RuntimeAgentResponse::HistoryResult { entries },
+                    Err(e) => RuntimeAgentResponse::Error {
                         error: format!("Failed to get history: {}", e),
                     },
                 }
             } else {
-                AgentResponse::Error {
+                RuntimeAgentResponse::Error {
                     error: "No kernel running".to_string(),
                 }
             }
         }
 
-        AgentRequest::SyncEnvironment { packages } => {
-            info!("[agent] SyncEnvironment: installing {:?}", packages);
+        RuntimeAgentRequest::SyncEnvironment { packages } => {
+            info!("[runtime-agent] SyncEnvironment: installing {:?}", packages);
             let guard = ctx.kernel.lock().await;
             if let Some(ref kernel) = *guard {
                 let es = kernel.env_source().to_string();
                 if !es.starts_with("uv:") {
-                    return AgentResponse::Error {
+                    return RuntimeAgentResponse::Error {
                         error: "Hot-sync only supported for UV environments".to_string(),
                     };
                 }
@@ -552,7 +558,7 @@ async fn handle_agent_request(request: AgentRequest, ctx: &AgentContext) -> Agen
                 let venv_path = match &launched.venv_path {
                     Some(p) => p.clone(),
                     None => {
-                        return AgentResponse::Error {
+                        return RuntimeAgentResponse::Error {
                             error: "No venv path available".to_string(),
                         };
                     }
@@ -560,7 +566,7 @@ async fn handle_agent_request(request: AgentRequest, ctx: &AgentContext) -> Agen
                 let python_path = match &launched.python_path {
                     Some(p) => p.clone(),
                     None => {
-                        return AgentResponse::Error {
+                        return RuntimeAgentResponse::Error {
                             error: "No python path available".to_string(),
                         };
                     }
@@ -574,15 +580,15 @@ async fn handle_agent_request(request: AgentRequest, ctx: &AgentContext) -> Agen
                 };
 
                 match kernel_env::uv::sync_dependencies(&uv_env, &packages).await {
-                    Ok(()) => AgentResponse::EnvironmentSynced {
+                    Ok(()) => RuntimeAgentResponse::EnvironmentSynced {
                         synced_packages: packages,
                     },
-                    Err(e) => AgentResponse::Error {
+                    Err(e) => RuntimeAgentResponse::Error {
                         error: format!("Failed to install packages: {}", e),
                     },
                 }
             } else {
-                AgentResponse::Error {
+                RuntimeAgentResponse::Error {
                     error: "No kernel running".to_string(),
                 }
             }
@@ -591,17 +597,23 @@ async fn handle_agent_request(request: AgentRequest, ctx: &AgentContext) -> Agen
 }
 
 /// Handle a QueueCommand from the kernel's IOPub/shell/heartbeat tasks.
-async fn handle_queue_command(command: QueueCommand, ctx: &AgentContext) -> anyhow::Result<()> {
+async fn handle_queue_command(
+    command: QueueCommand,
+    ctx: &RuntimeAgentContext,
+) -> anyhow::Result<()> {
     match command {
         QueueCommand::ExecutionDone {
             cell_id,
             execution_id,
         } => {
-            debug!("[agent] ExecutionDone for {} ({})", cell_id, execution_id);
+            debug!(
+                "[runtime-agent] ExecutionDone for {} ({})",
+                cell_id, execution_id
+            );
             let mut guard = ctx.kernel.lock().await;
             if let Some(ref mut k) = *guard {
                 if let Err(e) = k.execution_done(&cell_id, &execution_id).await {
-                    warn!("[agent] execution_done error: {}", e);
+                    warn!("[runtime-agent] execution_done error: {}", e);
                 }
             }
         }
@@ -611,7 +623,7 @@ async fn handle_queue_command(command: QueueCommand, ctx: &AgentContext) -> anyh
             execution_id,
         } => {
             debug!(
-                "[agent] CellError: cell={} execution={}",
+                "[runtime-agent] CellError: cell={} execution={}",
                 cell_id, execution_id
             );
             let mut guard = ctx.kernel.lock().await;
@@ -628,7 +640,7 @@ async fn handle_queue_command(command: QueueCommand, ctx: &AgentContext) -> anyh
         }
 
         QueueCommand::KernelDied => {
-            warn!("[agent] Kernel died");
+            warn!("[runtime-agent] Kernel died");
             let mut sd = ctx.state_doc.write().await;
             sd.set_kernel_status("error");
             sd.set_queue(None, &[]);
@@ -639,7 +651,7 @@ async fn handle_queue_command(command: QueueCommand, ctx: &AgentContext) -> anyh
             let mut guard = ctx.kernel.lock().await;
             if let Some(ref mut k) = *guard {
                 if let Err(e) = k.send_comm_update(&comm_id, state).await {
-                    warn!("[agent] Failed to send comm update: {}", e);
+                    warn!("[runtime-agent] Failed to send comm update: {}", e);
                 }
             }
         }
