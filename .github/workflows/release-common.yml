@@ -810,7 +810,7 @@ jobs:
             # Instead, find the previous stable tag and use an explicit range.
             PREV_STABLE=$(git tag -l 'v*-stable.*' --sort=-creatordate | head -1)
             if [ -n "$PREV_STABLE" ]; then
-              CHANGELOG=$(git-cliff "${PREV_STABLE}..HEAD" --strip header 2>/dev/null || echo "")
+              CHANGELOG=$(git-cliff "${PREV_STABLE}..HEAD" --ignore-tags ".*nightly.*" --strip header 2>/dev/null || echo "")
             else
               CHANGELOG=$(git-cliff --strip header 2>/dev/null || echo "")
             fi
