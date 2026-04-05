@@ -1015,7 +1015,7 @@ impl Daemon {
                 #[cfg(not(target_os = "windows"))]
                 let python_path = venv_path.join("bin").join("python");
 
-                if python_path.exists() && env_path.join(".warmed").exists() {
+                if python_path.exists() && venv_path.join(".warmed").exists() {
                     let mut pool = self.pixi_pool.lock().await;
                     if pool.available.len() < pool.target {
                         pool.available.push_back(PoolEntry {
@@ -3008,8 +3008,8 @@ print("warmup complete")
             return;
         }
 
-        // 7. Write .warmed marker
-        let _ = tokio::fs::write(project_dir.join(".warmed"), "").await;
+        // 7. Write .warmed marker (must be in venv_path — Pool::take() checks there)
+        let _ = tokio::fs::write(venv_path.join(".warmed"), "").await;
 
         // 8. Add to pool
         info!("[runtimed] Pixi environment ready at {:?}", project_dir);
