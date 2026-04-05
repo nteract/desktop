@@ -38,11 +38,11 @@ hex = "0.4"
 kernel-launch = { path = "../kernel-launch", optional = true }
 
 # Conda environment support via rattler
-rattler = { version = "0.39", default-features = false, features = ["native-tls"], optional = true }
+rattler = { version = "0.40", default-features = false, features = ["native-tls"], optional = true }
 rattler_cache = { version = "0.6", default-features = false, features = ["native-tls"], optional = true }
-rattler_conda_types = { version = "0.43", optional = true }
-rattler_repodata_gateway = { version = "0.25", default-features = false, features = ["gateway", "native-tls"], optional = true }
-rattler_solve = { version = "4.2", features = ["resolvo"], optional = true }
+rattler_conda_types = { version = "0.44", optional = true }
+rattler_repodata_gateway = { version = "0.27", default-features = false, features = ["gateway", "native-tls"], optional = true }
+rattler_solve = { version = "5.0", features = ["resolvo"], optional = true }
 rattler_virtual_packages = { version = "2.3", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["native-tls"], optional = true }
 reqwest-middleware = { version = "0.4", optional = true }
