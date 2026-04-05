@@ -4352,6 +4352,10 @@ pub fn run(
                         }
                     };
 
+                // Check if CLI symlinks are current and silently update if stale.
+                // This handles app reinstalls, bundle path changes, and channel switches.
+                cli_install::ensure_cli_current(&app_for_daemon);
+
                 // Start settings sync subscription (reconnects automatically)
                 // Spawn as separate task since it runs forever
                 tokio::spawn(run_settings_sync(app_for_sync.clone()));

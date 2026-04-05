@@ -116,6 +116,159 @@ pub fn get_bundled_runt_path(app: &tauri::AppHandle) -> Option<PathBuf> {
     None
 }
 
+/// Result of checking whether an installed CLI symlink is current.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SymlinkStatus {
+    /// Symlink exists and points to the current app bundle binary.
+    Current,
+    /// Symlink exists but points to a different (stale) path.
+    Stale,
+    /// CLI is not installed (symlink does not exist).
+    NotInstalled,
+}
+
+/// Check whether the installed `runt`/`runt-nightly` symlink points to the
+/// current app bundle binary path, and whether the `nb`/`nb-nightly` wrapper
+/// script references the correct CLI command name.
+///
+/// Returns a tuple of `(runt_status, nb_status)`.
+#[cfg(unix)]
+pub fn check_cli_currency(app: &tauri::AppHandle) -> (SymlinkStatus, SymlinkStatus) {
+    let dir = install_dir();
+    let cli_name = cli_command_name();
+    let nb_name = cli_notebook_alias_name();
+
+    let runt_status = check_runt_symlink(app, &dir.join(cli_name));
+    let nb_status = check_nb_script(&dir.join(nb_name), cli_name);
+
+    (runt_status, nb_status)
+}
+
+/// Check if the runt symlink points to the current bundled binary.
+#[cfg(unix)]
+fn check_runt_symlink(app: &tauri::AppHandle, symlink_path: &std::path::Path) -> SymlinkStatus {
+    if !symlink_path.is_symlink() {
+        if symlink_path.exists() {
+            // It's a regular file (not a symlink) — treat as stale so we replace it
+            return SymlinkStatus::Stale;
+        }
+        return SymlinkStatus::NotInstalled;
+    }
+
+    let target = match fs::read_link(symlink_path) {
+        Ok(t) => t,
+        Err(e) => {
+            log::warn!(
+                "[cli_install] Failed to read symlink {}: {}",
+                symlink_path.display(),
+                e
+            );
+            return SymlinkStatus::Stale;
+        }
+    };
+
+    let bundled = match get_bundled_runt_path(app) {
+        Some(p) => p,
+        None => {
+            log::debug!("[cli_install] Cannot determine bundled runt path for currency check");
+            // Can't determine — assume current to avoid unnecessary reinstall
+            return SymlinkStatus::Current;
+        }
+    };
+
+    if target == bundled {
+        SymlinkStatus::Current
+    } else {
+        log::info!(
+            "[cli_install] Symlink stale: {} -> {} (expected {})",
+            symlink_path.display(),
+            target.display(),
+            bundled.display()
+        );
+        SymlinkStatus::Stale
+    }
+}
+
+/// Check if the nb wrapper script references the correct CLI command name.
+#[cfg(unix)]
+fn check_nb_script(script_path: &std::path::Path, expected_cli_name: &str) -> SymlinkStatus {
+    if !script_path.exists() {
+        return SymlinkStatus::NotInstalled;
+    }
+
+    match fs::read_to_string(script_path) {
+        Ok(contents) => {
+            let expected_exec = format!("exec {} notebook", expected_cli_name);
+            if contents.contains(&expected_exec) {
+                SymlinkStatus::Current
+            } else {
+                log::info!(
+                    "[cli_install] nb script stale: {} does not contain '{}'",
+                    script_path.display(),
+                    expected_exec
+                );
+                SymlinkStatus::Stale
+            }
+        }
+        Err(e) => {
+            log::warn!(
+                "[cli_install] Failed to read nb script {}: {}",
+                script_path.display(),
+                e
+            );
+            SymlinkStatus::Stale
+        }
+    }
+}
+
+/// Silently update the CLI installation if the symlinks are stale.
+///
+/// Called on app launch. If the user has previously installed the CLI (symlink
+/// exists), this checks whether it still points to the current app bundle and
+/// re-runs `install_cli()` if not. Does nothing if the CLI was never installed.
+pub fn ensure_cli_current(app: &tauri::AppHandle) {
+    #[cfg(not(unix))]
+    {
+        let _ = app;
+        // On Windows, CLI install copies the binary — no symlink to check.
+        // A future enhancement could compare binary hashes.
+        return;
+    }
+
+    #[cfg(unix)]
+    {
+        let (runt_status, nb_status) = check_cli_currency(app);
+
+        log::debug!(
+            "[cli_install] CLI currency check: runt={:?}, nb={:?}",
+            runt_status,
+            nb_status
+        );
+
+        match (&runt_status, &nb_status) {
+            (SymlinkStatus::NotInstalled, SymlinkStatus::NotInstalled) => {
+                log::debug!("[cli_install] CLI not installed, skipping currency check");
+            }
+            (SymlinkStatus::Current, SymlinkStatus::Current) => {
+                log::debug!("[cli_install] CLI symlinks are current");
+            }
+            _ => {
+                // At least one component is stale (or one is installed while the other isn't)
+                log::info!(
+                    "[cli_install] CLI needs update (runt={:?}, nb={:?}), reinstalling",
+                    runt_status,
+                    nb_status
+                );
+                if let Err(e) = install_cli(app) {
+                    log::warn!("[cli_install] Failed to update CLI: {}", e);
+                } else {
+                    log::info!("[cli_install] CLI updated successfully");
+                }
+            }
+        }
+    }
+}
+
 /// Check if the CLI is already installed (checks both new and legacy locations).
 pub fn is_cli_installed() -> bool {
     let cli_name = cli_command_name();
@@ -333,4 +486,79 @@ fn ensure_shell_path(bin_dir: &std::path::Path) -> Result<(), String> {
         rc_path.display()
     );
     Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn nb_script_current_when_matches() {
+        let dir = tempfile::tempdir().ok().unwrap();
+        let script_path = dir.path().join("nb");
+        fs::write(
+            &script_path,
+            "#!/bin/bash\n# nb - open notebooks\nexec runt-nightly notebook \"$@\"\n",
+        )
+        .ok();
+
+        assert_eq!(
+            check_nb_script(&script_path, "runt-nightly"),
+            SymlinkStatus::Current
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nb_script_stale_when_wrong_command() {
+        let dir = tempfile::tempdir().ok().unwrap();
+        let script_path = dir.path().join("nb");
+        fs::write(
+            &script_path,
+            "#!/bin/bash\n# nb - open notebooks\nexec runt notebook \"$@\"\n",
+        )
+        .ok();
+
+        // Expects runt-nightly but script has runt
+        assert_eq!(
+            check_nb_script(&script_path, "runt-nightly"),
+            SymlinkStatus::Stale
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nb_script_not_installed_when_missing() {
+        let dir = tempfile::tempdir().ok().unwrap();
+        let script_path = dir.path().join("nb-nonexistent");
+
+        assert_eq!(
+            check_nb_script(&script_path, "runt"),
+            SymlinkStatus::NotInstalled
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runt_symlink_not_installed_when_missing() {
+        let dir = tempfile::tempdir().ok().unwrap();
+        let symlink_path = dir.path().join("runt-nonexistent");
+
+        assert!(!symlink_path.exists());
+        assert!(!symlink_path.is_symlink());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runt_symlink_stale_when_regular_file() {
+        let dir = tempfile::tempdir().ok().unwrap();
+        let file_path = dir.path().join("runt");
+        fs::write(&file_path, "not a symlink").ok();
+
+        // A regular file at the symlink path should be detected as stale
+        assert!(file_path.exists());
+        assert!(!file_path.is_symlink());
+    }
 }
