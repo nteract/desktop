@@ -262,6 +262,46 @@ code {
     animation: queue-breathe 3s ease-in-out infinite;
 }
 
+/* Executing cell: lively squish-breathe with anticipation + overshoot */
+@keyframes exec-squish {
+    0% {
+        transform: scale(1, 1) rotate(0deg);
+        opacity: 1;
+    }
+    /* Anticipation: squash down, dim */
+    15% {
+        transform: scale(1.08, 0.92) rotate(-0.5deg);
+        opacity: 0.6;
+    }
+    /* Overshoot: stretch up, bright */
+    30% {
+        transform: scale(0.94, 1.07) rotate(0.3deg);
+        opacity: 1;
+    }
+    /* Settle, dim */
+    50% {
+        transform: scale(1.01, 0.99) rotate(0deg);
+        opacity: 0.65;
+    }
+    /* Secondary bounce, bright */
+    70% {
+        transform: scale(0.98, 1.02) rotate(-0.2deg);
+        opacity: 1;
+    }
+    85% {
+        transform: scale(1.005, 0.995) rotate(0deg);
+        opacity: 0.7;
+    }
+    100% {
+        transform: scale(1, 1) rotate(0deg);
+        opacity: 1;
+    }
+}
+.animate-exec-squish {
+    animation: exec-squish 3s cubic-bezier(0.34, 1.56, 0.64, 1) 1s infinite;
+    transform-origin: center center;
+}
+
 @layer base {
     * {
         @apply border-border outline-ring/50;
