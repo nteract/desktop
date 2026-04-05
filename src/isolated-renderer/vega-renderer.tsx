@@ -16,18 +16,8 @@ function isVegaMimeType(mime: string): boolean {
   return /^application\/vnd\.vega(lite)?\.v\d/.test(mime);
 }
 
-// --- Vega MIME types to register ---
-// Cover common versions. The regex in isVegaMimeType handles all versions,
-// but we register specific ones for the plugin registry. Additional versions
-// are caught by the fallback check in install().
-const VEGA_MIME_TYPES = [
-  "application/vnd.vega.v5+json",
-  "application/vnd.vega.v5.json",
-  "application/vnd.vegalite.v4+json",
-  "application/vnd.vegalite.v4.json",
-  "application/vnd.vegalite.v5+json",
-  "application/vnd.vegalite.v5.json",
-];
+// No hardcoded MIME list — we use registerPattern with the regex matcher
+// to handle any Vega/Vega-Lite version (v1, v2, ..., v6, future versions).
 
 // --- VegaOutput component (self-contained, no window globals) ---
 
@@ -123,8 +113,13 @@ export function install(ctx: {
     mimeTypes: string[],
     component: React.ComponentType<RendererProps>,
   ) => void;
+  registerPattern: (
+    test: (mime: string) => boolean,
+    component: React.ComponentType<RendererProps>,
+  ) => void;
 }) {
-  ctx.register(VEGA_MIME_TYPES, VegaRenderer);
+  // Use pattern matcher to handle any Vega/Vega-Lite version
+  ctx.registerPattern(isVegaMimeType, VegaRenderer);
 }
 
 /**
