@@ -304,6 +304,7 @@ mod tests {
                 pool_size: 2,
                 ..Default::default()
             },
+            pixi: RuntimePoolState::default(),
         };
         let resp = Response::Stats {
             state: state.clone(),
