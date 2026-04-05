@@ -4711,8 +4711,11 @@ async fn handle_notebook_request(
                     // NotebookDoc owns the cell→execution_id mapping,
                     // RuntimeStateDoc owns execution lifecycle state.
                     {
-                        let doc = room.doc.read().await;
-                        if let Some(eid) = doc.get_execution_id(&cell_id) {
+                        let eid = {
+                            let doc = room.doc.read().await;
+                            doc.get_execution_id(&cell_id)
+                        };
+                        if let Some(eid) = eid {
                             let sd = room.state_doc.read().await;
                             if let Some(exec) = sd.get_execution(&eid) {
                                 if exec.status == "queued" || exec.status == "running" {

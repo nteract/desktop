@@ -848,7 +848,15 @@ async fn confirm_state_sync_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
                 handle_incoming_frame(&frame, doc, writer, snapshot_tx, broadcast_tx, notebook_id)
                     .await;
             }
-            _ => break, // timeout, EOF, or error — done draining
+            Ok(Ok(None)) => {
+                return Err(SyncError::Protocol(
+                    "Connection closed during state sync flush".into(),
+                ));
+            }
+            Ok(Err(e)) => {
+                return Err(SyncError::Io(e));
+            }
+            Err(_) => break, // timeout — done draining
         }
     }
 
