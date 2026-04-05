@@ -2792,11 +2792,14 @@ print("warmup complete")
         self.create_conda_env().await;
     }
 
-    /// Create a pixi environment using `pixi init` + `pixi add`.
+    /// Create a pixi environment by writing a manifest and running `pixi install`.
     ///
-    /// Creates a managed pixi project directory with ipykernel and default packages,
-    /// then adds the resulting env to the pixi pool.
+    /// Instead of `pixi init` + `pixi add` (which can panic in pixi 0.65.x),
+    /// we write the `pixi.toml` manifest directly and run `pixi install`.
+    /// This is more reliable and reduces subprocess calls from two to one.
     async fn create_pixi_env(&self) {
+        use rattler_conda_types::Platform;
+
         let cache_dir = self.config.cache_dir.clone();
         let env_id = uuid::Uuid::new_v4().to_string();
         let project_dir = cache_dir.join(format!("runtimed-pixi-{}", env_id));
@@ -2820,81 +2823,7 @@ print("warmup complete")
             }
         };
 
-        // 2. Create project directory
-        if let Err(e) = tokio::fs::create_dir_all(&project_dir).await {
-            error!(
-                "[runtimed] Failed to create pixi project dir {:?}: {}",
-                project_dir, e
-            );
-            self.pixi_pool
-                .lock()
-                .await
-                .warming_failed_with_error(Some(PackageInstallError {
-                    error_message: e.to_string(),
-                    failed_package: None,
-                }));
-            self.update_pool_doc().await;
-            return;
-        }
-
-        // 3. Run pixi init (60s timeout)
-        let init_result = tokio::time::timeout(
-            std::time::Duration::from_secs(60),
-            tokio::process::Command::new(&pixi_path)
-                .args(["init", "--format", "pixi"])
-                .current_dir(&project_dir)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::piped())
-                .status(),
-        )
-        .await;
-
-        match init_result {
-            Ok(Ok(status)) if status.success() => {
-                debug!("[runtimed] pixi init succeeded in {:?}", project_dir);
-            }
-            Ok(Ok(status)) => {
-                error!("[runtimed] pixi init failed with status: {}", status);
-                let _ = tokio::fs::remove_dir_all(&project_dir).await;
-                self.pixi_pool
-                    .lock()
-                    .await
-                    .warming_failed_with_error(Some(PackageInstallError {
-                        error_message: format!("pixi init exited with {}", status),
-                        failed_package: None,
-                    }));
-                self.update_pool_doc().await;
-                return;
-            }
-            Ok(Err(e)) => {
-                error!("[runtimed] pixi init IO error: {}", e);
-                let _ = tokio::fs::remove_dir_all(&project_dir).await;
-                self.pixi_pool
-                    .lock()
-                    .await
-                    .warming_failed_with_error(Some(PackageInstallError {
-                        error_message: e.to_string(),
-                        failed_package: None,
-                    }));
-                self.update_pool_doc().await;
-                return;
-            }
-            Err(_) => {
-                error!("[runtimed] pixi init timed out (60s)");
-                let _ = tokio::fs::remove_dir_all(&project_dir).await;
-                self.pixi_pool
-                    .lock()
-                    .await
-                    .warming_failed_with_error(Some(PackageInstallError {
-                        error_message: "pixi init timed out".to_string(),
-                        failed_package: None,
-                    }));
-                self.update_pool_doc().await;
-                return;
-            }
-        }
-
-        // 4. Build package list
+        // 2. Build package list
         let mut packages = vec![
             "ipykernel".to_string(),
             "ipywidgets".to_string(),
@@ -2913,39 +2842,88 @@ print("warmup complete")
         }
         let prewarmed_packages = packages.clone();
 
-        // 5. Run pixi add (120s timeout)
-        let add_result = tokio::time::timeout(
+        // 3. Write pixi.toml directly (avoids `pixi init` which can crash)
+        let platform = Platform::current().to_string();
+        let deps_toml = packages
+            .iter()
+            .map(|p| format!("{} = \"*\"", p))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let manifest = format!(
+            "[workspace]\nchannels = [\"conda-forge\"]\nname = \"runtimed-pool\"\nplatforms = [\"{platform}\"]\n\n[dependencies]\n{deps_toml}\n"
+        );
+
+        if let Err(e) = tokio::fs::create_dir_all(&project_dir).await {
+            error!(
+                "[runtimed] Failed to create pixi project dir {:?}: {}",
+                project_dir, e
+            );
+            self.pixi_pool
+                .lock()
+                .await
+                .warming_failed_with_error(Some(PackageInstallError {
+                    error_message: e.to_string(),
+                    failed_package: None,
+                }));
+            self.update_pool_doc().await;
+            return;
+        }
+
+        if let Err(e) = tokio::fs::write(project_dir.join("pixi.toml"), &manifest).await {
+            error!(
+                "[runtimed] Failed to write pixi.toml in {:?}: {}",
+                project_dir, e
+            );
+            let _ = tokio::fs::remove_dir_all(&project_dir).await;
+            self.pixi_pool
+                .lock()
+                .await
+                .warming_failed_with_error(Some(PackageInstallError {
+                    error_message: format!("Failed to write pixi.toml: {}", e),
+                    failed_package: None,
+                }));
+            self.update_pool_doc().await;
+            return;
+        }
+
+        // 4. Run pixi install (120s timeout)
+        let install_result = tokio::time::timeout(
             std::time::Duration::from_secs(120),
             tokio::process::Command::new(&pixi_path)
-                .arg("add")
-                .args(&packages)
+                .arg("install")
                 .current_dir(&project_dir)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
                 .output(),
         )
         .await;
 
-        match add_result {
+        match install_result {
             Ok(Ok(output)) if output.status.success() => {
-                debug!("[runtimed] pixi add succeeded");
+                debug!("[runtimed] pixi install succeeded");
             }
             Ok(Ok(output)) => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                error!("[runtimed] pixi add failed: {}", stderr.trim());
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                error!(
+                    "[runtimed] pixi install failed ({}): stderr={}, stdout={}",
+                    output.status,
+                    stderr.trim(),
+                    stdout.trim()
+                );
                 let _ = tokio::fs::remove_dir_all(&project_dir).await;
                 self.pixi_pool
                     .lock()
                     .await
                     .warming_failed_with_error(Some(PackageInstallError {
-                        error_message: format!("pixi add failed: {}", stderr.trim()),
+                        error_message: format!("pixi install failed: {}", stderr.trim()),
                         failed_package: None,
                     }));
                 self.update_pool_doc().await;
                 return;
             }
             Ok(Err(e)) => {
-                error!("[runtimed] pixi add IO error: {}", e);
+                error!("[runtimed] pixi install IO error: {}", e);
                 let _ = tokio::fs::remove_dir_all(&project_dir).await;
                 self.pixi_pool
                     .lock()
@@ -2959,14 +2937,14 @@ print("warmup complete")
             }
             Err(_) => {
                 error!(
-                    "[runtimed] pixi add timed out (120s). Check pixi.default_packages in settings."
+                    "[runtimed] pixi install timed out (120s). Check pixi.default_packages in settings."
                 );
                 let _ = tokio::fs::remove_dir_all(&project_dir).await;
                 self.pixi_pool
                     .lock()
                     .await
                     .warming_failed_with_error(Some(PackageInstallError {
-                        error_message: "pixi add timed out".to_string(),
+                        error_message: "pixi install timed out".to_string(),
                         failed_package: None,
                     }));
                 self.update_pool_doc().await;
