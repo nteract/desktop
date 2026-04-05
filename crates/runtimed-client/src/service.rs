@@ -1,9 +1,27 @@
 //! Cross-platform service management for runtimed.
 //!
 //! Handles installation and management of the daemon as a system service:
-//! - macOS: launchd user agent (channel-specific `io.nteract.runtimed*.plist`)
+//! - macOS 13+: SMAppService agent registration (plist inside the app bundle)
+//! - macOS <13: launchd user agent (plist in `~/Library/LaunchAgents/`)
 //! - Linux: systemd user service (channel-specific `runtimed*.service`)
 //! - Windows: Startup shortcut
+//!
+//! ## macOS registration strategy
+//!
+//! On macOS 13 (Ventura) and later, when the daemon binary lives inside an app
+//! bundle, we use `SMAppService` to register the launch agent. Benefits:
+//!
+//! - The agent appears in System Settings → Login Items (transparency)
+//! - The agent is automatically cleaned up when the app is deleted
+//! - Uses Apple's recommended framework
+//!
+//! The plist is placed at `Contents/Library/LaunchAgents/` inside the app
+//! bundle and uses the `BundleProgram` key (bundle-relative path) instead of
+//! `ProgramArguments` with an absolute path.
+//!
+//! On macOS <13, or when the binary is not inside an app bundle (e.g. CLI
+//! install), we fall back to the legacy approach: writing a plist to
+//! `~/Library/LaunchAgents/` and using `launchctl` directly.
 
 use std::path::{Path, PathBuf};
 
@@ -139,14 +157,39 @@ impl ServiceManager {
 
     /// Install the daemon as a system service.
     ///
-    /// On macOS, if the source binary is inside an app bundle, the plist is
-    /// pointed directly at it — no copy is needed. This avoids the macOS
-    /// "App Management" permission prompt and code-signature issues during
-    /// upgrades. If the source is a custom path (e.g. `--binary /path/to/runtimed`),
-    /// it is honored and copied to the configured install location as before.
+    /// On macOS 13+ with an in-bundle binary, uses `SMAppService` to register
+    /// the launch agent. The plist is placed inside the app bundle at
+    /// `Contents/Library/LaunchAgents/` and registered via the modern API.
+    ///
+    /// On macOS <13, or when the source binary is outside an app bundle, falls
+    /// back to the legacy approach: writing a plist to `~/Library/LaunchAgents/`
+    /// and using `launchctl` directly.
+    ///
+    /// On macOS (any version), if the source binary is inside an app bundle,
+    /// the plist is pointed directly at it — no copy is needed. If the source
+    /// is a custom path (e.g. `--binary /path/to/runtimed`), it is honored and
+    /// copied to the configured install location.
     pub fn install(&mut self, source_binary: &PathBuf) -> ServiceResult<()> {
         if !source_binary.exists() {
             return Err(ServiceError::BinaryNotFound(source_binary.clone()));
+        }
+
+        // macOS 13+: Use SMAppService for in-bundle binaries
+        #[cfg(target_os = "macos")]
+        if should_use_smappservice(source_binary) {
+            self.config.binary_path = source_binary.clone();
+            info!(
+                "[service] Using SMAppService for in-bundle binary at {:?}",
+                self.config.binary_path
+            );
+
+            // Clean up legacy plist and standalone binary from older installs
+            self.cleanup_legacy_install();
+            Self::cleanup_legacy_binary();
+
+            smappservice_register(source_binary, &self.config.log_path)?;
+            info!("[service] Service installed via SMAppService");
+            return Ok(());
         }
 
         if Self::is_in_app_bundle(source_binary) {
@@ -165,7 +208,7 @@ impl ServiceManager {
             self.atomic_copy_binary(source_binary)?;
         }
 
-        // Create service configuration
+        // Create service configuration (legacy plist path)
         self.create_service_config()?;
 
         info!("[service] Service installed successfully");
@@ -224,11 +267,20 @@ impl ServiceManager {
     }
 
     /// Uninstall the daemon service.
+    ///
+    /// On macOS 13+, unregisters via SMAppService if registered. Also cleans
+    /// up any legacy plist in `~/Library/LaunchAgents/` for migration.
     pub fn uninstall(&self) -> ServiceResult<()> {
         // Stop the service first
         self.stop().ok();
 
-        // Remove service configuration
+        // macOS: Unregister SMAppService agent if registered
+        #[cfg(target_os = "macos")]
+        if smappservice_is_registered() {
+            smappservice_unregister(&self.config.binary_path)?;
+        }
+
+        // Remove legacy service configuration (plist / systemd / windows)
         self.remove_service_config()?;
 
         // Determine what binary the plist was pointing at (if readable)
@@ -265,9 +317,10 @@ impl ServiceManager {
     /// Upgrade the daemon binary by stopping, replacing, and restarting.
     ///
     /// This is used when the notebook app detects a version mismatch between
-    /// the running daemon and the bundled version. On macOS with in-bundle
-    /// binaries, the binary is already updated (the app was replaced), so this
-    /// just regenerates the plist and restarts launchd.
+    /// the running daemon and the bundled version. On macOS 13+ with in-bundle
+    /// binaries, uses SMAppService to re-register (unregister + register),
+    /// which picks up the new binary. On older macOS or non-bundle binaries,
+    /// falls back to the legacy plist + launchctl approach.
     pub fn upgrade(&mut self, source_binary: &PathBuf) -> ServiceResult<()> {
         if !source_binary.exists() {
             return Err(ServiceError::BinaryNotFound(source_binary.clone()));
@@ -277,6 +330,21 @@ impl ServiceManager {
 
         // Stop the running daemon (ignore errors - may not be running)
         self.stop().ok();
+
+        // macOS 13+: Use SMAppService for in-bundle binaries
+        #[cfg(target_os = "macos")]
+        if should_use_smappservice(source_binary) {
+            self.config.binary_path = source_binary.clone();
+            info!("[service] Upgrading via SMAppService (in-bundle binary)");
+
+            // Clean up legacy plist from older installs during migration
+            self.cleanup_legacy_install();
+            Self::cleanup_legacy_binary();
+
+            smappservice_register(source_binary, &self.config.log_path)?;
+            info!("[service] Upgrade via SMAppService completed");
+            return Ok(());
+        }
 
         if Self::is_in_app_bundle(source_binary) {
             // Source is inside an app bundle — point the plist directly at it.
@@ -309,6 +377,26 @@ impl ServiceManager {
     /// Check whether a path is inside a macOS `.app` bundle.
     fn is_in_app_bundle(path: &Path) -> bool {
         path.to_string_lossy().contains(".app/Contents/MacOS/")
+    }
+
+    /// Remove the legacy plist from `~/Library/LaunchAgents/` and stop the
+    /// launchd service.
+    ///
+    /// Best-effort: called during migration to SMAppService to clean up the
+    /// old registration. Logs on failure but never errors.
+    #[cfg(target_os = "macos")]
+    fn cleanup_legacy_install(&self) {
+        // Stop the legacy launchd service if loaded
+        runt_workspace::launchd_stop().ok();
+
+        // Remove the legacy plist
+        let path = plist_path();
+        if path.exists() {
+            match std::fs::remove_file(&path) {
+                Ok(()) => info!("[service] Removed legacy plist at {:?}", path),
+                Err(e) => info!("[service] Could not remove legacy plist {:?}: {}", path, e),
+            }
+        }
     }
 
     /// Remove the legacy standalone binary from `~/.local/share/runt/bin/`.
@@ -385,10 +473,13 @@ impl ServiceManager {
     }
 
     /// Check if the service is installed.
+    ///
+    /// On macOS, checks both SMAppService registration (macOS 13+) and the
+    /// legacy plist in `~/Library/LaunchAgents/`.
     pub fn is_installed(&self) -> bool {
         #[cfg(target_os = "macos")]
         {
-            plist_path().exists()
+            smappservice_is_registered() || plist_path().exists()
         }
 
         #[cfg(target_os = "linux")]
@@ -546,6 +637,20 @@ impl ServiceManager {
 
     #[cfg(target_os = "macos")]
     fn start_macos(&self) -> ServiceResult<()> {
+        // SMAppService agents are started automatically by the system on
+        // register(). If already registered, re-registering is a no-op.
+        if smappservice_is_registered() {
+            info!("[service] SMAppService agent is registered (auto-started by system)");
+            return Ok(());
+        }
+
+        // If we should use SMAppService but aren't registered yet, register now
+        if should_use_smappservice(&self.config.binary_path) {
+            smappservice_register(&self.config.binary_path, &self.config.log_path)?;
+            return Ok(());
+        }
+
+        // Legacy launchctl path
         let bootstrapped =
             runt_workspace::launchd_ensure_loaded().map_err(ServiceError::StartFailed)?;
 
@@ -559,6 +664,15 @@ impl ServiceManager {
 
     #[cfg(target_os = "macos")]
     fn stop_macos(&self) -> ServiceResult<()> {
+        // For SMAppService agents, unregister stops the agent. We then
+        // re-register to keep it installed (stop != uninstall).
+        if smappservice_is_registered() {
+            smappservice_unregister(&self.config.binary_path)?;
+            info!("[service] Stopped SMAppService agent");
+            return Ok(());
+        }
+
+        // Legacy launchctl path
         runt_workspace::launchd_stop().map_err(ServiceError::StopFailed)?;
 
         info!("[service] Stopped launchd service");
@@ -711,8 +825,247 @@ Set WshShell = Nothing
     }
 }
 
+// ============================================================================
+// macOS SMAppService support (macOS 13+ Ventura)
+// ============================================================================
+
+/// Check whether the current macOS version is 13.0 (Ventura) or later.
+///
+/// SMAppService was introduced in macOS 13. On older versions we fall back to
+/// the legacy `launchctl` plist approach.
+#[cfg(target_os = "macos")]
+fn is_macos_13_or_later() -> bool {
+    let output = std::process::Command::new("sw_vers")
+        .args(["-productVersion"])
+        .output()
+        .ok();
+
+    let Some(output) = output else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+
+    let version_str = String::from_utf8_lossy(&output.stdout);
+    let version_str = version_str.trim();
+
+    // Parse major version from "13.0" or "14.2.1" etc.
+    version_str
+        .split('.')
+        .next()
+        .and_then(|major| major.parse::<u32>().ok())
+        .map(|major| major >= 13)
+        .unwrap_or(false)
+}
+
+/// Whether to use SMAppService for a given binary path.
+///
+/// Returns true only when:
+/// 1. Running on macOS 13+
+/// 2. The binary is inside a `.app` bundle
+///
+/// CLI installs and older macOS versions always use the legacy path.
+#[cfg(target_os = "macos")]
+fn should_use_smappservice(binary: &Path) -> bool {
+    ServiceManager::is_in_app_bundle(binary) && is_macos_13_or_later()
+}
+
+/// Resolve the app bundle root from a binary path inside `Contents/MacOS/`.
+///
+/// Given `/Applications/nteract.app/Contents/MacOS/runtimed`, returns
+/// `/Applications/nteract.app`.
+#[cfg(target_os = "macos")]
+fn app_bundle_root(binary: &Path) -> Option<PathBuf> {
+    let s = binary.to_string_lossy();
+    let idx = s.find(".app/Contents/MacOS/")?;
+    // Include the ".app" in the path
+    let end = idx + ".app".len();
+    Some(PathBuf::from(&s[..end]))
+}
+
+/// Get the plist filename for SMAppService registration.
+///
+/// This is just the filename (e.g. `io.nteract.runtimed.plist`), not a full
+/// path. SMAppService looks for this file inside
+/// `Contents/Library/LaunchAgents/` of the app bundle.
+#[cfg(target_os = "macos")]
+fn smappservice_plist_filename() -> String {
+    format!("{}.plist", daemon_launchd_label())
+}
+
+/// Generate the plist content for SMAppService registration.
+///
+/// Unlike the legacy plist, this uses `BundleProgram` (a bundle-relative path)
+/// instead of `ProgramArguments` with an absolute path. `BundleProgram` is
+/// required by SMAppService and specifies the executable relative to the
+/// bundle root (e.g. `Contents/MacOS/runtimed`).
+#[cfg(target_os = "macos")]
+fn generate_smappservice_plist(
+    bundle_program: &str,
+    log_path: &Path,
+) -> Result<String, ServiceError> {
+    let home = dirs::home_dir().ok_or_else(|| {
+        ServiceError::InstallFailed("Cannot determine home directory for service install".into())
+    })?;
+    let home_str = home.to_string_lossy();
+    let user = std::env::var("USER").unwrap_or_else(|_| "unknown".into());
+
+    let log_level = match runt_workspace::build_channel() {
+        runt_workspace::BuildChannel::Nightly => {
+            "info,notebook_sync=debug,runtimed::notebook_sync_server=debug"
+        }
+        runt_workspace::BuildChannel::Stable => "warn",
+    };
+
+    Ok(format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{label}</string>
+    <key>BundleProgram</key>
+    <string>{bundle_program}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{bundle_program}</string>
+        <string>--log-level</string>
+        <string>{log_level}</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>Crashed</key>
+        <true/>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>{log}</string>
+    <key>StandardErrorPath</key>
+    <string>{log}</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>{home}</string>
+        <key>USER</key>
+        <string>{user}</string>
+        <key>PATH</key>
+        <string>{home}/.local/bin:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+    </dict>
+</dict>
+</plist>
+"#,
+        label = daemon_launchd_label(),
+        bundle_program = bundle_program,
+        log_level = log_level,
+        log = log_path.display(),
+        home = home_str,
+        user = user,
+    ))
+}
+
+/// Write the SMAppService plist into the app bundle and register it.
+///
+/// The plist is placed at `<bundle>/Contents/Library/LaunchAgents/<label>.plist`.
+/// Then `SMAppService.agent(plistName:).register()` is called to register the
+/// agent with the system.
+#[cfg(target_os = "macos")]
+fn smappservice_register(binary: &Path, log_path: &Path) -> ServiceResult<()> {
+    use smappservice_rs::{AppService, ServiceType};
+
+    let bundle_root = app_bundle_root(binary)
+        .ok_or_else(|| ServiceError::InstallFailed("Cannot determine app bundle root".into()))?;
+
+    // Compute bundle-relative path: e.g. "Contents/MacOS/runtimed"
+    let binary_str = binary.to_string_lossy();
+    let bundle_root_str = bundle_root.to_string_lossy();
+    let bundle_program = binary_str
+        .strip_prefix(&*bundle_root_str)
+        .and_then(|s| s.strip_prefix('/'))
+        .ok_or_else(|| {
+            ServiceError::InstallFailed(format!(
+                "Binary {:?} is not inside bundle {:?}",
+                binary, bundle_root
+            ))
+        })?;
+
+    let plist_content = generate_smappservice_plist(bundle_program, log_path)?;
+
+    // Write plist into the bundle at Contents/Library/LaunchAgents/
+    let launch_agents_dir = bundle_root.join("Contents/Library/LaunchAgents");
+    std::fs::create_dir_all(&launch_agents_dir)?;
+
+    let plist_filename = smappservice_plist_filename();
+    let plist_path = launch_agents_dir.join(&plist_filename);
+    std::fs::write(&plist_path, plist_content)?;
+    info!("[service] Wrote SMAppService plist to {:?}", plist_path);
+
+    // Register via SMAppService
+    let service = AppService::new(ServiceType::Agent {
+        plist_name: &plist_filename,
+    });
+
+    // Unregister first to handle upgrades (plist content may have changed)
+    let _ = service.unregister();
+
+    service
+        .register()
+        .map_err(|e| ServiceError::InstallFailed(format!("SMAppService register failed: {e}")))?;
+
+    info!("[service] Registered agent via SMAppService");
+    Ok(())
+}
+
+/// Unregister the SMAppService agent.
+#[cfg(target_os = "macos")]
+fn smappservice_unregister(binary: &Path) -> ServiceResult<()> {
+    use smappservice_rs::{AppService, ServiceType};
+
+    let plist_filename = smappservice_plist_filename();
+    let service = AppService::new(ServiceType::Agent {
+        plist_name: &plist_filename,
+    });
+
+    service
+        .unregister()
+        .map_err(|e| ServiceError::StopFailed(format!("SMAppService unregister failed: {e}")))?;
+
+    info!("[service] Unregistered agent via SMAppService");
+
+    // Clean up the plist from the bundle
+    if let Some(bundle_root) = app_bundle_root(binary) {
+        let plist_path = bundle_root
+            .join("Contents/Library/LaunchAgents")
+            .join(&plist_filename);
+        if plist_path.exists() {
+            std::fs::remove_file(&plist_path)?;
+            info!("[service] Removed SMAppService plist {:?}", plist_path);
+        }
+    }
+
+    Ok(())
+}
+
+/// Check if an SMAppService agent is registered.
+#[cfg(target_os = "macos")]
+fn smappservice_is_registered() -> bool {
+    use smappservice_rs::{AppService, ServiceStatus, ServiceType};
+
+    let plist_filename = smappservice_plist_filename();
+    let service = AppService::new(ServiceType::Agent {
+        plist_name: &plist_filename,
+    });
+
+    matches!(service.status(), ServiceStatus::Enabled)
+}
+
 // Platform-specific paths
 
+/// Path to the legacy plist in `~/Library/LaunchAgents/`.
+///
+/// Used on macOS <13 and for non-bundle installs. On macOS 13+, the plist
+/// lives inside the app bundle instead (see `smappservice_register`).
 #[cfg(target_os = "macos")]
 fn plist_path() -> PathBuf {
     dirs::home_dir()
@@ -750,9 +1103,23 @@ fn windows_startup_path() -> PathBuf {
 
 /// Get the path to the service configuration file.
 /// Used by doctor command for diagnostics.
+///
+/// On macOS, returns the in-bundle plist path if SMAppService is active,
+/// otherwise the legacy `~/Library/LaunchAgents/` path.
 pub fn service_config_path() -> PathBuf {
     #[cfg(target_os = "macos")]
     {
+        // If the current binary is in an app bundle on macOS 13+, return
+        // the in-bundle plist path
+        if let Ok(exe) = std::env::current_exe() {
+            if should_use_smappservice(&exe) {
+                if let Some(bundle_root) = app_bundle_root(&exe) {
+                    return bundle_root
+                        .join("Contents/Library/LaunchAgents")
+                        .join(smappservice_plist_filename());
+                }
+            }
+        }
         plist_path()
     }
     #[cfg(target_os = "linux")]

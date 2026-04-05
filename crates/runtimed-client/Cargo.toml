@@ -28,6 +28,9 @@ automerge = "0.7"
 schemars = { workspace = true }
 ts-rs = { workspace = true }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+smappservice-rs = "0.1"
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
