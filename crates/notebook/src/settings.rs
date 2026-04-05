@@ -16,7 +16,9 @@ use std::path::PathBuf;
 
 // Re-export types that notebook code uses from runtimed
 pub use runtimed::runtime::Runtime;
-pub use runtimed::settings_doc::{CondaDefaults, PythonEnvType, ThemeMode, UvDefaults};
+pub use runtimed::settings_doc::{
+    CondaDefaults, PixiDefaults, PythonEnvType, ThemeMode, UvDefaults,
+};
 
 /// Get the path to the settings file
 fn settings_path() -> PathBuf {
@@ -112,6 +114,7 @@ mod tests {
                 default_packages: vec!["numpy".into(), "pandas".into()],
             },
             conda: CondaDefaults::default(),
+            pixi: PixiDefaults::default(),
             keep_alive_secs: 30,
             onboarding_completed: false,
         };
@@ -249,6 +252,10 @@ mod tests {
                 .get("conda")
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or(defaults.conda),
+            pixi: json_val
+                .get("pixi")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or(defaults.pixi),
             keep_alive_secs: json_val
                 .get("keep_alive_secs")
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
