@@ -14,7 +14,7 @@ import {
   NTERACT_COMM_CLOSE,
   NTERACT_COMM_MSG,
   NTERACT_COMM_OPEN,
-  NTERACT_COMM_SYNC,
+  NTERACT_WIDGET_SNAPSHOT,
   NTERACT_DOUBLE_CLICK,
   NTERACT_ERROR,
   NTERACT_EVAL,
@@ -48,7 +48,7 @@ describe("nteract JSON-RPC method constants", () => {
     NTERACT_COMM_OPEN,
     NTERACT_COMM_MSG,
     NTERACT_COMM_CLOSE,
-    NTERACT_COMM_SYNC,
+    NTERACT_WIDGET_SNAPSHOT,
     NTERACT_BRIDGE_READY,
     NTERACT_WIDGET_STATE,
     NTERACT_THEME,
@@ -91,7 +91,7 @@ describe("nteract JSON-RPC method constants", () => {
     expect(NTERACT_COMM_OPEN).toBe("nteract/commOpen");
     expect(NTERACT_COMM_MSG).toBe("nteract/commMsg");
     expect(NTERACT_COMM_CLOSE).toBe("nteract/commClose");
-    expect(NTERACT_COMM_SYNC).toBe("nteract/commSync");
+    expect(NTERACT_WIDGET_SNAPSHOT).toBe("nteract/widgetSnapshot");
     expect(NTERACT_BRIDGE_READY).toBe("nteract/bridgeReady");
     expect(NTERACT_WIDGET_READY).toBe("nteract/widgetReady");
     expect(NTERACT_WIDGET_COMM_MSG).toBe("nteract/widgetCommMsg");

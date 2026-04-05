@@ -260,7 +260,7 @@ crates/runt-workspace/
 | Crate | What it owns |
 |-------|-------------|
 | `notebook-doc` | `NotebookDoc`: Automerge schema, cell CRUD, per-cell accessors, `CellChangeset` diffing |
-| `notebook-protocol` | Wire types: `NotebookRequest`, `NotebookResponse`, `NotebookBroadcast`, `CommSnapshot` |
+| `notebook-protocol` | Wire types: `NotebookRequest`, `NotebookResponse`, `NotebookBroadcast` |
 | `notebook-sync` | `DocHandle`: sync infrastructure, snapshot watch channel, per-cell accessors for Python |
 
 For the full architecture (all phases, schemas, and design decisions), see [docs/runtimed.md](../docs/runtimed.md).

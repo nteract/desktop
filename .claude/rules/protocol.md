@@ -91,7 +91,7 @@ Only `0x00` (AutomergeSync) and `0x04` (Presence) are valid outgoing types from 
 | `ExecutionDone { cell_id }` | Cell execution completed |
 | `QueueChanged { executing, queued }` | Execution queue state changed (legacy; RuntimeStateDoc is authoritative) |
 | `Comm { msg_type, content, buffers }` | Jupyter comm message (widget) |
-| `CommSync { comms }` | Full widget state snapshot for new clients |
+| ~~`CommSync`~~ | Removed — widget state syncs via RuntimeStateDoc CRDT |
 | `EnvProgress { env_type, phase }` | Environment setup progress |
 | `EnvSyncState { in_sync, diff }` | Deps drifted from launched kernel |
 | `RoomRenamed { new_notebook_id }` | Untitled notebook saved, room re-keyed |
@@ -159,7 +159,7 @@ Each cell execution is assigned a unique `execution_id` (UUID). The `QueueEntry`
 
 ## Architectural Direction
 
-**Comms in doc (#761)** -- Widget state will move into `doc.comms/` in the Automerge document, eliminating `CommSync` and several broadcast variants.
+**Comms in doc (#761)** -- Done. Widget state lives in `doc.comms/` in RuntimeStateDoc. `CommSync` broadcast has been removed. New clients receive widget state via normal CRDT sync.
 
 ## Key Source Files
 

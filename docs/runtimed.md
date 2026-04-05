@@ -795,7 +795,7 @@ Broadcast types (see `NotebookBroadcast` in `crates/notebook-protocol/src/protoc
 - `QueueChanged { executing, queued }` — execution queue state
 - `KernelError { error }` — launch failure or crash
 - `Comm { msg_type, content, buffers }` — ipywidgets protocol (comm_open/msg/close)
-- `CommSync { comms }` — initial widget state for newly connected clients
+- ~~`CommSync`~~ — removed; widget state syncs via RuntimeStateDoc CRDT
 - `EnvProgress { env_type, phase }` — rich environment setup progress (repodata, solve, download, link)
 - `EnvSyncState { in_sync, diff }` — notebook metadata vs launched config drift
 

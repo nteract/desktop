@@ -181,10 +181,10 @@ describe("CommBridgeManager", () => {
       // Trigger widget_ready
       manager.handleIframeMessage({ type: "widget_ready" });
 
-      // Should have: bridge_ready, comm_sync, then buffered messages
+      // Should have: bridge_ready, widget_snapshot, then buffered messages
       expect(mockFrame.sendCalls.length).toBeGreaterThanOrEqual(4);
 
-      // Find the buffered messages (after comm_sync)
+      // Find the buffered messages (after widget_snapshot)
       const commOpenIdx = mockFrame.sendCalls.findIndex(
         (msg: unknown) => (msg as { type: string }).type === "comm_open",
       );
@@ -226,7 +226,7 @@ describe("CommBridgeManager", () => {
   });
 
   describe("handleWidgetReady", () => {
-    it("sends comm_sync with all existing models from store", () => {
+    it("sends widget_snapshot with all existing models from store", () => {
       const models = new Map<string, WidgetModel>([
         ["comm-1", createModel("comm-1", { value: 1 })],
         ["comm-2", createModel("comm-2", { value: 2 })],
@@ -243,7 +243,7 @@ describe("CommBridgeManager", () => {
       manager.handleIframeMessage({ type: "widget_ready" });
 
       const commSync = mockFrame.sendCalls.find(
-        (msg: unknown) => (msg as { type: string }).type === "comm_sync",
+        (msg: unknown) => (msg as { type: string }).type === "widget_snapshot",
       ) as { type: string; payload: { models: unknown[] } };
 
       expect(commSync).toBeDefined();
@@ -320,9 +320,9 @@ describe("CommBridgeManager", () => {
 
       manager.handleIframeMessage({ type: "widget_ready" });
 
-      // Should have sent comm_sync with the model
+      // Should have sent widget_snapshot with the model
       const commSync = mockFrame.sendCalls.find(
-        (msg: unknown) => (msg as { type: string }).type === "comm_sync",
+        (msg: unknown) => (msg as { type: string }).type === "widget_snapshot",
       );
       expect(commSync).toBeDefined();
     });
@@ -873,10 +873,10 @@ describe("CommBridgeManager", () => {
       manager.handleIframeMessage({ type: "widget_ready" });
 
       const commSyncs = mockFrame.sendCalls.filter(
-        (msg: unknown) => (msg as { type: string }).type === "comm_sync",
+        (msg: unknown) => (msg as { type: string }).type === "widget_snapshot",
       );
 
-      // Should have two comm_sync messages (before and after dispose)
+      // Should have two widget_snapshot messages (before and after dispose)
       expect(commSyncs).toHaveLength(2);
     });
 

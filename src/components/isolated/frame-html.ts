@@ -194,7 +194,7 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
               case 'nteract/commOpen':
               case 'nteract/commMsg':
               case 'nteract/commClose':
-              case 'nteract/commSync':
+              case 'nteract/widgetSnapshot':
                 break;
             }
           } catch (err) {
@@ -248,7 +248,7 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
             case 'comm_open':
             case 'comm_msg':
             case 'comm_close':
-            case 'comm_sync':
+            case 'widget_snapshot':
               break;
           }
         } catch (err) {
