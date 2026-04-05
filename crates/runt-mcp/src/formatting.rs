@@ -114,12 +114,43 @@ pub fn format_outputs_text(outputs: &[Output]) -> String {
 
 /// Convert outputs to separate Content items (one per output).
 /// This gives MCP clients richer structure than a single concatenated string.
+/// When outputs exist but have no text representation, appends a summary
+/// so agents know execution produced output they can't see.
 pub fn outputs_to_content_items(outputs: &[Output]) -> Vec<rmcp::model::Content> {
-    outputs
-        .iter()
-        .filter_map(format_output_text)
-        .map(rmcp::model::Content::text)
-        .collect()
+    let mut items: Vec<rmcp::model::Content> = Vec::new();
+    let mut omitted_count = 0usize;
+    let mut omitted_mimes: Vec<String> = Vec::new();
+
+    for output in outputs {
+        if let Some(text) = format_output_text(output) {
+            items.push(rmcp::model::Content::text(text));
+        } else if output.output_type == "display_data" || output.output_type == "execute_result" {
+            omitted_count += 1;
+            if let Some(data) = &output.data {
+                let mimes: Vec<&str> = data
+                    .keys()
+                    .map(|k| k.as_str())
+                    .filter(|k| !k.starts_with("text/llm"))
+                    .collect();
+                if !mimes.is_empty() {
+                    omitted_mimes.push(mimes.join(", "));
+                }
+            }
+        }
+    }
+
+    if omitted_count > 0 {
+        let detail = if omitted_mimes.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", omitted_mimes.join("; "))
+        };
+        items.push(rmcp::model::Content::text(format!(
+            "[{omitted_count} output(s) with non-text content{detail} — visible in the notebook UI]"
+        )));
+    }
+
+    items
 }
 
 /// Format a compact one-line cell summary (matches Python _format_cell_summary).

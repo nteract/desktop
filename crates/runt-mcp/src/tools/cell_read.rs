@@ -273,6 +273,10 @@ pub async fn get_all_cells(
 }
 
 /// Get cell execution status from RuntimeState.
+///
+/// Checks queue first (running/queued), then falls back to the executions
+/// map for terminal status (done/error). Without this fallback, agents
+/// cannot distinguish "executed with output" from "never ran."
 fn get_cell_status(handle: &notebook_sync::handle::DocHandle, cell_id: &str) -> Option<String> {
     if let Ok(state) = handle.get_runtime_state() {
         if state
@@ -286,6 +290,17 @@ fn get_cell_status(handle: &notebook_sync::handle::DocHandle, cell_id: &str) -> 
         if state.queue.queued.iter().any(|e| e.cell_id == cell_id) {
             return Some("queued".to_string());
         }
+        // Check executions map for terminal status (most recent execution for this cell)
+        if let Some(exec) = state
+            .executions
+            .values()
+            .filter(|e| e.cell_id == cell_id)
+            .max_by_key(|e| e.execution_count)
+        {
+            if exec.status == "done" || exec.status == "error" {
+                return Some(exec.status.clone());
+            }
+        }
     }
     None
 }
@@ -296,6 +311,14 @@ pub fn build_cell_status_map(
 ) -> std::collections::HashMap<String, String> {
     let mut map = std::collections::HashMap::new();
     if let Ok(state) = handle.get_runtime_state() {
+        // Terminal statuses from executions (written first, active queue overrides below)
+        for exec in state.executions.values() {
+            if exec.status == "done" || exec.status == "error" {
+                map.entry(exec.cell_id.clone())
+                    .or_insert_with(|| exec.status.clone());
+            }
+        }
+        // Active queue statuses override terminal ones
         if let Some(ref e) = state.queue.executing {
             map.insert(e.cell_id.clone(), "running".to_string());
         }
