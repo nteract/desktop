@@ -131,17 +131,44 @@ pub enum SymlinkStatus {
 /// current app bundle binary path, and whether the `nb`/`nb-nightly` wrapper
 /// script references the correct CLI command name.
 ///
-/// Returns a tuple of `(runt_status, nb_status)`.
+/// Checks both `~/.local/bin` (current) and `/usr/local/bin` (legacy). If the
+/// CLI exists in the legacy location, that is checked too.
+///
+/// Returns a tuple of `(runt_status, nb_status)` representing the worst status
+/// across both locations.
 #[cfg(unix)]
 pub fn check_cli_currency(app: &tauri::AppHandle) -> (SymlinkStatus, SymlinkStatus) {
-    let dir = install_dir();
     let cli_name = cli_command_name();
     let nb_name = cli_notebook_alias_name();
 
-    let runt_status = check_runt_symlink(app, &dir.join(cli_name));
-    let nb_status = check_nb_script(&dir.join(nb_name), cli_name);
+    let new_dir = install_dir();
+    let legacy_dir = PathBuf::from(LEGACY_INSTALL_DIR);
+
+    // Check both locations and take the worst status (Stale > NotInstalled > Current)
+    let runt_new = check_runt_symlink(app, &new_dir.join(cli_name));
+    let nb_new = check_nb_script(&new_dir.join(nb_name), cli_name);
+
+    let runt_legacy = check_runt_symlink(app, &legacy_dir.join(cli_name));
+    let nb_legacy = check_nb_script(&legacy_dir.join(nb_name), cli_name);
+
+    // If either location has a stale entry, report stale so we trigger reinstall.
+    // If neither location is installed, report not installed.
+    let runt_status = worst_status(runt_new, runt_legacy);
+    let nb_status = worst_status(nb_new, nb_legacy);
 
     (runt_status, nb_status)
+}
+
+/// Return the more actionable of two statuses: Stale > NotInstalled > Current.
+/// If either location is stale, the result is stale. If both are not installed,
+/// the result is not installed. Otherwise current.
+#[cfg(unix)]
+fn worst_status(a: SymlinkStatus, b: SymlinkStatus) -> SymlinkStatus {
+    match (&a, &b) {
+        (SymlinkStatus::Stale, _) | (_, SymlinkStatus::Stale) => SymlinkStatus::Stale,
+        (SymlinkStatus::NotInstalled, SymlinkStatus::NotInstalled) => SymlinkStatus::NotInstalled,
+        _ => SymlinkStatus::Current,
+    }
 }
 
 /// Check if the runt symlink points to the current bundled binary.
@@ -221,11 +248,45 @@ fn check_nb_script(script_path: &std::path::Path, expected_cli_name: &str) -> Sy
     }
 }
 
+/// Returns true if the app appears to be running from a translocated or
+/// temporary macOS path (e.g., opened directly from a DMG or Downloads before
+/// being moved to /Applications). We must not rewrite CLI symlinks in this case
+/// because the path is ephemeral — the symlinks would break as soon as the
+/// translocated copy is cleaned up.
+#[cfg(target_os = "macos")]
+fn is_translocated_path(app: &tauri::AppHandle) -> bool {
+    let bundled = match get_bundled_runt_path(app) {
+        Some(p) => p,
+        None => return false,
+    };
+
+    let path_str = bundled.to_string_lossy();
+
+    // macOS app translocation moves apps to /private/var/folders/...
+    // Also guard against running from common temp locations.
+    if path_str.contains("/private/var/folders/")
+        || path_str.contains("/AppTranslocation/")
+        || path_str.starts_with("/tmp/")
+        || path_str.starts_with("/var/folders/")
+    {
+        log::info!(
+            "[cli_install] Skipping CLI currency check — app running from translocated path: {}",
+            path_str
+        );
+        return true;
+    }
+
+    false
+}
+
 /// Silently update the CLI installation if the symlinks are stale.
 ///
 /// Called on app launch. If the user has previously installed the CLI (symlink
 /// exists), this checks whether it still points to the current app bundle and
 /// re-runs `install_cli()` if not. Does nothing if the CLI was never installed.
+///
+/// Skips the check on macOS if the app is running from a translocated path
+/// (e.g., directly from a DMG) to avoid pointing symlinks at ephemeral paths.
 pub fn ensure_cli_current(app: &tauri::AppHandle) {
     #[cfg(not(unix))]
     {
@@ -237,6 +298,12 @@ pub fn ensure_cli_current(app: &tauri::AppHandle) {
 
     #[cfg(unix)]
     {
+        // On macOS, skip if the app is running from a translocated/temporary path.
+        #[cfg(target_os = "macos")]
+        if is_translocated_path(app) {
+            return;
+        }
+
         let (runt_status, nb_status) = check_cli_currency(app);
 
         log::debug!(
@@ -548,6 +615,46 @@ mod tests {
 
         assert!(!symlink_path.exists());
         assert!(!symlink_path.is_symlink());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn worst_status_stale_wins() {
+        assert_eq!(
+            worst_status(SymlinkStatus::Stale, SymlinkStatus::Current),
+            SymlinkStatus::Stale
+        );
+        assert_eq!(
+            worst_status(SymlinkStatus::Current, SymlinkStatus::Stale),
+            SymlinkStatus::Stale
+        );
+        assert_eq!(
+            worst_status(SymlinkStatus::NotInstalled, SymlinkStatus::Stale),
+            SymlinkStatus::Stale
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn worst_status_both_not_installed() {
+        assert_eq!(
+            worst_status(SymlinkStatus::NotInstalled, SymlinkStatus::NotInstalled),
+            SymlinkStatus::NotInstalled
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn worst_status_current_when_one_installed() {
+        // If one location is current and the other not installed, overall is current
+        assert_eq!(
+            worst_status(SymlinkStatus::Current, SymlinkStatus::NotInstalled),
+            SymlinkStatus::Current
+        );
+        assert_eq!(
+            worst_status(SymlinkStatus::NotInstalled, SymlinkStatus::Current),
+            SymlinkStatus::Current
+        );
     }
 
     #[cfg(unix)]
