@@ -885,10 +885,13 @@ where
     use runtimed::client::DaemonProgress;
     use tauri_plugin_shell::{process::CommandEvent, ShellExt};
 
-    log::info!("[startup] Upgrading daemon to bundled version...");
+    let bundled = bundled_daemon_version();
+    log::info!("[startup] Upgrading daemon to bundled version: {}", bundled);
     on_progress(DaemonProgress::Installing); // Reuse "installing" state for upgrade
 
     // "runtimed install" handles: stop old → copy binary → start new
+    // The sidecar resolves to the runtimed binary bundled in the app.
+    // After a Tauri downloadAndInstall(), this should be the NEW binary.
     let (mut rx, _child) = app
         .shell()
         .sidecar("runtimed")
@@ -934,7 +937,7 @@ where
     }
 
     // Wait for upgraded daemon to be ready
-    log::info!("[startup] Upgrade completed, waiting for daemon to be ready...");
+    log::info!("[startup] Sidecar install exited successfully, waiting for daemon to be ready...");
     on_progress(DaemonProgress::Starting);
 
     let client = runtimed::client::PoolClient::default();
@@ -949,11 +952,26 @@ where
             let endpoint = runt_workspace::default_socket_path()
                 .to_string_lossy()
                 .to_string();
-            log::info!(
-                "[startup] Upgraded daemon ready at {} (attempt {})",
-                endpoint,
-                attempt
-            );
+
+            // Verify the running daemon version matches what we intended to install
+            if let Some(info) = runtimed::singleton::get_running_daemon_info() {
+                let running_commit = extract_commit_hash(&info.version);
+                let bundled_commit = extract_commit_hash(&bundled);
+                if running_commit == bundled_commit {
+                    log::info!(
+                        "[startup] Upgraded daemon version confirmed: {} (attempt {})",
+                        info.version,
+                        attempt
+                    );
+                } else {
+                    log::warn!(
+                        "[startup] Daemon version mismatch after upgrade! running={}, bundled={}",
+                        info.version,
+                        bundled
+                    );
+                }
+            }
+
             on_progress(DaemonProgress::Ready {
                 endpoint: endpoint.clone(),
             });
@@ -1263,7 +1281,16 @@ async fn run_upgrade(
         }
     }
 
-    // Step 4: Upgrade daemon
+    // Step 4: Upgrade daemon.
+    // At this point, Tauri's downloadAndInstall() has already completed
+    // (called by the upgrade frontend before invoking run_upgrade).
+    // The sidecar should resolve to the NEW binary if the app bundle
+    // was replaced on disk. If not, the startup version check will
+    // catch the mismatch on next launch.
+    log::info!(
+        "[upgrade] Step 4: upgrading daemon (bundled={})",
+        bundled_daemon_version()
+    );
     app.emit("upgrade:progress", UpgradeProgress::UpgradingDaemon)
         .map_err(|e| e.to_string())?;
 
@@ -1316,7 +1343,11 @@ where
     use runtimed::client::{DaemonProgress, PoolClient};
     use tauri_plugin_shell::{process::CommandEvent, ShellExt};
 
-    log::info!("[startup] Checking if daemon is running...");
+    let bundled_version = bundled_daemon_version();
+    log::info!(
+        "[startup] Checking if daemon is running... (bundled={})",
+        bundled_version
+    );
     on_progress(DaemonProgress::Checking);
 
     // Check if daemon is already running
@@ -1324,7 +1355,6 @@ where
     if let Ok(()) = client.ping().await {
         // Daemon is running - check version alignment (production only)
         if !runt_workspace::is_dev_mode() {
-            let bundled_version = bundled_daemon_version();
             if let Some(info) = runtimed::singleton::get_running_daemon_info() {
                 // Compare commit hashes only - CI appends "+{git_sha}" to the version
                 // at build time, so commit hash is the precise compatibility check.
@@ -1333,7 +1363,7 @@ where
 
                 if running_commit != bundled_commit {
                     log::info!(
-                        "[startup] Daemon commit mismatch: running={}, bundled={}",
+                        "[startup] Daemon commit mismatch — will upgrade: running={}, bundled={}",
                         info.version,
                         bundled_version
                     );
@@ -1341,8 +1371,14 @@ where
                     return upgrade_daemon_via_sidecar(app, on_progress).await;
                 }
                 log::info!(
-                    "[startup] Daemon commit matches bundled: {:?}",
-                    bundled_commit
+                    "[startup] Daemon version aligned: running={}, bundled={}",
+                    info.version,
+                    bundled_version
+                );
+            } else {
+                log::warn!(
+                    "[startup] Daemon responded to ping but info file missing (bundled={})",
+                    bundled_version
                 );
             }
         }

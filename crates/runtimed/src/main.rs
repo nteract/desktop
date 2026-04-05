@@ -444,6 +444,11 @@ fn install_service(binary: Option<PathBuf>) -> anyhow::Result<()> {
 
     println!("Installing {} service...", daemon_service_name());
     println!("Source binary: {}", source_binary.display());
+    println!(
+        "Binary version: {}+{}",
+        env!("CARGO_PKG_VERSION"),
+        env!("GIT_COMMIT")
+    );
 
     let mut manager = ServiceManager::default();
 

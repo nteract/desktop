@@ -153,7 +153,15 @@ pub fn install_cli(app: &tauri::AppHandle) -> Result<(), String> {
 
     try_install_direct(&bundled_runt, &runt_dest, &nb_dest)?;
 
-    log::info!("[cli_install] CLI installed to {}", dir.display());
+    log::info!(
+        "[cli_install] CLI installed: {} -> {}",
+        runt_dest.display(),
+        bundled_runt.display()
+    );
+
+    // Remove legacy /usr/local/bin entries so they don't shadow ~/.local/bin
+    #[cfg(unix)]
+    cleanup_legacy_cli();
 
     // Ensure the user's shell RC has ~/.local/bin on PATH
     if let Err(e) = ensure_shell_path(&dir) {
@@ -161,6 +169,32 @@ pub fn install_cli(app: &tauri::AppHandle) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Remove legacy CLI entries from /usr/local/bin so they don't shadow ~/.local/bin.
+///
+/// Old versions installed copies (not symlinks) to /usr/local/bin. Since that
+/// directory is typically earlier in PATH, a stale binary there shadows the
+/// new symlink in ~/.local/bin. We only remove entries we recognize as ours.
+#[cfg(unix)]
+fn cleanup_legacy_cli() {
+    let legacy = PathBuf::from(LEGACY_INSTALL_DIR);
+    for name in [cli_command_name(), cli_notebook_alias_name()] {
+        let path = legacy.join(name);
+        if path.exists() {
+            match fs::remove_file(&path) {
+                Ok(()) => log::info!(
+                    "[cli_install] Removed legacy CLI at {} (was shadowing ~/.local/bin)",
+                    path.display()
+                ),
+                Err(e) => log::debug!(
+                    "[cli_install] Could not remove legacy {}: {} (may need sudo)",
+                    path.display(),
+                    e
+                ),
+            }
+        }
+    }
 }
 
 /// Try to install directly without admin privileges
