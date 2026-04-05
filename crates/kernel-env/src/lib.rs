@@ -28,6 +28,8 @@
 pub mod conda;
 #[cfg(feature = "runtime")]
 pub mod gc;
+#[cfg(feature = "runtime")]
+pub mod pixi;
 pub mod progress;
 #[cfg(feature = "runtime")]
 pub mod uv;
@@ -35,6 +37,8 @@ pub mod uv;
 // Re-export key types
 #[cfg(feature = "runtime")]
 pub use conda::{CondaDependencies, CondaEnvironment};
+#[cfg(feature = "runtime")]
+pub use pixi::PixiEnvironment;
 pub use progress::{EnvProgressPhase, LogHandler, ProgressHandler};
 #[cfg(feature = "runtime")]
 pub use uv::{UvDependencies, UvEnvironment};

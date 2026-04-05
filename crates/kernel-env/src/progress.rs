@@ -177,6 +177,8 @@ impl ProgressHandler for LogHandler {
 #[cfg(feature = "runtime")]
 pub struct RattlerReporter {
     handler: Arc<dyn ProgressHandler>,
+    /// Environment type label for progress events (e.g. "conda", "pixi").
+    env_type: String,
     /// Total packages to download.
     total_downloads: AtomicUsize,
     /// Number of packages fully downloaded.
@@ -205,9 +207,18 @@ pub struct RattlerReporter {
 #[cfg(feature = "runtime")]
 impl RattlerReporter {
     /// Create a new reporter that delegates to the given handler.
+    ///
+    /// The `env_type` label defaults to `"conda"`. Use [`new_with_env_type`]
+    /// to override it (e.g. `"pixi"`).
     pub fn new(handler: Arc<dyn ProgressHandler>) -> Self {
+        Self::new_with_env_type(handler, "conda")
+    }
+
+    /// Create a reporter with a custom environment type label.
+    pub fn new_with_env_type(handler: Arc<dyn ProgressHandler>, env_type: &str) -> Self {
         Self {
             handler,
+            env_type: env_type.to_string(),
             total_downloads: AtomicUsize::new(0),
             downloaded_packages: AtomicUsize::new(0),
             bytes_downloaded: AtomicU64::new(0),
@@ -262,7 +273,7 @@ impl RattlerReporter {
         };
 
         self.handler.on_progress(
-            "conda",
+            &self.env_type,
             EnvProgressPhase::DownloadProgress {
                 completed,
                 total,
@@ -284,7 +295,7 @@ impl RattlerReporter {
         let total = self.total_to_link.load(Ordering::SeqCst);
 
         self.handler.on_progress(
-            "conda",
+            &self.env_type,
             EnvProgressPhase::LinkProgress {
                 completed,
                 total,
