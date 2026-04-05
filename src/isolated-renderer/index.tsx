@@ -41,7 +41,6 @@ import { HtmlOutput } from "@/components/outputs/html-output";
 import { ImageOutput } from "@/components/outputs/image-output";
 import { JavaScriptOutput } from "@/components/outputs/javascript-output";
 import { JsonOutput } from "@/components/outputs/json-output";
-import { GeoJsonOutput } from "@/components/outputs/geojson-output";
 import { PdfOutput } from "@/components/outputs/pdf-output";
 import { VideoOutput } from "@/components/outputs/video-output";
 import { SvgOutput } from "@/components/outputs/svg-output";
@@ -478,13 +477,6 @@ function OutputRenderer({ payload }: { payload: RenderPayload }) {
   // JavaScript
   if (mimeType === "application/javascript") {
     return <JavaScriptOutput code={String(content)} />;
-  }
-
-  // GeoJSON
-  if (mimeType === "application/geo+json") {
-    const geojsonData =
-      typeof content === "string" ? JSON.parse(content) : content;
-    return <GeoJsonOutput data={geojsonData} />;
   }
 
   // JSON

@@ -1,17 +1,14 @@
 /**
  * On-demand library loading for isolated iframes.
  *
- * Heavy libraries are NOT bundled into the isolated renderer IIFE. Instead,
- * they are lazy-loaded from the parent app and injected into iframes only
- * when an output actually needs them.
+ * Heavy output renderers are NOT bundled into the isolated renderer IIFE.
+ * Instead, they are built as renderer plugins — CJS modules loaded via
+ * `frame.installRenderer()`. The iframe's plugin loader provides a shared
+ * React instance and a registration API. No window globals needed.
  *
- * Two injection mechanisms:
- * - **Renderer plugins** (markdown, vega, plotly): CJS modules loaded via
- *   `frame.installRenderer()`. The iframe's plugin loader provides a shared React
- *   instance and a registration API. No globals needed.
- * - **Legacy eval libraries** (leaflet): Raw JS strings injected via
- *   `frame.eval()` that set window globals (e.g., `window.L`). These will
- *   migrate to the renderer plugin API in future PRs.
+ * Each plugin has its own virtual module (`virtual:renderer-plugin/{name}`)
+ * so Vite can code-split them into independent chunks that load only when
+ * their MIME types appear in cell outputs.
  */
 
 import type { JupyterOutput } from "@/components/cell/jupyter-output";
@@ -19,32 +16,29 @@ import type { IsolatedFrameHandle } from "@/components/isolated/isolated-frame";
 import { isVegaMimeType } from "@/components/outputs/vega-mime";
 
 /**
- * Map of MIME types to the library name they require.
- * Extend this when adding support for new heavy visualization libraries.
+ * Map of MIME types to the renderer plugin name they require.
+ * Extend this when adding support for new visualization libraries.
  */
-const MIME_LIBRARIES: Record<string, string> = {
+const MIME_PLUGINS: Record<string, string> = {
   "text/markdown": "markdown",
   "application/vnd.plotly.v1+json": "plotly",
   "application/geo+json": "leaflet",
 };
 
-/** Libraries that use the renderer plugin API instead of legacy eval. */
-const RENDERER_PLUGINS = new Set(["markdown", "vega", "plotly"]);
-
-function libraryForMime(mime: string): string | undefined {
-  if (MIME_LIBRARIES[mime]) return MIME_LIBRARIES[mime];
+function pluginForMime(mime: string): string | undefined {
+  if (MIME_PLUGINS[mime]) return MIME_PLUGINS[mime];
   if (isVegaMimeType(mime)) return "vega";
   return undefined;
 }
 
-/** Cache of library code promises (shared across all iframes). */
-const codeCache = new Map<string, Promise<{ code: string; css?: string }>>();
+/** Cache of plugin code promises (shared across all iframes). */
+const pluginCache = new Map<string, Promise<{ code: string; css?: string }>>();
 
 /**
- * Lazy-load a library's code (and optional CSS).
+ * Lazy-load a renderer plugin's code and optional CSS.
  */
-function loadLibrary(name: string): Promise<{ code: string; css?: string }> {
-  const cached = codeCache.get(name);
+function loadPlugin(name: string): Promise<{ code: string; css?: string }> {
+  const cached = pluginCache.get(name);
   if (cached) return cached;
 
   const promise = (async (): Promise<{ code: string; css?: string }> => {
@@ -62,32 +56,27 @@ function loadLibrary(name: string): Promise<{ code: string; css?: string }> {
         return { code, css: css || undefined };
       }
       case "leaflet": {
-        // Load Leaflet JS and CSS. Inject CSS via a <style> tag before the JS runs.
-        const [leafletJs, leafletCss] = await Promise.all([
-          import("leaflet-js-raw"),
-          import("leaflet-css-raw"),
-        ]);
-        const cssInjection = `(function(){var s=document.createElement('style');s.textContent=${JSON.stringify(leafletCss.default)};document.head.appendChild(s);})();`;
-        return { code: `${cssInjection}\n${leafletJs.default}` };
+        const { code, css } = await import("virtual:renderer-plugin/leaflet");
+        return { code, css: css || undefined };
       }
       default:
-        throw new Error(`Unknown iframe library: ${name}`);
+        throw new Error(`Unknown renderer plugin: ${name}`);
     }
   })();
 
-  codeCache.set(name, promise);
+  pluginCache.set(name, promise);
   return promise;
 }
 
 /**
- * Scan outputs for MIME types that require a heavy library.
- * Returns deduplicated library names.
+ * Scan outputs for MIME types that require a renderer plugin.
+ * Returns deduplicated plugin names.
  */
 export function getRequiredLibraries(
   outputs: JupyterOutput[],
   selectMimeType: (data: Record<string, unknown>) => string | null,
 ): string[] {
-  const libs = new Set<string>();
+  const plugins = new Set<string>();
   for (const output of outputs) {
     if (
       output.output_type === "execute_result" ||
@@ -95,20 +84,17 @@ export function getRequiredLibraries(
     ) {
       const mime = selectMimeType(output.data);
       if (mime) {
-        const lib = libraryForMime(mime);
-        if (lib) libs.add(lib);
+        const plugin = pluginForMime(mime);
+        if (plugin) plugins.add(plugin);
       }
     }
   }
-  return Array.from(libs);
+  return Array.from(plugins);
 }
 
 /**
- * Inject required libraries into an iframe.
- * Idempotent per iframe — tracks what has been injected via `injectedSet`.
- *
- * Renderer plugins use `frame.installRenderer()` (CJS module with shared React).
- * Legacy libraries use `frame.eval()` (raw JS setting window globals).
+ * Install required renderer plugins into an iframe.
+ * Idempotent per iframe — tracks what has been installed via `injectedSet`.
  */
 export async function injectLibraries(
   frame: IsolatedFrameHandle,
@@ -117,24 +103,11 @@ export async function injectLibraries(
 ): Promise<void> {
   for (const name of libraryNames) {
     if (injectedSet.has(name)) continue;
-    const lib = await loadLibrary(name);
-
-    if (RENDERER_PLUGINS.has(name)) {
-      // Renderer plugin: use the plugin API (CJS + shared React, no globals)
-      console.debug(
-        `[iframe-libraries] installing renderer plugin "${name}" (${(lib.code.length / 1024).toFixed(0)}KB)`,
-      );
-      frame.installRenderer(lib.code, lib.css);
-    } else {
-      // Legacy: eval raw JS that sets window globals
-      const guard = `__LIB_${name.toUpperCase()}__`;
-      console.debug(
-        `[iframe-libraries] injecting "${name}" (${(lib.code.length / 1024).toFixed(0)}KB)`,
-      );
-      frame.eval(
-        `if(!window.${guard}){window.${guard}=true;\n${lib.code}\n}`,
-      );
-    }
+    const plugin = await loadPlugin(name);
+    console.debug(
+      `[iframe-libraries] installing renderer plugin "${name}" (${(plugin.code.length / 1024).toFixed(0)}KB)`,
+    );
+    frame.installRenderer(plugin.code, plugin.css);
     injectedSet.add(name);
   }
 }

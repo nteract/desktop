@@ -60,6 +60,10 @@ export function isolatedRendererPlugin(
     __dirname,
     "../../src/isolated-renderer/plotly-renderer.tsx",
   );
+  const leafletEntry = path.resolve(
+    __dirname,
+    "../../src/isolated-renderer/leaflet-renderer.tsx",
+  );
 
   let rendererCode = "";
   let rendererCss = "";
@@ -69,6 +73,8 @@ export function isolatedRendererPlugin(
   let vegaRendererCss = "";
   let plotlyRendererCode = "";
   let plotlyRendererCss = "";
+  let leafletRendererCode = "";
+  let leafletRendererCss = "";
   let buildPromise: Promise<void> | null = null;
 
   // Directories to watch for changes that should trigger rebuild
@@ -88,6 +94,8 @@ export function isolatedRendererPlugin(
     vegaRendererCss = "";
     plotlyRendererCode = "";
     plotlyRendererCss = "";
+    leafletRendererCode = "";
+    leafletRendererCss = "";
   }
 
   /** Build a renderer plugin as CJS with React externalized. */
@@ -283,17 +291,21 @@ export function isolatedRendererPlugin(
     }
 
     // --- Build renderer plugins (CJS, React externalized) ---
-    const [markdownPlugin, vegaPlugin, plotlyPlugin] = await Promise.all([
-      buildRendererPlugin(markdownEntry, "markdown-renderer", srcDir),
-      buildRendererPlugin(vegaEntry, "vega-renderer", srcDir),
-      buildRendererPlugin(plotlyEntry, "plotly-renderer", srcDir),
-    ]);
+    const [markdownPlugin, vegaPlugin, plotlyPlugin, leafletPlugin] =
+      await Promise.all([
+        buildRendererPlugin(markdownEntry, "markdown-renderer", srcDir),
+        buildRendererPlugin(vegaEntry, "vega-renderer", srcDir),
+        buildRendererPlugin(plotlyEntry, "plotly-renderer", srcDir),
+        buildRendererPlugin(leafletEntry, "leaflet-renderer", srcDir),
+      ]);
     markdownRendererCode = markdownPlugin.code;
     markdownRendererCss = markdownPlugin.css;
     vegaRendererCode = vegaPlugin.code;
     vegaRendererCss = vegaPlugin.css;
     plotlyRendererCode = plotlyPlugin.code;
     plotlyRendererCss = plotlyPlugin.css;
+    leafletRendererCode = leafletPlugin.code;
+    leafletRendererCss = leafletPlugin.css;
   }
 
   return {
@@ -356,6 +368,12 @@ export const css = ${JSON.stringify(vegaRendererCss)};
         return `
 export const code = ${JSON.stringify(plotlyRendererCode)};
 export const css = ${JSON.stringify(plotlyRendererCss)};
+`;
+      }
+      if (pluginName === "leaflet") {
+        return `
+export const code = ${JSON.stringify(leafletRendererCode)};
+export const css = ${JSON.stringify(leafletRendererCss)};
 `;
       }
     },
