@@ -15,6 +15,11 @@ import { build, type Plugin } from "vite";
 const VIRTUAL_MODULE_ID = "virtual:isolated-renderer";
 const RESOLVED_VIRTUAL_MODULE_ID = `\0${VIRTUAL_MODULE_ID}`;
 
+// Renderer plugins get their own virtual modules so Vite can code-split them.
+// Without this, importing the core IIFE would also pull in all plugin strings.
+const VIRTUAL_PLUGIN_PREFIX = "virtual:renderer-plugin/";
+const RESOLVED_PLUGIN_PREFIX = "\0virtual:renderer-plugin/";
+
 interface IsolatedRendererPluginOptions {
   /**
    * Path to the isolated renderer entry file.
@@ -296,24 +301,44 @@ export function isolatedRendererPlugin(
       if (id === VIRTUAL_MODULE_ID) {
         return RESOLVED_VIRTUAL_MODULE_ID;
       }
+      if (id.startsWith(VIRTUAL_PLUGIN_PREFIX)) {
+        return `${RESOLVED_PLUGIN_PREFIX}${id.slice(VIRTUAL_PLUGIN_PREFIX.length)}`;
+      }
     },
 
     async load(id) {
-      if (id === RESOLVED_VIRTUAL_MODULE_ID) {
+      if (
+        id === RESOLVED_VIRTUAL_MODULE_ID ||
+        id.startsWith(RESOLVED_PLUGIN_PREFIX)
+      ) {
         // Ensure build is complete before returning module content
-        // This handles race conditions in dev mode where load() may be
-        // called before buildStart() completes
         if (buildPromise) {
           await buildPromise;
         }
-        // Export the built code as strings
+      }
+
+      // Core IIFE bundle (no plugin strings — they have their own modules)
+      if (id === RESOLVED_VIRTUAL_MODULE_ID) {
         return `
 export const rendererCode = ${JSON.stringify(rendererCode)};
 export const rendererCss = ${JSON.stringify(rendererCss)};
-export const markdownRendererCode = ${JSON.stringify(markdownRendererCode)};
-export const markdownRendererCss = ${JSON.stringify(markdownRendererCss)};
-export const vegaRendererCode = ${JSON.stringify(vegaRendererCode)};
-export const vegaRendererCss = ${JSON.stringify(vegaRendererCss)};
+`;
+      }
+
+      // Renderer plugin modules (code-split from the core bundle)
+      const pluginName = id.startsWith(RESOLVED_PLUGIN_PREFIX)
+        ? id.slice(RESOLVED_PLUGIN_PREFIX.length)
+        : null;
+      if (pluginName === "markdown") {
+        return `
+export const code = ${JSON.stringify(markdownRendererCode)};
+export const css = ${JSON.stringify(markdownRendererCss)};
+`;
+      }
+      if (pluginName === "vega") {
+        return `
+export const code = ${JSON.stringify(vegaRendererCode)};
+export const css = ${JSON.stringify(vegaRendererCss)};
 `;
       }
     },

@@ -50,26 +50,16 @@ function loadLibrary(name: string): Promise<{ code: string; css?: string }> {
   const promise = (async (): Promise<{ code: string; css?: string }> => {
     switch (name) {
       case "markdown": {
-        const { markdownRendererCode, markdownRendererCss } = await import(
-          "virtual:isolated-renderer"
-        );
-        return {
-          code: markdownRendererCode,
-          css: markdownRendererCss || undefined,
-        };
+        const { code, css } = await import("virtual:renderer-plugin/markdown");
+        return { code, css: css || undefined };
       }
       case "plotly": {
         const mod = await import("plotly-raw");
         return { code: mod.default };
       }
       case "vega": {
-        const { vegaRendererCode, vegaRendererCss } = await import(
-          "virtual:isolated-renderer"
-        );
-        return {
-          code: vegaRendererCode,
-          css: vegaRendererCss || undefined,
-        };
+        const { code, css } = await import("virtual:renderer-plugin/vega");
+        return { code, css: css || undefined };
       }
       case "leaflet": {
         // Load Leaflet JS and CSS. Inject CSS via a <style> tag before the JS runs.
