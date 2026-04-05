@@ -116,6 +116,7 @@ export async function injectLibraries(
     const code = await loadLibraryCode(name);
     // Idempotent guard inside the iframe (belt + suspenders with injectedSet)
     const guard = `__LIB_${name.toUpperCase()}__`;
+    console.debug(`[iframe-libraries] injecting "${name}" (${(code.length / 1024).toFixed(0)}KB)`);
     frame.eval(
       `if(!window.${guard}){window.${guard}=true;\n${code}\n}`,
     );

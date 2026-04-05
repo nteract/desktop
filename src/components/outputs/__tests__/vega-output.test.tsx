@@ -50,7 +50,7 @@ describe("VegaOutput", () => {
     expect(el).toBeInstanceOf(HTMLDivElement);
     expect(spec.background).toBe("transparent");
     expect(opts.actions).toBe(false);
-    expect(opts.renderer).toBe("svg");
+    expect(opts.renderer).toBe("canvas");
   });
 
   it("forces transparent background on the spec", () => {

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 
 interface VegaOutputProps {
@@ -14,7 +14,7 @@ interface VegaView {
 function embedOptions(isDark: boolean) {
   return {
     actions: false,
-    renderer: "svg" as const,
+    renderer: "canvas" as const,
     theme: isDark ? ("dark" as const) : undefined,
   };
 }
@@ -28,8 +28,11 @@ function embedOptions(isDark: boolean) {
  */
 export function VegaOutput({ data, className }: VegaOutputProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    setError(null);
+
     // biome-ignore lint/suspicious/noExplicitAny: vega-embed is injected as a global
     const vegaEmbed = (window as any).vegaEmbed;
     if (!containerRef.current || !data || !vegaEmbed) return;
@@ -48,6 +51,10 @@ export function VegaOutput({ data, className }: VegaOutputProps) {
       (result: { view: VegaView }) => {
         view = result.view;
       },
+      (err: Error) => {
+        console.error("[VegaOutput] embed failed:", err);
+        setError(err.message || String(err));
+      },
     );
 
     const themeObserver = new MutationObserver(() => {
@@ -56,6 +63,9 @@ export function VegaOutput({ data, className }: VegaOutputProps) {
       vegaEmbed(el, spec, embedOptions(nowDark)).then(
         (result: { view: VegaView }) => {
           view = result.view;
+        },
+        (err: Error) => {
+          console.error("[VegaOutput] embed failed on theme change:", err);
         },
       );
     });
@@ -72,11 +82,27 @@ export function VegaOutput({ data, className }: VegaOutputProps) {
 
   if (!data) return null;
 
+  // biome-ignore lint/suspicious/noExplicitAny: vega-embed is injected as a global
+  const vegaEmbed = (window as any).vegaEmbed;
+  if (!vegaEmbed) {
+    return (
+      <div className="text-sm text-muted-foreground py-2">
+        Vega library not loaded — chart cannot be rendered.
+      </div>
+    );
+  }
+
   return (
     <div
       ref={containerRef}
       data-slot="vega-output"
-      className={cn("not-prose py-2 max-w-full", className)}
-    />
+      className={cn("not-prose py-2 max-w-full overflow-visible", className)}
+    >
+      {error && (
+        <div className="text-sm text-destructive py-1">
+          Vega rendering error: {error}
+        </div>
+      )}
+    </div>
   );
 }
