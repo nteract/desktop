@@ -1125,6 +1125,7 @@ function AppContent() {
           onAddCell={handleAddCell}
           onToggleDependencies={() => setDependencyHeaderOpen((prev) => !prev)}
           isDepsOpen={dependencyHeaderOpen}
+          depsOutOfSync={envSyncState ? !envSyncState.inSync : false}
           updateStatus={updateStatus}
           updateVersion={updateVersion}
           onRestartToUpdate={restartToUpdate}

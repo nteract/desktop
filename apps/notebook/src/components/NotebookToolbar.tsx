@@ -48,6 +48,7 @@ interface NotebookToolbarProps {
   onToggleDependencies: () => void;
   isDepsOpen?: boolean;
   listKernelspecs?: () => Promise<KernelspecInfo[]>;
+  depsOutOfSync?: boolean;
   updateStatus?: UpdateStatus;
   updateVersion?: string | null;
   onRestartToUpdate?: () => void;
@@ -71,6 +72,7 @@ export function NotebookToolbar({
   onAddCell,
   onToggleDependencies,
   isDepsOpen = false,
+  depsOutOfSync = false,
   listKernelspecs,
   updateStatus,
   updateVersion,
@@ -206,8 +208,17 @@ export function NotebookToolbar({
         <button
           type="button"
           onClick={onRestartAndRunAll}
-          className="flex items-center gap-1 rounded px-2 py-1 text-xs text-foreground transition-colors hover:bg-muted"
-          title="Restart kernel and run all cells"
+          className={cn(
+            "flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors",
+            depsOutOfSync
+              ? "bg-amber-500/10 text-amber-700 ring-1 ring-amber-500/30 hover:bg-amber-500/20 dark:text-amber-400"
+              : "text-foreground hover:bg-muted",
+          )}
+          title={
+            depsOutOfSync
+              ? "Dependencies changed — restart kernel and run all cells"
+              : "Restart kernel and run all cells"
+          }
           data-testid="restart-run-all-button"
         >
           <RotateCcw className="h-3 w-3" />
