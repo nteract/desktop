@@ -129,7 +129,7 @@ Two message layers coexist:
    `jsonrpc-transport.ts` and `rpc-methods.ts`.
 
 The JSON-RPC widget methods include:
-- Parent → iframe: `nteract/bridgeReady`, `nteract/commOpen`, `nteract/commMsg`, `nteract/commClose`, `nteract/commSync`
+- Parent → iframe: `nteract/bridgeReady`, `nteract/commOpen`, `nteract/commMsg`, `nteract/commClose`, `nteract/widgetSnapshot`
 - Iframe → parent: `nteract/widgetReady`, `nteract/widgetCommMsg`, `nteract/widgetCommClose`
 
 ### Widget Sync Flow
@@ -141,7 +141,7 @@ The JSON-RPC widget methods include:
 4. Iframe sends: `renderer_ready`
 5. CommBridgeManager sends: `nteract/bridgeReady`
 6. Iframe sends: `nteract/widgetReady`
-7. CommBridgeManager sends: `nteract/commSync` (all existing models)
+7. CommBridgeManager sends: `nteract/widgetSnapshot` (all existing models)
 8. Iframe renders widgets
 9. Bidirectional widget updates flow through JSON-RPC notifications
 ```
@@ -214,7 +214,7 @@ Press `Cmd+Shift+I` in debug builds to open the isolation test panel.
 ### Widget Not Rendering
 
 1. Check console for errors in iframe (may need to inspect iframe in DevTools)
-2. Verify `nteract/commSync` was sent and the iframe answered with `nteract/widgetReady`
+2. Verify `nteract/widgetSnapshot` was sent and the iframe answered with `nteract/widgetReady`
 3. Check `jsonrpc-transport.ts` / `rpc-methods.ts` if the bridge handshake changed
 
 ### Widget Not Receiving Updates

@@ -145,5 +145,5 @@ runt daemon logs -f | grep -i comm
 ```
 
 **Troubleshooting:**
-- Widget not rendering: Check iframe console, verify `nteract/commSync` was sent and the iframe answered with `nteract/widgetReady`
+- Widget not rendering: Check iframe console, verify `nteract/widgetSnapshot` was sent and the iframe answered with `nteract/widgetReady`
 - Widget not receiving updates: Check custom message forwarding, verify `subscribeToModelCustomMessages` is called
