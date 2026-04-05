@@ -1184,6 +1184,74 @@ mod tests {
         }
     }
 
+    /// Verify macOS version detection returns a boolean without panicking
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_macos_version_detection() {
+        // Should not panic
+        let result = is_macos_13_or_later();
+        // On CI/dev machines running macOS 13+, this should be true
+        // We just check it doesn't panic — the exact value depends on the host
+        let _ = result;
+    }
+
+    /// Verify app_bundle_root extracts the correct bundle path
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_app_bundle_root() {
+        let binary = PathBuf::from("/Applications/nteract.app/Contents/MacOS/runtimed");
+        let root = app_bundle_root(&binary);
+        assert_eq!(root, Some(PathBuf::from("/Applications/nteract.app")));
+
+        let binary = PathBuf::from("/Users/test/Desktop/My App.app/Contents/MacOS/daemon");
+        let root = app_bundle_root(&binary);
+        assert_eq!(root, Some(PathBuf::from("/Users/test/Desktop/My App.app")));
+
+        // Non-bundle path returns None
+        let binary = PathBuf::from("/usr/local/bin/runtimed");
+        assert_eq!(app_bundle_root(&binary), None);
+    }
+
+    /// Verify SMAppService plist contains BundleProgram key
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_smappservice_plist_contains_bundle_program() {
+        let log_path = PathBuf::from("/tmp/test.log");
+        let content = generate_smappservice_plist("Contents/MacOS/runtimed", &log_path).unwrap();
+
+        assert!(
+            content.contains("<key>BundleProgram</key>"),
+            "SMAppService plist must contain BundleProgram key"
+        );
+        assert!(
+            content.contains("<string>Contents/MacOS/runtimed</string>"),
+            "BundleProgram should be the bundle-relative path"
+        );
+        assert!(
+            content.contains("<key>HOME</key>"),
+            "Plist must contain HOME env var"
+        );
+        assert!(
+            content.contains("<key>Label</key>"),
+            "Plist must contain Label key"
+        );
+        assert!(
+            content.contains("<key>KeepAlive</key>"),
+            "Plist must contain KeepAlive key"
+        );
+    }
+
+    /// Verify should_use_smappservice returns false for non-bundle paths
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_should_use_smappservice_non_bundle() {
+        let binary = PathBuf::from("/usr/local/bin/runtimed");
+        assert!(
+            !should_use_smappservice(&binary),
+            "Non-bundle paths should never use SMAppService"
+        );
+    }
+
     /// Verify the Linux systemd template includes HOME env var
     #[test]
     #[cfg(target_os = "linux")]
