@@ -350,6 +350,7 @@ mod tests {
                 consecutive_failures: 2,
                 retry_in_secs: 30,
             },
+            pixi: RuntimePoolState::default(),
         };
         assert!(doc.update(&state));
         let read = doc.read_state();
@@ -367,6 +368,7 @@ mod tests {
                 ..Default::default()
             },
             conda: RuntimePoolState::default(),
+            pixi: RuntimePoolState::default(),
         };
         assert!(doc.update(&state));
         assert!(!doc.update(&state)); // No change
@@ -386,6 +388,7 @@ mod tests {
                 retry_in_secs: 60,
             },
             conda: RuntimePoolState::default(),
+            pixi: RuntimePoolState::default(),
         };
         daemon_doc.update(&state);
 
