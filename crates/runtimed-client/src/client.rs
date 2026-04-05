@@ -58,6 +58,48 @@ pub struct InspectResult {
     pub kernel_info: Option<crate::protocol::NotebookKernelInfo>,
 }
 
+/// Version information returned by a daemon ping.
+#[derive(Debug, Clone)]
+pub struct PongInfo {
+    /// Numeric protocol version (matches `PROTOCOL_VERSION` in connection.rs).
+    /// `None` if the daemon is too old to include this field.
+    pub protocol_version: Option<u32>,
+    /// Daemon version string (e.g., "2.0.0+abc123").
+    /// `None` if the daemon is too old to include this field.
+    pub daemon_version: Option<String>,
+}
+
+impl PongInfo {
+    /// Check whether the daemon's protocol version is compatible with this client.
+    ///
+    /// Returns `Ok(())` if compatible, or an `Err` with an actionable message
+    /// explaining the mismatch. If the daemon didn't report a protocol version
+    /// (old daemon), this logs a warning but does not error — backward
+    /// compatibility is preserved.
+    pub fn check_protocol_version(&self) -> Result<(), String> {
+        let expected = notebook_protocol::connection::PROTOCOL_VERSION;
+
+        match self.protocol_version {
+            Some(remote) if remote == expected => Ok(()),
+            Some(remote) if remote > expected => Err(format!(
+                "Daemon is running protocol version {remote}, but this CLI expects version {expected}. \
+                 Please update the CLI (or reinstall the app) to match the daemon."
+            )),
+            Some(remote) => Err(format!(
+                "Daemon is running protocol version {remote}, but this CLI expects version {expected}. \
+                 Please update the daemon: runt daemon doctor --fix"
+            )),
+            None => {
+                log::warn!(
+                    "[pool-client] Daemon did not report a protocol version — \
+                     it may be outdated. Consider updating: runt daemon doctor --fix"
+                );
+                Ok(())
+            }
+        }
+    }
+}
+
 /// Error type for client operations.
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
@@ -108,9 +150,24 @@ impl PoolClient {
 
     /// Ping the daemon to check if it's alive.
     pub async fn ping(&self) -> Result<(), ClientError> {
+        self.ping_version().await.map(|_| ())
+    }
+
+    /// Ping the daemon and return its version info.
+    ///
+    /// Returns `Ok(PongInfo)` with the daemon's protocol version and
+    /// version string. Old daemons that send a bare `Pong` (no fields)
+    /// will have `None` for both fields.
+    pub async fn ping_version(&self) -> Result<PongInfo, ClientError> {
         let response = self.send_request(Request::Ping).await?;
         match response {
-            Response::Pong => Ok(()),
+            Response::Pong {
+                protocol_version,
+                daemon_version,
+            } => Ok(PongInfo {
+                protocol_version,
+                daemon_version,
+            }),
             Response::Error { message } => Err(ClientError::DaemonError(message)),
             _ => Err(ClientError::ProtocolError(
                 "Unexpected response".to_string(),
@@ -422,7 +479,13 @@ where
     if crate::is_dev_mode() {
         info!("[pool-client] Development mode: checking for worktree daemon...");
 
-        if client.ping().await.is_ok() {
+        if let Ok(pong) = client.ping_version().await {
+            if let Err(msg) = pong.check_protocol_version() {
+                warn!("[pool-client] {}", msg);
+            }
+            if let Some(ref ver) = pong.daemon_version {
+                info!("[pool-client] Dev daemon version: {}", ver);
+            }
             if let Some(info) = get_running_daemon_info() {
                 emit(DaemonProgress::Ready {
                     endpoint: info.endpoint.clone(),

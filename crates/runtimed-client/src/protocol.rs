@@ -78,7 +78,19 @@ pub enum Response {
     Stats { state: PoolState },
 
     /// Pong response to ping.
-    Pong,
+    ///
+    /// Includes version metadata so clients can detect version mismatches
+    /// early (before attempting notebook sync or other operations).
+    /// All fields are optional for backward compatibility with older daemons.
+    Pong {
+        /// Numeric protocol version (matches `PROTOCOL_VERSION` in connection.rs).
+        /// Bump only on breaking wire-format changes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        protocol_version: Option<u32>,
+        /// Daemon version string (e.g., "2.0.0+abc123").
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        daemon_version: Option<String>,
+    },
 
     /// Shutdown acknowledged.
     ShuttingDown,
@@ -322,10 +334,37 @@ mod tests {
 
     #[test]
     fn test_response_pong() {
-        assert!(matches!(
-            roundtrip_response(&Response::Pong),
-            Response::Pong
-        ));
+        let resp = Response::Pong {
+            protocol_version: Some(2),
+            daemon_version: Some("2.0.0+abc123".into()),
+        };
+        match roundtrip_response(&resp) {
+            Response::Pong {
+                protocol_version,
+                daemon_version,
+            } => {
+                assert_eq!(protocol_version, Some(2));
+                assert_eq!(daemon_version.as_deref(), Some("2.0.0+abc123"));
+            }
+            _ => panic!("unexpected response type"),
+        }
+    }
+
+    #[test]
+    fn test_response_pong_without_version() {
+        // Old daemons send Pong without version fields — backward compat
+        let json = r#"{"type":"pong"}"#;
+        let resp: Response = serde_json::from_str(json).unwrap();
+        match resp {
+            Response::Pong {
+                protocol_version,
+                daemon_version,
+            } => {
+                assert_eq!(protocol_version, None);
+                assert_eq!(daemon_version, None);
+            }
+            _ => panic!("unexpected response type"),
+        }
     }
 
     #[test]

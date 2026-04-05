@@ -1864,7 +1864,10 @@ impl Daemon {
                 Response::Stats { state }
             }
 
-            Request::Ping => Response::Pong,
+            Request::Ping => Response::Pong {
+                protocol_version: Some(notebook_protocol::connection::PROTOCOL_VERSION),
+                daemon_version: Some(crate::daemon_version().to_string()),
+            },
 
             Request::Shutdown => {
                 self.trigger_shutdown().await;
