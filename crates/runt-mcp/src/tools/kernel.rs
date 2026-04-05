@@ -7,7 +7,7 @@ use notebook_protocol::protocol::{NotebookRequest, NotebookResponse};
 
 use crate::NteractMcp;
 
-use super::{require_handle, tool_error, tool_success};
+use super::{tool_error, tool_success};
 
 /// Interrupt the currently executing cell.
 pub async fn interrupt_kernel(

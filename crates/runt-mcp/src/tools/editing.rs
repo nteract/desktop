@@ -11,7 +11,7 @@ use crate::editing;
 use crate::execution;
 use crate::NteractMcp;
 
-use super::{arg_str, require_handle, tool_error};
+use super::{arg_str, tool_error};
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]

@@ -12,7 +12,7 @@ use notebook_protocol::protocol::NotebookRequest;
 use crate::execution;
 use crate::NteractMcp;
 
-use super::{arg_str, require_handle, tool_error, tool_success};
+use super::{arg_str, tool_error, tool_success};
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
