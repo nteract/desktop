@@ -125,7 +125,29 @@ pub async fn execute_and_wait(
     // Prefer output hashes from RuntimeStateDoc (already synced above).
     // Fall back to handle.get_cell() which reads via execution_id facade.
 
-    let execution_count = handle.get_cell_execution_count(cell_id);
+    // Get execution_count from RuntimeStateDoc (the source of truth).
+    // The NotebookDoc cell's execution_count field is stale since execution
+    // state was moved to RuntimeStateDoc.
+    let execution_count = if let Some(ref eid) = execution_id {
+        handle
+            .get_runtime_state()
+            .ok()
+            .and_then(|state| {
+                state
+                    .executions
+                    .get(eid.as_str())
+                    .and_then(|e| e.execution_count)
+            })
+            .map(|c| c.to_string())
+    } else {
+        // Fallback: find most recent execution for this cell with an execution_count
+        let ec = crate::tools::cell_read::get_cell_execution_count_from_runtime(handle, cell_id);
+        if ec.is_empty() {
+            None
+        } else {
+            Some(ec)
+        }
+    };
 
     let comms = handle.get_runtime_state().ok().map(|rs| rs.comms);
     let outputs = if !output_hashes.is_empty() {

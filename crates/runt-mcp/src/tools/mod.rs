@@ -42,7 +42,7 @@ fn app_tool_meta() -> Meta {
 
 mod cell_crud;
 mod cell_meta;
-mod cell_read;
+pub(crate) mod cell_read;
 mod deps;
 mod editing;
 mod execution;
@@ -418,12 +418,18 @@ pub async fn build_execution_result(
                 comms.as_ref(),
             )
             .await;
+            let ec_str = cell_read::get_cell_execution_count_from_runtime(handle, &snap.id);
+            let ec: Option<i64> = if ec_str.is_empty() {
+                None
+            } else {
+                ec_str.parse().ok()
+            };
             let resolved = runtimed_client::resolved_output::ResolvedCell {
                 id: snap.id,
                 cell_type: snap.cell_type,
                 position: snap.position,
                 source: snap.source,
-                execution_count: snap.execution_count.parse().ok(),
+                execution_count: ec,
                 outputs,
                 metadata_json: serde_json::to_string(&snap.metadata).unwrap_or_default(),
             };
