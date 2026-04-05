@@ -133,6 +133,11 @@ function restoreEditorFocus(): void {
       view.contentDOM.blur();
     }
     view.focus();
+    // Force CM to re-measure and repaint its viewport. Without this,
+    // WKWebView may not composite the editor layer after window
+    // reactivation, causing the editor to appear blank until user
+    // interaction triggers a repaint.
+    view.requestMeasure();
   } catch (e) {
     logger.warn("[window-focus] Focus cycle failed:", e);
     return;
