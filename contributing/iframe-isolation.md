@@ -119,6 +119,116 @@ This prevents other windows/iframes from injecting messages.
 
 The isolated renderer code is built inline during the notebook app build via the Vite plugin (`apps/notebook/vite-plugin-isolated-renderer.ts`). The bundle is embedded as a virtual module and provided to `IsolatedFrame` via the `IsolatedRendererProvider` context (accessed internally through the `useIsolatedRenderer()` hook)—no separate build step or HTTP fetch required.
 
+### Renderer Plugins
+
+Heavy output renderers (markdown, plotly, vega, leaflet) are **not** bundled into the core IIFE. Instead, they are built as on-demand **renderer plugins** — CJS modules loaded via `frame.installRenderer()` only when their MIME types appear in cell outputs.
+
+#### Architecture
+
+```
+┌────────────────────────────────┐     ┌──────────────────────────┐
+│  Parent (iframe-libraries.ts)  │     │  Iframe (core renderer)  │
+│                                │     │                          │
+│  1. Scan outputs for MIME types│     │  RendererRegistry (Map)  │
+│  2. loadPlugin("vega")         │     │  + pattern matchers      │
+│     → import("virtual:        │     │                          │
+│        renderer-plugin/vega")  │     │  installRendererPlugin() │
+│  3. frame.installRenderer(     │────▶│    new Function(code)    │
+│       code, css)               │     │    mod.exports.install({ │
+│                                │     │      register,           │
+│                                │     │      registerPattern     │
+│                                │     │    })                    │
+└────────────────────────────────┘     └──────────────────────────┘
+```
+
+**How it works:**
+
+1. `OutputArea` scans cell outputs for MIME types via `getRequiredLibraries()`
+2. Matching plugins are lazy-loaded from their own virtual module (`virtual:renderer-plugin/{name}`)
+3. The parent sends an `nteract/installRenderer` message with the plugin code + CSS
+4. The iframe loads the CJS module via `new Function("module", "exports", "require", code)` with a custom `require` shim that provides the shared React instance
+5. The plugin's `install(ctx)` function registers components for its MIME types
+6. When `OutputRenderer` encounters a MIME type, it checks the registry before the built-in switch
+
+**React sharing:** Plugins declare `react` and `react/jsx-runtime` as external. The iframe's custom `require` shim maps them to the React instance already loaded in the core bundle — no globals, just dependency injection.
+
+**Code splitting:** Each plugin has its own Vite virtual module, so they load independently. A notebook with only markdown outputs never fetches the plotly chunk (~4.8MB).
+
+#### Current Plugins
+
+| Plugin | MIME Type(s) | Virtual Module | Size |
+|--------|-------------|----------------|------|
+| Markdown | `text/markdown` | `virtual:renderer-plugin/markdown` | ~2.2MB |
+| Vega | `application/vnd.vega*.v*` | `virtual:renderer-plugin/vega` | ~865KB |
+| Plotly | `application/vnd.plotly.v1+json` | `virtual:renderer-plugin/plotly` | ~4.8MB |
+| Leaflet | `application/geo+json` | `virtual:renderer-plugin/leaflet` | ~194KB |
+
+#### Adding a New Renderer Plugin
+
+1. **Create the plugin entry** at `src/isolated-renderer/{name}-renderer.tsx`:
+
+```typescript
+import { SomeLibrary } from "some-library";
+import { useEffect, useRef } from "react";
+
+interface RendererProps {
+  data: unknown;
+  metadata?: Record<string, unknown>;
+  mimeType: string;
+}
+
+function MyRenderer({ data }: RendererProps) {
+  // Render using the library...
+}
+
+export function install(ctx: {
+  register: (mimeTypes: string[], component: React.ComponentType<RendererProps>) => void;
+  registerPattern: (test: (mime: string) => boolean, component: React.ComponentType<RendererProps>) => void;
+}) {
+  // Use register() for exact MIME types
+  ctx.register(["application/x-my-type"], MyRenderer);
+  // Or registerPattern() for versioned/regex MIME types
+  ctx.registerPattern((mime) => /^application\/vnd\.mylib\.v\d/.test(mime), MyRenderer);
+}
+```
+
+2. **Add the build step** in `apps/notebook/vite-plugin-isolated-renderer.ts`:
+   - Add the entry path
+   - Add variables for code/css
+   - Add to `invalidateCache()`
+   - Add to the `Promise.all([...buildRendererPlugin()])` call
+   - Add a virtual module case in `load()`
+
+3. **Add the virtual module type** in `apps/notebook/src/vite-env.d.ts`:
+
+```typescript
+declare module "virtual:renderer-plugin/my-renderer" {
+  export const code: string;
+  export const css: string;
+}
+```
+
+4. **Register the MIME type** in `src/components/isolated/iframe-libraries.ts`:
+   - Add to `MIME_PLUGINS` map (or handle in `pluginForMime()` for regex patterns)
+   - Add the import case in `loadPlugin()`
+
+5. **Remove from core bundle** in `src/isolated-renderer/index.tsx`:
+   - Remove the component import
+   - Remove the MIME type case from `OutputRenderer`
+
+#### Key Files
+
+| File | Role |
+|------|------|
+| `src/isolated-renderer/index.tsx` | Core renderer with plugin registry and CJS loader |
+| `src/isolated-renderer/*-renderer.tsx` | Plugin entry points |
+| `apps/notebook/vite-plugin-isolated-renderer.ts` | Builds core IIFE + all plugins |
+| `src/components/isolated/iframe-libraries.ts` | MIME detection and on-demand plugin loading |
+| `src/components/isolated/frame-bridge.ts` | `InstallRendererMessage` type |
+| `src/components/isolated/rpc-methods.ts` | `NTERACT_INSTALL_RENDERER` constant |
+| `src/components/isolated/isolated-frame.tsx` | `installRenderer()` on `IsolatedFrameHandle` |
+| `apps/notebook/src/vite-env.d.ts` | Virtual module type declarations |
+
 ## Message Protocol
 
 Two message layers coexist:

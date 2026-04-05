@@ -125,6 +125,7 @@ Before diving into a subsystem, read the relevant guide:
 | Daemon development | `contributing/runtimed.md` |
 | Environment management | `contributing/environments.md` |
 | Output iframe sandbox | `contributing/iframe-isolation.md` |
+| Renderer plugins (markdown, plotly, vega, leaflet) | `contributing/iframe-isolation.md` § Renderer Plugins |
 | CRDT mutation rules | `contributing/crdt-mutation-guide.md` |
 | TypeScript bindings (ts-rs) | `contributing/typescript-bindings.md` |
 | Logging guidelines | `contributing/logging.md` |
@@ -476,6 +477,12 @@ The rule: `image/*` → binary (EXCEPT `image/svg+xml` — that's text). `audio/
 ### Iframe Security
 
 **NEVER add `allow-same-origin` to the iframe sandbox.** This is the single most important security invariant — tested in CI. It would give untrusted notebook outputs full access to Tauri APIs.
+
+### Renderer Plugins (Isolated Iframe)
+
+Heavy output renderers (markdown, plotly, vega, leaflet) are loaded as **on-demand CJS plugins** — not bundled into the core IIFE. Each plugin has its own Vite virtual module (`virtual:renderer-plugin/{name}`) for code splitting. The iframe's CJS loader provides React via a custom `require` shim — no window globals. See `contributing/iframe-isolation.md` § Renderer Plugins for the full architecture and step-by-step guide to adding new plugins.
+
+**Key files:** `src/isolated-renderer/index.tsx` (registry + loader), `src/isolated-renderer/*-renderer.tsx` (plugins), `apps/notebook/vite-plugin-isolated-renderer.ts` (build), `src/components/isolated/iframe-libraries.ts` (on-demand loading).
 
 ### Cell List Stable DOM Order (Iframe Reload Prevention)
 
