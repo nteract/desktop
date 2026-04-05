@@ -803,11 +803,19 @@ jobs:
       - name: Generate changelog
         id: changelog
         run: |
-          # For tag-triggered releases (stable), use --latest since commits are already tagged
-          # For schedule/dispatch releases (nightly), use --unreleased
-          if [ "${{ github.ref_type }}" = "tag" ]; then
-            CHANGELOG=$(git-cliff --latest --strip header 2>/dev/null || echo "")
+          if [ "${{ inputs.github_release_prerelease }}" = "false" ]; then
+            # Stable release: generate changelog since the previous stable tag.
+            # We can't use --latest because nightly tags between stable releases
+            # cause git-cliff to pick a nightly→stable range with zero commits.
+            # Instead, find the previous stable tag and use an explicit range.
+            PREV_STABLE=$(git tag -l 'v*-stable.*' --sort=-creatordate | head -1)
+            if [ -n "$PREV_STABLE" ]; then
+              CHANGELOG=$(git-cliff "${PREV_STABLE}..HEAD" --strip header 2>/dev/null || echo "")
+            else
+              CHANGELOG=$(git-cliff --strip header 2>/dev/null || echo "")
+            fi
           else
+            # Nightly: changelog from all unreleased commits since last tag
             CHANGELOG=$(git-cliff --unreleased --strip header 2>/dev/null || echo "")
           fi
           if [ -z "$CHANGELOG" ] || [ "$CHANGELOG" = "" ]; then
