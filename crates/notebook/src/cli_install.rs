@@ -341,30 +341,53 @@ pub fn ensure_cli_current(app: &tauri::AppHandle) {
             nb_status
         );
 
-        // Only reinstall when at least one entry is positively identified as
-        // stale (i.e., owned by nteract but pointing to the wrong bundle).
-        // Mixed states like (Current, NotInstalled) are left alone — the
-        // "not installed" entry might be an unrelated command the user owns.
+        // Only reinstall when at least one entry is Stale. install_cli() rewrites
+        // both runt and nb, so we must ensure neither path is occupied by an
+        // unrelated command. "NotInstalled" can mean either (a) the path doesn't
+        // exist (safe to create) or (b) it exists but isn't ours (unsafe to
+        // overwrite). Check actual path existence to distinguish the two cases.
         let runt_stale = runt_status == SymlinkStatus::Stale;
         let nb_stale = nb_status == SymlinkStatus::Stale;
 
-        if runt_stale || nb_stale {
-            log::info!(
-                "[cli_install] CLI needs update (runt={:?}, nb={:?}), reinstalling",
-                runt_status,
-                nb_status
-            );
-            if let Err(e) = install_cli(app) {
-                log::warn!("[cli_install] Failed to update CLI: {}", e);
-            } else {
-                log::info!("[cli_install] CLI updated successfully");
-            }
-        } else {
+        if !runt_stale && !nb_stale {
             log::debug!(
                 "[cli_install] CLI currency check: runt={:?}, nb={:?} — no update needed",
                 runt_status,
                 nb_status
             );
+            return;
+        }
+
+        // If either entry is "NotInstalled" (unrecognized), check whether the
+        // path actually exists. If it does, something else owns it — don't clobber.
+        let dir = install_dir();
+        let cli_name = cli_command_name();
+        let nb_name = cli_notebook_alias_name();
+
+        let runt_blocked =
+            runt_status == SymlinkStatus::NotInstalled && dir.join(cli_name).exists();
+        let nb_blocked = nb_status == SymlinkStatus::NotInstalled && dir.join(nb_name).exists();
+
+        if runt_blocked || nb_blocked {
+            log::info!(
+                "[cli_install] CLI partially stale (runt={:?}, nb={:?}) but {} \
+                 is occupied by an unrelated command — skipping auto-repair",
+                runt_status,
+                nb_status,
+                if runt_blocked { cli_name } else { nb_name }
+            );
+            return;
+        }
+
+        log::info!(
+            "[cli_install] CLI needs update (runt={:?}, nb={:?}), reinstalling",
+            runt_status,
+            nb_status
+        );
+        if let Err(e) = install_cli(app) {
+            log::warn!("[cli_install] Failed to update CLI: {}", e);
+        } else {
+            log::info!("[cli_install] CLI updated successfully");
         }
     }
 }
