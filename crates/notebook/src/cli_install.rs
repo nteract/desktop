@@ -407,7 +407,7 @@ pub fn is_cli_installed() -> bool {
 }
 
 /// Check if the CLI is installed to the user-local directory (`~/.local/bin`).
-fn is_cli_installed_local() -> bool {
+pub fn is_cli_installed_local() -> bool {
     let cli_name = cli_command_name();
     let nb_name = cli_notebook_alias_name();
     let dir = install_dir();
@@ -528,11 +528,16 @@ fn install_with_privilege_escalation(
         nb_escaped = shell_escape(nb_script),
     );
 
+    // Escape for AppleScript string: backslashes, double quotes, and newlines
+    let escaped = shell_cmd
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n");
     let output = std::process::Command::new("osascript")
         .arg("-e")
         .arg(format!(
             "do shell script \"{}\" with administrator privileges",
-            shell_cmd.replace('\\', "\\\\").replace('"', "\\\"")
+            escaped
         ))
         .output()
         .map_err(|e| format!("Failed to run privilege escalation: {}", e))?;
@@ -626,7 +631,7 @@ fn install_with_privilege_escalation(
          New-Item -ItemType Directory -Force -Path '{install_dir}' | Out-Null; \
          Remove-Item -Force -ErrorAction SilentlyContinue '{runt}','{nb}'; \
          Copy-Item '{src}' '{runt}'; \
-         Set-Content -Path '{nb}' -Value '@echo off`r`n{cli_cmd} notebook %*' -Encoding ASCII; \
+         Set-Content -Path '{nb}' -Value \"@echo off`r`n{cli_cmd} notebook %*\" -Encoding ASCII; \
          $path = [Environment]::GetEnvironmentVariable('Path','Machine'); \
          if ($path -notlike '*{install_dir}*') {{ \
            [Environment]::SetEnvironmentVariable('Path', $path + ';{install_dir}', 'Machine'); \

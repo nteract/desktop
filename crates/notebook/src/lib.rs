@@ -1310,7 +1310,8 @@ async fn run_upgrade(
 
     // Step 5: Re-install CLI if it was previously installed (ensures Windows
     // copies and Unix symlinks point at the new app bundle).
-    if cli_install::is_cli_installed() {
+    // Only check the local install — system-wide is handled separately below.
+    if cli_install::is_cli_installed_local() {
         match cli_install::install_cli(&app) {
             Ok(()) => log::info!("[upgrade] CLI re-installed successfully"),
             Err(e) => log::warn!("[upgrade] CLI re-install failed (non-fatal): {}", e),
