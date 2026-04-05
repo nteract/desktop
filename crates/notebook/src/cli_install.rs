@@ -398,6 +398,26 @@ pub fn ensure_cli_current(app: &tauri::AppHandle) {
         } else {
             log::info!("[cli_install] CLI updated successfully");
         }
+
+        // Check system-wide install too. We can't silently refresh it (requires
+        // admin privileges), but we can log a warning so diagnostics catch it.
+        if is_cli_installed_system() {
+            let system_dir = PathBuf::from(SYSTEM_INSTALL_DIR);
+            let system_runt = system_dir.join(cli_command_name());
+            if let Some(bundled) = get_bundled_runt_path(app) {
+                let system_size = fs::metadata(&system_runt).map(|m| m.len()).unwrap_or(0);
+                let bundled_size = fs::metadata(&bundled).map(|m| m.len()).unwrap_or(0);
+                if system_size != bundled_size {
+                    log::warn!(
+                        "[cli_install] System-wide {} is stale (size {} vs bundled {}). \
+                         It will be updated on next in-app upgrade, or re-run Install CLI from the menu.",
+                        system_runt.display(),
+                        system_size,
+                        bundled_size
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -513,26 +533,6 @@ pub fn install_cli_system(app: &tauri::AppHandle) -> Result<(), String> {
         cli_command_name(),
         cli_command_name()
     );
-
-    // Check for existing commands that aren't ours before overwriting.
-    // If the marker file is missing but the commands exist, something else
-    // put them there (Homebrew, manual install, another tool named "nb", etc.).
-    let marker_path = dir.join(system_install_marker());
-    if !marker_path.exists() {
-        let existing: Vec<&str> = [&runt_dest, &nb_dest]
-            .iter()
-            .filter(|p| p.exists())
-            .map(|p| p.file_name().unwrap_or_default().to_str().unwrap_or("?"))
-            .collect();
-        if !existing.is_empty() {
-            return Err(format!(
-                "Existing commands found in {}: {}. These don't appear to be managed by nteract \
-                 (no marker file). Remove them manually first, or use the ~/.local/bin install.",
-                SYSTEM_INSTALL_DIR,
-                existing.join(", ")
-            ));
-        }
-    }
 
     install_with_privilege_escalation(&bundled_runt, &runt_dest, &nb_dest, &nb_script)?;
 
