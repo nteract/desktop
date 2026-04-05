@@ -202,6 +202,24 @@ uv run nteract   # Alternative: finds and launches runt mcp
 - Use `default_socket_path()` for the current process or test harness because it respects `RUNTIMED_SOCKET_PATH`.
 - Use `socket_path_for_channel("stable"|"nightly")` only when you must target a specific channel explicitly or discover the other channel; it intentionally ignores `RUNTIMED_SOCKET_PATH`.
 
+## Creating Notebooks with Dependencies
+
+**Always use MCP tools** (`create_notebook`, `add_dependency`) to create notebooks and manage dependencies. Do not write `.ipynb` files by hand with dependency metadata — the metadata schema is internal and agents should not need to know it.
+
+If you must write a `.ipynb` file directly (e.g., test fixtures), dependencies go at `metadata.runt.uv.dependencies`:
+
+```json
+{
+  "metadata": {
+    "runt": {
+      "uv": {
+        "dependencies": ["pandas>=2.0", "numpy"]
+      }
+    }
+  }
+}
+```
+
 ## MCP Server (Local Development)
 
 ### nteract-dev — MCP Supervisor
