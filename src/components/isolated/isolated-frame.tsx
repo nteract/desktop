@@ -771,7 +771,8 @@ export const IsolatedFrame = forwardRef<
           ? "height 150ms ease-out, opacity 150ms ease-out"
           : undefined,
       }}
-      title="Isolated output frame"
+      // biome-ignore lint/a11y/useIframeTitle: intentionally no tooltip on output iframes
+      title=""
     />
   );
 });
