@@ -386,6 +386,11 @@ impl Daemon {
         self.settings.read().await.get_all().default_python_env
     }
 
+    /// Get the default pixi packages from settings.
+    pub async fn default_pixi_packages(&self) -> Vec<String> {
+        self.settings.read().await.get_all().pixi.default_packages
+    }
+
     /// Create a new daemon with the given configuration.
     ///
     /// Returns an error if another daemon is already running.

@@ -292,9 +292,13 @@ fn build_launched_config(
                 }
             }
         }
-        "pixi:inline" | "pixi:pep723" => {
+        "pixi:inline" => {
             // Store pixi deps for drift detection
             config.pixi_deps = inline_deps.map(|d| d.to_vec());
+        }
+        "pixi:pep723" => {
+            // PEP 723 deps come from cell source, not runt.pixi metadata.
+            // Don't store in pixi_deps — there's no metadata to diff against.
         }
         "pixi:prewarmed" => {
             // Pixi prewarmed uses pooled env — store paths
@@ -3482,7 +3486,19 @@ async fn auto_launch_kernel(
     // Build LaunchedEnvConfig to track what config the kernel was launched with
     let venv_path = pooled_env.as_ref().map(|e| e.venv_path.clone());
     let python_path = pooled_env.as_ref().map(|e| e.python_path.clone());
-    let prewarmed_pkgs = pooled_env.as_ref().map(|e| e.prewarmed_packages.clone());
+    let prewarmed_pkgs = if let Some(ref env) = pooled_env {
+        Some(env.prewarmed_packages.clone())
+    } else if env_source.starts_with("pixi:") {
+        // For pixi launches without a pooled env, read default packages from settings
+        let pixi_defaults = daemon.default_pixi_packages().await;
+        if pixi_defaults.is_empty() {
+            None
+        } else {
+            Some(pixi_defaults)
+        }
+    } else {
+        None
+    };
     let launched_config = build_launched_config(
         kernel_type,
         &env_source,
@@ -4018,10 +4034,18 @@ async fn handle_notebook_request(
                     };
 
                     if has_pep723_deps {
-                        let default_env = daemon.default_python_env().await;
-                        let pep723_source = match default_env {
-                            crate::settings_doc::PythonEnvType::Pixi => "pixi:pep723",
-                            _ => "uv:pep723",
+                        // Respect explicit scope: auto:uv → uv:pep723, auto:conda → skip (no handler)
+                        let pep723_source = match auto_scope {
+                            Some("uv") => "uv:pep723",
+                            Some("conda") => unreachable!("conda scope skips PEP 723"),
+                            _ => {
+                                // Unscoped auto: use default_python_env
+                                let default_env = daemon.default_python_env().await;
+                                match default_env {
+                                    crate::settings_doc::PythonEnvType::Pixi => "pixi:pep723",
+                                    _ => "uv:pep723",
+                                }
+                            }
                         };
                         info!(
                             "[notebook-sync] Found PEP 723 deps in cell source ({})",
