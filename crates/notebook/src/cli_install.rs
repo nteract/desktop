@@ -171,18 +171,20 @@ pub fn install_cli(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Warn if legacy /usr/local/bin entries shadow the new ~/.local/bin symlinks.
+/// Warn if legacy /usr/local/bin has stale CLI copies that shadow ~/.local/bin.
 ///
-/// Old versions installed copies to /usr/local/bin which is typically earlier
-/// in PATH. We can't remove them without sudo, so just warn once.
+/// Symlinks are fine — they track the app bundle. Only regular files (stale
+/// copies from old installs) are a problem since they don't update.
 #[cfg(unix)]
 fn warn_legacy_cli_shadow() {
     let legacy = PathBuf::from(LEGACY_INSTALL_DIR);
-    let shadowing: Vec<String> = [cli_command_name(), cli_notebook_alias_name()]
+    let stale: Vec<String> = [cli_command_name(), cli_notebook_alias_name()]
         .iter()
         .filter_map(|name| {
             let path = legacy.join(name);
-            if path.exists() {
+            // Symlinks are fine — they resolve to the current app bundle.
+            // Only warn about regular files (stale copies).
+            if path.exists() && !path.is_symlink() {
                 Some(path.to_string_lossy().to_string())
             } else {
                 None
@@ -190,12 +192,12 @@ fn warn_legacy_cli_shadow() {
         })
         .collect();
 
-    if !shadowing.is_empty() {
+    if !stale.is_empty() {
         log::warn!(
-            "[cli_install] Legacy CLI binaries in /usr/local/bin shadow ~/.local/bin: {}. \
+            "[cli_install] Stale CLI copies in /usr/local/bin shadow ~/.local/bin: {}. \
              Remove with: sudo rm {}",
-            shadowing.join(", "),
-            shadowing.join(" ")
+            stale.join(", "),
+            stale.join(" ")
         );
     }
 }
