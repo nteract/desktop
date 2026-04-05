@@ -219,10 +219,16 @@ fn check_nb_script(script_path: &std::path::Path, expected_cli_name: &str) -> Sy
 
     match fs::read_to_string(script_path) {
         Ok(contents) => {
-            // Only consider this script ours if it mentions runt
-            if !contents.contains("runt") {
+            // Only consider this script ours if it contains the exact exec pattern
+            // that create_nb_wrapper() generates: "exec runt notebook" or
+            // "exec runt-nightly notebook". A bare substring like "runt" would
+            // false-positive on scripts mentioning "grunt", "runtime", etc.
+            let is_ours = contents.contains("exec runt notebook")
+                || contents.contains("exec runt-nightly notebook");
+
+            if !is_ours {
                 log::debug!(
-                    "[cli_install] Script {} does not mention runt, skipping",
+                    "[cli_install] Script {} does not appear to be an nteract nb wrapper, skipping",
                     script_path.display()
                 );
                 return SymlinkStatus::NotInstalled;
@@ -323,26 +329,30 @@ pub fn ensure_cli_current(app: &tauri::AppHandle) {
             nb_status
         );
 
-        match (&runt_status, &nb_status) {
-            (SymlinkStatus::NotInstalled, SymlinkStatus::NotInstalled) => {
-                log::debug!("[cli_install] CLI not installed, skipping currency check");
+        // Only reinstall when at least one entry is positively identified as
+        // stale (i.e., owned by nteract but pointing to the wrong bundle).
+        // Mixed states like (Current, NotInstalled) are left alone — the
+        // "not installed" entry might be an unrelated command the user owns.
+        let runt_stale = runt_status == SymlinkStatus::Stale;
+        let nb_stale = nb_status == SymlinkStatus::Stale;
+
+        if runt_stale || nb_stale {
+            log::info!(
+                "[cli_install] CLI needs update (runt={:?}, nb={:?}), reinstalling",
+                runt_status,
+                nb_status
+            );
+            if let Err(e) = install_cli(app) {
+                log::warn!("[cli_install] Failed to update CLI: {}", e);
+            } else {
+                log::info!("[cli_install] CLI updated successfully");
             }
-            (SymlinkStatus::Current, SymlinkStatus::Current) => {
-                log::debug!("[cli_install] CLI symlinks are current");
-            }
-            _ => {
-                // At least one component is stale (or one is installed while the other isn't)
-                log::info!(
-                    "[cli_install] CLI needs update (runt={:?}, nb={:?}), reinstalling",
-                    runt_status,
-                    nb_status
-                );
-                if let Err(e) = install_cli(app) {
-                    log::warn!("[cli_install] Failed to update CLI: {}", e);
-                } else {
-                    log::info!("[cli_install] CLI updated successfully");
-                }
-            }
+        } else {
+            log::debug!(
+                "[cli_install] CLI currency check: runt={:?}, nb={:?} — no update needed",
+                runt_status,
+                nb_status
+            );
         }
     }
 }
@@ -633,8 +643,12 @@ mod tests {
     fn nb_script_not_installed_when_not_ours() {
         let dir = tempfile::tempdir().ok().unwrap();
         let script_path = dir.path().join("nb");
-        // An unrelated nb script that doesn't mention runt
-        fs::write(&script_path, "#!/bin/bash\nexec nb-something-else \"$@\"\n").ok();
+        // An unrelated nb script — even one mentioning "grunt" (substring of "runt")
+        fs::write(
+            &script_path,
+            "#!/bin/bash\n# build tool\nexec grunt \"$@\"\n",
+        )
+        .ok();
 
         assert_eq!(
             check_nb_script(&script_path, "runt"),
