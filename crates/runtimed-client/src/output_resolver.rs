@@ -213,19 +213,13 @@ pub fn json_data_to_datavalues(
     data: &serde_json::Map<String, Value>,
 ) -> HashMap<String, DataValue> {
     let mut output_data = HashMap::new();
-    let mut has_image = false;
 
     for (mime, value) in data {
         let dv = match mime_kind(mime) {
             MimeKind::Binary => {
                 if let Some(s) = value.as_str() {
                     match base64::engine::general_purpose::STANDARD.decode(s) {
-                        Ok(bytes) => {
-                            if mime.starts_with("image/") {
-                                has_image = true;
-                            }
-                            DataValue::Binary(bytes)
-                        }
+                        Ok(bytes) => DataValue::Binary(bytes),
                         Err(_) => DataValue::Text(s.to_string()),
                     }
                 } else {
@@ -253,34 +247,12 @@ pub fn json_data_to_datavalues(
         output_data.insert(mime.clone(), dv);
     }
 
-    // Synthesize text/llm+plain for binary images
-    if has_image && !output_data.contains_key("text/llm+plain") {
-        let mut parts: Vec<String> = Vec::new();
-        if let Some(DataValue::Text(ref plain)) = output_data.get("text/plain") {
-            parts.push(plain.clone());
-        }
-        for (mime, dv) in &output_data {
-            if let DataValue::Binary(bytes) = dv {
-                if mime.starts_with("image/") {
-                    parts.push(format!(
-                        "Image output ({}, {} KB)",
-                        mime,
-                        bytes.len() / 1024
-                    ));
-                }
-            }
-        }
-        output_data.insert(
-            "text/llm+plain".to_string(),
-            DataValue::Text(parts.join("\n")),
-        );
-    }
-
-    // Synthesize text/llm+plain for visualization specs (Plotly, Vega-Lite, Vega)
+    // Synthesis priority: viz > heavy types > binary media.
+    // Viz summaries are more useful than "Image output (image/png, X KB)" when
+    // both exist (e.g. Altair emits png fallback + vegalite+json).
     synthesize_llm_plain_for_viz(&mut output_data);
-
-    // Synthesize text/llm+plain for other heavy types (SVG, HTML, large JSON)
     synthesize_llm_plain_for_heavy_types(&mut output_data);
+    synthesize_llm_plain_for_binary_media(&mut output_data);
 
     output_data
 }
@@ -302,7 +274,6 @@ pub async fn output_from_manifest(
         "display_data" | "execute_result" => {
             let data_map = manifest.get("data")?.as_object()?;
             let mut output_data = HashMap::new();
-            let mut image_descriptions: Vec<String> = Vec::new();
             let mut blob_urls_map: HashMap<String, String> = HashMap::new();
             let mut blob_paths_map: HashMap<String, String> = HashMap::new();
 
@@ -332,42 +303,20 @@ pub async fn output_from_manifest(
                         }
                     }
 
-                    // Record binary image metadata for LLM description
-                    if let DataValue::Binary(ref bytes) = content {
-                        if mime_type.starts_with("image/") {
-                            let size_kb = bytes.len() / 1024;
-                            let mut desc = format!("Image output ({}, {} KB)", mime_type, size_kb);
-                            if let Some(url) = blob_urls_map.get(mime_type) {
-                                desc.push_str(&format!("\n{}", url));
-                            } else if let Some(path) = blob_paths_map.get(mime_type) {
-                                desc.push_str(&format!("\n{}", path));
-                            }
-                            image_descriptions.push(desc);
-                        }
-                    }
-
                     output_data.insert(mime_type.clone(), content);
                 }
             }
 
-            // Synthesize text/llm+plain for binary images
-            if !image_descriptions.is_empty() && !output_data.contains_key("text/llm+plain") {
-                let mut parts: Vec<String> = Vec::new();
-                if let Some(DataValue::Text(ref plain)) = output_data.get("text/plain") {
-                    parts.push(plain.clone());
-                }
-                parts.extend(image_descriptions);
-                output_data.insert(
-                    "text/llm+plain".to_string(),
-                    DataValue::Text(parts.join("\n")),
-                );
-            }
-
-            // Synthesize text/llm+plain for visualization specs (Plotly, Vega-Lite, Vega)
+            // Synthesis priority: viz > heavy types > binary media.
+            // Viz summaries are more useful than "Image output (image/png, X KB)" when
+            // both exist (e.g. Altair emits png fallback + vegalite+json).
             synthesize_llm_plain_for_viz(&mut output_data);
-
-            // Synthesize text/llm+plain for other heavy types (SVG, HTML, large JSON)
             synthesize_llm_plain_for_heavy_types(&mut output_data);
+            synthesize_llm_plain_for_binary_media_with_urls(
+                &mut output_data,
+                &blob_urls_map,
+                &blob_paths_map,
+            );
 
             let mut output = if output_type == "execute_result" {
                 let execution_count = manifest.get("execution_count")?.as_i64()?;
@@ -599,6 +548,101 @@ fn synthesize_llm_plain_for_heavy_types(output_data: &mut HashMap<String, DataVa
     if let Some(DataValue::Json(ref val)) = output_data.get("application/json") {
         if let Some(summary) = repr_llm::summarize_json(val) {
             descriptions.push(summary);
+        }
+    }
+
+    if descriptions.is_empty() {
+        return;
+    }
+
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(DataValue::Text(ref plain)) = output_data.get("text/plain") {
+        parts.push(plain.clone());
+    }
+    parts.extend(descriptions);
+    output_data.insert(
+        "text/llm+plain".to_string(),
+        DataValue::Text(parts.join("\n")),
+    );
+}
+
+// ── Binary media synthesis ──────────────────────────────────────────
+
+/// Synthesize `text/llm+plain` for binary media types (images, audio, video).
+///
+/// Produces a short description like "Image output (image/png, 45 KB)" or
+/// "Audio output (audio/wav, 118 KB)". Skips if `text/llm+plain` already
+/// exists (viz or heavy-type synthesis already ran).
+fn synthesize_llm_plain_for_binary_media(output_data: &mut HashMap<String, DataValue>) {
+    if output_data.contains_key("text/llm+plain") {
+        return;
+    }
+
+    let mut descriptions: Vec<String> = Vec::new();
+    for (mime, dv) in output_data.iter() {
+        if let DataValue::Binary(bytes) = dv {
+            let label = if mime.starts_with("image/") {
+                "Image"
+            } else if mime.starts_with("audio/") {
+                "Audio"
+            } else if mime.starts_with("video/") {
+                "Video"
+            } else {
+                "Binary"
+            };
+            descriptions.push(format!(
+                "{label} output ({mime}, {} KB)",
+                bytes.len() / 1024
+            ));
+        }
+    }
+
+    if descriptions.is_empty() {
+        return;
+    }
+
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(DataValue::Text(ref plain)) = output_data.get("text/plain") {
+        parts.push(plain.clone());
+    }
+    parts.extend(descriptions);
+    output_data.insert(
+        "text/llm+plain".to_string(),
+        DataValue::Text(parts.join("\n")),
+    );
+}
+
+/// Like [`synthesize_llm_plain_for_binary_media`] but appends blob URLs when available.
+///
+/// Used by `output_from_manifest` where blob URL maps are already computed.
+fn synthesize_llm_plain_for_binary_media_with_urls(
+    output_data: &mut HashMap<String, DataValue>,
+    blob_urls: &HashMap<String, String>,
+    blob_paths: &HashMap<String, String>,
+) {
+    if output_data.contains_key("text/llm+plain") {
+        return;
+    }
+
+    let mut descriptions: Vec<String> = Vec::new();
+    for (mime, dv) in output_data.iter() {
+        if let DataValue::Binary(bytes) = dv {
+            let label = if mime.starts_with("image/") {
+                "Image"
+            } else if mime.starts_with("audio/") {
+                "Audio"
+            } else if mime.starts_with("video/") {
+                "Video"
+            } else {
+                "Binary"
+            };
+            let mut desc = format!("{label} output ({mime}, {} KB)", bytes.len() / 1024);
+            if let Some(url) = blob_urls.get(mime) {
+                desc.push_str(&format!("\n{url}"));
+            } else if let Some(path) = blob_paths.get(mime) {
+                desc.push_str(&format!("\n{path}"));
+            }
+            descriptions.push(desc);
         }
     }
 
