@@ -403,7 +403,7 @@ pub fn ensure_cli_current(app: &tauri::AppHandle) {
 
 /// Check if the CLI is already installed (checks user-local, system-wide, and legacy locations).
 pub fn is_cli_installed() -> bool {
-    is_cli_installed_local() || is_cli_installed_system()
+    is_cli_installed_local() || is_cli_installed_system() || is_cli_installed_legacy()
 }
 
 /// Check if the CLI is installed to the user-local directory (`~/.local/bin`).
@@ -414,14 +414,31 @@ pub fn is_cli_installed_local() -> bool {
     dir.join(cli_name).exists() && dir.join(nb_name).exists()
 }
 
-/// Marker file placed by system-wide install to distinguish our managed copy
-/// from binaries installed by other means (Homebrew, manual, etc.).
-const SYSTEM_INSTALL_MARKER: &str = ".nteract-managed";
+/// Check if the CLI has a legacy install in `/usr/local/bin` (pre-system-wide era).
+pub fn is_cli_installed_legacy() -> bool {
+    #[cfg(unix)]
+    {
+        let legacy = PathBuf::from(LEGACY_INSTALL_DIR);
+        let cli_name = cli_command_name();
+        let nb_name = cli_notebook_alias_name();
+        legacy.join(cli_name).exists() && legacy.join(nb_name).exists()
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
+}
+
+/// Channel-specific marker file placed by system-wide install to distinguish
+/// our managed copy from binaries installed by other means (Homebrew, manual, etc.).
+fn system_install_marker() -> String {
+    format!(".nteract-managed-{}", cli_command_name())
+}
 
 /// Check if the CLI is installed system-wide by nteract (looks for our marker file).
 pub fn is_cli_installed_system() -> bool {
     PathBuf::from(SYSTEM_INSTALL_DIR)
-        .join(SYSTEM_INSTALL_MARKER)
+        .join(system_install_marker())
         .exists()
 }
 
@@ -524,7 +541,7 @@ fn install_with_privilege_escalation(
         runt_dest
             .parent()
             .ok_or("Invalid install destination")?
-            .join(SYSTEM_INSTALL_MARKER)
+            .join(system_install_marker())
             .to_string_lossy()
             .as_ref(),
     );
@@ -595,7 +612,7 @@ fn install_with_privilege_escalation(
         runt_dest
             .parent()
             .ok_or("Invalid install destination")?
-            .join(SYSTEM_INSTALL_MARKER)
+            .join(system_install_marker())
             .to_string_lossy()
             .as_ref(),
     );
@@ -649,7 +666,7 @@ fn install_with_privilege_escalation(
     let nb = nb_cmd.to_string_lossy().replace('\'', "''");
     let cli_cmd = runt_workspace::cli_command_name();
 
-    let marker = SYSTEM_INSTALL_MARKER.replace('\'', "''");
+    let marker = system_install_marker().replace('\'', "''");
 
     let err_file = std::env::temp_dir().join("nteract-cli-install-err.txt");
     let err_path = err_file.to_string_lossy().replace('\'', "''");
