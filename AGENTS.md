@@ -202,6 +202,32 @@ uv run nteract   # Alternative: finds and launches runt mcp
 - Use `default_socket_path()` for the current process or test harness because it respects `RUNTIMED_SOCKET_PATH`.
 - Use `socket_path_for_channel("stable"|"nightly")` only when you must target a specific channel explicitly or discover the other channel; it intentionally ignores `RUNTIMED_SOCKET_PATH`.
 
+### Writing .ipynb Files Directly
+
+When creating `.ipynb` files by writing JSON to disk (rather than via MCP `create_notebook`), dependencies **must** be placed at `metadata.runt.uv.dependencies`. The legacy `metadata.nteract.dependencies.inline` path is supported as a fallback but should not be used for new files.
+
+Correct metadata structure for a notebook with inline Python dependencies:
+
+```json
+{
+  "metadata": {
+    "kernelspec": {
+      "name": "python3",
+      "display_name": "Python 3",
+      "language": "python"
+    },
+    "runt": {
+      "schema_version": "1",
+      "uv": {
+        "dependencies": ["pandas>=2.0", "numpy"]
+      }
+    }
+  }
+}
+```
+
+Do **not** use the old format (`metadata.nteract.dependencies.inline`). While the daemon will migrate it on open, it lacks support for `requires-python`, prerelease settings, and trust signatures.
+
 ## MCP Server (Local Development)
 
 ### nteract-dev — MCP Supervisor

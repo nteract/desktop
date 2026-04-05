@@ -201,7 +201,7 @@ impl NotebookMetadataSnapshot {
     /// notebook-level metadata object (as read from an `.ipynb` file).
     ///
     /// Extracts `kernelspec`, `language_info`, and `runt` (with fallback to
-    /// legacy `uv`/`conda` top-level keys).
+    /// legacy `uv`/`conda` top-level keys and `nteract.dependencies.inline`).
     pub fn from_metadata_value(metadata: &serde_json::Value) -> Self {
         let kernelspec = metadata
             .get("kernelspec")
@@ -222,6 +222,23 @@ impl NotebookMetadataSnapshot {
                 let conda = metadata
                     .get("conda")
                     .and_then(|v| serde_json::from_value::<CondaInlineMetadata>(v.clone()).ok());
+
+                // Fallback: try legacy nteract.dependencies.inline format.
+                // Agents and older tools may write deps at this path instead of
+                // metadata.runt.uv.dependencies.
+                let uv = uv.or_else(|| {
+                    let deps = metadata
+                        .get("nteract")
+                        .and_then(|n| n.get("dependencies"))
+                        .and_then(|d| d.get("inline"))
+                        .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+                        .filter(|v| !v.is_empty())?;
+                    Some(UvInlineMetadata {
+                        dependencies: deps,
+                        requires_python: None,
+                        prerelease: None,
+                    })
+                });
 
                 RuntMetadata {
                     schema_version: "1".to_string(),
@@ -790,6 +807,89 @@ mod tests {
             vec!["requests"]
         );
         assert_eq!(snapshot.runt.schema_version, "1");
+    }
+
+    #[test]
+    fn test_snapshot_from_legacy_nteract_inline_deps() {
+        // Legacy format: deps at metadata.nteract.dependencies.inline
+        // (used by agents that write .ipynb files directly)
+        let metadata = serde_json::json!({
+            "kernelspec": {
+                "name": "python3",
+                "display_name": "Python 3",
+                "language": "python"
+            },
+            "nteract": {
+                "dependencies": {
+                    "inline": ["folium", "pandas>=2.0"]
+                }
+            }
+        });
+
+        let snapshot = NotebookMetadataSnapshot::from_metadata_value(&metadata);
+        let uv = snapshot
+            .runt
+            .uv
+            .as_ref()
+            .expect("uv should be populated from legacy nteract deps");
+        assert_eq!(uv.dependencies, vec!["folium", "pandas>=2.0"]);
+        assert_eq!(snapshot.runt.schema_version, "1");
+    }
+
+    #[test]
+    fn test_runt_key_takes_priority_over_legacy_nteract() {
+        // When both runt and nteract keys exist, runt wins
+        let metadata = serde_json::json!({
+            "runt": {
+                "schema_version": "1",
+                "uv": {
+                    "dependencies": ["numpy"]
+                }
+            },
+            "nteract": {
+                "dependencies": {
+                    "inline": ["folium"]
+                }
+            }
+        });
+
+        let snapshot = NotebookMetadataSnapshot::from_metadata_value(&metadata);
+        let uv = snapshot.runt.uv.as_ref().unwrap();
+        assert_eq!(uv.dependencies, vec!["numpy"]);
+    }
+
+    #[test]
+    fn test_legacy_nteract_empty_deps_not_migrated() {
+        // Empty inline deps should not create a uv section
+        let metadata = serde_json::json!({
+            "nteract": {
+                "dependencies": {
+                    "inline": []
+                }
+            }
+        });
+
+        let snapshot = NotebookMetadataSnapshot::from_metadata_value(&metadata);
+        assert!(snapshot.runt.uv.is_none());
+    }
+
+    #[test]
+    fn test_legacy_uv_takes_priority_over_nteract() {
+        // Top-level uv should win over nteract.dependencies.inline
+        let metadata = serde_json::json!({
+            "uv": {
+                "dependencies": ["requests"]
+            },
+            "nteract": {
+                "dependencies": {
+                    "inline": ["folium"]
+                }
+            }
+        });
+
+        let snapshot = NotebookMetadataSnapshot::from_metadata_value(&metadata);
+        let uv = snapshot.runt.uv.as_ref().unwrap();
+        assert_eq!(uv.dependencies, vec!["requests"]);
     }
 
     #[test]
