@@ -105,6 +105,12 @@ function handleWindowFocus(): void {
  * during the focus event.
  */
 function restoreEditorFocus(): void {
+  // Don't steal focus from iframe interactions (user may be in a widget)
+  if (document.activeElement instanceof HTMLIFrameElement) {
+    logger.debug("[window-focus] Skipping restore — iframe has focus");
+    return;
+  }
+
   if (!savedView?.dom?.isConnected) {
     savedView = null;
     savedSelection = null;
