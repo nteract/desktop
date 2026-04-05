@@ -48,6 +48,8 @@ pub struct DaemonConfig {
     pub uv_pool_size: usize,
     /// Target number of Conda environments to maintain.
     pub conda_pool_size: usize,
+    /// Target number of Pixi environments to maintain.
+    pub pixi_pool_size: usize,
     /// Maximum age (in seconds) before an environment is considered stale.
     pub max_age_secs: u64,
     /// Optional custom directory for lock files (used in tests).
@@ -71,6 +73,7 @@ impl Default for DaemonConfig {
             notebook_docs_dir: crate::default_notebook_docs_dir(),
             uv_pool_size: 3,
             conda_pool_size: 3,
+            pixi_pool_size: 2,
             max_age_secs: 172800, // 2 days
             lock_dir: None,
             room_eviction_delay_ms: None,
@@ -418,7 +421,7 @@ impl Daemon {
         Ok(Arc::new(Self {
             uv_pool: Mutex::new(Pool::new(config.uv_pool_size, config.max_age_secs)),
             conda_pool: Mutex::new(Pool::new(config.conda_pool_size, config.max_age_secs)),
-            pixi_pool: Mutex::new(Pool::new(0, config.max_age_secs)), // TODO: configurable pixi pool size
+            pixi_pool: Mutex::new(Pool::new(config.pixi_pool_size, config.max_age_secs)),
             config,
             shutdown: Arc::new(Mutex::new(false)),
             shutdown_notify: Arc::new(Notify::new()),
@@ -562,6 +565,11 @@ impl Daemon {
         let conda_daemon = self.clone();
         tokio::spawn(async move {
             conda_daemon.conda_warming_loop().await;
+        });
+
+        let pixi_daemon = self.clone();
+        tokio::spawn(async move {
+            pixi_daemon.pixi_warming_loop().await;
         });
 
         // Spawn the environment GC loop
@@ -904,7 +912,7 @@ impl Daemon {
 
         // Build the known prewarmed package lists so reused envs carry metadata.
         // These match the packages installed by create_uv_env/create_conda_env.
-        let (uv_prewarmed, conda_prewarmed) = {
+        let (uv_prewarmed, conda_prewarmed, pixi_prewarmed) = {
             let settings = self.settings.read().await;
             let synced = settings.get_all();
 
@@ -923,11 +931,20 @@ impl Daemon {
             ];
             conda_pkgs.extend(synced.conda.default_packages.clone());
 
-            (uv_pkgs, conda_pkgs)
+            let mut pixi_pkgs = vec![
+                "ipykernel".to_string(),
+                "ipywidgets".to_string(),
+                "anywidget".to_string(),
+                "nbformat".to_string(),
+            ];
+            pixi_pkgs.extend(synced.pixi.default_packages.clone());
+
+            (uv_pkgs, conda_pkgs, pixi_pkgs)
         };
 
         let mut uv_found = 0;
         let mut conda_found = 0;
+        let mut pixi_found = 0;
         let mut orphans: Vec<PathBuf> = Vec::new();
 
         while let Ok(Some(entry)) = entries.next_entry().await {
@@ -984,20 +1001,46 @@ impl Daemon {
                         });
                         conda_found += 1;
                     } else {
-                        // Pool is full — this env is an orphan from a previous daemon run
                         orphans.push(env_path);
                     }
                 } else {
-                    // Invalid env, clean up
+                    tokio::fs::remove_dir_all(&env_path).await.ok();
+                }
+            }
+            // Check for runtimed-pixi-* directories
+            else if name.starts_with("runtimed-pixi-") {
+                let venv_path = env_path.join(".pixi").join("envs").join("default");
+                #[cfg(target_os = "windows")]
+                let python_path = venv_path.join("python.exe");
+                #[cfg(not(target_os = "windows"))]
+                let python_path = venv_path.join("bin").join("python");
+
+                if python_path.exists() && env_path.join(".warmed").exists() {
+                    let mut pool = self.pixi_pool.lock().await;
+                    if pool.available.len() < pool.target {
+                        pool.available.push_back(PoolEntry {
+                            env: PooledEnv {
+                                env_type: EnvType::Pixi,
+                                venv_path,
+                                python_path,
+                                prewarmed_packages: pixi_prewarmed.clone(),
+                            },
+                            created_at: Instant::now(),
+                        });
+                        pixi_found += 1;
+                    } else {
+                        orphans.push(env_path);
+                    }
+                } else {
                     tokio::fs::remove_dir_all(&env_path).await.ok();
                 }
             }
         }
 
-        if uv_found > 0 || conda_found > 0 {
+        if uv_found > 0 || conda_found > 0 || pixi_found > 0 {
             info!(
-                "[runtimed] Found {} existing UV and {} existing Conda environments",
-                uv_found, conda_found
+                "[runtimed] Found {} existing UV, {} Conda, {} Pixi environments",
+                uv_found, conda_found, pixi_found
             );
         }
 
@@ -1720,7 +1763,10 @@ impl Daemon {
                 "[runtimed] Took Pixi env for kernel launch: {:?}",
                 e.venv_path
             );
-            // TODO: Spawn pixi pool replenishment
+            let daemon = self.clone();
+            tokio::spawn(async move {
+                daemon.replenish_pixi_env().await;
+            });
         }
         env
     }
@@ -1754,8 +1800,9 @@ impl Daemon {
                                 });
                             }
                             EnvType::Pixi => {
-                                // TODO: pixi pool replenishment
-                                debug!("[runtimed] Pixi pool replenishment not yet implemented");
+                                tokio::spawn(async move {
+                                    daemon.replenish_pixi_env().await;
+                                });
                             }
                         }
                         Response::Env { env }
@@ -2285,6 +2332,85 @@ impl Daemon {
         }
     }
 
+    /// Background loop that keeps the pixi environment pool at its target size.
+    async fn pixi_warming_loop(&self) {
+        if self.config.pixi_pool_size == 0 {
+            info!("[runtimed] Pixi pool size is 0, skipping warming");
+            return;
+        }
+
+        info!(
+            "[runtimed] Starting pixi warming loop (target: {})",
+            self.config.pixi_pool_size
+        );
+
+        loop {
+            if *self.shutdown.lock().await {
+                break;
+            }
+
+            let (deficit, should_retry, backoff_info) = {
+                let mut pool = self.pixi_pool.lock().await;
+                let d = pool.deficit();
+                let retry = pool.should_retry();
+                let info = if pool.failure_state.consecutive_failures > 0 {
+                    Some((
+                        pool.failure_state.consecutive_failures,
+                        pool.backoff_delay().as_secs(),
+                        pool.failure_state.last_error.clone(),
+                    ))
+                } else {
+                    None
+                };
+
+                if d > 0 && retry {
+                    pool.mark_warming(d);
+                }
+                (d, retry, info)
+            };
+
+            if deficit > 0 {
+                if should_retry {
+                    self.update_pool_doc().await;
+                    info!(
+                        "[runtimed] Pixi pool deficit: {}, creating {} envs",
+                        deficit, deficit
+                    );
+                    for _ in 0..deficit {
+                        if *self.shutdown.lock().await {
+                            break;
+                        }
+                        self.create_pixi_env().await;
+                    }
+                } else if let Some((failures, backoff_secs, last_error)) = backoff_info {
+                    if let Some(err) = last_error {
+                        warn!(
+                            "[runtimed] Pixi pool in backoff: {} consecutive failures ({}), \
+                             waiting {}s before retry. Check pixi.default_packages in settings.",
+                            failures,
+                            err.chars().take(80).collect::<String>(),
+                            backoff_secs
+                        );
+                    } else {
+                        warn!(
+                            "[runtimed] Pixi pool in backoff: {} consecutive failures, \
+                             waiting {}s before retry",
+                            failures, backoff_secs
+                        );
+                    }
+                }
+            }
+
+            let (available, warming) = self.pixi_pool.lock().await.stats();
+            debug!(
+                "[runtimed] Pixi pool: {}/{} available, {} warming",
+                available, self.config.pixi_pool_size, warming
+            );
+
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        }
+    }
+
     /// Create a single Conda environment using rattler and add it to the pool.
     async fn create_conda_env(&self) {
         use rattler::{default_cache_dir, install::Installer, package_cache::PackageCache};
@@ -2666,6 +2792,245 @@ print("warmup complete")
         self.create_conda_env().await;
     }
 
+    /// Create a pixi environment using `pixi init` + `pixi add`.
+    ///
+    /// Creates a managed pixi project directory with ipykernel and default packages,
+    /// then adds the resulting env to the pixi pool.
+    async fn create_pixi_env(&self) {
+        let cache_dir = self.config.cache_dir.clone();
+        let env_id = uuid::Uuid::new_v4().to_string();
+        let project_dir = cache_dir.join(format!("runtimed-pixi-{}", env_id));
+
+        info!("[runtimed] Creating Pixi environment at {:?}", project_dir);
+
+        // 1. Get pixi binary
+        let pixi_path = match kernel_launch::tools::get_pixi_path().await {
+            Ok(p) => p,
+            Err(e) => {
+                error!("[runtimed] Failed to get pixi binary: {}", e);
+                self.pixi_pool
+                    .lock()
+                    .await
+                    .warming_failed_with_error(Some(PackageInstallError {
+                        error_message: format!("Failed to get pixi binary: {}", e),
+                        failed_package: None,
+                    }));
+                self.update_pool_doc().await;
+                return;
+            }
+        };
+
+        // 2. Create project directory
+        if let Err(e) = tokio::fs::create_dir_all(&project_dir).await {
+            error!(
+                "[runtimed] Failed to create pixi project dir {:?}: {}",
+                project_dir, e
+            );
+            self.pixi_pool
+                .lock()
+                .await
+                .warming_failed_with_error(Some(PackageInstallError {
+                    error_message: e.to_string(),
+                    failed_package: None,
+                }));
+            self.update_pool_doc().await;
+            return;
+        }
+
+        // 3. Run pixi init (60s timeout)
+        let init_result = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            tokio::process::Command::new(&pixi_path)
+                .args(["init", "--format", "pixi"])
+                .current_dir(&project_dir)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::piped())
+                .status(),
+        )
+        .await;
+
+        match init_result {
+            Ok(Ok(status)) if status.success() => {
+                debug!("[runtimed] pixi init succeeded in {:?}", project_dir);
+            }
+            Ok(Ok(status)) => {
+                error!("[runtimed] pixi init failed with status: {}", status);
+                let _ = tokio::fs::remove_dir_all(&project_dir).await;
+                self.pixi_pool
+                    .lock()
+                    .await
+                    .warming_failed_with_error(Some(PackageInstallError {
+                        error_message: format!("pixi init exited with {}", status),
+                        failed_package: None,
+                    }));
+                self.update_pool_doc().await;
+                return;
+            }
+            Ok(Err(e)) => {
+                error!("[runtimed] pixi init IO error: {}", e);
+                let _ = tokio::fs::remove_dir_all(&project_dir).await;
+                self.pixi_pool
+                    .lock()
+                    .await
+                    .warming_failed_with_error(Some(PackageInstallError {
+                        error_message: e.to_string(),
+                        failed_package: None,
+                    }));
+                self.update_pool_doc().await;
+                return;
+            }
+            Err(_) => {
+                error!("[runtimed] pixi init timed out (60s)");
+                let _ = tokio::fs::remove_dir_all(&project_dir).await;
+                self.pixi_pool
+                    .lock()
+                    .await
+                    .warming_failed_with_error(Some(PackageInstallError {
+                        error_message: "pixi init timed out".to_string(),
+                        failed_package: None,
+                    }));
+                self.update_pool_doc().await;
+                return;
+            }
+        }
+
+        // 4. Build package list
+        let mut packages = vec![
+            "ipykernel".to_string(),
+            "ipywidgets".to_string(),
+            "anywidget".to_string(),
+            "nbformat".to_string(),
+        ];
+        {
+            let pixi_defaults = self.default_pixi_packages().await;
+            if !pixi_defaults.is_empty() {
+                info!(
+                    "[runtimed] Including default pixi packages: {:?}",
+                    pixi_defaults
+                );
+                packages.extend(pixi_defaults);
+            }
+        }
+        let prewarmed_packages = packages.clone();
+
+        // 5. Run pixi add (120s timeout)
+        let add_result = tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            tokio::process::Command::new(&pixi_path)
+                .arg("add")
+                .args(&packages)
+                .current_dir(&project_dir)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::piped())
+                .output(),
+        )
+        .await;
+
+        match add_result {
+            Ok(Ok(output)) if output.status.success() => {
+                debug!("[runtimed] pixi add succeeded");
+            }
+            Ok(Ok(output)) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                error!("[runtimed] pixi add failed: {}", stderr.trim());
+                let _ = tokio::fs::remove_dir_all(&project_dir).await;
+                self.pixi_pool
+                    .lock()
+                    .await
+                    .warming_failed_with_error(Some(PackageInstallError {
+                        error_message: format!("pixi add failed: {}", stderr.trim()),
+                        failed_package: None,
+                    }));
+                self.update_pool_doc().await;
+                return;
+            }
+            Ok(Err(e)) => {
+                error!("[runtimed] pixi add IO error: {}", e);
+                let _ = tokio::fs::remove_dir_all(&project_dir).await;
+                self.pixi_pool
+                    .lock()
+                    .await
+                    .warming_failed_with_error(Some(PackageInstallError {
+                        error_message: e.to_string(),
+                        failed_package: None,
+                    }));
+                self.update_pool_doc().await;
+                return;
+            }
+            Err(_) => {
+                error!(
+                    "[runtimed] pixi add timed out (120s). Check pixi.default_packages in settings."
+                );
+                let _ = tokio::fs::remove_dir_all(&project_dir).await;
+                self.pixi_pool
+                    .lock()
+                    .await
+                    .warming_failed_with_error(Some(PackageInstallError {
+                        error_message: "pixi add timed out".to_string(),
+                        failed_package: None,
+                    }));
+                self.update_pool_doc().await;
+                return;
+            }
+        }
+
+        // 6. Verify Python exists in the pixi env
+        let python_path = if cfg!(windows) {
+            project_dir
+                .join(".pixi")
+                .join("envs")
+                .join("default")
+                .join("python.exe")
+        } else {
+            project_dir
+                .join(".pixi")
+                .join("envs")
+                .join("default")
+                .join("bin")
+                .join("python")
+        };
+        let venv_path = project_dir.join(".pixi").join("envs").join("default");
+
+        if !python_path.exists() {
+            error!(
+                "[runtimed] Pixi env created but Python not found at {:?}",
+                python_path
+            );
+            let _ = tokio::fs::remove_dir_all(&project_dir).await;
+            self.pixi_pool
+                .lock()
+                .await
+                .warming_failed_with_error(Some(PackageInstallError {
+                    error_message: format!("Python not found at {}", python_path.display()),
+                    failed_package: None,
+                }));
+            self.update_pool_doc().await;
+            return;
+        }
+
+        // 7. Write .warmed marker
+        let _ = tokio::fs::write(project_dir.join(".warmed"), "").await;
+
+        // 8. Add to pool
+        info!("[runtimed] Pixi environment ready at {:?}", project_dir);
+        {
+            let mut pool = self.pixi_pool.lock().await;
+            pool.add(PooledEnv {
+                env_type: EnvType::Pixi,
+                venv_path,
+                python_path,
+                prewarmed_packages,
+            });
+        }
+        self.update_pool_doc().await;
+    }
+
+    /// Mark pixi pool as warming and create a pixi environment.
+    async fn replenish_pixi_env(&self) {
+        self.pixi_pool.lock().await.mark_warming(1);
+        self.create_pixi_env().await;
+    }
+
     /// Update the PoolDoc with current pool state and notify sync connections.
     ///
     /// Called when pool state changes (new error, error cleared, warming, etc.).
@@ -2699,7 +3064,25 @@ print("warmup complete")
             }
         };
 
-        let changed = self.pool_doc.write().await.update(&PoolState { uv, conda });
+        let pixi = {
+            let pool = self.pixi_pool.lock().await;
+            let (available, warming) = pool.stats();
+            RuntimePoolState {
+                available: available as u64,
+                warming: warming as u64,
+                pool_size: self.config.pixi_pool_size as u64,
+                error: pool.failure_state.last_error.clone(),
+                failed_package: pool.failure_state.failed_package.clone(),
+                consecutive_failures: pool.failure_state.consecutive_failures,
+                retry_in_secs: pool.retry_in_secs(),
+            }
+        };
+
+        let changed = self
+            .pool_doc
+            .write()
+            .await
+            .update(&PoolState { uv, conda, pixi });
         if changed {
             let _ = self.pool_doc_changed.send(());
         }

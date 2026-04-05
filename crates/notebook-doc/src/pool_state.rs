@@ -57,6 +57,7 @@ pub struct RuntimePoolState {
 pub struct PoolState {
     pub uv: RuntimePoolState,
     pub conda: RuntimePoolState,
+    pub pixi: RuntimePoolState,
 }
 
 // ── PoolDoc ─────────────────────────────────────────────────────────
@@ -114,6 +115,21 @@ impl PoolDoc {
         doc.put(&conda, "retry_in_secs", 0u64)
             .expect("scaffold conda.retry_in_secs");
 
+        // pixi/
+        let pixi = doc
+            .put_object(&ROOT, "pixi", ObjType::Map)
+            .expect("scaffold pixi");
+        doc.put(&pixi, "available", 0u64)
+            .expect("scaffold pixi.available");
+        doc.put(&pixi, "warming", 0u64)
+            .expect("scaffold pixi.warming");
+        doc.put(&pixi, "pool_size", 0u64)
+            .expect("scaffold pixi.pool_size");
+        doc.put(&pixi, "consecutive_failures", 0u64)
+            .expect("scaffold pixi.consecutive_failures");
+        doc.put(&pixi, "retry_in_secs", 0u64)
+            .expect("scaffold pixi.retry_in_secs");
+
         Self {
             doc,
             last_state: None,
@@ -160,6 +176,7 @@ impl PoolDoc {
     fn write_state(&mut self, state: &PoolState) -> Result<(), AutomergeError> {
         self.write_runtime_state("uv", &state.uv)?;
         self.write_runtime_state("conda", &state.conda)?;
+        self.write_runtime_state("pixi", &state.pixi)?;
         Ok(())
     }
 
@@ -212,6 +229,7 @@ impl PoolDoc {
         PoolState {
             uv: self.read_runtime_state("uv"),
             conda: self.read_runtime_state("conda"),
+            pixi: self.read_runtime_state("pixi"),
         }
     }
 
