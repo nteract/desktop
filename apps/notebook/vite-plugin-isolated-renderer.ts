@@ -43,8 +43,15 @@ export function isolatedRendererPlugin(
     sourcemap = false,
   } = options;
 
+  const markdownEntry = path.resolve(
+    __dirname,
+    "../../src/isolated-renderer/markdown-renderer.tsx",
+  );
+
   let rendererCode = "";
   let rendererCss = "";
+  let markdownRendererCode = "";
+  let markdownRendererCss = "";
   let buildPromise: Promise<void> | null = null;
 
   // Directories to watch for changes that should trigger rebuild
@@ -58,6 +65,8 @@ export function isolatedRendererPlugin(
     buildPromise = null;
     rendererCode = "";
     rendererCss = "";
+    markdownRendererCode = "";
+    markdownRendererCss = "";
   }
 
   async function buildRenderer() {
@@ -169,6 +178,81 @@ export function isolatedRendererPlugin(
         "Failed to build isolated renderer: no JS output produced",
       );
     }
+
+    // --- Build markdown renderer plugin (CJS, React externalized) ---
+    const markdownResult = await build({
+      configFile: false,
+      mode: "production",
+      plugins: [tailwindcss()],
+      esbuild: {
+        jsx: "automatic",
+        jsxImportSource: "react",
+        jsxDev: false,
+      },
+      resolve: {
+        alias: {
+          "@/": `${srcDir}/`,
+        },
+      },
+      build: {
+        write: false,
+        lib: {
+          entry: markdownEntry,
+          formats: ["cjs"],
+          fileName: () => "markdown-renderer.js",
+        },
+        rollupOptions: {
+          external: ["react", "react/jsx-runtime"],
+          output: {
+            inlineDynamicImports: true,
+            assetFileNames: "markdown-renderer.[ext]",
+          },
+          onwarn(warning, warn) {
+            if (
+              warning.code === "MODULE_LEVEL_DIRECTIVE" &&
+              warning.message?.includes('"use client"')
+            ) {
+              return;
+            }
+            warn(warning);
+          },
+        },
+        minify,
+        sourcemap,
+      },
+      define: {
+        "process.env.NODE_ENV": JSON.stringify("production"),
+      },
+      logLevel: "warn",
+    });
+
+    // Extract markdown plugin JS and CSS
+    const mdOutputs = Array.isArray(markdownResult)
+      ? markdownResult
+      : [markdownResult];
+    for (const output of mdOutputs) {
+      if ("output" in output) {
+        for (const chunk of output.output) {
+          if (chunk.type === "chunk" && chunk.fileName.endsWith(".js")) {
+            markdownRendererCode = chunk.code;
+          } else if (
+            chunk.type === "asset" &&
+            chunk.fileName.endsWith(".css")
+          ) {
+            markdownRendererCss =
+              typeof chunk.source === "string"
+                ? chunk.source
+                : new TextDecoder().decode(chunk.source);
+          }
+        }
+      }
+    }
+
+    if (!markdownRendererCode) {
+      throw new Error(
+        "Failed to build markdown renderer plugin: no JS output produced",
+      );
+    }
   }
 
   return {
@@ -201,6 +285,8 @@ export function isolatedRendererPlugin(
         return `
 export const rendererCode = ${JSON.stringify(rendererCode)};
 export const rendererCss = ${JSON.stringify(rendererCss)};
+export const markdownRendererCode = ${JSON.stringify(markdownRendererCode)};
+export const markdownRendererCss = ${JSON.stringify(markdownRendererCss)};
 `;
       }
     },

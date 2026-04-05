@@ -17,6 +17,7 @@
 
 // Host → Iframe (Requests — expect a response)
 export const NTERACT_EVAL = "nteract/eval" as const;
+export const NTERACT_INSTALL_RENDERER = "nteract/installRenderer" as const;
 export const NTERACT_SEARCH = "nteract/search" as const;
 
 // Host → Iframe (Notifications — fire-and-forget)
@@ -62,6 +63,13 @@ export interface NteractEvalResult {
   success: boolean;
   result?: string;
   error?: string;
+}
+
+export interface NteractInstallRendererParams {
+  /** CJS module code exporting an install(ctx) function */
+  code: string;
+  /** Optional CSS to inject (e.g., KaTeX styles) */
+  css?: string;
 }
 
 export interface NteractSearchParams {

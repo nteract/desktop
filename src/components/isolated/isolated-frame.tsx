@@ -26,6 +26,7 @@ import {
   NTERACT_ERROR,
   NTERACT_EVAL,
   NTERACT_EVAL_RESULT,
+  NTERACT_INSTALL_RENDERER,
   NTERACT_LINK_CLICK,
   NTERACT_PING,
   NTERACT_RENDER_BATCH,
@@ -161,6 +162,14 @@ export interface IsolatedFrameHandle {
   eval: (code: string) => void;
 
   /**
+   * Install a renderer plugin in the iframe.
+   * The plugin is a CJS module that exports an install(ctx) function.
+   * The iframe loads it with a custom require shim providing React,
+   * then calls install() with a registration API for MIME types.
+   */
+  installRenderer: (code: string, css?: string) => void;
+
+  /**
    * Update theme settings in the iframe.
    */
   setTheme: (isDark: boolean) => void;
@@ -200,6 +209,7 @@ const TYPE_TO_METHOD: Record<string, string> = {
   theme: NTERACT_THEME,
   clear: NTERACT_CLEAR_OUTPUTS,
   eval: NTERACT_EVAL,
+  install_renderer: NTERACT_INSTALL_RENDERER,
   ping: NTERACT_PING,
   search: NTERACT_SEARCH,
   search_navigate: NTERACT_SEARCH_NAVIGATE,
@@ -709,6 +719,8 @@ export const IsolatedFrame = forwardRef<
       renderBatch: (outputs: RenderPayload[]) =>
         send({ type: "render_batch", payload: { outputs } }),
       eval: (code: string) => send({ type: "eval", payload: { code } }),
+      installRenderer: (code: string, css?: string) =>
+        send({ type: "install_renderer", payload: { code, css } }),
       setTheme: (isDark: boolean) =>
         send({ type: "theme", payload: { isDark } }),
       clear: () => send({ type: "clear" }),

@@ -15,6 +15,7 @@ import {
   NTERACT_COMM_OPEN,
   NTERACT_WIDGET_SNAPSHOT,
   NTERACT_EVAL,
+  NTERACT_INSTALL_RENDERER,
   NTERACT_PING,
   NTERACT_RENDER_OUTPUT,
   NTERACT_SEARCH,
@@ -30,6 +31,7 @@ const TYPE_TO_METHOD: Record<string, string> = {
   theme: NTERACT_THEME,
   clear: NTERACT_CLEAR_OUTPUTS,
   eval: NTERACT_EVAL,
+  install_renderer: NTERACT_INSTALL_RENDERER,
   ping: NTERACT_PING,
   search: NTERACT_SEARCH,
   search_navigate: NTERACT_SEARCH_NAVIGATE,
@@ -49,6 +51,7 @@ describe("TYPE_TO_METHOD mapping", () => {
       "theme",
       "clear",
       "eval",
+      "install_renderer",
       "ping",
       "search",
       "search_navigate",
@@ -81,6 +84,7 @@ describe("TYPE_TO_METHOD mapping", () => {
     expect(TYPE_TO_METHOD.theme).toBe("nteract/theme");
     expect(TYPE_TO_METHOD.clear).toBe("nteract/clearOutputs");
     expect(TYPE_TO_METHOD.eval).toBe("nteract/eval");
+    expect(TYPE_TO_METHOD.install_renderer).toBe("nteract/installRenderer");
     expect(TYPE_TO_METHOD.search).toBe("nteract/search");
     expect(TYPE_TO_METHOD.search_navigate).toBe("nteract/searchNavigate");
     expect(TYPE_TO_METHOD.comm_open).toBe("nteract/commOpen");

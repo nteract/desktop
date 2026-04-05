@@ -9,8 +9,10 @@
  * It cannot access Tauri APIs, the parent DOM, or localStorage.
  */
 
+import * as React from "react";
 import { StrictMode, useCallback, useEffect, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import * as jsxRuntime from "react/jsx-runtime";
 
 // Import styles (Tailwind + theme variables)
 import "./styles.css";
@@ -19,6 +21,7 @@ import type { RenderPayload } from "@/components/isolated/frame-bridge";
 import { JsonRpcTransport } from "@/components/isolated/jsonrpc-transport";
 import {
   NTERACT_CLEAR_OUTPUTS,
+  NTERACT_INSTALL_RENDERER,
   NTERACT_RENDER_BATCH,
   NTERACT_RENDER_COMPLETE,
   NTERACT_RENDER_OUTPUT,
@@ -38,7 +41,6 @@ import { HtmlOutput } from "@/components/outputs/html-output";
 import { ImageOutput } from "@/components/outputs/image-output";
 import { JavaScriptOutput } from "@/components/outputs/javascript-output";
 import { JsonOutput } from "@/components/outputs/json-output";
-import { MarkdownOutput } from "@/components/outputs/markdown-output";
 import { GeoJsonOutput } from "@/components/outputs/geojson-output";
 import { PdfOutput } from "@/components/outputs/pdf-output";
 import { PlotlyOutput } from "@/components/outputs/plotly-output";
@@ -53,6 +55,75 @@ import { IframeWidgetStoreProvider } from "./widget-provider";
 // Import widget controls to register them in the widget registry
 // This import has side effects that register all built-in widgets
 import "@/components/widgets/controls";
+
+// --- Renderer Plugin Registry ---
+//
+// On-demand renderer plugins register React components for specific MIME types.
+// Plugins are CJS modules loaded via installRendererPlugin(). The custom
+// require shim provides the shared React instance so hooks work correctly.
+
+import type { ComponentType } from "react";
+
+interface RendererProps {
+  data: unknown;
+  metadata?: Record<string, unknown>;
+  mimeType: string;
+}
+
+const rendererRegistry = new Map<string, ComponentType<RendererProps>>();
+
+/**
+ * Load and install a renderer plugin.
+ *
+ * The plugin is a CJS module that exports an `install(ctx)` function.
+ * We provide a custom `require` that maps "react" and "react/jsx-runtime"
+ * to the already-loaded instances — no globals, just dependency injection.
+ */
+function installRendererPlugin(code: string, css?: string) {
+  const mod: { exports: Record<string, unknown> } = { exports: {} };
+  const customRequire = (name: string) => {
+    if (name === "react") return React;
+    if (name === "react/jsx-runtime") return jsxRuntime;
+    throw new Error(`[renderer-plugin] Unknown module: ${name}`);
+  };
+
+  // eslint-disable-next-line no-new-func -- CJS loader pattern
+  new Function("module", "exports", "require", code)(
+    mod,
+    mod.exports,
+    customRequire,
+  );
+
+  const install = mod.exports.install as
+    | ((ctx: {
+        register: (
+          mimeTypes: string[],
+          component: ComponentType<RendererProps>,
+        ) => void;
+      }) => void)
+    | undefined;
+
+  if (typeof install !== "function") {
+    console.error(
+      "[renderer-plugin] Plugin does not export an install() function",
+    );
+    return;
+  }
+
+  install({
+    register(mimeTypes, component) {
+      for (const mt of mimeTypes) {
+        rendererRegistry.set(mt, component);
+      }
+    },
+  });
+
+  if (css) {
+    const style = document.createElement("style");
+    style.textContent = css;
+    document.head.appendChild(style);
+  }
+}
 
 // --- Types ---
 
@@ -138,6 +209,14 @@ function setupMessageListener() {
   rpcTransport.onNotification(NTERACT_THEME, (params) => {
     messageHandler?.("theme", params);
   });
+  rpcTransport.onNotification(NTERACT_INSTALL_RENDERER, (params) => {
+    const { code, css } = params as { code: string; css?: string };
+    try {
+      installRendererPlugin(code, css);
+    } catch (err) {
+      console.error("[renderer-plugin] install failed:", err);
+    }
+  });
   rpcTransport.start();
 
   // Legacy listener for any { type, payload } messages that arrive
@@ -150,6 +229,15 @@ function setupMessageListener() {
     if (data?.jsonrpc === "2.0") return;
 
     const { type, payload } = data || {};
+    // Handle install_renderer directly (doesn't need React message handler)
+    if (type === "install_renderer" && payload?.code) {
+      try {
+        installRendererPlugin(payload.code, payload.css);
+      } catch (err) {
+        console.error("[renderer-plugin] install failed:", err);
+      }
+      return;
+    }
     if (messageHandler) {
       messageHandler(type, payload);
     }
@@ -309,15 +397,18 @@ function OutputRenderer({ payload }: { payload: RenderPayload }) {
   // Route to appropriate component based on MIME type
   // (Direct rendering without MediaRouter's lazy loading)
 
+  // Check renderer plugin registry first (e.g., markdown, future: plotly, vega)
+  const RegisteredRenderer = rendererRegistry.get(mimeType);
+  if (RegisteredRenderer) {
+    return (
+      <RegisteredRenderer data={data} metadata={metadata} mimeType={mimeType} />
+    );
+  }
+
   // Widget view - render interactive Jupyter widget
   if (mimeType === "application/vnd.jupyter.widget-view+json") {
     const widgetData = data as { model_id: string };
     return <WidgetView modelId={widgetData.model_id} />;
-  }
-
-  // Markdown
-  if (mimeType === "text/markdown") {
-    return <MarkdownOutput content={String(content)} />;
   }
 
   // HTML

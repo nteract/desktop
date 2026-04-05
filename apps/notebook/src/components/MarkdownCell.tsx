@@ -18,6 +18,7 @@ import { remoteCursorsExtension } from "@/components/editor/remote-cursors";
 import { searchHighlight } from "@/components/editor/search-highlight";
 import { textAttributionExtension } from "@/components/editor/text-attribution";
 import { IsolatedFrame, type IsolatedFrameHandle } from "@/components/isolated";
+import { injectLibraries } from "@/components/isolated/iframe-libraries";
 import { useDarkMode } from "@/lib/dark-mode";
 import { cn } from "@/lib/utils";
 import { usePresenceContext } from "../contexts/PresenceContext";
@@ -161,6 +162,7 @@ export const MarkdownCell = memo(function MarkdownCell({
   const presence = usePresenceContext();
   const { extension: crdtBridgeExt } = useCrdtBridge(cell.id);
   const frameRef = useRef<IsolatedFrameHandle>(null);
+  const injectedLibsRef = useRef(new Set<string>());
   const viewRef = useRef<HTMLDivElement>(null);
 
   // Register EditorView with the cursor registry when in edit mode.
@@ -231,10 +233,16 @@ export const MarkdownCell = memo(function MarkdownCell({
   }, [cell.source]);
 
   // Render markdown content when iframe is ready
-  const handleFrameReady = useCallback(() => {
+  const handleFrameReady = useCallback(async () => {
     if (!frameRef.current || !cell.source) return;
     // Ensure theme is in sync before re-rendering (fixes theme drift after cell moves)
     frameRef.current.setTheme(darkModeRef.current);
+    // Inject markdown renderer plugin before rendering (idempotent, cached after first load)
+    await injectLibraries(
+      frameRef.current,
+      ["markdown"],
+      injectedLibsRef.current,
+    );
     const processedSource = rewriteMarkdownAssetRefs(
       cell.source,
       cell.resolvedAssets,
@@ -251,16 +259,20 @@ export const MarkdownCell = memo(function MarkdownCell({
   // Sync markdown to iframe whenever source or resolved assets change (supports RTC updates)
   useEffect(() => {
     if (frameRef.current?.isReady && cell.source) {
-      const processedSource = rewriteMarkdownAssetRefs(
-        cell.source,
-        cell.resolvedAssets,
-        blobPort,
-      );
-      frameRef.current.render({
-        mimeType: "text/markdown",
-        data: processedSource,
-        cellId: cell.id,
-        replace: true,
+      const frame = frameRef.current;
+      // Inject markdown renderer plugin (idempotent) then render
+      injectLibraries(frame, ["markdown"], injectedLibsRef.current).then(() => {
+        const processedSource = rewriteMarkdownAssetRefs(
+          cell.source,
+          cell.resolvedAssets,
+          blobPort,
+        );
+        frame.render({
+          mimeType: "text/markdown",
+          data: processedSource,
+          cellId: cell.id,
+          replace: true,
+        });
       });
     }
   }, [cell.source, cell.id, cell.resolvedAssets, blobPort]);

@@ -1,13 +1,17 @@
 /**
  * On-demand library loading for isolated iframes.
  *
- * Heavy libraries (plotly.js, etc.) are NOT bundled into the isolated renderer
- * IIFE. Instead, they are lazy-loaded as raw strings from the parent app and
- * injected into iframes via `eval` only when an output actually needs them.
+ * Heavy libraries are NOT bundled into the isolated renderer IIFE. Instead,
+ * they are lazy-loaded from the parent app and injected into iframes only
+ * when an output actually needs them.
  *
- * The eval message is processed synchronously by the iframe's bootstrap before
- * any subsequent render messages, so the library global (e.g. `window.Plotly`)
- * is guaranteed to be available when the output component mounts.
+ * Two injection mechanisms:
+ * - **Renderer plugins** (markdown): CJS modules loaded via `frame.installRenderer()`.
+ *   The iframe's plugin loader provides a shared React instance and a registration
+ *   API. No globals needed.
+ * - **Legacy eval libraries** (plotly, vega, leaflet): Raw JS strings injected via
+ *   `frame.eval()` that set window globals (e.g., `window.Plotly`). These will
+ *   migrate to the renderer plugin API in future PRs.
  */
 
 import type { JupyterOutput } from "@/components/cell/jupyter-output";
@@ -19,9 +23,13 @@ import { isVegaMimeType } from "@/components/outputs/vega-mime";
  * Extend this when adding support for new heavy visualization libraries.
  */
 const MIME_LIBRARIES: Record<string, string> = {
+  "text/markdown": "markdown",
   "application/vnd.plotly.v1+json": "plotly",
   "application/geo+json": "leaflet",
 };
+
+/** Libraries that use the renderer plugin API instead of legacy eval. */
+const RENDERER_PLUGINS = new Set(["markdown"]);
 
 function libraryForMime(mime: string): string | undefined {
   if (MIME_LIBRARIES[mime]) return MIME_LIBRARIES[mime];
@@ -30,22 +38,29 @@ function libraryForMime(mime: string): string | undefined {
 }
 
 /** Cache of library code promises (shared across all iframes). */
-const codeCache = new Map<string, Promise<string>>();
+const codeCache = new Map<string, Promise<{ code: string; css?: string }>>();
 
 /**
- * Lazy-load a library's source code as a raw string.
- * The returned string is a self-contained script that sets a global
- * (e.g. `window.Plotly`) when eval'd.
+ * Lazy-load a library's code (and optional CSS).
  */
-function loadLibraryCode(name: string): Promise<string> {
+function loadLibrary(name: string): Promise<{ code: string; css?: string }> {
   const cached = codeCache.get(name);
   if (cached) return cached;
 
-  const promise = (async (): Promise<string> => {
+  const promise = (async (): Promise<{ code: string; css?: string }> => {
     switch (name) {
+      case "markdown": {
+        const { markdownRendererCode, markdownRendererCss } = await import(
+          "virtual:isolated-renderer"
+        );
+        return {
+          code: markdownRendererCode,
+          css: markdownRendererCss || undefined,
+        };
+      }
       case "plotly": {
         const mod = await import("plotly-raw");
-        return mod.default;
+        return { code: mod.default };
       }
       case "vega": {
         // Load all three in parallel: vega (runtime), vega-lite (compiler), vega-embed (renderer).
@@ -58,7 +73,9 @@ function loadLibraryCode(name: string): Promise<string> {
           import("vega-lite-raw"),
           import("vega-embed-raw"),
         ]);
-        return `${vegaMod.default}\n${vegaLiteMod.default}\n${vegaEmbedMod.default}`;
+        return {
+          code: `${vegaMod.default}\n${vegaLiteMod.default}\n${vegaEmbedMod.default}`,
+        };
       }
       case "leaflet": {
         // Load Leaflet JS and CSS. Inject CSS via a <style> tag before the JS runs.
@@ -67,7 +84,7 @@ function loadLibraryCode(name: string): Promise<string> {
           import("leaflet-css-raw"),
         ]);
         const cssInjection = `(function(){var s=document.createElement('style');s.textContent=${JSON.stringify(leafletCss.default)};document.head.appendChild(s);})();`;
-        return `${cssInjection}\n${leafletJs.default}`;
+        return { code: `${cssInjection}\n${leafletJs.default}` };
       }
       default:
         throw new Error(`Unknown iframe library: ${name}`);
@@ -103,8 +120,11 @@ export function getRequiredLibraries(
 }
 
 /**
- * Inject required libraries into an iframe via eval.
+ * Inject required libraries into an iframe.
  * Idempotent per iframe — tracks what has been injected via `injectedSet`.
+ *
+ * Renderer plugins use `frame.installRenderer()` (CJS module with shared React).
+ * Legacy libraries use `frame.eval()` (raw JS setting window globals).
  */
 export async function injectLibraries(
   frame: IsolatedFrameHandle,
@@ -113,13 +133,24 @@ export async function injectLibraries(
 ): Promise<void> {
   for (const name of libraryNames) {
     if (injectedSet.has(name)) continue;
-    const code = await loadLibraryCode(name);
-    // Idempotent guard inside the iframe (belt + suspenders with injectedSet)
-    const guard = `__LIB_${name.toUpperCase()}__`;
-    console.debug(`[iframe-libraries] injecting "${name}" (${(code.length / 1024).toFixed(0)}KB)`);
-    frame.eval(
-      `if(!window.${guard}){window.${guard}=true;\n${code}\n}`,
-    );
+    const lib = await loadLibrary(name);
+
+    if (RENDERER_PLUGINS.has(name)) {
+      // Renderer plugin: use the plugin API (CJS + shared React, no globals)
+      console.debug(
+        `[iframe-libraries] installing renderer plugin "${name}" (${(lib.code.length / 1024).toFixed(0)}KB)`,
+      );
+      frame.installRenderer(lib.code, lib.css);
+    } else {
+      // Legacy: eval raw JS that sets window globals
+      const guard = `__LIB_${name.toUpperCase()}__`;
+      console.debug(
+        `[iframe-libraries] injecting "${name}" (${(lib.code.length / 1024).toFixed(0)}KB)`,
+      );
+      frame.eval(
+        `if(!window.${guard}){window.${guard}=true;\n${lib.code}\n}`,
+      );
+    }
     injectedSet.add(name);
   }
 }

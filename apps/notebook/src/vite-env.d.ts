@@ -3,4 +3,6 @@
 declare module "virtual:isolated-renderer" {
   export const rendererCode: string;
   export const rendererCss: string;
+  export const markdownRendererCode: string;
+  export const markdownRendererCss: string;
 }

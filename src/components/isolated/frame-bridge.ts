@@ -82,6 +82,24 @@ export interface PingMessage {
 }
 
 /**
+ * Install a renderer plugin in the iframe.
+ *
+ * The plugin code is a CJS module that exports an `install(ctx)` function.
+ * The iframe loads it via a custom `require` shim that provides the shared
+ * React instance, then calls `install()` with a registration API.
+ * Registered components handle rendering for their declared MIME types.
+ */
+export interface InstallRendererMessage {
+  type: "install_renderer";
+  payload: {
+    /** CJS module code exporting an install(ctx) function */
+    code: string;
+    /** Optional CSS to inject (e.g., KaTeX styles) */
+    css?: string;
+  };
+}
+
+/**
  * Clear all rendered content in the iframe.
  */
 export interface ClearMessage {
@@ -199,6 +217,7 @@ export interface SearchNavigateMessage {
  */
 export type ParentToIframeMessage =
   | EvalMessage
+  | InstallRendererMessage
   | RenderMessage
   | RenderBatchMessage
   | WidgetStateMessage
