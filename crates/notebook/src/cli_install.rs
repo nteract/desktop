@@ -415,9 +415,15 @@ pub fn is_cli_installed_local() -> bool {
 }
 
 /// Check if the CLI has a legacy install in `/usr/local/bin` (pre-system-wide era).
+/// Returns false if the system-wide marker is present (that's a managed install,
+/// not a legacy one).
 pub fn is_cli_installed_legacy() -> bool {
     #[cfg(unix)]
     {
+        // If the system-wide marker exists, this is a managed install, not legacy
+        if is_cli_installed_system() {
+            return false;
+        }
         let legacy = PathBuf::from(LEGACY_INSTALL_DIR);
         let cli_name = cli_command_name();
         let nb_name = cli_notebook_alias_name();
@@ -553,16 +559,32 @@ fn install_with_privilege_escalation(
         nb_escaped = shell_escape(nb_script),
     );
 
-    // Escape for AppleScript do shell script string. Single quotes inside
-    // shell_escape output don't need extra escaping for AppleScript double-quote
-    // context, but backslashes and double quotes do. Newlines within single-quoted
-    // shell strings are valid and preserved by the shell, but the AppleScript
-    // "do shell script" string literal doesn't support them directly — we need
-    // to split the script into lines joined by AppleScript string concatenation.
-    // Simpler: write the shell command to a temp file and execute that.
-    let temp_script = std::env::temp_dir().join("nteract-cli-install.sh");
-    fs::write(&temp_script, &shell_cmd)
-        .map_err(|e| format!("Failed to write install script: {}", e))?;
+    // Write the shell command to a secure temp file to avoid multiline string
+    // issues in AppleScript. Use a unique filename and restrict permissions to
+    // prevent TOCTOU attacks (another process replacing the script before osascript
+    // executes it with admin privileges).
+    let temp_script =
+        std::env::temp_dir().join(format!("nteract-cli-install-{}.sh", std::process::id()));
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o700)
+            .open(&temp_script)
+            .or_else(|_| {
+                // File might exist from a previous failed attempt
+                let _ = fs::remove_file(&temp_script);
+                fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o700)
+                    .open(&temp_script)
+            })
+            .map_err(|e| format!("Failed to create install script: {}", e))?;
+        file.write_all(shell_cmd.as_bytes())
+            .map_err(|e| format!("Failed to write install script: {}", e))?;
+    }
 
     let escaped_script_path = temp_script
         .to_string_lossy()
