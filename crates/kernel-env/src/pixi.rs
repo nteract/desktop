@@ -74,7 +74,7 @@ fn generate_pixi_manifest(name: &str, packages: &[String], channels: &[String]) 
         .iter()
         .map(|p| {
             // Split "package>=version" into name and version spec
-            if let Some(idx) = p.find(|c: char| c == '>' || c == '<' || c == '=' || c == '!') {
+            if let Some(idx) = p.find(['>', '<', '=', '!']) {
                 let (name, version) = p.split_at(idx);
                 format!("{} = \"{}\"", name.trim(), version.trim())
             } else {
