@@ -29,7 +29,7 @@ pub const UV_TARGET_VERSION: &str = "0.10.8";
 
 /// Target pixi version for rattler bootstrap.
 /// Pinned to ensure stable `pixi info --json` and `pixi shell-hook --json` output.
-pub const PIXI_TARGET_VERSION: &str = "0.66";
+pub const PIXI_TARGET_VERSION: &str = "0.65.0";
 
 /// Minimum acceptable Deno major version for system deno.
 /// If system deno is below this version, we download a newer one.
