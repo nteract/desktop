@@ -1721,6 +1721,27 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
                         conda_colored,
                         conda_warming_text
                     );
+
+                    let pixi_total = state.pixi.available + state.pixi.warming;
+                    let pixi_status = format!("{}/{} ready", state.pixi.available, pixi_total);
+                    let pixi_colored = if state.pixi.warming > 0 {
+                        pixi_status.yellow()
+                    } else {
+                        pixi_status.green()
+                    };
+                    let pixi_warming_text = if state.pixi.warming > 0 {
+                        format!(" ({} warming)", state.pixi.warming)
+                            .dimmed()
+                            .to_string()
+                    } else {
+                        String::new()
+                    };
+                    println!(
+                        "  {:<8} {}{}",
+                        "Pixi:".bold(),
+                        pixi_colored,
+                        pixi_warming_text
+                    );
                 }
             }
         }
