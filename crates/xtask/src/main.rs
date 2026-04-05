@@ -1151,10 +1151,16 @@ fn generate_launch_agent_plist() {
     // BundleProgram is relative to the .app bundle root
     let bundle_program = format!("Contents/MacOS/{daemon_binary}");
 
-    // Note: StandardOutPath/StandardErrorPath are omitted because they
-    // require absolute paths and we can't know HOME at build time. The
-    // daemon manages its own log file internally and falls back to /tmp
-    // if HOME is unavailable.
+    // Note: HOME, USER, StandardOutPath, and StandardErrorPath are omitted
+    // because they require the user's home directory which isn't known at
+    // build time. This plist is only used on macOS 13+ where launchd's
+    // user-domain agent loading reliably sets HOME and USER. The daemon
+    // also manages its own log file internally and falls back to /tmp.
+    //
+    // This plist is additive — the legacy ~/Library/LaunchAgents/ plist
+    // (which includes HOME, USER, and ~/.local/bin in PATH) is always
+    // also written at install time and is the primary one used by
+    // launchctl start/stop.
 
     let plist_content = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>

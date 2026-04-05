@@ -276,10 +276,20 @@ impl ServiceManager {
         // SMAppService resolves against the calling process's bundle, so this
         // only works when called from the notebook app, not from `runt` CLI.
         #[cfg(target_os = "macos")]
-        if should_use_smappservice(&self.config.binary_path) {
-            match smappservice_unregister() {
-                Ok(()) => {}
-                Err(e) => info!("[service] SMAppService unregister skipped ({})", e),
+        {
+            if should_use_smappservice(&self.config.binary_path) {
+                match smappservice_unregister() {
+                    Ok(()) => {}
+                    Err(e) => info!("[service] SMAppService unregister skipped ({})", e),
+                }
+            } else if is_macos_13_or_later() && Self::is_in_app_bundle(&self.config.binary_path) {
+                // CLI is uninstalling an app-bundle daemon on macOS 13+.
+                // We can't call SMAppService from here, so warn the user.
+                info!(
+                    "[service] Note: The Login Item entry in System Settings may \
+                     persist until the app is deleted or you disable it manually \
+                     in System Settings > General > Login Items."
+                );
             }
         }
 
