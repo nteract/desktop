@@ -22,6 +22,7 @@ runtime = [
     "dep:reqwest",
     "dep:reqwest-middleware",
 ]
+pixi_api = ["dep:pixi_api", "dep:miette", "dep:indexmap"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -49,6 +50,8 @@ reqwest-middleware = { version = "0.4", optional = true }
 
 # Pixi API for workspace-level conda/pypi dependency management (experimental)
 pixi_api = { git = "https://github.com/prefix-dev/pixi", rev = "370a1759c", package = "pixi_api", optional = true, features = ["native-tls"] }
+miette = { version = "7", optional = true }
+indexmap = { version = "2", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

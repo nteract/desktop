@@ -28,6 +28,7 @@
 pub mod conda;
 #[cfg(feature = "runtime")]
 pub mod gc;
+pub mod pixi_api_integration;
 pub mod progress;
 #[cfg(feature = "runtime")]
 pub mod uv;
