@@ -36,7 +36,7 @@ pub struct NteractMcp {
     session: Arc<RwLock<Option<NotebookSession>>>,
     /// The MCP client's display name, sniffed from the initialize handshake.
     /// Used as the peer label in notebook sessions so the notebook app shows
-    /// "Claude Desktop" or "Claude Code" instead of "Agent".
+    /// "Claude Desktop" or "Claude Code" instead of the default "Inkwell".
     peer_label: Arc<RwLock<String>>,
     /// When true, the `show_notebook` tool is not registered (headless environments).
     no_show: bool,
@@ -57,7 +57,7 @@ impl NteractMcp {
             blob_base_url,
             blob_store_path,
             session: Arc::new(RwLock::new(None)),
-            peer_label: Arc::new(RwLock::new("Agent".to_string())),
+            peer_label: Arc::new(RwLock::new("Inkwell".to_string())),
             no_show: false,
             daemon_state: Arc::new(RwLock::new(initial_daemon_state)),
         }
@@ -151,7 +151,7 @@ impl ServerHandler for NteractMcp {
         // The title (e.g., "Claude Desktop") is preferred over the name ("claude-desktop").
         {
             let current = self.peer_label.read().await;
-            if *current == "Agent" {
+            if *current == "Inkwell" {
                 drop(current);
                 if let Some(info) = context.peer.peer_info() {
                     let label = info

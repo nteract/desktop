@@ -70,7 +70,7 @@ pub struct KernelState {
     pub language: String,
     #[serde(default)]
     pub env_source: String,
-    /// ID of the runtime agent subprocess that owns this kernel (e.g., "rt:agent:a1b2c3d4").
+    /// ID of the runtime agent subprocess that owns this kernel (e.g., "runtime-agent:a1b2c3d4").
     /// Used for provenance — identifying which runtime agent is running and detecting stale ones.
     #[serde(default)]
     pub runtime_agent_id: String,
