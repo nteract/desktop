@@ -445,7 +445,7 @@ function NotebookViewContent({
     useVirtualCells({
       cellIds,
       scrollContainerRef: containerRef,
-      overscan: 4,
+      overscan: 16,
       isDragging: activeId !== null,
       forceInclude,
     });
@@ -840,7 +840,7 @@ function NotebookViewContent({
   return (
     <div
       ref={containerRef}
-      className="flex-1 overflow-y-auto overflow-x-clip overscroll-x-contain pl-8 pr-2"
+      className="flex-1 overflow-y-auto overflow-x-clip overscroll-x-contain pb-16 pl-8 pr-2"
       style={{ contain: "paint", overflowAnchor: "none" }}
       onScroll={onScroll}
       data-notebook-synced={!isLoading && cellIds.length > 0}
