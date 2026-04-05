@@ -23,7 +23,12 @@ import {
   type NotebookClient,
   type NotebookResponse,
 } from "runtimed";
-import { getBlobPort, refreshBlobPort, resetBlobPort } from "../lib/blob-port";
+import {
+  getBlobPort,
+  refreshBlobPort,
+  resetBlobPort,
+  useBlobPort,
+} from "../lib/blob-port";
 import { replaceSentinelsWithBlobUrls } from "../lib/blob-sentinel";
 import { logger } from "../lib/logger";
 import { subscribeBroadcast } from "../lib/notebook-frame-bus";
@@ -151,6 +156,7 @@ export function useDaemonKernel({
 }: UseDaemonKernelOptions) {
   // ── State from RuntimeStateDoc (daemon-authoritative) ─────────────
   const runtimeState = useRuntimeState();
+  const blobPort = useBlobPort();
 
   const kernelInfo = useMemo(
     () => deriveKernelInfo(runtimeState),
@@ -451,7 +457,7 @@ export function useDaemonKernel({
     if (!commCb) return;
 
     const docComms = runtimeState.comms ?? {};
-    const hasBlobPort = getBlobPort() !== null;
+    const hasBlobPort = blobPort !== null;
 
     const { result, next } = diffComms(commDiffStateRef.current, docComms);
 
@@ -537,7 +543,8 @@ export function useDaemonKernel({
     }
 
     commDiffStateRef.current = next;
-  }, [runtimeState.comms]);
+    // biome-ignore lint/correctness/useExhaustiveDependencies: blobPort triggers retry for comms deferred due to missing blob server
+  }, [runtimeState.comms, blobPort]);
 
   // ── Actions (via NotebookClient) ──────────────────────────────────
 
