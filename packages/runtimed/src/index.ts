@@ -41,6 +41,7 @@ export {
   type RuntimeState,
   type TrustState,
   diffExecutions,
+  getExecutionCountForCell,
 } from "./runtime-state";
 
 // Pool state

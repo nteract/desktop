@@ -288,10 +288,13 @@ export function useDaemonKernel({
     const transitions = diffExecutions(prev, curr);
     for (const t of transitions) {
       if (t.kind === "started") {
-        callbacksRef.current.onExecutionCount(
-          t.cell_id,
-          t.execution_count ?? 0,
-        );
+        // Only forward when the kernel has actually reported the count
+        // (arrives via execute_input, after the queued→running transition).
+        // Materialization reads execution_count from RuntimeState directly,
+        // so skipping null here avoids a brief flash of "0".
+        if (t.execution_count != null) {
+          callbacksRef.current.onExecutionCount(t.cell_id, t.execution_count);
+        }
       } else {
         callbacksRef.current.onExecutionDone(t.cell_id);
       }

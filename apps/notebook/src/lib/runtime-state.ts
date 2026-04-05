@@ -20,7 +20,11 @@ export type {
   TrustState,
 } from "runtimed";
 
-export { DEFAULT_RUNTIME_STATE, diffExecutions } from "runtimed";
+export {
+  DEFAULT_RUNTIME_STATE,
+  diffExecutions,
+  getExecutionCountForCell,
+} from "runtimed";
 
 import { DEFAULT_RUNTIME_STATE, type RuntimeState } from "runtimed";
 

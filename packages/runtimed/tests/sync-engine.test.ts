@@ -13,7 +13,7 @@ import { SyncEngine } from "../src/sync-engine";
 import { DirectTransport } from "../src/direct-transport";
 import { FrameType } from "../src/transport";
 import { mergeChangesets } from "../src/cell-changeset";
-import { diffExecutions } from "../src/runtime-state";
+import { diffExecutions, getExecutionCountForCell } from "../src/runtime-state";
 import type { SyncableHandle, FrameEvent } from "../src/handle";
 import type { CellChangeset } from "../src/cell-changeset";
 import type { RuntimeState } from "../src/runtime-state";
@@ -1604,5 +1604,79 @@ describe("diffExecutions", () => {
     };
     const transitions = diffExecutions(state, state);
     expect(transitions).toHaveLength(0);
+  });
+
+  it("detects execution_count arriving while still running", () => {
+    const prev = {
+      "e1": { cell_id: "c1", status: "running" as const, execution_count: null, success: null },
+    };
+    const curr = {
+      "e1": { cell_id: "c1", status: "running" as const, execution_count: 5, success: null },
+    };
+    const transitions = diffExecutions(prev, curr);
+    expect(transitions).toHaveLength(1);
+    expect(transitions[0].kind).toBe("started");
+    expect(transitions[0].execution_count).toBe(5);
+  });
+
+  it("ignores execution_count change when not running", () => {
+    const prev = {
+      "e1": { cell_id: "c1", status: "done" as const, execution_count: null, success: true },
+    };
+    const curr = {
+      "e1": { cell_id: "c1", status: "done" as const, execution_count: 5, success: true },
+    };
+    const transitions = diffExecutions(prev, curr);
+    expect(transitions).toHaveLength(0);
+  });
+});
+
+// ── getExecutionCountForCell ────────────────────────────────────
+
+describe("getExecutionCountForCell", () => {
+  const baseState = {
+    kernel: { status: "idle", starting_phase: "", name: "", language: "", env_source: "" },
+    queue: { executing: null, queued: [] },
+    env: { in_sync: true, added: [], removed: [], channels_changed: false, deno_changed: false, prewarmed_packages: [] },
+    trust: { status: "trusted", needs_approval: false },
+    last_saved: null,
+    comms: {},
+  };
+
+  it("returns null when no executions exist", () => {
+    const state = { ...baseState, executions: {} };
+    expect(getExecutionCountForCell(state, "c1")).toBeNull();
+  });
+
+  it("returns the count for a matching cell", () => {
+    const state = {
+      ...baseState,
+      executions: {
+        "e1": { cell_id: "c1", status: "done" as const, execution_count: 3, success: true },
+      },
+    };
+    expect(getExecutionCountForCell(state, "c1")).toBe(3);
+  });
+
+  it("returns the highest count when multiple executions exist", () => {
+    const state = {
+      ...baseState,
+      executions: {
+        "e1": { cell_id: "c1", status: "done" as const, execution_count: 2, success: true },
+        "e2": { cell_id: "c1", status: "done" as const, execution_count: 5, success: true },
+        "e3": { cell_id: "c1", status: "running" as const, execution_count: null, success: null },
+      },
+    };
+    expect(getExecutionCountForCell(state, "c1")).toBe(5);
+  });
+
+  it("ignores executions for other cells", () => {
+    const state = {
+      ...baseState,
+      executions: {
+        "e1": { cell_id: "c2", status: "done" as const, execution_count: 10, success: true },
+      },
+    };
+    expect(getExecutionCountForCell(state, "c1")).toBeNull();
   });
 });
