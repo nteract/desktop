@@ -471,7 +471,13 @@ pub fn install_cli_system(app: &tauri::AppHandle) -> Result<(), String> {
         .ok_or_else(|| "Could not find bundled runt binary".to_string())?;
 
     let dir = PathBuf::from(SYSTEM_INSTALL_DIR);
-    let runt_dest = dir.join(cli_command_name());
+    // On Windows, executables need the .exe extension to be discoverable via PATH
+    let runt_name = if cfg!(windows) {
+        format!("{}.exe", cli_command_name())
+    } else {
+        cli_command_name().to_string()
+    };
+    let runt_dest = dir.join(runt_name);
     let nb_dest = dir.join(cli_notebook_alias_name());
 
     // Build the nb wrapper script content
@@ -485,7 +491,7 @@ pub fn install_cli_system(app: &tauri::AppHandle) -> Result<(), String> {
     install_with_privilege_escalation(&bundled_runt, &runt_dest, &nb_dest, &nb_script)?;
 
     log::info!(
-        "[cli_install] CLI installed system-wide: {} -> {}",
+        "[cli_install] CLI installed system-wide: {} (copied from {})",
         runt_dest.display(),
         bundled_runt.display()
     );
@@ -502,8 +508,8 @@ fn install_with_privilege_escalation(
     nb_script: &str,
 ) -> Result<(), String> {
     // Build the shell script that will run with admin privileges.
-    // We create the directory (may not exist on clean installs), symlink runt,
-    // and write the nb wrapper script.
+    // We copy the binary (not symlink) so the install is durable even if the
+    // app bundle is moved, unmounted, or accessed by another user account.
     let dir = shell_escape(
         runt_dest
             .parent()
@@ -512,7 +518,7 @@ fn install_with_privilege_escalation(
             .as_ref(),
     );
     let shell_cmd = format!(
-        "mkdir -p {dir} && rm -f {runt} {nb} && ln -s {src} {runt} && printf '%s' {nb_escaped} > {nb} && chmod 755 {nb}",
+        "mkdir -p {dir} && rm -f {runt} {nb} && cp {src} {runt} && chmod 755 {runt} && printf '%s' {nb_escaped} > {nb} && chmod 755 {nb}",
         src = shell_escape(bundled_runt.to_string_lossy().as_ref()),
         runt = shell_escape(runt_dest.to_string_lossy().as_ref()),
         nb = shell_escape(nb_dest.to_string_lossy().as_ref()),
@@ -558,7 +564,7 @@ fn install_with_privilege_escalation(
             .as_ref(),
     );
     let shell_cmd = format!(
-        "mkdir -p {dir} && rm -f {runt} {nb} && ln -s {src} {runt} && printf '%s' {nb_escaped} > {nb} && chmod 755 {nb}",
+        "mkdir -p {dir} && rm -f {runt} {nb} && cp {src} {runt} && chmod 755 {runt} && printf '%s' {nb_escaped} > {nb} && chmod 755 {nb}",
         src = shell_escape(bundled_runt.to_string_lossy().as_ref()),
         runt = shell_escape(runt_dest.to_string_lossy().as_ref()),
         nb = shell_escape(nb_dest.to_string_lossy().as_ref()),
