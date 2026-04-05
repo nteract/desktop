@@ -414,15 +414,15 @@ pub fn is_cli_installed_local() -> bool {
     dir.join(cli_name).exists() && dir.join(nb_name).exists()
 }
 
-/// Check if the CLI is installed system-wide (`/usr/local/bin` or equivalent).
+/// Marker file placed by system-wide install to distinguish our managed copy
+/// from binaries installed by other means (Homebrew, manual, etc.).
+const SYSTEM_INSTALL_MARKER: &str = ".nteract-managed";
+
+/// Check if the CLI is installed system-wide by nteract (looks for our marker file).
 pub fn is_cli_installed_system() -> bool {
-    let dir = PathBuf::from(SYSTEM_INSTALL_DIR);
-    let runt_name = if cfg!(windows) {
-        format!("{}.exe", cli_command_name())
-    } else {
-        cli_command_name().to_string()
-    };
-    dir.join(runt_name).exists()
+    PathBuf::from(SYSTEM_INSTALL_DIR)
+        .join(SYSTEM_INSTALL_MARKER)
+        .exists()
 }
 
 /// Install the CLI to `~/.local/bin` (no admin privileges needed).
@@ -520,27 +520,47 @@ fn install_with_privilege_escalation(
             .to_string_lossy()
             .as_ref(),
     );
+    let marker = shell_escape(
+        runt_dest
+            .parent()
+            .ok_or("Invalid install destination")?
+            .join(SYSTEM_INSTALL_MARKER)
+            .to_string_lossy()
+            .as_ref(),
+    );
     let shell_cmd = format!(
-        "mkdir -p {dir} && rm -f {runt} {nb} && cp {src} {runt} && chmod 755 {runt} && printf '%s' {nb_escaped} > {nb} && chmod 755 {nb}",
+        "mkdir -p {dir} && rm -f {runt} {nb} && cp {src} {runt} && chmod 755 {runt} && printf '%s' {nb_escaped} > {nb} && chmod 755 {nb} && touch {marker}",
         src = shell_escape(bundled_runt.to_string_lossy().as_ref()),
         runt = shell_escape(runt_dest.to_string_lossy().as_ref()),
         nb = shell_escape(nb_dest.to_string_lossy().as_ref()),
         nb_escaped = shell_escape(nb_script),
     );
 
-    // Escape for AppleScript string: backslashes, double quotes, and newlines
-    let escaped = shell_cmd
+    // Escape for AppleScript do shell script string. Single quotes inside
+    // shell_escape output don't need extra escaping for AppleScript double-quote
+    // context, but backslashes and double quotes do. Newlines within single-quoted
+    // shell strings are valid and preserved by the shell, but the AppleScript
+    // "do shell script" string literal doesn't support them directly — we need
+    // to split the script into lines joined by AppleScript string concatenation.
+    // Simpler: write the shell command to a temp file and execute that.
+    let temp_script = std::env::temp_dir().join("nteract-cli-install.sh");
+    fs::write(&temp_script, &shell_cmd)
+        .map_err(|e| format!("Failed to write install script: {}", e))?;
+
+    let escaped_script_path = temp_script
+        .to_string_lossy()
         .replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n");
+        .replace('"', "\\\"");
     let output = std::process::Command::new("osascript")
         .arg("-e")
         .arg(format!(
-            "do shell script \"{}\" with administrator privileges",
-            escaped
+            "do shell script \"sh '{escaped_script_path}'\" with administrator privileges"
         ))
         .output()
         .map_err(|e| format!("Failed to run privilege escalation: {}", e))?;
+
+    // Clean up temp script
+    let _ = fs::remove_file(&temp_script);
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -571,8 +591,16 @@ fn install_with_privilege_escalation(
             .to_string_lossy()
             .as_ref(),
     );
+    let marker = shell_escape(
+        runt_dest
+            .parent()
+            .ok_or("Invalid install destination")?
+            .join(SYSTEM_INSTALL_MARKER)
+            .to_string_lossy()
+            .as_ref(),
+    );
     let shell_cmd = format!(
-        "mkdir -p {dir} && rm -f {runt} {nb} && cp {src} {runt} && chmod 755 {runt} && printf '%s' {nb_escaped} > {nb} && chmod 755 {nb}",
+        "mkdir -p {dir} && rm -f {runt} {nb} && cp {src} {runt} && chmod 755 {runt} && printf '%s' {nb_escaped} > {nb} && chmod 755 {nb} && touch {marker}",
         src = shell_escape(bundled_runt.to_string_lossy().as_ref()),
         runt = shell_escape(runt_dest.to_string_lossy().as_ref()),
         nb = shell_escape(nb_dest.to_string_lossy().as_ref()),
@@ -621,6 +649,8 @@ fn install_with_privilege_escalation(
     let nb = nb_cmd.to_string_lossy().replace('\'', "''");
     let cli_cmd = runt_workspace::cli_command_name();
 
+    let marker = SYSTEM_INSTALL_MARKER.replace('\'', "''");
+
     let err_file = std::env::temp_dir().join("nteract-cli-install-err.txt");
     let err_path = err_file.to_string_lossy().replace('\'', "''");
 
@@ -632,6 +662,7 @@ fn install_with_privilege_escalation(
          Remove-Item -Force -ErrorAction SilentlyContinue '{runt}','{nb}'; \
          Copy-Item '{src}' '{runt}'; \
          Set-Content -Path '{nb}' -Value \"@echo off`r`n{cli_cmd} notebook %*\" -Encoding ASCII; \
+         New-Item -ItemType File -Force -Path '{install_dir}\\{marker}' | Out-Null; \
          $path = [Environment]::GetEnvironmentVariable('Path','Machine'); \
          if ($path -notlike '*{install_dir}*') {{ \
            [Environment]::SetEnvironmentVariable('Path', $path + ';{install_dir}', 'Machine'); \
