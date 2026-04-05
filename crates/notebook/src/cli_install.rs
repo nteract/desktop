@@ -502,9 +502,17 @@ fn install_with_privilege_escalation(
     nb_script: &str,
 ) -> Result<(), String> {
     // Build the shell script that will run with admin privileges.
-    // We create the symlink for runt and write the nb wrapper script.
+    // We create the directory (may not exist on clean installs), symlink runt,
+    // and write the nb wrapper script.
+    let dir = shell_escape(
+        runt_dest
+            .parent()
+            .ok_or("Invalid install destination")?
+            .to_string_lossy()
+            .as_ref(),
+    );
     let shell_cmd = format!(
-        "rm -f {runt} {nb} && ln -s {src} {runt} && printf '%s' {nb_escaped} > {nb} && chmod 755 {nb}",
+        "mkdir -p {dir} && rm -f {runt} {nb} && ln -s {src} {runt} && printf '%s' {nb_escaped} > {nb} && chmod 755 {nb}",
         src = shell_escape(bundled_runt.to_string_lossy().as_ref()),
         runt = shell_escape(runt_dest.to_string_lossy().as_ref()),
         nb = shell_escape(nb_dest.to_string_lossy().as_ref()),
@@ -542,8 +550,15 @@ fn install_with_privilege_escalation(
     nb_dest: &std::path::Path,
     nb_script: &str,
 ) -> Result<(), String> {
+    let dir = shell_escape(
+        runt_dest
+            .parent()
+            .ok_or("Invalid install destination")?
+            .to_string_lossy()
+            .as_ref(),
+    );
     let shell_cmd = format!(
-        "rm -f {runt} {nb} && ln -s {src} {runt} && printf '%s' {nb_escaped} > {nb} && chmod 755 {nb}",
+        "mkdir -p {dir} && rm -f {runt} {nb} && ln -s {src} {runt} && printf '%s' {nb_escaped} > {nb} && chmod 755 {nb}",
         src = shell_escape(bundled_runt.to_string_lossy().as_ref()),
         runt = shell_escape(runt_dest.to_string_lossy().as_ref()),
         nb = shell_escape(nb_dest.to_string_lossy().as_ref()),
@@ -576,7 +591,8 @@ fn install_with_privilege_escalation(
     _nb_script: &str,
 ) -> Result<(), String> {
     // On Windows, use PowerShell's Start-Process with -Verb RunAs for UAC elevation.
-    // We copy the binary (symlinks need admin and have compat issues on Windows).
+    // We copy the runt binary and create a .cmd wrapper for nb (since copying the
+    // binary would just give another runt instance, not a notebook shorthand).
     // Use a temp file for error reporting since Start-Process -Verb RunAs doesn't
     // propagate the inner process exit code.
     let install_dir = runt_dest
@@ -586,18 +602,21 @@ fn install_with_privilege_escalation(
         .replace('\'', "''");
     let src = bundled_runt.to_string_lossy().replace('\'', "''");
     let runt = runt_dest.to_string_lossy().replace('\'', "''");
-    let nb = nb_dest.to_string_lossy().replace('\'', "''");
+    // nb on Windows is a .cmd wrapper that calls runt notebook
+    let nb_cmd = nb_dest.with_extension("cmd");
+    let nb = nb_cmd.to_string_lossy().replace('\'', "''");
+    let cli_cmd = runt_workspace::cli_command_name();
 
     let err_file = std::env::temp_dir().join("nteract-cli-install-err.txt");
     let err_path = err_file.to_string_lossy().replace('\'', "''");
 
-    // The elevated script: create dir, copy files, add to system PATH, write errors
+    // The elevated script: create dir, copy runt, write nb.cmd wrapper, add to PATH
     let ps_cmd = format!(
         "$ErrorActionPreference='Stop'; try {{ \
          New-Item -ItemType Directory -Force -Path '{install_dir}' | Out-Null; \
          Remove-Item -Force -ErrorAction SilentlyContinue '{runt}','{nb}'; \
          Copy-Item '{src}' '{runt}'; \
-         Copy-Item '{src}' '{nb}'; \
+         Set-Content -Path '{nb}' -Value '@echo off`r`n{cli_cmd} notebook %*' -Encoding ASCII; \
          $path = [Environment]::GetEnvironmentVariable('Path','Machine'); \
          if ($path -notlike '*{install_dir}*') {{ \
            [Environment]::SetEnvironmentVariable('Path', $path + ';{install_dir}', 'Machine') \
