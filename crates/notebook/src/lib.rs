@@ -4699,6 +4699,76 @@ pub fn run(
                         }
                     });
                 }
+                crate::menu::MENU_INSTALL_CLI_SYSTEM => {
+                    let app_handle = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        // Show confirmation dialog first
+                        let confirmed =
+                            tauri_plugin_dialog::DialogExt::dialog(&app_handle)
+                                .message(
+                                    "This will install the CLI commands to /usr/local/bin, which requires administrator privileges.\n\n\
+                                     This is useful for corporate/MDM environments or multi-user machines. \
+                                     Most users should use the regular \"Install in PATH\" option instead.",
+                                )
+                                .title("Install System-Wide?")
+                                .kind(tauri_plugin_dialog::MessageDialogKind::Info)
+                                .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCancelCustom(
+                                    "Install".to_string(),
+                                    "Cancel".to_string(),
+                                ))
+                                .blocking_show();
+
+                        if !confirmed {
+                            return;
+                        }
+
+                        let result = tauri::async_runtime::spawn_blocking({
+                            let app_handle = app_handle.clone();
+                            move || crate::cli_install::install_cli_system(&app_handle)
+                        })
+                        .await;
+
+                        match result {
+                            Ok(Ok(())) => {
+                                log::info!(
+                                    "[cli_install] CLI installed system-wide successfully"
+                                );
+                                let cli_cmd = runt_workspace::cli_command_name();
+                                let nb_cmd = runt_workspace::cli_notebook_alias_name();
+                                let success_message = format!(
+                                    "The '{cli_cmd}' and '{nb_cmd}' commands have been installed to /usr/local/bin.\n\nOpen a new terminal and run: {cli_cmd} --help"
+                                );
+                                let _ = tauri_plugin_dialog::DialogExt::dialog(&app_handle)
+                                    .message(success_message)
+                                    .title("CLI Installed System-Wide")
+                                    .kind(tauri_plugin_dialog::MessageDialogKind::Info)
+                                    .blocking_show();
+                            }
+                            Ok(Err(e)) => {
+                                log::error!(
+                                    "[cli_install] System-wide CLI installation failed: {}",
+                                    e
+                                );
+                                if e != "Installation cancelled." {
+                                    let _ = tauri_plugin_dialog::DialogExt::dialog(&app_handle)
+                                        .message(format!(
+                                            "Failed to install CLI system-wide: {}",
+                                            e
+                                        ))
+                                        .title("Installation Failed")
+                                        .kind(tauri_plugin_dialog::MessageDialogKind::Error)
+                                        .blocking_show();
+                                }
+                            }
+                            Err(e) => {
+                                log::error!(
+                                    "[cli_install] System-wide CLI install task panicked: {}",
+                                    e
+                                );
+                            }
+                        }
+                    });
+                }
                 crate::menu::MENU_INSTALL_CLAUDE_EXT => {
                     let app_handle = app.clone();
                     match crate::mcpb_install::install_mcpb(&app_handle) {

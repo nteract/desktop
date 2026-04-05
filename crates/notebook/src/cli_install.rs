@@ -456,6 +456,158 @@ pub fn install_cli(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// System-wide install directory.
+const SYSTEM_INSTALL_DIR: &str = if cfg!(unix) {
+    "/usr/local/bin"
+} else {
+    "C:\\Program Files\\nteract"
+};
+
+/// Install the CLI system-wide to `/usr/local/bin` (Unix) or `C:\Program Files\nteract`
+/// (Windows) using OS privilege escalation.
+/// Returns Ok(()) on success, Err with message on failure.
+pub fn install_cli_system(app: &tauri::AppHandle) -> Result<(), String> {
+    let bundled_runt = get_bundled_runt_path(app)
+        .ok_or_else(|| "Could not find bundled runt binary".to_string())?;
+
+    let dir = PathBuf::from(SYSTEM_INSTALL_DIR);
+    let runt_dest = dir.join(cli_command_name());
+    let nb_dest = dir.join(cli_notebook_alias_name());
+
+    // Build the nb wrapper script content
+    let nb_script = format!(
+        "#!/bin/bash\n# {} - open notebooks faster than you can say {} notebook\nexec {} notebook \"$@\"\n",
+        cli_notebook_alias_name(),
+        cli_command_name(),
+        cli_command_name()
+    );
+
+    install_with_privilege_escalation(&bundled_runt, &runt_dest, &nb_dest, &nb_script)?;
+
+    log::info!(
+        "[cli_install] CLI installed system-wide: {} -> {}",
+        runt_dest.display(),
+        bundled_runt.display()
+    );
+
+    Ok(())
+}
+
+/// Install CLI commands to a privileged directory using OS-specific escalation.
+#[cfg(target_os = "macos")]
+fn install_with_privilege_escalation(
+    bundled_runt: &std::path::Path,
+    runt_dest: &std::path::Path,
+    nb_dest: &std::path::Path,
+    nb_script: &str,
+) -> Result<(), String> {
+    // Build the shell script that will run with admin privileges.
+    // We create the symlink for runt and write the nb wrapper script.
+    let shell_cmd = format!(
+        "rm -f {runt} {nb} && ln -s {src} {runt} && printf '%s' {nb_escaped} > {nb} && chmod 755 {nb}",
+        src = shell_escape(bundled_runt.to_string_lossy().as_ref()),
+        runt = shell_escape(runt_dest.to_string_lossy().as_ref()),
+        nb = shell_escape(nb_dest.to_string_lossy().as_ref()),
+        nb_escaped = shell_escape(nb_script),
+    );
+
+    let output = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(format!(
+            "do shell script \"{}\" with administrator privileges",
+            shell_cmd.replace('\\', "\\\\").replace('"', "\\\"")
+        ))
+        .output()
+        .map_err(|e| format!("Failed to run privilege escalation: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // User clicked "Cancel" in the authorization dialog
+        if stderr.contains("User canceled")
+            || stderr.contains("user canceled")
+            || stderr.contains("-128")
+        {
+            return Err("Installation cancelled.".to_string());
+        }
+        return Err(format!("Privilege escalation failed: {}", stderr.trim()));
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn install_with_privilege_escalation(
+    bundled_runt: &std::path::Path,
+    runt_dest: &std::path::Path,
+    nb_dest: &std::path::Path,
+    nb_script: &str,
+) -> Result<(), String> {
+    let shell_cmd = format!(
+        "rm -f {runt} {nb} && ln -s {src} {runt} && printf '%s' {nb_escaped} > {nb} && chmod 755 {nb}",
+        src = shell_escape(bundled_runt.to_string_lossy().as_ref()),
+        runt = shell_escape(runt_dest.to_string_lossy().as_ref()),
+        nb = shell_escape(nb_dest.to_string_lossy().as_ref()),
+        nb_escaped = shell_escape(nb_script),
+    );
+
+    let output = std::process::Command::new("pkexec")
+        .arg("sh")
+        .arg("-c")
+        .arg(&shell_cmd)
+        .output()
+        .map_err(|e| format!("Failed to run privilege escalation: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("dismissed") || stderr.contains("Not authorized") {
+            return Err("Installation cancelled.".to_string());
+        }
+        return Err(format!("Privilege escalation failed: {}", stderr.trim()));
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn install_with_privilege_escalation(
+    bundled_runt: &std::path::Path,
+    runt_dest: &std::path::Path,
+    nb_dest: &std::path::Path,
+    _nb_script: &str,
+) -> Result<(), String> {
+    // On Windows, use PowerShell's Start-Process with -Verb RunAs for UAC elevation.
+    // We copy the binary (symlinks need admin and have compat issues on Windows).
+    let ps_cmd = format!(
+        "Remove-Item -Force -ErrorAction SilentlyContinue '{runt}','{nb}'; Copy-Item '{src}' '{runt}'; Copy-Item '{src}' '{nb}'",
+        src = bundled_runt.to_string_lossy().replace('\'', "''"),
+        runt = runt_dest.to_string_lossy().replace('\'', "''"),
+        nb = nb_dest.to_string_lossy().replace('\'', "''"),
+    );
+
+    let output = std::process::Command::new("powershell")
+        .args([
+            "-Command",
+            &format!(
+                "Start-Process powershell -Verb RunAs -Wait -ArgumentList '-Command','{}'",
+                ps_cmd.replace('\'', "''")
+            ),
+        ])
+        .output()
+        .map_err(|e| format!("Failed to run privilege escalation: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Privilege escalation failed: {}", stderr.trim()));
+    }
+
+    Ok(())
+}
+
+/// Escape a string for use inside a single-quoted shell argument.
+fn shell_escape(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 /// Warn if legacy /usr/local/bin has stale CLI copies that shadow ~/.local/bin.
 ///
 /// Symlinks are fine — they track the app bundle. Only regular files (stale
