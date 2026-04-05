@@ -5,4 +5,6 @@ declare module "virtual:isolated-renderer" {
   export const rendererCss: string;
   export const markdownRendererCode: string;
   export const markdownRendererCss: string;
+  export const vegaRendererCode: string;
+  export const vegaRendererCss: string;
 }

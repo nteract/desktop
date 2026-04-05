@@ -47,11 +47,17 @@ export function isolatedRendererPlugin(
     __dirname,
     "../../src/isolated-renderer/markdown-renderer.tsx",
   );
+  const vegaEntry = path.resolve(
+    __dirname,
+    "../../src/isolated-renderer/vega-renderer.tsx",
+  );
 
   let rendererCode = "";
   let rendererCss = "";
   let markdownRendererCode = "";
   let markdownRendererCss = "";
+  let vegaRendererCode = "";
+  let vegaRendererCss = "";
   let buildPromise: Promise<void> | null = null;
 
   // Directories to watch for changes that should trigger rebuild
@@ -67,6 +73,90 @@ export function isolatedRendererPlugin(
     rendererCss = "";
     markdownRendererCode = "";
     markdownRendererCss = "";
+    vegaRendererCode = "";
+    vegaRendererCss = "";
+  }
+
+  /** Build a renderer plugin as CJS with React externalized. */
+  async function buildRendererPlugin(
+    pluginEntry: string,
+    pluginName: string,
+    srcDir: string,
+  ): Promise<{ code: string; css: string }> {
+    const result = await build({
+      configFile: false,
+      mode: "production",
+      plugins: [tailwindcss()],
+      esbuild: {
+        jsx: "automatic",
+        jsxImportSource: "react",
+        jsxDev: false,
+      },
+      resolve: {
+        alias: {
+          "@/": `${srcDir}/`,
+        },
+      },
+      build: {
+        write: false,
+        lib: {
+          entry: pluginEntry,
+          formats: ["cjs"],
+          fileName: () => `${pluginName}.js`,
+        },
+        rollupOptions: {
+          external: ["react", "react/jsx-runtime"],
+          output: {
+            inlineDynamicImports: true,
+            assetFileNames: `${pluginName}.[ext]`,
+          },
+          onwarn(warning, warn) {
+            if (
+              warning.code === "MODULE_LEVEL_DIRECTIVE" &&
+              warning.message?.includes('"use client"')
+            ) {
+              return;
+            }
+            warn(warning);
+          },
+        },
+        minify,
+        sourcemap,
+      },
+      define: {
+        "process.env.NODE_ENV": JSON.stringify("production"),
+      },
+      logLevel: "warn",
+    });
+
+    let code = "";
+    let css = "";
+    const outputs = Array.isArray(result) ? result : [result];
+    for (const output of outputs) {
+      if ("output" in output) {
+        for (const chunk of output.output) {
+          if (chunk.type === "chunk" && chunk.fileName.endsWith(".js")) {
+            code = chunk.code;
+          } else if (
+            chunk.type === "asset" &&
+            chunk.fileName.endsWith(".css")
+          ) {
+            css =
+              typeof chunk.source === "string"
+                ? chunk.source
+                : new TextDecoder().decode(chunk.source);
+          }
+        }
+      }
+    }
+
+    if (!code) {
+      throw new Error(
+        `Failed to build ${pluginName} renderer plugin: no JS output produced`,
+      );
+    }
+
+    return { code, css };
   }
 
   async function buildRenderer() {
@@ -179,80 +269,15 @@ export function isolatedRendererPlugin(
       );
     }
 
-    // --- Build markdown renderer plugin (CJS, React externalized) ---
-    const markdownResult = await build({
-      configFile: false,
-      mode: "production",
-      plugins: [tailwindcss()],
-      esbuild: {
-        jsx: "automatic",
-        jsxImportSource: "react",
-        jsxDev: false,
-      },
-      resolve: {
-        alias: {
-          "@/": `${srcDir}/`,
-        },
-      },
-      build: {
-        write: false,
-        lib: {
-          entry: markdownEntry,
-          formats: ["cjs"],
-          fileName: () => "markdown-renderer.js",
-        },
-        rollupOptions: {
-          external: ["react", "react/jsx-runtime"],
-          output: {
-            inlineDynamicImports: true,
-            assetFileNames: "markdown-renderer.[ext]",
-          },
-          onwarn(warning, warn) {
-            if (
-              warning.code === "MODULE_LEVEL_DIRECTIVE" &&
-              warning.message?.includes('"use client"')
-            ) {
-              return;
-            }
-            warn(warning);
-          },
-        },
-        minify,
-        sourcemap,
-      },
-      define: {
-        "process.env.NODE_ENV": JSON.stringify("production"),
-      },
-      logLevel: "warn",
-    });
-
-    // Extract markdown plugin JS and CSS
-    const mdOutputs = Array.isArray(markdownResult)
-      ? markdownResult
-      : [markdownResult];
-    for (const output of mdOutputs) {
-      if ("output" in output) {
-        for (const chunk of output.output) {
-          if (chunk.type === "chunk" && chunk.fileName.endsWith(".js")) {
-            markdownRendererCode = chunk.code;
-          } else if (
-            chunk.type === "asset" &&
-            chunk.fileName.endsWith(".css")
-          ) {
-            markdownRendererCss =
-              typeof chunk.source === "string"
-                ? chunk.source
-                : new TextDecoder().decode(chunk.source);
-          }
-        }
-      }
-    }
-
-    if (!markdownRendererCode) {
-      throw new Error(
-        "Failed to build markdown renderer plugin: no JS output produced",
-      );
-    }
+    // --- Build renderer plugins (CJS, React externalized) ---
+    const [markdownPlugin, vegaPlugin] = await Promise.all([
+      buildRendererPlugin(markdownEntry, "markdown-renderer", srcDir),
+      buildRendererPlugin(vegaEntry, "vega-renderer", srcDir),
+    ]);
+    markdownRendererCode = markdownPlugin.code;
+    markdownRendererCss = markdownPlugin.css;
+    vegaRendererCode = vegaPlugin.code;
+    vegaRendererCss = vegaPlugin.css;
   }
 
   return {
@@ -287,6 +312,8 @@ export const rendererCode = ${JSON.stringify(rendererCode)};
 export const rendererCss = ${JSON.stringify(rendererCss)};
 export const markdownRendererCode = ${JSON.stringify(markdownRendererCode)};
 export const markdownRendererCss = ${JSON.stringify(markdownRendererCss)};
+export const vegaRendererCode = ${JSON.stringify(vegaRendererCode)};
+export const vegaRendererCss = ${JSON.stringify(vegaRendererCss)};
 `;
       }
     },

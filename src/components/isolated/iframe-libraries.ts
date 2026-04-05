@@ -6,10 +6,10 @@
  * when an output actually needs them.
  *
  * Two injection mechanisms:
- * - **Renderer plugins** (markdown): CJS modules loaded via `frame.installRenderer()`.
- *   The iframe's plugin loader provides a shared React instance and a registration
- *   API. No globals needed.
- * - **Legacy eval libraries** (plotly, vega, leaflet): Raw JS strings injected via
+ * - **Renderer plugins** (markdown, vega): CJS modules loaded via
+ *   `frame.installRenderer()`. The iframe's plugin loader provides a shared React
+ *   instance and a registration API. No globals needed.
+ * - **Legacy eval libraries** (plotly, leaflet): Raw JS strings injected via
  *   `frame.eval()` that set window globals (e.g., `window.Plotly`). These will
  *   migrate to the renderer plugin API in future PRs.
  */
@@ -29,7 +29,7 @@ const MIME_LIBRARIES: Record<string, string> = {
 };
 
 /** Libraries that use the renderer plugin API instead of legacy eval. */
-const RENDERER_PLUGINS = new Set(["markdown"]);
+const RENDERER_PLUGINS = new Set(["markdown", "vega"]);
 
 function libraryForMime(mime: string): string | undefined {
   if (MIME_LIBRARIES[mime]) return MIME_LIBRARIES[mime];
@@ -63,18 +63,12 @@ function loadLibrary(name: string): Promise<{ code: string; css?: string }> {
         return { code: mod.default };
       }
       case "vega": {
-        // Load all three in parallel: vega (runtime), vega-lite (compiler), vega-embed (renderer).
-        // Eval order matters: vega-embed expects window.vega and window.vl to exist.
-        // These packages use restrictive "exports" fields that block deep ?raw imports,
-        // so we use resolve aliases defined in vite.config.ts and vitest.config.ts
-        // to bypass the exports restriction and load the UMD builds as raw strings.
-        const [vegaMod, vegaLiteMod, vegaEmbedMod] = await Promise.all([
-          import("vega-raw"),
-          import("vega-lite-raw"),
-          import("vega-embed-raw"),
-        ]);
+        const { vegaRendererCode, vegaRendererCss } = await import(
+          "virtual:isolated-renderer"
+        );
         return {
-          code: `${vegaMod.default}\n${vegaLiteMod.default}\n${vegaEmbedMod.default}`,
+          code: vegaRendererCode,
+          css: vegaRendererCss || undefined,
         };
       }
       case "leaflet": {

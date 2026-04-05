@@ -44,9 +44,7 @@ import { JsonOutput } from "@/components/outputs/json-output";
 import { GeoJsonOutput } from "@/components/outputs/geojson-output";
 import { PdfOutput } from "@/components/outputs/pdf-output";
 import { PlotlyOutput } from "@/components/outputs/plotly-output";
-import { VegaOutput } from "@/components/outputs/vega-output";
 import { VideoOutput } from "@/components/outputs/video-output";
-import { isVegaMimeType } from "@/components/outputs/vega-mime";
 import { SvgOutput } from "@/components/outputs/svg-output";
 import { WidgetView } from "@/components/widgets/widget-view";
 // Import widget support
@@ -472,13 +470,6 @@ function OutputRenderer({ payload }: { payload: RenderPayload }) {
     const geojsonData =
       typeof content === "string" ? JSON.parse(content) : content;
     return <GeoJsonOutput data={geojsonData} />;
-  }
-
-  // Vega / Vega-Lite (any version, both +json and .json suffixes)
-  if (isVegaMimeType(mimeType)) {
-    const vegaData =
-      typeof content === "string" ? JSON.parse(content) : content;
-    return <VegaOutput data={vegaData} />;
   }
 
   // JSON
