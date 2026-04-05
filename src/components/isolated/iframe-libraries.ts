@@ -6,11 +6,11 @@
  * when an output actually needs them.
  *
  * Two injection mechanisms:
- * - **Renderer plugins** (markdown, vega): CJS modules loaded via
+ * - **Renderer plugins** (markdown, vega, plotly): CJS modules loaded via
  *   `frame.installRenderer()`. The iframe's plugin loader provides a shared React
  *   instance and a registration API. No globals needed.
- * - **Legacy eval libraries** (plotly, leaflet): Raw JS strings injected via
- *   `frame.eval()` that set window globals (e.g., `window.Plotly`). These will
+ * - **Legacy eval libraries** (leaflet): Raw JS strings injected via
+ *   `frame.eval()` that set window globals (e.g., `window.L`). These will
  *   migrate to the renderer plugin API in future PRs.
  */
 
@@ -29,7 +29,7 @@ const MIME_LIBRARIES: Record<string, string> = {
 };
 
 /** Libraries that use the renderer plugin API instead of legacy eval. */
-const RENDERER_PLUGINS = new Set(["markdown", "vega"]);
+const RENDERER_PLUGINS = new Set(["markdown", "vega", "plotly"]);
 
 function libraryForMime(mime: string): string | undefined {
   if (MIME_LIBRARIES[mime]) return MIME_LIBRARIES[mime];
@@ -54,8 +54,8 @@ function loadLibrary(name: string): Promise<{ code: string; css?: string }> {
         return { code, css: css || undefined };
       }
       case "plotly": {
-        const mod = await import("plotly-raw");
-        return { code: mod.default };
+        const { code, css } = await import("virtual:renderer-plugin/plotly");
+        return { code, css: css || undefined };
       }
       case "vega": {
         const { code, css } = await import("virtual:renderer-plugin/vega");

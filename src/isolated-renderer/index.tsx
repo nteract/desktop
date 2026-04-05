@@ -43,7 +43,6 @@ import { JavaScriptOutput } from "@/components/outputs/javascript-output";
 import { JsonOutput } from "@/components/outputs/json-output";
 import { GeoJsonOutput } from "@/components/outputs/geojson-output";
 import { PdfOutput } from "@/components/outputs/pdf-output";
-import { PlotlyOutput } from "@/components/outputs/plotly-output";
 import { VideoOutput } from "@/components/outputs/video-output";
 import { SvgOutput } from "@/components/outputs/svg-output";
 import { WidgetView } from "@/components/widgets/widget-view";
@@ -479,13 +478,6 @@ function OutputRenderer({ payload }: { payload: RenderPayload }) {
   // JavaScript
   if (mimeType === "application/javascript") {
     return <JavaScriptOutput code={String(content)} />;
-  }
-
-  // Plotly
-  if (mimeType === "application/vnd.plotly.v1+json") {
-    const plotlyData =
-      typeof content === "string" ? JSON.parse(content) : content;
-    return <PlotlyOutput data={plotlyData} />;
   }
 
   // GeoJSON
