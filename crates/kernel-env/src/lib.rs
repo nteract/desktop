@@ -28,6 +28,8 @@
 pub mod conda;
 #[cfg(feature = "runtime")]
 pub mod gc;
+#[cfg(feature = "runtime")]
+pub mod pixi;
 pub mod progress;
 #[cfg(feature = "runtime")]
 pub mod uv;
