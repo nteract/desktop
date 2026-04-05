@@ -198,7 +198,7 @@ Three crates share "notebook" in the name but have distinct responsibilities:
 | Crate | Owns | Consumers |
 |-------|------|-----------|
 | `notebook-doc` | Automerge document schema, cell CRUD, output writes, per-cell accessors, `CellChangeset` diffing, fractional indexing, presence encoding, frame type constants | daemon, WASM, Python bindings |
-| `notebook-protocol` | Wire protocol types (`NotebookRequest`, `NotebookResponse`, `NotebookBroadcast`, `CommSnapshot`), connection handshake, frame parsing | daemon, `notebook-sync`, Python bindings |
+| `notebook-protocol` | Wire protocol types (`NotebookRequest`, `NotebookResponse`, `NotebookBroadcast`), connection handshake, frame parsing | daemon, `notebook-sync`, Python bindings |
 | `notebook-sync` | Sync infrastructure (`DocHandle`), snapshot watch channel, per-cell accessors for Python clients, sync task management | Python bindings (`runtimed-py`) |
 
 **Rule of thumb:** Document schema or cell operations → `notebook-doc`. New request/response/broadcast type → `notebook-protocol`. Python client sync behavior → `notebook-sync`.

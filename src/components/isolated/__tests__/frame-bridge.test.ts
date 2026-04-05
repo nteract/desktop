@@ -78,7 +78,7 @@ describe("isIframeMessage", () => {
     "comm_open",
     "comm_msg",
     "comm_close",
-    "comm_sync",
+    "widget_snapshot",
   ];
 
   it.each(

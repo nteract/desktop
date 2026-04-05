@@ -1495,20 +1495,6 @@ impl RuntimeStateDoc {
 
     /// Replace the full state for an existing comm.
     ///
-    /// Overwrites the native Automerge state map with the given JSON value.
-    /// Returns `false` if the comm doesn't exist.
-    #[allow(clippy::expect_used)]
-    pub fn update_comm_state(&mut self, comm_id: &str, new_state: &serde_json::Value) -> bool {
-        let Some(comms) = self.get_map("comms") else {
-            return false;
-        };
-        let Some((_, entry)) = self.doc.get(&comms, comm_id).ok().flatten() else {
-            return false;
-        };
-        crate::put_json_at_key(&mut self.doc, &entry, "state", new_state).expect("put comm.state");
-        true
-    }
-
     /// Set a single property in a comm's state map.
     ///
     /// Writes directly to `comms/{comm_id}/state/{key}` as a native
@@ -2757,31 +2743,6 @@ mod tests {
         assert_eq!(entry.model_module, "mod-b");
         assert_eq!(entry.model_name, "ModelB");
         assert_eq!(entry.seq, 1);
-    }
-
-    #[test]
-    fn test_update_comm_state() {
-        let mut doc = RuntimeStateDoc::new();
-        doc.put_comm(
-            "comm-1",
-            "jupyter.widget",
-            "",
-            "",
-            &serde_json::json!({"value": 1}),
-            0,
-        );
-
-        assert!(doc.update_comm_state("comm-1", &serde_json::json!({"value": 2})));
-        assert_eq!(
-            doc.get_comm("comm-1").unwrap().state,
-            serde_json::json!({"value": 2})
-        );
-    }
-
-    #[test]
-    fn test_update_comm_state_nonexistent() {
-        let mut doc = RuntimeStateDoc::new();
-        assert!(!doc.update_comm_state("nope", &serde_json::json!({})));
     }
 
     #[test]

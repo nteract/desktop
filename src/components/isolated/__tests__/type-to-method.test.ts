@@ -13,7 +13,7 @@ import {
   NTERACT_COMM_CLOSE,
   NTERACT_COMM_MSG,
   NTERACT_COMM_OPEN,
-  NTERACT_COMM_SYNC,
+  NTERACT_WIDGET_SNAPSHOT,
   NTERACT_EVAL,
   NTERACT_PING,
   NTERACT_RENDER_OUTPUT,
@@ -36,7 +36,7 @@ const TYPE_TO_METHOD: Record<string, string> = {
   comm_open: NTERACT_COMM_OPEN,
   comm_msg: NTERACT_COMM_MSG,
   comm_close: NTERACT_COMM_CLOSE,
-  comm_sync: NTERACT_COMM_SYNC,
+  widget_snapshot: NTERACT_WIDGET_SNAPSHOT,
   bridge_ready: NTERACT_BRIDGE_READY,
   widget_state: NTERACT_WIDGET_STATE,
 };
@@ -55,7 +55,7 @@ describe("TYPE_TO_METHOD mapping", () => {
       "comm_open",
       "comm_msg",
       "comm_close",
-      "comm_sync",
+      "widget_snapshot",
       "bridge_ready",
       "widget_state",
     ];
@@ -86,7 +86,7 @@ describe("TYPE_TO_METHOD mapping", () => {
     expect(TYPE_TO_METHOD.comm_open).toBe("nteract/commOpen");
     expect(TYPE_TO_METHOD.comm_msg).toBe("nteract/commMsg");
     expect(TYPE_TO_METHOD.comm_close).toBe("nteract/commClose");
-    expect(TYPE_TO_METHOD.comm_sync).toBe("nteract/commSync");
+    expect(TYPE_TO_METHOD.widget_snapshot).toBe("nteract/widgetSnapshot");
     expect(TYPE_TO_METHOD.bridge_ready).toBe("nteract/bridgeReady");
     expect(TYPE_TO_METHOD.widget_state).toBe("nteract/widgetState");
   });

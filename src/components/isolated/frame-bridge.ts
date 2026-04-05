@@ -146,8 +146,8 @@ export interface CommCloseMessage {
  * Sync all existing widget models to the iframe.
  * Sent on iframe ready to bootstrap existing widgets.
  */
-export interface CommSyncMessage {
-  type: "comm_sync";
+export interface WidgetSnapshotMessage {
+  type: "widget_snapshot";
   payload: {
     /** Array of existing models to sync */
     models: Array<{
@@ -161,7 +161,7 @@ export interface CommSyncMessage {
 
 /**
  * Signal that the parent's comm bridge is ready.
- * Iframe should respond with widget_ready to trigger comm_sync.
+ * Iframe should respond with widget_ready to trigger widget_snapshot.
  */
 export interface BridgeReadyMessage {
   type: "bridge_ready";
@@ -208,7 +208,7 @@ export type ParentToIframeMessage =
   | CommOpenMessage
   | CommMsgMessage
   | CommCloseMessage
-  | CommSyncMessage
+  | WidgetSnapshotMessage
   | BridgeReadyMessage
   | SearchMessage
   | SearchNavigateMessage;
@@ -328,7 +328,7 @@ export interface RendererReadyMessage {
 
 /**
  * Iframe widget system is ready to receive comm messages.
- * Parent should send comm_sync with existing models after this.
+ * Parent should send widget_snapshot with existing models after this.
  */
 export interface WidgetReadyMessage {
   type: "widget_ready";

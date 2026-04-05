@@ -3,7 +3,7 @@ import type {
   CommCloseMessage,
   CommMsgMessage,
   CommOpenMessage,
-  CommSyncMessage,
+  WidgetSnapshotMessage,
   IframeToParentMessage,
 } from "./frame-bridge";
 import type { IsolatedFrameHandle } from "./isolated-frame";
@@ -86,7 +86,7 @@ export class CommBridgeManager {
     });
 
     // Signal to iframe that parent bridge is ready
-    // Iframe will respond with widget_ready to trigger comm_sync
+    // Iframe will respond with widget_ready to trigger widget_snapshot
     this.frame.send({ type: "bridge_ready" });
   }
 
@@ -214,9 +214,9 @@ export class CommBridgeManager {
   private handleWidgetReady(): void {
     this.isWidgetReady = true;
 
-    // Send comm_sync with all existing models
+    // Send widget_snapshot with all existing models
     const models = this.store.getSnapshot();
-    const modelArray: CommSyncMessage["payload"]["models"] = [];
+    const modelArray: WidgetSnapshotMessage["payload"]["models"] = [];
 
     for (const [commId, model] of models) {
       modelArray.push({
@@ -233,8 +233,8 @@ export class CommBridgeManager {
     }
 
     if (modelArray.length > 0) {
-      const syncMsg: CommSyncMessage = {
-        type: "comm_sync",
+      const syncMsg: WidgetSnapshotMessage = {
+        type: "widget_snapshot",
         payload: { models: modelArray },
       };
       try {
@@ -244,15 +244,15 @@ export class CommBridgeManager {
         // Fall back to sending models individually so one bad model
         // doesn't prevent all widgets from loading.
         console.warn(
-          `[CommBridge] Batch comm_sync failed, sending ${modelArray.length} models individually:`,
+          `[CommBridge] Batch widget_snapshot failed, sending ${modelArray.length} models individually:`,
           e,
         );
         for (const model of modelArray) {
           try {
             this.frame.send({
-              type: "comm_sync",
+              type: "widget_snapshot",
               payload: { models: [model] },
-            } as CommSyncMessage);
+            } as WidgetSnapshotMessage);
           } catch (perModelError) {
             console.warn(
               `[CommBridge] Skipping non-cloneable model ${model.commId}:`,

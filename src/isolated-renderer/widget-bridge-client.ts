@@ -21,7 +21,7 @@ import {
   NTERACT_COMM_CLOSE,
   NTERACT_COMM_MSG,
   NTERACT_COMM_OPEN,
-  NTERACT_COMM_SYNC,
+  NTERACT_WIDGET_SNAPSHOT,
   NTERACT_WIDGET_COMM_CLOSE,
   NTERACT_WIDGET_COMM_MSG,
   NTERACT_WIDGET_READY,
@@ -180,7 +180,7 @@ export function createWidgetBridgeClient(
     store.deleteModel(commId);
   });
 
-  transport.onNotification(NTERACT_COMM_SYNC, (params) => {
+  transport.onNotification(NTERACT_WIDGET_SNAPSHOT, (params) => {
     const { models } = params as {
       models: Array<{
         commId: string;

@@ -16,13 +16,13 @@ Widgets run inside a security-isolated iframe. The parent window owns the Widget
 
 ### Current State Architecture
 
-Widget state lives **outside** the Automerge doc in parallel in-memory stores:
-- **Daemon:** `CommState` in `comm_state.rs` -- tracks active Jupyter comm channels, maintains output capture routing for Output widgets
-- **Frontend:** `WidgetStore` in `widget-store.ts` -- per-model subscriptions, IPY_MODEL_ reference resolution, custom message buffering
+Widget state lives in the **RuntimeStateDoc** CRDT (`doc.comms/` Automerge map). Each comm entry tracks target_name, model_module, model_name, state (as native Automerge map), outputs, and seq.
 
-New clients receive a `CommSync` broadcast (snapshot of all active widgets) on connect. Widget messages flow as `NotebookBroadcast::Comm` events, not document mutations.
+- **Daemon:** Writes comm state on `comm_open`/`comm_msg(update)`/`comm_close` from kernel IOPub. State updates go through a 16ms coalescing writer to avoid overwhelming CRDT sync.
+- **Frontend:** `WidgetStore` in `widget-store.ts` -- per-model subscriptions, IPY_MODEL_ reference resolution, custom message buffering. Populated by a CRDT watcher in `useDaemonKernel.ts` that diffs `runtimeState.comms` and synthesizes Jupyter comm messages.
+- **Frontend → Kernel:** Built-in widget state updates write to RuntimeStateDoc via `getCrdtCommWriter()`. The agent diffs comm state on each sync and forwards deltas to the kernel.
 
-**Planned:** Move widget state into `doc.comms/` in the Automerge document (#761). This eliminates `CommSync`, simplifies Output widget routing, and means new clients get widget state via normal CRDT sync. Implementation phases: #808-#811.
+New clients receive widget state via normal RuntimeStateDoc CRDT sync (frame `0x05`). Custom widget messages (button clicks, etc.) still use `NotebookBroadcast::Comm` since they're ephemeral events, not persistent state.
 
 ## Key Files
 

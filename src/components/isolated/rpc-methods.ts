@@ -27,7 +27,7 @@ export const NTERACT_SEARCH_NAVIGATE = "nteract/searchNavigate" as const;
 export const NTERACT_COMM_OPEN = "nteract/commOpen" as const;
 export const NTERACT_COMM_MSG = "nteract/commMsg" as const;
 export const NTERACT_COMM_CLOSE = "nteract/commClose" as const;
-export const NTERACT_COMM_SYNC = "nteract/commSync" as const;
+export const NTERACT_WIDGET_SNAPSHOT = "nteract/widgetSnapshot" as const;
 export const NTERACT_BRIDGE_READY = "nteract/bridgeReady" as const;
 export const NTERACT_WIDGET_STATE = "nteract/widgetState" as const;
 
@@ -113,7 +113,7 @@ export interface NteractCommCloseParams {
   commId: string;
 }
 
-export interface NteractCommSyncParams {
+export interface NteractWidgetSnapshotParams {
   models: Array<{
     commId: string;
     targetName: string;

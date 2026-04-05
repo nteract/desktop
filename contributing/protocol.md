@@ -254,13 +254,13 @@ Broadcasts are daemon-initiated messages pushed to all connected clients for a n
 | `KernelError { error }` | Kernel crashed or failed to launch |
 | `OutputsCleared { cell_id }` | Cell outputs cleared |
 | `Comm { msg_type, content, buffers }` | Jupyter comm message (widget open/msg/close) |
-| `CommSync { comms }` | Full widget state snapshot for newly connected clients |
+| ~~`CommSync`~~ | Removed — widget state syncs via RuntimeStateDoc CRDT |
 | `EnvProgress { env_type, phase }` | Environment setup progress (`phase` is a flattened `EnvProgressPhase`) |
 | `EnvSyncState { in_sync, diff }` | Notebook dependencies drifted from launched kernel config |
 | `RoomRenamed { new_notebook_id }` | Untitled notebook saved — room re-keyed from UUID to file path |
 | `NotebookAutosaved { path }` | Daemon autosaved `.ipynb` to disk — frontend clears dirty flag |
 
-Currently 15 variants. Five carry data that also arrives via Automerge sync and are planned for removal (#761): `Output`, `OutputsCleared`, `DisplayUpdate`, `CommSync`, and `Comm` for `comm_open`/`comm_msg(update)`/`comm_close` (the `Comm` variant would be renamed to `CommCustom` and restricted to `method: "custom"` only). This would reduce the surface to ~10 variants.
+Several broadcast variants have been superseded by RuntimeStateDoc CRDT sync: `CommSync` (removed), `KernelStatus`, `ExecutionStarted`, `ExecutionDone`, `QueueChanged`, and `EnvSyncState` are filtered at the relay stage and never reach clients. The `Comm` variant is now limited to custom messages (`method != "update"`) — state updates flow through the CRDT instead.
 
 ### Broadcast flow
 
@@ -337,23 +337,16 @@ The daemon writes kernel status, execution queue, and environment sync drift. Cl
 
 **Key files:** `crates/notebook-doc/src/runtime_state.rs` (schema + setters), `apps/notebook/src/lib/runtime-state.ts` (frontend store + hook).
 
-### Comms in doc (#761)
+### Comms in doc (#761) — Done
 
-The current protocol has widget state (`CommState`, `CommSync`) as a parallel system alongside the CRDT. Issue #761 tracks moving widget state into `doc.comms/` in the Automerge document, which would:
-
-- Eliminate `CommSync` (new clients get widgets via normal sync)
-- Eliminate `Output`, `OutputsCleared`, `DisplayUpdate` broadcasts (doc sync carries the data)
-- Simplify Output widget capture (daemon writes to `doc.comms[widget_id].outputs` instead of custom messages)
-- Reduce `CommState` to just the output capture routing logic
-
-The implementation is phased: #808 (schema + dual-write) → #809 (clients read from doc) → #810 (eliminate parallel paths) → #811 (blob unification + `update_comm` request).
+Widget state now lives in `doc.comms/` in RuntimeStateDoc. The daemon writes comm entries from kernel IOPub, and new clients receive widget state via normal CRDT sync. `CommSync` broadcast has been removed. The `Comm` broadcast variant is limited to custom messages (ephemeral events like button clicks). Frontend-originated widget state updates write to the CRDT, and the agent diffs comm state on each sync to forward deltas to the kernel.
 
 ## Key Source Files
 
 | File | Role |
 |------|------|
 | `crates/notebook-protocol/src/connection.rs` | Frame protocol: length-prefixed typed frames, handshake, preamble |
-| `crates/notebook-protocol/src/protocol.rs` | Canonical wire types: `NotebookRequest`, `NotebookResponse`, `NotebookBroadcast`, `CommSnapshot` |
+| `crates/notebook-protocol/src/protocol.rs` | Canonical wire types: `NotebookRequest`, `NotebookResponse`, `NotebookBroadcast` |
 | `crates/runtimed/src/protocol.rs` | Daemon-internal types (`Request`, `Response`, `BlobRequest`), re-exports from `notebook-protocol` |
 | `crates/notebook-sync/src/relay.rs` | Relay handle for notebook sync connections |
 | `crates/notebook-sync/src/connect.rs` | Connection setup (`connect_open_relay`, `connect_create_relay`) |

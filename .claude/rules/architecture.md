@@ -29,7 +29,7 @@ paths:
 | Crate | Owns | Consumers |
 |-------|------|-----------|
 | `notebook-doc` | Automerge schema, cell CRUD, output writes, per-cell accessors, `CellChangeset` diffing, fractional indexing, presence encoding, frame type constants | daemon, WASM, Python bindings |
-| `notebook-protocol` | Wire types (`NotebookRequest`, `NotebookResponse`, `NotebookBroadcast`, `CommSnapshot`), connection handshake, frame parsing | daemon, `notebook-sync`, Python bindings |
+| `notebook-protocol` | Wire types (`NotebookRequest`, `NotebookResponse`, `NotebookBroadcast`), connection handshake, frame parsing | daemon, `notebook-sync`, Python bindings |
 | `notebook-sync` | Sync infrastructure (`DocHandle`), snapshot watch channel, per-cell accessors for Python clients, sync task management | Python bindings (`runtimed-py`) |
 
 **Rule of thumb:** Document schema or cell operations -> `notebook-doc`. New request/response/broadcast type -> `notebook-protocol`. Python client sync behavior -> `notebook-sync`.
@@ -144,13 +144,12 @@ Settings (theme, default_runtime, etc.) sync via a **separate Automerge document
 
 ## Widget State (Current Architecture)
 
-Widget state lives **outside** the Automerge doc in parallel in-memory stores:
-- **Daemon:** `CommState` in `comm_state.rs` -- tracks active Jupyter comm channels, maintains output capture routing for Output widgets
-- **Frontend:** `WidgetStore` in `widget-store.ts` -- per-model subscriptions, IPY_MODEL_ reference resolution
+Widget state lives in **RuntimeStateDoc** (`doc.comms/` Automerge map):
+- **Daemon:** Writes comm state from kernel IOPub (`comm_open`/`comm_msg(update)`/`comm_close`). State updates coalesce in a 16ms batch writer.
+- **Frontend:** `WidgetStore` in `widget-store.ts` -- per-model subscriptions, IPY_MODEL_ reference resolution. Populated by a CRDT watcher that diffs `runtimeState.comms` and synthesizes Jupyter comm messages.
+- **Frontend → Kernel:** State updates write to RuntimeStateDoc via CRDT writer. The agent diffs comm state on each sync and forwards deltas to the kernel.
 
-New clients receive a `CommSync` broadcast (full widget snapshot) on connect. Widget messages flow as `NotebookBroadcast::Comm` events.
-
-**Planned:** Move widget state into `doc.comms/` in the Automerge document (#761). This eliminates `CommSync` and means new clients get widget state via normal CRDT sync.
+New clients receive widget state via normal RuntimeStateDoc CRDT sync (frame `0x05`). Custom widget messages (buttons, etc.) still use `NotebookBroadcast::Comm` as ephemeral events.
 
 ## Anti-Pattern: Bypassing the Document
 
