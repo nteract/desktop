@@ -704,7 +704,7 @@ fn install_with_privilege_escalation(
          New-Item -ItemType File -Force -Path '{install_dir}\\{marker}' | Out-Null; \
          $path = [Environment]::GetEnvironmentVariable('Path','Machine'); \
          if ($path -notlike '*{install_dir}*') {{ \
-           [Environment]::SetEnvironmentVariable('Path', $path + ';{install_dir}', 'Machine'); \
+           [Environment]::SetEnvironmentVariable('Path', '{install_dir};' + $path, 'Machine'); \
            Add-Type -Namespace Win32 -Name NativeMethods -MemberDefinition '[DllImport(\"user32.dll\", SetLastError=true, CharSet=CharSet.Auto)] public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);'; \
            $r = [UIntPtr]::Zero; \
            [Win32.NativeMethods]::SendMessageTimeout([IntPtr]0xFFFF, 0x1A, [UIntPtr]::Zero, 'Environment', 2, 5000, [ref]$r) | Out-Null \
