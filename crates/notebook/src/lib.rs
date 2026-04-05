@@ -1310,16 +1310,14 @@ async fn run_upgrade(
 
     // Step 5: Re-install CLI if it was previously installed (ensures Windows
     // copies and Unix symlinks point at the new app bundle).
-    // Check local or legacy installs — system-wide is handled separately below.
-    // Legacy installs get migrated to ~/.local/bin by install_cli().
+    // Local installs: symlinks updated, legacy installs migrated to ~/.local/bin.
     if cli_install::is_cli_installed_local() || cli_install::is_cli_installed_legacy() {
         match cli_install::install_cli(&app) {
-            Ok(()) => log::info!("[upgrade] CLI re-installed successfully"),
-            Err(e) => log::warn!("[upgrade] CLI re-install failed (non-fatal): {}", e),
+            Ok(()) => log::info!("[upgrade] Local CLI re-installed successfully"),
+            Err(e) => log::warn!("[upgrade] Local CLI re-install failed (non-fatal): {}", e),
         }
     }
-    // Also update the system-wide copy if one exists (it's a copy, not a
-    // symlink, so it won't auto-update with the app bundle).
+    // System-wide installs are copies (not symlinks), so they need updating too.
     if cli_install::is_cli_installed_system() {
         match cli_install::install_cli_system(&app) {
             Ok(()) => log::info!("[upgrade] System-wide CLI re-installed successfully"),
@@ -4678,53 +4676,14 @@ pub fn run(
                 crate::menu::MENU_INSTALL_CLI => {
                     let app_handle = app.clone();
                     tauri::async_runtime::spawn(async move {
-                        let result = tauri::async_runtime::spawn_blocking({
-                            let app_handle = app_handle.clone();
-                            move || crate::cli_install::install_cli(&app_handle)
-                        })
-                        .await;
-
-                        match result {
-                            Ok(Ok(())) => {
-                                log::info!("[cli_install] CLI installed successfully");
-                                let cli_cmd = runt_workspace::cli_command_name();
-                                let nb_cmd = runt_workspace::cli_notebook_alias_name();
-                                let success_message = format!(
-                                    "The '{cli_cmd}' and '{nb_cmd}' commands have been installed to ~/.local/bin.\n\nOpen a new terminal and run: {cli_cmd} --help"
-                                );
-                                let _ = tauri_plugin_dialog::DialogExt::dialog(&app_handle)
-                                    .message(success_message)
-                                    .title("CLI Installed")
-                                    .kind(tauri_plugin_dialog::MessageDialogKind::Info)
-                                    .blocking_show();
-                            }
-                            Ok(Err(e)) => {
-                                log::error!("[cli_install] CLI installation failed: {}", e);
-                                let _ = tauri_plugin_dialog::DialogExt::dialog(&app_handle)
-                                    .message(format!("Failed to install CLI: {}", e))
-                                    .title("Installation Failed")
-                                    .kind(tauri_plugin_dialog::MessageDialogKind::Error)
-                                    .blocking_show();
-                            }
-                            Err(e) => {
-                                log::error!("[cli_install] CLI install task panicked: {}", e);
-                            }
-                        }
-                    });
-                }
-                crate::menu::MENU_INSTALL_CLI_SYSTEM => {
-                    let app_handle = app.clone();
-                    tauri::async_runtime::spawn(async move {
-                        // Show confirmation dialog first
+                        // Show confirmation dialog — this requires admin privileges
                         let install_dir = crate::cli_install::SYSTEM_INSTALL_DIR;
                         let confirmed =
                             tauri_plugin_dialog::DialogExt::dialog(&app_handle)
                                 .message(format!(
-                                    "This will install the CLI commands to {install_dir}, which requires administrator privileges.\n\n\
-                                     This is useful for corporate/MDM environments or multi-user machines. \
-                                     Most users should use the regular \"Install in PATH\" option instead.",
+                                    "This will install the CLI commands to {install_dir}, which requires administrator privileges.",
                                 ))
-                                .title("Install System-Wide?")
+                                .title("Install CLI?")
                                 .kind(tauri_plugin_dialog::MessageDialogKind::Info)
                                 .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCancelCustom(
                                     "Install".to_string(),
@@ -4744,43 +4703,30 @@ pub fn run(
 
                         match result {
                             Ok(Ok(())) => {
-                                log::info!(
-                                    "[cli_install] CLI installed system-wide successfully"
-                                );
+                                log::info!("[cli_install] CLI installed successfully");
                                 let cli_cmd = runt_workspace::cli_command_name();
                                 let nb_cmd = runt_workspace::cli_notebook_alias_name();
-                                let install_dir =
-                                    crate::cli_install::SYSTEM_INSTALL_DIR;
                                 let success_message = format!(
                                     "The '{cli_cmd}' and '{nb_cmd}' commands have been installed to {install_dir}.\n\nOpen a new terminal and run: {cli_cmd} --help"
                                 );
                                 let _ = tauri_plugin_dialog::DialogExt::dialog(&app_handle)
                                     .message(success_message)
-                                    .title("CLI Installed System-Wide")
+                                    .title("CLI Installed")
                                     .kind(tauri_plugin_dialog::MessageDialogKind::Info)
                                     .blocking_show();
                             }
                             Ok(Err(e)) => {
-                                log::error!(
-                                    "[cli_install] System-wide CLI installation failed: {}",
-                                    e
-                                );
+                                log::error!("[cli_install] CLI installation failed: {}", e);
                                 if e != "Installation cancelled." {
                                     let _ = tauri_plugin_dialog::DialogExt::dialog(&app_handle)
-                                        .message(format!(
-                                            "Failed to install CLI system-wide: {}",
-                                            e
-                                        ))
+                                        .message(format!("Failed to install CLI: {}", e))
                                         .title("Installation Failed")
                                         .kind(tauri_plugin_dialog::MessageDialogKind::Error)
                                         .blocking_show();
                                 }
                             }
                             Err(e) => {
-                                log::error!(
-                                    "[cli_install] System-wide CLI install task panicked: {}",
-                                    e
-                                );
+                                log::error!("[cli_install] CLI install task panicked: {}", e);
                             }
                         }
                     });

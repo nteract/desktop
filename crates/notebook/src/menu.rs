@@ -38,7 +38,6 @@ pub const MENU_CLEAR_ALL_OUTPUTS: &str = "clear_all_outputs";
 
 // Menu item IDs for CLI installation and settings
 pub const MENU_INSTALL_CLI: &str = "install_cli";
-pub const MENU_INSTALL_CLI_SYSTEM: &str = "install_cli_system";
 pub const MENU_INSTALL_CLAUDE_EXT: &str = "install_claude_ext";
 pub const MENU_CHECK_FOR_UPDATES: &str = "check_for_updates";
 pub const MENU_SETTINGS: &str = "settings";
@@ -64,13 +63,6 @@ pub fn about_menu_label() -> String {
 pub fn install_cli_menu_label() -> String {
     format!(
         "Install '{}' Command in PATH...",
-        runt_workspace::cli_command_name()
-    )
-}
-
-pub fn install_cli_system_menu_label() -> String {
-    format!(
-        "Install '{}' System-Wide...",
         runt_workspace::cli_command_name()
     )
 }
@@ -102,7 +94,6 @@ pub fn create_menu(
     let about_metadata = build_about_metadata();
     let about_label = about_menu_label();
     let install_cli_label = install_cli_menu_label();
-    let install_cli_system_label = install_cli_system_menu_label();
 
     // App menu (macOS standard - shows app name)
     let app_menu = Submenu::new(app, app_name(), true)?;
@@ -116,13 +107,6 @@ pub fn create_menu(
         app,
         MENU_INSTALL_CLI,
         install_cli_label.as_str(),
-        true,
-        None::<&str>,
-    )?)?;
-    app_menu.append(&MenuItem::with_id(
-        app,
-        MENU_INSTALL_CLI_SYSTEM,
-        install_cli_system_label.as_str(),
         true,
         None::<&str>,
     )?)?;
