@@ -24,7 +24,6 @@ macro_rules! require_handle {
         }
     }};
 }
-pub(crate) use require_handle;
 
 /// The MCP Apps resource URI for the output widget.
 const OUTPUT_RESOURCE_URI: &str = "ui://nteract/output.html";
