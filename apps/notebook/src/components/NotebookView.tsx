@@ -27,9 +27,15 @@ import {
   EditorRegistryProvider,
   useEditorRegistry,
 } from "../hooks/useEditorRegistry";
+import { useVirtualCells } from "../hooks/useVirtualCells";
+import {
+  setMeasuredCellHeight,
+  updateHeightCache,
+} from "../lib/cell-height-cache";
 import { useFocusedCellId, useSearchCurrentMatch } from "../lib/cell-ui-state";
 import { logger } from "../lib/logger";
 import {
+  getCellById,
   getNotebookCellsSnapshot,
   useCell,
   useMaterializeVersion,
@@ -271,6 +277,7 @@ function SortableCell({
   cellId,
   nextCellId,
   index,
+  top,
   renderCell,
   onAddCell,
   onDeleteCell,
@@ -279,6 +286,8 @@ function SortableCell({
   cellId: string;
   nextCellId?: string;
   index: number;
+  /** Absolute top offset in px (from cell height cache). */
+  top: number;
   renderCell: (
     cell: NotebookCell,
     index: number,
@@ -291,6 +300,7 @@ function SortableCell({
 }) {
   const cell = useCell(cellId);
   const nextCell = useCell(nextCellId ?? "");
+  const measureRef = useRef<HTMLDivElement | null>(null);
   const {
     attributes,
     listeners,
@@ -301,10 +311,36 @@ function SortableCell({
   } = useSortable({ id: cellId });
 
   const style: React.CSSProperties = {
+    position: "absolute",
+    top,
+    left: 0,
+    right: 0,
     transform: DndCSS.Transform.toString(transform),
     transition,
-    order: index,
   };
+
+  // Measure actual cell height via ResizeObserver for scroll accuracy
+  useEffect(() => {
+    const el = measureRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      const height =
+        entries[0]?.borderBoxSize?.[0]?.blockSize ??
+        el.getBoundingClientRect().height;
+      setMeasuredCellHeight(cellId, height);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [cellId]);
+
+  // Combined ref for dnd-kit and measurement
+  const combinedRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      setNodeRef(node);
+      measureRef.current = node;
+    },
+    [setNodeRef],
+  );
 
   // Combine listeners and attributes for the drag handle
   // This enables keyboard-initiated dragging (Space/Enter + arrows)
@@ -314,7 +350,7 @@ function SortableCell({
   };
 
   if (isHiddenInGroup) {
-    return <div ref={setNodeRef} style={style} />;
+    return <div ref={combinedRef} style={style} />;
   }
 
   const cellType = cell?.cell_type ?? "code";
@@ -322,7 +358,7 @@ function SortableCell({
   const nextCellType = nextCell?.cell_type ?? cellType;
 
   return (
-    <div ref={setNodeRef} style={style}>
+    <div ref={combinedRef} style={style}>
       {index === 0 && (
         <CellAdder afterCellId={null} onAdd={onAddCell} cellType={cellType} />
       )}
@@ -385,6 +421,35 @@ function NotebookViewContent({
   // Drag-and-drop state
   const [activeId, setActiveId] = useState<string | null>(null);
 
+  // ── Height cache ─────────────────────────────────────────────────────
+  // Feed cell data to the height cache for pretext-based height estimation.
+  // Re-runs on structural changes and materializations (output/source changes).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: materializeVersion triggers re-read of cell data via getCellById
+  useEffect(() => {
+    const cellMap = new Map<string, NotebookCell>();
+    for (const id of cellIds) {
+      const cell = getCellById(id);
+      if (cell) cellMap.set(id, cell);
+    }
+    updateHeightCache(cellMap);
+  }, [cellIds, materializeVersion]);
+
+  // ── Virtual cells ────────────────────────────────────────────────────
+  const forceInclude = useMemo(() => {
+    const ids: string[] = [];
+    if (searchCurrentMatch) ids.push(searchCurrentMatch.cellId);
+    return ids;
+  }, [searchCurrentMatch]);
+
+  const { visibleCellIds, totalHeight, cellOffsets, onScroll } =
+    useVirtualCells({
+      cellIds,
+      scrollContainerRef: containerRef,
+      overscan: 4,
+      isDragging: activeId !== null,
+      forceInclude,
+    });
+
   // Configure dnd-kit sensors
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -428,12 +493,14 @@ function NotebookViewContent({
     [cellIds, onMoveCell],
   );
 
-  // IMPORTANT: Stable DOM order — do NOT replace with cellIds.map() directly.
-  // Cells are rendered in sorted-ID order so React never calls insertBefore on
-  // existing DOM nodes. Visual ordering uses CSS `order` on each cell wrapper.
-  // Without this, moving a cell causes browsers to reload iframes (destroying
-  // content, widgets, and theme state). See CLAUDE.md § "Cell List Stable DOM Order".
-  const stableDomOrder = useMemo(() => [...cellIds].sort(), [cellIds]);
+  // Stable DOM order filtered to only visible cells. Absolute positioning means
+  // adding/removing cells never triggers insertBefore on siblings (safer than
+  // the old flex+order approach for iframes). We still sort by ID for React
+  // key stability.
+  const stableDomOrder = useMemo(
+    () => [...cellIds].filter((id) => visibleCellIds.has(id)).sort(),
+    [cellIds, visibleCellIds],
+  );
 
   // Map cell ID → visual index for O(1) lookup
   const cellIdToIndex = useMemo(() => {
@@ -773,8 +840,9 @@ function NotebookViewContent({
   return (
     <div
       ref={containerRef}
-      className="flex-1 overflow-y-auto overflow-x-clip overscroll-x-contain py-4 pl-8 pr-2"
+      className="flex-1 overflow-y-auto overflow-x-clip overscroll-x-contain pl-8 pr-2"
       style={{ contain: "paint", overflowAnchor: "none" }}
+      onScroll={onScroll}
       data-notebook-synced={!isLoading && cellIds.length > 0}
       data-cell-count={cellIds.length}
     >
@@ -819,7 +887,7 @@ function NotebookViewContent({
             items={cellIds}
             strategy={verticalListSortingStrategy}
           >
-            <div style={{ display: "flex", flexDirection: "column" }}>
+            <div style={{ position: "relative", height: totalHeight }}>
               {stableDomOrder.map((cellId) => {
                 const index = cellIdToIndex.get(cellId) ?? 0;
                 const group = hiddenGroups.get(cellId);
@@ -829,6 +897,7 @@ function NotebookViewContent({
                     cellId={cellId}
                     nextCellId={cellIds[index + 1]}
                     index={index}
+                    top={cellOffsets.get(cellId) ?? 0}
                     renderCell={renderCell}
                     onAddCell={onAddCell}
                     onDeleteCell={onDeleteCell}
