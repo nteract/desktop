@@ -616,6 +616,7 @@ async fn handle_queue_command(command: QueueCommand, ctx: &AgentContext) -> anyh
             );
             let mut guard = ctx.kernel.lock().await;
             if let Some(ref mut k) = *guard {
+                k.mark_execution_error();
                 let cleared = k.clear_queue();
                 let mut sd = ctx.state_doc.write().await;
                 for entry in &cleared {
