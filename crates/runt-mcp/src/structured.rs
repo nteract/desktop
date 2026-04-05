@@ -7,10 +7,6 @@
 use runtimed_client::resolved_output::{DataValue, Output, ResolvedCell};
 use serde_json::{json, Value};
 
-/// Maximum inline size (bytes) for a single MIME entry in structured content.
-/// Entries larger than this are replaced with blob URLs or skipped.
-const MAX_INLINE_BYTES: usize = 8 * 1024;
-
 /// Check if a MIME type is a visualization spec (Plotly, Vega-Lite, Vega).
 fn is_viz_mime(mime: &str) -> bool {
     mime == "application/vnd.plotly.v1+json"
@@ -19,13 +15,6 @@ fn is_viz_mime(mime: &str) -> bool {
         || (mime.starts_with("application/vnd.vega.v")
             && !mime.starts_with("application/vnd.vegalite.")
             && (mime.ends_with("+json") || mime.ends_with(".json")))
-}
-
-/// Check if a JSON value exceeds the inline size limit when serialized.
-fn json_exceeds_limit(v: &Value) -> bool {
-    // Quick heuristic: serialize and check length.
-    // For very large values, to_string is cheaper than to_string_pretty.
-    serde_json::to_string(v).is_ok_and(|s| s.len() > MAX_INLINE_BYTES)
 }
 
 /// Return a blob URL for the given MIME type, or None to skip the entry.
@@ -70,17 +59,18 @@ fn output_to_structured(output: &Output) -> Value {
         }
         "display_data" | "execute_result" => {
             let mut data = serde_json::Map::new();
-            let has_blob_urls = output.blob_urls.is_some();
 
             if let Some(ref output_data) = output.data {
-                // Check if the output has a richer primary MIME type, so we can
-                // skip text/html (which often contains massive base64 data URIs
-                // for audio or redundant chart HTML).
-                let has_rich_primary = output_data.keys().any(|m| {
-                    is_viz_mime(m)
-                        || m.starts_with("image/")
-                        || m.starts_with("audio/")
-                        || m.starts_with("video/")
+                // Check if the output has a raster image that the MCP app can
+                // render directly (png/jpeg/gif/webp via blob URL). When true,
+                // we can safely skip text/html (which is often a massive base64
+                // data URI for audio, or redundant chart HTML that duplicates
+                // the image).
+                let has_renderable_image = output_data.keys().any(|m| {
+                    matches!(
+                        m.as_str(),
+                        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+                    )
                 });
 
                 for (mime, value) in output_data {
@@ -89,10 +79,17 @@ fn output_to_structured(output: &Output) -> Value {
                         continue;
                     }
 
-                    // Skip text/html when richer types are available — it's a
-                    // fallback representation that often contains inline base64
-                    // data URIs (audio) or redundant chart HTML (plotly).
-                    if mime == "text/html" && has_rich_primary {
+                    // Skip text/html when the MCP app can render a raster image
+                    // instead. This avoids sending large base64 data URIs (audio
+                    // HTML embeds) or redundant chart HTML alongside the image.
+                    if mime == "text/html" && has_renderable_image {
+                        continue;
+                    }
+
+                    // Skip viz JSON specs — the MCP app doesn't render them, and
+                    // they're large (tens of KB). The app uses text/html or image
+                    // fallbacks for display.
+                    if is_viz_mime(mime) {
                         continue;
                     }
 
@@ -101,23 +98,8 @@ fn output_to_structured(output: &Output) -> Value {
                             // For binary data, use blob URL if available
                             blob_url_or_skip(output, mime)
                         }
-                        DataValue::Json(v) => {
-                            // For viz JSON specs and large JSON, use blob URL
-                            // instead of sending the full spec inline.
-                            if is_viz_mime(mime) || json_exceeds_limit(v) {
-                                blob_url_or_skip(output, mime)
-                            } else {
-                                Some(v.clone())
-                            }
-                        }
-                        DataValue::Text(s) => {
-                            // For large text (e.g. SVG), use blob URL if available
-                            if s.len() > MAX_INLINE_BYTES && has_blob_urls {
-                                blob_url_or_skip(output, mime)
-                            } else {
-                                Some(Value::String(s.clone()))
-                            }
-                        }
+                        DataValue::Json(v) => Some(v.clone()),
+                        DataValue::Text(s) => Some(Value::String(s.clone())),
                     };
 
                     if let Some(jv) = json_value {
