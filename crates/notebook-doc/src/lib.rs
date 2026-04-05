@@ -833,22 +833,21 @@ impl NotebookDoc {
     /// encoding or actor we set.  A non-empty doc takes the normal
     /// incremental-apply path which preserves all settings.
     ///
-    /// Because the daemon creates the same structure, the CRDT merge
-    /// converges to identical values with no conflicts.
+    /// The daemon creates these maps in `new_inner()`. We must NOT create
+    /// `cells` or `metadata` maps here — if we do, Automerge sees two
+    /// concurrent `put_object` operations at the same key from different
+    /// actors, creating a conflict. If our empty map wins, the daemon's
+    /// populated map (with cells or dependencies) becomes invisible.
     pub fn bootstrap(encoding: TextEncoding, actor_label: &str) -> Self {
         let mut doc = AutoCommit::new_with_encoding(encoding);
         doc.set_actor(ActorId::from(actor_label.as_bytes()));
 
-        // Seed the standard notebook skeleton — schema_version, empty cells
-        // map, and empty metadata map.  The daemon writes these too, so the
-        // CRDT merge converges with no conflicts.
-        //
-        // NOTE: We intentionally do NOT set a default runtime here.  The
-        // runtime is determined by the notebook file or user choice, not
-        // hardcoded in the bootstrap skeleton.
+        // Seed with a single scalar so Automerge's is_empty() returns false.
+        // This prevents load_incremental's empty-doc fast-path from replacing
+        // *self with a default-options doc, which would discard our encoding
+        // and actor settings. The daemon's cells and metadata maps arrive
+        // via normal Automerge sync — no need to create them here.
         let _ = doc.put(automerge::ROOT, "schema_version", SCHEMA_VERSION);
-        let _ = doc.put_object(automerge::ROOT, "cells", ObjType::Map);
-        let _ = doc.put_object(automerge::ROOT, "metadata", ObjType::Map);
 
         Self { doc }
     }
@@ -2315,22 +2314,22 @@ mod tests {
 
     #[test]
     fn test_empty_doc_has_bootstrap_skeleton() {
-        // empty() now delegates to bootstrap(), which seeds the doc with
-        // schema_version, an empty cells map, and an empty metadata map.
+        // bootstrap() seeds only schema_version — no cells or metadata maps.
+        // Those are created by the daemon and arrive via Automerge sync.
         let doc = NotebookDoc::bootstrap(TextEncoding::UnicodeCodePoint, "test");
-        assert_eq!(doc.notebook_id(), None); // bootstrap doesn't set notebook_id
+        assert_eq!(doc.notebook_id(), None);
         assert_eq!(doc.cell_count(), 0);
         assert_eq!(doc.get_cells(), vec![]);
         assert_eq!(doc.schema_version(), Some(SCHEMA_VERSION));
-        // Bootstrap does NOT set a default runtime — that's determined by
-        // the notebook file or user choice.
+        // No metadata map exists before sync — reads return None gracefully.
         assert_eq!(doc.get_metadata("runtime"), None);
+        assert!(doc.get_metadata_snapshot().is_none());
     }
 
     #[test]
     fn test_empty_doc_set_metadata() {
         let mut doc = NotebookDoc::bootstrap(TextEncoding::UnicodeCodePoint, "test");
-        // set_metadata should work even without a pre-existing metadata map
+        // set_metadata should create the metadata map on demand
         let result = doc.set_metadata("runtime", "python");
         assert!(result.is_ok());
         assert_eq!(doc.get_metadata("runtime"), Some("python".to_string()));
@@ -2367,6 +2366,188 @@ mod tests {
         let cell = empty.get_cell("cell-1").unwrap();
         assert_eq!(cell.source, "print('hello')");
         assert_eq!(empty.notebook_id(), Some("test-notebook".to_string()));
+    }
+
+    /// Regression test: MCP-added deps must survive when a second bootstrap
+    /// peer (the app frontend) joins.
+    ///
+    /// Reproduces the exact production scenario:
+    /// 1. Daemon creates notebook (new_with_actor → creates metadata map)
+    /// 2. MCP agent bootstraps, syncs, then adds 10 deps
+    /// 3. MCP syncs deps back to daemon
+    /// 4. App frontend bootstraps and syncs — deps must survive
+    ///
+    /// Before the fix, bootstrap() created `metadata: {}` which competed
+    /// with the daemon's metadata map via Automerge conflict resolution.
+    /// If the bootstrap's empty map won, deps became invisible.
+    #[test]
+    fn test_bootstrap_sync_preserves_daemon_metadata() {
+        use automerge::sync;
+
+        fn sync_peers(
+            a: &mut NotebookDoc,
+            a_state: &mut sync::State,
+            b: &mut NotebookDoc,
+            b_state: &mut sync::State,
+        ) {
+            for _ in 0..10 {
+                let msg_a = a.generate_sync_message(a_state);
+                let msg_b = b.generate_sync_message(b_state);
+                if msg_a.is_none() && msg_b.is_none() {
+                    break;
+                }
+                if let Some(m) = msg_a {
+                    b.receive_sync_message(b_state, m).unwrap();
+                }
+                if let Some(m) = msg_b {
+                    a.receive_sync_message(a_state, m).unwrap();
+                }
+            }
+        }
+
+        // Step 1: Daemon creates notebook
+        let mut daemon = NotebookDoc::new_with_actor("test-notebook", "runtimed");
+
+        // Step 2: MCP agent bootstraps and syncs with daemon
+        let mut mcp = NotebookDoc::bootstrap(TextEncoding::UnicodeCodePoint, "mcp:nteract-nightly");
+        let mut daemon_mcp_state = sync::State::new();
+        let mut mcp_state = sync::State::new();
+        sync_peers(&mut daemon, &mut daemon_mcp_state, &mut mcp, &mut mcp_state);
+
+        // Step 3: MCP adds deps (writes to its local doc, syncs to daemon)
+        for dep in &[
+            "matplotlib",
+            "pandas",
+            "numpy",
+            "pillow",
+            "ipywidgets",
+            "plotly",
+            "altair",
+            "vega_datasets",
+            "sympy",
+            "rich",
+        ] {
+            mcp.add_uv_dependency(dep).unwrap();
+        }
+        sync_peers(&mut daemon, &mut daemon_mcp_state, &mut mcp, &mut mcp_state);
+
+        // Verify daemon has deps after MCP sync
+        let daemon_snap = daemon.get_metadata_snapshot().unwrap();
+        assert_eq!(
+            daemon_snap.runt.uv.as_ref().unwrap().dependencies.len(),
+            10,
+            "Daemon must have 10 deps after MCP sync"
+        );
+
+        // Step 4: App frontend bootstraps and syncs — the critical test
+        let mut frontend =
+            NotebookDoc::bootstrap(TextEncoding::UnicodeCodePoint, "human:kyle:tab-1");
+        let mut daemon_fe_state = sync::State::new();
+        let mut fe_state = sync::State::new();
+        sync_peers(
+            &mut daemon,
+            &mut daemon_fe_state,
+            &mut frontend,
+            &mut fe_state,
+        );
+
+        // Frontend must see all 10 deps
+        let fe_snap = frontend.get_metadata_snapshot().unwrap();
+        assert_eq!(
+            fe_snap.runt.uv.as_ref().unwrap().dependencies.len(),
+            10,
+            "Frontend must see all 10 deps after bootstrap sync"
+        );
+
+        // Daemon must still have all 10 deps (not corrupted by frontend sync)
+        let daemon_snap2 = daemon.get_metadata_snapshot().unwrap();
+        assert_eq!(
+            daemon_snap2.runt.uv.as_ref().unwrap().dependencies.len(),
+            10,
+            "Daemon deps must survive frontend bootstrap sync"
+        );
+    }
+
+    /// Verify that old-style bootstrap creates metadata conflicts but
+    /// the fixed bootstrap does not.
+    #[test]
+    fn test_old_bootstrap_creates_metadata_conflict_fixed_does_not() {
+        use automerge::sync;
+
+        fn sync_raw(
+            a: &mut AutoCommit,
+            a_state: &mut sync::State,
+            b: &mut AutoCommit,
+            b_state: &mut sync::State,
+        ) {
+            for _ in 0..10 {
+                let msg_a = a.sync().generate_sync_message(a_state);
+                let msg_b = b.sync().generate_sync_message(b_state);
+                if msg_a.is_none() && msg_b.is_none() {
+                    break;
+                }
+                if let Some(m) = msg_a {
+                    b.sync().receive_sync_message(b_state, m).unwrap();
+                }
+                if let Some(m) = msg_b {
+                    a.sync().receive_sync_message(a_state, m).unwrap();
+                }
+            }
+        }
+
+        // --- Part 1: old bootstrap creates a conflict ---
+        let mut daemon1 = NotebookDoc::new_with_actor("test", "runtimed");
+        daemon1.add_uv_dependency("numpy").unwrap();
+
+        let mut old_bootstrap = AutoCommit::new();
+        old_bootstrap.set_actor(ActorId::from(b"old-style-peer"));
+        let _ = old_bootstrap.put(automerge::ROOT, "schema_version", SCHEMA_VERSION);
+        let _ = old_bootstrap.put_object(automerge::ROOT, "cells", ObjType::Map);
+        let _ = old_bootstrap.put_object(automerge::ROOT, "metadata", ObjType::Map);
+
+        let mut ds1 = sync::State::new();
+        let mut bs1 = sync::State::new();
+        sync_raw(daemon1.doc_mut(), &mut ds1, &mut old_bootstrap, &mut bs1);
+
+        let old_conflicts: Vec<_> = old_bootstrap
+            .get_all(automerge::ROOT, "metadata")
+            .unwrap_or_default();
+        assert!(
+            old_conflicts.len() >= 2,
+            "Old bootstrap must create metadata conflict, got {} values",
+            old_conflicts.len()
+        );
+
+        // --- Part 2: fixed bootstrap does NOT create a conflict ---
+        let mut daemon2 = NotebookDoc::new_with_actor("test2", "runtimed");
+        daemon2.add_uv_dependency("numpy").unwrap();
+
+        let new_bootstrap = NotebookDoc::bootstrap(TextEncoding::UnicodeCodePoint, "fixed-peer");
+        let mut new_doc = new_bootstrap.into_inner();
+        let mut ds2 = sync::State::new();
+        let mut ns = sync::State::new();
+        sync_raw(daemon2.doc_mut(), &mut ds2, &mut new_doc, &mut ns);
+
+        let new_conflicts: Vec<_> = new_doc
+            .get_all(automerge::ROOT, "metadata")
+            .unwrap_or_default();
+        assert_eq!(
+            new_conflicts.len(),
+            1,
+            "Fixed bootstrap must not create metadata conflict"
+        );
+
+        // And deps are definitely visible
+        let doc = NotebookDoc::wrap(new_doc);
+        assert_eq!(
+            doc.get_metadata_snapshot()
+                .unwrap()
+                .runt
+                .uv
+                .unwrap()
+                .dependencies,
+            vec!["numpy"]
+        );
     }
 
     #[test]

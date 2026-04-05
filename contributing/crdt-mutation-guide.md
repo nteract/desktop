@@ -101,6 +101,8 @@ The bridge uses `externalChangeAnnotation` to prevent echo: inbound changes are 
 
 5. **Don't mutate the doc directly after an async gap.** If you read doc state, await something (subprocess, network, I/O), then write back, use `fork()` + `merge()` instead. Direct mutation after an async gap overwrites concurrent edits. See below.
 
+6. **Don't `put_object()` at a key that another peer also creates.** Two independent `put_object(ROOT, "cells", Map)` calls from different Automerge actors create two *distinct* Map objects at the same key — an Automerge conflict. One wins; the loser's children (cells, deps, etc.) become invisible. Document structure (Maps, Lists at well-known keys like `cells` and `metadata`) must be created by exactly one peer — the daemon, in `new_inner()`. All other peers receive it via Automerge sync. This is why `NotebookDoc::bootstrap()` only seeds `schema_version` (a scalar), not the full document skeleton.
+
 ## Fork+Merge for Async Mutations (Daemon-Side)
 
 When daemon code needs to read from the CRDT, do async work, and write results back, it **must** fork the doc before the async work and merge afterward. This treats the daemon's changes as concurrent with any edits that arrived during the async gap.
