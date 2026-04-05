@@ -234,6 +234,8 @@ export default function App() {
     setDefaultUvPackages,
     defaultCondaPackages,
     setDefaultCondaPackages,
+    defaultPixiPackages,
+    setDefaultPixiPackages,
     keepAliveSecs,
     setKeepAliveSecs,
   } = useSyncedSettings();
@@ -437,12 +439,13 @@ export default function App() {
             {defaultPythonEnv === "pixi" && (
               <>
                 <span className="text-sm text-muted-foreground whitespace-nowrap self-center text-right">
-                  Info
+                  Packages
                 </span>
-                <span className="text-xs text-muted-foreground self-center">
-                  Pixi environments are managed via pixi.toml. Prewarmed
-                  environments include ipykernel and common packages.
-                </span>
+                <PackageBadgeInput
+                  packages={defaultPixiPackages}
+                  onChange={setDefaultPixiPackages}
+                  placeholder="Add packages..."
+                />
               </>
             )}
           </div>

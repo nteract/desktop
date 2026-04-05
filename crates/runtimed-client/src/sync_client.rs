@@ -15,7 +15,8 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::connection::{self, Handshake};
 use crate::settings_doc::{
-    read_nested_list, split_comma_list, CondaDefaults, SyncedSettings, ThemeMode, UvDefaults,
+    read_nested_list, split_comma_list, CondaDefaults, PixiDefaults, SyncedSettings, ThemeMode,
+    UvDefaults,
 };
 
 /// Error type for sync client operations.
@@ -435,6 +436,9 @@ pub fn get_all_from_doc(doc: &AutoCommit) -> SyncedSettings {
         },
         conda: CondaDefaults {
             default_packages: conda_packages,
+        },
+        pixi: PixiDefaults {
+            default_packages: read_nested_list(doc, "pixi", "default_packages"),
         },
         keep_alive_secs: get_u64("keep_alive_secs").unwrap_or(defaults.keep_alive_secs),
         // For existing users: if onboarding_completed is missing but other settings exist,

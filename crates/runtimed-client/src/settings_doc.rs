@@ -138,6 +138,13 @@ pub struct CondaDefaults {
     pub default_packages: Vec<String>,
 }
 
+/// Default packages for pixi environments.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, JsonSchema, TS)]
+#[ts(export)]
+pub struct PixiDefaults {
+    pub default_packages: Vec<String>,
+}
+
 /// Default keep-alive duration in seconds for notebook rooms.
 /// When all clients disconnect, the daemon waits this long before evicting the room.
 pub const DEFAULT_KEEP_ALIVE_SECS: u64 = 30;
@@ -172,6 +179,10 @@ pub struct SyncedSettings {
     #[serde(default)]
     pub conda: CondaDefaults,
 
+    /// Pixi environment defaults
+    #[serde(default)]
+    pub pixi: PixiDefaults,
+
     /// How long (in seconds) to keep notebook rooms alive after all clients disconnect.
     /// This allows you to close and reopen the window without losing your kernel state.
     /// Range: 5 seconds to 7 days (604800 seconds).
@@ -192,6 +203,7 @@ impl Default for SyncedSettings {
             default_python_env: PythonEnvType::default(),
             uv: UvDefaults::default(),
             conda: CondaDefaults::default(),
+            pixi: PixiDefaults::default(),
             keep_alive_secs: DEFAULT_KEEP_ALIVE_SECS,
             onboarding_completed: false,
         }
@@ -707,6 +719,9 @@ impl SettingsDoc {
             },
             conda: CondaDefaults {
                 default_packages: conda_packages,
+            },
+            pixi: PixiDefaults {
+                default_packages: self.get_list("pixi.default_packages"),
             },
             keep_alive_secs: self
                 .get_u64("keep_alive_secs")

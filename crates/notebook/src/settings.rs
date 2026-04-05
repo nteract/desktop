@@ -70,6 +70,10 @@ pub fn load_settings() -> SyncedSettings {
             .get("conda")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or(defaults.conda),
+        pixi: json
+            .get("pixi")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or(defaults.pixi),
         keep_alive_secs: json
             .get("keep_alive_secs")
             .and_then(|v| serde_json::from_value(v.clone()).ok())

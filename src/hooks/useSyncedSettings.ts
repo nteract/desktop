@@ -104,6 +104,9 @@ export function useSyncedSettings() {
   const [defaultCondaPackages, setDefaultCondaPackagesState] = useState<
     string[]
   >([]);
+  const [defaultPixiPackages, setDefaultPixiPackagesState] = useState<
+    string[]
+  >([]);
   // Keep-alive duration in seconds (5s to 7 days)
   const [keepAliveSecs, setKeepAliveSecsState] = useState<number>(30);
 
@@ -126,6 +129,9 @@ export function useSyncedSettings() {
         }
         if (Array.isArray(settings.conda?.default_packages)) {
           setDefaultCondaPackagesState(settings.conda.default_packages);
+        }
+        if (Array.isArray(settings.pixi?.default_packages)) {
+          setDefaultPixiPackagesState(settings.pixi.default_packages);
         }
         // Handle keep_alive_secs: bigint from backend, convert to number
         if (typeof settings.keep_alive_secs === "bigint") {
@@ -163,6 +169,9 @@ export function useSyncedSettings() {
       }
       if (Array.isArray(event.payload.conda?.default_packages)) {
         setDefaultCondaPackagesState(event.payload.conda.default_packages);
+      }
+      if (Array.isArray(event.payload.pixi?.default_packages)) {
+        setDefaultPixiPackagesState(event.payload.pixi.default_packages);
       }
       // Handle keep_alive_secs: bigint from backend, convert to number
       if (typeof keep_alive_secs === "bigint") {
@@ -222,6 +231,16 @@ export function useSyncedSettings() {
     );
   }, []);
 
+  const setDefaultPixiPackages = useCallback((packages: string[]) => {
+    setDefaultPixiPackagesState(packages);
+    invoke("set_synced_setting", {
+      key: "pixi.default_packages",
+      value: packages,
+    }).catch((e) =>
+      console.warn("[settings] Failed to persist pixi packages:", e),
+    );
+  }, []);
+
   const setKeepAliveSecs = useCallback((secs: number) => {
     setKeepAliveSecsState(secs);
     invoke("set_synced_setting", {
@@ -243,6 +262,8 @@ export function useSyncedSettings() {
     setDefaultUvPackages,
     defaultCondaPackages,
     setDefaultCondaPackages,
+    defaultPixiPackages,
+    setDefaultPixiPackages,
     keepAliveSecs,
     setKeepAliveSecs,
   };
