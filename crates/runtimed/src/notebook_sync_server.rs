@@ -4705,18 +4705,23 @@ async fn handle_notebook_request(
                         }
                     }
 
-                    // Idempotency: if the cell already has a queued execution,
-                    // return the existing execution_id instead of creating a new one.
+                    // Idempotency: if the cell already has an active (queued or
+                    // running) execution, return the existing execution_id instead
+                    // of creating a new one. Lookup follows the ownership model:
+                    // NotebookDoc owns the cell→execution_id mapping,
+                    // RuntimeStateDoc owns execution lifecycle state.
                     {
-                        let sd = room.state_doc.read().await;
-                        let queued = sd.get_queued_executions();
-                        if let Some((eid, _)) =
-                            queued.iter().find(|(_, exec)| exec.cell_id == cell_id)
-                        {
-                            return NotebookResponse::CellQueued {
-                                cell_id,
-                                execution_id: eid.clone(),
-                            };
+                        let doc = room.doc.read().await;
+                        if let Some(eid) = doc.get_execution_id(&cell_id) {
+                            let sd = room.state_doc.read().await;
+                            if let Some(exec) = sd.get_execution(&eid) {
+                                if exec.status == "queued" || exec.status == "running" {
+                                    return NotebookResponse::CellQueued {
+                                        cell_id,
+                                        execution_id: eid,
+                                    };
+                                }
+                            }
                         }
                     }
 

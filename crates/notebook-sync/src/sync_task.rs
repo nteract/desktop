@@ -77,6 +77,15 @@ pub enum SyncCommand {
         reply: oneshot::Sender<Result<(), SyncError>>,
     },
 
+    /// Flush pending RuntimeStateDoc sync frames from the daemon.
+    ///
+    /// Generates and sends a state sync message, then drains incoming
+    /// frames until a short timeout. Since the client is read-only for
+    /// the state doc, this is a flush — not a convergence handshake.
+    ConfirmStateSync {
+        reply: oneshot::Sender<Result<(), SyncError>>,
+    },
+
     /// Send a raw presence frame to the daemon.
     SendPresence {
         data: Vec<u8>,
@@ -254,6 +263,19 @@ where
 
                     SyncCommand::ConfirmSync { reply } => {
                         let result = confirm_sync_impl(
+                            &config.doc,
+                            &mut reader,
+                            &mut writer,
+                            &config.snapshot_tx,
+                            &config.broadcast_tx,
+                            &notebook_id,
+                        )
+                        .await;
+                        let _ = reply.send(result);
+                    }
+
+                    SyncCommand::ConfirmStateSync { reply } => {
+                        let result = confirm_state_sync_impl(
                             &config.doc,
                             &mut reader,
                             &mut writer,
@@ -787,6 +809,49 @@ async fn confirm_sync_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
         "[notebook-sync] confirm_sync: heads not fully confirmed after 5 rounds for {}",
         notebook_id
     );
+    Ok(())
+}
+
+/// Flush pending RuntimeStateDoc sync frames.
+///
+/// The client never writes to the state doc, so there is no convergence
+/// to negotiate. We send our current heads (so the daemon can reply with
+/// anything we're missing) and then drain frames with a short timeout.
+async fn confirm_state_sync_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
+    doc: &Arc<Mutex<SharedDocState>>,
+    reader: &mut R,
+    writer: &mut W,
+    snapshot_tx: &Arc<tokio::sync::watch::Sender<NotebookSnapshot>>,
+    broadcast_tx: &broadcast::Sender<NotebookBroadcast>,
+    notebook_id: &str,
+) -> Result<(), SyncError> {
+    // Send our state doc heads so the daemon knows what we have.
+    let msg_bytes = {
+        let mut state = doc.lock().unwrap_or_else(|e| e.into_inner());
+        state.generate_state_sync_message().map(|m| m.encode())
+    };
+    if let Some(bytes) = msg_bytes {
+        connection::send_typed_frame(writer, NotebookFrameType::RuntimeStateSync, &bytes)
+            .await
+            .map_err(SyncError::Io)?;
+    }
+
+    // Drain up to 10 frames with a 200ms per-frame timeout.
+    for _ in 0..10 {
+        match tokio::time::timeout(
+            Duration::from_millis(200),
+            connection::recv_typed_frame(reader),
+        )
+        .await
+        {
+            Ok(Ok(Some(frame))) => {
+                handle_incoming_frame(&frame, doc, writer, snapshot_tx, broadcast_tx, notebook_id)
+                    .await;
+            }
+            _ => break, // timeout, EOF, or error — done draining
+        }
+    }
+
     Ok(())
 }
 

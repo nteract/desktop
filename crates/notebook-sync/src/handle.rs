@@ -575,6 +575,19 @@ impl DocHandle {
         reply_rx.await.map_err(|_| SyncError::Disconnected)?
     }
 
+    /// Flush pending RuntimeStateDoc sync frames from the daemon.
+    ///
+    /// Call before reading RuntimeStateDoc state to ensure the local
+    /// replica reflects the daemon's latest writes.
+    pub async fn confirm_state_sync(&self) -> Result<(), SyncError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.cmd_tx
+            .send(SyncCommand::ConfirmStateSync { reply: reply_tx })
+            .await
+            .map_err(|_| SyncError::Disconnected)?;
+        reply_rx.await.map_err(|_| SyncError::Disconnected)?
+    }
+
     /// Get all connected peer IDs and labels, sorted by peer ID for stable ordering.
     pub fn get_peers(&self) -> Vec<(String, String)> {
         let state = self.doc.lock().unwrap_or_else(|e| e.into_inner());
