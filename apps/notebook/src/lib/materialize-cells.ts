@@ -3,7 +3,7 @@ import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 import { logger } from "./logger";
 import type { OutputManifest } from "./manifest-resolution";
 import { isManifestHash, resolveManifest } from "./manifest-resolution";
-import { getRuntimeState } from "./runtime-state";
+import { getExecutionCountForCell, getRuntimeState } from "./runtime-state";
 
 export type { ContentRef, OutputManifest } from "./manifest-resolution";
 // Re-export shared manifest types and functions for downstream consumers
@@ -14,25 +14,9 @@ export {
   resolveManifest,
 } from "./manifest-resolution";
 
-/**
- * Resolve execution_count for a cell from the RuntimeState store.
- *
- * The daemon writes execution_count to RuntimeStateDoc (not NotebookDoc),
- * so the WASM handle's get_cell_execution_count always returns "null".
- * This mirrors what runt-mcp's get_cell_execution_count_from_runtime does:
- * find the most recent execution for the cell that has a count set.
- */
+/** Resolve execution_count for a cell from the current RuntimeState snapshot. */
 function getExecutionCountFromRuntime(cellId: string): number | null {
-  const state = getRuntimeState();
-  let best: number | null = null;
-  for (const exec of Object.values(state.executions)) {
-    if (exec.cell_id === cellId && exec.execution_count != null) {
-      if (best === null || exec.execution_count > best) {
-        best = exec.execution_count;
-      }
-    }
-  }
-  return best;
+  return getExecutionCountForCell(getRuntimeState(), cellId);
 }
 
 /**

@@ -184,3 +184,26 @@ export function diffExecutions(
 
   return transitions;
 }
+
+/**
+ * Resolve the most recent execution_count for a cell from RuntimeState.
+ *
+ * The daemon writes execution_count to RuntimeStateDoc (not NotebookDoc),
+ * so the WASM handle's get_cell_execution_count always returns "null".
+ * This mirrors runt-mcp's get_cell_execution_count_from_runtime: find
+ * the most recent execution for the cell that has a count set.
+ */
+export function getExecutionCountForCell(
+  state: RuntimeState,
+  cellId: string,
+): number | null {
+  let best: number | null = null;
+  for (const exec of Object.values(state.executions)) {
+    if (exec.cell_id === cellId && exec.execution_count != null) {
+      if (best === null || exec.execution_count > best) {
+        best = exec.execution_count;
+      }
+    }
+  }
+  return best;
+}

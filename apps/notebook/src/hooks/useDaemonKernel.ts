@@ -293,10 +293,7 @@ export function useDaemonKernel({
         // Materialization reads execution_count from RuntimeState directly,
         // so skipping null here avoids a brief flash of "0".
         if (t.execution_count != null) {
-          callbacksRef.current.onExecutionCount(
-            t.cell_id,
-            t.execution_count,
-          );
+          callbacksRef.current.onExecutionCount(t.cell_id, t.execution_count);
         }
       } else {
         callbacksRef.current.onExecutionDone(t.cell_id);
