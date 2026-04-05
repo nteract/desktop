@@ -457,7 +457,7 @@ pub fn install_cli(app: &tauri::AppHandle) -> Result<(), String> {
 }
 
 /// System-wide install directory.
-const SYSTEM_INSTALL_DIR: &str = if cfg!(unix) {
+pub const SYSTEM_INSTALL_DIR: &str = if cfg!(unix) {
     "/usr/local/bin"
 } else {
     "C:\\Program Files\\nteract"
@@ -577,11 +577,33 @@ fn install_with_privilege_escalation(
 ) -> Result<(), String> {
     // On Windows, use PowerShell's Start-Process with -Verb RunAs for UAC elevation.
     // We copy the binary (symlinks need admin and have compat issues on Windows).
+    // Use a temp file for error reporting since Start-Process -Verb RunAs doesn't
+    // propagate the inner process exit code.
+    let install_dir = runt_dest
+        .parent()
+        .ok_or("Invalid install destination")?
+        .to_string_lossy()
+        .replace('\'', "''");
+    let src = bundled_runt.to_string_lossy().replace('\'', "''");
+    let runt = runt_dest.to_string_lossy().replace('\'', "''");
+    let nb = nb_dest.to_string_lossy().replace('\'', "''");
+
+    let err_file = std::env::temp_dir().join("nteract-cli-install-err.txt");
+    let err_path = err_file.to_string_lossy().replace('\'', "''");
+
+    // The elevated script: create dir, copy files, add to system PATH, write errors
     let ps_cmd = format!(
-        "Remove-Item -Force -ErrorAction SilentlyContinue '{runt}','{nb}'; Copy-Item '{src}' '{runt}'; Copy-Item '{src}' '{nb}'",
-        src = bundled_runt.to_string_lossy().replace('\'', "''"),
-        runt = runt_dest.to_string_lossy().replace('\'', "''"),
-        nb = nb_dest.to_string_lossy().replace('\'', "''"),
+        "$ErrorActionPreference='Stop'; try {{ \
+         New-Item -ItemType Directory -Force -Path '{install_dir}' | Out-Null; \
+         Remove-Item -Force -ErrorAction SilentlyContinue '{runt}','{nb}'; \
+         Copy-Item '{src}' '{runt}'; \
+         Copy-Item '{src}' '{nb}'; \
+         $path = [Environment]::GetEnvironmentVariable('Path','Machine'); \
+         if ($path -notlike '*{install_dir}*') {{ \
+           [Environment]::SetEnvironmentVariable('Path', $path + ';{install_dir}', 'Machine') \
+         }}; \
+         Remove-Item -Force -ErrorAction SilentlyContinue '{err_path}' \
+         }} catch {{ $_.Exception.Message | Out-File '{err_path}' -Encoding utf8 }}"
     );
 
     let output = std::process::Command::new("powershell")
@@ -598,6 +620,15 @@ fn install_with_privilege_escalation(
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!("Privilege escalation failed: {}", stderr.trim()));
+    }
+
+    // Check the error file written by the elevated script
+    if err_file.exists() {
+        let err_msg = fs::read_to_string(&err_file).unwrap_or_default();
+        let _ = fs::remove_file(&err_file);
+        if !err_msg.trim().is_empty() {
+            return Err(format!("Installation failed: {}", err_msg.trim()));
+        }
     }
 
     Ok(())

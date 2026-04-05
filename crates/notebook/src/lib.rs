@@ -4703,13 +4703,14 @@ pub fn run(
                     let app_handle = app.clone();
                     tauri::async_runtime::spawn(async move {
                         // Show confirmation dialog first
+                        let install_dir = crate::cli_install::SYSTEM_INSTALL_DIR;
                         let confirmed =
                             tauri_plugin_dialog::DialogExt::dialog(&app_handle)
-                                .message(
-                                    "This will install the CLI commands to /usr/local/bin, which requires administrator privileges.\n\n\
+                                .message(format!(
+                                    "This will install the CLI commands to {install_dir}, which requires administrator privileges.\n\n\
                                      This is useful for corporate/MDM environments or multi-user machines. \
                                      Most users should use the regular \"Install in PATH\" option instead.",
-                                )
+                                ))
                                 .title("Install System-Wide?")
                                 .kind(tauri_plugin_dialog::MessageDialogKind::Info)
                                 .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCancelCustom(
@@ -4735,8 +4736,10 @@ pub fn run(
                                 );
                                 let cli_cmd = runt_workspace::cli_command_name();
                                 let nb_cmd = runt_workspace::cli_notebook_alias_name();
+                                let install_dir =
+                                    crate::cli_install::SYSTEM_INSTALL_DIR;
                                 let success_message = format!(
-                                    "The '{cli_cmd}' and '{nb_cmd}' commands have been installed to /usr/local/bin.\n\nOpen a new terminal and run: {cli_cmd} --help"
+                                    "The '{cli_cmd}' and '{nb_cmd}' commands have been installed to {install_dir}.\n\nOpen a new terminal and run: {cli_cmd} --help"
                                 );
                                 let _ = tauri_plugin_dialog::DialogExt::dialog(&app_handle)
                                     .message(success_message)
