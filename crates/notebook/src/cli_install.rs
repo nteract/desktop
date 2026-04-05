@@ -127,58 +127,36 @@ pub enum SymlinkStatus {
     NotInstalled,
 }
 
-/// Check whether the installed `runt`/`runt-nightly` symlink points to the
-/// current app bundle binary path, and whether the `nb`/`nb-nightly` wrapper
-/// script references the correct CLI command name.
+/// Check whether the installed `runt`/`runt-nightly` symlink in `~/.local/bin`
+/// points to the current app bundle binary path, and whether the `nb`/`nb-nightly`
+/// wrapper script references the correct CLI command name.
 ///
-/// Checks both `~/.local/bin` (current) and `/usr/local/bin` (legacy). If the
-/// CLI exists in the legacy location, that is checked too.
+/// Only checks `~/.local/bin` — the canonical install location. Legacy
+/// `/usr/local/bin` entries are warned about separately by `warn_legacy_cli_shadow()`
+/// and are not auto-repaired (since `install_cli()` writes to `~/.local/bin` only).
 ///
-/// Returns a tuple of `(runt_status, nb_status)` representing the worst status
-/// across both locations.
+/// Returns a tuple of `(runt_status, nb_status)`.
 #[cfg(unix)]
 pub fn check_cli_currency(app: &tauri::AppHandle) -> (SymlinkStatus, SymlinkStatus) {
+    let dir = install_dir();
     let cli_name = cli_command_name();
     let nb_name = cli_notebook_alias_name();
 
-    let new_dir = install_dir();
-    let legacy_dir = PathBuf::from(LEGACY_INSTALL_DIR);
-
-    // Check both locations and take the worst status (Stale > NotInstalled > Current)
-    let runt_new = check_runt_symlink(app, &new_dir.join(cli_name));
-    let nb_new = check_nb_script(&new_dir.join(nb_name), cli_name);
-
-    let runt_legacy = check_runt_symlink(app, &legacy_dir.join(cli_name));
-    let nb_legacy = check_nb_script(&legacy_dir.join(nb_name), cli_name);
-
-    // If either location has a stale entry, report stale so we trigger reinstall.
-    // If neither location is installed, report not installed.
-    let runt_status = worst_status(runt_new, runt_legacy);
-    let nb_status = worst_status(nb_new, nb_legacy);
+    let runt_status = check_runt_symlink(app, &dir.join(cli_name));
+    let nb_status = check_nb_script(&dir.join(nb_name), cli_name);
 
     (runt_status, nb_status)
 }
 
-/// Return the more actionable of two statuses: Stale > NotInstalled > Current.
-/// If either location is stale, the result is stale. If both are not installed,
-/// the result is not installed. Otherwise current.
-#[cfg(unix)]
-fn worst_status(a: SymlinkStatus, b: SymlinkStatus) -> SymlinkStatus {
-    match (&a, &b) {
-        (SymlinkStatus::Stale, _) | (_, SymlinkStatus::Stale) => SymlinkStatus::Stale,
-        (SymlinkStatus::NotInstalled, SymlinkStatus::NotInstalled) => SymlinkStatus::NotInstalled,
-        _ => SymlinkStatus::Current,
-    }
-}
-
 /// Check if the runt symlink points to the current bundled binary.
+///
+/// Only considers an existing entry "ours" if it is a symlink whose target
+/// contains "nteract" or "runt" in the path — this avoids clobbering unrelated
+/// commands that happen to share the same name.
 #[cfg(unix)]
 fn check_runt_symlink(app: &tauri::AppHandle, symlink_path: &std::path::Path) -> SymlinkStatus {
     if !symlink_path.is_symlink() {
-        if symlink_path.exists() {
-            // It's a regular file (not a symlink) — treat as stale so we replace it
-            return SymlinkStatus::Stale;
-        }
+        // Not a symlink — either missing or a regular file/directory we don't own.
         return SymlinkStatus::NotInstalled;
     }
 
@@ -190,9 +168,22 @@ fn check_runt_symlink(app: &tauri::AppHandle, symlink_path: &std::path::Path) ->
                 symlink_path.display(),
                 e
             );
-            return SymlinkStatus::Stale;
+            // Can't read it — don't touch what we can't verify
+            return SymlinkStatus::NotInstalled;
         }
     };
+
+    // Only consider this symlink ours if the target path looks like it came from
+    // an nteract app bundle (contains "nteract" or "runt" in the path).
+    let target_str = target.to_string_lossy();
+    if !target_str.contains("nteract") && !target_str.contains("runt") {
+        log::debug!(
+            "[cli_install] Symlink {} -> {} does not appear to be ours, skipping",
+            symlink_path.display(),
+            target_str
+        );
+        return SymlinkStatus::NotInstalled;
+    }
 
     let bundled = match get_bundled_runt_path(app) {
         Some(p) => p,
@@ -217,6 +208,9 @@ fn check_runt_symlink(app: &tauri::AppHandle, symlink_path: &std::path::Path) ->
 }
 
 /// Check if the nb wrapper script references the correct CLI command name.
+///
+/// Only considers the script "ours" if its content mentions "runt" — this avoids
+/// clobbering unrelated `nb` commands.
 #[cfg(unix)]
 fn check_nb_script(script_path: &std::path::Path, expected_cli_name: &str) -> SymlinkStatus {
     if !script_path.exists() {
@@ -225,6 +219,15 @@ fn check_nb_script(script_path: &std::path::Path, expected_cli_name: &str) -> Sy
 
     match fs::read_to_string(script_path) {
         Ok(contents) => {
+            // Only consider this script ours if it mentions runt
+            if !contents.contains("runt") {
+                log::debug!(
+                    "[cli_install] Script {} does not mention runt, skipping",
+                    script_path.display()
+                );
+                return SymlinkStatus::NotInstalled;
+            }
+
             let expected_exec = format!("exec {} notebook", expected_cli_name);
             if contents.contains(&expected_exec) {
                 SymlinkStatus::Current
@@ -243,7 +246,8 @@ fn check_nb_script(script_path: &std::path::Path, expected_cli_name: &str) -> Sy
                 script_path.display(),
                 e
             );
-            SymlinkStatus::Stale
+            // Can't read — don't touch
+            SymlinkStatus::NotInstalled
         }
     }
 }
@@ -285,8 +289,8 @@ fn is_translocated_path(app: &tauri::AppHandle) -> bool {
 /// exists), this checks whether it still points to the current app bundle and
 /// re-runs `install_cli()` if not. Does nothing if the CLI was never installed.
 ///
-/// Skips the check on macOS if the app is running from a translocated path
-/// (e.g., directly from a DMG) to avoid pointing symlinks at ephemeral paths.
+/// Skips the check in dev mode (source builds) and on macOS if the app is
+/// running from a translocated path (e.g., directly from a DMG).
 pub fn ensure_cli_current(app: &tauri::AppHandle) {
     #[cfg(not(unix))]
     {
@@ -298,6 +302,13 @@ pub fn ensure_cli_current(app: &tauri::AppHandle) {
 
     #[cfg(unix)]
     {
+        // In dev mode, the bundled path points into a build artifact directory
+        // (target/*/binaries/). Don't rewrite the user's global CLI to point there.
+        if runt_workspace::is_dev_mode() {
+            log::debug!("[cli_install] Dev mode — skipping CLI currency check");
+            return;
+        }
+
         // On macOS, skip if the app is running from a translocated/temporary path.
         #[cfg(target_os = "macos")]
         if is_translocated_path(app) {
@@ -619,52 +630,26 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn worst_status_stale_wins() {
-        assert_eq!(
-            worst_status(SymlinkStatus::Stale, SymlinkStatus::Current),
-            SymlinkStatus::Stale
-        );
-        assert_eq!(
-            worst_status(SymlinkStatus::Current, SymlinkStatus::Stale),
-            SymlinkStatus::Stale
-        );
-        assert_eq!(
-            worst_status(SymlinkStatus::NotInstalled, SymlinkStatus::Stale),
-            SymlinkStatus::Stale
-        );
-    }
+    fn nb_script_not_installed_when_not_ours() {
+        let dir = tempfile::tempdir().ok().unwrap();
+        let script_path = dir.path().join("nb");
+        // An unrelated nb script that doesn't mention runt
+        fs::write(&script_path, "#!/bin/bash\nexec nb-something-else \"$@\"\n").ok();
 
-    #[cfg(unix)]
-    #[test]
-    fn worst_status_both_not_installed() {
         assert_eq!(
-            worst_status(SymlinkStatus::NotInstalled, SymlinkStatus::NotInstalled),
+            check_nb_script(&script_path, "runt"),
             SymlinkStatus::NotInstalled
         );
     }
 
     #[cfg(unix)]
     #[test]
-    fn worst_status_current_when_one_installed() {
-        // If one location is current and the other not installed, overall is current
-        assert_eq!(
-            worst_status(SymlinkStatus::Current, SymlinkStatus::NotInstalled),
-            SymlinkStatus::Current
-        );
-        assert_eq!(
-            worst_status(SymlinkStatus::NotInstalled, SymlinkStatus::Current),
-            SymlinkStatus::Current
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn runt_symlink_stale_when_regular_file() {
+    fn regular_file_not_treated_as_ours() {
         let dir = tempfile::tempdir().ok().unwrap();
         let file_path = dir.path().join("runt");
         fs::write(&file_path, "not a symlink").ok();
 
-        // A regular file at the symlink path should be detected as stale
+        // A regular file (not a symlink) should be NotInstalled, not Stale
         assert!(file_path.exists());
         assert!(!file_path.is_symlink());
     }
