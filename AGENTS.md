@@ -413,6 +413,14 @@ text splices and merges. See automerge/automerge#1327. Use `fork()` instead.
 
 **Key methods on `NotebookDoc`:** `fork()`, `get_heads()`, `merge()`, `fork_and_merge(f)`.
 
+### No Independent `put_object` on Shared Keys
+
+**Never call `put_object()` on a key that another peer also creates.** Two independent `put_object(ROOT, "cells", Map)` calls from different actors create two distinct Automerge Map objects at the same key — a conflict. Automerge picks one winner; the loser's children become invisible.
+
+This is why `NotebookDoc::bootstrap()` only writes `schema_version` (a scalar). It does **not** create `cells` or `metadata` maps — those are created once by the daemon in `new_inner()` and arrive at other peers via sync. If bootstrap also created them, the daemon's populated maps (with cells, deps, etc.) could be shadowed by the bootstrap's empty maps depending on conflict resolution order.
+
+**Rule:** Document structure (Maps, Lists at well-known keys) must be created by exactly one peer — the daemon. All other peers receive it via Automerge sync. Scalars at the same key are safe (identical values converge).
+
 ### The `is_binary_mime` Contract
 
 Three implementations **must stay in sync** — if you change MIME classification, update all three:

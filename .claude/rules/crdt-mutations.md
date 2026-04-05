@@ -105,3 +105,5 @@ The bridge uses `externalChangeAnnotation` to prevent echo: inbound changes are 
 4. **Do not bypass the bridge for source text.** The CodeMirror bridge handles character-level sync. Using `update_source` (Myers diff) from the UI would conflict with the bridge's splice tracking.
 
 5. **Do not mutate the doc directly after an async gap.** If you read doc state, await something, then write back, use `NotebookDoc::fork()` before the async work and `merge()` after. For synchronous blocks, use `doc.fork_and_merge(|fork| { ... })`. See `contributing/crdt-mutation-guide.md` for the full pattern.
+
+6. **Do not `put_object()` at a key that another peer also creates.** Two independent `put_object(ROOT, "cells", Map)` from different actors create two distinct Map objects -- an Automerge conflict. One wins; the loser's children become invisible. Document structure must be created by exactly one peer (the daemon). Other peers receive it via sync. This is why `bootstrap()` only seeds `schema_version`, not the full skeleton.
