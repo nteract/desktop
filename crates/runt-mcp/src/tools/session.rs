@@ -102,17 +102,19 @@ fn get_dependencies(handle: &notebook_sync::handle::DocHandle) -> Vec<String> {
 fn format_cell_summaries(handle: &notebook_sync::handle::DocHandle) -> String {
     let cells = handle.get_cells();
     let cell_status_map = crate::tools::cell_read::build_cell_status_map(handle);
+    let cell_ec_map = crate::tools::cell_read::build_cell_execution_count_map(handle);
     cells
         .iter()
         .enumerate()
         .map(|(i, cell)| {
             let status = cell_status_map.get(&cell.id).map(String::as_str);
+            let ec = cell_ec_map.get(&cell.id).map(String::as_str);
             formatting::format_cell_summary(
                 i,
                 &cell.id,
                 &cell.cell_type,
                 &cell.source,
-                Some(&cell.execution_count),
+                ec,
                 status,
                 60,
             )

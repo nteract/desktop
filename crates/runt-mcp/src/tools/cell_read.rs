@@ -60,13 +60,12 @@ pub async fn get_cell(
         None => return tool_error(&format!("Cell not found: {cell_id}")),
     };
 
+    // Get execution_count from RuntimeStateDoc (the source of truth)
+    let ec = get_cell_execution_count_from_runtime(&handle, cell_id);
+
     // If the cell has been executed but outputs haven't synced yet,
     // force a sync round-trip to process pending RuntimeStateSync frames.
-    if cell.outputs.is_empty()
-        && !cell.execution_count.is_empty()
-        && cell.execution_count != "0"
-        && cell.execution_count != "null"
-    {
+    if cell.outputs.is_empty() && !ec.is_empty() {
         let _ = handle.confirm_sync().await;
         if let Some(c) = handle.get_cell(cell_id) {
             cell = c;
@@ -86,12 +85,13 @@ pub async fn get_cell(
     // Get execution status from RuntimeState
     let status = get_cell_status(&handle, cell_id);
 
-    let header = formatting::format_cell_header(
-        &cell.id,
-        &cell.cell_type,
-        Some(&cell.execution_count),
-        status.as_deref(),
-    );
+    let ec_display = if ec.is_empty() {
+        None
+    } else {
+        Some(ec.as_str())
+    };
+    let header =
+        formatting::format_cell_header(&cell.id, &cell.cell_type, ec_display, status.as_deref());
 
     // Return multiple Content items: header+source, then one per output
     let mut items = Vec::new();
@@ -148,8 +148,9 @@ pub async fn get_all_cells(
     };
     let slice = &cells[start.min(cells.len())..end.min(cells.len())];
 
-    // Build cell status map and comms from RuntimeState
+    // Build cell status map, execution count map, and comms from RuntimeState
     let cell_status_map = build_cell_status_map(&handle);
+    let cell_ec_map = build_cell_execution_count_map(&handle);
     let comms = handle.get_runtime_state().ok().map(|rs| rs.comms);
 
     match format {
@@ -157,7 +158,7 @@ pub async fn get_all_cells(
             let mut json_cells = Vec::new();
             for cell in slice {
                 let status = cell_status_map.get(&cell.id).map(String::as_str);
-                let ec: Option<i64> = cell.execution_count.parse().ok();
+                let ec: Option<i64> = cell_ec_map.get(&cell.id).and_then(|s| s.parse().ok());
 
                 // Resolve outputs through the output resolver so that
                 // text/llm+plain is synthesized and viz specs are summarized.
@@ -197,6 +198,7 @@ pub async fn get_all_cells(
             let mut items = Vec::new();
             for cell in slice {
                 let status = cell_status_map.get(&cell.id).map(String::as_str);
+                let ec = cell_ec_map.get(&cell.id).map(String::as_str);
                 let outputs = output_resolver::resolve_cell_outputs(
                     &cell.outputs,
                     &server.blob_base_url,
@@ -204,12 +206,7 @@ pub async fn get_all_cells(
                     comms.as_ref(),
                 )
                 .await;
-                let header = formatting::format_cell_header(
-                    &cell.id,
-                    &cell.cell_type,
-                    Some(&cell.execution_count),
-                    status,
-                );
+                let header = formatting::format_cell_header(&cell.id, &cell.cell_type, ec, status);
                 let output_text = formatting::format_outputs_text(&outputs);
                 let text = if !cell.source.is_empty() {
                     format!("{header}\n\n{}", cell.source)
@@ -228,12 +225,13 @@ pub async fn get_all_cells(
             let mut lines = Vec::new();
             for (i, cell) in slice.iter().enumerate() {
                 let status = cell_status_map.get(&cell.id).map(String::as_str);
+                let ec = cell_ec_map.get(&cell.id).map(String::as_str);
                 let line = formatting::format_cell_summary(
                     start + i,
                     &cell.id,
                     &cell.cell_type,
                     &cell.source,
-                    Some(&cell.execution_count),
+                    ec,
                     status,
                     preview_chars,
                 );
@@ -272,6 +270,31 @@ pub async fn get_all_cells(
     }
 }
 
+/// Get the execution_count for a cell from RuntimeStateDoc.
+///
+/// Looks at the executions map for the most recent execution of this cell
+/// that has an execution_count set (from the kernel's execute_input message).
+/// Returns an empty string if no execution_count is found, matching the
+/// convention used by formatting functions.
+pub fn get_cell_execution_count_from_runtime(
+    handle: &notebook_sync::handle::DocHandle,
+    cell_id: &str,
+) -> String {
+    if let Ok(state) = handle.get_runtime_state() {
+        if let Some(exec) = state
+            .executions
+            .values()
+            .filter(|e| e.cell_id == cell_id && e.execution_count.is_some())
+            .max_by_key(|e| e.execution_count)
+        {
+            if let Some(count) = exec.execution_count {
+                return count.to_string();
+            }
+        }
+    }
+    String::new()
+}
+
 /// Get cell execution status from RuntimeState.
 ///
 /// Checks queue first (running/queued), then falls back to the executions
@@ -303,6 +326,36 @@ fn get_cell_status(handle: &notebook_sync::handle::DocHandle, cell_id: &str) -> 
         }
     }
     None
+}
+
+/// Build a map of cell_id -> execution_count string from RuntimeState.
+///
+/// For each cell, finds the most recent execution with an execution_count
+/// and stores it as a string (e.g. "5"). Cells without execution_count
+/// are absent from the map.
+pub fn build_cell_execution_count_map(
+    handle: &notebook_sync::handle::DocHandle,
+) -> std::collections::HashMap<String, String> {
+    let mut map: std::collections::HashMap<String, (i64, String)> =
+        std::collections::HashMap::new();
+    if let Ok(state) = handle.get_runtime_state() {
+        for exec in state.executions.values() {
+            if let Some(count) = exec.execution_count {
+                let entry = map.entry(exec.cell_id.clone());
+                match entry {
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        e.insert((count, count.to_string()));
+                    }
+                    std::collections::hash_map::Entry::Occupied(mut e) => {
+                        if count > e.get().0 {
+                            e.insert((count, count.to_string()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    map.into_iter().map(|(k, (_, v))| (k, v)).collect()
 }
 
 /// Build a map of cell_id -> status from RuntimeState.
