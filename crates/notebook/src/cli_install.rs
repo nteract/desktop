@@ -178,6 +178,10 @@ fn check_runt_symlink(app: &tauri::AppHandle, symlink_path: &std::path::Path) ->
     // on Linux it's inside an nteract resource directory. We check for "nteract"
     // as a directory component AND the target filename being "runt" to avoid
     // false-positives on unrelated symlinks (e.g. /opt/homebrew/bin/runt).
+    //
+    // Note: if a user renames "nteract.app" to something else, the symlink will
+    // no longer be recognized as ours, and auto-repair won't trigger. This is an
+    // acceptable trade-off — renaming is rare and manual `install_cli()` still works.
     let target_str = target.to_string_lossy();
     let target_filename = target.file_name().map(|f| f.to_string_lossy());
     let looks_like_ours = target_filename.as_deref() == Some("runt")
@@ -359,14 +363,19 @@ pub fn ensure_cli_current(app: &tauri::AppHandle) {
         }
 
         // If either entry is "NotInstalled" (unrecognized), check whether the
-        // path actually exists. If it does, something else owns it — don't clobber.
+        // path actually exists (or is a dangling symlink). If it does, something
+        // else owns it — don't clobber. We use symlink_metadata() instead of
+        // exists() because exists() returns false for dangling symlinks, which
+        // would let us accidentally overwrite a broken symlink owned by another tool.
         let dir = install_dir();
         let cli_name = cli_command_name();
         let nb_name = cli_notebook_alias_name();
 
+        let path_occupied = |p: PathBuf| fs::symlink_metadata(p).is_ok();
         let runt_blocked =
-            runt_status == SymlinkStatus::NotInstalled && dir.join(cli_name).exists();
-        let nb_blocked = nb_status == SymlinkStatus::NotInstalled && dir.join(nb_name).exists();
+            runt_status == SymlinkStatus::NotInstalled && path_occupied(dir.join(cli_name));
+        let nb_blocked =
+            nb_status == SymlinkStatus::NotInstalled && path_occupied(dir.join(nb_name));
 
         if runt_blocked || nb_blocked {
             log::info!(
