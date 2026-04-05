@@ -173,12 +173,19 @@ fn check_runt_symlink(app: &tauri::AppHandle, symlink_path: &std::path::Path) ->
         }
     };
 
-    // Only consider this symlink ours if the target path looks like it came from
-    // an nteract app bundle (contains "nteract" or "runt" in the path).
+    // Only consider this symlink ours if the target path matches the shape of
+    // an nteract app bundle install. On macOS this is "*.app/Contents/MacOS/runt",
+    // on Linux it's inside an nteract resource directory. We check for "nteract"
+    // as a directory component AND the target filename being "runt" to avoid
+    // false-positives on unrelated symlinks (e.g. /opt/homebrew/bin/runt).
     let target_str = target.to_string_lossy();
-    if !target_str.contains("nteract") && !target_str.contains("runt") {
+    let target_filename = target.file_name().map(|f| f.to_string_lossy());
+    let looks_like_ours = target_filename.as_deref() == Some("runt")
+        && (target_str.contains("/nteract") || target_str.contains("/nteract-nightly"));
+
+    if !looks_like_ours {
         log::debug!(
-            "[cli_install] Symlink {} -> {} does not appear to be ours, skipping",
+            "[cli_install] Symlink {} -> {} does not appear to be an nteract install, skipping",
             symlink_path.display(),
             target_str
         );
@@ -258,13 +265,17 @@ fn check_nb_script(script_path: &std::path::Path, expected_cli_name: &str) -> Sy
     }
 }
 
-/// Returns true if the app appears to be running from a translocated or
-/// temporary macOS path (e.g., opened directly from a DMG or Downloads before
-/// being moved to /Applications). We must not rewrite CLI symlinks in this case
-/// because the path is ephemeral — the symlinks would break as soon as the
-/// translocated copy is cleaned up.
-#[cfg(target_os = "macos")]
-fn is_translocated_path(app: &tauri::AppHandle) -> bool {
+/// Returns true if the app appears to be running from a temporary or
+/// ephemeral path. We must not rewrite CLI symlinks in this case because
+/// the path will disappear, leaving the symlinks broken.
+///
+/// Covers:
+/// - macOS app translocation (`/private/var/folders/`, `AppTranslocation`)
+/// - macOS Downloads or Volumes (not yet moved to /Applications)
+/// - Linux AppImage mounts (`/tmp/.mount_*`)
+/// - General temp directories (`/tmp/`, `/var/folders/`)
+#[cfg(unix)]
+fn is_ephemeral_path(app: &tauri::AppHandle) -> bool {
     let bundled = match get_bundled_runt_path(app) {
         Some(p) => p,
         None => return false,
@@ -272,21 +283,22 @@ fn is_translocated_path(app: &tauri::AppHandle) -> bool {
 
     let path_str = bundled.to_string_lossy();
 
-    // macOS app translocation moves apps to /private/var/folders/...
-    // Also guard against running from common temp locations.
-    if path_str.contains("/private/var/folders/")
+    let ephemeral = path_str.contains("/private/var/folders/")
         || path_str.contains("/AppTranslocation/")
         || path_str.starts_with("/tmp/")
         || path_str.starts_with("/var/folders/")
-    {
+        || path_str.contains("/tmp/.mount_")
+        || path_str.contains("/Downloads/")
+        || path_str.starts_with("/Volumes/");
+
+    if ephemeral {
         log::info!(
-            "[cli_install] Skipping CLI currency check — app running from translocated path: {}",
+            "[cli_install] Skipping CLI currency check — app running from ephemeral path: {}",
             path_str
         );
-        return true;
     }
 
-    false
+    ephemeral
 }
 
 /// Silently update the CLI installation if the symlinks are stale.
@@ -315,9 +327,9 @@ pub fn ensure_cli_current(app: &tauri::AppHandle) {
             return;
         }
 
-        // On macOS, skip if the app is running from a translocated/temporary path.
-        #[cfg(target_os = "macos")]
-        if is_translocated_path(app) {
+        // Skip if the app is running from an ephemeral path (macOS translocation,
+        // AppImage mount, Downloads, DMG volume, etc.)
+        if is_ephemeral_path(app) {
             return;
         }
 
