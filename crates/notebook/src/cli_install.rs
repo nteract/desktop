@@ -401,25 +401,28 @@ pub fn ensure_cli_current(app: &tauri::AppHandle) {
     }
 }
 
-/// Check if the CLI is already installed (checks both new and legacy locations).
+/// Check if the CLI is already installed (checks user-local, system-wide, and legacy locations).
 pub fn is_cli_installed() -> bool {
+    is_cli_installed_local() || is_cli_installed_system()
+}
+
+/// Check if the CLI is installed to the user-local directory (`~/.local/bin`).
+fn is_cli_installed_local() -> bool {
     let cli_name = cli_command_name();
     let nb_name = cli_notebook_alias_name();
+    let dir = install_dir();
+    dir.join(cli_name).exists() && dir.join(nb_name).exists()
+}
 
-    let new_dir = install_dir();
-    if new_dir.join(cli_name).exists() && new_dir.join(nb_name).exists() {
-        return true;
-    }
-
-    #[cfg(unix)]
-    {
-        let legacy = PathBuf::from(LEGACY_INSTALL_DIR);
-        if legacy.join(cli_name).exists() && legacy.join(nb_name).exists() {
-            return true;
-        }
-    }
-
-    false
+/// Check if the CLI is installed system-wide (`/usr/local/bin` or equivalent).
+pub fn is_cli_installed_system() -> bool {
+    let dir = PathBuf::from(SYSTEM_INSTALL_DIR);
+    let runt_name = if cfg!(windows) {
+        format!("{}.exe", cli_command_name())
+    } else {
+        cli_command_name().to_string()
+    };
+    dir.join(runt_name).exists()
 }
 
 /// Install the CLI to `~/.local/bin` (no admin privileges needed).
@@ -616,7 +619,8 @@ fn install_with_privilege_escalation(
     let err_file = std::env::temp_dir().join("nteract-cli-install-err.txt");
     let err_path = err_file.to_string_lossy().replace('\'', "''");
 
-    // The elevated script: create dir, copy runt, write nb.cmd wrapper, add to PATH
+    // The elevated script: create dir, copy runt, write nb.cmd wrapper, add to PATH,
+    // then broadcast WM_SETTINGCHANGE so new shells pick up the PATH change.
     let ps_cmd = format!(
         "$ErrorActionPreference='Stop'; try {{ \
          New-Item -ItemType Directory -Force -Path '{install_dir}' | Out-Null; \
@@ -625,7 +629,10 @@ fn install_with_privilege_escalation(
          Set-Content -Path '{nb}' -Value '@echo off`r`n{cli_cmd} notebook %*' -Encoding ASCII; \
          $path = [Environment]::GetEnvironmentVariable('Path','Machine'); \
          if ($path -notlike '*{install_dir}*') {{ \
-           [Environment]::SetEnvironmentVariable('Path', $path + ';{install_dir}', 'Machine') \
+           [Environment]::SetEnvironmentVariable('Path', $path + ';{install_dir}', 'Machine'); \
+           Add-Type -Namespace Win32 -Name NativeMethods -MemberDefinition '[DllImport(\"user32.dll\", SetLastError=true, CharSet=CharSet.Auto)] public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);'; \
+           $r = [UIntPtr]::Zero; \
+           [Win32.NativeMethods]::SendMessageTimeout([IntPtr]0xFFFF, 0x1A, [UIntPtr]::Zero, 'Environment', 2, 5000, [ref]$r) | Out-Null \
          }}; \
          Remove-Item -Force -ErrorAction SilentlyContinue '{err_path}' \
          }} catch {{ $_.Exception.Message | Out-File '{err_path}' -Encoding utf8 }}"

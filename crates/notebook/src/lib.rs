@@ -1316,6 +1316,17 @@ async fn run_upgrade(
             Err(e) => log::warn!("[upgrade] CLI re-install failed (non-fatal): {}", e),
         }
     }
+    // Also update the system-wide copy if one exists (it's a copy, not a
+    // symlink, so it won't auto-update with the app bundle).
+    if cli_install::is_cli_installed_system() {
+        match cli_install::install_cli_system(&app) {
+            Ok(()) => log::info!("[upgrade] System-wide CLI re-installed successfully"),
+            Err(e) => log::warn!(
+                "[upgrade] System-wide CLI re-install failed (non-fatal): {}",
+                e
+            ),
+        }
+    }
 
     // Step 6: Signal ready
     app.emit("upgrade:progress", UpgradeProgress::Ready)
