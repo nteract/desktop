@@ -59,6 +59,12 @@ all = { level = "warn", priority = -1 }
 unwrap_used = "warn"
 expect_used = "warn"
 
+# Patches required by pixi_api's transitive dependencies (uv crates need forked reqwest-middleware)
+[patch.crates-io]
+reqwest-middleware = { git = "https://github.com/astral-sh/reqwest-middleware", rev = "7650ed76215a962a96d94a79be71c27bffde7ab2" }
+reqwest-retry = { git = "https://github.com/astral-sh/reqwest-middleware", rev = "7650ed76215a962a96d94a79be71c27bffde7ab2" }
+version-ranges = { git = "https://github.com/astral-sh/pubgrub", rev = "d8efd77673c9a90792da9da31b6c0da7ea8a324b" }
+
 [profile.release]
 opt-level = 'z'
 strip = true

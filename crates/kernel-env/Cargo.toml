@@ -42,10 +42,13 @@ rattler = { version = "0.40", default-features = false, features = ["native-tls"
 rattler_cache = { version = "0.6", default-features = false, features = ["native-tls"], optional = true }
 rattler_conda_types = { version = "0.44", optional = true }
 rattler_repodata_gateway = { version = "0.27", default-features = false, features = ["gateway", "native-tls"], optional = true }
-rattler_solve = { version = "5.0", features = ["resolvo"], optional = true }
+rattler_solve = { version = "=5.0.3", features = ["resolvo"], optional = true }
 rattler_virtual_packages = { version = "2.3", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["native-tls"], optional = true }
 reqwest-middleware = { version = "0.4", optional = true }
+
+# Pixi API for workspace-level conda/pypi dependency management (experimental)
+pixi_api = { git = "https://github.com/prefix-dev/pixi", rev = "370a1759c", package = "pixi_api", optional = true, features = ["native-tls"] }
 
 [dev-dependencies]
 tempfile = "3"
