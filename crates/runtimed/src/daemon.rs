@@ -1625,6 +1625,10 @@ impl Daemon {
         // working_dir for untitled notebooks (used for project file detection)
         let working_dir_path = working_dir.map(std::path::PathBuf::from);
 
+        // Use the explicitly requested runtime for auto-launch, not the system default.
+        // This ensures create_notebook(runtime="deno") actually launches a Deno kernel.
+        let requested_runtime: crate::runtime::Runtime = runtime.parse().unwrap_or(default_runtime);
+
         // Continue with normal notebook sync
         crate::notebook_sync_server::handle_notebook_sync_connection(
             reader,
@@ -1632,7 +1636,7 @@ impl Daemon {
             room,
             self.notebook_rooms.clone(),
             notebook_id,
-            default_runtime,
+            requested_runtime,
             default_python_env,
             self.clone(),
             working_dir_path,
