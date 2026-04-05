@@ -64,8 +64,9 @@ export function CompactExecutionButton({
       <span className="opacity-60">[</span>
       <span className="relative inline-flex min-w-4 items-center justify-center">
         {isExecuting ? (
-          // Running state: show stop with pulse
-          <span className="text-destructive animate-pulse">■</span>
+          // Running state: squish-breathe stop indicator with anticipation +
+          // overshoot. 1s delay so quick runs stay static.
+          <span className="text-destructive animate-exec-squish">■</span>
         ) : isQueued ? (
           // Queued state: small dot with slow breathe animation
           <span className="flex items-center justify-center">
