@@ -84,7 +84,7 @@ pub enum Handshake {
     RuntimeAgent {
         /// Notebook room to attach to.
         notebook_id: String,
-        /// Unique runtime agent identifier (e.g., "rt:agent:a1b2c3d4").
+        /// Unique runtime agent identifier (e.g., "runtime-agent:a1b2c3d4").
         runtime_agent_id: String,
         /// Filesystem path to the shared blob store root
         /// (e.g., "~/.cache/runt/blobs/").

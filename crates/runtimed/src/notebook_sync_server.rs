@@ -3538,7 +3538,7 @@ async fn auto_launch_kernel(
         info!("[notebook-sync] Spawning runtime agent subprocess for auto-launch");
 
         let nb_id = notebook_id.to_string();
-        let runtime_agent_id = format!("rt:agent:{}", &uuid::Uuid::new_v4().to_string()[..8]);
+        let runtime_agent_id = format!("runtime-agent:{}", &uuid::Uuid::new_v4().to_string()[..8]);
         let socket_path = daemon.socket_path().clone();
 
         match crate::runtime_agent_handle::RuntimeAgentHandle::spawn(
@@ -4508,7 +4508,7 @@ async fn handle_notebook_request(
 
                 let notebook_id = room.notebook_path.read().await.display().to_string();
                 let runtime_agent_id =
-                    format!("rt:agent:{}", &uuid::Uuid::new_v4().to_string()[..8]);
+                    format!("runtime-agent:{}", &uuid::Uuid::new_v4().to_string()[..8]);
                 let socket_path = daemon.socket_path().clone();
 
                 match crate::runtime_agent_handle::RuntimeAgentHandle::spawn(
