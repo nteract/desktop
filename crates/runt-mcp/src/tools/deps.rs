@@ -16,6 +16,10 @@ use super::{arg_str, tool_error, tool_success};
 pub struct AddDependencyParams {
     /// Package to add (e.g. "pandas>=2.0").
     pub package: String,
+    /// Action after adding: "none" (just record, default), "sync" (hot-install, UV only),
+    /// or "restart" (restart kernel with new deps).
+    #[serde(default)]
+    pub after: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -33,31 +37,195 @@ pub struct GetDependenciesParams {}
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SyncEnvironmentParams {}
 
-/// Add a package dependency.
+/// Detect the active package manager for a notebook from its env_source or metadata.
+/// Each notebook has exactly one env manager type.
+pub(crate) fn detect_package_manager(handle: &notebook_sync::handle::DocHandle) -> String {
+    // Priority 1: env_source from running kernel
+    if let Ok(state) = handle.get_runtime_state() {
+        let src = &state.kernel.env_source;
+        if src.starts_with("conda:") {
+            return "conda".to_string();
+        }
+        if src.starts_with("pixi:") {
+            return "pixi".to_string();
+        }
+        if src.starts_with("uv:") {
+            return "uv".to_string();
+        }
+    }
+    // Priority 2: existing metadata deps
+    if let Some(meta) = handle.get_notebook_metadata() {
+        if !meta.pixi_dependencies().is_empty() {
+            return "pixi".to_string();
+        }
+        if !meta.conda_dependencies().is_empty() {
+            return "conda".to_string();
+        }
+    }
+    // Default
+    "uv".to_string()
+}
+
+/// Add a dependency using the appropriate package manager, return error string on failure.
+pub(crate) fn add_dep_for_manager(
+    handle: &notebook_sync::handle::DocHandle,
+    package: &str,
+    manager: &str,
+) -> Result<(), String> {
+    match manager {
+        "conda" => handle
+            .add_conda_dependency(package)
+            .map_err(|e| format!("Failed to add conda dependency: {e}")),
+        "pixi" => handle
+            .add_pixi_dependency(package)
+            .map_err(|e| format!("Failed to add pixi dependency: {e}")),
+        _ => handle
+            .add_uv_dependency(package)
+            .map_err(|e| format!("Failed to add uv dependency: {e}")),
+    }
+}
+
+/// Remove a dependency using the appropriate package manager.
+fn remove_dep_for_manager(
+    handle: &notebook_sync::handle::DocHandle,
+    package: &str,
+    manager: &str,
+) -> Result<bool, String> {
+    match manager {
+        "conda" => handle
+            .remove_conda_dependency(package)
+            .map_err(|e| format!("Failed to remove conda dependency: {e}")),
+        "pixi" => handle
+            .remove_pixi_dependency(package)
+            .map_err(|e| format!("Failed to remove pixi dependency: {e}")),
+        _ => handle
+            .remove_uv_dependency(package)
+            .map_err(|e| format!("Failed to remove uv dependency: {e}")),
+    }
+}
+
+/// Add a package dependency. Auto-detects the notebook's package manager (uv, conda, or pixi).
 pub async fn add_dependency(
     server: &NteractMcp,
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
     let package = arg_str(request, "package")
         .ok_or_else(|| McpError::invalid_params("Missing required parameter: package", None))?;
+    let after = arg_str(request, "after").unwrap_or("none");
 
     let handle = require_handle!(server);
 
-    handle
-        .add_uv_dependency(package)
-        .map_err(|e| McpError::internal_error(format!("Failed to add dependency: {e}"), None))?;
+    let manager = detect_package_manager(&handle);
+
+    add_dep_for_manager(&handle, package, &manager)
+        .map_err(|e| McpError::internal_error(e, None))?;
+
+    // Ensure daemon has the metadata change before any follow-up action
+    if let Err(e) = handle.confirm_sync().await {
+        tracing::warn!("confirm_sync failed after add_dependency: {e}");
+    }
 
     // Read back current dependencies
-    let deps = get_deps_list(&handle);
+    let deps = get_deps_for_manager(&handle, &manager);
 
-    let result = serde_json::json!({
+    let mut result = serde_json::json!({
         "dependencies": deps,
         "added": package,
+        "package_manager": manager,
     });
+
+    match after {
+        "sync" => {
+            // Attempt hot-install (UV only; conda/pixi will report needs_restart)
+            match handle
+                .send_request(NotebookRequest::SyncEnvironment {})
+                .await
+            {
+                Ok(NotebookResponse::SyncEnvironmentComplete {
+                    synced_packages, ..
+                }) => {
+                    result["sync"] = serde_json::json!({
+                        "success": true,
+                        "synced_packages": synced_packages,
+                    });
+                }
+                Ok(NotebookResponse::SyncEnvironmentStarted { packages }) => {
+                    result["sync"] = serde_json::json!({
+                        "success": true,
+                        "synced_packages": packages,
+                    });
+                }
+                Ok(NotebookResponse::SyncEnvironmentFailed {
+                    error,
+                    needs_restart,
+                }) => {
+                    result["sync"] = serde_json::json!({
+                        "success": false,
+                        "error": error,
+                        "needs_restart": needs_restart,
+                    });
+                }
+                Ok(NotebookResponse::Error { error }) => {
+                    result["sync"] = serde_json::json!({
+                        "success": false,
+                        "error": error,
+                        "needs_restart": true,
+                    });
+                }
+                Ok(_) => {
+                    result["sync"] = serde_json::json!({ "success": true });
+                }
+                Err(e) => {
+                    result["sync"] = serde_json::json!({
+                        "success": false,
+                        "error": format!("Failed to sync: {e}"),
+                        "needs_restart": true,
+                    });
+                }
+            }
+        }
+        "restart" => {
+            // Shutdown + relaunch with auto-detect
+            let _ = handle
+                .send_request(NotebookRequest::ShutdownKernel {})
+                .await;
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            match handle
+                .send_request(NotebookRequest::LaunchKernel {
+                    kernel_type: "python".to_string(),
+                    env_source: "auto".to_string(),
+                    notebook_path: None,
+                })
+                .await
+            {
+                Ok(NotebookResponse::KernelLaunched { env_source, .. }) => {
+                    result["restart"] = serde_json::json!({
+                        "success": true,
+                        "env_source": env_source,
+                    });
+                }
+                Ok(NotebookResponse::Error { error }) => {
+                    result["restart"] = serde_json::json!({
+                        "success": false,
+                        "error": error,
+                    });
+                }
+                Err(e) => {
+                    result["restart"] = serde_json::json!({
+                        "success": false,
+                        "error": format!("Failed to restart: {e}"),
+                    });
+                }
+                _ => {}
+            }
+        }
+        _ => {} // "none" — just record the dep
+    }
+
     tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
 }
 
-/// Remove a package dependency.
+/// Remove a package dependency. Auto-detects the notebook's package manager.
 pub async fn remove_dependency(
     server: &NteractMcp,
     request: &CallToolRequestParams,
@@ -67,15 +235,23 @@ pub async fn remove_dependency(
 
     let handle = require_handle!(server);
 
-    handle
-        .remove_uv_dependency(package)
-        .map_err(|e| McpError::internal_error(format!("Failed to remove dependency: {e}"), None))?;
+    let manager = detect_package_manager(&handle);
 
-    let deps = get_deps_list(&handle);
+    let removed = remove_dep_for_manager(&handle, package, &manager)
+        .map_err(|e| McpError::internal_error(e, None))?;
+
+    // Ensure daemon has the metadata change
+    if let Err(e) = handle.confirm_sync().await {
+        tracing::warn!("confirm_sync failed after remove_dependency: {e}");
+    }
+
+    let deps = get_deps_for_manager(&handle, &manager);
 
     let result = serde_json::json!({
         "dependencies": deps,
         "removed": package,
+        "was_present": removed,
+        "package_manager": manager,
     });
     tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
 }
@@ -87,7 +263,8 @@ pub async fn get_dependencies(
 ) -> Result<CallToolResult, McpError> {
     let handle = require_handle!(server);
 
-    let deps = get_deps_list(&handle);
+    let manager = detect_package_manager(&handle);
+    let deps = get_deps_for_manager(&handle, &manager);
 
     // Include prewarmed packages from RuntimeStateDoc when available
     let prewarmed = handle
@@ -96,7 +273,10 @@ pub async fn get_dependencies(
         .map(|s| s.env.prewarmed_packages)
         .unwrap_or_default();
 
-    let mut result = serde_json::json!({ "dependencies": deps });
+    let mut result = serde_json::json!({
+        "dependencies": deps,
+        "package_manager": manager,
+    });
     if !prewarmed.is_empty() {
         result["available_packages"] = serde_json::json!(prewarmed);
     }
@@ -160,10 +340,14 @@ pub async fn sync_environment(
     }
 }
 
-/// Read UV dependencies from notebook metadata.
-fn get_deps_list(handle: &notebook_sync::handle::DocHandle) -> Vec<String> {
+/// Read dependencies for the detected package manager.
+fn get_deps_for_manager(handle: &notebook_sync::handle::DocHandle, manager: &str) -> Vec<String> {
     handle
         .get_notebook_metadata()
-        .map(|m| m.uv_dependencies().to_vec())
+        .map(|m| match manager {
+            "conda" => m.conda_dependencies().to_vec(),
+            "pixi" => m.pixi_dependencies().to_vec(),
+            _ => m.uv_dependencies().to_vec(),
+        })
         .unwrap_or_default()
 }

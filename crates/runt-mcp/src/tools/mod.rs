@@ -101,7 +101,7 @@ pub fn all_tools() -> Vec<Tool> {
         ),
         Tool::new(
             "create_notebook",
-            "Create a new notebook with optional pre-installed dependencies. The kernel starts automatically. Call save_notebook(path) to persist to disk.",
+            "Create a new notebook with optional pre-installed dependencies. Supports uv (default), conda, or pixi via package_manager param. The kernel starts automatically with deps installed. Call save_notebook(path) to persist to disk.",
             schema_for::<session::CreateNotebookParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(false).open_world(false)),
@@ -258,7 +258,7 @@ pub fn all_tools() -> Vec<Tool> {
         // -- Dependencies --
         Tool::new(
             "add_dependency",
-            "Add a package dependency (e.g. 'pandas>=2.0'). Call sync_environment() to install.",
+            "Add a package dependency (e.g. 'pandas>=2.0'). Auto-detects package manager (uv, conda, or pixi). Use after='sync' to hot-install (UV only) or after='restart' to restart kernel with new deps.",
             schema_for::<deps::AddDependencyParams>(),
         )
         .annotate(
@@ -269,7 +269,7 @@ pub fn all_tools() -> Vec<Tool> {
         ),
         Tool::new(
             "remove_dependency",
-            "Remove a package dependency. Requires restart_kernel() to take effect.",
+            "Remove a package dependency. Auto-detects package manager. Requires restart_kernel() to take effect.",
             schema_for::<deps::RemoveDependencyParams>(),
         )
         .annotate(
