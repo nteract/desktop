@@ -1407,6 +1407,7 @@ pub(crate) async fn collect_outputs(
             .ok_or_else(|| to_py_err("Not connected"))?;
 
         handle.confirm_sync().await.map_err(to_py_err)?;
+        handle.confirm_state_sync().await.map_err(to_py_err)?;
 
         let snap = handle.get_cell(cell_id).ok_or_else(|| {
             to_py_err(format!(
