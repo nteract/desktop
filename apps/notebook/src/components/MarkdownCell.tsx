@@ -237,6 +237,8 @@ export const MarkdownCell = memo(function MarkdownCell({
     if (!frameRef.current || !cell.source) return;
     // Ensure theme is in sync before re-rendering (fixes theme drift after cell moves)
     frameRef.current.setTheme(darkModeRef.current);
+    // Clear injected set — a reloaded iframe has a fresh renderer registry
+    injectedLibsRef.current.clear();
     // Inject markdown renderer plugin before rendering (idempotent, cached after first load)
     await injectLibraries(
       frameRef.current,
