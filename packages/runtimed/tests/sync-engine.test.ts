@@ -1605,4 +1605,28 @@ describe("diffExecutions", () => {
     const transitions = diffExecutions(state, state);
     expect(transitions).toHaveLength(0);
   });
+
+  it("detects execution_count arriving while still running", () => {
+    const prev = {
+      "e1": { cell_id: "c1", status: "running" as const, execution_count: null, success: null },
+    };
+    const curr = {
+      "e1": { cell_id: "c1", status: "running" as const, execution_count: 5, success: null },
+    };
+    const transitions = diffExecutions(prev, curr);
+    expect(transitions).toHaveLength(1);
+    expect(transitions[0].kind).toBe("started");
+    expect(transitions[0].execution_count).toBe(5);
+  });
+
+  it("ignores execution_count change when not running", () => {
+    const prev = {
+      "e1": { cell_id: "c1", status: "done" as const, execution_count: null, success: true },
+    };
+    const curr = {
+      "e1": { cell_id: "c1", status: "done" as const, execution_count: 5, success: true },
+    };
+    const transitions = diffExecutions(prev, curr);
+    expect(transitions).toHaveLength(0);
+  });
 });

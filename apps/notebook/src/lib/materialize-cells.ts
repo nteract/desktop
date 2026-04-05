@@ -3,6 +3,7 @@ import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 import { logger } from "./logger";
 import type { OutputManifest } from "./manifest-resolution";
 import { isManifestHash, resolveManifest } from "./manifest-resolution";
+import { getRuntimeState } from "./runtime-state";
 
 export type { ContentRef, OutputManifest } from "./manifest-resolution";
 // Re-export shared manifest types and functions for downstream consumers
@@ -12,6 +13,27 @@ export {
   resolveDataBundle,
   resolveManifest,
 } from "./manifest-resolution";
+
+/**
+ * Resolve execution_count for a cell from the RuntimeState store.
+ *
+ * The daemon writes execution_count to RuntimeStateDoc (not NotebookDoc),
+ * so the WASM handle's get_cell_execution_count always returns "null".
+ * This mirrors what runt-mcp's get_cell_execution_count_from_runtime does:
+ * find the most recent execution for the cell that has a count set.
+ */
+function getExecutionCountFromRuntime(cellId: string): number | null {
+  const state = getRuntimeState();
+  let best: number | null = null;
+  for (const exec of Object.values(state.executions)) {
+    if (exec.cell_id === cellId && exec.execution_count != null) {
+      if (best === null || exec.execution_count > best) {
+        best = exec.execution_count;
+      }
+    }
+  }
+  return best;
+}
 
 /**
  * Snapshot of a cell from the Automerge document.
@@ -153,11 +175,17 @@ export function cellSnapshotsToNotebookCellsSync(
         })
         .filter((o): o is JupyterOutput => o !== null);
 
+      // Resolve execution_count from RuntimeState (source of truth) rather
+      // than the stale NotebookDoc field which is always "null".
+      const runtimeCount = getExecutionCountFromRuntime(snap.id);
+      const ec =
+        runtimeCount ?? (Number.isNaN(executionCount) ? null : executionCount);
+
       return {
         id: snap.id,
         cell_type: "code" as const,
         source: snap.source,
-        execution_count: Number.isNaN(executionCount) ? null : executionCount,
+        execution_count: ec,
         outputs: resolvedOutputs,
         metadata,
       };
@@ -212,11 +240,17 @@ export async function cellSnapshotsToNotebookCells(
           )
         ).filter((o): o is JupyterOutput => o !== null);
 
+        // Resolve execution_count from RuntimeState (source of truth)
+        const runtimeCount = getExecutionCountFromRuntime(snap.id);
+        const ec =
+          runtimeCount ??
+          (Number.isNaN(executionCount) ? null : executionCount);
+
         return {
           id: snap.id,
           cell_type: "code" as const,
           source: snap.source,
-          execution_count: Number.isNaN(executionCount) ? null : executionCount,
+          execution_count: ec,
           outputs: resolvedOutputs,
           metadata,
         };
@@ -262,10 +296,6 @@ export function materializeCellFromWasm(
   const metadata = handle.get_cell_metadata(cellId) ?? {};
 
   if (cellType === "code") {
-    const ecStr = handle.get_cell_execution_count(cellId);
-    const executionCount =
-      !ecStr || ecStr === "null" ? null : Number.parseInt(ecStr, 10);
-
     const rawOutputs: string[] = handle.get_cell_outputs(cellId) ?? [];
     const resolvedOutputs = rawOutputs
       .map((outputStr: string) => {
@@ -294,11 +324,14 @@ export function materializeCellFromWasm(
       previousCell?.cell_type === "code" ? previousCell.outputs : undefined;
     const outputs = reuseOutputsIfUnchanged(resolvedOutputs, prevOutputs);
 
+    // Resolve execution_count from RuntimeState (source of truth)
+    const executionCount = getExecutionCountFromRuntime(cellId);
+
     return {
       id: cellId,
       cell_type: "code",
       source,
-      execution_count: Number.isNaN(executionCount) ? null : executionCount,
+      execution_count: executionCount,
       outputs,
       metadata,
     };

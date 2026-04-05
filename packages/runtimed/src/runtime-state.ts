@@ -134,8 +134,23 @@ export function diffExecutions(
     const prevStatus = prevEntry?.status;
     const currStatus = entry.status;
 
-    // No change
-    if (prevStatus === currStatus) continue;
+    // Same status — check if execution_count arrived (kernel sends
+    // execute_input after the status transitions to "running").
+    if (prevStatus === currStatus) {
+      if (
+        currStatus === "running" &&
+        entry.execution_count != null &&
+        prevEntry?.execution_count == null
+      ) {
+        transitions.push({
+          execution_id: eid,
+          cell_id: entry.cell_id,
+          kind: "started",
+          execution_count: entry.execution_count,
+        });
+      }
+      continue;
+    }
 
     // Terminal states: done or error
     if (currStatus === "done") {
