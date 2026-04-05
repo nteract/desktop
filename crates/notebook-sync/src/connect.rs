@@ -203,7 +203,8 @@ pub async fn connect_with_options(
     let caps_data = connection::recv_frame(&mut reader)
         .await?
         .ok_or_else(|| SyncError::Protocol("Connection closed during handshake".into()))?;
-    let _caps: ProtocolCapabilities = serde_json::from_slice(&caps_data)?;
+    let caps: ProtocolCapabilities = serde_json::from_slice(&caps_data)?;
+    check_daemon_protocol_version(&caps);
 
     // Initial Automerge sync exchange — start from the standard notebook
     // skeleton so load_incremental takes the incremental path.
@@ -658,8 +659,9 @@ pub async fn connect_relay(
     let caps_data = connection::recv_frame(&mut reader)
         .await?
         .ok_or_else(|| SyncError::Protocol("Connection closed during handshake".into()))?;
-    let _caps: ProtocolCapabilities = serde_json::from_slice(&caps_data)
+    let caps: ProtocolCapabilities = serde_json::from_slice(&caps_data)
         .map_err(|e| SyncError::Protocol(format!("Parse capabilities: {}", e)))?;
+    check_daemon_protocol_version(&caps);
 
     // Receive initial metadata frame (may be empty)
     let _initial_data = connection::recv_frame(&mut reader)
@@ -819,4 +821,30 @@ where
     }
 
     Ok(())
+}
+
+/// Log version info from a daemon's `ProtocolCapabilities` response.
+///
+/// Warns on protocol version mismatch but does not error — the preamble
+/// already hard-rejects incompatible protocol versions, so any connection
+/// that gets this far has a matching wire format. This check surfaces
+/// version differences for debugging (e.g., a daemon rebuilt from a
+/// different commit).
+fn check_daemon_protocol_version(caps: &ProtocolCapabilities) {
+    let expected = notebook_protocol::connection::PROTOCOL_VERSION;
+
+    if let Some(remote) = caps.protocol_version {
+        if remote != expected {
+            log::warn!(
+                "[notebook-sync] Daemon protocol version ({}) differs from client ({}). \
+                 This connection may behave unexpectedly.",
+                remote,
+                expected,
+            );
+        }
+    }
+
+    if let Some(ref ver) = caps.daemon_version {
+        debug!("[notebook-sync] Connected to daemon version {}", ver);
+    }
 }

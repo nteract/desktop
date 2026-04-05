@@ -172,11 +172,16 @@ pub async fn recv_preamble<R: AsyncRead + Unpin>(reader: &mut R) -> std::io::Res
 
     let version = buf[4];
     if version != PROTOCOL_VERSION as u8 {
+        let direction = if (version as u32) > PROTOCOL_VERSION {
+            "The daemon is newer than this client. Please update the CLI (or reinstall the app)."
+        } else {
+            "The daemon is older than this client. Please update the daemon: runt daemon doctor --fix"
+        };
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!(
-                "protocol version mismatch: expected {}, got {}",
-                PROTOCOL_VERSION, version
+                "protocol version mismatch: daemon has v{}, client expects v{}. {}",
+                version, PROTOCOL_VERSION, direction
             ),
         ));
     }

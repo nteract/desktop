@@ -1552,15 +1552,16 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
     match command {
         DaemonCommands::Status { json } => {
             let installed = manager.is_installed();
-            let running = if daemon_info.is_some() {
+            let pong_info = if daemon_info.is_some() {
                 // Use timeout to prevent hanging on stale daemon.json
-                tokio::time::timeout(Duration::from_secs(3), client.ping())
+                tokio::time::timeout(Duration::from_secs(3), client.ping_version())
                     .await
-                    .map(|r| r.is_ok())
-                    .unwrap_or(false)
+                    .ok()
+                    .and_then(|r| r.ok())
             } else {
-                false
+                None
             };
+            let running = pong_info.is_some();
             let stats = if running {
                 client.status().await.ok()
             } else {
@@ -1586,6 +1587,8 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
                     "installed": installed,
                     "running": running,
                     "dev_mode": is_dev,
+                    "protocol_version": pong_info.as_ref().and_then(|p| p.protocol_version),
+                    "daemon_version": pong_info.as_ref().and_then(|p| p.daemon_version.clone()),
                     "daemon_info": daemon_info,
                     "pool_stats": stats,
                     "paths": {
@@ -1656,6 +1659,15 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
                     println!();
                     println!("{:<19} {}", "PID:".bold(), info.pid);
                     println!("{:<19} {}", "Version:".bold(), info.version);
+                    if let Some(ref pong) = pong_info {
+                        if let Some(pv) = pong.protocol_version {
+                            println!("{:<19} v{}", "Protocol:".bold(), pv);
+                        }
+                        // Warn on protocol version mismatch
+                        if let Err(msg) = pong.check_protocol_version() {
+                            println!("{:<19} {}", "Warning:".bold(), msg.yellow());
+                        }
+                    }
                     if let Some(port) = info.blob_port {
                         println!(
                             "{:<19} {}",
