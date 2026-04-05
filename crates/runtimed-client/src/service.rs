@@ -637,20 +637,12 @@ impl ServiceManager {
 
     #[cfg(target_os = "macos")]
     fn start_macos(&self) -> ServiceResult<()> {
-        // SMAppService agents are started automatically by the system on
-        // register(). If already registered, re-registering is a no-op.
-        if smappservice_is_registered() {
-            info!("[service] SMAppService agent is registered (auto-started by system)");
-            return Ok(());
-        }
-
-        // If we should use SMAppService but aren't registered yet, register now
-        if should_use_smappservice(&self.config.binary_path) {
-            smappservice_register(&self.config.binary_path, &self.config.log_path)?;
-            return Ok(());
-        }
-
-        // Legacy launchctl path
+        // SMAppService-registered agents are managed by the system — the
+        // agent starts automatically at login and after crashes. We still
+        // use launchctl to ensure the service is loaded for immediate start.
+        // We do NOT call smappservice_register() here because start() may
+        // be called from `runt` (the CLI), whose current_exe is different
+        // from the daemon binary.
         let bootstrapped =
             runt_workspace::launchd_ensure_loaded().map_err(ServiceError::StartFailed)?;
 
@@ -664,15 +656,12 @@ impl ServiceManager {
 
     #[cfg(target_os = "macos")]
     fn stop_macos(&self) -> ServiceResult<()> {
-        // For SMAppService agents, unregister stops the agent. We then
-        // re-register to keep it installed (stop != uninstall).
-        if smappservice_is_registered() {
-            smappservice_unregister(&self.config.binary_path)?;
-            info!("[service] Stopped SMAppService agent");
-            return Ok(());
-        }
-
-        // Legacy launchctl path
+        // Use launchctl bootout to stop the running daemon process.
+        // This works for both SMAppService-registered and legacy agents.
+        // Crucially, we do NOT call smappservice_unregister() here —
+        // unregister both stops and removes the registration, making
+        // is_installed() return false and preventing auto-start at login.
+        // stop() should only stop the process, not remove the service.
         runt_workspace::launchd_stop().map_err(ServiceError::StopFailed)?;
 
         info!("[service] Stopped launchd service");
@@ -1104,16 +1093,27 @@ fn windows_startup_path() -> PathBuf {
 /// Get the path to the service configuration file.
 /// Used by doctor command for diagnostics.
 ///
-/// On macOS, returns the in-bundle plist path if SMAppService is active,
-/// otherwise the legacy `~/Library/LaunchAgents/` path.
+/// On macOS, checks whether the service is registered via SMAppService
+/// (by querying its status) and returns the in-bundle plist path if so.
+/// Otherwise returns the legacy `~/Library/LaunchAgents/` path.
 pub fn service_config_path() -> PathBuf {
     #[cfg(target_os = "macos")]
     {
-        // If the current binary is in an app bundle on macOS 13+, return
-        // the in-bundle plist path
-        if let Ok(exe) = std::env::current_exe() {
-            if should_use_smappservice(&exe) {
+        // Check if SMAppService is actually registered (not just whether
+        // we *could* use it). This avoids misreporting the plist location
+        // when the installed service is still legacy.
+        if smappservice_is_registered() {
+            if let Ok(exe) = std::env::current_exe() {
                 if let Some(bundle_root) = app_bundle_root(&exe) {
+                    return bundle_root
+                        .join("Contents/Library/LaunchAgents")
+                        .join(smappservice_plist_filename());
+                }
+            }
+            // If we can't determine the bundle root, check the plist path
+            // recorded by runt-workspace (it parses the installed plist).
+            if let Some(binary) = runt_workspace::plist_binary_path() {
+                if let Some(bundle_root) = app_bundle_root(&binary) {
                     return bundle_root
                         .join("Contents/Library/LaunchAgents")
                         .join(smappservice_plist_filename());
