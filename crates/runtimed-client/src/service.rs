@@ -174,6 +174,37 @@ impl ServiceManager {
             return Err(ServiceError::BinaryNotFound(source_binary.clone()));
         }
 
+        // macOS 13+: Use SMAppService for in-bundle binaries (preferred).
+        // The plist must already be in the signed bundle at build time.
+        // On success, remove the legacy plist to avoid dual-registration
+        // (which would let the daemon start even when Login Items is disabled).
+        #[cfg(target_os = "macos")]
+        if should_use_smappservice(source_binary) {
+            self.config.binary_path = source_binary.clone();
+            info!(
+                "[service] Using SMAppService for in-bundle binary at {:?}",
+                self.config.binary_path
+            );
+            Self::cleanup_legacy_binary();
+
+            match smappservice_register() {
+                Ok(()) => {
+                    // Remove legacy plist to avoid dual-registration
+                    self.remove_legacy_plist();
+                    info!("[service] Service installed via SMAppService");
+                    return Ok(());
+                }
+                Err(e) => {
+                    // SMAppService failed (e.g. unsigned dev build) — fall
+                    // through to legacy plist registration
+                    info!(
+                        "[service] SMAppService failed ({}), falling back to legacy plist",
+                        e
+                    );
+                }
+            }
+        }
+
         if Self::is_in_app_bundle(source_binary) {
             // Source is inside an app bundle — point the plist directly at it.
             self.config.binary_path = source_binary.clone();
@@ -190,23 +221,8 @@ impl ServiceManager {
             self.atomic_copy_binary(source_binary)?;
         }
 
-        // Always write the legacy plist — launchctl start/stop depend on it
+        // Legacy plist registration
         self.create_service_config()?;
-
-        // macOS 13+: Additionally register via SMAppService for Login Items
-        // visibility and automatic cleanup on app deletion. Best-effort:
-        // if the bundle is read-only (e.g. running from DMG), we skip
-        // SMAppService and rely on the legacy plist alone.
-        #[cfg(target_os = "macos")]
-        if should_use_smappservice(source_binary) {
-            match smappservice_register(source_binary, &self.config.log_path) {
-                Ok(()) => info!("[service] Additionally registered via SMAppService"),
-                Err(e) => info!(
-                    "[service] SMAppService registration skipped ({}), legacy plist is active",
-                    e
-                ),
-            }
-        }
 
         info!("[service] Service installed successfully");
         Ok(())
@@ -274,7 +290,7 @@ impl ServiceManager {
         // macOS: Unregister SMAppService agent if registered
         #[cfg(target_os = "macos")]
         if smappservice_is_registered() {
-            smappservice_unregister(&self.config.binary_path)?;
+            smappservice_unregister()?;
         }
 
         // Remove legacy service configuration (plist / systemd / windows)
@@ -315,8 +331,7 @@ impl ServiceManager {
     ///
     /// This is used when the notebook app detects a version mismatch between
     /// the running daemon and the bundled version. On macOS 13+ with in-bundle
-    /// binaries, additionally re-registers via SMAppService. The legacy plist
-    /// is always updated to keep launchctl start/stop working.
+    /// binaries, re-registers via SMAppService then kickstarts.
     pub fn upgrade(&mut self, source_binary: &PathBuf) -> ServiceResult<()> {
         if !source_binary.exists() {
             return Err(ServiceError::BinaryNotFound(source_binary.clone()));
@@ -327,32 +342,43 @@ impl ServiceManager {
         // Stop the running daemon (ignore errors - may not be running)
         self.stop().ok();
 
+        // macOS 13+: Use SMAppService for in-bundle binaries
+        #[cfg(target_os = "macos")]
+        if should_use_smappservice(source_binary) {
+            self.config.binary_path = source_binary.clone();
+            Self::cleanup_legacy_binary();
+
+            match smappservice_register() {
+                Ok(()) => {
+                    self.remove_legacy_plist();
+                    // Kickstart the agent (SMAppService doesn't auto-start
+                    // on re-register if it was stopped)
+                    runt_workspace::launchd_kickstart().map_err(ServiceError::StartFailed)?;
+                    info!("[service] Upgrade via SMAppService completed");
+                    return Ok(());
+                }
+                Err(e) => {
+                    info!(
+                        "[service] SMAppService failed ({}), falling back to legacy",
+                        e
+                    );
+                }
+            }
+        }
+
         if Self::is_in_app_bundle(source_binary) {
-            // Source is inside an app bundle — point the plist directly at it.
             self.config.binary_path = source_binary.clone();
             info!("[service] In-bundle binary, skipping copy");
             Self::cleanup_legacy_binary();
         } else {
-            // Standalone binary (Linux, Windows, edge cases) — atomically replace.
             self.atomic_copy_binary(source_binary)?;
         }
 
-        // Always recreate the legacy plist for launchctl start/stop
+        // Legacy plist registration
         self.create_service_config()?;
         info!("[service] Updated service config");
 
-        // macOS 13+: Additionally re-register via SMAppService (best-effort)
-        #[cfg(target_os = "macos")]
-        if should_use_smappservice(source_binary) {
-            match smappservice_register(source_binary, &self.config.log_path) {
-                Ok(()) => info!("[service] Re-registered via SMAppService"),
-                Err(e) => info!("[service] SMAppService re-registration skipped ({})", e),
-            }
-        }
-
-        // Use launchd_start() which always does bootout+bootstrap, not
-        // start() which uses ensure_loaded (a no-op if KeepAlive already
-        // restarted the old binary during the stop→copy window).
+        // Use launchd_start() which always does bootout+bootstrap
         #[cfg(target_os = "macos")]
         runt_workspace::launchd_start().map_err(ServiceError::StartFailed)?;
 
@@ -366,6 +392,25 @@ impl ServiceManager {
     /// Check whether a path is inside a macOS `.app` bundle.
     fn is_in_app_bundle(path: &Path) -> bool {
         path.to_string_lossy().contains(".app/Contents/MacOS/")
+    }
+
+    /// Remove the legacy plist from `~/Library/LaunchAgents/`.
+    ///
+    /// Best-effort: called after successful SMAppService registration to avoid
+    /// dual-registration. If both the legacy plist and SMAppService are active,
+    /// disabling Login Items in System Settings won't actually stop auto-start.
+    #[cfg(target_os = "macos")]
+    fn remove_legacy_plist(&self) {
+        // Stop the legacy launchd registration if loaded
+        runt_workspace::launchd_stop().ok();
+
+        let path = plist_path();
+        if path.exists() {
+            match std::fs::remove_file(&path) {
+                Ok(()) => info!("[service] Removed legacy plist at {:?}", path),
+                Err(e) => info!("[service] Could not remove legacy plist {:?}: {}", path, e),
+            }
+        }
     }
 
     /// Remove the legacy standalone binary from `~/.local/share/runt/bin/`.
@@ -606,12 +651,19 @@ impl ServiceManager {
 
     #[cfg(target_os = "macos")]
     fn start_macos(&self) -> ServiceResult<()> {
-        // SMAppService-registered agents are managed by the system — the
-        // agent starts automatically at login and after crashes. We still
-        // use launchctl to ensure the service is loaded for immediate start.
-        // We do NOT call smappservice_register() here because start() may
-        // be called from `runt` (the CLI), whose current_exe is different
-        // from the daemon binary.
+        // If SMAppService is registered, use kickstart (works without a
+        // legacy plist in ~/Library/LaunchAgents/).
+        if smappservice_is_registered() {
+            if runt_workspace::launchd_is_loaded().unwrap_or(false) {
+                info!("[service] SMAppService agent already loaded");
+                return Ok(());
+            }
+            runt_workspace::launchd_kickstart().map_err(ServiceError::StartFailed)?;
+            info!("[service] Started SMAppService agent via kickstart");
+            return Ok(());
+        }
+
+        // Legacy path: bootstrap from ~/Library/LaunchAgents/ plist
         let bootstrapped =
             runt_workspace::launchd_ensure_loaded().map_err(ServiceError::StartFailed)?;
 
@@ -873,119 +925,23 @@ fn smappservice_plist_filename() -> String {
     format!("{}.plist", daemon_launchd_label())
 }
 
-/// Generate the plist content for SMAppService registration.
+/// Register the launch agent via SMAppService.
 ///
-/// Unlike the legacy plist, this uses `BundleProgram` (a bundle-relative path)
-/// instead of `ProgramArguments` with an absolute path. `BundleProgram` is
-/// required by SMAppService and specifies the executable relative to the
-/// bundle root (e.g. `Contents/MacOS/runtimed`).
+/// The plist must already exist inside the app bundle at
+/// `Contents/Library/LaunchAgents/<label>.plist` — it is generated at
+/// build time by `cargo xtask build-app` and signed with the bundle.
+/// This function only calls `SMAppService.agent(plistName:).register()`.
 #[cfg(target_os = "macos")]
-fn generate_smappservice_plist(
-    bundle_program: &str,
-    log_path: &Path,
-) -> Result<String, ServiceError> {
-    let home = dirs::home_dir().ok_or_else(|| {
-        ServiceError::InstallFailed("Cannot determine home directory for service install".into())
-    })?;
-    let home_str = home.to_string_lossy();
-    let user = std::env::var("USER").unwrap_or_else(|_| "unknown".into());
-
-    let log_level = match runt_workspace::build_channel() {
-        runt_workspace::BuildChannel::Nightly => {
-            "info,notebook_sync=debug,runtimed::notebook_sync_server=debug"
-        }
-        runt_workspace::BuildChannel::Stable => "warn",
-    };
-
-    Ok(format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>{label}</string>
-    <key>BundleProgram</key>
-    <string>{bundle_program}</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>{bundle_program}</string>
-        <string>--log-level</string>
-        <string>{log_level}</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <dict>
-        <key>Crashed</key>
-        <true/>
-    </dict>
-    <key>StandardOutPath</key>
-    <string>{log}</string>
-    <key>StandardErrorPath</key>
-    <string>{log}</string>
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>HOME</key>
-        <string>{home}</string>
-        <key>USER</key>
-        <string>{user}</string>
-        <key>PATH</key>
-        <string>{home}/.local/bin:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
-    </dict>
-</dict>
-</plist>
-"#,
-        label = daemon_launchd_label(),
-        bundle_program = bundle_program,
-        log_level = log_level,
-        log = log_path.display(),
-        home = home_str,
-        user = user,
-    ))
-}
-
-/// Write the SMAppService plist into the app bundle and register it.
-///
-/// The plist is placed at `<bundle>/Contents/Library/LaunchAgents/<label>.plist`.
-/// Then `SMAppService.agent(plistName:).register()` is called to register the
-/// agent with the system.
-#[cfg(target_os = "macos")]
-fn smappservice_register(binary: &Path, log_path: &Path) -> ServiceResult<()> {
+fn smappservice_register() -> ServiceResult<()> {
     use smappservice_rs::{AppService, ServiceType};
 
-    let bundle_root = app_bundle_root(binary)
-        .ok_or_else(|| ServiceError::InstallFailed("Cannot determine app bundle root".into()))?;
-
-    // Compute bundle-relative path: e.g. "Contents/MacOS/runtimed"
-    let binary_str = binary.to_string_lossy();
-    let bundle_root_str = bundle_root.to_string_lossy();
-    let bundle_program = binary_str
-        .strip_prefix(&*bundle_root_str)
-        .and_then(|s| s.strip_prefix('/'))
-        .ok_or_else(|| {
-            ServiceError::InstallFailed(format!(
-                "Binary {:?} is not inside bundle {:?}",
-                binary, bundle_root
-            ))
-        })?;
-
-    let plist_content = generate_smappservice_plist(bundle_program, log_path)?;
-
-    // Write plist into the bundle at Contents/Library/LaunchAgents/
-    let launch_agents_dir = bundle_root.join("Contents/Library/LaunchAgents");
-    std::fs::create_dir_all(&launch_agents_dir)?;
-
     let plist_filename = smappservice_plist_filename();
-    let plist_path = launch_agents_dir.join(&plist_filename);
-    std::fs::write(&plist_path, plist_content)?;
-    info!("[service] Wrote SMAppService plist to {:?}", plist_path);
-
-    // Register via SMAppService
     let service = AppService::new(ServiceType::Agent {
         plist_name: &plist_filename,
     });
 
-    // Unregister first to handle upgrades (plist content may have changed)
+    // Unregister first to handle upgrades (plist content may have changed
+    // between app versions). Best-effort — may fail if not registered.
     let _ = service.unregister();
 
     service
@@ -997,8 +953,11 @@ fn smappservice_register(binary: &Path, log_path: &Path) -> ServiceResult<()> {
 }
 
 /// Unregister the SMAppService agent.
+///
+/// Does not modify the plist inside the app bundle — that is part of the
+/// signed bundle and should not be touched at runtime.
 #[cfg(target_os = "macos")]
-fn smappservice_unregister(binary: &Path) -> ServiceResult<()> {
+fn smappservice_unregister() -> ServiceResult<()> {
     use smappservice_rs::{AppService, ServiceType};
 
     let plist_filename = smappservice_plist_filename();
@@ -1011,18 +970,6 @@ fn smappservice_unregister(binary: &Path) -> ServiceResult<()> {
         .map_err(|e| ServiceError::StopFailed(format!("SMAppService unregister failed: {e}")))?;
 
     info!("[service] Unregistered agent via SMAppService");
-
-    // Clean up the plist from the bundle
-    if let Some(bundle_root) = app_bundle_root(binary) {
-        let plist_path = bundle_root
-            .join("Contents/Library/LaunchAgents")
-            .join(&plist_filename);
-        if plist_path.exists() {
-            std::fs::remove_file(&plist_path)?;
-            info!("[service] Removed SMAppService plist {:?}", plist_path);
-        }
-    }
-
     Ok(())
 }
 
@@ -1181,32 +1128,18 @@ mod tests {
         assert_eq!(app_bundle_root(&binary), None);
     }
 
-    /// Verify SMAppService plist contains BundleProgram key
+    /// Verify SMAppService plist filename is channel-specific
     #[test]
     #[cfg(target_os = "macos")]
-    fn test_smappservice_plist_contains_bundle_program() {
-        let log_path = PathBuf::from("/tmp/test.log");
-        let content = generate_smappservice_plist("Contents/MacOS/runtimed", &log_path).unwrap();
-
+    fn test_smappservice_plist_filename() {
+        let filename = smappservice_plist_filename();
         assert!(
-            content.contains("<key>BundleProgram</key>"),
-            "SMAppService plist must contain BundleProgram key"
+            filename.ends_with(".plist"),
+            "Plist filename should end with .plist: {filename}"
         );
         assert!(
-            content.contains("<string>Contents/MacOS/runtimed</string>"),
-            "BundleProgram should be the bundle-relative path"
-        );
-        assert!(
-            content.contains("<key>HOME</key>"),
-            "Plist must contain HOME env var"
-        );
-        assert!(
-            content.contains("<key>Label</key>"),
-            "Plist must contain Label key"
-        );
-        assert!(
-            content.contains("<key>KeepAlive</key>"),
-            "Plist must contain KeepAlive key"
+            filename.contains("runtimed"),
+            "Plist filename should contain 'runtimed': {filename}"
         );
     }
 

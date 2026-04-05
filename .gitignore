@@ -25,6 +25,9 @@ Untitled*.ipynb
 # Local environment
 .env
 
+# Generated launch agent plists (built by xtask for Tauri bundling)
+crates/notebook/launch-agents/
+
 # OS-generated files
 .DS_Store
 .AppleDouble

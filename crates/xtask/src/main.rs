@@ -1070,12 +1070,18 @@ fn build_with_bundle(bundle: &str) {
     // Build runtimed daemon binary for bundling (release mode for distribution)
     build_runtimed_daemon(true);
 
+    // Generate the SMAppService launch agent plist for inclusion in the bundle.
+    // This must happen before `cargo tauri build` so the plist is signed with
+    // the app bundle (modifying Contents/ after signing invalidates the signature).
+    generate_launch_agent_plist();
+
     // Build frontend
     println!("Building frontend...");
     run_frontend_build(false);
 
     // Build Tauri app
     println!("Building Tauri app ({bundle} bundle)...");
+    let tauri_config = launch_agent_tauri_config();
     run_cmd(
         "cargo",
         &[
@@ -1084,11 +1090,112 @@ fn build_with_bundle(bundle: &str) {
             "--bundles",
             bundle,
             "--config",
-            r#"{"build":{"beforeBuildCommand":""}}"#,
+            &tauri_config,
         ],
     );
 
     println!("Build complete!");
+}
+
+/// Build a Tauri `--config` override JSON that:
+/// 1. Disables `beforeBuildCommand` (we already built the frontend)
+/// 2. Includes the launch agent plist in the macOS bundle
+///
+/// The plist is included at `Contents/Library/LaunchAgents/<label>.plist`
+/// so SMAppService can find it. The files map is channel-specific since
+/// the label differs between stable and nightly.
+fn launch_agent_tauri_config() -> String {
+    let label = runt_workspace::daemon_launchd_label();
+    let plist_filename = format!("{label}.plist");
+    let bundle_dest = format!("Library/LaunchAgents/{plist_filename}");
+    let source_path = format!("./launch-agents/{plist_filename}");
+
+    // Build the config JSON with serde_json to avoid escaping issues
+    let config = serde_json::json!({
+        "build": {
+            "beforeBuildCommand": ""
+        },
+        "bundle": {
+            "macOS": {
+                "files": {
+                    bundle_dest: source_path
+                }
+            }
+        }
+    });
+
+    config.to_string()
+}
+
+/// Generate the launch agent plist for SMAppService registration.
+///
+/// On macOS 13+, SMAppService looks for the plist inside the app bundle at
+/// `Contents/Library/LaunchAgents/<label>.plist`. This function generates the
+/// plist with channel-specific values and writes it to `crates/notebook/launch-agents/`
+/// where `tauri.conf.json` picks it up via `bundle.macOS.files`.
+///
+/// The plist uses `BundleProgram` (bundle-relative path) instead of absolute
+/// `ProgramArguments`, as required by SMAppService.
+#[allow(clippy::expect_used)] // xtask is a dev tool; panics with context are fine
+fn generate_launch_agent_plist() {
+    let label = runt_workspace::daemon_launchd_label();
+    let daemon_binary = runt_workspace::daemon_binary_basename();
+
+    let log_level = match runt_workspace::build_channel() {
+        runt_workspace::BuildChannel::Nightly => {
+            "info,notebook_sync=debug,runtimed::notebook_sync_server=debug"
+        }
+        runt_workspace::BuildChannel::Stable => "warn",
+    };
+
+    // BundleProgram is relative to the .app bundle root
+    let bundle_program = format!("Contents/MacOS/{daemon_binary}");
+
+    // Note: StandardOutPath/StandardErrorPath are omitted because they
+    // require absolute paths and we can't know HOME at build time. The
+    // daemon manages its own log file internally and falls back to /tmp
+    // if HOME is unavailable.
+
+    let plist_content = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{label}</string>
+    <key>BundleProgram</key>
+    <string>{bundle_program}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{bundle_program}</string>
+        <string>--log-level</string>
+        <string>{log_level}</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>Crashed</key>
+        <true/>
+    </dict>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+    </dict>
+</dict>
+</plist>
+"#,
+    );
+
+    let output_dir = Path::new("crates/notebook/launch-agents");
+    fs::create_dir_all(output_dir).expect("Failed to create launch-agents directory");
+
+    let plist_filename = format!("{label}.plist");
+    let output_path = output_dir.join(&plist_filename);
+    fs::write(&output_path, plist_content).expect("Failed to write launch agent plist");
+
+    println!("Generated launch agent plist: {}", output_path.display());
 }
 
 /// Build runtimed and install it into the running launchd/systemd service.
