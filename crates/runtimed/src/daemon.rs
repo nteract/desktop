@@ -237,13 +237,29 @@ fn package_import_name(pkg: &str) -> Option<String> {
     let name = pkg
         .split("::")
         .last()?
-        .split(['<', '>', '=', '!', '~', ' ', '['])
+        .split([
+            '<', '>', '=', '!', '~', ' ', '[', '"', '\'', '\\', '\n', '\r',
+        ])
         .next()?
         .trim();
     if name.is_empty() {
         return None;
     }
-    Some(name.replace('-', "_"))
+    let candidate = name.replace('-', "_");
+    if candidate.split('.').all(is_valid_python_identifier) {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
+fn is_valid_python_identifier(segment: &str) -> bool {
+    let mut chars = segment.chars();
+    match chars.next() {
+        Some(first) if first == '_' || first.is_ascii_alphabetic() => {}
+        _ => return false,
+    }
+    chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
 }
 
 fn build_python_warmup_script(extra_packages: &[String], include_conda_runtime: bool) -> String {
@@ -273,21 +289,16 @@ import zmq
     modules.dedup();
 
     if !modules.is_empty() {
-        script.push('\n');
-        script.push_str("for module_name in [");
-        for (index, module) in modules.iter().enumerate() {
-            if index > 0 {
-                script.push_str(", ");
-            }
-            script.push('"');
-            script.push_str(module);
-            script.push('"');
+        if let Ok(modules_json) = serde_json::to_string(&modules) {
+            script.push('\n');
+            script.push_str("for module_name in ");
+            script.push_str(&modules_json);
+            script.push_str("]:\n");
+            script.push_str("    try:\n");
+            script.push_str("        __import__(module_name)\n");
+            script.push_str("    except Exception:\n");
+            script.push_str("        pass\n");
         }
-        script.push_str("]:\n");
-        script.push_str("    try:\n");
-        script.push_str("        __import__(module_name)\n");
-        script.push_str("    except Exception:\n");
-        script.push_str("        pass\n");
     }
 
     script.push_str(
@@ -349,7 +360,7 @@ impl Pool {
         self.available = kept;
         if !removed_paths.is_empty() {
             info!(
-                "[runtimed] Pruned {} stale environments",
+                "[runtimed] Pruned {} stale/invalid environments",
                 removed_paths.len()
             );
         }
@@ -2004,7 +2015,10 @@ impl Daemon {
                 };
 
                 match env {
-                    Some(env) => Response::Env { env },
+                    Some(env) => {
+                        self.update_pool_doc().await;
+                        Response::Env { env }
+                    }
                     None => {
                         debug!("[runtimed] Pool miss for {}", env_type);
                         Response::Empty
