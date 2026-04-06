@@ -34,6 +34,19 @@ pub const CONTENT_PRIORITY: &[&str] = &[
     "text/plain",
 ];
 
+/// MIME prefixes that have dedicated synthesizers producing `text/llm+plain`.
+/// When any MIME in the manifest starts with one of these, run synthesis
+/// before the text priority walk.
+const SYNTHESIS_PREFIXES: &[&str] = &[
+    "application/vnd.plotly.v",
+    "application/vnd.vegalite.v",
+    "application/vnd.vega.v",
+    "application/vnd.jupyter.widget-view",
+];
+
+/// Exact MIME matches that have dedicated synthesizers.
+const SYNTHESIS_EXACT: &[&str] = &["application/geo+json"];
+
 /// When `text/plain` exceeds this size, synthesize a truncated `text/llm+plain`.
 const LLM_TEXT_MAX_SIZE: usize = 4 * 1024;
 
@@ -53,6 +66,19 @@ pub struct ContentRefMeta<'a> {
     pub size: u64,
     /// Blob hash, if the content is stored in the blob store.
     pub blob_hash: Option<&'a str>,
+}
+
+/// Check if a manifest data map contains any MIME types with dedicated synthesizers.
+///
+/// These MIME types produce richer `text/llm+plain` than the generic `text/plain`
+/// repr, so synthesis should run before the text priority walk.
+pub fn has_synthesizable_mime(data_map: &serde_json::Map<String, Value>) -> bool {
+    data_map.keys().any(|mime| {
+        SYNTHESIS_EXACT.contains(&mime.as_str())
+            || SYNTHESIS_PREFIXES
+                .iter()
+                .any(|prefix| mime.starts_with(prefix))
+    })
 }
 
 /// Extract metadata from a ContentRef Value without resolving the content.
@@ -515,37 +541,13 @@ async fn resolve_display_for_llm(
     let data_map = manifest.get("data")?.as_object()?;
 
     let mut output_data: HashMap<String, DataValue> = HashMap::new();
+    let prefer_synthesis = has_synthesizable_mime(data_map);
 
-    // Phase 1: Try to resolve the highest-priority text MIME that exists.
-    let mut found_priority = false;
-    for &mime in CONTENT_PRIORITY {
-        let Some(content_ref) = data_map.get(mime) else {
-            continue;
-        };
-        let Some(content) =
-            resolve_content_ref(content_ref, blob_base_url, blob_store_path, Some(mime)).await
-        else {
-            continue; // Resolution failed, try next priority.
-        };
-
-        // For text/plain: if too large, synthesize truncated text/llm+plain.
-        if mime == "text/plain" {
-            if let DataValue::Text(ref text) = content {
-                if text.len() > LLM_TEXT_MAX_SIZE {
-                    let truncated = truncate_head_tail(text, LLM_TEXT_SIDE_SIZE);
-                    output_data.insert("text/llm+plain".to_string(), DataValue::Text(truncated));
-                }
-            }
-        }
-
-        output_data.insert(mime.to_string(), content);
-        found_priority = true;
-        break;
-    }
-
-    // Phase 2: No priority MIME found — synthesize text/llm+plain from metadata.
-    if !found_priority {
-        // 2a: Resolve JSON types for viz summarization.
+    // Phase 1: If the manifest has MIMEs with dedicated synthesizers, run
+    // synthesis first. These produce text/llm+plain that's more useful than
+    // a generic text/plain repr (e.g., "Scatter chart: x vs y" vs "alt.Chart(...)").
+    if prefer_synthesis {
+        // 1a: Resolve JSON types for viz summarization.
         for (mime, content_ref) in data_map {
             if mime_kind(mime) == MimeKind::Json {
                 if let Some(content) =
@@ -558,7 +560,7 @@ async fn resolve_display_for_llm(
         }
         synthesize_llm_plain_for_viz(&mut output_data);
 
-        // 2b: Widget synthesis (if viz didn't produce text/llm+plain).
+        // 1b: Widget synthesis (if viz didn't produce text/llm+plain).
         if !output_data.contains_key("text/llm+plain") {
             if let Some(widget_ref) = data_map.get(WIDGET_VIEW_MIME) {
                 if !output_data.contains_key(WIDGET_VIEW_MIME) {
@@ -579,7 +581,7 @@ async fn resolve_display_for_llm(
             }
         }
 
-        // 2c: Large JSON summary (if still no text/llm+plain).
+        // 1c: Large JSON summary (if still no text/llm+plain).
         if !output_data.contains_key("text/llm+plain") {
             if let Some(DataValue::Json(ref val)) = output_data.get("application/json") {
                 if let Some(summary) = repr_llm::summarize_json(val) {
@@ -587,37 +589,67 @@ async fn resolve_display_for_llm(
                 }
             }
         }
+    }
 
-        // 2d: Describe remaining MIMEs from manifest metadata (no fetches).
-        if !output_data.contains_key("text/llm+plain") {
-            let mut descriptions: Vec<String> = Vec::new();
+    // Phase 2: Walk content priority order for the best text representation.
+    // If phase 1 produced text/llm+plain, it wins at position 1.
+    // If synthesis was skipped or failed, this picks the first available text MIME.
+    if !output_data.contains_key("text/llm+plain") {
+        for &mime in CONTENT_PRIORITY {
+            let Some(content_ref) = data_map.get(mime) else {
+                continue;
+            };
+            let Some(content) =
+                resolve_content_ref(content_ref, blob_base_url, blob_store_path, Some(mime)).await
+            else {
+                continue; // Resolution failed, try next priority.
+            };
 
-            for (mime, content_ref) in data_map {
-                // Skip JSON (already resolved above) and widget view.
-                if mime_kind(mime) == MimeKind::Json || mime == WIDGET_VIEW_MIME {
-                    continue;
-                }
-
-                let meta = content_ref_meta(content_ref);
-                let label = mime_label(mime);
-                let kb = meta.size / 1024;
-                let mut desc = format!("{label} output ({mime}, {kb} KB)");
-
-                // Append blob URL so the LLM can fetch if it wants.
-                if let Some(hash) = meta.blob_hash {
-                    if let Some(base_url) = blob_base_url {
-                        desc.push_str(&format!("\n{}/blob/{}", base_url, hash));
+            // For text/plain: if too large, synthesize truncated text/llm+plain.
+            if mime == "text/plain" {
+                if let DataValue::Text(ref text) = content {
+                    if text.len() > LLM_TEXT_MAX_SIZE {
+                        let truncated = truncate_head_tail(text, LLM_TEXT_SIDE_SIZE);
+                        output_data
+                            .insert("text/llm+plain".to_string(), DataValue::Text(truncated));
                     }
                 }
-                descriptions.push(desc);
             }
 
-            if !descriptions.is_empty() {
-                output_data.insert(
-                    "text/llm+plain".to_string(),
-                    DataValue::Text(descriptions.join("\n")),
-                );
+            output_data.insert(mime.to_string(), content);
+            break;
+        }
+    }
+
+    // Phase 3: No synthesis and no priority MIME — describe from manifest metadata.
+    if output_data.is_empty() {
+        let mut descriptions: Vec<String> = Vec::new();
+
+        for (mime, content_ref) in data_map {
+            // Skip JSON (may have been resolved in phase 1 without producing synthesis).
+            if mime_kind(mime) == MimeKind::Json || mime == WIDGET_VIEW_MIME {
+                continue;
             }
+
+            let meta = content_ref_meta(content_ref);
+            let label = mime_label(mime);
+            let kb = meta.size / 1024;
+            let mut desc = format!("{label} output ({mime}, {kb} KB)");
+
+            // Append blob URL so the LLM can fetch if it wants.
+            if let Some(hash) = meta.blob_hash {
+                if let Some(base_url) = blob_base_url {
+                    desc.push_str(&format!("\n{}/blob/{}", base_url, hash));
+                }
+            }
+            descriptions.push(desc);
+        }
+
+        if !descriptions.is_empty() {
+            output_data.insert(
+                "text/llm+plain".to_string(),
+                DataValue::Text(descriptions.join("\n")),
+            );
         }
     }
 
@@ -1231,6 +1263,80 @@ mod tests {
         assert_eq!(CONTENT_PRIORITY[3], "text/plain");
     }
 
+    // ── has_synthesizable_mime ───────────────────────────────────
+
+    #[test]
+    fn synthesizable_plotly() {
+        let data = serde_json::json!({
+            "application/vnd.plotly.v1+json": inline_ref("{}"),
+            "text/plain": inline_ref("Figure()"),
+        });
+        let Some(map) = data.as_object() else {
+            panic!("should be object");
+        };
+        assert!(has_synthesizable_mime(map));
+    }
+
+    #[test]
+    fn synthesizable_vegalite() {
+        let data = serde_json::json!({
+            "application/vnd.vegalite.v5+json": inline_ref("{}"),
+            "text/plain": inline_ref("alt.Chart(...)"),
+        });
+        let Some(map) = data.as_object() else {
+            panic!("should be object");
+        };
+        assert!(has_synthesizable_mime(map));
+    }
+
+    #[test]
+    fn synthesizable_widget() {
+        let data = serde_json::json!({
+            "application/vnd.jupyter.widget-view+json": inline_ref("{}"),
+            "text/plain": inline_ref("IntSlider(...)"),
+        });
+        let Some(map) = data.as_object() else {
+            panic!("should be object");
+        };
+        assert!(has_synthesizable_mime(map));
+    }
+
+    #[test]
+    fn synthesizable_geojson() {
+        let data = serde_json::json!({
+            "application/geo+json": inline_ref("{}"),
+            "text/plain": inline_ref("<GeoJSON>"),
+        });
+        let Some(map) = data.as_object() else {
+            panic!("should be object");
+        };
+        assert!(has_synthesizable_mime(map));
+    }
+
+    #[test]
+    fn not_synthesizable_plain_only() {
+        let data = serde_json::json!({
+            "text/plain": inline_ref("hello"),
+            "image/png": blob_ref("abc", 50_000),
+        });
+        let Some(map) = data.as_object() else {
+            panic!("should be object");
+        };
+        assert!(!has_synthesizable_mime(map));
+    }
+
+    #[test]
+    fn not_synthesizable_html_only() {
+        let data = serde_json::json!({
+            "text/html": inline_ref("<b>bold</b>"),
+            "text/plain": inline_ref("bold"),
+        });
+        let Some(map) = data.as_object() else {
+            panic!("should be object");
+        };
+        assert!(!has_synthesizable_mime(map));
+    }
+
     // ── resolve_display_for_llm (async) ─────────────────────────
 
     /// Helper to build a display_data manifest with inline data entries.
@@ -1381,13 +1487,122 @@ mod tests {
         assert!(!data.contains_key("image/svg+xml"));
 
         // text/llm+plain synthesized from metadata
-        let llm = match data.get("text/llm+plain") {
-            Some(DataValue::Text(s)) => s.clone(),
-            _ => panic!("expected text/llm+plain synthesis"),
+        let Some(DataValue::Text(ref llm)) = data.get("text/llm+plain") else {
+            panic!("expected text/llm+plain synthesis");
         };
         assert!(llm.contains("image/png"));
         assert!(llm.contains("45 KB") || llm.contains("43 KB")); // 45000/1024 ≈ 43
         assert!(llm.contains("http://localhost:9999/blob/png123"));
+    }
+
+    #[tokio::test]
+    async fn llm_synthesis_wins_over_text_plain_for_viz() {
+        // Altair-style output: vegalite JSON + text/plain
+        // Synthesis should produce text/llm+plain from the viz spec,
+        // NOT short-circuit on text/plain.
+        let manifest = make_display_manifest(json!({
+            "application/vnd.vegalite.v5+json": inline_ref(r#"{"mark":"point","encoding":{"x":{"field":"Horsepower","type":"quantitative"},"y":{"field":"Miles_per_Gallon","type":"quantitative"}}}"#),
+            "text/plain": inline_ref("alt.Chart(...)"),
+        }));
+        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+            panic!("resolve should succeed");
+        };
+        let Some(data) = output.data else {
+            panic!("output should have data");
+        };
+
+        // text/llm+plain should exist from viz synthesis
+        let Some(DataValue::Text(ref llm)) = data.get("text/llm+plain") else {
+            panic!("expected text/llm+plain from viz synthesis");
+        };
+        assert!(llm.contains("Vega-Lite"));
+        // text/plain should NOT have been resolved (synthesis handled it)
+        assert!(!data.contains_key("text/plain"));
+    }
+
+    #[tokio::test]
+    async fn llm_synthesis_wins_over_text_plain_for_plotly() {
+        let manifest = make_display_manifest(json!({
+            "application/vnd.plotly.v1+json": inline_ref(r#"{"data":[{"type":"bar","x":["A","B"],"y":[1,2]}],"layout":{"title":"Test"}}"#),
+            "text/plain": inline_ref("Figure()"),
+        }));
+        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+            panic!("resolve should succeed");
+        };
+        let Some(data) = output.data else {
+            panic!("output should have data");
+        };
+
+        let Some(DataValue::Text(ref llm)) = data.get("text/llm+plain") else {
+            panic!("expected text/llm+plain from Plotly synthesis");
+        };
+        assert!(llm.contains("Plotly"));
+        assert!(!data.contains_key("text/plain"));
+    }
+
+    #[tokio::test]
+    async fn llm_synthesis_wins_over_text_plain_for_geojson() {
+        let manifest = make_display_manifest(json!({
+            "application/geo+json": inline_ref(r#"{"type":"FeatureCollection","features":[{"type":"Feature","geometry":{"type":"Point","coordinates":[0,0]},"properties":{"name":"origin"}}]}"#),
+            "text/plain": inline_ref("<GeoJSON object>"),
+        }));
+        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+            panic!("resolve should succeed");
+        };
+        let Some(data) = output.data else {
+            panic!("output should have data");
+        };
+
+        let Some(DataValue::Text(ref llm)) = data.get("text/llm+plain") else {
+            panic!("expected text/llm+plain from GeoJSON synthesis");
+        };
+        assert!(llm.contains("GeoJSON"));
+        assert!(!data.contains_key("text/plain"));
+    }
+
+    #[tokio::test]
+    async fn llm_no_synthesis_falls_through_to_priority() {
+        // Regular output without synthesizable MIMEs — priority walk works as before
+        let manifest = make_display_manifest(json!({
+            "text/html": inline_ref("<b>bold</b>"),
+            "text/plain": inline_ref("bold"),
+        }));
+        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+            panic!("resolve should succeed");
+        };
+        let Some(data) = output.data else {
+            panic!("output should have data");
+        };
+
+        // text/plain wins via priority walk (no synthesis triggered)
+        assert!(matches!(
+            data.get("text/plain"),
+            Some(DataValue::Text(s)) if s == "bold"
+        ));
+        assert!(!data.contains_key("text/llm+plain"));
+    }
+
+    #[tokio::test]
+    async fn llm_synthesis_failure_falls_through_to_priority() {
+        // Widget MIME present but no comms → synthesis produces nothing.
+        // Should fall through to text/plain via priority walk.
+        let manifest = make_display_manifest(json!({
+            "application/vnd.jupyter.widget-view+json": inline_ref(r#"{"model_id":"abc123"}"#),
+            "text/plain": inline_ref("IntSlider(value=42)"),
+        }));
+        // No comms passed → widget synthesis can't look up state
+        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+            panic!("resolve should succeed");
+        };
+        let Some(data) = output.data else {
+            panic!("output should have data");
+        };
+
+        // Synthesis didn't produce text/llm+plain (no comms), so priority walk ran
+        assert!(matches!(
+            data.get("text/plain"),
+            Some(DataValue::Text(s)) if s == "IntSlider(value=42)"
+        ));
     }
 
     #[tokio::test]
