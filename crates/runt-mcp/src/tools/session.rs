@@ -13,6 +13,42 @@ use crate::formatting;
 use crate::session::NotebookSession;
 use crate::NteractMcp;
 
+/// Resolve a user-provided path: expand ~ to home dir and resolve relative paths
+/// against the current working directory. The MCP server runs in the expected cwd,
+/// so relative paths are meaningful here (unlike the daemon, which may run as launchd).
+fn resolve_path(path: &str) -> String {
+    // Expand ~ using dirs::home_dir() (handles HOME on Unix, USERPROFILE on Windows)
+    let expanded = if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            home.join(rest).to_string_lossy().to_string()
+        } else {
+            path.to_string()
+        }
+    } else if let Some(rest) = path.strip_prefix("~\\") {
+        // Windows-style: ~\Documents\notebook.ipynb
+        if let Some(home) = dirs::home_dir() {
+            home.join(rest).to_string_lossy().to_string()
+        } else {
+            path.to_string()
+        }
+    } else if path == "~" {
+        dirs::home_dir()
+            .map(|h| h.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.to_string())
+    } else {
+        path.to_string()
+    };
+
+    let p = PathBuf::from(&expanded);
+    if p.is_relative() {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(&p).to_string_lossy().to_string())
+            .unwrap_or(expanded)
+    } else {
+        expanded
+    }
+}
+
 use notebook_protocol::protocol::{NotebookRequest, NotebookResponse};
 
 use super::{arg_str, tool_error, tool_success};
@@ -257,12 +293,8 @@ pub async fn open_notebook(
     let path = arg_str(request, "path")
         .ok_or_else(|| McpError::invalid_params("Missing required parameter: path", None))?;
 
-    // Resolve to absolute path for the daemon
-    let abs_path = if std::path::Path::new(path).is_absolute() {
-        PathBuf::from(path)
-    } else {
-        std::env::current_dir().unwrap_or_default().join(path)
-    };
+    // Resolve ~ and relative paths to absolute for the daemon
+    let abs_path = PathBuf::from(resolve_path(path));
 
     // Use connect_open which sends the OpenNotebook handshake —
     // the daemon loads the .ipynb from disk and creates a file-backed room.
@@ -318,7 +350,7 @@ pub async fn create_notebook(
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
     let runtime = arg_str(request, "runtime").unwrap_or("python");
-    let working_dir = arg_str(request, "working_dir").map(std::path::PathBuf::from);
+    let working_dir = arg_str(request, "working_dir").map(|s| PathBuf::from(resolve_path(s)));
 
     match notebook_sync::connect::connect_create(
         server.socket_path.clone(),
@@ -422,7 +454,7 @@ pub async fn save_notebook(
     server: &NteractMcp,
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
-    let path = arg_str(request, "path").map(|s| s.to_string());
+    let path = arg_str(request, "path").map(resolve_path);
 
     // Need both handle and the mutable notebook_id from the session (not the
     // handle's immutable connect-time ID) so that post-rekey saves report the
