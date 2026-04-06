@@ -102,18 +102,18 @@ pub async fn daemon_health_monitor(
                                 return EXIT_DAEMON_UPGRADED;
                             }
                             if current.pid != info.pid {
-                                // Same version, different PID — daemon restarted.
-                                // Transition to Reconnecting so we rejoin the notebook
-                                // session once the new daemon is fully ready.
+                                // Same version, different PID — daemon restarted but is
+                                // already reachable (this ping succeeded). Stay Connected
+                                // so tools aren't blocked, and rejoin the session inline.
                                 info!(
-                                    "Daemon restarted (same version {}, PID {} → {}), will rejoin session",
+                                    "Daemon restarted (same version {}, PID {} → {}), rejoining session",
                                     info.version, info.pid, current.pid
                                 );
-                                *state = DaemonState::Reconnecting {
-                                    since: Instant::now(),
-                                    attempt: 0,
-                                    last_info: Some(info.clone()),
+                                *state = DaemonState::Connected {
+                                    info: current.clone(),
                                 };
+                                drop(state);
+                                auto_rejoin_session(&socket_path, &session, &peer_label).await;
                             }
                         }
                     }
