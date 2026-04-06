@@ -197,6 +197,112 @@ struct Pool {
     failure_state: FailureState,
 }
 
+const MIN_WARM_BASES: usize = 2;
+
+fn uv_prewarmed_packages(extra: &[String]) -> Vec<String> {
+    let mut packages = vec![
+        "ipykernel".to_string(),
+        "ipywidgets".to_string(),
+        "anywidget".to_string(),
+        "nbformat".to_string(),
+        "uv".to_string(),
+    ];
+    packages.extend(extra.iter().cloned());
+    packages
+}
+
+fn conda_prewarmed_packages(extra: &[String]) -> Vec<String> {
+    let mut packages = vec![
+        "ipykernel".to_string(),
+        "ipywidgets".to_string(),
+        "anywidget".to_string(),
+        "nbformat".to_string(),
+    ];
+    packages.extend(extra.iter().cloned());
+    packages
+}
+
+fn pixi_prewarmed_packages(extra: &[String]) -> Vec<String> {
+    let mut packages = vec![
+        "ipykernel".to_string(),
+        "ipywidgets".to_string(),
+        "anywidget".to_string(),
+        "nbformat".to_string(),
+    ];
+    packages.extend(extra.iter().cloned());
+    packages
+}
+
+fn package_import_name(pkg: &str) -> Option<String> {
+    let name = pkg
+        .split("::")
+        .last()?
+        .split(['<', '>', '=', '!', '~', ' ', '['])
+        .next()?
+        .trim();
+    if name.is_empty() {
+        return None;
+    }
+    Some(name.replace('-', "_"))
+}
+
+fn build_python_warmup_script(extra_packages: &[String], include_conda_runtime: bool) -> String {
+    let mut script = r#"
+import ipykernel
+import IPython
+import ipywidgets
+import anywidget
+import nbformat
+"#
+    .to_string();
+
+    if include_conda_runtime {
+        script.push_str(
+            r#"
+import traitlets
+import zmq
+"#,
+        );
+    }
+
+    let mut modules = extra_packages
+        .iter()
+        .filter_map(|pkg| package_import_name(pkg))
+        .collect::<Vec<_>>();
+    modules.sort();
+    modules.dedup();
+
+    if !modules.is_empty() {
+        script.push('\n');
+        script.push_str("for module_name in [");
+        for (index, module) in modules.iter().enumerate() {
+            if index > 0 {
+                script.push_str(", ");
+            }
+            script.push('"');
+            script.push_str(module);
+            script.push('"');
+        }
+        script.push_str("]:\n");
+        script.push_str("    try:\n");
+        script.push_str("        __import__(module_name)\n");
+        script.push_str("    except Exception:\n");
+        script.push_str("        pass\n");
+    }
+
+    script.push_str(
+        r#"
+from ipykernel.kernelbase import Kernel
+from ipykernel.ipkernel import IPythonKernel
+"#,
+    );
+    if include_conda_runtime {
+        script.push_str("from ipykernel.comm import CommManager\n");
+    }
+    script.push_str("print(\"warmup complete\")\n");
+    script
+}
+
 impl Pool {
     fn new(target: usize, max_age_secs: u64) -> Self {
         Self {
@@ -208,18 +314,38 @@ impl Pool {
         }
     }
 
+    fn min_available(&self) -> usize {
+        self.target.min(MIN_WARM_BASES)
+    }
+
     /// Prune stale environments, returning paths that should be deleted from disk.
     fn prune_stale(&mut self) -> Vec<PathBuf> {
         let max_age = std::time::Duration::from_secs(self.max_age_secs);
         let mut removed_paths = Vec::new();
-        let mut kept = VecDeque::new();
+        let mut healthy = VecDeque::new();
         for entry in self.available.drain(..) {
-            if entry.created_at.elapsed() < max_age {
-                kept.push_back(entry);
+            if entry.env.venv_path.exists()
+                && entry.env.python_path.exists()
+                && entry.env.venv_path.join(".warmed").exists()
+            {
+                healthy.push_back(entry);
             } else {
                 removed_paths.push(entry.env.venv_path.clone());
             }
         }
+
+        let mut healthy_count = healthy.len();
+        let mut kept = VecDeque::new();
+        for entry in healthy {
+            let stale = entry.created_at.elapsed() >= max_age;
+            if stale && healthy_count > self.min_available() {
+                removed_paths.push(entry.env.venv_path.clone());
+                healthy_count -= 1;
+            } else {
+                kept.push_back(entry);
+            }
+        }
+
         self.available = kept;
         if !removed_paths.is_empty() {
             info!(
@@ -923,28 +1049,9 @@ impl Daemon {
             let settings = self.settings.read().await;
             let synced = settings.get_all();
 
-            let mut uv_pkgs = vec![
-                "ipykernel".to_string(),
-                "ipywidgets".to_string(),
-                "anywidget".to_string(),
-                "uv".to_string(),
-            ];
-            uv_pkgs.extend(synced.uv.default_packages.clone());
-
-            let mut conda_pkgs = vec![
-                "ipykernel".to_string(),
-                "ipywidgets".to_string(),
-                "anywidget".to_string(),
-            ];
-            conda_pkgs.extend(synced.conda.default_packages.clone());
-
-            let mut pixi_pkgs = vec![
-                "ipykernel".to_string(),
-                "ipywidgets".to_string(),
-                "anywidget".to_string(),
-                "nbformat".to_string(),
-            ];
-            pixi_pkgs.extend(synced.pixi.default_packages.clone());
+            let uv_pkgs = uv_prewarmed_packages(&synced.uv.default_packages);
+            let conda_pkgs = conda_prewarmed_packages(&synced.conda.default_packages);
+            let pixi_pkgs = pixi_prewarmed_packages(&synced.pixi.default_packages);
 
             (uv_pkgs, conda_pkgs, pixi_pkgs)
         };
@@ -1744,26 +1851,27 @@ impl Daemon {
                 return Some(e);
             }
 
-            // Pool empty — check if warming is in progress or can be triggered
-            let pool = self.uv_pool.lock().await;
-            let (_, warming) = pool.stats();
-            let can_retry = pool.should_retry();
-            drop(pool);
+            if self.config.uv_pool_size == 0 {
+                return None;
+            }
 
-            if warming == 0 {
-                if self.config.uv_pool_size == 0 {
-                    return None;
-                }
-                if can_retry {
-                    // Kick off creation (respects backoff)
-                    self.uv_pool.lock().await.mark_warming(1);
+            let (warming, can_retry, retry_in_secs) = {
+                let mut pool = self.uv_pool.lock().await;
+                let (_, warming) = pool.stats();
+                let can_retry = pool.should_retry();
+                let retry_in_secs = pool.retry_in_secs();
+
+                if warming == 0 && can_retry {
+                    pool.mark_warming(1);
                     let daemon = self.clone();
                     tokio::spawn(async move {
                         daemon.create_uv_env().await;
                     });
+                    (1, can_retry, retry_in_secs)
+                } else {
+                    (warming, can_retry, retry_in_secs)
                 }
-                // If in backoff, wait — the warming loop will retry when backoff expires
-            }
+            };
 
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
@@ -1771,12 +1879,21 @@ impl Daemon {
                 return None;
             }
 
+            let wait_for = if warming > 0 {
+                remaining
+            } else {
+                remaining.min(std::time::Duration::from_secs(retry_in_secs.max(1)))
+            };
+
             info!("[runtimed] UV pool empty, waiting for warming ({warming} in progress, retry ready: {can_retry})...");
 
             tokio::select! {
-                _ = tokio::time::sleep(remaining) => {
-                    warn!("[runtimed] Timed out waiting for UV pool env");
-                    return None;
+                _ = tokio::time::sleep(wait_for) => {
+                    if wait_for == remaining {
+                        warn!("[runtimed] Timed out waiting for UV pool env");
+                        return None;
+                    }
+                    continue;
                 }
                 _ = self.pool_ready_uv.notified() => continue,
                 _ = self.shutdown_notify.notified() => return None,
@@ -1807,26 +1924,27 @@ impl Daemon {
                 return Some(e);
             }
 
-            // Pool empty — check if warming is in progress or can be triggered
-            let pool = self.conda_pool.lock().await;
-            let (_, warming) = pool.stats();
-            let can_retry = pool.should_retry();
-            drop(pool);
+            if self.config.conda_pool_size == 0 {
+                return None;
+            }
 
-            if warming == 0 {
-                if self.config.conda_pool_size == 0 {
-                    return None;
-                }
-                if can_retry {
-                    // Kick off creation (respects backoff)
-                    self.conda_pool.lock().await.mark_warming(1);
+            let (warming, can_retry, retry_in_secs) = {
+                let mut pool = self.conda_pool.lock().await;
+                let (_, warming) = pool.stats();
+                let can_retry = pool.should_retry();
+                let retry_in_secs = pool.retry_in_secs();
+
+                if warming == 0 && can_retry {
+                    pool.mark_warming(1);
                     let daemon = self.clone();
                     tokio::spawn(async move {
                         daemon.create_conda_env().await;
                     });
+                    (1, can_retry, retry_in_secs)
+                } else {
+                    (warming, can_retry, retry_in_secs)
                 }
-                // If in backoff, wait — the warming loop will retry when backoff expires
-            }
+            };
 
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
@@ -1834,12 +1952,21 @@ impl Daemon {
                 return None;
             }
 
+            let wait_for = if warming > 0 {
+                remaining
+            } else {
+                remaining.min(std::time::Duration::from_secs(retry_in_secs.max(1)))
+            };
+
             info!("[runtimed] Conda pool empty, waiting for warming ({warming} in progress, retry ready: {can_retry})...");
 
             tokio::select! {
-                _ = tokio::time::sleep(remaining) => {
-                    warn!("[runtimed] Timed out waiting for Conda pool env");
-                    return None;
+                _ = tokio::time::sleep(wait_for) => {
+                    if wait_for == remaining {
+                        warn!("[runtimed] Timed out waiting for Conda pool env");
+                        return None;
+                    }
+                    continue;
                 }
                 _ = self.pool_ready_conda.notified() => continue,
                 _ = self.shutdown_notify.notified() => return None,
@@ -1870,38 +1997,14 @@ impl Daemon {
     async fn handle_request(self: Arc<Self>, request: Request) -> Response {
         match request {
             Request::Take { env_type } => {
-                let (env, stale_paths) = match env_type {
-                    EnvType::Uv => self.uv_pool.lock().await.take(),
-                    EnvType::Conda => self.conda_pool.lock().await.take(),
-                    EnvType::Pixi => self.pixi_pool.lock().await.take(),
+                let env = match env_type {
+                    EnvType::Uv => self.take_uv_env().await,
+                    EnvType::Conda => self.take_conda_env().await,
+                    EnvType::Pixi => self.take_pixi_env().await,
                 };
-                spawn_env_deletions(stale_paths);
 
                 match env {
-                    Some(env) => {
-                        debug!("[runtimed] Took {} env: {:?}", env_type, env.venv_path);
-                        self.update_pool_doc().await;
-                        // Spawn replenishment
-                        let daemon = self.clone();
-                        match env_type {
-                            EnvType::Uv => {
-                                tokio::spawn(async move {
-                                    daemon.create_uv_env().await;
-                                });
-                            }
-                            EnvType::Conda => {
-                                tokio::spawn(async move {
-                                    daemon.replenish_conda_env().await;
-                                });
-                            }
-                            EnvType::Pixi => {
-                                tokio::spawn(async move {
-                                    daemon.replenish_pixi_env().await;
-                                });
-                            }
-                        }
-                        Response::Env { env }
-                    }
+                    Some(env) => Response::Env { env },
                     None => {
                         debug!("[runtimed] Pool miss for {}", env_type);
                         Response::Empty
@@ -2578,25 +2681,13 @@ impl Daemon {
             );
         }
 
-        // Build specs: python + ipykernel + ipywidgets + default packages
-        let mut conda_install_packages = vec![
-            "ipykernel".to_string(),
-            "ipywidgets".to_string(),
-            "anywidget".to_string(),
-            "nbformat".to_string(),
-        ];
-        conda_install_packages.extend(extra_conda_packages.clone());
+        // Build specs: python + notebook essentials + user-configured defaults
+        let conda_install_packages = conda_prewarmed_packages(&extra_conda_packages);
 
         let match_spec_options = ParseMatchSpecOptions::strict();
         let specs: Vec<MatchSpec> = match (|| -> anyhow::Result<Vec<MatchSpec>> {
-            let mut specs = vec![
-                MatchSpec::from_str("python>=3.13", match_spec_options)?,
-                MatchSpec::from_str("ipykernel", match_spec_options)?,
-                MatchSpec::from_str("ipywidgets", match_spec_options)?,
-                MatchSpec::from_str("anywidget", match_spec_options)?,
-                MatchSpec::from_str("nbformat", match_spec_options)?,
-            ];
-            for pkg in &extra_conda_packages {
+            let mut specs = vec![MatchSpec::from_str("python>=3.13", match_spec_options)?];
+            for pkg in &conda_install_packages {
                 specs.push(MatchSpec::from_str(pkg, match_spec_options)?);
             }
             Ok(specs)
@@ -2795,7 +2886,9 @@ impl Daemon {
         }
 
         // Run warmup script
-        let warmup_ok = self.warmup_conda_env(&python_path, &env_path).await;
+        let warmup_ok = self
+            .warmup_conda_env(&python_path, &env_path, &extra_conda_packages)
+            .await;
 
         if warmup_ok {
             {
@@ -2833,25 +2926,18 @@ impl Daemon {
 
     /// Warm up a conda environment by running Python to trigger .pyc compilation.
     /// Returns `true` if warmup succeeded (ipykernel imports work).
-    async fn warmup_conda_env(&self, python_path: &PathBuf, env_path: &PathBuf) -> bool {
-        let warmup_script = r#"
-import ipykernel
-import IPython
-import ipywidgets
-import anywidget
-import nbformat
-import traitlets
-import zmq
-from ipykernel.kernelbase import Kernel
-from ipykernel.ipkernel import IPythonKernel
-from ipykernel.comm import CommManager
-print("warmup complete")
-"#;
+    async fn warmup_conda_env(
+        &self,
+        python_path: &PathBuf,
+        env_path: &PathBuf,
+        extra_packages: &[String],
+    ) -> bool {
+        let warmup_script = build_python_warmup_script(extra_packages, true);
 
         let warmup_result = tokio::time::timeout(
             std::time::Duration::from_secs(30),
             tokio::process::Command::new(python_path)
-                .args(["-c", warmup_script])
+                .args(["-c", &warmup_script])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .output(),
@@ -2904,12 +2990,7 @@ print("warmup complete")
         info!("[runtimed] Creating Pixi environment at {:?}", project_dir);
 
         // Build package list
-        let mut packages = vec![
-            "ipykernel".to_string(),
-            "ipywidgets".to_string(),
-            "anywidget".to_string(),
-            "nbformat".to_string(),
-        ];
+        let mut packages = pixi_prewarmed_packages(&[]);
         {
             let pixi_defaults = self.default_pixi_packages().await;
             if !pixi_defaults.is_empty() {
@@ -3132,25 +3213,17 @@ print("warmup complete")
             }
         }
 
-        // Build install args: ipykernel + ipywidgets + anywidget + uv + default packages from settings
-        let mut install_packages = vec![
-            "ipykernel".to_string(),
-            "ipywidgets".to_string(),
-            "anywidget".to_string(),
-            "nbformat".to_string(),
-            "uv".to_string(), // For %uv magic in notebooks
-        ];
-
         // Read default uv packages from synced settings
-        {
+        let user_default_packages = {
             let settings = self.settings.read().await;
             let synced = settings.get_all();
-            let extra = synced.uv.default_packages;
-            if !extra.is_empty() {
-                info!("[runtimed] Including default uv packages: {:?}", extra);
-                install_packages.extend(extra);
+            let configured = synced.uv.default_packages;
+            if !configured.is_empty() {
+                info!("[runtimed] Including default uv packages: {:?}", configured);
             }
-        }
+            configured
+        };
+        let install_packages = uv_prewarmed_packages(&user_default_packages);
 
         // Install packages (120 second timeout)
         // Use hardlink mode to share files from uv's global cache,
@@ -3185,10 +3258,9 @@ print("warmup complete")
                 if let Some(ref err) = parsed_error {
                     if let Some(pkg) = &err.failed_package {
                         // Check if this is a user-specified package (not ipykernel/ipywidgets/anywidget)
-                        let is_user_package = install_packages
+                        let is_user_package = user_default_packages
                             .iter()
-                            .skip(3) // Skip ipykernel, ipywidgets, and anywidget
-                            .any(|p| p == pkg);
+                            .any(|configured| configured == pkg);
 
                         if is_user_package {
                             error!(
@@ -3253,21 +3325,12 @@ print("warmup complete")
         }
 
         // Warm up the environment (30 second timeout)
-        let warmup_script = r#"
-import ipykernel
-import IPython
-import ipywidgets
-import anywidget
-import nbformat
-from ipykernel.kernelbase import Kernel
-from ipykernel.ipkernel import IPythonKernel
-print("warmup complete")
-"#;
+        let warmup_script = build_python_warmup_script(&user_default_packages, false);
 
         let warmup_result = tokio::time::timeout(
             std::time::Duration::from_secs(30),
             tokio::process::Command::new(&python_path)
-                .args(["-c", warmup_script])
+                .args(["-c", &warmup_script])
                 .output(),
         )
         .await;
@@ -3381,6 +3444,44 @@ mod tests {
         assert_eq!(taken.unwrap().venv_path, env.venv_path);
         assert_eq!(pool.available.len(), 0);
         assert!(stale.is_empty());
+    }
+
+    #[test]
+    fn test_pool_prune_stale_keeps_minimum_warm_bases() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut pool = Pool::new(3, 0);
+
+        let env1 = create_test_env(&temp_dir, "env1");
+        let env2 = create_test_env(&temp_dir, "env2");
+        let env3 = create_test_env(&temp_dir, "env3");
+        pool.add(env1);
+        pool.add(env2);
+        pool.add(env3);
+
+        let stale = pool.prune_stale();
+        assert_eq!(pool.available.len(), 2);
+        assert_eq!(stale.len(), 1);
+    }
+
+    #[test]
+    fn test_pool_prune_stale_drops_invalid_even_at_minimum() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut pool = Pool::new(2, 3600);
+
+        let env1 = create_test_env(&temp_dir, "env1");
+        let env2 = create_test_env(&temp_dir, "env2");
+        std::fs::remove_file(env2.venv_path.join(".warmed")).unwrap();
+
+        pool.add(env1.clone());
+        pool.add(env2.clone());
+
+        let stale = pool.prune_stale();
+        assert_eq!(pool.available.len(), 1);
+        assert_eq!(
+            pool.available.front().unwrap().env.venv_path,
+            env1.venv_path
+        );
+        assert_eq!(stale, vec![env2.venv_path]);
     }
 
     #[test]
