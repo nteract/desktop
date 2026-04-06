@@ -89,6 +89,7 @@
     "@wdio/mocha-framework": "^8.40.0",
     "@wdio/spec-reporter": "^8.40.0",
     "@wdio/types": "^8.40.0",
+    "@mcpjam/inspector": "^2.1.0",
     "jsdom": "^26.0.0",
     "rollup-plugin-visualizer": "^5.14.0",
     "tailwindcss": "^4.1.8",

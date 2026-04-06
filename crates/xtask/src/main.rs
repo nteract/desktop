@@ -63,6 +63,7 @@ fn main() {
             let release = args.iter().any(|a| a == "--release");
             cmd_mcp(print_config, release);
         }
+        "mcp-inspector" => cmd_mcp_inspector(),
         "lint" => {
             let fix = args.iter().any(|a| a == "--fix");
             cmd_lint(fix);
@@ -122,6 +123,7 @@ MCP:
   run-mcp --print-config     Print MCP client config JSON (for Zed, Claude, etc.)
   dev-mcp                    Build Python bindings and launch nteract MCP server directly (no supervisor)
   dev-mcp --print-config     Print MCP client config JSON (for Zed, Claude, etc.)
+  mcp-inspector              Launch MCPJam Inspector UI to test runt mcp (MCP Apps)
 
 Linting:
   lint                       Check formatting and linting (Rust, JS/TS, Python)
@@ -1418,6 +1420,78 @@ fn cmd_mcp(print_config: bool, release: bool) {
         eprintln!("Failed to run mcp-supervisor: {e}");
         exit(1);
     });
+
+    if !status.success() {
+        exit(status.code().unwrap_or(1));
+    }
+}
+
+fn cmd_mcp_inspector() {
+    require_pnpm();
+
+    // Build runt-cli so it's ready when the inspector spawns it
+    println!("Building runt CLI...");
+    run_cmd("cargo", &["build", "-p", "runt-cli"]);
+
+    ensure_pnpm_install();
+
+    let runt_binary = fs::canonicalize(dev_runt_cli_binary()).unwrap_or_else(|e| {
+        eprintln!("Failed to resolve runt binary path: {e}");
+        exit(1);
+    });
+
+    // Build a mcpServers config so nteract is pre-populated and auto-connects
+    let mut env_map = serde_json::Map::new();
+    env_map.insert("RUNTIMED_DEV".into(), serde_json::json!("1"));
+    if let Some(path) = runt_workspace::get_workspace_path() {
+        env_map.insert(
+            "RUNTIMED_WORKSPACE_PATH".into(),
+            serde_json::json!(path.to_string_lossy()),
+        );
+    }
+
+    let config = serde_json::json!({
+        "mcpServers": {
+            "nteract": {
+                "command": runt_binary.to_string_lossy(),
+                "args": ["mcp"],
+                "env": env_map,
+            }
+        }
+    });
+
+    let config_path = env::temp_dir().join("nteract-mcp-inspector.json");
+    fs::write(&config_path, config.to_string()).unwrap_or_else(|e| {
+        eprintln!("Failed to write inspector config: {e}");
+        exit(1);
+    });
+
+    println!("Starting MCPJam Inspector...");
+    println!("UI will open at http://localhost:6274");
+    println!("Server: nteract (auto-connect)");
+    println!("Ensure the dev daemon is running (cargo xtask dev-daemon).");
+    println!();
+
+    let config_str = config_path.to_string_lossy().to_string();
+    let mut command = Command::new("pnpm");
+    command.args([
+        "exec",
+        "inspector",
+        "--config",
+        &config_str,
+        "--server",
+        "nteract",
+    ]);
+    apply_worktree_env(&mut command, true);
+
+    let status = command.status().unwrap_or_else(|e| {
+        eprintln!("Failed to run inspector: {e}");
+        eprintln!("Ensure @mcpjam/inspector is in devDependencies and run `pnpm install`.");
+        exit(1);
+    });
+
+    // Clean up temp config
+    let _ = fs::remove_file(&config_path);
 
     if !status.success() {
         exit(status.code().unwrap_or(1));
