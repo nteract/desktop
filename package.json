@@ -12,6 +12,7 @@
     "test:e2e:native": "wdio run e2e/wdio.conf.js"
   },
   "dependencies": {
+    "@bokeh/bokehjs": "3.9.0",
     "@codemirror/autocomplete": "^6.20.0",
     "@codemirror/commands": "^6.10.2",
     "@codemirror/lang-html": "^6.4.11",

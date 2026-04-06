@@ -24,3 +24,8 @@ declare module "virtual:renderer-plugin/leaflet" {
   export const code: string;
   export const css: string;
 }
+
+declare module "virtual:renderer-plugin/bokeh" {
+  export const code: string;
+  export const css: string;
+}

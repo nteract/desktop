@@ -43,6 +43,10 @@ function loadPlugin(name: string): Promise<{ code: string; css?: string }> {
         const { code, css } = await import("virtual:renderer-plugin/leaflet");
         return { code, css: css || undefined };
       }
+      case "bokeh": {
+        const { code, css } = await import("virtual:renderer-plugin/bokeh");
+        return { code, css: css || undefined };
+      }
       default:
         throw new Error(`Unknown renderer plugin: ${name}`);
     }

@@ -93,6 +93,14 @@ fn output_to_structured(output: &Output) -> Value {
                         continue;
                     }
 
+                    // Skip Bokeh marker MIME types — empty data, rendering happens
+                    // via application/javascript which is handled separately.
+                    if mime == "application/vnd.bokehjs_exec.v0+json"
+                        || mime == "application/vnd.bokehjs_load.v0+json"
+                    {
+                        continue;
+                    }
+
                     let json_value = match value {
                         DataValue::Binary(_) => {
                             // For binary data, use blob URL if available

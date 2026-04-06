@@ -12,6 +12,40 @@ import path from "node:path";
 import tailwindcss from "@tailwindcss/vite";
 import { build, type Plugin } from "vite";
 
+function bokehRawResolvePlugin(): Plugin {
+  return {
+    name: "bokeh-raw-resolve",
+    resolveId(source: string) {
+      const nodeModules = path.resolve(__dirname, "../../node_modules");
+      const mapping: Record<string, string> = {
+        "bokeh-core-raw": path.join(
+          nodeModules,
+          "@bokeh/bokehjs/build/js/bokeh.min.js",
+        ),
+        "bokeh-widgets-raw": path.join(
+          nodeModules,
+          "@bokeh/bokehjs/build/js/bokeh-widgets.min.js",
+        ),
+        "bokeh-tables-raw": path.join(
+          nodeModules,
+          "@bokeh/bokehjs/build/js/bokeh-tables.min.js",
+        ),
+        "bokeh-api-raw": path.join(
+          nodeModules,
+          "@bokeh/bokehjs/build/js/bokeh-api.min.js",
+        ),
+        "bokeh-gl-raw": path.join(
+          nodeModules,
+          "@bokeh/bokehjs/build/js/bokeh-gl.min.js",
+        ),
+      };
+      const filePath = mapping[source];
+      if (filePath) return `${filePath}?raw`;
+      return null;
+    },
+  };
+}
+
 const VIRTUAL_MODULE_ID = "virtual:isolated-renderer";
 const RESOLVED_VIRTUAL_MODULE_ID = `\0${VIRTUAL_MODULE_ID}`;
 
@@ -64,6 +98,10 @@ export function isolatedRendererPlugin(
     __dirname,
     "../../src/isolated-renderer/leaflet-renderer.tsx",
   );
+  const bokehEntry = path.resolve(
+    __dirname,
+    "../../src/isolated-renderer/bokeh-renderer.tsx",
+  );
 
   let rendererCode = "";
   let rendererCss = "";
@@ -75,6 +113,8 @@ export function isolatedRendererPlugin(
   let plotlyRendererCss = "";
   let leafletRendererCode = "";
   let leafletRendererCss = "";
+  let bokehRendererCode = "";
+  let bokehRendererCss = "";
   let buildPromise: Promise<void> | null = null;
 
   // Directories to watch for changes that should trigger rebuild
@@ -96,6 +136,8 @@ export function isolatedRendererPlugin(
     plotlyRendererCss = "";
     leafletRendererCode = "";
     leafletRendererCss = "";
+    bokehRendererCode = "";
+    bokehRendererCss = "";
   }
 
   /**
@@ -111,7 +153,7 @@ export function isolatedRendererPlugin(
     const result = await build({
       configFile: false,
       mode: "production",
-      plugins: [tailwindcss()],
+      plugins: [tailwindcss(), bokehRawResolvePlugin()],
       esbuild: {
         jsx: "automatic",
         jsxImportSource: "react",
@@ -203,10 +245,42 @@ export function isolatedRendererPlugin(
             const nodeModules = path.resolve(__dirname, "../../node_modules");
             const mapping: Record<string, string> = {
               "vega-raw": path.join(nodeModules, "vega/build/vega.min.js"),
-              "vega-lite-raw": path.join(nodeModules, "vega-lite/build/vega-lite.min.js"),
-              "vega-embed-raw": path.join(nodeModules, "vega-embed/build/vega-embed.min.js"),
-              "leaflet-js-raw": path.join(nodeModules, "leaflet/dist/leaflet.js"),
-              "leaflet-css-raw": path.join(nodeModules, "leaflet/dist/leaflet.css"),
+              "vega-lite-raw": path.join(
+                nodeModules,
+                "vega-lite/build/vega-lite.min.js",
+              ),
+              "vega-embed-raw": path.join(
+                nodeModules,
+                "vega-embed/build/vega-embed.min.js",
+              ),
+              "leaflet-js-raw": path.join(
+                nodeModules,
+                "leaflet/dist/leaflet.js",
+              ),
+              "leaflet-css-raw": path.join(
+                nodeModules,
+                "leaflet/dist/leaflet.css",
+              ),
+              "bokeh-core-raw": path.join(
+                nodeModules,
+                "@bokeh/bokehjs/build/js/bokeh.min.js",
+              ),
+              "bokeh-widgets-raw": path.join(
+                nodeModules,
+                "@bokeh/bokehjs/build/js/bokeh-widgets.min.js",
+              ),
+              "bokeh-tables-raw": path.join(
+                nodeModules,
+                "@bokeh/bokehjs/build/js/bokeh-tables.min.js",
+              ),
+              "bokeh-api-raw": path.join(
+                nodeModules,
+                "@bokeh/bokehjs/build/js/bokeh-api.min.js",
+              ),
+              "bokeh-gl-raw": path.join(
+                nodeModules,
+                "@bokeh/bokehjs/build/js/bokeh-gl.min.js",
+              ),
             };
             const filePath = mapping[source];
             if (filePath) return `${filePath}?raw`;
@@ -295,13 +369,19 @@ export function isolatedRendererPlugin(
     }
 
     // --- Build renderer plugins (CJS, React externalized) ---
-    const [markdownPlugin, vegaPlugin, plotlyPlugin, leafletPlugin] =
-      await Promise.all([
-        buildRendererPlugin(markdownEntry, "markdown-renderer", srcDir),
-        buildRendererPlugin(vegaEntry, "vega-renderer", srcDir),
-        buildRendererPlugin(plotlyEntry, "plotly-renderer", srcDir),
-        buildRendererPlugin(leafletEntry, "leaflet-renderer", srcDir),
-      ]);
+    const [
+      markdownPlugin,
+      vegaPlugin,
+      plotlyPlugin,
+      leafletPlugin,
+      bokehPlugin,
+    ] = await Promise.all([
+      buildRendererPlugin(markdownEntry, "markdown-renderer", srcDir),
+      buildRendererPlugin(vegaEntry, "vega-renderer", srcDir),
+      buildRendererPlugin(plotlyEntry, "plotly-renderer", srcDir),
+      buildRendererPlugin(leafletEntry, "leaflet-renderer", srcDir),
+      buildRendererPlugin(bokehEntry, "bokeh-renderer", srcDir),
+    ]);
     markdownRendererCode = markdownPlugin.code;
     markdownRendererCss = markdownPlugin.css;
     vegaRendererCode = vegaPlugin.code;
@@ -310,6 +390,8 @@ export function isolatedRendererPlugin(
     plotlyRendererCss = plotlyPlugin.css;
     leafletRendererCode = leafletPlugin.code;
     leafletRendererCss = leafletPlugin.css;
+    bokehRendererCode = bokehPlugin.code;
+    bokehRendererCss = bokehPlugin.css;
   }
 
   return {
@@ -378,6 +460,12 @@ export const css = ${JSON.stringify(plotlyRendererCss)};
         return `
 export const code = ${JSON.stringify(leafletRendererCode)};
 export const css = ${JSON.stringify(leafletRendererCss)};
+`;
+      }
+      if (pluginName === "bokeh") {
+        return `
+export const code = ${JSON.stringify(bokehRendererCode)};
+export const css = ${JSON.stringify(bokehRendererCss)};
 `;
       }
     },

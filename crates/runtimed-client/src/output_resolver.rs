@@ -251,6 +251,7 @@ pub fn json_data_to_datavalues(
     // Viz summaries are more useful than "Image output (image/png, X KB)" when
     // both exist (e.g. Altair emits png fallback + vegalite+json).
     synthesize_llm_plain_for_viz(&mut output_data);
+    synthesize_llm_plain_for_bokeh(&mut output_data);
     synthesize_llm_plain_for_heavy_types(&mut output_data);
     synthesize_llm_plain_for_binary_media(&mut output_data);
 
@@ -311,6 +312,7 @@ pub async fn output_from_manifest(
             // Viz summaries are more useful than "Image output (image/png, X KB)" when
             // both exist (e.g. Altair emits png fallback + vegalite+json).
             synthesize_llm_plain_for_viz(&mut output_data);
+            synthesize_llm_plain_for_bokeh(&mut output_data);
             synthesize_llm_plain_for_heavy_types(&mut output_data);
             synthesize_llm_plain_for_binary_media_with_urls(
                 &mut output_data,
@@ -514,6 +516,42 @@ fn synthesize_llm_plain_for_viz(output_data: &mut HashMap<String, DataValue>) {
             DataValue::Text(parts.join("\n")),
         );
     }
+}
+
+/// Synthesize `text/llm+plain` for Bokeh visualization outputs.
+///
+/// Bokeh emits `application/vnd.bokehjs_exec.v0+json` as a marker MIME type
+/// alongside `application/javascript` which contains the rendering code.
+/// The exec MIME data is empty, so we can only detect presence, not chart details.
+///
+/// Skips if `text/llm+plain` already exists.
+fn synthesize_llm_plain_for_bokeh(output_data: &mut HashMap<String, DataValue>) {
+    if output_data.contains_key("text/llm+plain") {
+        return;
+    }
+
+    let is_exec = output_data.contains_key("application/vnd.bokehjs_exec.v0+json");
+    let is_load = output_data.contains_key("application/vnd.bokehjs_load.v0+json");
+
+    if !is_exec && !is_load {
+        return;
+    }
+
+    let description = if is_exec {
+        "Bokeh interactive visualization".to_string()
+    } else {
+        "BokehJS library loaded".to_string()
+    };
+
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(DataValue::Text(ref plain)) = output_data.get("text/plain") {
+        parts.push(plain.clone());
+    }
+    parts.push(description);
+    output_data.insert(
+        "text/llm+plain".to_string(),
+        DataValue::Text(parts.join("\n")),
+    );
 }
 
 /// Synthesize `text/llm+plain` for heavy non-viz media types.

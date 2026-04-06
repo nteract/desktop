@@ -34,6 +34,27 @@ declare module "leaflet-css-raw" {
   export default content;
 }
 
+declare module "bokeh-core-raw" {
+  const content: string;
+  export default content;
+}
+declare module "bokeh-widgets-raw" {
+  const content: string;
+  export default content;
+}
+declare module "bokeh-tables-raw" {
+  const content: string;
+  export default content;
+}
+declare module "bokeh-api-raw" {
+  const content: string;
+  export default content;
+}
+declare module "bokeh-gl-raw" {
+  const content: string;
+  export default content;
+}
+
 // lezer-toml type declaration (package doesn't properly export types)
 declare module "lezer-toml" {
   import type { LRParser } from "@lezer/lr";

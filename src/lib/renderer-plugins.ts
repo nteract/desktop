@@ -18,6 +18,8 @@ const MIME_PLUGINS: Record<string, string> = {
   "text/markdown": "markdown",
   "application/vnd.plotly.v1+json": "plotly",
   "application/geo+json": "leaflet",
+  "application/vnd.bokehjs_exec.v0+json": "bokeh",
+  "application/vnd.bokehjs_load.v0+json": "bokeh",
 };
 
 /**
