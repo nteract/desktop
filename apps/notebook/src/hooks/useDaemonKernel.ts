@@ -15,7 +15,7 @@ import {
   deriveEnvSyncState,
   deriveKernelInfo,
   deriveQueueState,
-  detectOutputManifestHashes,
+  detectUnresolvedOutputs,
   diffComms,
   isKernelStatus,
   KERNEL_STATUS,
@@ -60,7 +60,7 @@ function resolveCommOutputHashes(
     readonly current: { onCommMessage?: (msg: JupyterMessage) => void };
   },
 ): void {
-  const detected = detectOutputManifestHashes(state);
+  const detected = detectUnresolvedOutputs(state);
   if (!detected) {
     // Bump generation so any in-flight fetch is discarded (for OutputModel with empty outputs)
     if (state._model_name === "OutputModel") {
@@ -77,7 +77,7 @@ function resolveCommOutputHashes(
 
   void (async () => {
     const resolved = await Promise.all(
-      detected.hashes.map((h) => resolveOutputValue(h, blobPort)),
+      detected.outputs.map((h) => resolveOutputValue(h, blobPort)),
     );
     if (_outputResolveGen.get(commId) !== gen) return;
 

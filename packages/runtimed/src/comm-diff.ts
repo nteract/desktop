@@ -28,7 +28,7 @@ export interface CommDiffState {
   json: Record<string, string>;
 }
 
-// ── Manifest hash detection ─────────────────────────────────────────
+// ── Output manifest detection ───────────────────────────────────────
 
 const MANIFEST_HASH_RE = /^[a-f0-9]{64}$/;
 
@@ -39,16 +39,54 @@ export function isManifestHash(s: string): boolean {
   return MANIFEST_HASH_RE.test(s);
 }
 
+/** @deprecated Use {@link UnresolvedOutputs} instead. */
 export interface OutputManifestHashes {
   hashes: string[];
 }
 
+export interface UnresolvedOutputs {
+  outputs: unknown[];
+}
+
 /**
- * Detect unresolved Output widget manifest hashes in comm state.
+ * Check whether `value` looks like an inline manifest object
+ * (has an `output_type` string property).
+ */
+function isManifestObject(value: unknown): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as Record<string, unknown>).output_type === "string"
+  );
+}
+
+/**
+ * Detect unresolved Output widget outputs in comm state.
  *
- * Returns the hashes if `state._model_name === "OutputModel"` and
- * `state.outputs` contains valid manifest hash strings. Returns null
- * if not an OutputModel, outputs are empty, or already resolved.
+ * Returns the outputs if `state._model_name === "OutputModel"` and
+ * `state.outputs` contains entries that are either manifest hash strings
+ * (64-char hex SHA-256) or inline manifest objects (with `output_type`).
+ * Returns null if not an OutputModel, outputs are empty, or already resolved.
+ */
+export function detectUnresolvedOutputs(
+  state: Record<string, unknown>,
+): UnresolvedOutputs | null {
+  if (state._model_name !== "OutputModel") return null;
+
+  const outputs = state.outputs;
+  if (!Array.isArray(outputs) || outputs.length === 0) return null;
+
+  // Every entry must be either a manifest hash string or a manifest object
+  const allUnresolved = outputs.every(
+    (o) => (typeof o === "string" && isManifestHash(o)) || isManifestObject(o),
+  );
+  if (!allUnresolved) return null;
+
+  return { outputs: outputs as unknown[] };
+}
+
+/**
+ * @deprecated Use {@link detectUnresolvedOutputs} instead.
  */
 export function detectOutputManifestHashes(
   state: Record<string, unknown>,
@@ -58,7 +96,6 @@ export function detectOutputManifestHashes(
   const outputs = state.outputs;
   if (!Array.isArray(outputs) || outputs.length === 0) return null;
 
-  // Check all entries are manifest hash strings
   const allHashes = outputs.every(
     (o) => typeof o === "string" && isManifestHash(o),
   );

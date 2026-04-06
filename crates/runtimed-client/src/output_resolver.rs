@@ -342,6 +342,41 @@ pub async fn resolve_content_ref(
         }
     }
 
+    // Fallback: handle raw Jupyter values (not ContentRef objects).
+    // This supports legacy outputs from pre-v3 .automerge migrations where
+    // data values are plain strings, arrays, or JSON objects rather than
+    // ContentRef entries.
+    if let Some(s) = content_ref.as_str() {
+        return Some(match kind {
+            MimeKind::Binary => base64::engine::general_purpose::STANDARD
+                .decode(s)
+                .map(DataValue::Binary)
+                .unwrap_or_else(|_| DataValue::Text(s.to_string())),
+            MimeKind::Json => serde_json::from_str::<serde_json::Value>(s)
+                .map(DataValue::Json)
+                .unwrap_or_else(|_| DataValue::Text(s.to_string())),
+            MimeKind::Text => DataValue::Text(s.to_string()),
+        });
+    }
+
+    // Handle array values (Jupyter sometimes uses ["line1\n", "line2\n"])
+    if let Some(arr) = content_ref.as_array() {
+        let joined: String = arr
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect::<Vec<_>>()
+            .join("");
+        return Some(DataValue::Text(joined));
+    }
+
+    // Handle JSON object values that aren't ContentRef
+    if content_ref.is_object()
+        && content_ref.get("inline").is_none()
+        && content_ref.get("blob").is_none()
+    {
+        return Some(DataValue::Json(content_ref.clone()));
+    }
+
     None
 }
 

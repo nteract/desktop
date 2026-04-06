@@ -14,11 +14,7 @@ export type { NotebookTransport, FrameListener } from "./transport";
 export { FrameType, type FrameTypeValue } from "./transport";
 
 // Handle
-export type {
-  SyncableHandle,
-  FrameEvent,
-  TextAttribution,
-} from "./handle";
+export type { SyncableHandle, FrameEvent, TextAttribution } from "./handle";
 
 // Cell changeset
 export {
@@ -73,9 +69,11 @@ export {
   type CommDiffResult,
   type CommDiffState,
   detectOutputManifestHashes,
+  detectUnresolvedOutputs,
   diffComms,
   isManifestHash,
   type OutputManifestHashes,
+  type UnresolvedOutputs,
 } from "./comm-diff";
 
 // Derived state
