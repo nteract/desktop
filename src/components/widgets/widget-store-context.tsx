@@ -70,6 +70,8 @@ interface WidgetStoreProviderProps {
   children: ReactNode;
   /** Function to send messages back to the kernel (for widget interactions) */
   sendMessage?: SendMessage;
+  /** Optional update manager for debounced CRDT writes + echo suppression. */
+  updateManager?: import("./widget-update-manager").WidgetUpdateManager;
 }
 
 /**
@@ -81,6 +83,7 @@ interface WidgetStoreProviderProps {
 export function WidgetStoreProvider({
   children,
   sendMessage = () => {},
+  updateManager,
 }: WidgetStoreProviderProps) {
   // Create store once and keep it stable across renders
   const storeRef = useRef<WidgetStore | null>(null);
@@ -93,6 +96,7 @@ export function WidgetStoreProvider({
   const { handleMessage, sendUpdate, sendCustom, closeComm } = useCommRouter({
     sendMessage,
     store,
+    updateManager,
   });
 
   // Manage link subscriptions (jslink/jsdlink) at the store level.

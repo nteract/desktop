@@ -14,6 +14,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import { applyBufferPaths } from "./buffer-utils";
 import { getCrdtCommWriter } from "./crdt-comm-writer";
+import type { WidgetUpdateManager } from "./widget-update-manager";
 import type { WidgetStore } from "./widget-store";
 
 // === Message Types ===
@@ -102,6 +103,8 @@ export interface UseCommRouterOptions {
   store: WidgetStore;
   /** Optional username for message headers (default: "frontend") */
   username?: string;
+  /** Optional update manager for debounced CRDT writes + echo suppression. */
+  updateManager?: WidgetUpdateManager;
 }
 
 export interface UseCommRouterReturn {
@@ -245,6 +248,7 @@ export function useCommRouter({
   sendMessage,
   store,
   username = "frontend",
+  updateManager,
 }: UseCommRouterOptions): UseCommRouterReturn {
   // Refs for values that need to be fresh but shouldn't cause function identity changes.
   // This ensures sendUpdate, sendCustom, etc. are stable across renders, preventing
@@ -252,12 +256,14 @@ export function useCommRouter({
   const sendMessageRef = useRef(sendMessage);
   const storeRef = useRef(store);
   const usernameRef = useRef(username);
+  const managerRef = useRef(updateManager);
 
   // Keep refs up-to-date without changing function identities
   useEffect(() => {
     sendMessageRef.current = sendMessage;
     storeRef.current = store;
     usernameRef.current = username;
+    managerRef.current = updateManager;
   });
 
   /**
@@ -325,11 +331,16 @@ export function useCommRouter({
       state: Record<string, unknown>,
       buffers?: ArrayBuffer[],
     ) => {
-      // Optimistic update: apply locally first for responsive UI
+      // When a manager is available, delegate to it for debounced CRDT
+      // writes + echo suppression. Otherwise fall back to direct write
+      // (used in iframe context where no manager exists).
+      const manager = managerRef.current;
+      if (manager) {
+        manager.updateAndPersist(commId, state, buffers);
+        return;
+      }
+      // Fallback: immediate optimistic update + direct CRDT write
       storeRef.current.updateModel(commId, state, buffers);
-      // Try CRDT path first (writes directly to RuntimeStateDoc via WASM,
-      // no SendComm round-trip). Falls back to SendComm if CRDT writer
-      // isn't available or binary buffers are present.
       const writer = getCrdtCommWriter();
       if (writer && !buffers?.length) {
         writer(commId, state);

@@ -13,11 +13,15 @@ import {
 import { NotebookClient } from "runtimed";
 import { IsolationTest } from "@/components/isolated";
 import { MediaProvider } from "@/components/outputs/media-provider";
-import { setCrdtCommWriter } from "@/components/widgets/crdt-comm-writer";
+import {
+  getCrdtCommWriter,
+  setCrdtCommWriter,
+} from "@/components/widgets/crdt-comm-writer";
 import {
   useWidgetStoreRequired,
   WidgetStoreProvider,
 } from "@/components/widgets/widget-store-context";
+import { WidgetUpdateManager } from "@/components/widgets/widget-update-manager";
 import { WidgetView } from "@/components/widgets/widget-view";
 import { useSyncedTheme } from "@/hooks/useSyncedSettings";
 import { ErrorBoundary } from "@/lib/error-boundary";
@@ -291,8 +295,10 @@ function AppContent() {
   const { denoConfigInfo, flexibleNpmImports, setFlexibleNpmImports } =
     useDenoDependencies();
 
-  // Get widget store for CRDT → WidgetStore projection
+  // Get widget store for CRDT → WidgetStore projection.
+  // Set the module-level ref so the updateManager can access it.
   const { store: widgetStore } = useWidgetStoreRequired();
+  _widgetStoreRef = widgetStore;
 
   const handleExecutionCount = useCallback(
     (cellId: string, count: number) => {
@@ -384,7 +390,15 @@ function AppContent() {
         }
       }
       for (const comm of changes.updated) {
-        widgetStore.updateModel(comm.commId, comm.state);
+        // Suppress CRDT echoes for keys with pending optimistic values
+        // (e.g. slider being dragged — don't clobber with stale echo).
+        const filtered = updateManager.shouldSuppressEcho(
+          comm.commId,
+          comm.state,
+        );
+        if (filtered) {
+          widgetStore.updateModel(comm.commId, filtered);
+        }
         if (comm.unresolvedOutputs) {
           resolveCommOutputs(comm.commId, comm.unresolvedOutputs, widgetStore);
         }
@@ -415,6 +429,14 @@ function AppContent() {
       customSub.unsubscribe();
     };
   }, [getEngine, widgetStore]);
+
+  // Reset the update manager when kernel restarts so fresh echoes
+  // from the new session aren't suppressed by stale optimistic state.
+  useEffect(() => {
+    if (kernelStatus === KERNEL_STATUS.NOT_STARTED) {
+      updateManager.reset();
+    }
+  }, [kernelStatus]);
 
   // Re-project comms when blob_port changes (deferred comms retry).
   const blobPort = useBlobPort();
@@ -1410,10 +1432,24 @@ function AppErrorFallback(_error: Error, resetErrorBoundary: () => void) {
   );
 }
 
+// Module-level ref for the widget store (set by AppContent, read by updateManager).
+// This avoids a chicken-and-egg: the manager is created before the store exists.
+let _widgetStoreRef:
+  | import("@/components/widgets/widget-store").WidgetStore
+  | null = null;
+
+const updateManager = new WidgetUpdateManager({
+  getStore: () => _widgetStoreRef,
+  getCrdtWriter: getCrdtCommWriter,
+});
+
 export default function App() {
   return (
     <ErrorBoundary fallback={AppErrorFallback}>
-      <WidgetStoreProvider sendMessage={sendMessage}>
+      <WidgetStoreProvider
+        sendMessage={sendMessage}
+        updateManager={updateManager}
+      >
         <MediaProvider
           renderers={{
             "application/vnd.jupyter.widget-view+json": ({ data }) => {

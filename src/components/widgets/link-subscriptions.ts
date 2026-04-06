@@ -64,6 +64,10 @@ function setupDirectionalLink(
 
     // Subscribe to source changes, propagate to target
     keyUnsub = store.subscribeToKey(sourceModelId, sourceAttr, (newValue) => {
+      // Value equality check — skip if target already has this value
+      // (prevents redundant propagation after CRDT echo suppression)
+      const tgt = store.getModel(targetModelId);
+      if (tgt && tgt.state[targetAttr] === newValue) return;
       sendUpdate(targetModelId, { [targetAttr]: newValue });
     });
 
@@ -136,6 +140,8 @@ function setupBidirectionalLink(
     keyUnsubs.push(
       store.subscribeToKey(sourceModelId, sourceAttr, (newValue) => {
         if (isSyncing) return;
+        const tgt = store.getModel(targetModelId);
+        if (tgt && tgt.state[targetAttr] === newValue) return;
         isSyncing = true;
         sendUpdate(targetModelId, { [targetAttr]: newValue });
         isSyncing = false;
@@ -146,6 +152,8 @@ function setupBidirectionalLink(
     keyUnsubs.push(
       store.subscribeToKey(targetModelId, targetAttr, (newValue) => {
         if (isSyncing) return;
+        const src = store.getModel(sourceModelId);
+        if (src && src.state[sourceAttr] === newValue) return;
         isSyncing = true;
         sendUpdate(sourceModelId, { [sourceAttr]: newValue });
         isSyncing = false;
