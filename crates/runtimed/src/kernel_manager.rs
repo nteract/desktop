@@ -2595,7 +2595,7 @@ impl RoomKernel {
                         }
                         let mut batch = std::mem::take(&mut pending);
                         // Blob-store large delta values before CRDT merge.
-                        for (_comm_id, delta) in &mut batch {
+                        for delta in batch.values_mut() {
                             *delta = blob_store_large_state_values(delta, &coalesce_blob_store).await;
                         }
                         let mut sd = coalesce_state_doc.write().await;
