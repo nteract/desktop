@@ -826,21 +826,18 @@ async fn test_streaming_load_via_open_notebook() {
     // The output pipeline is verified end-to-end by the fixture integration
     // tests and manual testing — this checks the streaming load path specifically.
     if !cells[0].outputs.is_empty() {
-        let hash = &cells[0].outputs[0];
-        assert_eq!(
-            hash.len(),
-            64,
-            "output should be a manifest hash, got: {}",
-            hash
-        );
+        let output = &cells[0].outputs[0];
         assert!(
-            hash.chars().all(|c| c.is_ascii_hexdigit()),
-            "output should be hex, got: {}",
-            hash
+            output.get("output_type").is_some(),
+            "output should be a manifest object with output_type, got: {}",
+            output
         );
         assert_eq!(cells[3].outputs.len(), 1, "c4 should have 1 output");
-        let c4_hash = &cells[3].outputs[0];
-        assert_eq!(c4_hash.len(), 64, "c4 output should be a manifest hash");
+        let c4_output = &cells[3].outputs[0];
+        assert!(
+            c4_output.get("output_type").is_some(),
+            "c4 output should be a manifest object with output_type"
+        );
     }
 
     // Verify execution counts
