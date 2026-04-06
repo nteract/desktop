@@ -113,7 +113,17 @@ pub async fn add_dependency(
         .ok_or_else(|| McpError::invalid_params("Missing required parameter: package", None))?;
     let after = arg_str(request, "after").unwrap_or("none");
 
-    let handle = require_handle!(server);
+    let (handle, notebook_id) = {
+        let guard = server.session.read().await;
+        match guard.as_ref() {
+            Some(s) => (s.handle.clone(), s.notebook_id.clone()),
+            None => {
+                return tool_error(
+                    "No active notebook session. Call join_notebook or open_notebook first.",
+                )
+            }
+        }
+    };
 
     let manager = detect_package_manager(&handle);
 
@@ -185,7 +195,26 @@ pub async fn add_dependency(
             }
         }
         "restart" => {
-            // Shutdown + relaunch with auto-detect
+            // Shutdown + relaunch with scoped auto-detect to preserve the
+            // package manager family (auto:uv, auto:conda, auto:pixi)
+            let restart_env_source = match handle
+                .get_runtime_state()
+                .ok()
+                .map(|s| s.kernel.env_source.clone())
+                .as_deref()
+            {
+                Some("uv:prewarmed") => "auto:uv".to_string(),
+                Some("conda:prewarmed") => "auto:conda".to_string(),
+                Some("pixi:prewarmed") => "auto:pixi".to_string(),
+                Some("") | None => "auto".to_string(),
+                Some(s) => s.to_string(),
+            };
+            // Derive notebook_path for project-file-backed envs (uv:pyproject, pixi:toml, etc.)
+            let notebook_path = if notebook_id.contains('/') || notebook_id.contains('\\') {
+                Some(notebook_id.clone())
+            } else {
+                None
+            };
             let _ = handle
                 .send_request(NotebookRequest::ShutdownKernel {})
                 .await;
@@ -193,8 +222,8 @@ pub async fn add_dependency(
             match handle
                 .send_request(NotebookRequest::LaunchKernel {
                     kernel_type: "python".to_string(),
-                    env_source: "auto".to_string(),
-                    notebook_path: None,
+                    env_source: restart_env_source,
+                    notebook_path,
                 })
                 .await
             {
