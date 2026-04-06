@@ -53,6 +53,17 @@ function loadPlugin(name: string): Promise<{ code: string; css?: string }> {
 }
 
 /**
+ * Pre-warm the plugin cache for the given plugin names.
+ * Fetches plugin code from virtual modules without installing into any iframe.
+ * Use at materialization time so that later injectLibraries() calls resolve instantly.
+ */
+export function preWarmPlugins(pluginNames: Iterable<string>): void {
+  for (const name of pluginNames) {
+    loadPlugin(name);
+  }
+}
+
+/**
  * Scan outputs for MIME types that require a renderer plugin.
  * Returns deduplicated plugin names.
  */

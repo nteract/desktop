@@ -1,9 +1,28 @@
-import { defineConfig } from "vitest/config";
+import { defineConfig, type Plugin } from "vitest/config";
 import path from "path";
 import { rawLibPlugin } from "./apps/notebook/vite-plugin-raw-lib";
 
+/** Stub virtual:renderer-plugin/* modules for tests (real builds use the Vite plugin). */
+function rendererPluginStub(): Plugin {
+  const prefix = "virtual:renderer-plugin/";
+  return {
+    name: "renderer-plugin-stub",
+    resolveId(id) {
+      if (id.startsWith(prefix)) return `\0${id}`;
+    },
+    load(id) {
+      if (id.startsWith(`\0${prefix}`)) {
+        return 'export const code = ""; export const css = "";';
+      }
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [rawLibPlugin(path.resolve(__dirname, "./node_modules"))],
+  plugins: [
+    rawLibPlugin(path.resolve(__dirname, "./node_modules")),
+    rendererPluginStub(),
+  ],
   test: {
     environment: "jsdom",
     include: [

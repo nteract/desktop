@@ -6,10 +6,7 @@ import {
   IsolatedFrame,
   type IsolatedFrameHandle,
 } from "@/components/isolated";
-import {
-  getRequiredLibraries,
-  injectLibraries,
-} from "@/components/isolated/iframe-libraries";
+import { injectLibraries } from "@/components/isolated/iframe-libraries";
 import {
   AnsiErrorOutput,
   AnsiStreamOutput,
@@ -42,6 +39,11 @@ interface OutputAreaProps {
    * Cell ID for stable output keys in the iframe (enables smooth updates).
    */
   cellId?: string;
+  /**
+   * Pre-computed renderer plugins required by this cell's outputs.
+   * When provided, skips MIME scanning at render time.
+   */
+  requiredPlugins?: string[];
   /**
    * Whether the output area is collapsed.
    */
@@ -258,6 +260,7 @@ function renderOutput(
 export function OutputArea({
   outputs,
   cellId,
+  requiredPlugins,
   collapsed = false,
   onToggleCollapse,
   maxHeight,
@@ -349,22 +352,17 @@ export function OutputArea({
     // Use ref to avoid adding darkMode to deps which would cause re-renders on theme toggle
     frameRef.current.setTheme(darkModeRef.current);
 
-    // Inject any heavy libraries required by the outputs (e.g. plotly.js).
-    // Must happen before clear+render so the eval messages arrive first.
-    // Clear the tracking set on each call — a new or reloaded iframe won't
-    // have the previously-injected globals, so we must re-inject.
+    // Install renderer plugins required by the outputs (e.g. plotly, vega).
+    // Must happen before clear+render so the installRenderer messages arrive first.
+    // Clear the tracking set on each call — a reloaded iframe has a fresh registry.
     injectedLibsRef.current.clear();
-    const neededLibs = getRequiredLibraries(
-      outputs,
-      (data) => selectMimeType(data, priority),
-    );
-    if (neededLibs.length > 0) {
+    if (requiredPlugins && requiredPlugins.length > 0) {
       await injectLibraries(
         frameRef.current,
-        neededLibs,
+        requiredPlugins,
         injectedLibsRef.current,
       );
-      // Stale check: if outputs changed while we were loading the library,
+      // Stale check: if outputs changed while we were loading the plugin,
       // bail — a newer handleFrameReady call is already in flight.
       if (gen !== renderGenRef.current) return;
     }
