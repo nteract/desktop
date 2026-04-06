@@ -64,6 +64,29 @@ it("sandbox does NOT include allow-same-origin", () => {
 });
 ```
 
+### Content Security Policy
+
+The iframe HTML includes a `<meta>` CSP as defense-in-depth alongside the sandbox:
+
+```
+default-src 'self' blob: data:;
+script-src  'unsafe-inline' 'unsafe-eval' blob: https: http://127.0.0.1:*;
+style-src   'unsafe-inline' https: http://127.0.0.1:*;
+img-src     * data: blob:;
+font-src    * data:;
+media-src   * data: blob:;
+object-src  * data: blob:;
+connect-src *;
+```
+
+**Why `http://127.0.0.1:*`:** Anywidget ESM modules (`_esm`) and CSS (`_css`) are served from the daemon's blob store HTTP server on a dynamic localhost port. Without this exception, the browser rejects `import()` of blob-served JavaScript with a MIME type violation. This is safe because:
+
+1. The iframe is sandboxed **without `allow-same-origin`** — it cannot read cookies, localStorage, or access the parent DOM regardless of what scripts load.
+2. The blob server is read-only and content-addressed — it serves immutable blobs with correct `Content-Type` headers.
+3. `https:` is allowed for CDN-hosted widget assets (e.g., anywidget ESM from unpkg/jsdelivr).
+
+**Key file:** `src/components/isolated/frame-html.ts` — `generateFrameHtml()`.
+
 ### Source Validation
 
 The iframe's message handler validates that messages come from the parent window:
@@ -286,6 +309,7 @@ JSON-RPC widget methods are defined separately in `rpc-methods.ts`.
 When reviewing changes to iframe isolation code:
 
 - [ ] **No `allow-same-origin`** added to sandbox attributes
+- [ ] **CSP not weakened** — no new origins in `script-src`/`style-src` beyond `127.0.0.1:*` and `https:`
 - [ ] **Source validation intact** (`event.source !== window.parent`)
 - [ ] **Message whitelist updated** if new types added (frame-bridge.ts)
 - [ ] **Tests updated** for any new message types
