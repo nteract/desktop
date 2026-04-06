@@ -98,7 +98,11 @@ export function isolatedRendererPlugin(
     leafletRendererCss = "";
   }
 
-  /** Build a renderer plugin as CJS with React externalized. */
+  /**
+   * Build a renderer plugin as CJS with React externalized.
+   * Always minified — these are string constants containing entire libraries
+   * (plotly alone is 20MB unminified). No debugging value in readable output.
+   */
   async function buildRendererPlugin(
     pluginEntry: string,
     pluginName: string,
@@ -141,8 +145,8 @@ export function isolatedRendererPlugin(
             warn(warning);
           },
         },
-        minify,
-        sourcemap,
+        minify: true,
+        sourcemap: false,
       },
       define: {
         "process.env.NODE_ENV": JSON.stringify("production"),
