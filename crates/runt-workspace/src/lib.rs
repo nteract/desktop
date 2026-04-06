@@ -625,6 +625,20 @@ pub fn launchd_stop() -> Result<(), String> {
 /// "not found" errors), then bootstraps fresh from the plist.
 #[cfg(target_os = "macos")]
 pub fn launchd_start() -> Result<(), String> {
+    // Clear any stale registration — launchd_stop() already treats "not found"
+    // as Ok, so ? propagates only unexpected failures.
+    launchd_stop()?;
+
+    launchd_bootstrap_only()
+}
+
+/// Bootstrap the daemon's launchd service without stopping first.
+///
+/// Use this when the caller has already stopped the service and only needs
+/// to bootstrap. Avoids the double-bootout race that can occur when
+/// `launchd_start()` is called after an explicit `launchd_stop()`.
+#[cfg(target_os = "macos")]
+pub fn launchd_bootstrap_only() -> Result<(), String> {
     let plist = launchd_plist_path()?;
     if !plist.exists() {
         return Err(format!("launchd plist not found at {}", plist.display()));
@@ -633,12 +647,6 @@ pub fn launchd_start() -> Result<(), String> {
     let uid = launchd_uid()?;
     let domain = format!("gui/{uid}");
 
-    // Clear any stale registration — launchd_stop() already treats "not found"
-    // as Ok, so ? propagates only unexpected failures.
-    launchd_stop()?;
-
-    // launchd_bootstrap retries with backoff if launchd needs time to
-    // clean up after the bootout above.
     launchd_bootstrap(&plist, &domain)
 }
 
@@ -722,8 +730,8 @@ pub fn launchd_ensure_loaded() -> Result<bool, String> {
 /// recent `bootout`.
 #[cfg(target_os = "macos")]
 fn launchd_bootstrap(plist: &Path, domain: &str) -> Result<(), String> {
-    // First attempt immediate, then backoff. Total max wait ~3.7s.
-    let delays_ms: &[u64] = &[0, 200, 500, 1000, 2000];
+    // First attempt immediate, then backoff. Total max wait ~7.7s.
+    let delays_ms: &[u64] = &[0, 200, 500, 1000, 2000, 4000];
     let mut last_err = String::new();
 
     for (attempt, &delay_ms) in delays_ms.iter().enumerate() {
