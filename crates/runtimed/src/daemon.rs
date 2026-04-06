@@ -363,6 +363,10 @@ pub struct Daemon {
     pub(crate) pool_doc: Arc<RwLock<notebook_doc::pool_state::PoolDoc>>,
     /// Broadcast channel to notify sync connections of pool doc changes.
     pub(crate) pool_doc_changed: tokio::sync::broadcast::Sender<()>,
+    /// Notifiers for pool env readiness (wakes waiters in take_*_env).
+    pool_ready_uv: Notify,
+    pool_ready_conda: Notify,
+    pool_ready_pixi: Notify,
     /// Content-addressed blob store.
     blob_store: Arc<BlobStore>,
     /// HTTP port for the blob server (set after startup).
@@ -425,6 +429,9 @@ impl Daemon {
             config,
             shutdown: Arc::new(Mutex::new(false)),
             shutdown_notify: Arc::new(Notify::new()),
+            pool_ready_uv: Notify::new(),
+            pool_ready_conda: Notify::new(),
+            pool_ready_pixi: Notify::new(),
             _lock: lock,
             settings: Arc::new(RwLock::new(settings)),
             settings_changed,
@@ -1719,20 +1726,62 @@ impl Daemon {
     /// Returns `Some(PooledEnv)` if an environment is available, `None` otherwise.
     /// Automatically triggers replenishment when an environment is taken.
     pub async fn take_uv_env(self: &Arc<Self>) -> Option<PooledEnv> {
-        let (env, stale_paths) = self.uv_pool.lock().await.take();
-        spawn_env_deletions(stale_paths);
-        if let Some(ref e) = env {
-            info!(
-                "[runtimed] Took UV env for kernel launch: {:?}",
-                e.venv_path
-            );
-            // Spawn replenishment
-            let daemon = self.clone();
-            tokio::spawn(async move {
-                daemon.create_uv_env().await;
-            });
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(90);
+
+        loop {
+            let (env, stale_paths) = self.uv_pool.lock().await.take();
+            spawn_env_deletions(stale_paths);
+
+            if let Some(e) = env {
+                info!(
+                    "[runtimed] Took UV env for kernel launch: {:?}",
+                    e.venv_path
+                );
+                let daemon = self.clone();
+                tokio::spawn(async move {
+                    daemon.create_uv_env().await;
+                });
+                return Some(e);
+            }
+
+            // Pool empty — check if warming is in progress or can be triggered
+            let pool = self.uv_pool.lock().await;
+            let (_, warming) = pool.stats();
+            let can_retry = pool.should_retry();
+            drop(pool);
+
+            if warming == 0 {
+                if self.config.uv_pool_size == 0 {
+                    return None;
+                }
+                if can_retry {
+                    // Kick off creation (respects backoff)
+                    self.uv_pool.lock().await.mark_warming(1);
+                    let daemon = self.clone();
+                    tokio::spawn(async move {
+                        daemon.create_uv_env().await;
+                    });
+                }
+                // If in backoff, wait — the warming loop will retry when backoff expires
+            }
+
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                warn!("[runtimed] Timed out waiting for UV pool env");
+                return None;
+            }
+
+            info!("[runtimed] UV pool empty, waiting for warming ({warming} in progress, retry ready: {can_retry})...");
+
+            tokio::select! {
+                _ = tokio::time::sleep(remaining) => {
+                    warn!("[runtimed] Timed out waiting for UV pool env");
+                    return None;
+                }
+                _ = self.pool_ready_uv.notified() => continue,
+                _ = self.shutdown_notify.notified() => return None,
+            }
         }
-        env
     }
 
     /// Take a Conda environment from the pool for kernel launching.
@@ -1740,20 +1789,62 @@ impl Daemon {
     /// Returns `Some(PooledEnv)` if an environment is available, `None` otherwise.
     /// Automatically triggers replenishment when an environment is taken.
     pub async fn take_conda_env(self: &Arc<Self>) -> Option<PooledEnv> {
-        let (env, stale_paths) = self.conda_pool.lock().await.take();
-        spawn_env_deletions(stale_paths);
-        if let Some(ref e) = env {
-            info!(
-                "[runtimed] Took Conda env for kernel launch: {:?}",
-                e.venv_path
-            );
-            // Spawn replenishment
-            let daemon = self.clone();
-            tokio::spawn(async move {
-                daemon.replenish_conda_env().await;
-            });
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(90);
+
+        loop {
+            let (env, stale_paths) = self.conda_pool.lock().await.take();
+            spawn_env_deletions(stale_paths);
+
+            if let Some(e) = env {
+                info!(
+                    "[runtimed] Took Conda env for kernel launch: {:?}",
+                    e.venv_path
+                );
+                let daemon = self.clone();
+                tokio::spawn(async move {
+                    daemon.replenish_conda_env().await;
+                });
+                return Some(e);
+            }
+
+            // Pool empty — check if warming is in progress or can be triggered
+            let pool = self.conda_pool.lock().await;
+            let (_, warming) = pool.stats();
+            let can_retry = pool.should_retry();
+            drop(pool);
+
+            if warming == 0 {
+                if self.config.conda_pool_size == 0 {
+                    return None;
+                }
+                if can_retry {
+                    // Kick off creation (respects backoff)
+                    self.conda_pool.lock().await.mark_warming(1);
+                    let daemon = self.clone();
+                    tokio::spawn(async move {
+                        daemon.create_conda_env().await;
+                    });
+                }
+                // If in backoff, wait — the warming loop will retry when backoff expires
+            }
+
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                warn!("[runtimed] Timed out waiting for Conda pool env");
+                return None;
+            }
+
+            info!("[runtimed] Conda pool empty, waiting for warming ({warming} in progress, retry ready: {can_retry})...");
+
+            tokio::select! {
+                _ = tokio::time::sleep(remaining) => {
+                    warn!("[runtimed] Timed out waiting for Conda pool env");
+                    return None;
+                }
+                _ = self.pool_ready_conda.notified() => continue,
+                _ = self.shutdown_notify.notified() => return None,
+            }
         }
-        env
     }
 
     /// Take a Pixi environment from the pool for kernel launching.
@@ -2935,6 +3026,11 @@ print("warmup complete")
         if changed {
             let _ = self.pool_doc_changed.send(());
         }
+
+        // Wake any take_*_env() waiters so they can retry after pool state changes
+        self.pool_ready_uv.notify_waiters();
+        self.pool_ready_conda.notify_waiters();
+        self.pool_ready_pixi.notify_waiters();
     }
 
     /// Create a single UV environment and add it to the pool.
