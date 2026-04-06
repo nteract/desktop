@@ -100,6 +100,9 @@ export type {
   NotebookResponse,
 } from "./request-types";
 
+// MIME priority
+export { DEFAULT_MIME_PRIORITY } from "./mime-priority";
+
 // Testing
 export { DirectTransport } from "./direct-transport";
 export type { ServerHandle } from "./direct-transport";

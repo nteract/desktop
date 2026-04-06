@@ -477,6 +477,12 @@ export class NotebookHandle {
      */
     set_metadata_value(key: string, value: any): void;
     /**
+     * Set the MIME type priority list for output selection.
+     * Types earlier in the list are preferred when narrowing output data bundles.
+     * If empty, all MIME types are returned (backward compatible).
+     */
+    set_mime_priority(priority: any): void;
+    /**
      * Set Pixi channels.
      * Accepts a JSON array string (e.g. `'["conda-forge"]'`).
      */
@@ -632,6 +638,7 @@ export interface InitOutput {
     readonly notebookhandle_set_metadata: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly notebookhandle_set_metadata_snapshot_value: (a: number, b: number, c: number) => void;
     readonly notebookhandle_set_metadata_value: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly notebookhandle_set_mime_priority: (a: number, b: number) => void;
     readonly notebookhandle_set_pixi_channels: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_set_pixi_python: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_set_uv_prerelease: (a: number, b: number, c: number, d: number) => void;

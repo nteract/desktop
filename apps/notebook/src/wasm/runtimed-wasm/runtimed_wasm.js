@@ -1568,6 +1568,15 @@ export class NotebookHandle {
         }
     }
     /**
+     * Set the MIME type priority list for output selection.
+     * Types earlier in the list are preferred when narrowing output data bundles.
+     * If empty, all MIME types are returned (backward compatible).
+     * @param {any} priority
+     */
+    set_mime_priority(priority) {
+        wasm.notebookhandle_set_mime_priority(this.__wbg_ptr, addHeapObject(priority));
+    }
+    /**
      * Set Pixi channels.
      * Accepts a JSON array string (e.g. `'["conda-forge"]'`).
      * @param {string} channels_json

@@ -87,6 +87,25 @@ export async function resolveOutput(
       return resolved;
     } catch (e) {
       logger.warn("[materialize-cells] Failed to resolve manifest:", e);
+      // Fallback: try resolving with just text/plain if available
+      if (
+        (output.output_type === "display_data" ||
+          output.output_type === "execute_result") &&
+        output.data["text/plain"]
+      ) {
+        try {
+          const fallback = {
+            ...output,
+            data: { "text/plain": output.data["text/plain"] },
+          } as typeof output;
+          const resolved = await resolveManifest(fallback, blobPort);
+          // Don't cache the fallback — leave the original key as a cache miss
+          // so the next materialization retries the rich MIME type.
+          return resolved;
+        } catch {
+          // text/plain fallback also failed
+        }
+      }
       return null;
     }
   }
