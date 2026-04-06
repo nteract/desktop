@@ -33,6 +33,12 @@ allow-popups, allow-popups-to-escape-sandbox, allow-modals
 
 No `allow-same-origin`. Ever.
 
+### Content Security Policy
+
+The iframe HTML includes a `<meta>` CSP as defense-in-depth. `script-src` and `style-src` allow `http://127.0.0.1:*` for anywidget ESM/CSS served from the daemon's blob store. This is safe because the sandbox lacks `allow-same-origin` — loaded scripts still can't access the parent DOM, Tauri APIs, or storage. See `contributing/iframe-isolation.md` § Content Security Policy for the full policy.
+
+**Key file:** `src/components/isolated/frame-html.ts` — `generateFrameHtml()`.
+
 ### Source Validation
 
 The iframe's message handler validates `event.source !== window.parent` to reject messages from other windows/iframes.
@@ -86,6 +92,7 @@ The JSON-RPC widget methods include:
 ## Code Review Checklist
 
 - No `allow-same-origin` added to sandbox attributes
+- CSP not weakened — no new origins in `script-src`/`style-src` beyond `127.0.0.1:*` and `https:`
 - Source validation intact (`event.source !== window.parent`)
 - Message whitelist updated if new types added (`frame-bridge.ts`)
 - Tests updated for new message types
