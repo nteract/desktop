@@ -7,6 +7,10 @@ import type { JupyterOutput } from "../types";
  * from Jupyter's base64 wire format). The blob HTTP server serves them
  * with the correct Content-Type, so the frontend can use blob URLs
  * directly (e.g., `<img src="http://...">`) instead of base64 data URIs.
+ *
+ * **This is a TypeScript port of the canonical Rust implementation in
+ * `crates/notebook-doc/src/mime.rs` (`is_binary_mime` / `mime_kind`).
+ * Keep them in sync — see AGENTS.md § "The `is_binary_mime` Contract".**
  */
 export function isBinaryMime(mime: string): boolean {
   if (mime.startsWith("image/")) {

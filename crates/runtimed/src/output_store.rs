@@ -50,6 +50,8 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use notebook_doc::mime::is_binary_mime;
+
 use crate::blob_store::BlobStore;
 
 /// Default inlining threshold: 1 KB.
@@ -662,44 +664,6 @@ fn value_to_string(value: &Value) -> String {
         Value::String(s) => s.clone(),
         _ => serde_json::to_string(value).unwrap_or_default(),
     }
-}
-
-/// Check if a MIME type represents binary content.
-///
-/// Binary MIME types are base64-encoded on the Jupyter wire protocol.
-/// We decode them to raw bytes before storing in the blob store so that:
-/// - The blob store holds actual binary content (33% smaller than base64)
-/// - The HTTP blob server serves correct Content-Type with real bytes
-/// - Future binary formats (Arrow IPC, Parquet) work without changes
-fn is_binary_mime(mime: &str) -> bool {
-    if mime.starts_with("image/") {
-        // SVG is plain XML text in Jupyter, not base64-encoded binary.
-        return !mime.ends_with("+xml");
-    }
-    if mime.starts_with("audio/") || mime.starts_with("video/") {
-        return true;
-    }
-
-    // application/* is binary by default, with carve-outs for text-like formats.
-    if let Some(subtype) = mime.strip_prefix("application/") {
-        // Text-like application types that should NOT be treated as binary
-        let is_text = subtype == "json"
-            || subtype == "javascript"
-            || subtype == "ecmascript"
-            || subtype == "xml"
-            || subtype == "xhtml+xml"
-            || subtype == "mathml+xml"
-            || subtype == "sql"
-            || subtype == "graphql"
-            || subtype == "x-latex"
-            || subtype == "x-tex"
-            || subtype.ends_with("+json")
-            || subtype.ends_with(".json")
-            || subtype.ends_with("+xml");
-        return !is_text;
-    }
-
-    false
 }
 
 #[cfg(test)]

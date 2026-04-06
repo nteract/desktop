@@ -16,6 +16,8 @@ use serde_json::Value;
 
 use crate::resolved_output::{DataValue, Output};
 
+pub use notebook_doc::mime::{mime_kind, MimeKind};
+
 /// MIME type for Jupyter widget view references.
 const WIDGET_VIEW_MIME: &str = "application/vnd.jupyter.widget-view+json";
 
@@ -37,22 +39,6 @@ const LLM_TEXT_MAX_SIZE: usize = 4 * 1024;
 
 /// Bytes to keep from head and tail when truncating into `text/llm+plain`.
 const LLM_TEXT_SIDE_SIZE: usize = 2 * 1024;
-
-/// Classification of a MIME type for output data.
-///
-/// This is the canonical Rust implementation of MIME classification.
-/// Must stay in sync with:
-/// - `crates/runtimed/src/output_store.rs` — `is_binary_mime()`
-/// - `apps/notebook/src/lib/manifest-resolution.ts` — `isBinaryMime()`
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MimeKind {
-    /// UTF-8 text: text/*, image/svg+xml, application/javascript, etc.
-    Text,
-    /// Raw binary bytes: image/png, audio/*, video/*, etc.
-    Binary,
-    /// JSON data: application/json, *+json
-    Json,
-}
 
 /// Metadata extracted from a ContentRef Value without resolving content.
 ///
@@ -97,55 +83,6 @@ pub fn content_ref_meta(content_ref: &Value) -> ContentRefMeta<'_> {
             blob_hash: None,
         }
     }
-}
-
-/// Classify a MIME type into Text, Binary, or Json.
-pub fn mime_kind(mime: &str) -> MimeKind {
-    // JSON types
-    if mime == "application/json" {
-        return MimeKind::Json;
-    }
-    if let Some(subtype) = mime.strip_prefix("application/") {
-        if subtype.ends_with("+json") || subtype.ends_with(".json") {
-            return MimeKind::Json;
-        }
-    }
-
-    // Binary images (but NOT SVG — that's XML text)
-    if mime.starts_with("image/") {
-        return if mime.ends_with("+xml") {
-            MimeKind::Text
-        } else {
-            MimeKind::Binary
-        };
-    }
-
-    // Audio/video are always binary
-    if mime.starts_with("audio/") || mime.starts_with("video/") {
-        return MimeKind::Binary;
-    }
-
-    // application/* is binary by default, with carve-outs for text-like formats
-    if let Some(subtype) = mime.strip_prefix("application/") {
-        let is_text = subtype == "javascript"
-            || subtype == "ecmascript"
-            || subtype == "xml"
-            || subtype == "xhtml+xml"
-            || subtype == "mathml+xml"
-            || subtype == "sql"
-            || subtype == "graphql"
-            || subtype == "x-latex"
-            || subtype == "x-tex"
-            || subtype.ends_with("+xml");
-        return if is_text {
-            MimeKind::Text
-        } else {
-            MimeKind::Binary
-        };
-    }
-
-    // Everything else (text/*, unknown) is text
-    MimeKind::Text
 }
 
 /// Resolve a structured output manifest Value to an Output.

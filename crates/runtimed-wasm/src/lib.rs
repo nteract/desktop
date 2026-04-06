@@ -10,6 +10,7 @@ use automerge::sync;
 use automerge::sync::SyncDoc;
 use automerge::Prop;
 use notebook_doc::diff::{diff_cells, CellChangeset};
+use notebook_doc::mime::is_binary_mime;
 use notebook_doc::pool_state::{PoolDoc, PoolState};
 use notebook_doc::presence;
 use notebook_doc::runtime_state::{diff_execution_outputs, RuntimeState, RuntimeStateDoc};
@@ -28,38 +29,6 @@ use wasm_bindgen::prelude::*;
 /// Using `serialize_maps_as_objects(true)` ensures all maps become plain
 /// JS Objects, matching what `JSON.parse()` would produce. The returned
 /// `JsValue` can be any JS type (object, array, scalar) depending on input.
-/// Check if a MIME type represents binary content (images, audio, video).
-///
-/// Binary MIME refs resolve to blob URLs (no fetch needed), so they're
-/// cheap to include in narrowed output bundles. Only text blob refs
-/// are expensive (HTTP roundtrip to the blob server).
-fn is_binary_mime(mime: &str) -> bool {
-    if mime.starts_with("image/") {
-        // SVG is XML text, not binary
-        return !mime.ends_with("+xml");
-    }
-    if mime.starts_with("audio/") || mime.starts_with("video/") {
-        return true;
-    }
-    // application/* is binary by default, with carve-outs for text-like formats
-    if let Some(subtype) = mime.strip_prefix("application/") {
-        let is_text = subtype == "json"
-            || subtype == "javascript"
-            || subtype == "ecmascript"
-            || subtype == "xml"
-            || subtype == "xhtml+xml"
-            || subtype == "mathml+xml"
-            || subtype == "sql"
-            || subtype == "graphql"
-            || subtype == "x-latex"
-            || subtype == "x-tex"
-            || subtype.ends_with("+json")
-            || subtype.ends_with(".json")
-            || subtype.ends_with("+xml");
-        return !is_text;
-    }
-    false
-}
 
 fn serialize_to_js<T: Serialize>(value: &T) -> Result<JsValue, serde_wasm_bindgen::Error> {
     let serializer = serde_wasm_bindgen::Serializer::new().serialize_maps_as_objects(true);
