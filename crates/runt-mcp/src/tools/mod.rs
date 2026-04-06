@@ -402,39 +402,27 @@ pub async fn build_execution_result(
     let mut items = vec![Content::text(header)];
     items.extend(crate::formatting::outputs_to_content_items(&result.outputs));
 
-    // Build structured content for MCP Apps widget.
-    // Only send structured content when there are outputs to render.
+    // Build structured content directly from manifest Values + blob URLs.
+    // No blob fetches — inline ContentRefs pass through, blobs become URLs.
     let cell_snapshot = handle.get_cell(&result.cell_id);
     let structured_content = if let Some(snap) = cell_snapshot {
         if snap.outputs.is_empty() {
             None
         } else {
-            let comms = handle.get_runtime_state().ok().map(|rs| rs.comms);
-            let outputs = runtimed_client::output_resolver::resolve_cell_outputs(
-                &snap.outputs,
-                &server.blob_base_url,
-                &server.blob_store_path,
-                comms.as_ref(),
-            )
-            .await;
             let ec_str = cell_read::get_cell_execution_count_from_runtime(handle, &snap.id);
             let ec: Option<i64> = if ec_str.is_empty() {
                 None
             } else {
                 ec_str.parse().ok()
             };
-            let resolved = runtimed_client::resolved_output::ResolvedCell {
-                id: snap.id,
-                cell_type: snap.cell_type,
-                position: snap.position,
-                source: snap.source,
-                execution_count: ec,
-                outputs,
-                metadata_json: serde_json::to_string(&snap.metadata).unwrap_or_default(),
-            };
-            Some(crate::structured::cell_structured_content(
-                &resolved,
+            Some(crate::structured::cell_structured_content_from_manifests(
+                &snap.id,
+                &snap.cell_type,
+                &snap.source,
+                &snap.outputs,
+                ec,
                 &result.status,
+                &server.blob_base_url,
             ))
         }
     } else {

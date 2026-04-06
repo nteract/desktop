@@ -19,6 +19,25 @@ use crate::resolved_output::{DataValue, Output};
 /// MIME type for Jupyter widget view references.
 const WIDGET_VIEW_MIME: &str = "application/vnd.jupyter.widget-view+json";
 
+/// Priority order for selecting the best text MIME type for LLM consumption.
+///
+/// Walk this list against the manifest's MIME keys; resolve the first match.
+/// `text/llm+plain` is either author-provided or synthesized by us when no
+/// direct text type exists (viz specs, widget state, binary-only outputs) or
+/// when the best text type was too large and got summarized.
+pub const CONTENT_PRIORITY: &[&str] = &[
+    "text/llm+plain",
+    "text/latex",
+    "text/markdown",
+    "text/plain",
+];
+
+/// When `text/plain` exceeds this size, synthesize a truncated `text/llm+plain`.
+const LLM_TEXT_MAX_SIZE: usize = 4 * 1024;
+
+/// Bytes to keep from head and tail when truncating into `text/llm+plain`.
+const LLM_TEXT_SIDE_SIZE: usize = 2 * 1024;
+
 /// Classification of a MIME type for output data.
 ///
 /// This is the canonical Rust implementation of MIME classification.
@@ -33,6 +52,51 @@ pub enum MimeKind {
     Binary,
     /// JSON data: application/json, *+json
     Json,
+}
+
+/// Metadata extracted from a ContentRef Value without resolving content.
+///
+/// Enables inspection of manifest entries (MIME type, size, blob hash) without
+/// any I/O. After #1558 inlined manifests into the RuntimeStateDoc, this is
+/// all we need to decide what to fetch for LLM consumption.
+pub struct ContentRefMeta<'a> {
+    /// True if the content is inlined in the CRDT (< 1KB).
+    pub is_inline: bool,
+    /// Content size in bytes. For inline refs this is the string length;
+    /// for blob refs it comes from the `size` field written at storage time.
+    pub size: u64,
+    /// Blob hash, if the content is stored in the blob store.
+    pub blob_hash: Option<&'a str>,
+}
+
+/// Extract metadata from a ContentRef Value without resolving the content.
+///
+/// Works with both `{"inline": "..."}` and `{"blob": "hash", "size": N}` shapes.
+pub fn content_ref_meta(content_ref: &Value) -> ContentRefMeta<'_> {
+    if let Some(inline) = content_ref.get("inline") {
+        let size = inline.as_str().map(|s| s.len() as u64).unwrap_or(0);
+        ContentRefMeta {
+            is_inline: true,
+            size,
+            blob_hash: None,
+        }
+    } else if let Some(blob_hash) = content_ref.get("blob").and_then(|v| v.as_str()) {
+        let size = content_ref
+            .get("size")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        ContentRefMeta {
+            is_inline: false,
+            size,
+            blob_hash: Some(blob_hash),
+        }
+    } else {
+        ContentRefMeta {
+            is_inline: false,
+            size: 0,
+            blob_hash: None,
+        }
+    }
 }
 
 /// Classify a MIME type into Text, Binary, or Json.
@@ -417,6 +481,263 @@ pub async fn resolve_cell_outputs(
         }
     }
     outputs
+}
+
+// ── LLM-selective resolution ────────────────────────────────────────
+//
+// These functions resolve only what the MCP LLM text path needs from
+// output manifests. Instead of fetching every blob, they walk
+// CONTENT_PRIORITY to find the single best text MIME, resolve just that,
+// and synthesize `text/llm+plain` from manifest metadata when no direct
+// text representation exists.
+
+/// Resolve all outputs for a cell, fetching only what the LLM text path needs.
+///
+/// Drop-in replacement for [`resolve_cell_outputs`] in MCP tool handlers.
+/// Streams and errors are resolved normally (text-only, cheap). For
+/// `display_data`/`execute_result`, only the highest-priority text MIME
+/// is resolved; everything else is described from manifest metadata.
+pub async fn resolve_cell_outputs_for_llm(
+    raw_outputs: &[serde_json::Value],
+    blob_base_url: &Option<String>,
+    blob_store_path: &Option<PathBuf>,
+    comms: Option<&HashMap<String, CommDocEntry>>,
+) -> Vec<Output> {
+    let mut outputs = Vec::with_capacity(raw_outputs.len());
+    for manifest in raw_outputs {
+        if let Some(output) =
+            resolve_output_for_llm(manifest, blob_base_url, blob_store_path, comms).await
+        {
+            outputs.push(output);
+        }
+    }
+    outputs
+}
+
+/// Resolve a single output manifest for LLM consumption.
+///
+/// Streams and errors pass through the normal resolver (text-only, cheap).
+/// Display data / execute results use [`resolve_display_for_llm`] which
+/// only fetches the highest-priority text MIME type.
+pub async fn resolve_output_for_llm(
+    manifest: &serde_json::Value,
+    blob_base_url: &Option<String>,
+    blob_store_path: &Option<PathBuf>,
+    comms: Option<&HashMap<String, CommDocEntry>>,
+) -> Option<Output> {
+    let output_type = manifest.get("output_type")?.as_str()?;
+
+    match output_type {
+        // Stream and error are text-only — resolve as normal.
+        "stream" => {
+            let name = manifest.get("name")?.as_str()?;
+            let text_ref = manifest.get("text")?;
+            let text = resolve_text_ref(text_ref, blob_base_url, blob_store_path).await?;
+            Some(Output::stream(name, &text))
+        }
+        "error" => {
+            let ename = manifest.get("ename")?.as_str()?.to_string();
+            let evalue = manifest.get("evalue")?.as_str()?.to_string();
+            let traceback_val = manifest.get("traceback")?;
+            let traceback = if let Some(arr) = traceback_val.as_array() {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            } else {
+                let tb_str =
+                    resolve_text_ref(traceback_val, blob_base_url, blob_store_path).await?;
+                serde_json::from_str::<Vec<String>>(&tb_str).ok()?
+            };
+            Some(Output::error(&ename, &evalue, traceback))
+        }
+        "display_data" | "execute_result" => {
+            resolve_display_for_llm(output_type, manifest, blob_base_url, blob_store_path, comms)
+                .await
+        }
+        _ => None,
+    }
+}
+
+/// Selectively resolve a display_data or execute_result manifest for LLM use.
+///
+/// 1. Walk [`CONTENT_PRIORITY`] against the manifest's MIME keys.
+/// 2. If a priority MIME exists, resolve just that one ContentRef.
+///    - If `text/plain` and too large, synthesize a truncated `text/llm+plain`.
+/// 3. If no priority MIME exists, synthesize `text/llm+plain`:
+///    - Resolve viz JSON specs for `summarize_viz`.
+///    - Resolve widget JSON for widget state summaries.
+///    - Describe binary/heavy-text MIMEs from ContentRef metadata (no fetch).
+/// 4. Return an Output with only the resolved/synthesized entries.
+async fn resolve_display_for_llm(
+    output_type: &str,
+    manifest: &serde_json::Value,
+    blob_base_url: &Option<String>,
+    blob_store_path: &Option<PathBuf>,
+    comms: Option<&HashMap<String, CommDocEntry>>,
+) -> Option<Output> {
+    let data_map = manifest.get("data")?.as_object()?;
+
+    let mut output_data: HashMap<String, DataValue> = HashMap::new();
+
+    // Phase 1: Try to resolve the highest-priority text MIME that exists.
+    let mut found_priority = false;
+    for &mime in CONTENT_PRIORITY {
+        let Some(content_ref) = data_map.get(mime) else {
+            continue;
+        };
+        let Some(content) =
+            resolve_content_ref(content_ref, blob_base_url, blob_store_path, Some(mime)).await
+        else {
+            continue; // Resolution failed, try next priority.
+        };
+
+        // For text/plain: if too large, synthesize truncated text/llm+plain.
+        if mime == "text/plain" {
+            if let DataValue::Text(ref text) = content {
+                if text.len() > LLM_TEXT_MAX_SIZE {
+                    let truncated = truncate_head_tail(text, LLM_TEXT_SIDE_SIZE);
+                    output_data.insert("text/llm+plain".to_string(), DataValue::Text(truncated));
+                }
+            }
+        }
+
+        output_data.insert(mime.to_string(), content);
+        found_priority = true;
+        break;
+    }
+
+    // Phase 2: No priority MIME found — synthesize text/llm+plain from metadata.
+    if !found_priority {
+        // 2a: Resolve JSON types for viz summarization.
+        for (mime, content_ref) in data_map {
+            if mime_kind(mime) == MimeKind::Json {
+                if let Some(content) =
+                    resolve_content_ref(content_ref, blob_base_url, blob_store_path, Some(mime))
+                        .await
+                {
+                    output_data.insert(mime.to_string(), content);
+                }
+            }
+        }
+        synthesize_llm_plain_for_viz(&mut output_data);
+
+        // 2b: Widget synthesis (if viz didn't produce text/llm+plain).
+        if !output_data.contains_key("text/llm+plain") {
+            if let Some(widget_ref) = data_map.get(WIDGET_VIEW_MIME) {
+                if !output_data.contains_key(WIDGET_VIEW_MIME) {
+                    if let Some(content) = resolve_content_ref(
+                        widget_ref,
+                        blob_base_url,
+                        blob_store_path,
+                        Some(WIDGET_VIEW_MIME),
+                    )
+                    .await
+                    {
+                        output_data.insert(WIDGET_VIEW_MIME.to_string(), content);
+                    }
+                }
+                if let Some(comms) = comms {
+                    synthesize_llm_plain_for_widgets(&mut output_data, comms);
+                }
+            }
+        }
+
+        // 2c: Large JSON summary (if still no text/llm+plain).
+        if !output_data.contains_key("text/llm+plain") {
+            if let Some(DataValue::Json(ref val)) = output_data.get("application/json") {
+                if let Some(summary) = repr_llm::summarize_json(val) {
+                    output_data.insert("text/llm+plain".to_string(), DataValue::Text(summary));
+                }
+            }
+        }
+
+        // 2d: Describe remaining MIMEs from manifest metadata (no fetches).
+        if !output_data.contains_key("text/llm+plain") {
+            let mut descriptions: Vec<String> = Vec::new();
+
+            for (mime, content_ref) in data_map {
+                // Skip JSON (already resolved above) and widget view.
+                if mime_kind(mime) == MimeKind::Json || mime == WIDGET_VIEW_MIME {
+                    continue;
+                }
+
+                let meta = content_ref_meta(content_ref);
+                let label = mime_label(mime);
+                let kb = meta.size / 1024;
+                let mut desc = format!("{label} output ({mime}, {kb} KB)");
+
+                // Append blob URL so the LLM can fetch if it wants.
+                if let Some(hash) = meta.blob_hash {
+                    if let Some(base_url) = blob_base_url {
+                        desc.push_str(&format!("\n{}/blob/{}", base_url, hash));
+                    }
+                }
+                descriptions.push(desc);
+            }
+
+            if !descriptions.is_empty() {
+                output_data.insert(
+                    "text/llm+plain".to_string(),
+                    DataValue::Text(descriptions.join("\n")),
+                );
+            }
+        }
+    }
+
+    // Build the output.
+    if output_type == "execute_result" {
+        let execution_count = manifest.get("execution_count").and_then(|v| v.as_i64())?;
+        Some(Output::execute_result(output_data, execution_count))
+    } else {
+        Some(Output::display_data(output_data))
+    }
+}
+
+/// Truncate text keeping head and tail, since errors and results tend to
+/// appear at the bottom while context (imports, setup) is at the top.
+fn truncate_head_tail(text: &str, side_bytes: usize) -> String {
+    if text.len() <= side_bytes * 2 {
+        return text.to_string();
+    }
+
+    // Find char boundary at or before the head limit.
+    let mut head_end = side_bytes;
+    while head_end > 0 && !text.is_char_boundary(head_end) {
+        head_end -= 1;
+    }
+
+    // Find char boundary at or after the tail start.
+    let mut tail_start = text.len() - side_bytes;
+    while tail_start < text.len() && !text.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+
+    let omitted = tail_start - head_end;
+    format!(
+        "{}\n[... truncated {} bytes ...]\n{}",
+        &text[..head_end],
+        omitted,
+        &text[tail_start..],
+    )
+}
+
+/// Human-readable label for a MIME type in synthesis descriptions.
+fn mime_label(mime: &str) -> &str {
+    if mime == "image/svg+xml" {
+        "SVG image"
+    } else if mime.starts_with("image/") {
+        "Image"
+    } else if mime.starts_with("audio/") {
+        "Audio"
+    } else if mime.starts_with("video/") {
+        "Video"
+    } else if mime == "text/html" {
+        "HTML"
+    } else if mime == "text/latex" {
+        "LaTeX"
+    } else {
+        "Content"
+    }
 }
 
 /// Synthesize `text/llm+plain` from visualization specs (Plotly, Vega-Lite, Vega).
@@ -833,5 +1154,429 @@ fn truncate_str(s: &str, max: usize) -> String {
     } else {
         let truncated: String = s.chars().take(max).collect();
         format!("{truncated}\u{2026}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // ── content_ref_meta ────────────────────────────────────────
+
+    #[test]
+    fn content_ref_meta_inline() {
+        let cr = json!({"inline": "hello world"});
+        let meta = content_ref_meta(&cr);
+        assert!(meta.is_inline);
+        assert_eq!(meta.size, 11);
+        assert!(meta.blob_hash.is_none());
+    }
+
+    #[test]
+    fn content_ref_meta_blob() {
+        let cr = json!({"blob": "abc123def456", "size": 50_000});
+        let meta = content_ref_meta(&cr);
+        assert!(!meta.is_inline);
+        assert_eq!(meta.size, 50_000);
+        assert_eq!(meta.blob_hash, Some("abc123def456"));
+    }
+
+    #[test]
+    fn content_ref_meta_blob_missing_size() {
+        let cr = json!({"blob": "abc123"});
+        let meta = content_ref_meta(&cr);
+        assert!(!meta.is_inline);
+        assert_eq!(meta.size, 0);
+        assert_eq!(meta.blob_hash, Some("abc123"));
+    }
+
+    #[test]
+    fn content_ref_meta_malformed() {
+        let cr = json!({"unexpected": true});
+        let meta = content_ref_meta(&cr);
+        assert!(!meta.is_inline);
+        assert_eq!(meta.size, 0);
+        assert!(meta.blob_hash.is_none());
+    }
+
+    #[test]
+    fn content_ref_meta_raw_string_legacy() {
+        // Legacy outputs are plain strings, not ContentRef objects
+        let cr = json!("some raw text");
+        let meta = content_ref_meta(&cr);
+        assert!(!meta.is_inline);
+        assert_eq!(meta.size, 0);
+        assert!(meta.blob_hash.is_none());
+    }
+
+    // ── truncate_head_tail ──────────────────────────────────────
+
+    #[test]
+    fn truncate_short_text_unchanged() {
+        let text = "short";
+        assert_eq!(truncate_head_tail(text, 100), "short");
+    }
+
+    #[test]
+    fn truncate_exactly_at_boundary() {
+        // 2 * side_bytes = total, should NOT truncate
+        let text = "a".repeat(200);
+        assert_eq!(truncate_head_tail(&text, 100), text);
+    }
+
+    #[test]
+    fn truncate_one_over_boundary() {
+        // 201 bytes, side=100 → head 100 + tail 100, middle 1 byte truncated
+        let text = "a".repeat(201);
+        let result = truncate_head_tail(&text, 100);
+        assert!(result.contains("[... truncated 1 bytes ...]"));
+        assert!(result.starts_with(&"a".repeat(100)));
+        assert!(result.ends_with(&"a".repeat(100)));
+    }
+
+    #[test]
+    fn truncate_large_text() {
+        let text = format!("HEAD{}{}", "x".repeat(10_000), "TAIL");
+        let result = truncate_head_tail(&text, 10);
+        assert!(result.starts_with("HEAD"));
+        assert!(result.ends_with("TAIL"));
+        assert!(result.contains("[... truncated"));
+    }
+
+    #[test]
+    fn truncate_multibyte_unicode_boundary() {
+        // '€' is 3 bytes (U+20AC). Put it right at the cut boundary.
+        // side_bytes=5, so we need text > 10 bytes total.
+        let text = "ab€€€€cd"; // 2 + 4*3 + 2 = 16 bytes
+        let result = truncate_head_tail(text, 5);
+        // Should find a valid char boundary, not panic
+        assert!(result.contains("[... truncated"));
+        // Verify the result is valid UTF-8 (it is, since it's a String)
+        assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn truncate_preserves_head_and_tail_content() {
+        let head = "ERROR at line 1\n";
+        let middle = "x".repeat(10_000);
+        let tail = "\nTraceback: something failed";
+        let text = format!("{head}{middle}{tail}");
+        let result = truncate_head_tail(&text, 100);
+        // Head content preserved
+        assert!(result.starts_with("ERROR at line 1"));
+        // Tail content preserved
+        assert!(result.ends_with("something failed"));
+    }
+
+    // ── mime_label ──────────────────────────────────────────────
+
+    #[test]
+    fn mime_labels() {
+        assert_eq!(mime_label("image/svg+xml"), "SVG image");
+        assert_eq!(mime_label("image/png"), "Image");
+        assert_eq!(mime_label("image/jpeg"), "Image");
+        assert_eq!(mime_label("audio/wav"), "Audio");
+        assert_eq!(mime_label("audio/mpeg"), "Audio");
+        assert_eq!(mime_label("video/mp4"), "Video");
+        assert_eq!(mime_label("text/html"), "HTML");
+        assert_eq!(mime_label("text/latex"), "LaTeX");
+        assert_eq!(mime_label("application/octet-stream"), "Content");
+    }
+
+    // ── CONTENT_PRIORITY constant ───────────────────────────────
+
+    #[test]
+    fn content_priority_order() {
+        assert_eq!(CONTENT_PRIORITY[0], "text/llm+plain");
+        assert_eq!(CONTENT_PRIORITY[1], "text/latex");
+        assert_eq!(CONTENT_PRIORITY[2], "text/markdown");
+        assert_eq!(CONTENT_PRIORITY[3], "text/plain");
+    }
+
+    // ── resolve_display_for_llm (async) ─────────────────────────
+
+    /// Helper to build a display_data manifest with inline data entries.
+    fn make_display_manifest(data: serde_json::Value) -> serde_json::Value {
+        json!({
+            "output_type": "display_data",
+            "data": data,
+        })
+    }
+
+    fn make_execute_result_manifest(data: serde_json::Value, ec: i64) -> serde_json::Value {
+        json!({
+            "output_type": "execute_result",
+            "data": data,
+            "execution_count": ec,
+        })
+    }
+
+    /// Helper: inline ContentRef
+    fn inline_ref(content: &str) -> serde_json::Value {
+        json!({"inline": content})
+    }
+
+    /// Helper: blob ContentRef (won't resolve without a blob store)
+    fn blob_ref(hash: &str, size: u64) -> serde_json::Value {
+        json!({"blob": hash, "size": size})
+    }
+
+    #[tokio::test]
+    async fn llm_resolves_text_plain_only() {
+        let manifest = make_display_manifest(json!({
+            "text/plain": inline_ref("hello world"),
+            "image/png": blob_ref("abc123", 50_000),
+        }));
+        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+            panic!("resolve should succeed");
+        };
+        let Some(data) = output.data else {
+            panic!("output should have data");
+        };
+
+        // text/plain resolved
+        assert!(matches!(data.get("text/plain"), Some(DataValue::Text(s)) if s == "hello world"));
+        // image/png NOT resolved (no blob store, but more importantly: not attempted)
+        assert!(!data.contains_key("image/png"));
+    }
+
+    #[tokio::test]
+    async fn llm_latex_wins_over_plain() {
+        let manifest = make_display_manifest(json!({
+            "text/latex": inline_ref("$E=mc^2$"),
+            "text/plain": inline_ref("E=mc^2"),
+        }));
+        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+            panic!("resolve should succeed");
+        };
+        let Some(data) = output.data else {
+            panic!("output should have data");
+        };
+
+        // text/latex should be resolved (it's higher priority than text/plain)
+        assert!(matches!(data.get("text/latex"), Some(DataValue::Text(s)) if s == "$E=mc^2$"));
+        // text/plain should NOT be resolved (lower priority, not needed)
+        assert!(!data.contains_key("text/plain"));
+    }
+
+    #[tokio::test]
+    async fn llm_author_provided_llm_plain_wins() {
+        let manifest = make_display_manifest(json!({
+            "text/llm+plain": inline_ref("Author's summary"),
+            "text/plain": inline_ref("raw repr"),
+            "image/png": blob_ref("img123", 100_000),
+        }));
+        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+            panic!("resolve should succeed");
+        };
+        let Some(data) = output.data else {
+            panic!("output should have data");
+        };
+
+        assert!(
+            matches!(data.get("text/llm+plain"), Some(DataValue::Text(s)) if s == "Author's summary")
+        );
+        assert!(!data.contains_key("text/plain"));
+        assert!(!data.contains_key("image/png"));
+    }
+
+    #[tokio::test]
+    async fn llm_large_text_plain_gets_truncated() {
+        let large_text = format!("START{}{}", "x".repeat(10_000), "END");
+        let manifest = make_display_manifest(json!({
+            "text/plain": inline_ref(&large_text),
+        }));
+        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+            panic!("resolve should succeed");
+        };
+        let Some(data) = output.data else {
+            panic!("output should have data");
+        };
+
+        // text/plain is resolved (it's the content)
+        assert!(data.contains_key("text/plain"));
+        // text/llm+plain is synthesized as truncated version
+        let llm = match data.get("text/llm+plain") {
+            Some(DataValue::Text(s)) => s.clone(),
+            _ => panic!("expected text/llm+plain"),
+        };
+        assert!(llm.contains("[... truncated"));
+        assert!(llm.starts_with("START"));
+        assert!(llm.ends_with("END"));
+    }
+
+    #[tokio::test]
+    async fn llm_text_plain_under_threshold_not_truncated() {
+        // 4096 bytes exactly = LLM_TEXT_MAX_SIZE, should NOT truncate (> threshold, not >=)
+        let text = "a".repeat(4096);
+        let manifest = make_display_manifest(json!({
+            "text/plain": inline_ref(&text),
+        }));
+        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+            panic!("resolve should succeed");
+        };
+        let Some(data) = output.data else {
+            panic!("output should have data");
+        };
+
+        // No text/llm+plain synthesized — text/plain is under/at threshold
+        assert!(!data.contains_key("text/llm+plain"));
+        assert!(matches!(data.get("text/plain"), Some(DataValue::Text(s)) if s.len() == 4096));
+    }
+
+    #[tokio::test]
+    async fn llm_no_text_mime_binary_only_described() {
+        let manifest = make_display_manifest(json!({
+            "image/png": blob_ref("png123", 45_000),
+            "image/svg+xml": blob_ref("svg456", 12_000),
+        }));
+        let blob_base = Some("http://localhost:9999".to_string());
+        let Some(output) = resolve_output_for_llm(&manifest, &blob_base, &None, None).await else {
+            panic!("resolve should succeed");
+        };
+        let Some(data) = output.data else {
+            panic!("output should have data");
+        };
+
+        // No image data resolved
+        assert!(!data.contains_key("image/png"));
+        assert!(!data.contains_key("image/svg+xml"));
+
+        // text/llm+plain synthesized from metadata
+        let llm = match data.get("text/llm+plain") {
+            Some(DataValue::Text(s)) => s.clone(),
+            _ => panic!("expected text/llm+plain synthesis"),
+        };
+        assert!(llm.contains("image/png"));
+        assert!(llm.contains("45 KB") || llm.contains("43 KB")); // 45000/1024 ≈ 43
+        assert!(llm.contains("http://localhost:9999/blob/png123"));
+    }
+
+    #[tokio::test]
+    async fn llm_empty_data_map() {
+        let manifest = make_display_manifest(json!({}));
+        let output = resolve_output_for_llm(&manifest, &None, &None, None).await;
+        // Empty data map still produces an output, just with empty data
+        let Some(output) = output else {
+            panic!("should produce output");
+        };
+        let Some(data) = output.data else {
+            panic!("should have data");
+        };
+        assert!(data.is_empty());
+    }
+
+    #[tokio::test]
+    async fn llm_stream_resolves_normally() {
+        let manifest = json!({
+            "output_type": "stream",
+            "name": "stdout",
+            "text": inline_ref("hello from stdout"),
+        });
+        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+            panic!("resolve should succeed");
+        };
+        assert_eq!(output.output_type, "stream");
+        assert_eq!(output.text.as_deref(), Some("hello from stdout"));
+    }
+
+    #[tokio::test]
+    async fn llm_error_resolves_normally() {
+        let manifest = json!({
+            "output_type": "error",
+            "ename": "ValueError",
+            "evalue": "bad value",
+            "traceback": ["line 1", "line 2"],
+        });
+        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+            panic!("resolve should succeed");
+        };
+        assert_eq!(output.output_type, "error");
+        assert_eq!(output.ename.as_deref(), Some("ValueError"));
+        let Some(ref traceback) = output.traceback else {
+            panic!("should have traceback");
+        };
+        assert_eq!(traceback.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn llm_execute_result_has_execution_count() {
+        let manifest = make_execute_result_manifest(json!({"text/plain": inline_ref("42")}), 5);
+        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+            panic!("resolve should succeed");
+        };
+        assert_eq!(output.output_type, "execute_result");
+        assert_eq!(output.execution_count, Some(5));
+    }
+
+    #[tokio::test]
+    async fn llm_blob_text_plain_falls_through_on_failure() {
+        // text/latex is a blob that can't resolve (no store), text/plain is inline
+        let manifest = make_display_manifest(json!({
+            "text/latex": blob_ref("latex_hash", 5000),
+            "text/plain": inline_ref("fallback plain"),
+        }));
+        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+            panic!("resolve should succeed");
+        };
+        let Some(data) = output.data else {
+            panic!("output should have data");
+        };
+
+        // text/latex resolution failed → fell through to text/plain
+        assert!(!data.contains_key("text/latex"));
+        assert!(
+            matches!(data.get("text/plain"), Some(DataValue::Text(s)) if s == "fallback plain")
+        );
+    }
+
+    #[tokio::test]
+    async fn llm_only_html_gets_described() {
+        // text/html is NOT in CONTENT_PRIORITY — should be described, not resolved
+        let manifest = make_display_manifest(json!({
+            "text/html": blob_ref("html_hash", 8_000),
+        }));
+        let blob_base = Some("http://localhost:9999".to_string());
+        let Some(output) = resolve_output_for_llm(&manifest, &blob_base, &None, None).await else {
+            panic!("resolve should succeed");
+        };
+        let Some(data) = output.data else {
+            panic!("output should have data");
+        };
+
+        assert!(!data.contains_key("text/html"));
+        let llm = match data.get("text/llm+plain") {
+            Some(DataValue::Text(s)) => s.clone(),
+            _ => panic!("expected text/llm+plain for HTML-only output"),
+        };
+        assert!(llm.contains("HTML"));
+        assert!(llm.contains("text/html"));
+        assert!(llm.contains("http://localhost:9999/blob/html_hash"));
+    }
+
+    #[tokio::test]
+    async fn llm_resolve_cell_outputs_for_llm_mixed() {
+        let manifests = vec![
+            json!({
+                "output_type": "stream",
+                "name": "stdout",
+                "text": inline_ref("print output"),
+            }),
+            make_display_manifest(json!({
+                "text/plain": inline_ref("<Figure>"),
+                "image/png": blob_ref("fig_png", 80_000),
+            })),
+        ];
+        let outputs = resolve_cell_outputs_for_llm(&manifests, &None, &None, None).await;
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(outputs[0].output_type, "stream");
+        assert_eq!(outputs[1].output_type, "display_data");
+        // The display_data should only have text/plain, not image/png
+        let Some(ref data) = outputs[1].data else {
+            panic!("display_data should have data");
+        };
+        assert!(data.contains_key("text/plain"));
+        assert!(!data.contains_key("image/png"));
     }
 }

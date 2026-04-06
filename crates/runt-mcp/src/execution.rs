@@ -152,7 +152,7 @@ pub async fn execute_and_wait(
 
     let comms = handle.get_runtime_state().ok().map(|rs| rs.comms);
     let outputs = if !output_manifests.is_empty() {
-        output_resolver::resolve_cell_outputs(
+        output_resolver::resolve_cell_outputs_for_llm(
             &output_manifests,
             blob_base_url,
             blob_store_path,
@@ -160,7 +160,7 @@ pub async fn execute_and_wait(
         )
         .await
     } else if let Some(cell_snapshot) = handle.get_cell(cell_id) {
-        output_resolver::resolve_cell_outputs(
+        output_resolver::resolve_cell_outputs_for_llm(
             &cell_snapshot.outputs,
             blob_base_url,
             blob_store_path,

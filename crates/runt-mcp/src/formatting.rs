@@ -15,9 +15,11 @@ static ANSI_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// MIME types to try for text output, in priority order.
-/// text/llm+plain is a custom MIME for LLM-friendly representations.
+/// Matches the `CONTENT_PRIORITY` order in `output_resolver.rs` with
+/// `application/json` appended as a formatting-layer fallback.
 const TEXT_MIME_PRIORITY: &[&str] = &[
     "text/llm+plain",
+    "text/latex",
     "text/markdown",
     "text/plain",
     "application/json",
