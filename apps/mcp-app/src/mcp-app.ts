@@ -1,4 +1,8 @@
-import { App, applyDocumentTheme, type McpUiHostContext } from "@modelcontextprotocol/ext-apps";
+import {
+  App,
+  applyDocumentTheme,
+  type McpUiHostContext,
+} from "@modelcontextprotocol/ext-apps";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 const root = document.getElementById("root")!;
@@ -11,7 +15,7 @@ interface CellOutput {
   text?: string;
   ename?: string;
   evalue?: string;
-  traceback?: string[];
+  traceback?: string[] | string;
   data?: Record<string, string>;
 }
 
@@ -40,25 +44,71 @@ function renderOutput(output: CellOutput): HTMLElement {
 
   if (output.output_type === "stream") {
     const pre = document.createElement("div");
-    pre.className = "stream" + (output.name === "stderr" ? " stream-stderr" : "");
-    pre.textContent = stripAnsi(output.text || "");
+    pre.className =
+      "stream" + (output.name === "stderr" ? " stream-stderr" : "");
+    const text = output.text || "";
+    if (text.startsWith("http://") || text.startsWith("https://")) {
+      pre.textContent = "Loading…";
+      fetch(text)
+        .then((r) => r.text())
+        .then((t) => {
+          pre.textContent = stripAnsi(t);
+        })
+        .catch(() => {
+          pre.textContent = text;
+        });
+    } else {
+      pre.textContent = stripAnsi(text);
+    }
     el.appendChild(pre);
   } else if (output.output_type === "error") {
     const pre = document.createElement("div");
     pre.className = "error-output";
-    const parts: string[] = [];
-    if (output.ename) parts.push(`${output.ename}: ${output.evalue || ""}`);
-    if (output.traceback?.length) parts.push(output.traceback.map(stripAnsi).join("\n"));
-    pre.textContent = parts.join("\n\n");
+    const header = output.ename
+      ? `${output.ename}: ${output.evalue || ""}`
+      : "";
+    const tb = output.traceback;
+    if (
+      typeof tb === "string" &&
+      (tb.startsWith("http://") || tb.startsWith("https://"))
+    ) {
+      pre.textContent = header || "Loading…";
+      fetch(tb)
+        .then((r) => r.json())
+        .then((lines: string[]) => {
+          const parts: string[] = [];
+          if (header) parts.push(header);
+          if (Array.isArray(lines) && lines.length)
+            parts.push(lines.map(stripAnsi).join("\n"));
+          pre.textContent = parts.join("\n\n");
+        })
+        .catch(() => {
+          pre.textContent = header || tb;
+        });
+    } else {
+      const parts: string[] = [];
+      if (header) parts.push(header);
+      if (Array.isArray(tb) && tb.length)
+        parts.push(tb.map(stripAnsi).join("\n"));
+      pre.textContent = parts.join("\n\n");
+    }
     el.appendChild(pre);
-  } else if (output.output_type === "display_data" || output.output_type === "execute_result") {
+  } else if (
+    output.output_type === "display_data" ||
+    output.output_type === "execute_result"
+  ) {
     const data = output.data || {};
-    const imgMime = ["image/png", "image/jpeg", "image/gif", "image/webp"].find(m => data[m]);
+    const imgMime = ["image/png", "image/jpeg", "image/gif", "image/webp"].find(
+      (m) => data[m],
+    );
     if (imgMime) {
       const img = document.createElement("img");
       img.className = "image-output";
       const raw = data[imgMime];
-      img.src = raw.startsWith("data:") || raw.startsWith("http") ? raw : `data:${imgMime};base64,${raw}`;
+      img.src =
+        raw.startsWith("data:") || raw.startsWith("http")
+          ? raw
+          : `data:${imgMime};base64,${raw}`;
       if (data["text/plain"]) img.alt = data["text/plain"];
       el.appendChild(img);
     } else if (data["text/html"]) {
@@ -85,7 +135,9 @@ function renderOutput(output: CellOutput): HTMLElement {
         try {
           const h = frame.contentDocument?.documentElement?.scrollHeight;
           if (h) frame.style.height = `${h + 2}px`;
-        } catch { /* cross-origin, ignore */ }
+        } catch {
+          /* cross-origin, ignore */
+        }
       });
       el.appendChild(frame);
     } else if (data["application/json"]) {
@@ -93,7 +145,8 @@ function renderOutput(output: CellOutput): HTMLElement {
       pre.className = "display-text";
       const jsonData = data["application/json"];
       try {
-        const obj = typeof jsonData === "string" ? JSON.parse(jsonData) : jsonData;
+        const obj =
+          typeof jsonData === "string" ? JSON.parse(jsonData) : jsonData;
         pre.textContent = JSON.stringify(obj, null, 2);
       } catch {
         pre.textContent = String(jsonData);
@@ -150,15 +203,17 @@ function render(data: NteractContent) {
   }
 
   // Check if any cell has actual outputs to display
-  const hasOutputs = cells.some(c => c.outputs?.length > 0);
+  const hasOutputs = cells.some((c) => c.outputs?.length > 0);
   if (!hasOutputs) {
     // Cells exist but no outputs (e.g., import statements, assignments).
     // Show a minimal status indicator instead of the noisy "No output" box.
     const status = cells[0]?.status;
     if (status === "error") {
-      root.innerHTML = '<div class="status-indicator status-error">✗ Error</div>';
+      root.innerHTML =
+        '<div class="status-indicator status-error">✗ Error</div>';
     } else if (status === "running") {
-      root.innerHTML = '<div class="status-indicator status-running">◐ Running…</div>';
+      root.innerHTML =
+        '<div class="status-indicator status-running">◐ Running…</div>';
     }
     // For "idle" with no outputs, show nothing — clean and quiet.
     return;
