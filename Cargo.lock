@@ -6237,6 +6237,8 @@ dependencies = [
  "tar",
  "tempfile",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
  "uuid",
  "walkdir",
 ]

@@ -45,8 +45,8 @@ pub use runt_workspace::{
     daemon_base_dir_for, daemon_binary_basename, daemon_binary_basename_for, daemon_launchd_label,
     daemon_service_basename, default_notebook_log_path, default_socket_path, desktop_display_name,
     desktop_display_name_for, desktop_product_name, get_workspace_name, get_workspace_path,
-    is_dev_mode, open_notebook_app_for_channel, session_state_path, settings_json_path,
-    socket_path_for_channel, worktree_hash, BuildChannel,
+    is_dev_mode, mcp_logs_dir, open_notebook_app_for_channel, session_state_path,
+    settings_json_path, socket_path_for_channel, worktree_hash, BuildChannel,
 };
 
 /// Get the default log path for the daemon.

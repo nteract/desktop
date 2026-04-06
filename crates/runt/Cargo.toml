@@ -39,6 +39,8 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 flate2 = "1"
 notify = "8"
 tar = "0.4"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 walkdir = "2"
 
 [dev-dependencies]

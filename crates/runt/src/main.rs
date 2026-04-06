@@ -650,6 +650,48 @@ async fn async_main(command: Option<Commands>) -> Result<()> {
 }
 
 async fn run_mcp_server(no_show: bool) -> Result<()> {
+    // ── Initialize file logging ──────────────────────────────────────
+    // MCP servers use stdio for the JSON-RPC protocol, so we log to a
+    // file only. Each session gets its own file (date + short random ID)
+    // to support multiple concurrent MCP server instances.
+    let log_dir = runt_workspace::mcp_logs_dir();
+    let _ = std::fs::create_dir_all(&log_dir);
+
+    let session_id = &uuid::Uuid::new_v4().to_string()[..8];
+    let date = chrono::Local::now().format("%Y-%m-%d");
+    let log_filename = format!("{date}-{session_id}.log");
+    let log_path = log_dir.join(&log_filename);
+
+    // Prune logs older than 7 days
+    prune_old_mcp_logs(&log_dir, 7);
+
+    if let Ok(log_file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+    {
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+
+        let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+        let file_layer = tracing_subscriber::fmt::layer()
+            .with_writer(std::sync::Mutex::new(log_file))
+            .with_ansi(false);
+
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(file_layer)
+            .init();
+
+        tracing::info!(
+            pid = std::process::id(),
+            log = %log_path.display(),
+            "MCP server starting"
+        );
+    }
+
+    // ── Server setup ─────────────────────────────────────────────────
     let socket_path = runtimed_client::daemon_paths::get_socket_path();
     let (blob_base_url, blob_store_path) =
         runtimed_client::daemon_paths::get_blob_paths_async(&socket_path).await;
@@ -716,6 +758,29 @@ async fn run_mcp_server(no_show: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Delete MCP log files older than `max_age_days` days.
+fn prune_old_mcp_logs(dir: &std::path::Path, max_age_days: u64) {
+    let cutoff =
+        std::time::SystemTime::now() - std::time::Duration::from_secs(max_age_days * 24 * 60 * 60);
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("log") {
+            continue;
+        }
+        if let Ok(meta) = path.metadata() {
+            if let Ok(modified) = meta.modified() {
+                if modified < cutoff {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+        }
+    }
 }
 
 async fn jupyter_command(command: JupyterCommands) -> Result<()> {
@@ -3309,18 +3374,58 @@ async fn diagnostics_command(output_dir: Option<PathBuf>) -> Result<()> {
         );
     }
 
-    // 3. daemon status --json
+    // 3. MCP server session logs (most recent 10 by mtime)
+    let mcp_dir = runt_workspace::mcp_logs_dir();
+    if mcp_dir.is_dir() {
+        let mut log_files: Vec<_> = std::fs::read_dir(&mcp_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| ext == "log")
+            })
+            .filter_map(|e| {
+                let mtime = e.metadata().ok()?.modified().ok()?;
+                Some((e.path(), mtime))
+            })
+            .collect();
+        log_files.sort_by(|a, b| b.1.cmp(&a.1)); // newest first
+        let selected: Vec<_> = log_files.into_iter().take(10).collect();
+
+        if selected.is_empty() {
+            println!("  {} mcp-logs/ (empty)", "–".yellow());
+        } else {
+            for (path, _) in &selected {
+                if let Some(name) = path.file_name() {
+                    let archive_name = format!("mcp-logs/{}", name.to_string_lossy());
+                    tar.append_path_with_name(path, &archive_name)?;
+                }
+            }
+            println!(
+                "  {} mcp-logs/ ({} session logs)",
+                "✓".green(),
+                selected.len()
+            );
+        }
+    } else {
+        println!("  {} mcp-logs/ (not found)", "–".yellow());
+    }
+
+    // 4. daemon status --json
     let exe = std::env::current_exe()?;
     let status_output = capture_command_output(&exe, &["daemon", "status", "--json"]);
     tar_add_bytes(&mut tar, "daemon-status.json", &status_output)?;
     println!("  {} daemon-status.json", "✓".green());
 
-    // 4. doctor --json
+    // 5. doctor --json
     let doctor_output = capture_command_output(&exe, &["doctor", "--json"]);
     tar_add_bytes(&mut tar, "doctor.json", &doctor_output)?;
     println!("  {} doctor.json", "✓".green());
 
-    // 5. system-info.json
+    // 6. system-info.json
     let system_info = collect_system_info();
     let system_json = serde_json::to_string_pretty(&system_info)?;
     tar_add_bytes(&mut tar, "system-info.json", system_json.as_bytes())?;

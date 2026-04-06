@@ -906,6 +906,18 @@ pub fn default_notebook_log_path() -> PathBuf {
     daemon_base_dir().join("notebook.log")
 }
 
+/// Get the directory for MCP server session logs.
+///
+/// Multiple MCP server instances can run concurrently (one per agent),
+/// so each session gets its own log file in this directory.
+///
+/// macOS:  `~/Library/Caches/runt[-nightly]/mcp-logs/`
+/// Linux:  `~/.cache/runt[-nightly]/mcp-logs/`
+/// Dev:    `{cache}/runt[-nightly]/worktrees/{hash}/mcp-logs/`
+pub fn mcp_logs_dir() -> PathBuf {
+    daemon_base_dir().join("mcp-logs")
+}
+
 /// Get the default directory for saving notebooks.
 ///
 /// In dev mode with a workspace path: tries `{workspace}/notebooks/` first,
