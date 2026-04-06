@@ -11,7 +11,6 @@ use crate::execution;
 use crate::formatting;
 use crate::NteractMcp;
 
-use super::cell_read::{build_cell_execution_count_map, build_cell_status_map};
 use super::{arg_str, tool_error, tool_success};
 
 #[allow(dead_code)]
@@ -86,9 +85,16 @@ pub async fn run_all_cells(
     let result = execution::run_all_and_wait(&handle, Duration::from_secs_f64(timeout_secs)).await;
 
     // Build the notebook summary view (same format as get_all_cells summary).
+    // Status and execution_count are scoped to THIS run's execution IDs to
+    // avoid mixing in historical state from prior runs.
     let cells = handle.get_cells();
-    let cell_status_map = build_cell_status_map(&handle);
-    let cell_ec_map = build_cell_execution_count_map(&handle);
+    let runtime_state = handle.get_runtime_state().ok();
+
+    // Look up this run's execution state for a given cell.
+    let run_exec = |cell_id: &str| -> Option<&notebook_doc::runtime_state::ExecutionState> {
+        let eid = result.cell_execution_ids.get(cell_id)?;
+        runtime_state.as_ref()?.executions.get(eid.as_str())
+    };
 
     // Count code cells by status for the header.
     let mut succeeded = 0usize;
@@ -101,21 +107,21 @@ pub async fn run_all_cells(
         if cell.cell_type != "code" {
             continue;
         }
-        let status = cell_status_map.get(&cell.id).map(String::as_str);
-        let ec = cell_ec_map.get(&cell.id);
-        match status {
-            Some("done") => succeeded += 1,
-            Some("error") => {
-                // Cancelled = error status but never actually ran (no execution_count)
-                if ec.is_none() {
-                    cancelled += 1;
-                } else {
-                    errored += 1;
+        if let Some(exec) = run_exec(&cell.id) {
+            match exec.status.as_str() {
+                "done" => succeeded += 1,
+                "error" => {
+                    // Cancelled = error status but never actually ran (no execution_count)
+                    if exec.execution_count.is_none() {
+                        cancelled += 1;
+                    } else {
+                        errored += 1;
+                    }
                 }
+                "running" => running += 1,
+                "queued" => queued += 1,
+                _ => {}
             }
-            Some("running") => running += 1,
-            Some("queued") => queued += 1,
-            _ => {}
         }
     }
 
@@ -152,23 +158,30 @@ pub async fn run_all_cells(
     };
 
     // Format each cell using the standard summary format.
+    // For code cells in this run, use the run-scoped execution state.
+    // For non-code cells or cells not in this run, show no status.
     let mut lines = vec![header, String::new()];
     for (i, cell) in cells.iter().enumerate() {
-        let ec = cell_ec_map.get(&cell.id).map(String::as_str);
+        let (display_status, ec_str);
 
-        // Remap "error" with no execution_count to "cancelled" for display.
-        let raw_status = cell_status_map.get(&cell.id).map(String::as_str);
-        let display_status = match raw_status {
-            Some("error") if ec.is_none() => Some("cancelled"),
-            other => other,
-        };
+        if let Some(exec) = run_exec(&cell.id) {
+            // Remap "error" with no execution_count to "cancelled" for display.
+            display_status = Some(match exec.status.as_str() {
+                "error" if exec.execution_count.is_none() => "cancelled",
+                other => other,
+            });
+            ec_str = exec.execution_count.map(|c| c.to_string());
+        } else {
+            display_status = None;
+            ec_str = None;
+        }
 
         let line = formatting::format_cell_summary(
             i,
             &cell.id,
             &cell.cell_type,
             &cell.source,
-            ec,
+            ec_str.as_deref(),
             display_status,
             60,
         );

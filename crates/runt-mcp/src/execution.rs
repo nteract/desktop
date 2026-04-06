@@ -5,7 +5,7 @@
 //! Automerge CRDT) for execution lifecycle state, using the CRDT as the
 //! source of truth instead of relying on broadcast hints.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use notebook_protocol::protocol::{NotebookRequest, NotebookResponse};
@@ -192,6 +192,9 @@ pub struct RunAllResult {
     pub timed_out: bool,
     /// Overall status: "completed", "error", or "timed_out".
     pub status: String,
+    /// Map of cell_id → execution_id for this run's queued cells.
+    /// Used to scope status lookups to this specific run.
+    pub cell_execution_ids: HashMap<String, String>,
 }
 
 /// Run all cells and wait for completion.
@@ -211,24 +214,29 @@ pub async fn run_all_and_wait(handle: &DocHandle, timeout: Duration) -> RunAllRe
     // Step 2: Submit run-all request
     let response = handle.send_request(NotebookRequest::RunAllCells {}).await;
 
-    let execution_ids: HashSet<String> = match response {
-        Ok(NotebookResponse::AllCellsQueued { queued }) => {
-            queued.into_iter().map(|q| q.execution_id).collect()
-        }
+    let cell_execution_ids: HashMap<String, String> = match response {
+        Ok(NotebookResponse::AllCellsQueued { queued }) => queued
+            .into_iter()
+            .map(|q| (q.cell_id, q.execution_id))
+            .collect(),
         _ => {
             return RunAllResult {
                 timed_out: false,
                 status: "error".to_string(),
+                cell_execution_ids: HashMap::new(),
             };
         }
     };
 
-    if execution_ids.is_empty() {
+    if cell_execution_ids.is_empty() {
         return RunAllResult {
             timed_out: false,
             status: "completed".to_string(),
+            cell_execution_ids: HashMap::new(),
         };
     }
+
+    let execution_ids: HashSet<&str> = cell_execution_ids.values().map(|s| s.as_str()).collect();
 
     // Step 3: Poll RuntimeStateDoc for all execution IDs to reach terminal status.
     let deadline = Instant::now() + timeout;
@@ -244,7 +252,7 @@ pub async fn run_all_and_wait(handle: &DocHandle, timeout: Duration) -> RunAllRe
             all_terminal = execution_ids.iter().all(|eid| {
                 state
                     .executions
-                    .get(eid.as_str())
+                    .get(*eid)
                     .is_some_and(|exec| exec.status == "done" || exec.status == "error")
             });
             if all_terminal {
@@ -261,7 +269,7 @@ pub async fn run_all_and_wait(handle: &DocHandle, timeout: Duration) -> RunAllRe
         execution_ids.iter().any(|eid| {
             state
                 .executions
-                .get(eid.as_str())
+                .get(*eid)
                 .is_some_and(|exec| exec.status == "error")
         })
     });
@@ -275,5 +283,9 @@ pub async fn run_all_and_wait(handle: &DocHandle, timeout: Duration) -> RunAllRe
     }
     .to_string();
 
-    RunAllResult { timed_out, status }
+    RunAllResult {
+        timed_out,
+        status,
+        cell_execution_ids,
+    }
 }
