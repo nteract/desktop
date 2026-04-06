@@ -5,6 +5,7 @@
 //! Automerge CRDT) for execution lifecycle state, using the CRDT as the
 //! source of truth instead of relying on broadcast hints.
 
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use notebook_protocol::protocol::{NotebookRequest, NotebookResponse};
@@ -182,5 +183,109 @@ pub async fn execute_and_wait(
         execution_count,
         status: final_status,
         success,
+    }
+}
+
+/// Result of running all cells.
+pub struct RunAllResult {
+    /// Whether the deadline was hit before all cells finished.
+    pub timed_out: bool,
+    /// Overall status: "completed", "error", or "timed_out".
+    pub status: String,
+    /// Map of cell_id → execution_id for this run's queued cells.
+    /// Used to scope status lookups to this specific run.
+    pub cell_execution_ids: HashMap<String, String>,
+}
+
+/// Run all cells and wait for completion.
+///
+/// 1. Calls `confirm_sync()` to ensure the daemon has the latest cell sources.
+/// 2. Sends `RunAllCells` request.
+/// 3. Polls RuntimeStateDoc until all queued execution IDs reach terminal status.
+///
+/// Returns a lightweight `RunAllResult` with overall status. The caller should
+/// read the full notebook state after this returns to build the summary view.
+pub async fn run_all_and_wait(handle: &DocHandle, timeout: Duration) -> RunAllResult {
+    // Step 1: Ensure daemon has our latest edits
+    if let Err(e) = handle.confirm_sync().await {
+        warn!("confirm_sync failed before run_all_cells: {e}");
+    }
+
+    // Step 2: Submit run-all request
+    let response = handle.send_request(NotebookRequest::RunAllCells {}).await;
+
+    let cell_execution_ids: HashMap<String, String> = match response {
+        Ok(NotebookResponse::AllCellsQueued { queued }) => queued
+            .into_iter()
+            .map(|q| (q.cell_id, q.execution_id))
+            .collect(),
+        _ => {
+            return RunAllResult {
+                timed_out: false,
+                status: "error".to_string(),
+                cell_execution_ids: HashMap::new(),
+            };
+        }
+    };
+
+    if cell_execution_ids.is_empty() {
+        return RunAllResult {
+            timed_out: false,
+            status: "completed".to_string(),
+            cell_execution_ids: HashMap::new(),
+        };
+    }
+
+    let execution_ids: HashSet<&str> = cell_execution_ids.values().map(|s| s.as_str()).collect();
+
+    // Step 3: Poll RuntimeStateDoc for all execution IDs to reach terminal status.
+    let deadline = Instant::now() + timeout;
+    let mut all_terminal = false;
+
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+
+        if let Ok(state) = handle.get_runtime_state() {
+            all_terminal = execution_ids.iter().all(|eid| {
+                state
+                    .executions
+                    .get(*eid)
+                    .is_some_and(|exec| exec.status == "done" || exec.status == "error")
+            });
+            if all_terminal {
+                break;
+            }
+        }
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // Step 4: Derive overall status
+    let timed_out = !all_terminal;
+    let has_error = handle.get_runtime_state().ok().is_some_and(|state| {
+        execution_ids.iter().any(|eid| {
+            state
+                .executions
+                .get(*eid)
+                .is_some_and(|exec| exec.status == "error")
+        })
+    });
+
+    let status = if timed_out {
+        "timed_out"
+    } else if has_error {
+        "error"
+    } else {
+        "completed"
+    }
+    .to_string();
+
+    RunAllResult {
+        timed_out,
+        status,
+        cell_execution_ids,
     }
 }
