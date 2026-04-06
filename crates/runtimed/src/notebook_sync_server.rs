@@ -6731,7 +6731,11 @@ where
                     let synthetic_eid = uuid::Uuid::new_v4().to_string();
                     sd.create_execution(&synthetic_eid, &cell.id);
                     let _ = sd.set_outputs(&synthetic_eid, output_refs);
-                    let mime_types = output_store::extract_all_mime_types(output_refs);
+                    // Extract MIME types from the original parsed outputs, not
+                    // from output_refs (which are manifest hashes that
+                    // extract_all_mime_types can't parse).
+                    let mime_types =
+                        output_store::extract_all_mime_types_from_values(&cell.outputs);
                     let _ = sd.set_mime_types(&synthetic_eid, &mime_types);
                     sd.set_execution_done(&synthetic_eid, true);
                     cell_eids.insert(cell.id.clone(), synthetic_eid);

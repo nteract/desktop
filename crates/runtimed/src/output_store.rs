@@ -408,6 +408,24 @@ pub fn extract_all_mime_types(output_strings: &[String]) -> Vec<String> {
     result
 }
 
+/// Extract deduplicated MIME types from a slice of parsed output values.
+///
+/// Like `extract_all_mime_types` but operates on already-parsed
+/// `serde_json::Value` objects (e.g., from `.ipynb` cell outputs)
+/// rather than JSON strings.
+pub fn extract_all_mime_types_from_values(outputs: &[Value]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut result = Vec::new();
+    for output in outputs {
+        for mime in extract_mime_types(output) {
+            if seen.insert(mime.clone()) {
+                result.push(mime);
+            }
+        }
+    }
+    result
+}
+
 /// Update display data in a manifest with new data and metadata.
 ///
 /// Returns the updated manifest JSON if the manifest is a display_data or execute_result

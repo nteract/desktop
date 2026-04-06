@@ -7,6 +7,7 @@ import {
   type IsolatedFrameHandle,
 } from "@/components/isolated";
 import { injectLibraries } from "@/components/isolated/iframe-libraries";
+import { pluginForMime } from "@/lib/renderer-plugins";
 import {
   AnsiErrorOutput,
   AnsiStreamOutput,
@@ -357,9 +358,46 @@ export function OutputArea({
     // Clear the tracking set on each call — a reloaded iframe has a fresh registry.
     injectedLibsRef.current.clear();
 
-    // Plugins are pre-computed by the WASM layer from RuntimeStateDoc MIME types,
-    // covering both direct outputs and widget-captured outputs.
+    // Plugins are pre-computed by the WASM layer from RuntimeStateDoc MIME types.
     const allPlugins = new Set(requiredPlugins ?? []);
+
+    // Widget-captured outputs (OutputModel) live in comm state, not the cell
+    // execution's mime_types. Scan them here until the daemon stores
+    // mime_types on comm entries in RuntimeStateDoc.
+    if (widgetContext?.store) {
+      for (const output of outputs) {
+        if (
+          (output.output_type === "execute_result" ||
+            output.output_type === "display_data") &&
+          output.data?.["application/vnd.jupyter.widget-view+json"]
+        ) {
+          const widgetData = output.data[
+            "application/vnd.jupyter.widget-view+json"
+          ] as { model_id?: string };
+          if (widgetData?.model_id) {
+            const model = widgetContext.store.getModel(widgetData.model_id);
+            if (model?.modelName === "OutputModel" && model.state.outputs) {
+              const widgetOutputs = model.state.outputs as Array<{
+                output_type: string;
+                data?: Record<string, unknown>;
+              }>;
+              for (const wo of widgetOutputs) {
+                if (
+                  (wo.output_type === "execute_result" ||
+                    wo.output_type === "display_data") &&
+                  wo.data
+                ) {
+                  for (const mime of Object.keys(wo.data)) {
+                    const plugin = pluginForMime(mime);
+                    if (plugin) allPlugins.add(plugin);
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
 
     if (allPlugins.size > 0) {
       await injectLibraries(
