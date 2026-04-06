@@ -20,7 +20,7 @@ export class JsCell {
      */
     readonly metadata_json: string;
     /**
-     * Get outputs as a JSON array string.
+     * Get outputs as a JSON array string of structured manifest objects.
      */
     readonly outputs_json: string;
     /**
@@ -232,10 +232,10 @@ export class NotebookHandle {
      */
     get_cell_metadata(cell_id: string): any;
     /**
-     * Get a cell's outputs as a native JS array of strings.
+     * Get a cell's outputs as a native JS array of manifest objects.
      *
-     * Each element is a JSON-encoded Jupyter output object (or manifest hash).
-     * Returns undefined if the cell doesn't exist.
+     * Each element is a structured output manifest (with MIME bundles and
+     * ContentRef blob/inline refs). Returns undefined if the cell doesn't exist.
      *
      * Outputs now live in the RuntimeStateDoc keyed by execution_id. This
      * method reads the cell's `execution_id` from the notebook doc, then
