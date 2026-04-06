@@ -726,12 +726,22 @@ async fn wait_for_response<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
                 }
             }
 
+            // Process all other frame types (RuntimeStateSync, Presence, etc.)
+            // while waiting for the response. Dropping these frames would stall
+            // the Automerge sync protocol — the daemon marks sent messages as
+            // in_flight, and generate_sync_message() returns None until the peer
+            // acknowledges. A dropped RuntimeStateSync causes permanent sync
+            // stall for RuntimeStateDoc (no execution results, no status updates).
             _ => {
-                // Ignore other frame types while waiting for response
-                debug!(
-                    "[notebook-sync] Ignoring {:?} frame while waiting for response ({})",
-                    frame.frame_type, notebook_id
-                );
+                handle_incoming_frame(
+                    &frame,
+                    doc,
+                    writer,
+                    snapshot_tx,
+                    broadcast_tx,
+                    notebook_id,
+                )
+                .await;
             }
         }
     }
