@@ -203,10 +203,22 @@ export function isolatedRendererPlugin(
             const nodeModules = path.resolve(__dirname, "../../node_modules");
             const mapping: Record<string, string> = {
               "vega-raw": path.join(nodeModules, "vega/build/vega.min.js"),
-              "vega-lite-raw": path.join(nodeModules, "vega-lite/build/vega-lite.min.js"),
-              "vega-embed-raw": path.join(nodeModules, "vega-embed/build/vega-embed.min.js"),
-              "leaflet-js-raw": path.join(nodeModules, "leaflet/dist/leaflet.js"),
-              "leaflet-css-raw": path.join(nodeModules, "leaflet/dist/leaflet.css"),
+              "vega-lite-raw": path.join(
+                nodeModules,
+                "vega-lite/build/vega-lite.min.js",
+              ),
+              "vega-embed-raw": path.join(
+                nodeModules,
+                "vega-embed/build/vega-embed.min.js",
+              ),
+              "leaflet-js-raw": path.join(
+                nodeModules,
+                "leaflet/dist/leaflet.js",
+              ),
+              "leaflet-css-raw": path.join(
+                nodeModules,
+                "leaflet/dist/leaflet.css",
+              ),
             };
             const filePath = mapping[source];
             if (filePath) return `${filePath}?raw`;
@@ -413,18 +425,31 @@ export const css = ${JSON.stringify(leafletRendererCss)};
         buildPromise = buildRenderer();
         await buildPromise;
 
-        // Invalidate the virtual module to trigger re-import
+        // Invalidate the core virtual module and all plugin virtual modules.
+        // Without this, Vite's module graph retains stale load() results for
+        // plugin modules and serves old plugin code after a full-reload.
         const mod = devServer.moduleGraph.getModuleById(
           RESOLVED_VIRTUAL_MODULE_ID,
         );
         if (mod) {
           devServer.moduleGraph.invalidateModule(mod);
-          // Send HMR update
-          devServer.ws.send({
-            type: "full-reload",
-            path: "*",
-          });
         }
+
+        const pluginNames = ["markdown", "vega", "plotly", "leaflet"];
+        for (const name of pluginNames) {
+          const pluginMod = devServer.moduleGraph.getModuleById(
+            `${RESOLVED_PLUGIN_PREFIX}${name}`,
+          );
+          if (pluginMod) {
+            devServer.moduleGraph.invalidateModule(pluginMod);
+          }
+        }
+
+        // Send HMR update
+        devServer.ws.send({
+          type: "full-reload",
+          path: "*",
+        });
       }
     },
   };
