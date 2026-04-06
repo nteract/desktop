@@ -98,7 +98,7 @@ fn summarize_feature(spec: &Value) -> String {
     // Bbox from explicit field or geometry coordinates
     let bbox_line = spec.get("bbox").and_then(format_bbox).or_else(|| {
         spec.get("geometry")
-            .and_then(|g| bbox_from_geometry(g))
+            .and_then(bbox_from_geometry)
             .map(|b| format_bbox_values(b.0, b.1, b.2, b.3))
     });
     if let Some(b) = bbox_line {
