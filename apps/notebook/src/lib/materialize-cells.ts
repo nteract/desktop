@@ -99,7 +99,8 @@ export async function resolveOutput(
             data: { "text/plain": output.data["text/plain"] },
           } as typeof output;
           const resolved = await resolveManifest(fallback, blobPort);
-          cache.set(key, resolved);
+          // Don't cache the fallback — leave the original key as a cache miss
+          // so the next materialization retries the rich MIME type.
           return resolved;
         } catch {
           // text/plain fallback also failed

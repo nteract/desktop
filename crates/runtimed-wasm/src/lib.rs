@@ -28,6 +28,39 @@ use wasm_bindgen::prelude::*;
 /// Using `serialize_maps_as_objects(true)` ensures all maps become plain
 /// JS Objects, matching what `JSON.parse()` would produce. The returned
 /// `JsValue` can be any JS type (object, array, scalar) depending on input.
+/// Check if a MIME type represents binary content (images, audio, video).
+///
+/// Binary MIME refs resolve to blob URLs (no fetch needed), so they're
+/// cheap to include in narrowed output bundles. Only text blob refs
+/// are expensive (HTTP roundtrip to the blob server).
+fn is_binary_mime(mime: &str) -> bool {
+    if mime.starts_with("image/") {
+        // SVG is XML text, not binary
+        return !mime.ends_with("+xml");
+    }
+    if mime.starts_with("audio/") || mime.starts_with("video/") {
+        return true;
+    }
+    // application/* is binary by default, with carve-outs for text-like formats
+    if let Some(subtype) = mime.strip_prefix("application/") {
+        let is_text = subtype == "json"
+            || subtype == "javascript"
+            || subtype == "ecmascript"
+            || subtype == "xml"
+            || subtype == "xhtml+xml"
+            || subtype == "mathml+xml"
+            || subtype == "sql"
+            || subtype == "graphql"
+            || subtype == "x-latex"
+            || subtype == "x-tex"
+            || subtype.ends_with("+json")
+            || subtype.ends_with(".json")
+            || subtype.ends_with("+xml");
+        return !is_text;
+    }
+    false
+}
+
 fn serialize_to_js<T: Serialize>(value: &T) -> Result<JsValue, serde_wasm_bindgen::Error> {
     let serializer = serde_wasm_bindgen::Serializer::new().serialize_maps_as_objects(true);
     value.serialize(&serializer)
@@ -463,8 +496,11 @@ impl NotebookHandle {
         }
     }
 
-    /// Narrow an output manifest's data bundle to the winning MIME type.
-    /// Includes text/plain alongside the winner as a fallback candidate.
+    /// Narrow an output manifest's data bundle to the winning MIME type,
+    /// plus all binary MIME refs (cheap — just URL construction, no fetch)
+    /// and text/plain as a fallback candidate.
+    ///
+    /// Only expensive text blob refs for non-winning types are dropped.
     /// Returns the manifest unchanged if mime_priority is empty or output_type
     /// is not display_data/execute_result.
     fn narrow_output_data(&self, mut output: serde_json::Value) -> serde_json::Value {
@@ -488,14 +524,9 @@ impl NotebookHandle {
 
             if let Some(winner_mime) = winner {
                 let mut narrowed = serde_json::Map::new();
-                // Always include the winner
-                if let Some(val) = data.get(winner_mime) {
-                    narrowed.insert(winner_mime.to_string(), val.clone());
-                }
-                // Include text/plain as fallback if it exists and isn't already the winner
-                if winner_mime != "text/plain" {
-                    if let Some(plain) = data.get("text/plain") {
-                        narrowed.insert("text/plain".to_string(), plain.clone());
+                for (mime, val) in data {
+                    if mime == winner_mime || mime == "text/plain" || is_binary_mime(mime) {
+                        narrowed.insert(mime.clone(), val.clone());
                     }
                 }
                 output["data"] = serde_json::Value::Object(narrowed);
