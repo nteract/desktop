@@ -1744,18 +1744,25 @@ impl Daemon {
                 return Some(e);
             }
 
-            // Pool empty — check if warming is in progress
-            let (_, warming) = self.uv_pool.lock().await.stats();
+            // Pool empty — check if warming is in progress or can be triggered
+            let pool = self.uv_pool.lock().await;
+            let (_, warming) = pool.stats();
+            let can_retry = pool.should_retry();
+            drop(pool);
+
             if warming == 0 {
                 if self.config.uv_pool_size == 0 {
                     return None;
                 }
-                // Kick off creation
-                self.uv_pool.lock().await.mark_warming(1);
-                let daemon = self.clone();
-                tokio::spawn(async move {
-                    daemon.create_uv_env().await;
-                });
+                if can_retry {
+                    // Kick off creation (respects backoff)
+                    self.uv_pool.lock().await.mark_warming(1);
+                    let daemon = self.clone();
+                    tokio::spawn(async move {
+                        daemon.create_uv_env().await;
+                    });
+                }
+                // If in backoff, wait — the warming loop will retry when backoff expires
             }
 
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -1764,7 +1771,7 @@ impl Daemon {
                 return None;
             }
 
-            info!("[runtimed] UV pool empty, waiting for warming ({warming} in progress)...");
+            info!("[runtimed] UV pool empty, waiting for warming ({warming} in progress, retry ready: {can_retry})...");
 
             tokio::select! {
                 _ = tokio::time::sleep(remaining) => {
@@ -1800,18 +1807,25 @@ impl Daemon {
                 return Some(e);
             }
 
-            // Pool empty — check if warming is in progress
-            let (_, warming) = self.conda_pool.lock().await.stats();
+            // Pool empty — check if warming is in progress or can be triggered
+            let pool = self.conda_pool.lock().await;
+            let (_, warming) = pool.stats();
+            let can_retry = pool.should_retry();
+            drop(pool);
+
             if warming == 0 {
                 if self.config.conda_pool_size == 0 {
                     return None;
                 }
-                // Kick off creation
-                self.conda_pool.lock().await.mark_warming(1);
-                let daemon = self.clone();
-                tokio::spawn(async move {
-                    daemon.create_conda_env().await;
-                });
+                if can_retry {
+                    // Kick off creation (respects backoff)
+                    self.conda_pool.lock().await.mark_warming(1);
+                    let daemon = self.clone();
+                    tokio::spawn(async move {
+                        daemon.create_conda_env().await;
+                    });
+                }
+                // If in backoff, wait — the warming loop will retry when backoff expires
             }
 
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -1820,7 +1834,7 @@ impl Daemon {
                 return None;
             }
 
-            info!("[runtimed] Conda pool empty, waiting for warming ({warming} in progress)...");
+            info!("[runtimed] Conda pool empty, waiting for warming ({warming} in progress, retry ready: {can_retry})...");
 
             tokio::select! {
                 _ = tokio::time::sleep(remaining) => {
