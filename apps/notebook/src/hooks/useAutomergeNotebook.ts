@@ -3,7 +3,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { SyncableHandle } from "runtimed";
 import { SyncEngine } from "runtimed";
 import { concatMap, from, switchMap } from "rxjs";
-import { preWarmPlugins } from "@/components/isolated/iframe-libraries";
+import {
+  needsPlugin,
+  preWarmForMimes,
+} from "@/components/isolated/iframe-libraries";
 import { getBlobPort, refreshBlobPort } from "../lib/blob-port";
 import { materializeChangeset } from "../lib/frame-pipeline";
 import { logger } from "../lib/logger";
@@ -111,11 +114,24 @@ export function useAutomergeNotebook() {
       blobPort,
       outputCacheRef.current,
     );
-    // Pre-warm plugin cache so iframe rendering doesn't wait for async loads
-    const allPlugins = newCells.flatMap((c) =>
-      c.cell_type === "code" ? c.requiredPlugins : [],
-    );
-    if (allPlugins.length > 0) preWarmPlugins(allPlugins);
+    // Pre-warm plugin cache from output MIME types so iframe rendering
+    // doesn't wait for async loads
+    const pluginMimes: string[] = [];
+    for (const c of newCells) {
+      if (c.cell_type === "code") {
+        for (const output of c.outputs) {
+          if (
+            output.output_type === "execute_result" ||
+            output.output_type === "display_data"
+          ) {
+            for (const mime of Object.keys(output.data)) {
+              if (needsPlugin(mime)) pluginMimes.push(mime);
+            }
+          }
+        }
+      }
+    }
+    if (pluginMimes.length > 0) preWarmForMimes(pluginMimes);
     replaceNotebookCells(newCells);
     logger.debug(
       `[automerge-notebook] Full materialization: ${snapshots.length} cells in ${(performance.now() - start).toFixed(1)}ms`,
@@ -157,7 +173,7 @@ export function useAutomergeNotebook() {
     [rematerializeCellsSync],
   );
 
-  // ── Bootstrap ──��──────────────────────────────────��────────────────
+  // ── Bootstrap ──────────────────────────────────────────────────────
 
   const bootstrap = useCallback(async () => {
     await wasmReady;
@@ -183,7 +199,7 @@ export function useAutomergeNotebook() {
     return true;
   }, []);
 
-  // ── Lifecycle (single effect) ─────────────���────────────────────────
+  // ── Lifecycle (single effect) ──────────────────────────────────────
 
   useEffect(() => {
     let cancelled = false;
@@ -286,7 +302,7 @@ export function useAutomergeNotebook() {
       }
     });
 
-    // ── Daemon lifecycle ────────��─────────────────────────────────
+    // ── Daemon lifecycle ─────────────────────────────────────────
 
     const lifecycleSub = fromTauriEvent("daemon:ready")
       .pipe(
@@ -354,7 +370,7 @@ export function useAutomergeNotebook() {
     };
   }, [bootstrap, materializeCells]);
 
-  // ── Cell mutations ─────���───────────────────────────────────────────
+  // ── Cell mutations ─────────────────────────────────────────────────
 
   const updateCellSource = useCallback((cellId: string, source: string) => {
     const handle = handleRef.current;
@@ -471,7 +487,7 @@ export function useAutomergeNotebook() {
     [commitMutation],
   );
 
-  // ── Sync flush ────��────────────────────────────────────────────────
+  // ── Sync flush ─────────────────────────────────────────────────────
 
   /**
    * Flush pending sync immediately (call before execute/save).
@@ -501,7 +517,7 @@ export function useAutomergeNotebook() {
 
   const cloneNotebook = useCallback(() => cloneNotebookFile(), []);
 
-  // ── Output overlays (optimistic, pre-sync) ──────��──────────────────
+  // ── Output overlays (optimistic, pre-sync) ─────────────────────────
 
   const updateOutputByDisplayId = useCallback(
     (
@@ -540,7 +556,7 @@ export function useAutomergeNotebook() {
     [],
   );
 
-  // ── Public interface ───────────���───────────────────────────────────
+  // ── Public interface ───────────────────────────────────────────────
 
   const getHandle = useCallback(() => handleRef.current, []);
   const triggerSync = useCallback(() => engineRef.current?.scheduleFlush(), []);
