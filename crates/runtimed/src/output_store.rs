@@ -252,6 +252,7 @@ pub enum OutputManifest {
 
 impl OutputManifest {
     /// Serialize the manifest to a JSON Value (for writing into the CRDT).
+    #[allow(clippy::expect_used)]
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::to_value(self).expect("OutputManifest should always serialize to JSON")
     }
