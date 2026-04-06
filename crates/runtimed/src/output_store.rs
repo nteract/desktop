@@ -388,6 +388,17 @@ pub fn extract_mime_types(output_json: &Value) -> Vec<String> {
     }
 }
 
+/// Extract MIME type keys directly from a `data` bundle JSON value.
+///
+/// Unlike `extract_mime_types` which expects a full output object with
+/// `output_type` and `data` fields, this takes the `data` map directly
+/// (e.g., from `UpdateDisplayData.data`).
+pub fn extract_mime_types_from_data(data: &Value) -> Vec<String> {
+    data.as_object()
+        .map(|obj| obj.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
 /// Extract deduplicated MIME types from a slice of output strings.
 ///
 /// Each output string may be raw nbformat JSON or a manifest hash. For raw

@@ -272,6 +272,10 @@ async fn update_output_by_display_id_with_manifests(
 
                 // Replace the hash in the RuntimeStateDoc
                 state_doc.replace_output(&exec_id, output_idx, &new_hash)?;
+                // Recompute mime_types for this execution since the MIME
+                // bundle may have changed (e.g., text/plain → image/png).
+                let new_mimes = output_store::extract_mime_types_from_data(new_data);
+                let _ = state_doc.append_mime_types(&exec_id, &new_mimes);
                 found = true;
             }
         } else {
@@ -295,6 +299,8 @@ async fn update_output_by_display_id_with_manifests(
                 // Write back
                 let updated_str = output_json.to_string();
                 state_doc.replace_output(&exec_id, output_idx, &updated_str)?;
+                let new_mimes = output_store::extract_mime_types_from_data(new_data);
+                let _ = state_doc.append_mime_types(&exec_id, &new_mimes);
                 found = true;
             }
         }
