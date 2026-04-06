@@ -3819,7 +3819,7 @@ dependencies = [
 
 [[package]]
 name = "notebook"
-version = "2.1.0"
+version = "2.1.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -6210,7 +6210,7 @@ dependencies = [
 
 [[package]]
 name = "runt-cli"
-version = "2.1.0"
+version = "2.1.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -6292,7 +6292,7 @@ dependencies = [
 
 [[package]]
 name = "runtimed"
-version = "2.1.0"
+version = "2.1.1"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -6352,7 +6352,7 @@ dependencies = [
 
 [[package]]
 name = "runtimed-client"
-version = "2.1.0"
+version = "2.1.1"
 dependencies = [
  "automerge",
  "base64 0.22.1",
@@ -6379,7 +6379,7 @@ dependencies = [
 
 [[package]]
 name = "runtimed-py"
-version = "2.1.0"
+version = "2.1.1"
 dependencies = [
  "kernel-env",
  "log",

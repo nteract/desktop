@@ -293,7 +293,7 @@ import zmq
             script.push('\n');
             script.push_str("for module_name in ");
             script.push_str(&modules_json);
-            script.push_str("]:\n");
+            script.push_str(":\n");
             script.push_str("    try:\n");
             script.push_str("        __import__(module_name)\n");
             script.push_str("    except Exception:\n");

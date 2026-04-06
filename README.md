@@ -10,11 +10,7 @@ Download the latest release from [GitHub Releases](https://github.com/nteract/de
 
 The desktop app bundles everything — `runt` CLI and `runtimed` daemon.
 
-The Python bindings are available on PyPI:
-
-```bash
-pip install runtimed
-```
+The `runt` CLI and `runtimed` Python bindings ship with the app and stay up to date automatically. For nightly builds, use `runt-nightly` instead.
 
 ## What's in here
 
@@ -23,7 +19,7 @@ pip install runtimed
 | `nteract` | Desktop notebook editor (Tauri + React) |
 | `runtimed` | Background daemon — environment pools, notebook sync, kernel execution |
 | `runt` | CLI for managing kernels, notebooks, and the daemon |
-| `runtimed` (PyPI) | Python bindings for the daemon |
+| `runtimed` (Python) | Python bindings for the daemon (ships with the app) |
 ## MCP Server
 
 The nteract MCP server connects AI assistants to Jupyter notebooks through the daemon. Agents get 27 tools for working with notebooks — executing code, reading and writing cells, managing dependencies, and collaborating in real-time alongside humans in the desktop app.
@@ -55,13 +51,7 @@ claude mcp add nteract-nightly -- runt-nightly mcp
 }
 ```
 
-#### Via PyPI (convenience wrapper)
-
-If `runt` isn't on your PATH, the `nteract` PyPI package can find it in the app bundle:
-
-```bash
-claude mcp add nteract -- uvx nteract
-```
+The `runt` CLI ships with the desktop app. Use `runt` (stable) or `runt-nightly` directly — no PyPI install needed.
 
 ## Usage
 
