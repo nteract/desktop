@@ -924,7 +924,11 @@ where
     }
 
     if exit_code != Some(0) {
-        let error = format!("Daemon upgrade failed with code {:?}", exit_code);
+        let code_str = match exit_code {
+            Some(code) => format!("exit code {code}"),
+            None => "signal".to_string(),
+        };
+        let error = format!("Daemon upgrade failed ({code_str})");
         log::error!("[startup] {}", error);
         on_progress(DaemonProgress::Failed {
             error: error.clone(),

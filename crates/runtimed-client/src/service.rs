@@ -363,9 +363,13 @@ impl ServiceManager {
             }
         }
 
-        // Use launchd_start() which always does bootout+bootstrap
+        // Bootstrap only. The stop() call above is best-effort and may have
+        // already performed the launchd bootout, but upgrade intentionally does
+        // not issue another bootout here. Using launchd_start() would add a
+        // second bootout attempt and can put launchd into a transient error-5
+        // state.
         #[cfg(target_os = "macos")]
-        runt_workspace::launchd_start().map_err(ServiceError::StartFailed)?;
+        runt_workspace::launchd_bootstrap_only().map_err(ServiceError::StartFailed)?;
 
         #[cfg(not(target_os = "macos"))]
         self.start()?;
