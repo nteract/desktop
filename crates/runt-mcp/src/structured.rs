@@ -73,11 +73,34 @@ fn manifest_output_to_structured(manifest: &Value, blob_base_url: &Option<String
             })
         }
         "error" => {
+            // traceback is a ContentRef (inline JSON string or blob), not a
+            // raw string[]. Resolve it: parse inline JSON → array, or fall
+            // back to a blob URL for rare oversized tracebacks.
+            let traceback = manifest
+                .get("traceback")
+                .and_then(|cr| {
+                    // Inline ContentRef: the value is a JSON-stringified array
+                    // e.g. {"inline": "[\"line1\", \"line2\"]"}
+                    if let Some(inline) = cr.get("inline").and_then(|v| v.as_str()) {
+                        serde_json::from_str::<Value>(inline).ok()
+                    } else if let Some(hash) = cr.get("blob").and_then(|v| v.as_str()) {
+                        // Blob-stored traceback — return URL for renderer to fetch
+                        blob_base_url
+                            .as_ref()
+                            .map(|base| Value::String(format!("{}/blob/{}", base, hash)))
+                    } else if cr.is_array() {
+                        // Legacy: already a plain JSON array
+                        Some(cr.clone())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(Value::Null);
             json!({
                 "output_type": "error",
                 "ename": manifest.get("ename").cloned().unwrap_or(Value::Null),
                 "evalue": manifest.get("evalue").cloned().unwrap_or(Value::Null),
-                "traceback": manifest.get("traceback").cloned().unwrap_or(Value::Null),
+                "traceback": traceback,
             })
         }
         "display_data" | "execute_result" => {
@@ -299,17 +322,56 @@ mod tests {
     }
 
     #[test]
-    fn structured_error_passthrough() {
+    fn structured_error_inline_traceback_parsed() {
+        // Daemon stores traceback as ContentRef with JSON-stringified array
         let manifest = json!({
             "output_type": "error",
             "ename": "ValueError",
             "evalue": "bad",
-            "traceback": ["line 1", "line 2"],
+            "traceback": inline_ref(r#"["line 1", "line 2"]"#),
         });
         let result = manifest_output_to_structured(&manifest, &None);
         assert_eq!(result["output_type"], "error");
         assert_eq!(result["ename"], "ValueError");
-        assert_eq!(result["traceback"][0], "line 1");
+        // Traceback should be a parsed JSON array, not the raw ContentRef
+        let tb = result["traceback"]
+            .as_array()
+            .expect("traceback should be an array");
+        assert_eq!(tb.len(), 2);
+        assert_eq!(tb[0], "line 1");
+        assert_eq!(tb[1], "line 2");
+    }
+
+    #[test]
+    fn structured_error_blob_traceback_becomes_url() {
+        let manifest = json!({
+            "output_type": "error",
+            "ename": "RecursionError",
+            "evalue": "maximum recursion depth exceeded",
+            "traceback": blob_ref("tb_hash_123", 8_000),
+        });
+        let blob_base = Some("http://localhost:9999".to_string());
+        let result = manifest_output_to_structured(&manifest, &blob_base);
+        assert_eq!(
+            result["traceback"],
+            "http://localhost:9999/blob/tb_hash_123"
+        );
+    }
+
+    #[test]
+    fn structured_error_legacy_traceback_array() {
+        // Legacy outputs may have a plain JSON array (not a ContentRef)
+        let manifest = json!({
+            "output_type": "error",
+            "ename": "TypeError",
+            "evalue": "oops",
+            "traceback": ["line 1", "line 2"],
+        });
+        let result = manifest_output_to_structured(&manifest, &None);
+        let tb = result["traceback"]
+            .as_array()
+            .expect("legacy array should pass through");
+        assert_eq!(tb.len(), 2);
     }
 
     #[test]
