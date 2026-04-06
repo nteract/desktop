@@ -733,15 +733,8 @@ async fn wait_for_response<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
             // acknowledges. A dropped RuntimeStateSync causes permanent sync
             // stall for RuntimeStateDoc (no execution results, no status updates).
             _ => {
-                handle_incoming_frame(
-                    &frame,
-                    doc,
-                    writer,
-                    snapshot_tx,
-                    broadcast_tx,
-                    notebook_id,
-                )
-                .await;
+                handle_incoming_frame(&frame, doc, writer, snapshot_tx, broadcast_tx, notebook_id)
+                    .await;
             }
         }
     }
