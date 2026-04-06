@@ -93,13 +93,24 @@ pub async fn get_cell(
     let header =
         formatting::format_cell_header(&cell.id, &cell.cell_type, ec_display, status.as_deref());
 
+    // Include tags if present
+    let tags = cell.tags();
+    let header_with_tags = if tags.is_empty() {
+        header
+    } else {
+        format!("{header}\nTags: {}", tags.join(", "))
+    };
+
     // Return multiple Content items: header+source, then one per output
     let mut items = Vec::new();
 
     if !cell.source.is_empty() {
-        items.push(Content::text(format!("{header}\n\n{}", cell.source)));
+        items.push(Content::text(format!(
+            "{header_with_tags}\n\n{}",
+            cell.source
+        )));
     } else {
-        items.push(Content::text(header));
+        items.push(Content::text(header_with_tags));
     }
 
     // Each output as a separate Content item (matches Python _cell_to_content)
@@ -207,6 +218,12 @@ pub async fn get_all_cells(
                 )
                 .await;
                 let header = formatting::format_cell_header(&cell.id, &cell.cell_type, ec, status);
+                let tags = cell.tags();
+                let header = if tags.is_empty() {
+                    header
+                } else {
+                    format!("{header}\nTags: {}", tags.join(", "))
+                };
                 let output_text = formatting::format_outputs_text(&outputs);
                 let text = if !cell.source.is_empty() {
                     format!("{header}\n\n{}", cell.source)
