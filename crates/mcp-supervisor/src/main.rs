@@ -554,6 +554,9 @@ struct SupervisorState {
     /// Cached child tool definitions, loaded from disk at startup.
     /// Served optimistically before the child connects.
     cached_tools: Option<Vec<Tool>>,
+    /// Last active notebook ID. Persisted across child restarts so the
+    /// supervisor can auto-rejoin the session after file watcher restarts.
+    last_notebook_id: Option<String>,
 }
 
 impl SupervisorState {
@@ -611,6 +614,7 @@ impl Supervisor {
                 tool_list_changed_tx: Some(tool_list_changed_tx),
                 managed: HashMap::new(),
                 cached_tools,
+                last_notebook_id: None,
             })),
             child_ready: Arc::new(Notify::new()),
         }
@@ -717,20 +721,40 @@ impl Supervisor {
         }
     }
 
-    /// Forward a tool call to the child, auto-restarting on disconnect.
+    /// Forward a tool call to the child, restarting only if the child exited.
+    ///
+    /// A transport error from `call_tool` means the child's stdio pipe broke —
+    /// the process likely exited. Only then do we restart and retry. Application
+    /// errors (tool returned `is_error: true`) come back as `Ok(CallToolResult)`
+    /// and never reach this retry path.
+    ///
+    /// Previously this restarted on *any* error, which killed sessions when the
+    /// error was transient (e.g., timeout, backpressure).
     async fn forward_tool_call(
         &self,
         params: CallToolRequestParams,
     ) -> Result<CallToolResult, McpError> {
         // First attempt
         match self.try_forward_tool_call(&params).await {
-            Ok(result) => return Ok(result),
+            Ok(result) => {
+                // Track session-establishing tool calls so we can auto-rejoin
+                // after file watcher restarts.
+                self.track_session_tool(&params, &result).await;
+                return Ok(result);
+            }
             Err(e) => {
-                warn!("Tool call failed, attempting restart: {e}");
+                // Check if the child is still connected before restarting.
+                // If child_client is Some, the transport is alive — propagate the error.
+                let state = self.state.read().await;
+                if state.child_client.is_some() {
+                    warn!("Tool call failed but child still connected, not restarting: {e}");
+                    return Err(e);
+                }
+                warn!("Tool call failed and child disconnected, attempting restart: {e}");
             }
         }
 
-        // Restart and retry once
+        // Child is gone — restart and retry once
         if let Err(e) = self.restart_child().await {
             return Err(McpError::internal_error(
                 format!("Child restart failed: {e}"),
@@ -739,7 +763,43 @@ impl Supervisor {
         }
 
         // Second attempt after restart
-        self.try_forward_tool_call(&params).await
+        let result = self.try_forward_tool_call(&params).await?;
+        self.track_session_tool(&params, &result).await;
+        Ok(result)
+    }
+
+    /// Track notebook_id from session-establishing tool calls.
+    ///
+    /// When `open_notebook`, `join_notebook`, or `create_notebook` succeeds,
+    /// persist the notebook_id so we can auto-rejoin after child restarts.
+    async fn track_session_tool(&self, params: &CallToolRequestParams, result: &CallToolResult) {
+        // Only track successful calls (is_error is None or Some(false))
+        if result.is_error == Some(true) {
+            return;
+        }
+
+        let name: &str = &params.name;
+        match name {
+            "open_notebook" | "join_notebook" | "create_notebook" => {
+                // Extract notebook_id from the tool arguments
+                let notebook_id = params
+                    .arguments
+                    .as_ref()
+                    .and_then(|args| {
+                        args.get("notebook_id")
+                            .or_else(|| args.get("path"))
+                            .and_then(Value::as_str)
+                    })
+                    .map(String::from);
+
+                if let Some(ref id) = notebook_id {
+                    info!("Tracking active notebook session: {id}");
+                    let mut state = self.state.write().await;
+                    state.last_notebook_id = Some(id.clone());
+                }
+            }
+            _ => {}
+        }
     }
 
     async fn try_forward_tool_call(
@@ -758,7 +818,7 @@ impl Supervisor {
             .map_err(|e| McpError::internal_error(format!("Child tool call failed: {e}"), None))
     }
 
-    /// Forward a resource read to the child, auto-restarting on disconnect.
+    /// Forward a resource read to the child, restarting only if the child exited.
     async fn forward_read_resource(
         &self,
         params: ReadResourceRequestParams,
@@ -767,11 +827,16 @@ impl Supervisor {
         match self.try_forward_read_resource(&params).await {
             Ok(result) => return Ok(result),
             Err(e) => {
-                warn!("Resource read failed, attempting restart: {e}");
+                let state = self.state.read().await;
+                if state.child_client.is_some() {
+                    warn!("Resource read failed but child still connected, not restarting: {e}");
+                    return Err(e);
+                }
+                warn!("Resource read failed and child disconnected, attempting restart: {e}");
             }
         }
 
-        // Restart and retry once
+        // Child is gone — restart and retry once
         if let Err(e) = self.restart_child().await {
             return Err(McpError::internal_error(
                 format!("Child restart failed: {e}"),
@@ -1142,9 +1207,50 @@ impl Supervisor {
                 if let Some(ref tx) = state.tool_list_changed_tx {
                     let _ = tx.send(()).await;
                 }
+                drop(state);
+
+                // Auto-rejoin the last active notebook session so agents
+                // don't lose their session across hot-reload restarts.
+                self.auto_rejoin_session().await;
             }
             Err(e) => {
                 error!("Failed to restart child after file change: {e}");
+            }
+        }
+    }
+
+    /// Re-join the last active notebook session in the new child process.
+    ///
+    /// Called after file watcher restarts to preserve session continuity.
+    /// Failures are logged but not propagated — the agent can always
+    /// manually rejoin.
+    async fn auto_rejoin_session(&self) {
+        let notebook_id = {
+            let state = self.state.read().await;
+            state.last_notebook_id.clone()
+        };
+
+        let Some(id) = notebook_id else { return };
+
+        info!("Auto-rejoining notebook session: {id}");
+
+        let params: CallToolRequestParams = serde_json::from_value(serde_json::json!({
+            "name": "join_notebook",
+            "arguments": { "notebook_id": id }
+        }))
+        .expect("valid join_notebook params");
+
+        match self.try_forward_tool_call(&params).await {
+            Ok(result) if result.is_error != Some(true) => {
+                info!("Auto-rejoin succeeded for {id}");
+            }
+            Ok(_) => {
+                warn!("Auto-rejoin returned error for {id} (notebook may have closed)");
+                let mut state = self.state.write().await;
+                state.last_notebook_id = None;
+            }
+            Err(e) => {
+                warn!("Auto-rejoin failed for {id}: {e}");
             }
         }
     }
