@@ -179,6 +179,10 @@ pub struct NotebookHandle {
     /// Avoids re-serializing the metadata snapshot on every
     /// `get_metadata_fingerprint()` call (~30/sec during streaming).
     metadata_fingerprint_cache: Option<String>,
+    /// MIME type priority list for output selection.
+    /// Types earlier in the list are preferred when narrowing output data bundles.
+    /// If empty, all MIME types are returned (backward compatible).
+    mime_priority: Vec<String>,
 }
 
 /// A cell snapshot returned to JavaScript.
@@ -277,6 +281,7 @@ impl NotebookHandle {
             pool_doc: PoolDoc::new_empty(),
             pool_sync_state: sync::State::new(),
             metadata_fingerprint_cache: None,
+            mime_priority: Vec::new(),
         }
     }
 
@@ -294,6 +299,7 @@ impl NotebookHandle {
             pool_doc: PoolDoc::new_empty(),
             pool_sync_state: sync::State::new(),
             metadata_fingerprint_cache: None,
+            mime_priority: Vec::new(),
         }
     }
 
@@ -325,6 +331,7 @@ impl NotebookHandle {
             pool_doc: PoolDoc::new_empty(),
             pool_sync_state: sync::State::new(),
             metadata_fingerprint_cache: None,
+            mime_priority: Vec::new(),
         })
     }
 
@@ -386,7 +393,10 @@ impl NotebookHandle {
             if let Some(eid) = self.doc.get_execution_id(&cell.id) {
                 let outputs = self.state_doc.get_outputs(&eid);
                 if !outputs.is_empty() {
-                    cell.outputs = outputs;
+                    cell.outputs = outputs
+                        .into_iter()
+                        .map(|o| self.narrow_output_data(o))
+                        .collect();
                 }
             }
         }
@@ -429,7 +439,11 @@ impl NotebookHandle {
                 if out.is_empty() {
                     None
                 } else {
-                    Some(out)
+                    Some(
+                        out.into_iter()
+                            .map(|o| self.narrow_output_data(o))
+                            .collect::<Vec<_>>(),
+                    )
                 }
             }
             None => None,
@@ -438,6 +452,56 @@ impl NotebookHandle {
             Some(outputs) => serialize_to_js(&outputs).unwrap_or(JsValue::UNDEFINED),
             None => JsValue::UNDEFINED,
         }
+    }
+
+    /// Set the MIME type priority list for output selection.
+    /// Types earlier in the list are preferred when narrowing output data bundles.
+    /// If empty, all MIME types are returned (backward compatible).
+    pub fn set_mime_priority(&mut self, priority: JsValue) {
+        if let Ok(p) = serde_wasm_bindgen::from_value::<Vec<String>>(priority) {
+            self.mime_priority = p;
+        }
+    }
+
+    /// Narrow an output manifest's data bundle to the winning MIME type.
+    /// Includes text/plain alongside the winner as a fallback candidate.
+    /// Returns the manifest unchanged if mime_priority is empty or output_type
+    /// is not display_data/execute_result.
+    fn narrow_output_data(&self, mut output: serde_json::Value) -> serde_json::Value {
+        if self.mime_priority.is_empty() {
+            return output;
+        }
+        let output_type = output.get("output_type").and_then(|v| v.as_str());
+        if !matches!(output_type, Some("display_data" | "execute_result")) {
+            return output;
+        }
+        if let Some(data) = output.get("data").and_then(|d| d.as_object()) {
+            let keys: Vec<&str> = data.keys().map(|k| k.as_str()).collect();
+            // Find the winning MIME type from priority list
+            let winner = self
+                .mime_priority
+                .iter()
+                .find(|p| keys.contains(&p.as_str()))
+                .map(|s| s.as_str())
+                // Fallback: first available key
+                .or_else(|| keys.first().copied());
+
+            if let Some(winner_mime) = winner {
+                let mut narrowed = serde_json::Map::new();
+                // Always include the winner
+                if let Some(val) = data.get(winner_mime) {
+                    narrowed.insert(winner_mime.to_string(), val.clone());
+                }
+                // Include text/plain as fallback if it exists and isn't already the winner
+                if winner_mime != "text/plain" {
+                    if let Some(plain) = data.get("text/plain") {
+                        narrowed.insert("text/plain".to_string(), plain.clone());
+                    }
+                }
+                output["data"] = serde_json::Value::Object(narrowed);
+            }
+        }
+        output
     }
 
     /// Get a cell's execution count.

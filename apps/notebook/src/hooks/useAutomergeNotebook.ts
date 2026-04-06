@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SyncableHandle } from "runtimed";
-import { SyncEngine } from "runtimed";
+import { DEFAULT_MIME_PRIORITY, SyncEngine } from "runtimed";
 import { concatMap, from, switchMap } from "rxjs";
 import {
   needsPlugin,
@@ -184,6 +184,7 @@ export function useAutomergeNotebook() {
 
     handleRef.current?.free();
     handleRef.current = handle;
+    handle.set_mime_priority(DEFAULT_MIME_PRIORITY);
     setNotebookHandle(handle);
 
     setIsLoading(true);

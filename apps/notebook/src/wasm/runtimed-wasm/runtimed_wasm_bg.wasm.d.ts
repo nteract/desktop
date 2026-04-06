@@ -80,6 +80,7 @@ export const notebookhandle_set_conda_python: (a: number, b: number, c: number, 
 export const notebookhandle_set_metadata: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
 export const notebookhandle_set_metadata_snapshot_value: (a: number, b: number, c: number) => void;
 export const notebookhandle_set_metadata_value: (a: number, b: number, c: number, d: number, e: number) => void;
+export const notebookhandle_set_mime_priority: (a: number, b: number) => void;
 export const notebookhandle_set_pixi_channels: (a: number, b: number, c: number, d: number) => void;
 export const notebookhandle_set_pixi_python: (a: number, b: number, c: number, d: number) => void;
 export const notebookhandle_set_uv_prerelease: (a: number, b: number, c: number, d: number) => void;
