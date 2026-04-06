@@ -404,6 +404,7 @@ function AppContent() {
         }
       }
       for (const commId of changes.closed) {
+        updateManager.clearComm(commId);
         widgetStore.deleteModel(commId);
       }
     });

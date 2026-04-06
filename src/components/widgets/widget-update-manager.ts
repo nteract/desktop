@@ -135,6 +135,20 @@ export class WidgetUpdateManager {
 
   // ── Internal ──────────────────────────────────────────────────────
 
+  /**
+   * Cancel pending state and timers for a specific comm.
+   * Call when a comm is closed to avoid flushing stale state.
+   */
+  clearComm(commId: string): void {
+    const timer = this.flushTimers.get(commId);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      this.flushTimers.delete(commId);
+    }
+    this.pendingState.delete(commId);
+    this.optimisticKeys.delete(commId);
+  }
+
   private flushComm(commId: string): void {
     // Clear timer
     const timer = this.flushTimers.get(commId);
@@ -145,15 +159,20 @@ export class WidgetUpdateManager {
 
     const patch = this.pendingState.get(commId);
     if (!patch) return;
-    this.pendingState.delete(commId);
 
-    // Write to CRDT. If writer not available (shouldn't happen in main
-    // window), the patch is dropped — the use-comm-router fallback
-    // handles this case for iframe contexts where no manager exists.
+    // If the CRDT writer isn't available yet (early startup), keep the
+    // patch queued and retry after the next debounce interval.
     const writer = this.getCrdtWriter();
-    if (writer) {
-      writer(commId, patch);
+    if (!writer) {
+      this.flushTimers.set(
+        commId,
+        setTimeout(() => this.flushComm(commId), DEBOUNCE_MS),
+      );
+      return;
     }
+
+    this.pendingState.delete(commId);
+    writer(commId, patch);
 
     // Clear optimistic keys after flush. Echoes arriving after this
     // point carry the value we just wrote (or a kernel-validated value)
