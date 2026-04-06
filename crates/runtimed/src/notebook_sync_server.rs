@@ -728,6 +728,55 @@ pub(crate) async fn apply_cell_error_to_state_doc(
     }
 }
 
+/// Handle interrupt: clear queued executions in state_doc and mark them as
+/// errored using fork+merge. The currently-executing cell is left alone —
+/// the kernel will send an `execute_reply` with error status for it, which
+/// the normal IOPub handler will process.
+pub(crate) async fn apply_interrupt_to_state_doc(
+    room_state_doc: &Arc<RwLock<RuntimeStateDoc>>,
+    room_state_changed_tx: &broadcast::Sender<()>,
+    cleared: &[notebook_protocol::protocol::QueueEntry],
+) {
+    // Fork state_doc so mutations compose with any concurrent writes.
+    let mut fork = {
+        let mut sd = room_state_doc.write().await;
+        let mut f = sd.fork();
+        f.set_actor("runtimed:state:interrupt");
+        f
+    };
+
+    // Read the currently-executing entry from the CRDT (it stays — the
+    // kernel will send an execute_reply for it via the normal IOPub path).
+    let state = fork.read_state();
+    let exec = state.queue.executing.as_ref().map(|e| DocQueueEntry {
+        cell_id: e.cell_id.clone(),
+        execution_id: e.execution_id.clone(),
+    });
+
+    // Clear the queued entries, keeping only the executing one.
+    fork.set_queue(exec.as_ref(), &[]);
+
+    // Mark cleared executions as errored on the fork
+    for entry in cleared {
+        fork.set_execution_done(&entry.execution_id, false);
+    }
+
+    // Merge fork back — concurrent state_doc writes compose via CRDT
+    {
+        let mut sd = room_state_doc.write().await;
+        match catch_automerge_panic("interrupt-state-merge", || sd.merge(&mut fork)) {
+            Ok(Ok(_)) => {
+                let _ = room_state_changed_tx.send(());
+            }
+            Ok(Err(_)) => {}
+            Err(e) => {
+                warn!("{}", e);
+                sd.rebuild_from_save();
+            }
+        }
+    }
+}
+
 /// Handle KernelDied: set error status, clear queue, mark all executions
 /// as errored using fork+merge. Returns env_source for presence update.
 pub(crate) async fn apply_kernel_died_to_state_doc(
@@ -4846,7 +4895,6 @@ async fn handle_notebook_request(
         }
 
         NotebookRequest::InterruptExecution {} => {
-            // Agent path: send RPC via sync connection
             let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
             if has_runtime_agent {
                 match send_runtime_agent_request(
@@ -4855,7 +4903,29 @@ async fn handle_notebook_request(
                 )
                 .await
                 {
-                    Ok(_) => NotebookResponse::InterruptSent {},
+                    Ok(notebook_protocol::protocol::RuntimeAgentResponse::InterruptAcknowledged {
+                        cleared,
+                    }) => {
+                        // Update RuntimeStateDoc: clear CRDT queue, mark cleared
+                        // executions as errored so the frontend reflects the interrupt.
+                        apply_interrupt_to_state_doc(
+                            &room.state_doc,
+                            &room.state_changed_tx,
+                            &cleared,
+                        )
+                        .await;
+                        NotebookResponse::InterruptSent {}
+                    }
+                    Ok(_) => {
+                        // Legacy Ok response — still update state_doc with empty cleared list
+                        apply_interrupt_to_state_doc(
+                            &room.state_doc,
+                            &room.state_changed_tx,
+                            &[],
+                        )
+                        .await;
+                        NotebookResponse::InterruptSent {}
+                    }
                     Err(e) => NotebookResponse::Error {
                         error: format!("Agent interrupt error: {}", e),
                     },

@@ -465,7 +465,7 @@ async fn handle_runtime_agent_request(
             let mut guard = ctx.kernel.lock().await;
             if let Some(ref mut k) = *guard {
                 match k.interrupt().await {
-                    Ok(_cleared) => RuntimeAgentResponse::Ok,
+                    Ok(cleared) => RuntimeAgentResponse::InterruptAcknowledged { cleared },
                     Err(e) => RuntimeAgentResponse::Error {
                         error: format!("Failed to interrupt: {}", e),
                     },

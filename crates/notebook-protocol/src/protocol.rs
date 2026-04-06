@@ -607,6 +607,9 @@ pub enum RuntimeAgentResponse {
     /// History search result.
     HistoryResult { entries: Vec<HistoryEntry> },
 
+    /// Interrupt acknowledged. Contains the list of cleared queue entries.
+    InterruptAcknowledged { cleared: Vec<QueueEntry> },
+
     /// Generic success.
     Ok,
 
