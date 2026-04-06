@@ -3971,6 +3971,7 @@ async fn handle_notebook_request(
                     && env_source != "auto"
                     && env_source != "auto:uv"
                     && env_source != "auto:conda"
+                    && env_source != "auto:pixi"
                     && env_source != "deno"
                     && env_source != "prewarmed"
                 {
@@ -3986,15 +3987,19 @@ async fn handle_notebook_request(
             } else if env_source == "auto"
                 || env_source == "auto:uv"
                 || env_source == "auto:conda"
+                || env_source == "auto:pixi"
                 || env_source.is_empty()
                 || env_source == "prewarmed"
             {
                 // Auto-detect Python environment, optionally scoped to a package manager family.
-                // "auto:uv" constrains to UV sources, "auto:conda" to conda sources.
+                // "auto:uv" constrains to UV sources, "auto:conda" to conda sources,
+                // "auto:pixi" to pixi sources.
                 let auto_scope = if env_source == "auto:uv" {
                     Some("uv")
                 } else if env_source == "auto:conda" {
                     Some("conda")
+                } else if env_source == "auto:pixi" {
+                    Some("pixi")
                 } else {
                     None
                 };
@@ -4019,6 +4024,12 @@ async fn handle_notebook_request(
                                 .as_ref()
                                 .filter(|c| !c.dependencies.is_empty())
                                 .map(|_| "conda:inline".to_string()),
+                            Some("pixi") => snap
+                                .runt
+                                .pixi
+                                .as_ref()
+                                .filter(|p| !p.dependencies.is_empty())
+                                .map(|_| "pixi:inline".to_string()),
                             _ => check_inline_deps(snap).filter(|s| s != "deno"),
                         })
                 {
@@ -4053,6 +4064,7 @@ async fn handle_notebook_request(
                         // Respect explicit scope: auto:uv → uv:pep723, auto:conda → skip (no handler)
                         let pep723_source = match auto_scope {
                             Some("uv") => "uv:pep723",
+                            Some("pixi") => "pixi:pep723",
                             Some("conda") => unreachable!("conda scope skips PEP 723"),
                             _ => {
                                 // Unscoped auto: use default_python_env
@@ -4078,10 +4090,11 @@ async fn handle_notebook_request(
                             ),
                             Some("conda") => crate::project_file::find_nearest_project_file(
                                 path,
-                                &[
-                                    crate::project_file::ProjectFileKind::PixiToml,
-                                    crate::project_file::ProjectFileKind::EnvironmentYml,
-                                ],
+                                &[crate::project_file::ProjectFileKind::EnvironmentYml],
+                            ),
+                            Some("pixi") => crate::project_file::find_nearest_project_file(
+                                path,
+                                &[crate::project_file::ProjectFileKind::PixiToml],
                             ),
                             _ => crate::project_file::detect_project_file(path),
                         })
@@ -4097,6 +4110,7 @@ async fn handle_notebook_request(
                     else {
                         let fallback = match auto_scope {
                             Some("conda") => "conda:prewarmed",
+                            Some("pixi") => "pixi:prewarmed",
                             _ => "uv:prewarmed",
                         };
                         info!(

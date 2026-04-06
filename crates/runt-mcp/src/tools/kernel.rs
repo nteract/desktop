@@ -63,11 +63,13 @@ pub async fn restart_kernel(
         tracing::warn!("confirm_sync failed before restart_kernel launch: {e}");
     }
 
-    // Step 2: Determine kernel type from RuntimeState, but let daemon auto-detect env_source
-    // from notebook metadata. This ensures newly added deps are picked up on restart.
-    let kernel_type = {
+    // Step 2: Determine kernel type and env_source from RuntimeState.
+    // Use scoped auto-detect (auto:uv, auto:conda, auto:pixi) to stay within
+    // the original package manager family while re-checking metadata for new deps.
+    // This matches the Python bindings' restart logic in session_core.rs.
+    let (kernel_type, env_source) = {
         let state = handle.get_runtime_state().ok();
-        state
+        let kernel_type = state
             .as_ref()
             .and_then(|s| {
                 let name = &s.kernel.name;
@@ -77,12 +79,15 @@ pub async fn restart_kernel(
                     Some(name.clone())
                 }
             })
-            .unwrap_or_else(|| "python".to_string())
-    };
-    let env_source = if kernel_type == "deno" {
-        "deno".to_string()
-    } else {
-        "auto".to_string()
+            .unwrap_or_else(|| "python".to_string());
+        let env_source = match state.as_ref().map(|s| s.kernel.env_source.as_str()) {
+            Some("uv:prewarmed") => "auto:uv".to_string(),
+            Some("conda:prewarmed") => "auto:conda".to_string(),
+            Some("pixi:prewarmed") => "auto:pixi".to_string(),
+            Some("") | None => "auto".to_string(),
+            Some(s) => s.to_string(),
+        };
+        (kernel_type, env_source)
     };
 
     // Step 3: Launch kernel
