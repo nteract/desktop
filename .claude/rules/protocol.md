@@ -120,13 +120,12 @@ After WASM `receive_frame()` demuxes frames, broadcasts and presence are dispatc
 
 ## Output Storage
 
-Two-tier blob manifest system. When daemon receives kernel output:
-1. Convert to nbformat JSON, create manifest (`output_store.rs`)
-2. Each MIME type -> `ContentRef`: `Inline` for < 8KB, `Blob { hash, size }` for >= 8KB
-3. Binary content stored in blob store (SHA-256 hashes, `~/.cache/runt/blobs/`)
-4. Manifest stored in blob store -> 64-char hex hash
-5. Automerge doc stores only the manifest hash in `cell.outputs[]`
-6. Clients resolve from daemon's HTTP blob server (`GET /blob/{hash}`)
+Inline manifest system with blob offload for large payloads. When daemon receives kernel output:
+1. Convert to nbformat JSON, create output manifest as an **inline Automerge Map** in RuntimeStateDoc (`output_store.rs`)
+2. Each MIME type → `ContentRef`: `Inline` for ≤ 1KB, `Blob { hash, size }` for > 1KB
+3. Large content stored in blob store (SHA-256 hashes, `~/.cache/runt/blobs/`)
+4. MIME types and small payloads are readable directly from the CRDT without any blob fetch
+5. Clients resolve large blobs from daemon's HTTP blob server (`GET /blob/{hash}`)
 
 ## RuntimeStateDoc (Shipped)
 

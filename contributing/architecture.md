@@ -88,7 +88,7 @@ The blob store uses content-addressed storage at `~/.cache/runt/blobs/`. Each bl
 Jupyter kernels send binary data (images) as base64-encoded strings on the wire. The daemon **base64-decodes binary MIME types before storing** so the blob store holds actual binary bytes (real PNG, JPEG, etc.), not base64 text. This classification is determined by `is_binary_mime()`.
 
 **Text MIME types** (`text/*`, `application/json`, `image/svg+xml`, anything `+json`/`+xml`):
-- Stored as UTF-8 string bytes (or inlined in the manifest if < 8KB)
+- Stored as UTF-8 string bytes (or inlined in the manifest if ≤ 1KB)
 - Resolved via `read_to_string()` / `response.text()`
 
 **Binary MIME types** (`image/png`, `image/jpeg`, `audio/*`, `video/*`, most `application/*`):
@@ -102,13 +102,11 @@ Jupyter kernels send binary data (images) as base64-encoded strings on the wire.
 
 #### The `is_binary_mime` Contract
 
-Three implementations **must stay in sync** — if you change the classification, update all three:
+One canonical Rust implementation in `notebook-doc::mime` is the single source of truth. All Rust crates use this module — the old per-crate copies have been deleted. On the TypeScript side, `isBinaryMime()` has been deleted from `manifest-resolution.ts`. WASM now owns MIME classification end-to-end — it resolves `ContentRef`s to `Inline`/`Url`/`Blob` variants directly.
 
-| Location | Language | Function |
-|----------|----------|----------|
-| `crates/runtimed/src/output_store.rs` | Rust | `is_binary_mime()` |
-| `crates/runtimed-client/src/output_resolver.rs` | Rust | `mime_kind()` |
-| `apps/notebook/src/lib/manifest-resolution.ts` | TypeScript | `isBinaryMime()` |
+| Location | Function |
+|----------|----------|
+| `crates/notebook-doc/src/mime.rs` | `is_binary_mime()`, `mime_kind()`, `MimeKind` |
 
 The rule:
 - `image/*` → binary, **EXCEPT** `image/svg+xml` (plain XML text)
@@ -127,24 +125,25 @@ The rule:
 
 1. Kernel produces output → daemon's `kernel_manager.rs` converts to nbformat JSON
 2. `output_store.rs` creates manifest:
-   - Text MIME → `ContentRef::from_data()` (inline if < 8KB, blob if larger)
+   - Text MIME → `ContentRef::from_data()` (inline if ≤ 1KB, blob if larger)
    - Binary MIME → base64-decode → `ContentRef::from_binary()` (always blob)
-3. Manifest JSON stored in blob store → hash goes into Automerge CRDT
+3. Manifest is written as an inline Automerge Map in RuntimeStateDoc — MIME types and sizes are readable from the CRDT without blob fetch
 
 Resolution varies by consumer:
 
 | Consumer | Binary MIME | Text MIME |
 |----------|------------|-----------|
-| **Frontend** (`manifest-resolution.ts`) | Returns `http://` blob URL | `response.text()` → string |
+| **Frontend** (WASM resolves `ContentRef` → `Inline`/`Url`/`Blob` variants) | Returns `http://` blob URL | Inline string or `response.text()` → string |
 | **Python** (`output_resolver.rs`) | `fs::read()` → base64-encode | `read_to_string()` → string |
 | **.ipynb save** (`output_store.rs`) | `resolve_binary_as_base64()` | `resolve()` → UTF-8 string |
 
 Key files:
-- `crates/runtimed/src/output_store.rs` — Manifest creation/resolution, `is_binary_mime()`, `ContentRef`
+- `crates/notebook-doc/src/mime.rs` — Canonical MIME classification (`is_binary_mime`, `mime_kind`, `MimeKind`)
+- `crates/runtimed/src/output_store.rs` — Manifest creation/resolution, `ContentRef`
 - `crates/runtimed/src/blob_store.rs` — Content-addressed storage with atomic writes
 - `crates/runtimed/src/blob_server.rs` — HTTP server (`GET /blob/{hash}`, serves raw bytes with correct `Content-Type`)
-- `crates/runtimed-client/src/output_resolver.rs` — Shared Rust manifest resolution, `mime_kind()`, Python/MCP consumers
-- `apps/notebook/src/lib/manifest-resolution.ts` — Frontend resolution, `isBinaryMime()`, `resolveContentRef()`
+- `crates/runtimed-client/src/output_resolver.rs` — Shared Rust manifest resolution, Python/MCP consumers
+- `apps/notebook/src/lib/manifest-resolution.ts` — Frontend resolution (`isBinaryMime()` deleted, WASM resolves `ContentRef` directly)
 - `apps/notebook/src/lib/materialize-cells.ts` — Assembles cells with resolved outputs
 
 ### 6. Process-Isolated Kernel Execution
@@ -271,7 +270,8 @@ The frontend now owns a local Automerge doc via `runtimed-wasm` WASM bindings, m
 - `crates/runtimed/src/runtime_agent_handle.rs` — Coordinator-side runtime agent process management (spawn + monitor)
 - `crates/runtimed/src/kernel_manager.rs` — `RoomKernel`: kernel process lifecycle, execution queue, IOPub output routing
 - `crates/runtimed/src/comm_state.rs` — Widget comm state + Output widget capture routing
-- `crates/runtimed/src/output_store.rs` — Output manifest creation/resolution, `is_binary_mime()`, `ContentRef`
+- `crates/runtimed/src/output_store.rs` — Output manifest creation/resolution, `ContentRef`
+- `crates/notebook-doc/src/mime.rs` — Canonical MIME classification (`is_binary_mime`, `mime_kind`, `MimeKind`)
 - `crates/notebook-sync/src/relay.rs` — `RelayHandle`: relay API for forwarding typed frames between WASM and daemon
 - `crates/notebook-sync/src/connect.rs` — `connect_open_relay()`, `connect_create_relay()`: transparent byte pipe setup
 - `crates/runtimed-wasm/src/lib.rs` — WASM bindings: local Automerge peer, frame demux, per-cell accessors, `CellChangeset`
