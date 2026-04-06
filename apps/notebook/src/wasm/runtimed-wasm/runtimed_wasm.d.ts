@@ -383,6 +383,21 @@ export class NotebookHandle {
      */
     reset_sync_state(): void;
     /**
+     * Resolve ContentRef values in a comm's state for frontend consumption.
+     *
+     * Walks the state **recursively**, resolving ContentRef objects:
+     * - `{"blob": hash, "size": N, ...}` → plain URL string
+     * - `{"inline": value}` → unwrapped inner value
+     * - Plain values → passed through unchanged
+     *
+     * Returns `{ state, buffer_paths }` where `buffer_paths` records the
+     * JSON paths of blob refs that were resolved to URLs (so the iframe
+     * knows which values to fetch as ArrayBuffers).
+     *
+     * Returns undefined if blob_port is not set or comm doesn't exist.
+     */
+    resolve_comm_state(comm_id: string): any;
+    /**
      * Export the full document as bytes (for debugging or persistence).
      */
     save(): Uint8Array;
@@ -628,6 +643,7 @@ export interface InitOutput {
     readonly notebookhandle_remove_pixi_dependency: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_remove_uv_dependency: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_reset_sync_state: (a: number) => void;
+    readonly notebookhandle_resolve_comm_state: (a: number, b: number, c: number) => number;
     readonly notebookhandle_save: (a: number, b: number) => void;
     readonly notebookhandle_set_actor: (a: number, b: number, c: number) => void;
     readonly notebookhandle_set_blob_port: (a: number, b: number) => void;

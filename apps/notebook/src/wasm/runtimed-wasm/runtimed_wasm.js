@@ -1238,6 +1238,28 @@ export class NotebookHandle {
         wasm.notebookhandle_reset_sync_state(this.__wbg_ptr);
     }
     /**
+     * Resolve ContentRef values in a comm's state for frontend consumption.
+     *
+     * Walks the state **recursively**, resolving ContentRef objects:
+     * - `{"blob": hash, "size": N, ...}` → plain URL string
+     * - `{"inline": value}` → unwrapped inner value
+     * - Plain values → passed through unchanged
+     *
+     * Returns `{ state, buffer_paths }` where `buffer_paths` records the
+     * JSON paths of blob refs that were resolved to URLs (so the iframe
+     * knows which values to fetch as ArrayBuffers).
+     *
+     * Returns undefined if blob_port is not set or comm doesn't exist.
+     * @param {string} comm_id
+     * @returns {any}
+     */
+    resolve_comm_state(comm_id) {
+        const ptr0 = passStringToWasm0(comm_id, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.notebookhandle_resolve_comm_state(this.__wbg_ptr, ptr0, len0);
+        return takeObject(ret);
+    }
+    /**
      * Export the full document as bytes (for debugging or persistence).
      * @returns {Uint8Array}
      */

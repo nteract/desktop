@@ -65,6 +65,7 @@ export const notebookhandle_remove_conda_dependency: (a: number, b: number, c: n
 export const notebookhandle_remove_pixi_dependency: (a: number, b: number, c: number, d: number) => void;
 export const notebookhandle_remove_uv_dependency: (a: number, b: number, c: number, d: number) => void;
 export const notebookhandle_reset_sync_state: (a: number) => void;
+export const notebookhandle_resolve_comm_state: (a: number, b: number, c: number) => number;
 export const notebookhandle_save: (a: number, b: number) => void;
 export const notebookhandle_set_actor: (a: number, b: number, c: number) => void;
 export const notebookhandle_set_blob_port: (a: number, b: number) => void;
