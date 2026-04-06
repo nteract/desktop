@@ -1,4 +1,3 @@
-import { computeRequiredPlugins } from "@/lib/renderer-plugins";
 import type { JupyterOutput, NotebookCell } from "../types";
 import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 import { logger } from "./logger";
@@ -236,7 +235,6 @@ export function cellSnapshotsToNotebookCellsSync(
         source: snap.source,
         execution_count: ec,
         outputs: resolvedOutputs,
-        requiredPlugins: computeRequiredPlugins(resolvedOutputs),
         metadata,
       };
     }
@@ -302,7 +300,6 @@ export async function cellSnapshotsToNotebookCells(
           source: snap.source,
           execution_count: ec,
           outputs: resolvedOutputs,
-          requiredPlugins: computeRequiredPlugins(resolvedOutputs),
           metadata,
         };
       }
@@ -367,7 +364,6 @@ export function materializeCellFromWasm(
       source,
       execution_count: executionCount,
       outputs,
-      requiredPlugins: computeRequiredPlugins(outputs),
       metadata,
     };
   }

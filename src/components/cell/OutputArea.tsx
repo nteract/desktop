@@ -6,8 +6,10 @@ import {
   IsolatedFrame,
   type IsolatedFrameHandle,
 } from "@/components/isolated";
-import { injectLibraries } from "@/components/isolated/iframe-libraries";
-import { computeRequiredPlugins } from "@/lib/renderer-plugins";
+import {
+  injectPluginsForMimes,
+  needsPlugin,
+} from "@/components/isolated/iframe-libraries";
 import {
   AnsiErrorOutput,
   AnsiStreamOutput,
@@ -40,11 +42,6 @@ interface OutputAreaProps {
    * Cell ID for stable output keys in the iframe (enables smooth updates).
    */
   cellId?: string;
-  /**
-   * Pre-computed renderer plugins required by this cell's outputs.
-   * When provided, skips MIME scanning at render time.
-   */
-  requiredPlugins?: string[];
   /**
    * Whether the output area is collapsed.
    */
@@ -261,7 +258,6 @@ function renderOutput(
 export function OutputArea({
   outputs,
   cellId,
-  requiredPlugins,
   collapsed = false,
   onToggleCollapse,
   maxHeight,
@@ -358,8 +354,18 @@ export function OutputArea({
     // Clear the tracking set on each call — a reloaded iframe has a fresh registry.
     injectedLibsRef.current.clear();
 
-    // Collect plugins from the cell's direct outputs
-    const allPlugins = new Set(requiredPlugins ?? []);
+    // Collect MIME types that need renderer plugins from the cell's outputs
+    const pluginMimes = new Set<string>();
+    for (const output of outputs) {
+      if (
+        output.output_type === "execute_result" ||
+        output.output_type === "display_data"
+      ) {
+        for (const mime of Object.keys(output.data)) {
+          if (needsPlugin(mime)) pluginMimes.add(mime);
+        }
+      }
+    }
 
     // Also scan output widgets for captured outputs that need plugins.
     // A cell may output a widget view (application/vnd.jupyter.widget-view+json)
@@ -381,8 +387,10 @@ export function OutputArea({
                 output_type: string;
                 data?: Record<string, unknown>;
               }>;
-              for (const p of computeRequiredPlugins(widgetOutputs)) {
-                allPlugins.add(p);
+              for (const wo of widgetOutputs) {
+                for (const mime of Object.keys(wo.data ?? {})) {
+                  if (needsPlugin(mime)) pluginMimes.add(mime);
+                }
               }
             }
           }
@@ -390,10 +398,10 @@ export function OutputArea({
       }
     }
 
-    if (allPlugins.size > 0) {
-      await injectLibraries(
+    if (pluginMimes.size > 0) {
+      await injectPluginsForMimes(
         frameRef.current,
-        allPlugins,
+        pluginMimes,
         injectedLibsRef.current,
       );
       // Stale check: if outputs changed while we were loading the plugin,
@@ -513,7 +521,11 @@ export function OutputArea({
   return (
     <div
       data-slot="output-area"
-      className={cn("output-area pl-6 pr-9", isPreloadOnly && "hidden", className)}
+      className={cn(
+        "output-area pl-6 pr-9",
+        isPreloadOnly && "hidden",
+        className,
+      )}
     >
       {/* Collapse toggle */}
       {hasCollapseControl && (

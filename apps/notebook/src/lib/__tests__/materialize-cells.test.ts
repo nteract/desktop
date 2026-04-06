@@ -389,7 +389,6 @@ describe("cellSnapshotsToNotebookCells", () => {
       source: "print('hello')",
       execution_count: 1,
       outputs: [{ output_type: "stream", name: "stdout", text: "hello\n" }],
-      requiredPlugins: [],
       metadata: {},
     });
   });
@@ -406,7 +405,6 @@ describe("cellSnapshotsToNotebookCells", () => {
       source: "print('hello')",
       execution_count: 1,
       outputs: [{ output_type: "stream", name: "stdout", text: "hello\n" }],
-      requiredPlugins: [],
       metadata: {},
     });
   });
@@ -428,7 +426,6 @@ describe("cellSnapshotsToNotebookCells", () => {
       source: "print('hello')",
       execution_count: 1,
       outputs: [{ output_type: "stream", name: "stdout", text: "hello\n" }],
-      requiredPlugins: [],
       metadata: {},
     });
   });
@@ -444,7 +441,6 @@ describe("cellSnapshotsToNotebookCells", () => {
       source: "x = 1",
       execution_count: 3,
       outputs: [],
-      requiredPlugins: [],
       metadata: {},
     });
   });

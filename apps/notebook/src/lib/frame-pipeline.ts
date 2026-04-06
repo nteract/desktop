@@ -6,8 +6,10 @@
  * transforms coalesced CellChangesets into React store updates.
  */
 
-import { preWarmPlugins } from "@/components/isolated/iframe-libraries";
-import { computeRequiredPlugins } from "@/lib/renderer-plugins";
+import {
+  needsPlugin,
+  preWarmForMimes,
+} from "@/components/isolated/iframe-libraries";
 import type { JupyterOutput } from "../types";
 import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 import { getBlobPort, refreshBlobPort } from "./blob-port";
@@ -142,9 +144,19 @@ export async function materializeChangeset(
           ? (handle.get_cell_source(cellId) ?? "")
           : (existingCell?.source ?? handle.get_cell_source(cellId) ?? "");
 
-        const plugins = computeRequiredPlugins(resolved);
-        // Pre-warm plugin cache so OutputArea.injectLibraries() resolves instantly
-        preWarmPlugins(plugins);
+        // Pre-warm plugin cache from MIME keys so OutputArea resolves instantly
+        const pluginMimes: string[] = [];
+        for (const output of resolved) {
+          if (
+            output.output_type === "execute_result" ||
+            output.output_type === "display_data"
+          ) {
+            for (const mime of Object.keys(output.data)) {
+              if (needsPlugin(mime)) pluginMimes.push(mime);
+            }
+          }
+        }
+        if (pluginMimes.length > 0) preWarmForMimes(pluginMimes);
 
         updateCellById(cellId, () => ({
           id: cellId,
@@ -152,7 +164,6 @@ export async function materializeChangeset(
           source,
           execution_count: Number.isNaN(ec) ? null : ec,
           outputs: resolved,
-          requiredPlugins: plugins,
           metadata,
         }));
       }
