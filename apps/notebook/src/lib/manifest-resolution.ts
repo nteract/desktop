@@ -1,13 +1,6 @@
 import type { JupyterOutput } from "../types";
 
 /**
- * Check if a string looks like a manifest hash (64-char hex SHA-256).
- */
-export function isManifestHash(s: string): boolean {
-  return /^[a-f0-9]{64}$/.test(s);
-}
-
-/**
  * Check if a MIME type represents binary content.
  *
  * Binary MIME types are stored as raw bytes in the blob store (decoded
@@ -82,6 +75,45 @@ export type OutputManifest =
     };
 
 /**
+ * Type guard: returns true if `value` looks like a structured OutputManifest
+ * (i.e., has ContentRef objects rather than already-resolved primitive data).
+ *
+ * Distinguishes manifests from raw JupyterOutputs by checking whether the
+ * data fields contain ContentRef objects (`{ inline }` or `{ blob }`).
+ */
+export function isOutputManifest(value: unknown): value is OutputManifest {
+  if (typeof value !== "object" || value === null) return false;
+  const obj = value as Record<string, unknown>;
+  if (!("output_type" in obj)) return false;
+
+  switch (obj.output_type) {
+    case "stream":
+      return isContentRef(obj.text);
+    case "error":
+      return isContentRef(obj.traceback);
+    case "display_data":
+    case "execute_result": {
+      if (typeof obj.data !== "object" || obj.data === null) return false;
+      const entries = Object.values(obj.data as Record<string, unknown>);
+      // A manifest's data values are ContentRef objects; a raw output's are strings/primitives
+      return entries.length > 0 && entries.every(isContentRef);
+    }
+    default:
+      return false;
+  }
+}
+
+/** Check if a value is a ContentRef (`{ inline }` or `{ blob, size }`). */
+function isContentRef(value: unknown): value is ContentRef {
+  if (typeof value !== "object" || value === null) return false;
+  const obj = value as Record<string, unknown>;
+  return (
+    ("inline" in obj && typeof obj.inline === "string") ||
+    ("blob" in obj && typeof obj.blob === "string")
+  );
+}
+
+/**
  * Resolve a content reference to its string value.
  *
  * For binary MIME types (images, etc.), blob refs resolve to an HTTP URL
@@ -112,6 +144,32 @@ export async function resolveContentRef(
 }
 
 /**
+ * Resolve a content reference synchronously, returning null if async
+ * work (text blob fetch) would be required.
+ *
+ * Resolves:
+ * - Inline refs → the embedded string
+ * - Binary blob refs → blob server URL
+ *
+ * Returns null for text blob refs (require HTTP fetch).
+ */
+function resolveContentRefSync(
+  ref: ContentRef,
+  blobPort: number,
+  mimeType?: string,
+): string | null {
+  if ("inline" in ref) {
+    return ref.inline;
+  }
+  // Binary blob refs → URL (no fetch needed)
+  if (mimeType && isBinaryMime(mimeType)) {
+    return `http://127.0.0.1:${blobPort}/blob/${ref.blob}`;
+  }
+  // Text blob ref — needs async fetch
+  return null;
+}
+
+/**
  * Resolve a MIME-type → ContentRef map to a fully hydrated data bundle.
  *
  * Binary MIME types resolve to blob URLs (the browser fetches raw bytes
@@ -132,6 +190,31 @@ export async function resolveDataBundle(
   for (let i = 0; i < entries.length; i++) {
     const [mimeType] = entries[i];
     const content = contents[i];
+    if (mimeType.includes("json")) {
+      try {
+        resolved[mimeType] = JSON.parse(content);
+      } catch {
+        resolved[mimeType] = content;
+      }
+    } else {
+      resolved[mimeType] = content;
+    }
+  }
+  return resolved;
+}
+
+/**
+ * Synchronously resolve a data bundle. Returns null if any text blob
+ * fetch would be required.
+ */
+function resolveDataBundleSync(
+  data: Record<string, ContentRef>,
+  blobPort: number,
+): Record<string, unknown> | null {
+  const resolved: Record<string, unknown> = {};
+  for (const [mimeType, ref] of Object.entries(data)) {
+    const content = resolveContentRefSync(ref, blobPort, mimeType);
+    if (content === null) return null;
     if (mimeType.includes("json")) {
       try {
         resolved[mimeType] = JSON.parse(content);
@@ -185,6 +268,65 @@ export async function resolveManifest(
         manifest.traceback,
         blobPort,
       );
+      const traceback = JSON.parse(tracebackJson) as string[];
+      return {
+        output_type: "error",
+        ename: manifest.ename,
+        evalue: manifest.evalue,
+        traceback,
+      };
+    }
+  }
+}
+
+/**
+ * Synchronously resolve a manifest into a JupyterOutput.
+ *
+ * Returns null if any content ref requires an async blob fetch (i.e.,
+ * a text blob ref). Inline refs and binary blob refs (which resolve to
+ * URLs) are handled synchronously.
+ *
+ * Use this in the sync materialization path where blob fetches are not
+ * available — the async path will pick up unresolved outputs later.
+ */
+export function resolveManifestSync(
+  manifest: OutputManifest,
+  blobPort: number,
+): JupyterOutput | null {
+  switch (manifest.output_type) {
+    case "display_data": {
+      const data = resolveDataBundleSync(manifest.data, blobPort);
+      if (data === null) return null;
+      return {
+        output_type: "display_data",
+        data,
+        metadata: manifest.metadata ?? {},
+        display_id: manifest.transient?.display_id,
+      };
+    }
+    case "execute_result": {
+      const data = resolveDataBundleSync(manifest.data, blobPort);
+      if (data === null) return null;
+      return {
+        output_type: "execute_result",
+        data,
+        metadata: manifest.metadata ?? {},
+        execution_count: manifest.execution_count ?? null,
+        display_id: manifest.transient?.display_id,
+      };
+    }
+    case "stream": {
+      const text = resolveContentRefSync(manifest.text, blobPort);
+      if (text === null) return null;
+      return {
+        output_type: "stream",
+        name: manifest.name as "stdout" | "stderr",
+        text,
+      };
+    }
+    case "error": {
+      const tracebackJson = resolveContentRefSync(manifest.traceback, blobPort);
+      if (tracebackJson === null) return null;
       const traceback = JSON.parse(tracebackJson) as string[];
       return {
         output_type: "error",

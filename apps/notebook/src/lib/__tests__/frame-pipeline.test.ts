@@ -42,24 +42,34 @@ vi.mock("../logger", () => ({
 }));
 
 // Mock materialize-cells: materializeCellFromWasm builds a cell from the
-// handle's per-field accessors. isManifestHash and resolveOutput handle
+// handle's per-field accessors. outputCacheKey and resolveOutput handle
 // the cache-miss path.
+function mockOutputCacheKey(output: unknown): string {
+  if (typeof output === "string") return output;
+  try {
+    return JSON.stringify(output);
+  } catch {
+    return String(output);
+  }
+}
+
 vi.mock("../materialize-cells", () => ({
-  isManifestHash: (s: string) => s.startsWith("sha256:"),
+  outputCacheKey: (output: unknown) => mockOutputCacheKey(output),
   materializeCellFromWasm: (
     handle: Record<string, (id: string) => unknown>,
     cellId: string,
     cache: Map<string, JupyterOutput>,
     _prev?: Record<string, unknown>,
+    _blobPort?: number | null,
   ) => {
     const cellType = handle.get_cell_type(cellId);
     if (!cellType) return null;
     const source = (handle.get_cell_source(cellId) as string) ?? "";
     const ecStr = handle.get_cell_execution_count(cellId) as string;
     const ec = !ecStr || ecStr === "null" ? null : Number.parseInt(ecStr, 10);
-    const rawOutputs = (handle.get_cell_outputs(cellId) as string[]) ?? [];
+    const rawOutputs = (handle.get_cell_outputs(cellId) as unknown[]) ?? [];
     const outputs = rawOutputs
-      .map((o: string) => cache.get(o) ?? null)
+      .map((o: unknown) => cache.get(mockOutputCacheKey(o)) ?? null)
       .filter((o: JupyterOutput | null): o is JupyterOutput => o !== null);
     const metadata =
       (handle.get_cell_metadata(cellId) as Record<string, unknown>) ?? {};
@@ -73,31 +83,46 @@ vi.mock("../materialize-cells", () => ({
     };
   },
   resolveOutput: async (
-    outputStr: string,
+    output: unknown,
     _blobPort: number,
     cache: Map<string, JupyterOutput>,
   ) => {
-    // Simulate async blob resolution — check cache, test-level registry,
-    // or parse JSON.
-    const cached = cache.get(outputStr);
+    // Simulate async resolution — check cache, test-level registry,
+    // or handle objects/strings.
+    const key = mockOutputCacheKey(output);
+    const cached = cache.get(key);
     if (cached) return cached;
-    // Check test-level registry for sha256 hashes
-    const registered = blobRegistry.get(outputStr);
+    // Check test-level registry for manifest objects (keyed by JSON)
+    const registered = blobRegistry.get(key);
     if (registered) {
-      cache.set(outputStr, registered);
+      cache.set(key, registered);
       return registered;
     }
-    try {
-      const parsed = JSON.parse(outputStr) as JupyterOutput;
-      cache.set(outputStr, parsed);
-      return parsed;
-    } catch {
-      return null;
+    // Object with output_type — treat as raw JupyterOutput
+    if (
+      typeof output === "object" &&
+      output !== null &&
+      "output_type" in output
+    ) {
+      const jupyterOutput = output as JupyterOutput;
+      cache.set(key, jupyterOutput);
+      return jupyterOutput;
     }
+    // String — try JSON.parse
+    if (typeof output === "string") {
+      try {
+        const parsed = JSON.parse(output) as JupyterOutput;
+        cache.set(key, parsed);
+        return parsed;
+      } catch {
+        return null;
+      }
+    }
+    return null;
   },
 }));
 
-// Test-level registry for simulating blob server responses for sha256 hashes.
+// Test-level registry for simulating blob server responses for manifest objects.
 const blobRegistry = new Map<string, JupyterOutput>();
 
 // ---------------------------------------------------------------------------
@@ -356,7 +381,7 @@ describe("materializeChangeset", () => {
       {
         type?: string;
         source?: string;
-        outputs?: string[];
+        outputs?: unknown[];
         execution_count?: string;
         metadata?: Record<string, unknown>;
       }
@@ -548,7 +573,7 @@ describe("materializeChangeset", () => {
     expect(deps.materializeCells).toHaveBeenCalledWith(handle);
   });
 
-  it("resolves uncached manifest hashes via async blob fetch", async () => {
+  it("resolves uncached manifest objects via async resolution", async () => {
     const execResult: JupyterOutput = {
       output_type: "execute_result",
       data: { "text/plain": "42" },
@@ -556,16 +581,21 @@ describe("materializeChangeset", () => {
       execution_count: 1,
     };
 
-    // Use a sha256: hash so isManifestHash returns true. The output cache
-    // is empty so allCached=false, triggering the async resolution path.
-    // The blobRegistry simulates the blob server returning this output.
-    const hash = "sha256:abc123";
-    blobRegistry.set(hash, execResult);
+    // Use a manifest object. The output cache is empty so allCached=false,
+    // triggering the async resolution path. The blobRegistry simulates the
+    // resolver returning this output.
+    const manifest = {
+      output_type: "execute_result",
+      data: { "text/plain": "42" },
+      metadata: {},
+      execution_count: 1,
+    };
+    blobRegistry.set(mockOutputCacheKey(manifest), execResult);
     const cache = new Map<string, JupyterOutput>();
 
     const handle = createMockHandle({
       c1: {
-        outputs: [hash],
+        outputs: [manifest],
         execution_count: "1",
         source: "6 * 7",
       },

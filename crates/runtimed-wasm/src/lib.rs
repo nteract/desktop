@@ -170,7 +170,7 @@ pub struct NotebookHandle {
     /// Previous outputs per execution_id for diffing. Extracted from
     /// `state.executions[eid].outputs` on each sync frame to detect
     /// mid-execution output changes (stream append, display update, error).
-    prev_execution_outputs: std::collections::HashMap<String, Vec<String>>,
+    prev_execution_outputs: std::collections::HashMap<String, Vec<serde_json::Value>>,
     /// Pool state doc — daemon-authoritative, global, synced read-only.
     pool_doc: PoolDoc,
     pool_sync_state: sync::State,
@@ -192,7 +192,7 @@ pub struct JsCell {
     position: String,
     source: String,
     execution_count: String,
-    outputs: Vec<String>,
+    outputs: Vec<serde_json::Value>,
     metadata: serde_json::Value,
     resolved_assets: std::collections::HashMap<String, String>,
 }
@@ -225,7 +225,7 @@ impl JsCell {
         self.execution_count.clone()
     }
 
-    /// Get outputs as a JSON array string.
+    /// Get outputs as a JSON array string of structured manifest objects.
     #[wasm_bindgen(getter)]
     pub fn outputs_json(&self) -> String {
         serde_json::to_string(&self.outputs).unwrap_or_else(|_| "[]".to_string())
@@ -413,10 +413,10 @@ impl NotebookHandle {
         self.doc.get_cell_type(cell_id)
     }
 
-    /// Get a cell's outputs as a native JS array of strings.
+    /// Get a cell's outputs as a native JS array of manifest objects.
     ///
-    /// Each element is a JSON-encoded Jupyter output object (or manifest hash).
-    /// Returns undefined if the cell doesn't exist.
+    /// Each element is a structured output manifest (with MIME bundles and
+    /// ContentRef blob/inline refs). Returns undefined if the cell doesn't exist.
     ///
     /// Outputs now live in the RuntimeStateDoc keyed by execution_id. This
     /// method reads the cell's `execution_id` from the notebook doc, then

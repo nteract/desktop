@@ -959,7 +959,7 @@ pub(crate) async fn get_cell_type(
     Ok(handle.get_cell_type(cell_id))
 }
 
-/// Get a cell's raw output strings without blob resolution.
+/// Get a cell's raw output manifests as JSON strings without blob resolution.
 pub(crate) async fn get_cell_outputs(
     state: &Arc<Mutex<SessionState>>,
     cell_id: &str,
@@ -971,7 +971,12 @@ pub(crate) async fn get_cell_outputs(
             .ok_or_else(|| to_py_err("Not connected"))?
             .clone()
     };
-    Ok(handle.get_cell_outputs(cell_id))
+    Ok(handle.get_cell_outputs(cell_id).map(|values| {
+        values
+            .into_iter()
+            .map(|v| serde_json::to_string(&v).unwrap_or_default())
+            .collect()
+    }))
 }
 
 /// Get a cell's execution count without materializing all cells.

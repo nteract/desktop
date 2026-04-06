@@ -560,12 +560,12 @@ mod tests {
             "stdout",
             StreamOutputState {
                 index: 0,
-                manifest_hash: "hash1".to_string(),
+                blob_hash: "hash1".to_string(),
             },
         );
         let state = terminals.get_output_state("cell-1", "stdout").unwrap();
         assert_eq!(state.index, 0);
-        assert_eq!(state.manifest_hash, "hash1");
+        assert_eq!(state.blob_hash, "hash1");
 
         // Different stream gets different state
         terminals.set_output_state(
@@ -573,7 +573,7 @@ mod tests {
             "stderr",
             StreamOutputState {
                 index: 1,
-                manifest_hash: "hash2".to_string(),
+                blob_hash: "hash2".to_string(),
             },
         );
         assert_eq!(
@@ -597,14 +597,14 @@ mod tests {
             "stdout",
             StreamOutputState {
                 index: 0,
-                manifest_hash: "hash3".to_string(),
+                blob_hash: "hash3".to_string(),
             },
         );
         assert_eq!(
             terminals
                 .get_output_state("cell-1", "stdout")
                 .unwrap()
-                .manifest_hash,
+                .blob_hash,
             "hash3"
         );
 

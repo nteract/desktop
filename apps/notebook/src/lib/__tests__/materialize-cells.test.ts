@@ -4,6 +4,7 @@ import {
   type CellSnapshot,
   cellSnapshotsToNotebookCells,
   cellSnapshotsToNotebookCellsSync,
+  outputCacheKey,
   resolveOutput,
   reuseOutputsIfUnchanged,
 } from "../materialize-cells";
@@ -35,7 +36,7 @@ function streamOutput(name: "stdout" | "stderr", text: string): JupyterOutput {
 function codeSnapshot(
   id: string,
   source: string,
-  outputs: string[] = [],
+  outputs: unknown[] = [],
   executionCount = "null",
 ): CellSnapshot {
   return {
@@ -162,14 +163,124 @@ describe("resolveOutput", () => {
   it("returns cached value on cache hit", async () => {
     const cached: JupyterOutput = streamOutput("stdout", "cached");
     const cache = new Map<string, JupyterOutput>();
-    cache.set("key1", cached);
+    const manifest = {
+      output_type: "stream",
+      name: "stdout",
+      text: { inline: "cached" },
+    };
+    cache.set(outputCacheKey(manifest), cached);
 
-    const result = await resolveOutput("key1", null, cache);
+    const result = await resolveOutput(manifest, null, cache);
     expect(result).toBe(cached);
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
-  it("parses raw JSON output string (non-manifest)", async () => {
+  it("resolves structured manifest object with inline refs", async () => {
+    const manifest = {
+      output_type: "stream",
+      name: "stdout",
+      text: { inline: "hello\n" },
+    };
+    const cache = new Map<string, JupyterOutput>();
+
+    const result = await resolveOutput(manifest, 8765, cache);
+    expect(result).toEqual({
+      output_type: "stream",
+      name: "stdout",
+      text: "hello\n",
+    });
+  });
+
+  it("resolves display_data manifest with inline data", async () => {
+    const manifest = {
+      output_type: "display_data",
+      data: {
+        "text/plain": { inline: "hi" },
+        "text/html": { inline: "<b>hi</b>" },
+      },
+      metadata: { isolated: true },
+    };
+    const cache = new Map<string, JupyterOutput>();
+
+    const result = await resolveOutput(manifest, 8765, cache);
+    expect(result).toEqual({
+      output_type: "display_data",
+      data: { "text/plain": "hi", "text/html": "<b>hi</b>" },
+      metadata: { isolated: true },
+      display_id: undefined,
+    });
+  });
+
+  it("resolves manifest with blob ref by fetching from blob server", async () => {
+    const manifest = {
+      output_type: "stream",
+      name: "stdout",
+      text: { blob: "abc123hash", size: 5000 },
+    };
+    const cache = new Map<string, JupyterOutput>();
+    const blobPort = 8765;
+
+    mockFetch.mockResolvedValueOnce(
+      new Response("big text output", { status: 200 }),
+    );
+
+    const result = await resolveOutput(manifest, blobPort, cache);
+    expect(result).toEqual({
+      output_type: "stream",
+      name: "stdout",
+      text: "big text output",
+    });
+    expect(mockFetch).toHaveBeenCalledWith(
+      `http://127.0.0.1:${blobPort}/blob/abc123hash`,
+    );
+  });
+
+  it("caches resolved manifest output", async () => {
+    const manifest = {
+      output_type: "stream",
+      name: "stdout",
+      text: { inline: "cached manifest" },
+    };
+    const cache = new Map<string, JupyterOutput>();
+    const key = outputCacheKey(manifest);
+
+    await resolveOutput(manifest, 8765, cache);
+    expect(cache.has(key)).toBe(true);
+
+    // Second call should hit cache without resolving
+    const result = await resolveOutput(manifest, 8765, cache);
+    expect(result).toEqual({
+      output_type: "stream",
+      name: "stdout",
+      text: "cached manifest",
+    });
+  });
+
+  it("returns null for manifest object when blobPort is null", async () => {
+    const manifest = {
+      output_type: "stream",
+      name: "stdout",
+      text: { blob: "abc123", size: 100 },
+    };
+    const cache = new Map<string, JupyterOutput>();
+
+    const result = await resolveOutput(manifest, null, cache);
+    expect(result).toBeNull();
+  });
+
+  it("returns raw JupyterOutput object without ContentRefs", async () => {
+    const output = {
+      output_type: "stream",
+      name: "stdout",
+      text: "already resolved",
+    };
+    const cache = new Map<string, JupyterOutput>();
+
+    const result = await resolveOutput(output, null, cache);
+    expect(result).toEqual(output);
+  });
+
+  it("parses legacy JSON output string (backward compat)", async () => {
     const outputJson = JSON.stringify({
       output_type: "stream",
       name: "stdout",
@@ -185,7 +296,7 @@ describe("resolveOutput", () => {
     });
   });
 
-  it("caches parsed JSON output", async () => {
+  it("caches parsed legacy JSON output", async () => {
     const outputJson = JSON.stringify({
       output_type: "execute_result",
       data: { "text/plain": "42" },
@@ -202,99 +313,27 @@ describe("resolveOutput", () => {
     expect(result).toEqual(cache.get(outputJson));
   });
 
-  it("returns null for invalid JSON (non-manifest)", async () => {
+  it("returns null for invalid JSON string", async () => {
     const cache = new Map<string, JupyterOutput>();
-    // Not a manifest hash (not 64 hex chars) and not valid JSON
     const result = await resolveOutput("not valid json{{{", null, cache);
     expect(result).toBeNull();
   });
 
-  it("returns null for manifest hash when blobPort is null", async () => {
+  it("returns null for non-parseable string (e.g. hex hash)", async () => {
     const hash = "a".repeat(64);
     const cache = new Map<string, JupyterOutput>();
 
     const result = await resolveOutput(hash, null, cache);
     expect(result).toBeNull();
-    expect(mockFetch).not.toHaveBeenCalled();
   });
 
-  it("fetches and resolves manifest hash when blobPort is set", async () => {
-    const hash =
-      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+  it("returns null for unrecognized types", async () => {
     const cache = new Map<string, JupyterOutput>();
-    const blobPort = 8765;
-
-    // The manifest fetch (first fetch for the manifest JSON)
-    const manifest = {
-      output_type: "stream",
-      name: "stdout",
-      text: { inline: "resolved text" },
-    };
-    mockFetch.mockResolvedValueOnce(
-      new Response(JSON.stringify(manifest), { status: 200 }),
-    );
-
-    const result = await resolveOutput(hash, blobPort, cache);
-    expect(result).toEqual({
-      output_type: "stream",
-      name: "stdout",
-      text: "resolved text",
-    });
-    expect(mockFetch).toHaveBeenCalledWith(
-      `http://127.0.0.1:${blobPort}/blob/${hash}`,
-    );
-  });
-
-  it("caches resolved manifest output", async () => {
-    const hash =
-      "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2";
-    const cache = new Map<string, JupyterOutput>();
-    const blobPort = 8765;
-
-    const manifest = {
-      output_type: "stream",
-      name: "stdout",
-      text: { inline: "cached manifest" },
-    };
-    mockFetch.mockResolvedValueOnce(
-      new Response(JSON.stringify(manifest), { status: 200 }),
-    );
-
-    await resolveOutput(hash, blobPort, cache);
-    expect(cache.has(hash)).toBe(true);
-
-    // Second call should hit cache without fetching
-    mockFetch.mockClear();
-    const result = await resolveOutput(hash, blobPort, cache);
-    expect(result).toEqual({
-      output_type: "stream",
-      name: "stdout",
-      text: "cached manifest",
-    });
-    expect(mockFetch).not.toHaveBeenCalled();
-  });
-
-  it("returns null on fetch failure for manifest hash", async () => {
-    const hash = "f".repeat(64);
-    const cache = new Map<string, JupyterOutput>();
-
-    mockFetch.mockResolvedValueOnce(new Response("not found", { status: 404 }));
-
-    const result = await resolveOutput(hash, 8765, cache);
+    const result = await resolveOutput(42, null, cache);
     expect(result).toBeNull();
   });
 
-  it("returns null on network error for manifest hash", async () => {
-    const hash = "b".repeat(64);
-    const cache = new Map<string, JupyterOutput>();
-
-    mockFetch.mockRejectedValueOnce(new TypeError("network error"));
-
-    const result = await resolveOutput(hash, 8765, cache);
-    expect(result).toBeNull();
-  });
-
-  it("parses execute_result JSON correctly", async () => {
+  it("handles execute_result object correctly", async () => {
     const output = {
       output_type: "execute_result",
       data: { "text/plain": "2", "text/html": "<b>2</b>" },
@@ -303,11 +342,11 @@ describe("resolveOutput", () => {
     };
     const cache = new Map<string, JupyterOutput>();
 
-    const result = await resolveOutput(JSON.stringify(output), null, cache);
+    const result = await resolveOutput(output, null, cache);
     expect(result).toEqual(output);
   });
 
-  it("parses error output JSON correctly", async () => {
+  it("handles error output object correctly", async () => {
     const output = {
       output_type: "error",
       ename: "ValueError",
@@ -319,7 +358,7 @@ describe("resolveOutput", () => {
     };
     const cache = new Map<string, JupyterOutput>();
 
-    const result = await resolveOutput(JSON.stringify(output), null, cache);
+    const result = await resolveOutput(output, null, cache);
     expect(result).toEqual(output);
   });
 });
@@ -334,7 +373,45 @@ describe("cellSnapshotsToNotebookCells", () => {
     expect(cells).toEqual([]);
   });
 
-  it("converts a code cell with raw JSON outputs", async () => {
+  it("converts a code cell with structured manifest outputs", async () => {
+    const manifest = {
+      output_type: "stream",
+      name: "stdout",
+      text: { inline: "hello\n" },
+    };
+    const snap = codeSnapshot("c1", "print('hello')", [manifest], "1");
+
+    const cells = await cellSnapshotsToNotebookCells([snap], 8765, new Map());
+    expect(cells).toHaveLength(1);
+    expect(cells[0]).toEqual({
+      id: "c1",
+      cell_type: "code",
+      source: "print('hello')",
+      execution_count: 1,
+      outputs: [{ output_type: "stream", name: "stdout", text: "hello\n" }],
+      requiredPlugins: [],
+      metadata: {},
+    });
+  });
+
+  it("converts a code cell with raw JupyterOutput objects (no ContentRefs)", async () => {
+    const output = { output_type: "stream", name: "stdout", text: "hello\n" };
+    const snap = codeSnapshot("c1", "print('hello')", [output], "1");
+
+    const cells = await cellSnapshotsToNotebookCells([snap], null, new Map());
+    expect(cells).toHaveLength(1);
+    expect(cells[0]).toEqual({
+      id: "c1",
+      cell_type: "code",
+      source: "print('hello')",
+      execution_count: 1,
+      outputs: [{ output_type: "stream", name: "stdout", text: "hello\n" }],
+      requiredPlugins: [],
+      metadata: {},
+    });
+  });
+
+  it("converts a code cell with legacy JSON string outputs", async () => {
     const output = { output_type: "stream", name: "stdout", text: "hello\n" };
     const snap = codeSnapshot(
       "c1",
@@ -479,14 +556,19 @@ describe("cellSnapshotsToNotebookCells", () => {
   });
 
   it("filters out null (unparseable) outputs", async () => {
-    const validOutput = JSON.stringify({
+    const validManifest = {
       output_type: "stream",
       name: "stdout",
-      text: "ok\n",
-    });
-    const snap = codeSnapshot("c1", "", [validOutput, "invalid json{{{"], "1");
+      text: { inline: "ok\n" },
+    };
+    const snap = codeSnapshot(
+      "c1",
+      "",
+      [validManifest, "invalid json{{{"],
+      "1",
+    );
 
-    const cells = await cellSnapshotsToNotebookCells([snap], null, new Map());
+    const cells = await cellSnapshotsToNotebookCells([snap], 8765, new Map());
     if (cells[0].cell_type === "code") {
       expect(cells[0].outputs).toHaveLength(1);
       expect(cells[0].outputs[0]).toEqual({
@@ -498,22 +580,22 @@ describe("cellSnapshotsToNotebookCells", () => {
   });
 
   it("passes through consecutive streams without merging (daemon consolidates)", async () => {
-    const out1 = JSON.stringify({
+    const out1 = {
       output_type: "stream",
       name: "stdout",
-      text: "line1\n",
-    });
-    const out2 = JSON.stringify({
+      text: { inline: "line1\n" },
+    };
+    const out2 = {
       output_type: "stream",
       name: "stdout",
-      text: "line2\n",
-    });
+      text: { inline: "line2\n" },
+    };
     const snap = codeSnapshot("c1", "print(...)", [out1, out2], "1");
 
     // The daemon's StreamTerminals consolidates streams via terminal
     // emulation before writing to the Automerge doc. The frontend no
     // longer merges — it passes outputs through as-is.
-    const cells = await cellSnapshotsToNotebookCells([snap], null, new Map());
+    const cells = await cellSnapshotsToNotebookCells([snap], 8765, new Map());
     if (cells[0].cell_type === "code") {
       expect(cells[0].outputs).toHaveLength(2);
       expect(cells[0].outputs[0]).toEqual({
@@ -530,39 +612,39 @@ describe("cellSnapshotsToNotebookCells", () => {
   });
 
   it("does not merge streams with different names", async () => {
-    const stdout = JSON.stringify({
+    const stdout = {
       output_type: "stream",
       name: "stdout",
-      text: "out\n",
-    });
-    const stderr = JSON.stringify({
+      text: { inline: "out\n" },
+    };
+    const stderr = {
       output_type: "stream",
       name: "stderr",
-      text: "err\n",
-    });
+      text: { inline: "err\n" },
+    };
     const snap = codeSnapshot("c1", "", [stdout, stderr], "1");
 
-    const cells = await cellSnapshotsToNotebookCells([snap], null, new Map());
+    const cells = await cellSnapshotsToNotebookCells([snap], 8765, new Map());
     if (cells[0].cell_type === "code") {
       expect(cells[0].outputs).toHaveLength(2);
     }
   });
 
   it("converts mixed cell types in order", async () => {
-    const streamJson = JSON.stringify({
+    const streamManifest = {
       output_type: "stream",
       name: "stdout",
-      text: "42\n",
-    });
+      text: { inline: "42\n" },
+    };
     const snaps: CellSnapshot[] = [
       markdownSnapshot("m1", "# Intro"),
-      codeSnapshot("c1", "print(42)", [streamJson], "1"),
+      codeSnapshot("c1", "print(42)", [streamManifest], "1"),
       rawSnapshot("r1", "---"),
       codeSnapshot("c2", "x", [], "null"),
       markdownSnapshot("m2", "## End"),
     ];
 
-    const cells = await cellSnapshotsToNotebookCells(snaps, null, new Map());
+    const cells = await cellSnapshotsToNotebookCells(snaps, 8765, new Map());
     expect(cells).toHaveLength(5);
     expect(cells.map((c) => c.cell_type)).toEqual([
       "markdown",
@@ -584,20 +666,19 @@ describe("cellSnapshotsToNotebookCells", () => {
   });
 
   it("uses shared cache across all output resolutions", async () => {
-    const outputJson = JSON.stringify({
+    const manifest = {
       output_type: "execute_result",
-      data: { "text/plain": "same" },
-      metadata: {},
+      data: { "text/plain": { inline: "same" } },
       execution_count: 1,
-    });
-    // Two cells reference the same output string
+    };
+    // Two cells reference the same manifest object shape
     const snaps: CellSnapshot[] = [
-      codeSnapshot("c1", "", [outputJson], "1"),
-      codeSnapshot("c2", "", [outputJson], "2"),
+      codeSnapshot("c1", "", [manifest], "1"),
+      codeSnapshot("c2", "", [manifest], "2"),
     ];
     const cache = new Map<string, JupyterOutput>();
 
-    const cells = await cellSnapshotsToNotebookCells(snaps, null, cache);
+    const cells = await cellSnapshotsToNotebookCells(snaps, 8765, cache);
     expect(cache.size).toBe(1);
     if (cells[0].cell_type === "code" && cells[1].cell_type === "code") {
       expect(cells[0].outputs[0]).toEqual(cells[1].outputs[0]);
@@ -606,26 +687,27 @@ describe("cellSnapshotsToNotebookCells", () => {
 
   it("handles code cell with multiple output types", async () => {
     const outputs = [
-      JSON.stringify({
+      {
         output_type: "stream",
         name: "stdout",
-        text: "computing...\n",
-      }),
-      JSON.stringify({
+        text: { inline: "computing...\n" },
+      },
+      {
         output_type: "execute_result",
-        data: { "text/plain": "42", "text/html": "<b>42</b>" },
-        metadata: {},
+        data: {
+          "text/plain": { inline: "42" },
+          "text/html": { inline: "<b>42</b>" },
+        },
         execution_count: 3,
-      }),
-      JSON.stringify({
+      },
+      {
         output_type: "display_data",
-        data: { "image/png": "base64data" },
-        metadata: {},
-      }),
+        data: { "image/png": { blob: "imgblob", size: 500 } },
+      },
     ];
     const snap = codeSnapshot("c1", "compute()", outputs, "3");
 
-    const cells = await cellSnapshotsToNotebookCells([snap], null, new Map());
+    const cells = await cellSnapshotsToNotebookCells([snap], 8765, new Map());
     if (cells[0].cell_type === "code") {
       expect(cells[0].outputs).toHaveLength(3);
       expect(cells[0].outputs[0].output_type).toBe("stream");
@@ -634,19 +716,17 @@ describe("cellSnapshotsToNotebookCells", () => {
     }
   });
 
-  it("resolves manifest hash outputs when blobPort is provided", async () => {
-    const hash =
-      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+  it("resolves manifest object outputs with blob refs when blobPort is provided", async () => {
     const manifest = {
       output_type: "stream",
       name: "stdout",
-      text: { inline: "from manifest\n" },
+      text: { blob: "blobhash123", size: 5000 },
     };
     mockFetch.mockResolvedValueOnce(
-      new Response(JSON.stringify(manifest), { status: 200 }),
+      new Response("from manifest\n", { status: 200 }),
     );
 
-    const snap = codeSnapshot("c1", "", [hash], "1");
+    const snap = codeSnapshot("c1", "", [manifest], "1");
     const cells = await cellSnapshotsToNotebookCells([snap], 9999, new Map());
 
     if (cells[0].cell_type === "code") {
@@ -658,17 +738,21 @@ describe("cellSnapshotsToNotebookCells", () => {
       });
     }
     expect(mockFetch).toHaveBeenCalledWith(
-      `http://127.0.0.1:9999/blob/${hash}`,
+      "http://127.0.0.1:9999/blob/blobhash123",
     );
   });
 
-  it("handles manifest hash with no blobPort gracefully", async () => {
-    const hash = "a".repeat(64);
-    const snap = codeSnapshot("c1", "", [hash], "1");
+  it("handles manifest object with no blobPort gracefully", async () => {
+    const manifest = {
+      output_type: "stream",
+      name: "stdout",
+      text: { blob: "blobhash", size: 100 },
+    };
+    const snap = codeSnapshot("c1", "", [manifest], "1");
 
     const cells = await cellSnapshotsToNotebookCells([snap], null, new Map());
     if (cells[0].cell_type === "code") {
-      // Manifest hash without blobPort resolves to null and is filtered out
+      // Manifest with blob ref and no blobPort resolves to null and is filtered
       expect(cells[0].outputs).toHaveLength(0);
     }
   });
@@ -701,16 +785,19 @@ describe("cellSnapshotsToNotebookCells", () => {
     expect(cells[0]).not.toHaveProperty("execution_count");
   });
 
-  it("handles error output in code cells", async () => {
-    const errOutput = JSON.stringify({
+  it("handles error output manifest in code cells", async () => {
+    const traceback = [
+      "\u001b[0;31mZeroDivisionError\u001b[0m: division by zero",
+    ];
+    const errManifest = {
       output_type: "error",
       ename: "ZeroDivisionError",
       evalue: "division by zero",
-      traceback: ["\u001b[0;31mZeroDivisionError\u001b[0m: division by zero"],
-    });
-    const snap = codeSnapshot("c1", "1/0", [errOutput], "1");
+      traceback: { inline: JSON.stringify(traceback) },
+    };
+    const snap = codeSnapshot("c1", "1/0", [errManifest], "1");
 
-    const cells = await cellSnapshotsToNotebookCells([snap], null, new Map());
+    const cells = await cellSnapshotsToNotebookCells([snap], 8765, new Map());
     if (cells[0].cell_type === "code") {
       expect(cells[0].outputs).toHaveLength(1);
       const out = cells[0].outputs[0];
@@ -720,6 +807,22 @@ describe("cellSnapshotsToNotebookCells", () => {
         expect(out.evalue).toBe("division by zero");
         expect(out.traceback).toHaveLength(1);
       }
+    }
+  });
+
+  it("handles raw error output object (no ContentRefs) in code cells", async () => {
+    const errOutput = {
+      output_type: "error",
+      ename: "ValueError",
+      evalue: "bad",
+      traceback: ["ValueError: bad"],
+    };
+    const snap = codeSnapshot("c1", "1/0", [errOutput], "1");
+
+    const cells = await cellSnapshotsToNotebookCells([snap], null, new Map());
+    if (cells[0].cell_type === "code") {
+      expect(cells[0].outputs).toHaveLength(1);
+      expect(cells[0].outputs[0]).toEqual(errOutput);
     }
   });
 

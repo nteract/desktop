@@ -4433,13 +4433,8 @@ fn doc_to_ipynb(doc: &notebook_doc::NotebookDoc) -> serde_json::Value {
         });
 
         if cell.cell_type == "code" {
-            // Parse outputs from stored JSON strings
-            let resolved_outputs: Vec<serde_json::Value> = cell
-                .outputs
-                .iter()
-                .map(|o| serde_json::from_str(o).unwrap_or(serde_json::Value::String(o.clone())))
-                .collect();
-            cell_json["outputs"] = serde_json::Value::Array(resolved_outputs);
+            // Outputs are already structured serde_json::Value manifests
+            cell_json["outputs"] = serde_json::Value::Array(cell.outputs.clone());
 
             let exec_count: serde_json::Value =
                 serde_json::from_str(&cell.execution_count).unwrap_or(serde_json::Value::Null);
@@ -4632,23 +4627,17 @@ async fn inspect_notebook(path: &PathBuf, full_outputs: bool, json_output: bool)
                     "kernel_info": result.kernel_info,
                     "cells": result.cells.iter().map(|c| {
                         let outputs_info: Vec<serde_json::Value> = if full_outputs {
-                            c.outputs.iter().map(|o| {
-                                serde_json::from_str(o).unwrap_or(serde_json::Value::String(o.clone()))
-                            }).collect()
+                            c.outputs.clone()
                         } else {
                             c.outputs.iter().map(|o| {
-                                // Parse and summarize
-                                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(o) {
-                                    if let Some(otype) = parsed.get("output_type").and_then(|v| v.as_str()) {
-                                        serde_json::json!({
-                                            "output_type": otype,
-                                            "size": o.len(),
-                                        })
-                                    } else {
-                                        serde_json::json!({ "size": o.len() })
-                                    }
+                                let size = serde_json::to_string(o).map(|s| s.len()).unwrap_or(0);
+                                if let Some(otype) = o.get("output_type").and_then(|v| v.as_str()) {
+                                    serde_json::json!({
+                                        "output_type": otype,
+                                        "size": size,
+                                    })
                                 } else {
-                                    serde_json::json!({ "size": o.len(), "parse_error": true })
+                                    serde_json::json!({ "size": size })
                                 }
                             }).collect()
                         };
@@ -4707,16 +4696,11 @@ async fn inspect_notebook(path: &PathBuf, full_outputs: bool, json_output: bool)
 
                     if full_outputs && !cell.outputs.is_empty() {
                         for (j, output) in cell.outputs.iter().enumerate() {
-                            // Pretty print the JSON
-                            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(output) {
-                                println!(
-                                    "      output[{}]: {}",
-                                    j,
-                                    serde_json::to_string_pretty(&parsed)?
-                                );
-                            } else {
-                                println!("      output[{}]: {}", j, output);
-                            }
+                            println!(
+                                "      output[{}]: {}",
+                                j,
+                                serde_json::to_string_pretty(output)?
+                            );
                         }
                     }
                 }

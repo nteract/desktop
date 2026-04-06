@@ -15,17 +15,18 @@ function generateSource(lineCount: number): string {
   return lines.join("\n");
 }
 
-function generateOutputJson(index: number): string {
-  const output = {
+function generateOutputManifest(index: number): Record<string, unknown> {
+  return {
     output_type: "execute_result",
     data: {
-      "text/plain": `Result ${index}`,
-      "text/html": `<div class="output"><table>${Array.from({ length: 10 }, (_, r) => `<tr><td>${r}</td><td>${(Math.random() * 100).toFixed(2)}</td></tr>`).join("")}</table></div>`,
+      "text/plain": { inline: `Result ${index}` },
+      "text/html": {
+        inline: `<div class="output"><table>${Array.from({ length: 10 }, (_, r) => `<tr><td>${r}</td><td>${(Math.random() * 100).toFixed(2)}</td></tr>`).join("")}</table></div>`,
+      },
     },
     execution_count: index + 1,
     metadata: {},
   };
-  return JSON.stringify(output);
 }
 
 function generateCellSnapshot(
@@ -42,7 +43,7 @@ function generateCellSnapshot(
     execution_count: isCode ? `${index + 1}` : "null",
     outputs:
       isCode && withOutputs && index % 3 === 0
-        ? [generateOutputJson(index)]
+        ? [generateOutputManifest(index)]
         : [],
     metadata: { collapsed: false },
   };
@@ -101,27 +102,30 @@ describe("JSON.parse baseline", () => {
   }
 });
 
-// ── Benchmarks: individual output JSON.parse ──────────────────────────
+// ── Benchmarks: output cache key computation + lookups ────────────────
 
-describe("per-output JSON.parse", () => {
-  const outputJsons = Array.from({ length: 100 }, (_, i) =>
-    generateOutputJson(i),
+describe("per-output cache key + lookup", () => {
+  const outputManifests = Array.from({ length: 100 }, (_, i) =>
+    generateOutputManifest(i),
   );
 
-  bench("parse 100 individual output JSONs", () => {
-    for (const json of outputJsons) {
-      JSON.parse(json);
+  bench("compute 100 output cache keys (JSON.stringify)", () => {
+    for (const manifest of outputManifests) {
+      JSON.stringify(manifest);
     }
   });
 
   const cachedOutputs = new Map<string, JupyterOutput>();
-  for (const json of outputJsons) {
-    cachedOutputs.set(json, JSON.parse(json));
+  const keys: string[] = [];
+  for (const manifest of outputManifests) {
+    const key = JSON.stringify(manifest);
+    keys.push(key);
+    cachedOutputs.set(key, manifest as unknown as JupyterOutput);
   }
 
   bench("100 output cache lookups (hit)", () => {
-    for (const json of outputJsons) {
-      cachedOutputs.get(json);
+    for (const key of keys) {
+      cachedOutputs.get(key);
     }
   });
 });

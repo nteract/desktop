@@ -29,7 +29,7 @@ use uuid::Uuid;
 
 use crate::blob_store::BlobStore;
 use crate::notebook_doc::NotebookDoc;
-use crate::output_store::{self, DEFAULT_INLINE_THRESHOLD};
+use crate::output_store::{self, ContentRef, OutputManifest, DEFAULT_INLINE_THRESHOLD};
 use crate::protocol::{CompletionItem, HistoryEntry, NotebookBroadcast, QueueEntry};
 use crate::stream_terminal::{StreamOutputState, StreamTerminals};
 use crate::terminal_size::{TERMINAL_COLUMNS_STR, TERMINAL_LINES_STR};
@@ -223,16 +223,11 @@ fn media_to_display_data(media: &jupyter_protocol::Media) -> serde_json::Value {
     })
 }
 
-/// Check if a string looks like a manifest hash (64-char hex).
-fn is_manifest_hash(s: &str) -> bool {
-    s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit())
-}
-
-/// Update an output by display_id when outputs are manifest hashes.
+/// Update an output by display_id when outputs are inline manifests.
 ///
-/// This function iterates through all cells and outputs in the document,
-/// looking for a manifest with a matching display_id. When found, it creates
-/// a new manifest with updated data and replaces the hash in the document.
+/// Iterates through all executions' outputs in the RuntimeStateDoc,
+/// deserializes each as an OutputManifest, checks for a matching display_id,
+/// and replaces the manifest with updated data when found.
 ///
 /// Returns true if an output was found and updated, false otherwise.
 async fn update_output_by_display_id_with_manifests(
@@ -246,57 +241,27 @@ async fn update_output_by_display_id_with_manifests(
     let outputs = state_doc.get_all_outputs();
     let mut found = false;
 
-    for (exec_id, output_idx, output_str) in outputs {
-        // Check if it's a manifest hash or raw JSON
-        if is_manifest_hash(&output_str) {
-            // Fetch manifest from blob store
-            let manifest_bytes = match blob_store.get(&output_str).await? {
-                Some(bytes) => bytes,
-                None => continue,
-            };
-            let manifest_json = String::from_utf8(manifest_bytes)?;
+    for (exec_id, output_idx, output_value) in outputs {
+        // Deserialize the inline manifest JSON Value as an OutputManifest
+        let manifest: OutputManifest = match serde_json::from_value(output_value) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
 
-            // Try to update the manifest
-            if let Some(updated_manifest) = output_store::update_manifest_display_data(
-                &manifest_json,
-                display_id,
-                new_data,
-                new_metadata,
-                blob_store,
-                DEFAULT_INLINE_THRESHOLD,
-            )
-            .await?
-            {
-                // Store the updated manifest and get new hash
-                let new_hash = output_store::store_manifest(&updated_manifest, blob_store).await?;
-
-                // Replace the hash in the RuntimeStateDoc
-                state_doc.replace_output(&exec_id, output_idx, &new_hash)?;
-                found = true;
-            }
-        } else {
-            // Backward compatibility: try parsing as raw JSON
-            let mut output_json: serde_json::Value = match serde_json::from_str(&output_str) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-
-            let matches = output_json
-                .get("transient")
-                .and_then(|t| t.get("display_id"))
-                .and_then(|d| d.as_str())
-                == Some(display_id);
-
-            if matches {
-                // Update data and metadata in place
-                output_json["data"] = new_data.clone();
-                output_json["metadata"] = serde_json::Value::Object(new_metadata.clone());
-
-                // Write back
-                let updated_str = output_json.to_string();
-                state_doc.replace_output(&exec_id, output_idx, &updated_str)?;
-                found = true;
-            }
+        // Check if this manifest has the matching display_id and update it
+        if let Some(updated_manifest) = output_store::update_manifest_display_data(
+            &manifest,
+            display_id,
+            new_data,
+            new_metadata,
+            blob_store,
+            DEFAULT_INLINE_THRESHOLD,
+        )
+        .await?
+        {
+            // Write the updated manifest back as a JSON Value
+            state_doc.replace_output(&exec_id, output_idx, &updated_manifest.to_json())?;
+            found = true;
         }
     }
 
@@ -1325,84 +1290,70 @@ impl RoomKernel {
                                         "text": stream.text
                                     });
 
-                                    // Persist to CRDT via blob store manifest (same as cell outputs)
-                                    if let Ok(manifest_json) = crate::output_store::create_manifest(
+                                    // Persist to CRDT as inline manifest
+                                    if let Ok(manifest) = crate::output_store::create_manifest(
                                         &output,
                                         &blob_store,
                                         crate::output_store::DEFAULT_INLINE_THRESHOLD,
                                     )
                                     .await
                                     {
-                                        if let Ok(hash) = crate::output_store::store_manifest(
-                                            &manifest_json,
-                                            &blob_store,
-                                        )
-                                        .await
-                                        {
-                                            let mut sd = state_doc_for_iopub.write().await;
-                                            // Honor deferred clear_output(wait=true)
-                                            if pending_clear_widgets.remove(&widget_comm_id) {
-                                                sd.clear_comm_outputs(&widget_comm_id);
-                                            }
-                                            if sd.append_comm_output(&widget_comm_id, &hash) {
-                                                let _ = state_changed_for_iopub.send(());
-                                            }
+                                        let manifest_json = manifest.to_json();
+                                        let mut sd = state_doc_for_iopub.write().await;
+                                        // Honor deferred clear_output(wait=true)
+                                        if pending_clear_widgets.remove(&widget_comm_id) {
+                                            sd.clear_comm_outputs(&widget_comm_id);
+                                        }
+                                        if sd.append_comm_output(&widget_comm_id, &manifest_json) {
+                                            let _ = state_changed_for_iopub.send(());
+                                        }
 
-                                            // Read the full outputs list and sync to kernel
-                                            if let Some(entry) = sd.get_comm(&widget_comm_id) {
-                                                let output_hashes = entry.outputs.clone();
+                                        // Read the full outputs list and sync to kernel
+                                        if let Some(entry) = sd.get_comm(&widget_comm_id) {
+                                            let output_manifests = entry.outputs.clone();
 
-                                                // Write manifest hashes to state.outputs so the
-                                                // frontend CRDT watcher picks them up (it diffs
-                                                // entry.state, not entry.outputs).
-                                                let hashes_json = serde_json::Value::Array(
-                                                    output_hashes
-                                                        .iter()
-                                                        .map(|h| {
-                                                            serde_json::Value::String(h.clone())
-                                                        })
-                                                        .collect(),
-                                                );
-                                                sd.set_comm_state_property(
-                                                    &widget_comm_id,
-                                                    "outputs",
-                                                    &hashes_json,
-                                                );
+                                            // Write manifests to state.outputs so the
+                                            // frontend CRDT watcher picks them up (it diffs
+                                            // entry.state, not entry.outputs).
+                                            let manifests_json =
+                                                serde_json::Value::Array(output_manifests.clone());
+                                            sd.set_comm_state_property(
+                                                &widget_comm_id,
+                                                "outputs",
+                                                &manifests_json,
+                                            );
 
-                                                drop(sd); // Release lock before async work
+                                            drop(sd); // Release lock before async work
 
-                                                // Resolve manifest hashes to nbformat JSON
-                                                let mut resolved_outputs = Vec::new();
-                                                for h in &output_hashes {
-                                                    if let Ok(Some(manifest_bytes)) =
-                                                        blob_store.get(h).await
+                                            // Resolve inline manifests to nbformat JSON
+                                            let mut resolved_outputs = Vec::new();
+                                            for m in &output_manifests {
+                                                if let Ok(manifest) =
+                                                    serde_json::from_value::<OutputManifest>(
+                                                        m.clone(),
+                                                    )
+                                                {
+                                                    if let Ok(resolved) =
+                                                        output_store::resolve_manifest(
+                                                            &manifest,
+                                                            &blob_store,
+                                                        )
+                                                        .await
                                                     {
-                                                        if let Ok(manifest_str) =
-                                                            String::from_utf8(manifest_bytes)
-                                                        {
-                                                            if let Ok(resolved) =
-                                                                output_store::resolve_manifest(
-                                                                    &manifest_str,
-                                                                    &blob_store,
-                                                                )
-                                                                .await
-                                                            {
-                                                                resolved_outputs.push(resolved);
-                                                            }
-                                                        }
+                                                        resolved_outputs.push(resolved);
                                                     }
                                                 }
-
-                                                // Send comm_msg(update, state: {outputs}) to kernel
-                                                let _ = iopub_cmd_tx
-                                                    .send(QueueCommand::SendCommUpdate {
-                                                        comm_id: widget_comm_id.clone(),
-                                                        state: serde_json::json!({
-                                                            "outputs": resolved_outputs,
-                                                        }),
-                                                    })
-                                                    .await;
                                             }
+
+                                            // Send comm_msg(update, state: {outputs}) to kernel
+                                            let _ = iopub_cmd_tx
+                                                .send(QueueCommand::SendCommUpdate {
+                                                    comm_id: widget_comm_id.clone(),
+                                                    state: serde_json::json!({
+                                                        "outputs": resolved_outputs,
+                                                    }),
+                                                })
+                                                .await;
                                         }
                                     }
 
@@ -1435,39 +1386,35 @@ impl RoomKernel {
                                         "text": rendered_text
                                     });
 
-                                    // Create and store manifest
-                                    let output_ref = match output_store::create_manifest(
+                                    // Create manifest for stream output
+                                    let manifest = match output_store::create_manifest(
                                         &nbformat_value,
                                         &blob_store,
                                         DEFAULT_INLINE_THRESHOLD,
                                     )
                                     .await
                                     {
-                                        Ok(manifest_json) => {
-                                            match output_store::store_manifest(
-                                                &manifest_json,
-                                                &blob_store,
-                                            )
-                                            .await
-                                            {
-                                                Ok(hash) => hash,
-                                                Err(e) => {
-                                                    warn!(
-                                                        "[kernel-manager] Failed to store stream manifest: {}",
-                                                        e
-                                                    );
-                                                    nbformat_value.to_string()
-                                                }
-                                            }
-                                        }
+                                        Ok(m) => m,
                                         Err(e) => {
                                             warn!(
                                                 "[kernel-manager] Failed to create stream manifest: {}",
                                                 e
                                             );
-                                            nbformat_value.to_string()
+                                            continue;
                                         }
                                     };
+                                    let manifest_json = manifest.to_json();
+
+                                    // Extract blob hash for stream output state caching
+                                    let blob_hash =
+                                        if let OutputManifest::Stream { ref text, .. } = manifest {
+                                            match text {
+                                                ContentRef::Blob { blob, .. } => blob.clone(),
+                                                ContentRef::Inline { inline } => inline.clone(),
+                                            }
+                                        } else {
+                                            String::new()
+                                        };
 
                                     // Fork RuntimeStateDoc before upsert so concurrent edits
                                     // compose via CRDT merge. Outputs now live in the state doc
@@ -1482,7 +1429,7 @@ impl RoomKernel {
                                     let upsert_result = fork.upsert_stream_output(
                                         &eid,
                                         stream_name,
-                                        &output_ref,
+                                        &manifest_json,
                                         known_state.as_ref(),
                                     );
 
@@ -1515,7 +1462,7 @@ impl RoomKernel {
                                                     stream_name,
                                                     StreamOutputState {
                                                         index: *output_index,
-                                                        manifest_hash: output_ref.clone(),
+                                                        blob_hash: blob_hash.clone(),
                                                     },
                                                 );
                                                 if *updated {
@@ -1538,7 +1485,7 @@ impl RoomKernel {
                                             cell_id: cid.clone(),
                                             execution_id: eid,
                                             output_type: "stream".to_string(),
-                                            output_json: output_ref,
+                                            output_json: manifest_json.to_string(),
                                             output_index: broadcast_output_index,
                                         });
                                     }
@@ -1560,73 +1507,63 @@ impl RoomKernel {
                                     if let Some(nbformat_value) =
                                         message_content_to_nbformat(&message.content)
                                     {
-                                        // Persist to CRDT via blob store manifest
-                                        if let Ok(manifest_json) =
-                                            crate::output_store::create_manifest(
-                                                &nbformat_value,
-                                                &blob_store,
-                                                crate::output_store::DEFAULT_INLINE_THRESHOLD,
-                                            )
-                                            .await
+                                        // Persist to CRDT as inline manifest
+                                        if let Ok(manifest) = crate::output_store::create_manifest(
+                                            &nbformat_value,
+                                            &blob_store,
+                                            crate::output_store::DEFAULT_INLINE_THRESHOLD,
+                                        )
+                                        .await
                                         {
-                                            if let Ok(hash) = crate::output_store::store_manifest(
-                                                &manifest_json,
-                                                &blob_store,
-                                            )
-                                            .await
+                                            let manifest_json = manifest.to_json();
+                                            let mut sd = state_doc_for_iopub.write().await;
+                                            // Honor deferred clear_output(wait=true)
+                                            if pending_clear_widgets.remove(&widget_comm_id) {
+                                                sd.clear_comm_outputs(&widget_comm_id);
+                                            }
+                                            if sd
+                                                .append_comm_output(&widget_comm_id, &manifest_json)
                                             {
-                                                let mut sd = state_doc_for_iopub.write().await;
-                                                // Honor deferred clear_output(wait=true)
-                                                if pending_clear_widgets.remove(&widget_comm_id) {
-                                                    sd.clear_comm_outputs(&widget_comm_id);
-                                                }
-                                                if sd.append_comm_output(&widget_comm_id, &hash) {
-                                                    let _ = state_changed_for_iopub.send(());
-                                                }
+                                                let _ = state_changed_for_iopub.send(());
+                                            }
 
-                                                // Read full outputs and sync to kernel
-                                                if let Some(entry) = sd.get_comm(&widget_comm_id) {
-                                                    let output_hashes = entry.outputs.clone();
+                                            // Read full outputs and sync to kernel
+                                            if let Some(entry) = sd.get_comm(&widget_comm_id) {
+                                                let output_manifests = entry.outputs.clone();
 
-                                                    // Write manifest hashes to state.outputs for frontend
-                                                    let hashes_json = serde_json::Value::Array(
-                                                        output_hashes
-                                                            .iter()
-                                                            .map(|h| {
-                                                                serde_json::Value::String(h.clone())
-                                                            })
-                                                            .collect(),
-                                                    );
-                                                    sd.set_comm_state_property(
-                                                        &widget_comm_id,
-                                                        "outputs",
-                                                        &hashes_json,
-                                                    );
+                                                // Write manifests to state.outputs for frontend
+                                                let manifests_json = serde_json::Value::Array(
+                                                    output_manifests.clone(),
+                                                );
+                                                sd.set_comm_state_property(
+                                                    &widget_comm_id,
+                                                    "outputs",
+                                                    &manifests_json,
+                                                );
 
-                                                    drop(sd);
-                                                    let mut resolved_outputs = Vec::new();
-                                                    for h in &output_hashes {
-                                                        if let Ok(Some(mb)) =
-                                                            blob_store.get(h).await
+                                                drop(sd);
+                                                let mut resolved_outputs = Vec::new();
+                                                for m in &output_manifests {
+                                                    if let Ok(manifest) =
+                                                        serde_json::from_value::<OutputManifest>(
+                                                            m.clone(),
+                                                        )
+                                                    {
+                                                        if let Ok(r) =
+                                                            output_store::resolve_manifest(
+                                                                &manifest,
+                                                                &blob_store,
+                                                            )
+                                                            .await
                                                         {
-                                                            if let Ok(ms) = String::from_utf8(mb) {
-                                                                if let Ok(r) =
-                                                                    output_store::resolve_manifest(
-                                                                        &ms,
-                                                                        &blob_store,
-                                                                    )
-                                                                    .await
-                                                                {
-                                                                    resolved_outputs.push(r);
-                                                                }
-                                                            }
+                                                            resolved_outputs.push(r);
                                                         }
                                                     }
-                                                    let _ = iopub_cmd_tx.send(QueueCommand::SendCommUpdate {
-                                                        comm_id: widget_comm_id.clone(),
-                                                        state: serde_json::json!({ "outputs": resolved_outputs }),
-                                                    }).await;
                                                 }
+                                                let _ = iopub_cmd_tx.send(QueueCommand::SendCommUpdate {
+                                                    comm_id: widget_comm_id.clone(),
+                                                    state: serde_json::json!({ "outputs": resolved_outputs }),
+                                                }).await;
                                             }
                                         }
                                         // Frontend reads from CRDT state.outputs.
@@ -1655,38 +1592,20 @@ impl RoomKernel {
                                         message_content_to_nbformat(&message.content)
                                     {
                                         // Create manifest (inlines small data, blobs large data)
-                                        let output_ref = match output_store::create_manifest(
+                                        let manifest_json = match output_store::create_manifest(
                                             &nbformat_value,
                                             &blob_store,
                                             DEFAULT_INLINE_THRESHOLD,
                                         )
                                         .await
                                         {
-                                            Ok(manifest_json) => {
-                                                // Store manifest in blob store, get hash
-                                                match output_store::store_manifest(
-                                                    &manifest_json,
-                                                    &blob_store,
-                                                )
-                                                .await
-                                                {
-                                                    Ok(hash) => hash,
-                                                    Err(e) => {
-                                                        warn!(
-                                                            "[kernel-manager] Failed to store manifest: {}",
-                                                            e
-                                                        );
-                                                        nbformat_value.to_string()
-                                                        // Fallback to raw JSON
-                                                    }
-                                                }
-                                            }
+                                            Ok(manifest) => manifest.to_json(),
                                             Err(e) => {
                                                 warn!(
                                                     "[kernel-manager] Failed to create manifest: {}",
                                                     e
                                                 );
-                                                nbformat_value.to_string() // Fallback to raw JSON
+                                                nbformat_value.clone()
                                             }
                                         };
 
@@ -1700,7 +1619,7 @@ impl RoomKernel {
                                             f
                                         };
 
-                                        if let Err(e) = fork.append_output(&eid, &output_ref) {
+                                        if let Err(e) = fork.append_output(&eid, &manifest_json) {
                                             warn!(
                                                 "[kernel-manager] Failed to append output to state doc: {}",
                                                 e
@@ -1729,7 +1648,7 @@ impl RoomKernel {
                                                 cell_id: cid.clone(),
                                                 execution_id: eid,
                                                 output_type: output_type.to_string(),
-                                                output_json: output_ref,
+                                                output_json: manifest_json.to_string(),
                                                 output_index: None,
                                             });
                                         }
@@ -1822,73 +1741,63 @@ impl RoomKernel {
                                     if let Some(nbformat_value) =
                                         message_content_to_nbformat(&message.content)
                                     {
-                                        // Persist to CRDT via blob store manifest
-                                        if let Ok(manifest_json) =
-                                            crate::output_store::create_manifest(
-                                                &nbformat_value,
-                                                &blob_store,
-                                                crate::output_store::DEFAULT_INLINE_THRESHOLD,
-                                            )
-                                            .await
+                                        // Persist to CRDT as inline manifest
+                                        if let Ok(manifest) = crate::output_store::create_manifest(
+                                            &nbformat_value,
+                                            &blob_store,
+                                            crate::output_store::DEFAULT_INLINE_THRESHOLD,
+                                        )
+                                        .await
                                         {
-                                            if let Ok(hash) = crate::output_store::store_manifest(
-                                                &manifest_json,
-                                                &blob_store,
-                                            )
-                                            .await
+                                            let manifest_json = manifest.to_json();
+                                            let mut sd = state_doc_for_iopub.write().await;
+                                            // Honor deferred clear_output(wait=true)
+                                            if pending_clear_widgets.remove(&widget_comm_id) {
+                                                sd.clear_comm_outputs(&widget_comm_id);
+                                            }
+                                            if sd
+                                                .append_comm_output(&widget_comm_id, &manifest_json)
                                             {
-                                                let mut sd = state_doc_for_iopub.write().await;
-                                                // Honor deferred clear_output(wait=true)
-                                                if pending_clear_widgets.remove(&widget_comm_id) {
-                                                    sd.clear_comm_outputs(&widget_comm_id);
-                                                }
-                                                if sd.append_comm_output(&widget_comm_id, &hash) {
-                                                    let _ = state_changed_for_iopub.send(());
-                                                }
+                                                let _ = state_changed_for_iopub.send(());
+                                            }
 
-                                                // Read full outputs and sync to kernel
-                                                if let Some(entry) = sd.get_comm(&widget_comm_id) {
-                                                    let output_hashes = entry.outputs.clone();
+                                            // Read full outputs and sync to kernel
+                                            if let Some(entry) = sd.get_comm(&widget_comm_id) {
+                                                let output_manifests = entry.outputs.clone();
 
-                                                    // Write manifest hashes to state.outputs for frontend
-                                                    let hashes_json = serde_json::Value::Array(
-                                                        output_hashes
-                                                            .iter()
-                                                            .map(|h| {
-                                                                serde_json::Value::String(h.clone())
-                                                            })
-                                                            .collect(),
-                                                    );
-                                                    sd.set_comm_state_property(
-                                                        &widget_comm_id,
-                                                        "outputs",
-                                                        &hashes_json,
-                                                    );
+                                                // Write manifests to state.outputs for frontend
+                                                let manifests_json = serde_json::Value::Array(
+                                                    output_manifests.clone(),
+                                                );
+                                                sd.set_comm_state_property(
+                                                    &widget_comm_id,
+                                                    "outputs",
+                                                    &manifests_json,
+                                                );
 
-                                                    drop(sd);
-                                                    let mut resolved_outputs = Vec::new();
-                                                    for h in &output_hashes {
-                                                        if let Ok(Some(mb)) =
-                                                            blob_store.get(h).await
+                                                drop(sd);
+                                                let mut resolved_outputs = Vec::new();
+                                                for m in &output_manifests {
+                                                    if let Ok(manifest) =
+                                                        serde_json::from_value::<OutputManifest>(
+                                                            m.clone(),
+                                                        )
+                                                    {
+                                                        if let Ok(r) =
+                                                            output_store::resolve_manifest(
+                                                                &manifest,
+                                                                &blob_store,
+                                                            )
+                                                            .await
                                                         {
-                                                            if let Ok(ms) = String::from_utf8(mb) {
-                                                                if let Ok(r) =
-                                                                    output_store::resolve_manifest(
-                                                                        &ms,
-                                                                        &blob_store,
-                                                                    )
-                                                                    .await
-                                                                {
-                                                                    resolved_outputs.push(r);
-                                                                }
-                                                            }
+                                                            resolved_outputs.push(r);
                                                         }
                                                     }
-                                                    let _ = iopub_cmd_tx.send(QueueCommand::SendCommUpdate {
-                                                        comm_id: widget_comm_id.clone(),
-                                                        state: serde_json::json!({ "outputs": resolved_outputs }),
-                                                    }).await;
                                                 }
+                                                let _ = iopub_cmd_tx.send(QueueCommand::SendCommUpdate {
+                                                    comm_id: widget_comm_id.clone(),
+                                                    state: serde_json::json!({ "outputs": resolved_outputs }),
+                                                }).await;
                                             }
                                         }
                                         // Frontend reads from CRDT state.outputs.
@@ -1910,36 +1819,20 @@ impl RoomKernel {
                                         message_content_to_nbformat(&message.content)
                                     {
                                         // Create manifest for error output
-                                        let output_ref = match output_store::create_manifest(
+                                        let manifest_json = match output_store::create_manifest(
                                             &nbformat_value,
                                             &blob_store,
                                             DEFAULT_INLINE_THRESHOLD,
                                         )
                                         .await
                                         {
-                                            Ok(manifest_json) => {
-                                                match output_store::store_manifest(
-                                                    &manifest_json,
-                                                    &blob_store,
-                                                )
-                                                .await
-                                                {
-                                                    Ok(hash) => hash,
-                                                    Err(e) => {
-                                                        warn!(
-                                                            "[kernel-manager] Failed to store error manifest: {}",
-                                                            e
-                                                        );
-                                                        nbformat_value.to_string()
-                                                    }
-                                                }
-                                            }
+                                            Ok(manifest) => manifest.to_json(),
                                             Err(e) => {
                                                 warn!(
                                                     "[kernel-manager] Failed to create error manifest: {}",
                                                     e
                                                 );
-                                                nbformat_value.to_string()
+                                                nbformat_value.clone()
                                             }
                                         };
 
@@ -1952,7 +1845,7 @@ impl RoomKernel {
                                             f
                                         };
 
-                                        if let Err(e) = fork.append_output(&eid, &output_ref) {
+                                        if let Err(e) = fork.append_output(&eid, &manifest_json) {
                                             warn!(
                                                 "[kernel-manager] Failed to append error output to state doc: {}",
                                                 e
@@ -1981,7 +1874,7 @@ impl RoomKernel {
                                                 cell_id: cid.clone(),
                                                 execution_id: eid.clone(),
                                                 output_type: "error".to_string(),
-                                                output_json: output_ref,
+                                                output_json: manifest_json.to_string(),
                                                 output_index: None,
                                             });
                                         }
@@ -2311,37 +2204,21 @@ impl RoomKernel {
                                             // Convert Media to nbformat display_data
                                             let nbformat_value = media_to_display_data(data);
 
-                                            // Create manifest and store (same pattern as iopub_task)
-                                            let output_ref = match output_store::create_manifest(
+                                            // Create manifest for page output
+                                            let manifest_json = match output_store::create_manifest(
                                                 &nbformat_value,
                                                 &shell_blob_store,
                                                 DEFAULT_INLINE_THRESHOLD,
                                             )
                                             .await
                                             {
-                                                Ok(manifest_json) => {
-                                                    match output_store::store_manifest(
-                                                        &manifest_json,
-                                                        &shell_blob_store,
-                                                    )
-                                                    .await
-                                                    {
-                                                        Ok(hash) => hash,
-                                                        Err(e) => {
-                                                            warn!(
-                                                                "[kernel-manager] Failed to store page manifest: {}",
-                                                                e
-                                                            );
-                                                            nbformat_value.to_string()
-                                                        }
-                                                    }
-                                                }
+                                                Ok(manifest) => manifest.to_json(),
                                                 Err(e) => {
                                                     warn!(
                                                         "[kernel-manager] Failed to create page manifest: {}",
                                                         e
                                                     );
-                                                    nbformat_value.to_string()
+                                                    nbformat_value.clone()
                                                 }
                                             };
 
@@ -2355,7 +2232,8 @@ impl RoomKernel {
                                                 f
                                             };
 
-                                            if let Err(e) = fork.append_output(&eid, &output_ref) {
+                                            if let Err(e) = fork.append_output(&eid, &manifest_json)
+                                            {
                                                 warn!(
                                                     "[kernel-manager] Failed to append page output to state doc: {}",
                                                     e
@@ -2386,7 +2264,7 @@ impl RoomKernel {
                                                             .clone()
                                                             .unwrap_or_default(),
                                                         output_type: "display_data".to_string(),
-                                                        output_json: output_ref,
+                                                        output_json: manifest_json.to_string(),
                                                         output_index: None,
                                                     },
                                                 );
@@ -3391,39 +3269,38 @@ mod tests {
         BlobStore::new(dir.path().join("blobs"))
     }
 
-    /// Helper: create a display_data manifest with a display_id, store it,
-    /// and append the hash to the given execution in the state doc.
+    /// Helper: create a display_data manifest with a display_id and append
+    /// the inline manifest to the given execution in the state doc.
     async fn insert_display_output(
         state_doc: &mut RuntimeStateDoc,
         execution_id: &str,
         display_id: &str,
         text_content: &str,
         blob_store: &BlobStore,
-    ) -> String {
+    ) -> serde_json::Value {
         let nbformat = serde_json::json!({
             "output_type": "display_data",
             "data": { "text/plain": text_content },
             "metadata": {},
             "transient": { "display_id": display_id }
         });
-        let manifest_json =
+        let manifest =
             output_store::create_manifest(&nbformat, blob_store, DEFAULT_INLINE_THRESHOLD)
                 .await
                 .unwrap();
-        let hash = output_store::store_manifest(&manifest_json, blob_store)
-            .await
+        let manifest_json = manifest.to_json();
+        state_doc
+            .append_output(execution_id, &manifest_json)
             .unwrap();
-        state_doc.append_output(execution_id, &hash).unwrap();
-        hash
+        manifest_json
     }
 
-    /// Verify that a manifest hash in the blob store contains the expected
-    /// text/plain content.
-    async fn read_text_plain(blob_store: &BlobStore, hash: &str) -> String {
-        let bytes = blob_store.get(hash).await.unwrap().unwrap();
-        let manifest: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        let inline = &manifest["data"]["text/plain"]["inline"];
-        inline.as_str().unwrap().to_string()
+    /// Extract the text/plain inline content from an output manifest Value.
+    fn read_text_plain(manifest: &serde_json::Value) -> String {
+        manifest["data"]["text/plain"]["inline"]
+            .as_str()
+            .unwrap()
+            .to_string()
     }
 
     #[tokio::test]
@@ -3457,8 +3334,8 @@ mod tests {
         let outputs_2 = state_doc.get_outputs("exec-2");
         assert_eq!(outputs_1.len(), 1);
         assert_eq!(outputs_2.len(), 1);
-        assert_eq!(read_text_plain(&store, &outputs_1[0]).await, "updated");
-        assert_eq!(read_text_plain(&store, &outputs_2[0]).await, "updated");
+        assert_eq!(read_text_plain(&outputs_1[0]), "updated");
+        assert_eq!(read_text_plain(&outputs_2[0]), "updated");
     }
 
     #[tokio::test]
@@ -3486,7 +3363,7 @@ mod tests {
 
         // Original output unchanged
         let outputs = state_doc.get_outputs("exec-1");
-        assert_eq!(read_text_plain(&store, &outputs[0]).await, "hello");
+        assert_eq!(read_text_plain(&outputs[0]), "hello");
     }
 
     #[tokio::test]
@@ -3517,7 +3394,7 @@ mod tests {
         // Only the matching output should be updated
         let outputs_1 = state_doc.get_outputs("exec-1");
         let outputs_2 = state_doc.get_outputs("exec-2");
-        assert_eq!(read_text_plain(&store, &outputs_1[0]).await, "updated");
-        assert_eq!(read_text_plain(&store, &outputs_2[0]).await, "leave-me");
+        assert_eq!(read_text_plain(&outputs_1[0]), "updated");
+        assert_eq!(read_text_plain(&outputs_2[0]), "leave-me");
     }
 }

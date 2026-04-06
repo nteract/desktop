@@ -6,21 +6,21 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use notebook_doc::runtime_state::CommDocEntry;
-use runtimed::output_resolver as shared;
+use runtimed_client::output_resolver as shared;
 
 use crate::output::{DataValue, Output};
 
 /// Convert a shared DataValue to a local (PyO3) DataValue.
-fn convert_dv(dv: runtimed::resolved_output::DataValue) -> DataValue {
+fn convert_dv(dv: runtimed_client::resolved_output::DataValue) -> DataValue {
     match dv {
-        runtimed::resolved_output::DataValue::Text(s) => DataValue::Text(s),
-        runtimed::resolved_output::DataValue::Binary(b) => DataValue::Binary(b),
-        runtimed::resolved_output::DataValue::Json(v) => DataValue::Json(v),
+        runtimed_client::resolved_output::DataValue::Text(s) => DataValue::Text(s),
+        runtimed_client::resolved_output::DataValue::Binary(b) => DataValue::Binary(b),
+        runtimed_client::resolved_output::DataValue::Json(v) => DataValue::Json(v),
     }
 }
 
 /// Convert a shared Output to a local (PyO3) Output.
-fn convert_output(o: runtimed::resolved_output::Output) -> Output {
+fn convert_output(o: runtimed_client::resolved_output::Output) -> Output {
     Output {
         output_type: o.output_type,
         name: o.name,
@@ -39,7 +39,7 @@ fn convert_output(o: runtimed::resolved_output::Output) -> Output {
 
 /// Resolve all outputs for a cell snapshot.
 pub async fn resolve_cell_outputs(
-    raw_outputs: &[String],
+    raw_outputs: &[serde_json::Value],
     blob_base_url: &Option<String>,
     blob_store_path: &Option<PathBuf>,
     comms: Option<&HashMap<String, CommDocEntry>>,

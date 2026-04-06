@@ -129,6 +129,7 @@ export function useAutomergeNotebook() {
     const newCells = cellSnapshotsToNotebookCellsSync(
       snapshots,
       outputCacheRef.current,
+      getBlobPort(),
     );
     replaceNotebookCells(newCells);
   }, []);

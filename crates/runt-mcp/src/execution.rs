@@ -74,7 +74,7 @@ pub async fn execute_and_wait(
     // The CRDT is the source of truth — no broadcast dependency.
     let mut final_status = "running".to_string();
     let mut success = false;
-    let mut output_hashes: Vec<String> = Vec::new();
+    let mut output_manifests: Vec<serde_json::Value> = Vec::new();
     let deadline = Instant::now() + timeout;
 
     if let Some(ref eid) = execution_id {
@@ -90,7 +90,7 @@ pub async fn execute_and_wait(
                     if exec.status == "done" || exec.status == "error" {
                         final_status = exec.status.clone();
                         success = exec.success.unwrap_or(false);
-                        output_hashes = exec.outputs.clone();
+                        output_manifests = exec.outputs.clone();
                         break;
                     }
                 }
@@ -105,14 +105,14 @@ pub async fn execute_and_wait(
         // for output sync to catch up. The daemon writes outputs before
         // set_execution_done, but they may arrive in separate sync frames.
         // Cap at 500ms to avoid hanging on genuinely output-free executions.
-        if (final_status == "done" || final_status == "error") && output_hashes.is_empty() {
+        if (final_status == "done" || final_status == "error") && output_manifests.is_empty() {
             let output_deadline =
                 Instant::now() + Duration::from_millis(500).min(deadline - Instant::now());
             while Instant::now() < output_deadline {
                 if let Ok(state) = handle.get_runtime_state() {
                     if let Some(exec) = state.executions.get(eid.as_str()) {
                         if !exec.outputs.is_empty() {
-                            output_hashes = exec.outputs.clone();
+                            output_manifests = exec.outputs.clone();
                             break;
                         }
                     }
@@ -151,9 +151,9 @@ pub async fn execute_and_wait(
     };
 
     let comms = handle.get_runtime_state().ok().map(|rs| rs.comms);
-    let outputs = if !output_hashes.is_empty() {
+    let outputs = if !output_manifests.is_empty() {
         output_resolver::resolve_cell_outputs(
-            &output_hashes,
+            &output_manifests,
             blob_base_url,
             blob_store_path,
             comms.as_ref(),

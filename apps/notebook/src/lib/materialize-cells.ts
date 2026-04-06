@@ -2,22 +2,42 @@ import { computeRequiredPlugins } from "@/lib/renderer-plugins";
 import type { JupyterOutput, NotebookCell } from "../types";
 import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 import { logger } from "./logger";
-import type { OutputManifest } from "./manifest-resolution";
-import { isManifestHash, resolveManifest } from "./manifest-resolution";
+import {
+  isOutputManifest,
+  resolveManifest,
+  resolveManifestSync,
+} from "./manifest-resolution";
 import { getExecutionCountForCell, getRuntimeState } from "./runtime-state";
 
 export type { ContentRef, OutputManifest } from "./manifest-resolution";
 // Re-export shared manifest types and functions for downstream consumers
 export {
-  isManifestHash,
+  isOutputManifest,
   resolveContentRef,
   resolveDataBundle,
   resolveManifest,
+  resolveManifestSync,
 } from "./manifest-resolution";
 
 /** Resolve execution_count for a cell from the current RuntimeState snapshot. */
 function getExecutionCountFromRuntime(cellId: string): number | null {
   return getExecutionCountForCell(getRuntimeState(), cellId);
+}
+
+/**
+ * Compute a stable cache key for an output value.
+ *
+ * - Objects are serialized to JSON (stable across WASM calls since key
+ *   ordering comes from serde).
+ * - Strings are used directly (legacy JSON or other string values).
+ */
+export function outputCacheKey(output: unknown): string {
+  if (typeof output === "string") return output;
+  try {
+    return JSON.stringify(output);
+  } catch {
+    return String(output);
+  }
 }
 
 /**
@@ -31,63 +51,127 @@ export interface CellSnapshot {
   position: string; // Fractional index hex string for ordering (e.g., "80", "7F80")
   source: string;
   execution_count: string; // "5" or "null"
-  outputs: string[]; // JSON-encoded Jupyter outputs or manifest hashes
+  outputs: unknown[]; // Structured output manifests (from WASM) or legacy JSON strings
   metadata: Record<string, unknown>; // Cell metadata (arbitrary JSON object)
   resolved_assets?: Record<string, string>; // asset ref → blob hash (markdown cells)
 }
 
 /**
- * Resolve a single output string — either raw JSON or a manifest hash.
+ * Resolve a single output — either a structured manifest object, a raw
+ * JupyterOutput object, or a legacy JSON string.
  *
  * - If cached, returns the cached value.
- * - If not a manifest hash, parses as raw JSON.
- * - If a manifest hash, fetches from blob store and resolves the manifest.
+ * - If a structured OutputManifest (has ContentRef data), resolves via
+ *   resolveManifest (may fetch blobs).
+ * - If an object with output_type but no ContentRefs, treats as raw
+ *   JupyterOutput.
+ * - If a string, parses as JSON (legacy fallback).
  */
 export async function resolveOutput(
-  outputStr: string,
+  output: unknown,
   blobPort: number | null,
   cache: Map<string, JupyterOutput>,
 ): Promise<JupyterOutput | null> {
-  const cached = cache.get(outputStr);
+  const key = outputCacheKey(output);
+  const cached = cache.get(key);
   if (cached) return cached;
 
-  if (!isManifestHash(outputStr)) {
+  // Structured manifest from WASM — resolve ContentRefs
+  if (isOutputManifest(output)) {
+    if (blobPort === null) {
+      logger.warn("[materialize-cells] Manifest object but no blob port");
+      return null;
+    }
     try {
-      const output = JSON.parse(outputStr) as JupyterOutput;
-      cache.set(outputStr, output);
-      return output;
+      const resolved = await resolveManifest(output, blobPort);
+      cache.set(key, resolved);
+      return resolved;
+    } catch (e) {
+      logger.warn("[materialize-cells] Failed to resolve manifest:", e);
+      return null;
+    }
+  }
+
+  // Object with output_type but no ContentRefs — already a raw JupyterOutput
+  if (
+    typeof output === "object" &&
+    output !== null &&
+    "output_type" in output
+  ) {
+    const jupyterOutput = output as JupyterOutput;
+    cache.set(key, jupyterOutput);
+    return jupyterOutput;
+  }
+
+  // Legacy string path (backward compat during transition)
+  if (typeof output === "string") {
+    try {
+      const parsed = JSON.parse(output) as JupyterOutput;
+      cache.set(key, parsed);
+      return parsed;
     } catch {
       logger.warn("[materialize-cells] Failed to parse output JSON");
       return null;
     }
   }
 
-  if (blobPort === null) {
-    logger.warn("[materialize-cells] Manifest hash but no blob port");
+  logger.warn("[materialize-cells] Unrecognized output type:", typeof output);
+  return null;
+}
+
+/**
+ * Synchronously resolve a single output from cache or inline manifests.
+ *
+ * Returns null if the output requires async blob fetches (will be
+ * resolved on the next async materialization pass).
+ */
+function resolveOutputSync(
+  output: unknown,
+  blobPort: number | null,
+  cache: Map<string, JupyterOutput>,
+): JupyterOutput | null {
+  const key = outputCacheKey(output);
+  const cached = cache.get(key);
+  if (cached) return cached;
+
+  // Structured manifest — try sync resolution (inline + binary URL only)
+  if (isOutputManifest(output)) {
+    if (blobPort === null) return null;
+    const resolved = resolveManifestSync(output, blobPort);
+    if (resolved) {
+      cache.set(key, resolved);
+      return resolved;
+    }
+    // Has text blob refs — needs async resolution
+    logger.debug(
+      "[materialize-cells] Manifest needs async resolution (has blob refs)",
+    );
     return null;
   }
 
-  try {
-    const response = await fetch(
-      `http://127.0.0.1:${blobPort}/blob/${outputStr}`,
-    );
-    if (!response.ok) {
-      logger.warn(
-        `[materialize-cells] Failed to fetch manifest: ${response.status}`,
-      );
+  // Object with output_type — already a raw JupyterOutput
+  if (
+    typeof output === "object" &&
+    output !== null &&
+    "output_type" in output
+  ) {
+    const jupyterOutput = output as JupyterOutput;
+    cache.set(key, jupyterOutput);
+    return jupyterOutput;
+  }
+
+  // Legacy string path
+  if (typeof output === "string") {
+    try {
+      const parsed = JSON.parse(output) as JupyterOutput;
+      cache.set(key, parsed);
+      return parsed;
+    } catch {
       return null;
     }
-
-    const manifestJson = await response.text();
-    const manifest = JSON.parse(manifestJson) as OutputManifest;
-    const output = await resolveManifest(manifest, blobPort);
-
-    cache.set(outputStr, output);
-    return output;
-  } catch (e) {
-    logger.warn("[materialize-cells] Failed to resolve manifest:", e);
-    return null;
   }
+
+  return null;
 }
 
 /**
@@ -119,11 +203,12 @@ export function reuseOutputsIfUnchanged(
  * - Moving cells (no new outputs)
  * - Updating source (outputs unchanged)
  *
- * For daemon sync with potentially new blob hashes, use cellSnapshotsToNotebookCells().
+ * For daemon sync with potentially new blob refs, use cellSnapshotsToNotebookCells().
  */
 export function cellSnapshotsToNotebookCellsSync(
   snapshots: CellSnapshot[],
   cache: Map<string, JupyterOutput>,
+  blobPort?: number | null,
 ): NotebookCell[] {
   return snapshots.map((snap) => {
     const executionCount =
@@ -134,30 +219,9 @@ export function cellSnapshotsToNotebookCellsSync(
     const metadata = snap.metadata ?? {};
 
     if (snap.cell_type === "code") {
-      // Resolve outputs from cache only — skip blob fetches
+      // Resolve outputs from cache or sync-resolvable manifests
       const resolvedOutputs = snap.outputs
-        .map((outputStr) => {
-          const cached = cache.get(outputStr);
-          if (cached) return cached;
-
-          // If not a manifest hash, parse as JSON
-          if (!isManifestHash(outputStr)) {
-            try {
-              const output = JSON.parse(outputStr) as JupyterOutput;
-              cache.set(outputStr, output);
-              return output;
-            } catch {
-              return null;
-            }
-          }
-
-          // Manifest hash but not cached — return null (will resolve on daemon sync)
-          logger.debug(
-            "[materialize-cells] Manifest hash not in cache during sync materialization:",
-            outputStr.slice(0, 16),
-          );
-          return null;
-        })
+        .map((output) => resolveOutputSync(output, blobPort ?? null, cache))
         .filter((o): o is JupyterOutput => o !== null);
 
       // Resolve execution_count from RuntimeState (source of truth) rather
@@ -197,7 +261,7 @@ export function cellSnapshotsToNotebookCellsSync(
 }
 
 /**
- * Convert CellSnapshots to NotebookCells, resolving manifest hashes.
+ * Convert CellSnapshots to NotebookCells, resolving manifest content refs.
  *
  * This is the primary materialization function shared between `useNotebook`
  * (which receives CellSnapshots from the Tauri sync client) and
@@ -219,7 +283,7 @@ export async function cellSnapshotsToNotebookCells(
       const metadata = snap.metadata ?? {};
 
       if (snap.cell_type === "code") {
-        // Resolve all outputs (may be manifest hashes or raw JSON)
+        // Resolve all outputs (structured manifests or legacy JSON strings)
         const resolvedOutputs = (
           await Promise.all(
             snap.outputs.map((o) => resolveOutput(o, blobPort, cache)),
@@ -268,13 +332,15 @@ export async function cellSnapshotsToNotebookCells(
  * Read a single cell from the WASM handle and convert to NotebookCell.
  *
  * Uses per-cell WASM accessors (O(1) doc lookups) instead of serializing
- * the entire document. Output resolution uses cache-only (no blob fetches).
+ * the entire document. Output resolution uses cache + sync-resolvable
+ * manifests only (no blob fetches).
  */
 export function materializeCellFromWasm(
   handle: NotebookHandle,
   cellId: string,
   cache: Map<string, JupyterOutput>,
   previousCell?: NotebookCell,
+  blobPort?: number | null,
 ): NotebookCell | null {
   const cellType = handle.get_cell_type(cellId);
   if (!cellType) return null;
@@ -283,28 +349,9 @@ export function materializeCellFromWasm(
   const metadata = handle.get_cell_metadata(cellId) ?? {};
 
   if (cellType === "code") {
-    const rawOutputs: string[] = handle.get_cell_outputs(cellId) ?? [];
+    const rawOutputs: unknown[] = handle.get_cell_outputs(cellId) ?? [];
     const resolvedOutputs = rawOutputs
-      .map((outputStr: string) => {
-        const cached = cache.get(outputStr);
-        if (cached) return cached;
-
-        if (!isManifestHash(outputStr)) {
-          try {
-            const output = JSON.parse(outputStr) as JupyterOutput;
-            cache.set(outputStr, output);
-            return output;
-          } catch {
-            return null;
-          }
-        }
-        logger.debug(
-          "[materialize-cells] materializeCellFromWasm: uncached manifest hash dropped for cell %s: %s",
-          cellId,
-          outputStr.slice(0, 16),
-        );
-        return null;
-      })
+      .map((output) => resolveOutputSync(output, blobPort ?? null, cache))
       .filter((o): o is JupyterOutput => o !== null);
 
     const prevOutputs =

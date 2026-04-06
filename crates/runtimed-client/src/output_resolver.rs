@@ -1,7 +1,11 @@
-//! Output resolution for converting blob hashes and JSON to Output objects.
+//! Output resolution for converting structured manifest Values to Output objects.
 //!
 //! This module provides standalone async functions for resolving outputs,
 //! used by both the MCP server and the Python bindings.
+//!
+//! Outputs in the RuntimeStateDoc CRDT are structured `serde_json::Value`
+//! manifest objects containing ContentRef entries (inline/blob). The single
+//! entry point is `resolve_output()` which dispatches on `output_type`.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -80,128 +84,18 @@ pub fn mime_kind(mime: &str) -> MimeKind {
     MimeKind::Text
 }
 
-/// Check if a string looks like a blob hash (64 hex characters).
-pub fn is_blob_hash(s: &str) -> bool {
-    s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit())
-}
-
-/// Resolve an output string to an Output.
+/// Resolve a structured output manifest Value to an Output.
 ///
-/// The output string can be:
-/// - Raw JSON for backward compatibility
-/// - A blob hash (64-char hex SHA-256) pointing to an output manifest
-pub async fn resolve_output_string(
-    output_str: &str,
+/// The Value must be a JSON object with an `output_type` field.
+/// All outputs are structured manifests with ContentRef entries
+/// (inline/blob) for their data fields.
+pub async fn resolve_output(
+    output: &serde_json::Value,
     blob_base_url: &Option<String>,
     blob_store_path: &Option<PathBuf>,
 ) -> Option<Output> {
-    // Try to parse as raw JSON first
-    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(output_str) {
-        let output_type = parsed.get("output_type")?.as_str()?;
-        return output_from_json(output_type, &parsed);
-    }
-
-    // If it looks like a blob hash, try to resolve it
-    if is_blob_hash(output_str) {
-        log::debug!("[output_resolver] Detected blob hash: {}", output_str);
-
-        // First try: read directly from disk
-        if let Some(store_path) = blob_store_path {
-            let prefix = &output_str[..2];
-            let rest = &output_str[2..];
-            let blob_path = store_path.join(prefix).join(rest);
-            log::debug!("[output_resolver] Trying blob path: {:?}", blob_path);
-
-            if let Ok(contents) = tokio::fs::read_to_string(&blob_path).await {
-                log::debug!(
-                    "[output_resolver] Read blob file, contents len: {}",
-                    contents.len()
-                );
-                if let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&contents) {
-                    if let Some(output_type) = manifest.get("output_type").and_then(|v| v.as_str())
-                    {
-                        return output_from_manifest(
-                            output_type,
-                            &manifest,
-                            blob_base_url,
-                            blob_store_path,
-                        )
-                        .await;
-                    }
-                }
-            }
-        }
-
-        // Second try: fetch from blob server
-        if let Some(base_url) = blob_base_url {
-            let url = format!("{}/blob/{}", base_url, output_str);
-            if let Ok(response) = reqwest::get(&url).await {
-                if response.status().is_success() {
-                    if let Ok(manifest) = response.json::<serde_json::Value>().await {
-                        if let Some(output_type) =
-                            manifest.get("output_type").and_then(|v| v.as_str())
-                        {
-                            return output_from_manifest(
-                                output_type,
-                                &manifest,
-                                blob_base_url,
-                                blob_store_path,
-                            )
-                            .await;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Unable to resolve - return a fallback error output
-    log::debug!(
-        "[output_resolver] Failed to resolve output string: {}",
-        &output_str[..output_str.len().min(100)]
-    );
-    Some(Output::stream(
-        "stderr",
-        &format!(
-            "Failed to resolve output: {}",
-            &output_str[..output_str.len().min(64)]
-        ),
-    ))
-}
-
-/// Convert a parsed JSON value to an Output.
-pub fn output_from_json(output_type: &str, json: &serde_json::Value) -> Option<Output> {
-    match output_type {
-        "stream" => {
-            let name = json.get("name")?.as_str()?;
-            let text = json.get("text")?.as_str()?;
-            Some(Output::stream(name, text))
-        }
-        "display_data" => {
-            let data = json.get("data")?.as_object()?;
-            Some(Output::display_data(json_data_to_datavalues(data)))
-        }
-        "execute_result" => {
-            let data = json.get("data")?.as_object()?;
-            let execution_count = json.get("execution_count")?.as_i64()?;
-            Some(Output::execute_result(
-                json_data_to_datavalues(data),
-                execution_count,
-            ))
-        }
-        "error" => {
-            let ename = json.get("ename")?.as_str()?.to_string();
-            let evalue = json.get("evalue")?.as_str()?.to_string();
-            let traceback = json
-                .get("traceback")?
-                .as_array()?
-                .iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                .collect();
-            Some(Output::error(&ename, &evalue, traceback))
-        }
-        _ => None,
-    }
+    let output_type = output.get("output_type")?.as_str()?;
+    output_from_manifest(output_type, output, blob_base_url, blob_store_path).await
 }
 
 /// Convert a JSON data map (mime -> value) to DataValue entries.
@@ -466,20 +360,21 @@ async fn resolve_text_ref(
 
 /// Resolve all outputs for a cell snapshot.
 ///
+/// Each element in `raw_outputs` is a structured manifest Value with an
+/// `output_type` field and ContentRef entries for data.
+///
 /// When `comms` is provided, widget view outputs (`application/vnd.jupyter.widget-view+json`)
 /// are resolved to human-readable `text/llm+plain` summaries by looking up the referenced
 /// widget's current state in the comms map.
 pub async fn resolve_cell_outputs(
-    raw_outputs: &[String],
+    raw_outputs: &[serde_json::Value],
     blob_base_url: &Option<String>,
     blob_store_path: &Option<PathBuf>,
     comms: Option<&HashMap<String, CommDocEntry>>,
 ) -> Vec<Output> {
     let mut outputs = Vec::with_capacity(raw_outputs.len());
-    for output_str in raw_outputs {
-        if let Some(mut output) =
-            resolve_output_string(output_str, blob_base_url, blob_store_path).await
-        {
+    for manifest in raw_outputs {
+        if let Some(mut output) = resolve_output(manifest, blob_base_url, blob_store_path).await {
             if let (Some(comms), Some(ref mut data)) = (comms, &mut output.data) {
                 synthesize_llm_plain_for_widgets(data, comms);
             }

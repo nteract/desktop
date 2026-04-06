@@ -189,8 +189,16 @@ fn fixture_add_outputs(
     state_doc.create_execution(execution_id, cell_id);
     state_doc.set_execution_done(execution_id, true);
     if !hashes.is_empty() {
+        // TODO(inline-manifests): fixture generator still uses hash strings.
+        // Wrap each hash as a JSON string value so the new set_outputs API
+        // compiles. This fixture generator needs a full rewrite to produce
+        // inline manifest objects instead of hash refs.
+        let manifests: Vec<serde_json::Value> = hashes
+            .iter()
+            .map(|h| serde_json::Value::String(h.clone()))
+            .collect();
         state_doc
-            .set_outputs(execution_id, hashes)
+            .set_outputs(execution_id, &manifests)
             .expect("set_outputs");
     }
     // Link cell to execution_id in notebook doc

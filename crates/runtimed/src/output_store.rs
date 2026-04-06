@@ -2,18 +2,18 @@
 //!
 //! ## Design
 //!
-//! Instead of storing full Jupyter outputs as JSON strings in the CRDT (which
-//! causes bloat for images and large outputs), we store output manifests that
-//! reference content via [`ContentRef`]. The manifest is itself stored in the
-//! blob store with media type `application/x-jupyter-output+json`, and its
-//! SHA-256 hash is what goes into the Automerge CRDT cell outputs list.
+//! Output manifests are inlined directly into the RuntimeStateDoc CRDT as
+//! structured Automerge Maps. Content within those manifests is referenced
+//! via [`ContentRef`] — small text content (< 1KB) is inlined directly in
+//! the manifest, while larger content and all binary data is stored in the
+//! blob store.
 //!
 //! ## Text vs Binary Content
 //!
 //! Content is classified by MIME type via [`is_binary_mime()`]:
 //!
 //! **Text** (`text/*`, `application/json`, `image/svg+xml`, `+json`, `+xml`):
-//! - Stored as UTF-8 string bytes in the blob store, or inlined if < 8KB
+//! - Inlined if < 1KB, otherwise stored in the blob store
 //! - Resolved via [`ContentRef::resolve()`] → `String`
 //!
 //! **Binary** (`image/png`, `image/jpeg`, `audio/*`, `video/*`, most `application/*`):
@@ -37,11 +37,11 @@
 //!
 //! ## Key Types
 //!
-//! - [`ContentRef`]: inline string or blob hash — format-agnostic, the MIME
-//!   type determines whether to read as text or binary
+//! - [`ContentRef`]: inline string or blob hash — the MIME type determines
+//!   whether to read as text or binary
 //! - [`OutputManifest`]: Jupyter output with `ContentRef` fields
-//! - [`create_manifest()`]: nbformat JSON → manifest (decodes binary, stores blobs)
-//! - [`resolve_manifest()`]: manifest → nbformat JSON (re-encodes binary to base64)
+//! - [`create_manifest()`]: nbformat JSON → `OutputManifest` (decodes binary, stores blobs)
+//! - [`resolve_manifest()`]: `&OutputManifest` → nbformat JSON (re-encodes binary to base64)
 
 use std::collections::HashMap;
 use std::io;
@@ -52,19 +52,17 @@ use serde_json::Value;
 
 use crate::blob_store::BlobStore;
 
-/// Default inlining threshold: 8 KB.
+/// Default inlining threshold: 1 KB.
 ///
-/// Content smaller than this is inlined in the manifest.
-/// Content equal to or larger than this is stored in the blob store.
-pub const DEFAULT_INLINE_THRESHOLD: usize = 8 * 1024;
-
-/// Media type for output manifests stored in the blob store.
-pub const MANIFEST_MEDIA_TYPE: &str = "application/x-jupyter-output+json";
+/// Text content smaller than this is inlined in the manifest (and thus in the
+/// CRDT). Content equal to or larger than this is stored in the blob store.
+/// Binary content always goes to the blob store regardless of size.
+pub const DEFAULT_INLINE_THRESHOLD: usize = 1024;
 
 /// A reference to content that may be inlined or stored in the blob store.
 ///
 /// Serializes as an untagged enum:
-/// - `{"inline": "..."}`  — content is inlined
+/// - `{"inline": "..."}` — content is inlined
 /// - `{"blob": "hash...", "size": 12345}` — content is in blob store
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -252,22 +250,31 @@ pub enum OutputManifest {
     },
 }
 
+impl OutputManifest {
+    /// Serialize the manifest to a JSON Value (for writing into the CRDT).
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::to_value(self).expect("OutputManifest should always serialize to JSON")
+    }
+}
+
 // =============================================================================
 // Manifest creation and resolution
 // =============================================================================
 
 /// Create an output manifest from a raw Jupyter output JSON value.
 ///
-/// Applies the inlining threshold to data fields:
-/// - Data smaller than the threshold is inlined
-/// - Data larger than the threshold is stored in the blob store
+/// Applies the inlining threshold to text data fields:
+/// - Text data smaller than the threshold is inlined
+/// - Text data larger than the threshold is stored in the blob store
+/// - Binary data is always stored in the blob store
 ///
-/// Returns the manifest as a JSON string.
+/// Returns the manifest struct directly. Use `OutputManifest::to_json()` to
+/// serialize it for writing into the CRDT.
 pub async fn create_manifest(
     output: &Value,
     blob_store: &BlobStore,
     threshold: usize,
-) -> io::Result<String> {
+) -> io::Result<OutputManifest> {
     let output_type = output
         .get("output_type")
         .and_then(|v| v.as_str())
@@ -348,47 +355,34 @@ pub async fn create_manifest(
         }
     };
 
-    serde_json::to_string(&manifest).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    Ok(manifest)
 }
 
-/// Store a manifest JSON string in the blob store.
-///
-/// Returns the blob hash that can be stored in the CRDT.
-pub async fn store_manifest(manifest_json: &str, blob_store: &BlobStore) -> io::Result<String> {
-    blob_store
-        .put(manifest_json.as_bytes(), MANIFEST_MEDIA_TYPE)
-        .await
-}
-
-/// Get the display_id from a manifest JSON string, if present.
+/// Get the display_id from an OutputManifest, if present.
 ///
 /// Used by UpdateDisplayData to find the output to update.
-pub fn get_display_id(manifest_json: &str) -> Option<String> {
-    let manifest: OutputManifest = serde_json::from_str(manifest_json).ok()?;
+pub fn get_display_id(manifest: &OutputManifest) -> Option<String> {
     match manifest {
         OutputManifest::DisplayData { transient, .. }
-        | OutputManifest::ExecuteResult { transient, .. } => transient.display_id,
+        | OutputManifest::ExecuteResult { transient, .. } => transient.display_id.clone(),
         _ => None,
     }
 }
 
 /// Update display data in a manifest with new data and metadata.
 ///
-/// Returns the updated manifest JSON if the manifest is a display_data or execute_result
+/// Returns the updated OutputManifest if the manifest is a display_data or execute_result
 /// with matching display_id, otherwise returns None.
 pub async fn update_manifest_display_data(
-    manifest_json: &str,
+    manifest: &OutputManifest,
     display_id: &str,
     new_data: &serde_json::Value,
     new_metadata: &serde_json::Map<String, serde_json::Value>,
     blob_store: &BlobStore,
     threshold: usize,
-) -> io::Result<Option<String>> {
-    let manifest: OutputManifest = serde_json::from_str(manifest_json)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-
+) -> io::Result<Option<OutputManifest>> {
     // Check if this manifest has the matching display_id
-    let matches = match &manifest {
+    let matches = match manifest {
         OutputManifest::DisplayData { transient, .. }
         | OutputManifest::ExecuteResult { transient, .. } => {
             transient.display_id.as_deref() == Some(display_id)
@@ -403,17 +397,14 @@ pub async fn update_manifest_display_data(
     // Create updated manifest with new data
     match manifest {
         OutputManifest::DisplayData { transient, .. } => {
-            // Convert new_data Value to ContentRef map
             let data = convert_value_to_content_refs(new_data, blob_store, threshold).await?;
             let metadata = new_metadata.clone().into_iter().collect();
             let updated = OutputManifest::DisplayData {
                 data,
                 metadata,
-                transient,
+                transient: transient.clone(),
             };
-            let json = serde_json::to_string(&updated)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            Ok(Some(json))
+            Ok(Some(updated))
         }
         OutputManifest::ExecuteResult {
             execution_count,
@@ -425,12 +416,10 @@ pub async fn update_manifest_display_data(
             let updated = OutputManifest::ExecuteResult {
                 data,
                 metadata,
-                execution_count,
-                transient,
+                execution_count: *execution_count,
+                transient: transient.clone(),
             };
-            let json = serde_json::to_string(&updated)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            Ok(Some(json))
+            Ok(Some(updated))
         }
         _ => Ok(None),
     }
@@ -470,10 +459,10 @@ async fn convert_value_to_content_refs(
 /// Resolve a manifest back to a full Jupyter output JSON value.
 ///
 /// Fetches any blob-referenced content and reconstructs the original format.
-pub async fn resolve_manifest(manifest_json: &str, blob_store: &BlobStore) -> io::Result<Value> {
-    let manifest: OutputManifest = serde_json::from_str(manifest_json)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-
+pub async fn resolve_manifest(
+    manifest: &OutputManifest,
+    blob_store: &BlobStore,
+) -> io::Result<Value> {
     match manifest {
         OutputManifest::DisplayData {
             data,
@@ -486,14 +475,15 @@ pub async fn resolve_manifest(manifest_json: &str, blob_store: &BlobStore) -> io
                 "data": resolved_data,
             });
             if !metadata.is_empty() {
-                output["metadata"] = Value::Object(metadata.into_iter().collect());
+                output["metadata"] = Value::Object(metadata.clone().into_iter().collect());
             } else {
                 output["metadata"] = Value::Object(serde_json::Map::new());
             }
             if !transient.is_empty() {
                 let mut transient_map = serde_json::Map::new();
-                if let Some(display_id) = transient.display_id {
-                    transient_map.insert("display_id".to_string(), Value::String(display_id));
+                if let Some(display_id) = &transient.display_id {
+                    transient_map
+                        .insert("display_id".to_string(), Value::String(display_id.clone()));
                 }
                 output["transient"] = Value::Object(transient_map);
             }
@@ -512,14 +502,15 @@ pub async fn resolve_manifest(manifest_json: &str, blob_store: &BlobStore) -> io
                 "execution_count": execution_count,
             });
             if !metadata.is_empty() {
-                output["metadata"] = Value::Object(metadata.into_iter().collect());
+                output["metadata"] = Value::Object(metadata.clone().into_iter().collect());
             } else {
                 output["metadata"] = Value::Object(serde_json::Map::new());
             }
             if !transient.is_empty() {
                 let mut transient_map = serde_json::Map::new();
-                if let Some(display_id) = transient.display_id {
-                    transient_map.insert("display_id".to_string(), Value::String(display_id));
+                if let Some(display_id) = &transient.display_id {
+                    transient_map
+                        .insert("display_id".to_string(), Value::String(display_id.clone()));
                 }
                 output["transient"] = Value::Object(transient_map);
             }
@@ -602,13 +593,13 @@ async fn convert_data_bundle(
 /// reads raw bytes from the blob store and base64-encodes them for the
 /// Jupyter nbformat representation (used when saving .ipynb to disk).
 async fn resolve_data_bundle(
-    data: HashMap<String, ContentRef>,
+    data: &HashMap<String, ContentRef>,
     blob_store: &BlobStore,
 ) -> io::Result<HashMap<String, Value>> {
     let mut result = HashMap::new();
 
     for (mime_type, content_ref) in data {
-        let value = if is_binary_mime(&mime_type) {
+        let value = if is_binary_mime(mime_type) {
             // Binary: read raw bytes from blob → base64-encode for nbformat
             let base64_str = content_ref.resolve_binary_as_base64(blob_store).await?;
             Value::String(base64_str)
@@ -621,7 +612,7 @@ async fn resolve_data_bundle(
             let content = content_ref.resolve(blob_store).await?;
             Value::String(content)
         };
-        result.insert(mime_type, value);
+        result.insert(mime_type.clone(), value);
     }
 
     Ok(result)
@@ -819,11 +810,9 @@ mod tests {
             "metadata": {}
         });
 
-        let manifest_json = create_manifest(&output, &store, DEFAULT_INLINE_THRESHOLD)
+        let manifest = create_manifest(&output, &store, DEFAULT_INLINE_THRESHOLD)
             .await
             .unwrap();
-
-        let manifest: OutputManifest = serde_json::from_str(&manifest_json).unwrap();
         assert!(matches!(manifest, OutputManifest::DisplayData { .. }));
     }
 
@@ -838,11 +827,9 @@ mod tests {
             "text": "hello world\n"
         });
 
-        let manifest_json = create_manifest(&output, &store, DEFAULT_INLINE_THRESHOLD)
+        let manifest = create_manifest(&output, &store, DEFAULT_INLINE_THRESHOLD)
             .await
             .unwrap();
-
-        let manifest: OutputManifest = serde_json::from_str(&manifest_json).unwrap();
         assert!(matches!(manifest, OutputManifest::Stream { name, .. } if name == "stdout"));
     }
 
@@ -858,25 +845,10 @@ mod tests {
             "traceback": ["line 1", "line 2"]
         });
 
-        let manifest_json = create_manifest(&output, &store, DEFAULT_INLINE_THRESHOLD)
+        let manifest = create_manifest(&output, &store, DEFAULT_INLINE_THRESHOLD)
             .await
             .unwrap();
-
-        let manifest: OutputManifest = serde_json::from_str(&manifest_json).unwrap();
         assert!(matches!(manifest, OutputManifest::Error { ename, .. } if ename == "ValueError"));
-    }
-
-    #[tokio::test]
-    async fn test_store_manifest() {
-        let dir = TempDir::new().unwrap();
-        let store = test_store(&dir);
-
-        let manifest = r#"{"output_type":"stream","name":"stdout","text":{"inline":"hello"}}"#;
-        let hash = store_manifest(manifest, &store).await.unwrap();
-
-        // Verify it's stored with correct media type
-        let meta = store.get_meta(&hash).await.unwrap().unwrap();
-        assert_eq!(meta.media_type, MANIFEST_MEDIA_TYPE);
     }
 
     #[tokio::test]
@@ -893,10 +865,10 @@ mod tests {
             "metadata": {}
         });
 
-        let manifest_json = create_manifest(&original, &store, DEFAULT_INLINE_THRESHOLD)
+        let manifest = create_manifest(&original, &store, DEFAULT_INLINE_THRESHOLD)
             .await
             .unwrap();
-        let resolved = resolve_manifest(&manifest_json, &store).await.unwrap();
+        let resolved = resolve_manifest(&manifest, &store).await.unwrap();
 
         assert_eq!(resolved["output_type"], "display_data");
         assert_eq!(resolved["data"]["text/plain"], "hello");
@@ -917,10 +889,10 @@ mod tests {
             "execution_count": 5
         });
 
-        let manifest_json = create_manifest(&original, &store, DEFAULT_INLINE_THRESHOLD)
+        let manifest = create_manifest(&original, &store, DEFAULT_INLINE_THRESHOLD)
             .await
             .unwrap();
-        let resolved = resolve_manifest(&manifest_json, &store).await.unwrap();
+        let resolved = resolve_manifest(&manifest, &store).await.unwrap();
 
         assert_eq!(resolved["output_type"], "execute_result");
         assert_eq!(resolved["data"]["text/plain"], "42");
@@ -938,10 +910,10 @@ mod tests {
             "text": "error message\n"
         });
 
-        let manifest_json = create_manifest(&original, &store, DEFAULT_INLINE_THRESHOLD)
+        let manifest = create_manifest(&original, &store, DEFAULT_INLINE_THRESHOLD)
             .await
             .unwrap();
-        let resolved = resolve_manifest(&manifest_json, &store).await.unwrap();
+        let resolved = resolve_manifest(&manifest, &store).await.unwrap();
 
         assert_eq!(resolved["output_type"], "stream");
         assert_eq!(resolved["name"], "stderr");
@@ -960,10 +932,10 @@ mod tests {
             "traceback": ["Traceback:", "  File \"test.py\"", "ZeroDivisionError"]
         });
 
-        let manifest_json = create_manifest(&original, &store, DEFAULT_INLINE_THRESHOLD)
+        let manifest = create_manifest(&original, &store, DEFAULT_INLINE_THRESHOLD)
             .await
             .unwrap();
-        let resolved = resolve_manifest(&manifest_json, &store).await.unwrap();
+        let resolved = resolve_manifest(&manifest, &store).await.unwrap();
 
         assert_eq!(resolved["output_type"], "error");
         assert_eq!(resolved["ename"], "ZeroDivisionError");
@@ -973,12 +945,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_large_data_uses_blob() {
+    async fn test_small_data_inlines_large_blobs() {
         let dir = TempDir::new().unwrap();
         let store = test_store(&dir);
 
-        // Create output with data larger than threshold
-        let large_html = "<html>".to_string() + &"x".repeat(10000) + "</html>";
+        // Create output with data both above and below the threshold
+        let large_html = "<html>".to_string() + &"x".repeat(2000) + "</html>";
         let output = serde_json::json!({
             "output_type": "display_data",
             "data": {
@@ -988,15 +960,14 @@ mod tests {
             "metadata": {}
         });
 
-        let manifest_json = create_manifest(&output, &store, DEFAULT_INLINE_THRESHOLD)
+        let manifest = create_manifest(&output, &store, DEFAULT_INLINE_THRESHOLD)
             .await
             .unwrap();
-        let manifest: OutputManifest = serde_json::from_str(&manifest_json).unwrap();
 
         if let OutputManifest::DisplayData { data, .. } = manifest {
-            // text/plain should be inlined (< 8KB)
+            // text/plain should be inlined (< 1KB)
             assert!(data.get("text/plain").unwrap().is_inline());
-            // text/html should be a blob (> 8KB)
+            // text/html should be a blob (> 1KB)
             assert!(!data.get("text/html").unwrap().is_inline());
         } else {
             panic!("Expected DisplayData manifest");
@@ -1015,10 +986,10 @@ mod tests {
             "text": ["line 1\n", "line 2\n"]
         });
 
-        let manifest_json = create_manifest(&output, &store, DEFAULT_INLINE_THRESHOLD)
+        let manifest = create_manifest(&output, &store, DEFAULT_INLINE_THRESHOLD)
             .await
             .unwrap();
-        let resolved = resolve_manifest(&manifest_json, &store).await.unwrap();
+        let resolved = resolve_manifest(&manifest, &store).await.unwrap();
 
         assert_eq!(resolved["text"], "line 1\nline 2\n");
     }
@@ -1084,17 +1055,169 @@ mod tests {
         });
 
         // Create manifest (should base64-decode the PNG and store raw bytes)
-        let manifest_json = create_manifest(&output, &store, DEFAULT_INLINE_THRESHOLD)
+        let manifest = create_manifest(&output, &store, DEFAULT_INLINE_THRESHOLD)
             .await
             .unwrap();
 
         // Resolve manifest (should base64-encode raw bytes back for nbformat)
-        let resolved = resolve_manifest(&manifest_json, &store).await.unwrap();
+        let resolved = resolve_manifest(&manifest, &store).await.unwrap();
 
         assert_eq!(resolved["output_type"], "display_data");
         assert_eq!(resolved["data"]["text/plain"], "<Figure>");
         // The resolved base64 should match what the kernel originally sent
         assert_eq!(resolved["data"]["image/png"], base64_from_kernel);
+    }
+
+    // ── Manifest JSON serialization tests ───────────────────────────
+
+    #[tokio::test]
+    async fn test_manifest_to_json() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+
+        let output = serde_json::json!({
+            "output_type": "stream",
+            "name": "stdout",
+            "text": "hello\n"
+        });
+
+        let manifest = create_manifest(&output, &store, DEFAULT_INLINE_THRESHOLD)
+            .await
+            .unwrap();
+        let json_value = manifest.to_json();
+
+        assert_eq!(json_value["output_type"], "stream");
+        assert_eq!(json_value["name"], "stdout");
+        // Small text should be inlined
+        assert_eq!(json_value["text"]["inline"], "hello\n");
+    }
+
+    #[tokio::test]
+    async fn test_manifest_to_json_blob_ref() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+
+        // Use threshold of 0 to force everything to blob
+        let output = serde_json::json!({
+            "output_type": "stream",
+            "name": "stdout",
+            "text": "hello\n"
+        });
+
+        let manifest = create_manifest(&output, &store, 0).await.unwrap();
+        let json_value = manifest.to_json();
+
+        assert_eq!(json_value["output_type"], "stream");
+        assert_eq!(json_value["name"], "stdout");
+        // With threshold=0, text should be a blob ref
+        assert!(json_value["text"]["blob"].is_string());
+        assert!(json_value["text"]["size"].is_number());
+    }
+
+    #[tokio::test]
+    async fn test_manifest_to_json_round_trip() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+
+        let output = serde_json::json!({
+            "output_type": "display_data",
+            "data": {
+                "text/plain": "test"
+            },
+            "metadata": {}
+        });
+
+        let manifest = create_manifest(&output, &store, DEFAULT_INLINE_THRESHOLD)
+            .await
+            .unwrap();
+        let json_value = manifest.to_json();
+
+        // Should be deserializable back to OutputManifest
+        let roundtripped: OutputManifest = serde_json::from_value(json_value).unwrap();
+        let resolved = resolve_manifest(&roundtripped, &store).await.unwrap();
+
+        assert_eq!(resolved["output_type"], "display_data");
+        assert_eq!(resolved["data"]["text/plain"], "test");
+    }
+
+    // ── get_display_id / update tests ───────────────────────────────
+
+    #[tokio::test]
+    async fn test_get_display_id() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+
+        let output = serde_json::json!({
+            "output_type": "display_data",
+            "data": {"text/plain": "hi"},
+            "metadata": {},
+            "transient": {"display_id": "my-display"}
+        });
+
+        let manifest = create_manifest(&output, &store, DEFAULT_INLINE_THRESHOLD)
+            .await
+            .unwrap();
+        assert_eq!(get_display_id(&manifest), Some("my-display".to_string()));
+
+        // Stream outputs have no display_id
+        let stream_output = serde_json::json!({
+            "output_type": "stream",
+            "name": "stdout",
+            "text": "hi"
+        });
+        let stream_manifest = create_manifest(&stream_output, &store, DEFAULT_INLINE_THRESHOLD)
+            .await
+            .unwrap();
+        assert_eq!(get_display_id(&stream_manifest), None);
+    }
+
+    #[tokio::test]
+    async fn test_update_manifest_display_data() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+
+        let output = serde_json::json!({
+            "output_type": "display_data",
+            "data": {"text/plain": "old"},
+            "metadata": {},
+            "transient": {"display_id": "my-display"}
+        });
+
+        let manifest = create_manifest(&output, &store, DEFAULT_INLINE_THRESHOLD)
+            .await
+            .unwrap();
+
+        let new_data = serde_json::json!({"text/plain": "new"});
+        let new_metadata = serde_json::Map::new();
+
+        let updated = update_manifest_display_data(
+            &manifest,
+            "my-display",
+            &new_data,
+            &new_metadata,
+            &store,
+            DEFAULT_INLINE_THRESHOLD,
+        )
+        .await
+        .unwrap();
+
+        assert!(updated.is_some());
+        let updated = updated.unwrap();
+        let resolved = resolve_manifest(&updated, &store).await.unwrap();
+        assert_eq!(resolved["data"]["text/plain"], "new");
+
+        // Non-matching display_id returns None
+        let not_updated = update_manifest_display_data(
+            &manifest,
+            "wrong-id",
+            &new_data,
+            &new_metadata,
+            &store,
+            DEFAULT_INLINE_THRESHOLD,
+        )
+        .await
+        .unwrap();
+        assert!(not_updated.is_none());
     }
 
     #[test]

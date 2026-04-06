@@ -466,7 +466,7 @@ impl DocHandle {
     ///
     /// Reads the cell's `execution_id` from the notebook doc, then looks up
     /// outputs in the RuntimeStateDoc — providing a transparent facade.
-    pub fn get_cell_outputs(&self, cell_id: &str) -> Option<Vec<String>> {
+    pub fn get_cell_outputs(&self, cell_id: &str) -> Option<Vec<serde_json::Value>> {
         let state = self.doc.lock().ok()?;
         // Read execution_id from the raw Automerge doc
         let eid = read_execution_id(&state.doc, cell_id)?;

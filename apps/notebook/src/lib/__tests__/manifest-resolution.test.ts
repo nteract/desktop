@@ -2,11 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type ContentRef,
   isBinaryMime,
-  isManifestHash,
+  isOutputManifest,
   type OutputManifest,
   resolveContentRef,
   resolveDataBundle,
   resolveManifest,
+  resolveManifestSync,
 } from "../manifest-resolution";
 
 // ---------------------------------------------------------------------------
@@ -26,57 +27,224 @@ afterEach(() => {
 });
 
 // ---------------------------------------------------------------------------
-// isManifestHash
+// isOutputManifest
 // ---------------------------------------------------------------------------
 
-describe("isManifestHash", () => {
-  it("returns true for a valid 64-char lowercase hex string", () => {
-    const hash = "a".repeat(64);
-    expect(isManifestHash(hash)).toBe(true);
-  });
-
-  it("returns true for a realistic SHA-256 hash", () => {
+describe("isOutputManifest", () => {
+  it("returns true for a stream manifest with inline ContentRef", () => {
     expect(
-      isManifestHash(
-        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      ),
+      isOutputManifest({
+        output_type: "stream",
+        name: "stdout",
+        text: { inline: "hello\n" },
+      }),
     ).toBe(true);
   });
 
-  it("returns false for uppercase hex", () => {
-    const hash = "A".repeat(64);
-    expect(isManifestHash(hash)).toBe(false);
+  it("returns true for a stream manifest with blob ContentRef", () => {
+    expect(
+      isOutputManifest({
+        output_type: "stream",
+        name: "stdout",
+        text: { blob: "abc123", size: 100 },
+      }),
+    ).toBe(true);
   });
 
-  it("returns false for 63-char string", () => {
-    expect(isManifestHash("a".repeat(63))).toBe(false);
+  it("returns true for a display_data manifest", () => {
+    expect(
+      isOutputManifest({
+        output_type: "display_data",
+        data: { "text/plain": { inline: "hi" } },
+      }),
+    ).toBe(true);
   });
 
-  it("returns false for 65-char string", () => {
-    expect(isManifestHash("a".repeat(65))).toBe(false);
+  it("returns true for an execute_result manifest", () => {
+    expect(
+      isOutputManifest({
+        output_type: "execute_result",
+        data: { "text/plain": { inline: "42" } },
+        execution_count: 1,
+      }),
+    ).toBe(true);
   });
 
-  it("returns false for empty string", () => {
-    expect(isManifestHash("")).toBe(false);
+  it("returns true for an error manifest with inline traceback", () => {
+    expect(
+      isOutputManifest({
+        output_type: "error",
+        ename: "ValueError",
+        evalue: "bad",
+        traceback: { inline: '["line1"]' },
+      }),
+    ).toBe(true);
   });
 
-  it("returns false for non-hex characters", () => {
-    const hash = "g".repeat(64);
-    expect(isManifestHash(hash)).toBe(false);
+  it("returns false for a raw JupyterOutput (stream with string text)", () => {
+    expect(
+      isOutputManifest({
+        output_type: "stream",
+        name: "stdout",
+        text: "hello\n",
+      }),
+    ).toBe(false);
   });
 
-  it("returns false for mixed valid/invalid chars at 64 length", () => {
-    const hash = `${"a".repeat(63)}z`;
-    expect(isManifestHash(hash)).toBe(false);
+  it("returns false for a raw JupyterOutput (display_data with string data)", () => {
+    expect(
+      isOutputManifest({
+        output_type: "display_data",
+        data: { "text/plain": "hi" },
+        metadata: {},
+      }),
+    ).toBe(false);
   });
 
-  it("returns false for JSON strings", () => {
-    expect(isManifestHash('{"output_type":"stream"}')).toBe(false);
+  it("returns false for null", () => {
+    expect(isOutputManifest(null)).toBe(false);
   });
 
-  it("returns false for strings with spaces", () => {
-    const hash = `${"a".repeat(32)} ${"b".repeat(31)}`;
-    expect(isManifestHash(hash)).toBe(false);
+  it("returns false for a string", () => {
+    expect(isOutputManifest("hello")).toBe(false);
+  });
+
+  it("returns false for an object without output_type", () => {
+    expect(isOutputManifest({ data: { "text/plain": { inline: "x" } } })).toBe(
+      false,
+    );
+  });
+
+  it("returns false for display_data with empty data", () => {
+    expect(isOutputManifest({ output_type: "display_data", data: {} })).toBe(
+      false,
+    );
+  });
+
+  it("returns false for unknown output_type", () => {
+    expect(isOutputManifest({ output_type: "unknown_type", data: {} })).toBe(
+      false,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveManifestSync
+// ---------------------------------------------------------------------------
+
+describe("resolveManifestSync", () => {
+  const blobPort = 8765;
+
+  it("resolves stream manifest with inline text", () => {
+    const manifest: OutputManifest = {
+      output_type: "stream",
+      name: "stdout",
+      text: { inline: "hello\n" },
+    };
+    const output = resolveManifestSync(manifest, blobPort);
+    expect(output).toEqual({
+      output_type: "stream",
+      name: "stdout",
+      text: "hello\n",
+    });
+  });
+
+  it("returns null for stream manifest with blob text ref", () => {
+    const manifest: OutputManifest = {
+      output_type: "stream",
+      name: "stdout",
+      text: { blob: "abc123", size: 100 },
+    };
+    expect(resolveManifestSync(manifest, blobPort)).toBeNull();
+  });
+
+  it("resolves display_data with all inline refs", () => {
+    const manifest: OutputManifest = {
+      output_type: "display_data",
+      data: {
+        "text/plain": { inline: "hi" },
+        "text/html": { inline: "<b>hi</b>" },
+      },
+      metadata: { isolated: true },
+      transient: { display_id: "d1" },
+    };
+    const output = resolveManifestSync(manifest, blobPort);
+    expect(output).toEqual({
+      output_type: "display_data",
+      data: { "text/plain": "hi", "text/html": "<b>hi</b>" },
+      metadata: { isolated: true },
+      display_id: "d1",
+    });
+  });
+
+  it("resolves display_data with binary blob ref to URL", () => {
+    const manifest: OutputManifest = {
+      output_type: "display_data",
+      data: {
+        "image/png": { blob: "imgblob", size: 5000 },
+      },
+    };
+    const output = resolveManifestSync(manifest, blobPort);
+    expect(output).toEqual({
+      output_type: "display_data",
+      data: { "image/png": `http://127.0.0.1:${blobPort}/blob/imgblob` },
+      metadata: {},
+      display_id: undefined,
+    });
+  });
+
+  it("returns null for display_data with text blob ref", () => {
+    const manifest: OutputManifest = {
+      output_type: "display_data",
+      data: {
+        "text/plain": { blob: "textblob", size: 5000 },
+      },
+    };
+    expect(resolveManifestSync(manifest, blobPort)).toBeNull();
+  });
+
+  it("resolves error manifest with inline traceback", () => {
+    const traceback = ["line1", "line2"];
+    const manifest: OutputManifest = {
+      output_type: "error",
+      ename: "ValueError",
+      evalue: "bad",
+      traceback: { inline: JSON.stringify(traceback) },
+    };
+    const output = resolveManifestSync(manifest, blobPort);
+    expect(output).toEqual({
+      output_type: "error",
+      ename: "ValueError",
+      evalue: "bad",
+      traceback,
+    });
+  });
+
+  it("returns null for error manifest with blob traceback", () => {
+    const manifest: OutputManifest = {
+      output_type: "error",
+      ename: "ValueError",
+      evalue: "bad",
+      traceback: { blob: "tbblob", size: 2000 },
+    };
+    expect(resolveManifestSync(manifest, blobPort)).toBeNull();
+  });
+
+  it("auto-parses JSON MIME types in sync resolution", () => {
+    const manifest: OutputManifest = {
+      output_type: "execute_result",
+      data: {
+        "application/json": { inline: '{"key":"value"}' },
+        "text/plain": { inline: "{'key': 'value'}" },
+      },
+      execution_count: 1,
+    };
+    const output = resolveManifestSync(manifest, blobPort);
+    expect(output).not.toBeNull();
+    if (output && output.output_type === "execute_result") {
+      expect(output.data["application/json"]).toEqual({ key: "value" });
+      expect(output.data["text/plain"]).toBe("{'key': 'value'}");
+    }
   });
 });
 

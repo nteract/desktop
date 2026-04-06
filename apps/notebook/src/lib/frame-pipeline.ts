@@ -14,8 +14,8 @@ import { getBlobPort, refreshBlobPort } from "./blob-port";
 import type { CellChangeset } from "./cell-changeset";
 import { logger } from "./logger";
 import {
-  isManifestHash,
   materializeCellFromWasm,
+  outputCacheKey,
   resolveOutput,
 } from "./materialize-cells";
 import { getCellById, updateCellById } from "./notebook-cells";
@@ -93,16 +93,15 @@ export async function materializeChangeset(
   // ── Per-cell incremental materialization ───────────────────────────
 
   const cache = deps.outputCache;
+  let blobPort = getBlobPort();
   let cacheHits = 0;
   let cacheMisses = 0;
 
   for (const { cell_id: cellId, fields } of changeset.changed) {
     if (fields.outputs) {
       // Check if every output for this cell is already cached.
-      const rawOutputs: string[] = handle.get_cell_outputs(cellId) ?? [];
-      const allCached = rawOutputs.every(
-        (o) => cache.has(o) || !isManifestHash(o),
-      );
+      const rawOutputs: unknown[] = handle.get_cell_outputs(cellId) ?? [];
+      const allCached = rawOutputs.every((o) => cache.has(outputCacheKey(o)));
 
       if (allCached) {
         cacheHits++;
@@ -112,6 +111,7 @@ export async function materializeChangeset(
           cellId,
           cache,
           getCellById(cellId),
+          blobPort,
         );
         if (cell) {
           if (!fields.source) {
@@ -123,7 +123,6 @@ export async function materializeChangeset(
       } else {
         cacheMisses++;
         // Cache miss — resolve this cell's outputs async.
-        let blobPort = getBlobPort();
         if (blobPort === null) {
           blobPort = await refreshBlobPort();
         }
@@ -164,6 +163,7 @@ export async function materializeChangeset(
         cellId,
         cache,
         getCellById(cellId),
+        blobPort,
       );
       if (cell) {
         if (!fields.source) {

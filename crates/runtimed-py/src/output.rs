@@ -1084,7 +1084,11 @@ impl From<notebook_doc::runtime_state::RuntimeState> for PyRuntimeState {
                             model_name: entry.model_name,
                             state_json: serde_json::to_string(&entry.state)
                                 .unwrap_or_else(|_| "{}".to_string()),
-                            outputs: entry.outputs,
+                            outputs: entry
+                                .outputs
+                                .iter()
+                                .map(|v| serde_json::to_string(v).unwrap_or_default())
+                                .collect(),
                             seq: entry.seq,
                         },
                     )

@@ -41,7 +41,7 @@ import {
   useRuntimeState,
 } from "../lib/runtime-state";
 import type { DaemonBroadcast, JupyterMessage, JupyterOutput } from "../types";
-import { resolveOutputString } from "./useManifestResolver";
+import { resolveOutputValue } from "./useManifestResolver";
 
 // ── Output widget manifest resolution ───────────────────────────────
 
@@ -77,7 +77,7 @@ function resolveCommOutputHashes(
 
   void (async () => {
     const resolved = await Promise.all(
-      detected.hashes.map((h) => resolveOutputString(h, blobPort)),
+      detected.hashes.map((h) => resolveOutputValue(h, blobPort)),
     );
     if (_outputResolveGen.get(commId) !== gen) return;
 
@@ -328,7 +328,17 @@ export function useDaemonKernel({
               );
               return;
             }
-            const output = await resolveOutputString(outputJson, port);
+            // Parse the broadcast JSON string into a manifest/output object
+            let parsedOutput: unknown;
+            try {
+              parsedOutput = JSON.parse(outputJson);
+            } catch {
+              logger.warn(
+                "[daemon-kernel] Failed to parse output_json from broadcast",
+              );
+              return;
+            }
+            const output = await resolveOutputValue(parsedOutput, port);
             if (cancelled) return;
             if (output) {
               callbacksRef.current.onOutput?.(cellId, output);

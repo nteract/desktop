@@ -1209,7 +1209,14 @@ impl NotebookRoom {
                 for (cell_id, outputs) in &cell_outputs {
                     let synthetic_eid = uuid::Uuid::new_v4().to_string();
                     sd.create_execution(&synthetic_eid, cell_id);
-                    let _ = sd.set_outputs(&synthetic_eid, outputs);
+                    let json_outputs: Vec<serde_json::Value> = outputs
+                        .iter()
+                        .map(|s| {
+                            serde_json::from_str(s)
+                                .unwrap_or_else(|_| serde_json::Value::String(s.clone()))
+                        })
+                        .collect();
+                    let _ = sd.set_outputs(&synthetic_eid, &json_outputs);
                     sd.set_execution_done(&synthetic_eid, true);
                     let _ = doc.set_execution_id(cell_id, Some(&synthetic_eid));
                 }
@@ -5610,7 +5617,7 @@ async fn save_notebook_to_disk(
     // Read outputs and execution_count from RuntimeStateDoc keyed by execution_id.
     // Lock ordering: doc first (released above), then state_doc.
     let (cell_outputs, cell_execution_counts): (
-        HashMap<String, Vec<String>>,
+        HashMap<String, Vec<serde_json::Value>>,
         HashMap<String, Option<i64>>,
     ) = {
         let sd = room.state_doc.read().await;
@@ -5665,9 +5672,9 @@ async fn save_notebook_to_disk(
         if cell.cell_type == "code" {
             // Resolve outputs from RuntimeStateDoc (keyed by execution_id)
             let mut resolved_outputs = Vec::new();
-            if let Some(output_hashes) = cell_outputs.get(&cell.id) {
-                for output_str in output_hashes {
-                    let output_value = resolve_cell_output(output_str, &room.blob_store).await;
+            if let Some(outputs) = cell_outputs.get(&cell.id) {
+                for output in outputs {
+                    let output_value = resolve_cell_output(output, &room.blob_store).await;
                     resolved_outputs.push(output_value);
                 }
             }
@@ -5902,49 +5909,54 @@ async fn clone_notebook_to_disk(room: &NotebookRoom, target_path: &str) -> Resul
 }
 
 /// Resolve a single cell output — handles both manifest hashes and raw JSON.
-async fn resolve_cell_output(output_str: &str, blob_store: &BlobStore) -> serde_json::Value {
-    // Check if it's a manifest hash (64-char hex string)
-    if output_str.len() == 64 && output_str.chars().all(|c| c.is_ascii_hexdigit()) {
-        // Try to fetch manifest from blob store
-        if let Ok(Some(manifest_bytes)) = blob_store.get(output_str).await {
-            if let Ok(manifest_json) = String::from_utf8(manifest_bytes) {
-                // Resolve the manifest to full Jupyter output
-                if let Ok(resolved) =
-                    crate::output_store::resolve_manifest(&manifest_json, blob_store).await
-                {
-                    return resolved;
+async fn resolve_cell_output(
+    output: &serde_json::Value,
+    blob_store: &BlobStore,
+) -> serde_json::Value {
+    // If the output is a string, it's a legacy format (hash or raw JSON string)
+    if let Some(s) = output.as_str() {
+        // Check if it's a manifest hash (64-char hex string)
+        if s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit()) {
+            if let Ok(Some(manifest_bytes)) = blob_store.get(s).await {
+                if let Ok(manifest_json) = String::from_utf8(manifest_bytes) {
+                    if let Ok(manifest) =
+                        serde_json::from_str::<crate::output_store::OutputManifest>(&manifest_json)
+                    {
+                        if let Ok(resolved) =
+                            crate::output_store::resolve_manifest(&manifest, blob_store).await
+                        {
+                            return resolved;
+                        }
+                    }
                 }
             }
+            warn!(
+                "[notebook-sync] Failed to resolve legacy output manifest: {}",
+                &s[..8]
+            );
+            return serde_json::json!({"output_type": "stream", "name": "stderr", "text": ["[output could not be resolved]"]});
         }
-        // If resolution fails, return empty output
-        warn!(
-            "[notebook-sync] Failed to resolve output manifest: {}",
-            &output_str[..8]
-        );
-        serde_json::json!({"output_type": "stream", "name": "stderr", "text": ["[output could not be resolved]"]})
-    } else {
-        // Raw JSON output
-        // TODO: investigate when this can happen - raw output should always be valid JSON from kernel
-        match serde_json::from_str(output_str) {
-            Ok(value) => value,
+        // Raw JSON string — parse it
+        match serde_json::from_str(s) {
+            Ok(value) => return value,
             Err(e) => {
-                let preview = if output_str.len() > 100 {
-                    format!("{}...", &output_str[..100])
-                } else {
-                    output_str.to_string()
-                };
-                warn!(
-                    "[notebook-sync] Invalid JSON in raw output ({}): {}",
-                    e, preview
-                );
-                // Return valid nbformat stream output instead of invalid {}
-                serde_json::json!({
+                warn!("[notebook-sync] Invalid JSON in raw output string: {}", e);
+                return serde_json::json!({
                     "output_type": "stream",
                     "name": "stderr",
                     "text": ["[invalid output JSON]"]
-                })
+                });
             }
         }
+    }
+
+    // Structured manifest/output object — resolve any blob refs
+    match serde_json::from_value::<crate::output_store::OutputManifest>(output.clone()) {
+        Ok(manifest) => match crate::output_store::resolve_manifest(&manifest, blob_store).await {
+            Ok(resolved) => resolved,
+            Err(_) => output.clone(),
+        },
+        Err(_) => output.clone(),
     }
 }
 
@@ -6290,15 +6302,11 @@ fn parse_cells_from_ipynb(json: &serde_json::Value) -> Option<Vec<CellSnapshot>>
                 _ => "null".to_string(),
             };
 
-            // Outputs: keep as JSON strings
-            let outputs = cell
+            // Outputs: keep as serde_json::Value
+            let outputs: Vec<serde_json::Value> = cell
                 .get("outputs")
                 .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .map(|o| serde_json::to_string(o).unwrap_or_default())
-                        .collect()
-                })
+                .cloned()
                 .unwrap_or_default();
 
             // Cell metadata (preserves all fields, normalize to object)
@@ -6369,37 +6377,23 @@ fn parse_metadata_from_ipynb(json: &serde_json::Value) -> Option<NotebookMetadat
 /// Returns a vec of manifest hashes suitable for storing in the Automerge doc.
 ///
 /// Falls back to storing the raw JSON string if manifest creation fails.
-async fn outputs_to_manifest_refs(raw_outputs: &[String], blob_store: &BlobStore) -> Vec<String> {
+async fn outputs_to_manifest_refs(
+    raw_outputs: &[serde_json::Value],
+    blob_store: &BlobStore,
+) -> Vec<serde_json::Value> {
     let mut refs = Vec::with_capacity(raw_outputs.len());
-    for output_json in raw_outputs {
-        let output_ref = match serde_json::from_str::<serde_json::Value>(output_json) {
-            Ok(output_value) => {
-                match crate::output_store::create_manifest(
-                    &output_value,
-                    blob_store,
-                    crate::output_store::DEFAULT_INLINE_THRESHOLD,
-                )
-                .await
-                {
-                    Ok(manifest_json) => {
-                        match crate::output_store::store_manifest(&manifest_json, blob_store).await
-                        {
-                            Ok(hash) => hash,
-                            Err(e) => {
-                                warn!("[notebook-sync] Failed to store output manifest: {}", e);
-                                output_json.clone()
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        warn!("[notebook-sync] Failed to create output manifest: {}", e);
-                        output_json.clone()
-                    }
-                }
-            }
+    for output_value in raw_outputs {
+        let output_ref = match crate::output_store::create_manifest(
+            output_value,
+            blob_store,
+            crate::output_store::DEFAULT_INLINE_THRESHOLD,
+        )
+        .await
+        {
+            Ok(manifest) => manifest.to_json(),
             Err(e) => {
-                warn!("[notebook-sync] Failed to parse output JSON: {}", e);
-                output_json.clone()
+                warn!("[notebook-sync] Failed to create output manifest: {}", e);
+                output_value.clone()
             }
         };
         refs.push(output_ref);
@@ -6419,7 +6413,7 @@ type ParsedStreamingNotebook = (
     Option<NotebookMetadataSnapshot>,
     NbformatAttachmentMap,
 );
-type StreamingLoadBatchEntry = (usize, StreamingCell, Vec<String>, ResolvedAssets);
+type StreamingLoadBatchEntry = (usize, StreamingCell, Vec<serde_json::Value>, ResolvedAssets);
 
 fn should_resolve_markdown_assets(cell_type: &str) -> bool {
     cell_type == "markdown"
@@ -6598,7 +6592,7 @@ fn parse_notebook_jiter(bytes: &[u8]) -> Result<ParsedStreamingNotebook, String>
 async fn output_value_to_manifest_ref(
     output: &serde_json::Value,
     blob_store: &BlobStore,
-) -> String {
+) -> serde_json::Value {
     match crate::output_store::create_manifest(
         output,
         blob_store,
@@ -6606,18 +6600,10 @@ async fn output_value_to_manifest_ref(
     )
     .await
     {
-        Ok(manifest_json) => {
-            match crate::output_store::store_manifest(&manifest_json, blob_store).await {
-                Ok(hash) => hash,
-                Err(e) => {
-                    warn!("[streaming-load] Failed to store output manifest: {}", e);
-                    output.to_string()
-                }
-            }
-        }
+        Ok(manifest) => manifest.to_json(),
         Err(e) => {
             warn!("[streaming-load] Failed to create output manifest: {}", e);
-            output.to_string()
+            output.clone()
         }
     }
 }
@@ -7077,7 +7063,7 @@ async fn apply_ipynb_changes(
     // Pre-convert external outputs through the blob store so they're stored as
     // manifest hashes rather than raw JSON. This also ensures comparisons against
     // the doc's existing manifest hashes work correctly.
-    let converted_outputs: HashMap<String, Vec<String>> = {
+    let converted_outputs: HashMap<String, Vec<serde_json::Value>> = {
         let mut map = HashMap::new();
         for cell in external_cells {
             if !cell.outputs.is_empty() {
@@ -7348,7 +7334,7 @@ async fn apply_ipynb_changes(
 
                 // Compare external outputs and execution_count against RuntimeStateDoc
                 let current_eid = doc.get_execution_id(&ext_cell.id);
-                let (current_outputs, current_ec): (Vec<String>, Option<i64>) =
+                let (current_outputs, current_ec): (Vec<serde_json::Value>, Option<i64>) =
                     if let Some(ref eid) = current_eid {
                         let sd = room.state_doc.read().await;
                         let outputs = sd.get_outputs(eid);
@@ -8272,10 +8258,11 @@ mod tests {
         }
         {
             let mut sd = room.state_doc.write().await;
-            let output = r#"{"output_type": "stream", "name": "stdout", "text": ["hello\n"]}"#;
+            let output: serde_json::Value =
+                serde_json::json!({"output_type": "stream", "name": "stdout", "text": ["hello\n"]});
             sd.create_execution(eid, "cell1");
             sd.set_execution_count(eid, 1);
-            sd.set_outputs(eid, &[output.to_string()]).unwrap();
+            sd.set_outputs(eid, &[output]).unwrap();
             sd.set_execution_done(eid, true);
         }
 
@@ -8586,7 +8573,7 @@ mod tests {
                 position: "81".to_string(),
                 source: "print('new')".to_string(),
                 execution_count: "42".to_string(),
-                outputs: vec![r#"{"output_type":"execute_result"}"#.to_string()],
+                outputs: vec![serde_json::json!({"output_type":"execute_result"})],
                 metadata: serde_json::json!({}),
                 resolved_assets: std::collections::HashMap::new(),
             },
@@ -8617,17 +8604,16 @@ mod tests {
         let outputs = sd.get_outputs(&eid);
         drop(sd);
         assert_eq!(outputs.len(), 1);
-        let hash = &outputs[0];
-        assert_eq!(hash.len(), 64, "Output should be a 64-char manifest hash");
+        let manifest = &outputs[0];
         assert!(
-            hash.chars().all(|c| c.is_ascii_hexdigit()),
-            "Output should be a hex hash, got: {}",
-            hash
+            manifest.is_object(),
+            "Output should be a manifest object, got: {}",
+            manifest
         );
         // Verify the manifest resolves back to the original output
-        let manifest_bytes = room.blob_store.get(hash).await.unwrap().unwrap();
-        let manifest_json = String::from_utf8(manifest_bytes).unwrap();
-        let resolved = crate::output_store::resolve_manifest(&manifest_json, &room.blob_store)
+        let parsed_manifest: crate::output_store::OutputManifest =
+            serde_json::from_value(manifest.clone()).unwrap();
+        let resolved = crate::output_store::resolve_manifest(&parsed_manifest, &room.blob_store)
             .await
             .unwrap();
         assert_eq!(resolved["output_type"], "execute_result");
@@ -8852,18 +8838,16 @@ mod tests {
                     cell.id
                 );
                 for output_ref in &outputs {
-                    assert_eq!(
-                        output_ref.len(),
-                        64,
-                        "Cell {} output should be a 64-char manifest hash, got: {}",
-                        cell.id,
-                        &output_ref[..output_ref.len().min(80)]
-                    );
                     assert!(
-                        output_ref.chars().all(|c| c.is_ascii_hexdigit()),
-                        "Cell {} output should be hex, got: {}",
+                        output_ref.is_object(),
+                        "Cell {} output should be a manifest object, got: {}",
                         cell.id,
                         output_ref
+                    );
+                    assert!(
+                        output_ref.get("output_type").is_some(),
+                        "Cell {} output manifest should have output_type",
+                        cell.id
                     );
                 }
             }
@@ -8874,10 +8858,10 @@ mod tests {
             .get_execution_id("cell-1")
             .expect("cell-1 should have execution_id");
         let outputs1 = state_doc.get_outputs(&eid1);
-        let hash = &outputs1[0];
-        let manifest_bytes = blob_store.get(hash).await.unwrap().unwrap();
-        let manifest_json = String::from_utf8(manifest_bytes).unwrap();
-        let resolved = crate::output_store::resolve_manifest(&manifest_json, &blob_store)
+        let manifest = &outputs1[0];
+        let parsed_manifest: crate::output_store::OutputManifest =
+            serde_json::from_value(manifest.clone()).unwrap();
+        let resolved = crate::output_store::resolve_manifest(&parsed_manifest, &blob_store)
             .await
             .unwrap();
         assert_eq!(resolved["output_type"], "execute_result");
@@ -8889,11 +8873,10 @@ mod tests {
             .get_execution_id("cell-2")
             .expect("cell-2 should have execution_id");
         let outputs2 = state_doc.get_outputs(&eid2);
-        let hash = &outputs2[0];
-        let manifest_bytes = blob_store.get(hash).await.unwrap().unwrap();
-        let manifest_json = String::from_utf8(manifest_bytes).unwrap();
+        let manifest = &outputs2[0];
+        let parsed_manifest2: crate::output_store::OutputManifest =
+            serde_json::from_value(manifest.clone()).unwrap();
         // The manifest should contain a blob ref for the large image, not inline
-        let manifest: serde_json::Value = serde_json::from_str(&manifest_json).unwrap();
         let image_ref = &manifest["data"]["image/png"];
         assert!(
             image_ref.get("blob").is_some(),
@@ -8901,7 +8884,7 @@ mod tests {
             image_ref
         );
         // Full round-trip should reconstruct original data
-        let resolved = crate::output_store::resolve_manifest(&manifest_json, &blob_store)
+        let resolved = crate::output_store::resolve_manifest(&parsed_manifest2, &blob_store)
             .await
             .unwrap();
         assert_eq!(resolved["output_type"], "display_data");
@@ -8912,10 +8895,10 @@ mod tests {
             .get_execution_id("cell-3")
             .expect("cell-3 should have execution_id");
         let outputs3 = state_doc.get_outputs(&eid3);
-        let hash = &outputs3[0];
-        let manifest_bytes = blob_store.get(hash).await.unwrap().unwrap();
-        let manifest_json = String::from_utf8(manifest_bytes).unwrap();
-        let resolved = crate::output_store::resolve_manifest(&manifest_json, &blob_store)
+        let manifest = &outputs3[0];
+        let parsed_manifest: crate::output_store::OutputManifest =
+            serde_json::from_value(manifest.clone()).unwrap();
+        let resolved = crate::output_store::resolve_manifest(&parsed_manifest, &blob_store)
             .await
             .unwrap();
         assert_eq!(resolved["output_type"], "stream");
@@ -9426,7 +9409,7 @@ mod tests {
         while cell_iter.peek().is_some() {
             // Blob store phase
             let t_blob = std::time::Instant::now();
-            let mut batch: Vec<(usize, StreamingCell, Vec<String>)> = Vec::new();
+            let mut batch: Vec<(usize, StreamingCell, Vec<serde_json::Value>)> = Vec::new();
             let mut batch_output_bytes = 0usize;
             for _ in 0..batch_size {
                 let Some((idx, cell)) = cell_iter.next() else {

@@ -24,7 +24,18 @@
 //!       status: Str         ("queued" | "running" | "done" | "error")
 //!       execution_count: Int|null
 //!       success: Bool|null
-//!       outputs: List[Str]  (manifest hashes)
+//!       outputs: List[Map]  (inline manifests with blob refs)
+//!         {output}/
+//!           output_type: Str
+//!           data: Map { mime_type: Map { blob: Str, size: Uint } }  (display_data/execute_result)
+//!           metadata: Map (JSON)
+//!           execution_count: Int|null (execute_result only)
+//!           transient: Map { display_id: Str }
+//!           name: Str (stream only)
+//!           text: Map { blob: Str, size: Uint } (stream only)
+//!           ename: Str (error only)
+//!           evalue: Str (error only)
+//!           traceback: Map { blob: Str, size: Uint } (error only)
 //!   env/
 //!     in_sync: bool
 //!     added: List[Str]     (packages in metadata but not in kernel)
@@ -40,7 +51,7 @@
 //!       model_module: Str
 //!       model_name: Str
 //!       state: Str         (JSON-encoded widget state)
-//!       outputs: List[Str] (manifest hashes, OutputModel only)
+//!       outputs: List[Map] (inline manifests, OutputModel only)
 //!       seq: Int           (insertion order)
 //!       capture_msg_id: Str (Output widget capture routing, "" if not capturing)
 //!   last_saved: Str|null   (ISO timestamp of last save)
@@ -107,7 +118,7 @@ pub struct QueueState {
 ///
 /// Tracks the status of an execution from queue to completion.
 /// Stored in `executions/{execution_id}/` in the RuntimeStateDoc.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExecutionState {
     /// Cell that was executed.
     pub cell_id: String,
@@ -119,9 +130,9 @@ pub struct ExecutionState {
     /// Whether the execution succeeded (set on completion).
     #[serde(default)]
     pub success: Option<bool>,
-    /// Output manifest hashes for this execution.
+    /// Output manifests for this execution (inline Automerge Maps with blob refs).
     #[serde(default)]
-    pub outputs: Vec<String>,
+    pub outputs: Vec<serde_json::Value>,
     /// Source code that was executed (audit log).
     /// Set by the coordinator when creating the execution entry.
     #[serde(default)]
@@ -187,9 +198,9 @@ pub struct CommDocEntry {
     /// Widget state as a JSON object (stored as native Automerge map).
     #[serde(default = "default_empty_state")]
     pub state: serde_json::Value,
-    /// Output manifest hashes (OutputModel widgets only).
+    /// Output manifests (inline Automerge Maps, OutputModel widgets only).
     #[serde(default)]
-    pub outputs: Vec<String>,
+    pub outputs: Vec<serde_json::Value>,
     /// Insertion order for dependency-correct replay.
     #[serde(default)]
     pub seq: u64,
@@ -599,6 +610,30 @@ impl RuntimeStateDoc {
         out
     }
 
+    /// Read a List[Map] from a map object as `Vec<serde_json::Value>`.
+    fn read_json_list(&self, obj: &automerge::ObjId, key: &str) -> Vec<serde_json::Value> {
+        let Some(list_id) =
+            self.doc
+                .get(obj, key)
+                .ok()
+                .flatten()
+                .and_then(|(value, id)| match value {
+                    Value::Object(ObjType::List) => Some(id),
+                    _ => None,
+                })
+        else {
+            return Vec::new();
+        };
+        let len = self.doc.length(&list_id);
+        let mut out = Vec::with_capacity(len);
+        for i in 0..len {
+            if let Some(val) = crate::read_json_value(&self.doc, &list_id, i) {
+                out.push(val);
+            }
+        }
+        out
+    }
+
     // ── Granular setters (daemon calls these individually) ──────────
 
     /// Update trust state. Returns `true` if the doc was mutated.
@@ -988,7 +1023,7 @@ impl RuntimeStateDoc {
                 _ => None,
             });
 
-        let outputs = self.read_str_list(&entry, "outputs");
+        let outputs = self.read_json_list(&entry, "outputs");
 
         let source = self.read_opt_str(&entry, "source");
 
@@ -1070,19 +1105,20 @@ impl RuntimeStateDoc {
         }
     }
 
-    /// Append a single manifest hash to the output list for an execution.
+    /// Append a single output manifest to the output list for an execution.
     ///
+    /// The manifest is written as an Automerge Map at the list position.
     /// Creates the `outputs/{execution_id}` list if it doesn't exist.
-    /// Returns `(changed, output_index)`.
+    /// Returns the output index.
     #[allow(clippy::expect_used)]
     pub fn append_output(
         &mut self,
         execution_id: &str,
-        manifest_hash: &str,
+        manifest: &serde_json::Value,
     ) -> Result<usize, AutomergeError> {
         let list_id = self.ensure_output_list(execution_id);
         let len = self.doc.length(&list_id);
-        self.doc.insert(&list_id, len, manifest_hash)?;
+        crate::insert_json_at_index(&mut self.doc, &list_id, len, manifest)?;
         Ok(len)
     }
 
@@ -1093,7 +1129,7 @@ impl RuntimeStateDoc {
     pub fn set_outputs(
         &mut self,
         execution_id: &str,
-        hashes: &[String],
+        manifests: &[serde_json::Value],
     ) -> Result<bool, AutomergeError> {
         let executions = self
             .get_map("executions")
@@ -1108,8 +1144,8 @@ impl RuntimeStateDoc {
         // Delete existing list and create fresh
         let _ = self.doc.delete(&entry, "outputs");
         let list_id = self.doc.put_object(&entry, "outputs", ObjType::List)?;
-        for (i, hash) in hashes.iter().enumerate() {
-            self.doc.insert(&list_id, i, hash.as_str())?;
+        for (i, manifest) in manifests.iter().enumerate() {
+            crate::insert_json_at_index(&mut self.doc, &list_id, i, manifest)?;
         }
         Ok(true)
     }
@@ -1132,17 +1168,17 @@ impl RuntimeStateDoc {
     /// Update or insert a stream output for an execution.
     ///
     /// If `known_state` is provided, validates that the output at the cached index
-    /// still has the expected manifest hash. If validation passes, updates in place.
-    /// If validation fails (hash mismatch, index out of bounds, or no state), appends
-    /// a new output.
+    /// still has the expected blob hash (via `text.blob`). If validation passes,
+    /// replaces in place. If validation fails (hash mismatch, index out of bounds,
+    /// or no state), appends a new output.
     ///
     /// Returns `(updated: bool, output_index: usize)` where `updated` is true if an
-    /// existing output was updated in place, false if a new output was appended.
+    /// existing output was replaced in place, false if a new output was appended.
     pub fn upsert_stream_output(
         &mut self,
         execution_id: &str,
         _stream_name: &str,
-        output_ref: &str,
+        manifest: &serde_json::Value,
         known_state: Option<&StreamOutputState>,
     ) -> Result<(bool, usize), AutomergeError> {
         let list_id = self.ensure_output_list(execution_id);
@@ -1153,13 +1189,22 @@ impl RuntimeStateDoc {
             // Must be the last output — if something was appended after (e.g., stderr
             // between two stdout messages), we should append instead of updating
             if state.index + 1 == output_count {
-                if let Ok(Some((value, _))) = self.doc.get(&list_id, state.index) {
-                    if let Ok(current_hash) = value.into_string() {
-                        if current_hash == state.manifest_hash {
-                            // Validated! Safe to update in place
-                            self.doc.put(&list_id, state.index, output_ref)?;
-                            return Ok((true, state.index));
-                        }
+                // Read the existing output and check text.blob against state.blob_hash
+                if let Some(existing) = crate::read_json_value(&self.doc, &list_id, state.index) {
+                    let current_blob = existing
+                        .get("text")
+                        .and_then(|t| t.get("blob"))
+                        .and_then(|b| b.as_str());
+                    if current_blob == Some(&state.blob_hash) {
+                        // Validated! Delete old and insert new at same index
+                        self.doc.delete(&list_id, state.index)?;
+                        crate::insert_json_at_index(
+                            &mut self.doc,
+                            &list_id,
+                            state.index,
+                            manifest,
+                        )?;
+                        return Ok((true, state.index));
                     }
                 }
             }
@@ -1167,18 +1212,19 @@ impl RuntimeStateDoc {
         }
 
         // No valid state, append new output
-        self.doc.insert(&list_id, output_count, output_ref)?;
+        crate::insert_json_at_index(&mut self.doc, &list_id, output_count, manifest)?;
         Ok((false, output_count))
     }
 
     /// Replace an output at a specific index for an execution.
     ///
     /// Used by UpdateDisplayData handling for in-place manifest updates.
+    /// Deletes the old entry and inserts the new manifest at the same position.
     pub fn replace_output(
         &mut self,
         execution_id: &str,
         output_idx: usize,
-        new_hash: &str,
+        manifest: &serde_json::Value,
     ) -> Result<bool, AutomergeError> {
         let Some(list_id) = self.get_output_list(execution_id) else {
             return Ok(false);
@@ -1186,32 +1232,22 @@ impl RuntimeStateDoc {
         if output_idx >= self.doc.length(&list_id) {
             return Ok(false);
         }
-        self.doc.put(&list_id, output_idx, new_hash)?;
+        // Delete old entry and insert new manifest at same position
+        self.doc.delete(&list_id, output_idx)?;
+        crate::insert_json_at_index(&mut self.doc, &list_id, output_idx, manifest)?;
         Ok(true)
     }
 
     /// Read all outputs for an execution.
-    pub fn get_outputs(&self, execution_id: &str) -> Vec<String> {
+    pub fn get_outputs(&self, execution_id: &str) -> Vec<serde_json::Value> {
         let Some(list_id) = self.get_output_list(execution_id) else {
             return Vec::new();
         };
         let len = self.doc.length(&list_id);
         let mut out = Vec::with_capacity(len);
         for i in 0..len {
-            if let Some(s) = self
-                .doc
-                .get(&list_id, i)
-                .ok()
-                .flatten()
-                .and_then(|(value, _)| match value {
-                    Value::Scalar(s) => match s.as_ref() {
-                        ScalarValue::Str(s) => Some(s.to_string()),
-                        _ => None,
-                    },
-                    _ => None,
-                })
-            {
-                out.push(s);
+            if let Some(val) = crate::read_json_value(&self.doc, &list_id, i) {
+                out.push(val);
             }
         }
         out
@@ -1219,9 +1255,9 @@ impl RuntimeStateDoc {
 
     /// Get all outputs across all executions.
     ///
-    /// Returns `(execution_id, output_index, manifest_hash)` triples.
+    /// Returns `(execution_id, output_index, manifest)` triples.
     /// Used by UpdateDisplayData to find outputs with matching display_id.
-    pub fn get_all_outputs(&self) -> Vec<(String, usize, String)> {
+    pub fn get_all_outputs(&self) -> Vec<(String, usize, serde_json::Value)> {
         let Some(executions) = self.get_map("executions") else {
             return Vec::new();
         };
@@ -1233,20 +1269,8 @@ impl RuntimeStateDoc {
                 {
                     let len = self.doc.length(&list_id);
                     for i in 0..len {
-                        if let Some(s) =
-                            self.doc
-                                .get(&list_id, i)
-                                .ok()
-                                .flatten()
-                                .and_then(|(value, _)| match value {
-                                    Value::Scalar(s) => match s.as_ref() {
-                                        ScalarValue::Str(s) => Some(s.to_string()),
-                                        _ => None,
-                                    },
-                                    _ => None,
-                                })
-                        {
-                            results.push((exec_id.clone(), i, s));
+                        if let Some(val) = crate::read_json_value(&self.doc, &list_id, i) {
+                            results.push((exec_id.clone(), i, val));
                         }
                     }
                 }
@@ -1655,17 +1679,17 @@ impl RuntimeStateDoc {
             model_module: self.read_str(&entry, "model_module"),
             model_name: self.read_str(&entry, "model_name"),
             state,
-            outputs: self.read_str_list(&entry, "outputs"),
+            outputs: self.read_json_list(&entry, "outputs"),
             seq: self.read_i64(&entry, "seq") as u64,
             capture_msg_id: self.read_str(&entry, "capture_msg_id"),
         })
     }
 
-    /// Append a manifest hash to a comm's outputs list (OutputModel widgets).
+    /// Append an output manifest to a comm's outputs list (OutputModel widgets).
     ///
     /// Returns `false` if the comm doesn't exist.
     #[allow(clippy::expect_used)]
-    pub fn append_comm_output(&mut self, comm_id: &str, manifest_hash: &str) -> bool {
+    pub fn append_comm_output(&mut self, comm_id: &str, manifest: &serde_json::Value) -> bool {
         let Some(comms) = self.get_map("comms") else {
             return false;
         };
@@ -1678,8 +1702,7 @@ impl RuntimeStateDoc {
             return false;
         };
         let len = self.doc.length(&list_id);
-        self.doc
-            .insert(&list_id, len, manifest_hash)
+        crate::insert_json_at_index(&mut self.doc, &list_id, len, manifest)
             .expect("append comm output");
         true
     }
@@ -1895,9 +1918,9 @@ impl RuntimeStateDoc {
 /// (stream append, display update, error) without re-materializing
 /// all cells.
 pub fn diff_execution_outputs(
-    prev: &HashMap<String, Vec<String>>,
+    prev: &HashMap<String, Vec<serde_json::Value>>,
     current_executions: &HashMap<String, ExecutionState>,
-) -> (Vec<String>, HashMap<String, Vec<String>>) {
+) -> (Vec<String>, HashMap<String, Vec<serde_json::Value>>) {
     let mut changed_cells = Vec::new();
 
     for (eid, exec) in current_executions {
@@ -1912,7 +1935,7 @@ pub fn diff_execution_outputs(
 
     // Keep ALL executions (even with empty outputs) so the next diff
     // correctly detects transitions from [] → [hash].
-    let new_snapshot: HashMap<String, Vec<String>> = current_executions
+    let new_snapshot: HashMap<String, Vec<serde_json::Value>> = current_executions
         .iter()
         .map(|(eid, e)| (eid.clone(), e.outputs.clone()))
         .collect();
@@ -1925,6 +1948,23 @@ pub fn diff_execution_outputs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Create a stream output manifest for tests.
+    fn test_stream(blob: &str) -> serde_json::Value {
+        serde_json::json!({
+            "output_type": "stream",
+            "name": "stdout",
+            "text": {"blob": blob, "size": blob.len()}
+        })
+    }
+
+    /// Create a display_data output manifest for tests.
+    fn test_display(blob: &str) -> serde_json::Value {
+        serde_json::json!({
+            "output_type": "display_data",
+            "data": {"text/plain": {"blob": blob, "size": blob.len()}}
+        })
+    }
 
     #[test]
     fn test_new_doc_has_default_state() {
@@ -2483,32 +2523,35 @@ mod tests {
     fn test_append_output() {
         let mut doc = RuntimeStateDoc::new();
         doc.create_execution("exec-1", "cell-1");
-        let idx0 = doc.append_output("exec-1", "hash-a").unwrap();
+        let m_a = test_stream("hash-a");
+        let m_b = test_stream("hash-b");
+        let idx0 = doc.append_output("exec-1", &m_a).unwrap();
         assert_eq!(idx0, 0);
-        let idx1 = doc.append_output("exec-1", "hash-b").unwrap();
+        let idx1 = doc.append_output("exec-1", &m_b).unwrap();
         assert_eq!(idx1, 1);
 
-        assert_eq!(doc.get_outputs("exec-1"), vec!["hash-a", "hash-b"]);
+        assert_eq!(doc.get_outputs("exec-1"), vec![m_a, m_b]);
     }
 
     #[test]
     fn test_set_outputs() {
         let mut doc = RuntimeStateDoc::new();
         doc.create_execution("exec-1", "cell-1");
-        doc.append_output("exec-1", "old-hash").unwrap();
+        doc.append_output("exec-1", &test_stream("old-hash"))
+            .unwrap();
 
-        let hashes = vec!["h1".to_string(), "h2".to_string(), "h3".to_string()];
-        doc.set_outputs("exec-1", &hashes).unwrap();
+        let manifests = vec![test_display("h1"), test_display("h2"), test_display("h3")];
+        doc.set_outputs("exec-1", &manifests).unwrap();
 
-        assert_eq!(doc.get_outputs("exec-1"), vec!["h1", "h2", "h3"]);
+        assert_eq!(doc.get_outputs("exec-1"), manifests);
     }
 
     #[test]
     fn test_clear_execution_outputs() {
         let mut doc = RuntimeStateDoc::new();
         doc.create_execution("exec-1", "cell-1");
-        doc.append_output("exec-1", "hash-a").unwrap();
-        doc.append_output("exec-1", "hash-b").unwrap();
+        doc.append_output("exec-1", &test_stream("hash-a")).unwrap();
+        doc.append_output("exec-1", &test_stream("hash-b")).unwrap();
 
         assert!(doc.clear_execution_outputs("exec-1").unwrap());
         assert!(doc.get_outputs("exec-1").is_empty());
@@ -2521,16 +2564,20 @@ mod tests {
     fn test_replace_output() {
         let mut doc = RuntimeStateDoc::new();
         doc.create_execution("exec-1", "cell-1");
-        doc.append_output("exec-1", "hash-a").unwrap();
-        doc.append_output("exec-1", "hash-b").unwrap();
+        let m_a = test_display("hash-a");
+        let m_b = test_display("hash-b");
+        let m_c = test_display("hash-c");
+        let m_d = test_display("hash-d");
+        doc.append_output("exec-1", &m_a).unwrap();
+        doc.append_output("exec-1", &m_b).unwrap();
 
-        assert!(doc.replace_output("exec-1", 1, "hash-c").unwrap());
-        assert_eq!(doc.get_outputs("exec-1"), vec!["hash-a", "hash-c"]);
+        assert!(doc.replace_output("exec-1", 1, &m_c).unwrap());
+        assert_eq!(doc.get_outputs("exec-1"), vec![m_a, m_c]);
 
         // Out of bounds
-        assert!(!doc.replace_output("exec-1", 5, "hash-d").unwrap());
+        assert!(!doc.replace_output("exec-1", 5, &m_d).unwrap());
         // Nonexistent execution
-        assert!(!doc.replace_output("nope", 0, "hash-d").unwrap());
+        assert!(!doc.replace_output("nope", 0, &m_d).unwrap());
     }
 
     #[test]
@@ -2538,49 +2585,54 @@ mod tests {
         let mut doc = RuntimeStateDoc::new();
         doc.create_execution("exec-1", "cell-1");
 
+        let manifest = test_stream("hash-a");
         // No known state → append
         let (updated, idx) = doc
-            .upsert_stream_output("exec-1", "stdout", "hash-a", None)
+            .upsert_stream_output("exec-1", "stdout", &manifest, None)
             .unwrap();
         assert!(!updated);
         assert_eq!(idx, 0);
-        assert_eq!(doc.get_outputs("exec-1"), vec!["hash-a"]);
+        assert_eq!(doc.get_outputs("exec-1"), vec![manifest]);
     }
 
     #[test]
     fn test_upsert_stream_output_update_in_place() {
         let mut doc = RuntimeStateDoc::new();
         doc.create_execution("exec-1", "cell-1");
-        doc.append_output("exec-1", "hash-a").unwrap();
+        let m_a = test_stream("hash-a");
+        doc.append_output("exec-1", &m_a).unwrap();
 
         let state = StreamOutputState {
             index: 0,
-            manifest_hash: "hash-a".to_string(),
+            blob_hash: "hash-a".to_string(),
         };
+        let m_b = test_stream("hash-b");
         let (updated, idx) = doc
-            .upsert_stream_output("exec-1", "stdout", "hash-b", Some(&state))
+            .upsert_stream_output("exec-1", "stdout", &m_b, Some(&state))
             .unwrap();
         assert!(updated);
         assert_eq!(idx, 0);
-        assert_eq!(doc.get_outputs("exec-1"), vec!["hash-b"]);
+        assert_eq!(doc.get_outputs("exec-1"), vec![m_b]);
     }
 
     #[test]
     fn test_upsert_stream_output_hash_mismatch_appends() {
         let mut doc = RuntimeStateDoc::new();
         doc.create_execution("exec-1", "cell-1");
-        doc.append_output("exec-1", "hash-a").unwrap();
+        let m_a = test_stream("hash-a");
+        doc.append_output("exec-1", &m_a).unwrap();
 
         let state = StreamOutputState {
             index: 0,
-            manifest_hash: "wrong-hash".to_string(),
+            blob_hash: "wrong-hash".to_string(),
         };
+        let m_b = test_stream("hash-b");
         let (updated, idx) = doc
-            .upsert_stream_output("exec-1", "stdout", "hash-b", Some(&state))
+            .upsert_stream_output("exec-1", "stdout", &m_b, Some(&state))
             .unwrap();
         assert!(!updated);
         assert_eq!(idx, 1);
-        assert_eq!(doc.get_outputs("exec-1"), vec!["hash-a", "hash-b"]);
+        assert_eq!(doc.get_outputs("exec-1"), vec![m_a, m_b]);
     }
 
     #[test]
@@ -2588,18 +2640,21 @@ mod tests {
         let mut doc = RuntimeStateDoc::new();
         doc.create_execution("exec-1", "cell-1");
         doc.create_execution("exec-2", "cell-2");
-        doc.append_output("exec-1", "h1").unwrap();
-        doc.append_output("exec-1", "h2").unwrap();
-        doc.append_output("exec-2", "h3").unwrap();
+        let m1 = test_stream("h1");
+        let m2 = test_stream("h2");
+        let m3 = test_stream("h3");
+        doc.append_output("exec-1", &m1).unwrap();
+        doc.append_output("exec-1", &m2).unwrap();
+        doc.append_output("exec-2", &m3).unwrap();
 
         let all = doc.get_all_outputs();
         assert_eq!(all.len(), 3);
 
         // Check that all expected entries are present (order across execution_ids
         // depends on Automerge key iteration order, so use contains)
-        assert!(all.contains(&("exec-1".to_string(), 0, "h1".to_string())));
-        assert!(all.contains(&("exec-1".to_string(), 1, "h2".to_string())));
-        assert!(all.contains(&("exec-2".to_string(), 0, "h3".to_string())));
+        assert!(all.contains(&("exec-1".to_string(), 0, m1)));
+        assert!(all.contains(&("exec-1".to_string(), 1, m2)));
+        assert!(all.contains(&("exec-2".to_string(), 0, m3)));
     }
 
     #[test]
@@ -2607,13 +2662,16 @@ mod tests {
         let mut doc = RuntimeStateDoc::new();
         doc.create_execution("exec-1", "cell-1");
         doc.create_execution("exec-2", "cell-2");
-        doc.append_output("exec-1", "h1").unwrap();
-        doc.append_output("exec-1", "h2").unwrap();
-        doc.append_output("exec-2", "h3").unwrap();
+        let m1 = test_stream("h1");
+        let m2 = test_stream("h2");
+        let m3 = test_stream("h3");
+        doc.append_output("exec-1", &m1).unwrap();
+        doc.append_output("exec-1", &m2).unwrap();
+        doc.append_output("exec-2", &m3).unwrap();
 
         let state = doc.read_state();
-        assert_eq!(state.executions["exec-1"].outputs, vec!["h1", "h2"]);
-        assert_eq!(state.executions["exec-2"].outputs, vec!["h3"]);
+        assert_eq!(state.executions["exec-1"].outputs, vec![m1, m2]);
+        assert_eq!(state.executions["exec-2"].outputs, vec![m3]);
     }
 
     #[test]
@@ -2624,7 +2682,8 @@ mod tests {
             let eid = format!("e{i}");
             let cid = if i % 2 == 0 { "cell-a" } else { "cell-b" };
             doc.create_execution(&eid, cid);
-            doc.append_output(&eid, &format!("hash-{i}")).unwrap();
+            doc.append_output(&eid, &test_stream(&format!("hash-{i}")))
+                .unwrap();
         }
 
         // Trim to 3
@@ -2655,9 +2714,12 @@ mod tests {
         let mut daemon_doc = RuntimeStateDoc::new();
         daemon_doc.create_execution("exec-1", "cell-1");
         daemon_doc.create_execution("exec-2", "cell-2");
-        daemon_doc.append_output("exec-1", "h1").unwrap();
-        daemon_doc.append_output("exec-1", "h2").unwrap();
-        daemon_doc.append_output("exec-2", "h3").unwrap();
+        let m1 = test_stream("h1");
+        let m2 = test_stream("h2");
+        let m3 = test_stream("h3");
+        daemon_doc.append_output("exec-1", &m1).unwrap();
+        daemon_doc.append_output("exec-1", &m2).unwrap();
+        daemon_doc.append_output("exec-2", &m3).unwrap();
 
         let mut client_doc = RuntimeStateDoc::new_empty();
         let mut daemon_sync = sync::State::new();
@@ -2684,22 +2746,24 @@ mod tests {
 
         let client_state = client_doc.read_state();
         assert_eq!(client_state.executions.len(), 2);
-        assert_eq!(client_state.executions["exec-1"].outputs, vec!["h1", "h2"]);
-        assert_eq!(client_state.executions["exec-2"].outputs, vec!["h3"]);
+        assert_eq!(client_state.executions["exec-1"].outputs, vec![m1, m2]);
+        assert_eq!(client_state.executions["exec-2"].outputs, vec![m3]);
     }
 
     #[test]
     fn test_fork_and_merge_outputs() {
         let mut doc = RuntimeStateDoc::new();
         doc.create_execution("exec-1", "cell-1");
-        doc.append_output("exec-1", "h1").unwrap();
+        let m1 = test_stream("h1");
+        let m2 = test_stream("h2");
+        doc.append_output("exec-1", &m1).unwrap();
 
         let mut fork = doc.fork();
         fork.set_actor("runtimed:state:iopub");
-        fork.append_output("exec-1", "h2").unwrap();
+        fork.append_output("exec-1", &m2).unwrap();
 
         doc.merge(&mut fork).unwrap();
-        assert_eq!(doc.get_outputs("exec-1"), vec!["h1", "h2"]);
+        assert_eq!(doc.get_outputs("exec-1"), vec![m1, m2]);
     }
 
     #[test]
@@ -2825,12 +2889,11 @@ mod tests {
         let mut doc = RuntimeStateDoc::new();
         doc.put_comm("comm-1", "jupyter.widget", "", "OutputModel", &empty, 0);
 
-        assert!(doc.append_comm_output("comm-1", "hash-a"));
-        assert!(doc.append_comm_output("comm-1", "hash-b"));
-        assert_eq!(
-            doc.get_comm("comm-1").unwrap().outputs,
-            vec!["hash-a", "hash-b"]
-        );
+        let m_a = test_display("hash-a");
+        let m_b = test_display("hash-b");
+        assert!(doc.append_comm_output("comm-1", &m_a));
+        assert!(doc.append_comm_output("comm-1", &m_b));
+        assert_eq!(doc.get_comm("comm-1").unwrap().outputs, vec![m_a, m_b]);
 
         assert!(doc.clear_comm_outputs("comm-1"));
         assert!(doc.get_comm("comm-1").unwrap().outputs.is_empty());
@@ -2842,7 +2905,7 @@ mod tests {
     #[test]
     fn test_comm_output_nonexistent() {
         let mut doc = RuntimeStateDoc::new();
-        assert!(!doc.append_comm_output("nope", "hash"));
+        assert!(!doc.append_comm_output("nope", &test_stream("hash")));
         assert!(!doc.clear_comm_outputs("nope"));
     }
 
@@ -2909,7 +2972,7 @@ mod tests {
                 status: "done".to_string(),
                 execution_count: Some(1),
                 success: Some(true),
-                outputs: vec!["hash1".to_string()],
+                outputs: vec![test_stream("hash1")],
                 source: None,
                 seq: None,
             },
@@ -2941,7 +3004,7 @@ mod tests {
     #[test]
     fn test_diff_output_cleared_detected() {
         let mut prev = HashMap::new();
-        prev.insert("exec-1".to_string(), vec!["hash1".to_string()]);
+        prev.insert("exec-1".to_string(), vec![test_stream("hash1")]);
         let mut execs = HashMap::new();
         execs.insert(
             "exec-1".to_string(),
@@ -2974,7 +3037,7 @@ mod tests {
                 status: "done".to_string(),
                 execution_count: Some(1),
                 success: Some(true),
-                outputs: vec!["hash1".to_string()],
+                outputs: vec![test_stream("hash1")],
                 source: None,
                 seq: None,
             },
@@ -3004,7 +3067,7 @@ mod tests {
         assert!(changed.is_empty(), "no output change yet");
 
         // Stage 4: new output arrives on exec-2
-        execs.get_mut("exec-2").unwrap().outputs = vec!["hash2".to_string()];
+        execs.get_mut("exec-2").unwrap().outputs = vec![test_stream("hash2")];
         let (changed, _) = diff_execution_outputs(&snapshot, &execs);
         assert_eq!(
             changed,
@@ -3018,7 +3081,7 @@ mod tests {
     #[test]
     fn test_diff_snapshot_retains_empty_outputs() {
         let mut prev = HashMap::new();
-        prev.insert("exec-1".to_string(), vec!["hash1".to_string()]);
+        prev.insert("exec-1".to_string(), vec![test_stream("hash1")]);
 
         let mut execs = HashMap::new();
         execs.insert(
