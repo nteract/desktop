@@ -209,8 +209,8 @@ declare module "virtual:renderer-plugin/my-renderer" {
 ```
 
 4. **Register the MIME type** in `src/components/isolated/iframe-libraries.ts`:
-   - Add to `MIME_PLUGINS` map (or handle in `pluginForMime()` for regex patterns)
-   - Add the import case in `loadPlugin()`
+   - Add to `PLUGIN_MIME_TYPES` map
+   - Add the import case in `loadPluginForMime()`
 
 5. **Remove from core bundle** in `src/isolated-renderer/index.tsx`:
    - Remove the component import

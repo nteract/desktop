@@ -304,16 +304,15 @@ All dispatch is synchronous and in-process — no serialization or Tauri event l
 
 ## Output Storage
 
-Cell outputs use a two-tier blob manifest system rather than inline data. When the daemon receives output from a kernel:
+Cell outputs use inline manifests with blob offload for large payloads. When the daemon receives output from a kernel:
 
-1. The output is converted to nbformat JSON, then a **manifest** is created (`output_store.rs`)
-2. Each MIME type's content becomes a `ContentRef`: `Inline` for < 8KB, `Blob { hash, size }` for ≥ 8KB
+1. The output is converted to nbformat JSON, then a **manifest** is created as an inline Automerge Map in RuntimeStateDoc (`output_store.rs`)
+2. Each MIME type's content becomes a `ContentRef`: `Inline` for ≤ 1KB, `Blob { hash, size }` for > 1KB
 3. Large binary content (images, plots) is stored in a content-addressed **blob store** (`blob_store.rs`, SHA-256 hashes, `~/.cache/runt/blobs/`)
-4. The manifest itself is stored in the blob store → produces a 64-char hex manifest hash
-5. The Automerge doc stores only the manifest hash in `cell.outputs[]`
-6. Clients resolve manifests and blobs from the daemon's HTTP blob server (`GET /blob/{hash}` on a dynamic port)
+4. MIME types and small payloads are readable directly from the CRDT without any blob fetch
+5. Clients resolve large blobs from the daemon's HTTP blob server (`GET /blob/{hash}` on a dynamic port)
 
-This keeps the CRDT small: a cell with 50 outputs adds ~3.2KB to the doc (50 × 64 bytes), regardless of output content size.
+This keeps the CRDT efficient: manifests are structured Maps with compact ContentRef entries. MIME type metadata is always available without touching the blob store.
 
 Stream outputs (stdout/stderr) are special: text is fed through a terminal emulator (`stream_terminals`) for carriage return and ANSI escape handling before manifest creation. `upsert_stream_output` updates in-place when consecutive stream outputs arrive.
 

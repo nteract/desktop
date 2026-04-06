@@ -16,21 +16,17 @@ When changing the wire handshake or typed frame semantics, also inspect:
 
 ## MIME classification contract
 
-Keep these implementations in sync when changing text-vs-binary rules:
-
-- `crates/runtimed/src/output_store.rs`
-- `crates/runtimed-client/src/output_resolver.rs`
-- `apps/notebook/src/lib/manifest-resolution.ts`
+Single canonical Rust implementation in `crates/notebook-doc/src/mime.rs` (`is_binary_mime()`, `mime_kind()`, `MimeKind` enum). All Rust crates use this module. The old per-crate copies in `runtimed/src/output_store.rs`, `runtimed-client/src/output_resolver.rs`, and the TypeScript `isBinaryMime()` in `manifest-resolution.ts` have been deleted — WASM owns MIME classification end-to-end.
 
 Important rule: `image/svg+xml` is text, not binary.
 
 ## Output pipeline
 
-The daemon stores manifests and blobs; the CRDT stores only manifest hashes. Frontend and Python consumers resolve through the manifest layer rather than treating output payloads as inline notebook state.
+The daemon stores content in the blob store; output manifests are inline Automerge Maps in RuntimeStateDoc. MIME types and sizes are readable directly from the CRDT without any blob fetch. Frontend and Python consumers resolve ContentRefs through the manifest layer — Inline for ≤1KB, Blob for >1KB.
 
 ## Common pitfalls
 
 - Storing base64 text for binary blobs instead of raw bytes
 - Reading binary blobs as UTF-8 strings
-- Forgetting to update both frontend and Python MIME classification paths
+- Adding MIME classification outside `crates/notebook-doc/src/mime.rs` — there is one canonical implementation
 - Changing sync reply or retry behavior without testing failed-delivery cases

@@ -18,7 +18,7 @@ Widgets run inside a security-isolated iframe. The parent window owns the Widget
 
 Widget state lives in the **RuntimeStateDoc** CRDT (`doc.comms/` Automerge map). Each comm entry tracks target_name, model_module, model_name, state (as native Automerge map), outputs, and seq.
 
-- **Daemon:** Writes comm state on `comm_open`/`comm_msg(update)`/`comm_close` from kernel IOPub. State updates go through a 16ms coalescing writer to avoid overwhelming CRDT sync.
+- **Daemon:** Writes comm state on `comm_open`/`comm_msg(update)`/`comm_close` from kernel IOPub. State updates go through a 16ms coalescing writer to avoid overwhelming CRDT sync. Large comm state values (>1KB serialized JSON) are stored in the blob store with a `$blob` sentinel in the CRDT, following the same pattern as binary widget buffers and output ContentRefs. This prevents expensive recursive CRDT expansion of large JSON objects (e.g., Vega-Lite specs embedded in JupyterChart state).
 - **Frontend:** `WidgetStore` in `widget-store.ts` -- per-model subscriptions, IPY_MODEL_ reference resolution, custom message buffering. Populated by a CRDT watcher in `useDaemonKernel.ts` that diffs `runtimeState.comms` and synthesizes Jupyter comm messages.
 - **Frontend → Kernel:** Built-in widget state updates write to RuntimeStateDoc via `getCrdtCommWriter()`. The runtime agent diffs comm state on each sync and forwards deltas to the kernel.
 

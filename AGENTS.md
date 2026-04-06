@@ -299,7 +299,7 @@ The supervisor watches source directories and auto-restarts the child on changes
 | `runtimed-py` | Python bindings for daemon (PyO3/maturin) |
 | `runtimed-wasm` | WASM bindings for notebook doc (Automerge, used by frontend) |
 | `notebook` | Tauri desktop app — main GUI, bundles daemon+CLI as sidecars |
-| `notebook-doc` | Shared Automerge schema — cells, outputs, RuntimeStateDoc, PEP 723 |
+| `notebook-doc` | Shared Automerge schema — cells, outputs, RuntimeStateDoc, PEP 723, MIME classification |
 | `notebook-protocol` | Wire types — requests, responses, broadcasts |
 | `notebook-sync` | Automerge sync client — `DocHandle`, per-cell Python accessors |
 | `runt` | CLI — daemon management, kernel control, notebook launching, MCP server |
@@ -308,7 +308,7 @@ The supervisor watches source directories and auto-restarts the child on changes
 | `runt-workspace` | Per-worktree daemon isolation, socket path management |
 | `kernel-launch` | Kernel launching, tool bootstrapping (deno, uv, ruff via rattler) |
 | `kernel-env` | Python environment management (UV + Conda) with progress reporting |
-| `repr-llm` | LLM-friendly text summaries of visualization specs (`text/llm+plain` synthesis) |
+| `repr-llm` | LLM-friendly text summaries of visualization specs incl. GeoJSON (`text/llm+plain` synthesis) |
 | `mcp-supervisor` | nteract-dev — MCP supervisor proxy, daemon/vite lifecycle management |
 | `xtask` | Build system orchestration |
 
@@ -442,21 +442,21 @@ This is why `NotebookDoc::bootstrap()` only writes `schema_version` (a scalar). 
 
 ### The `is_binary_mime` Contract
 
-Three implementations **must stay in sync** — if you change MIME classification, update all three:
+One canonical Rust implementation in `notebook-doc::mime` is the single source of truth for MIME classification. It exports `is_binary_mime()`, `mime_kind()`, and the `MimeKind` enum. All Rust crates (`runtimed`, `runtimed-client`, `runtimed-wasm`) use this module — the old per-crate copies have been deleted.
 
-| Location | Language | Function |
-|----------|----------|----------|
-| `crates/runtimed/src/output_store.rs` | Rust | `is_binary_mime()` |
-| `crates/runtimed-client/src/output_resolver.rs` | Rust | `mime_kind()` |
-| `apps/notebook/src/lib/manifest-resolution.ts` | TypeScript | `isBinaryMime()` |
+On the TypeScript side, `isBinaryMime()` has been deleted from `manifest-resolution.ts`. **WASM now owns MIME classification end-to-end** — it resolves `ContentRef`s to `Inline`/`Url`/`Blob` variants directly, so the frontend never needs to classify MIMEs itself.
 
-The rule: `image/*` → binary (EXCEPT `image/svg+xml` — that's text). `audio/*`, `video/*` → binary. `application/*` → binary by default (EXCEPT json, javascript, xml, and `+json`/`+xml` suffixes). `text/*` → always text.
+| Location | Function |
+|----------|----------|
+| `crates/notebook-doc/src/mime.rs` | `is_binary_mime()`, `mime_kind()`, `MimeKind` |
+
+The classification rules: `image/*` → binary (EXCEPT `image/svg+xml` — that's text). `audio/*`, `video/*` → binary. `application/*` → binary by default (EXCEPT json, javascript, xml, and `+json`/`+xml` suffixes). `text/*` → always text.
 
 ### Crate Boundaries
 
 | Crate | Owns | Modify when |
 |-------|------|-------------|
-| `notebook-doc` | Automerge schema, cell CRUD, output writes, `CellChangeset` | Changing document schema or cell operations |
+| `notebook-doc` | Automerge schema, cell CRUD, output writes, MIME classification, `CellChangeset` | Changing document schema or cell operations |
 | `notebook-protocol` | Wire types (`NotebookRequest`, `NotebookResponse`, `NotebookBroadcast`) | Adding request/response/broadcast types |
 | `notebook-sync` | `DocHandle`, sync infrastructure, per-cell accessors for Python | Changing Python client sync behavior |
 
@@ -467,7 +467,7 @@ The rule: `image/*` → binary (EXCEPT `image/svg+xml` — that's text). `audio/
 | Cell source | Frontend WASM | Local-first, character-level merge |
 | Cell position, type, metadata | Frontend WASM | User-initiated via UI |
 | Notebook metadata (deps, runtime) | Frontend WASM | User edits deps, runtime picker |
-| Cell outputs (manifest hashes) | Runtime agent subprocess | Kernel IOPub → blob store → hash in RuntimeStateDoc |
+| Cell outputs (inline manifests) | Runtime agent subprocess | Kernel IOPub → blob store → inline manifest Maps in RuntimeStateDoc |
 | Execution count | Runtime agent subprocess | Set on `execute_input` from kernel |
 | Execution queue (source, seq, status) | Coordinator writes `queued`, runtime agent transitions to `running`/`done` | CRDT-driven execution — no RPC for cell execution |
 | RuntimeStateDoc (kernel, queue, executions, env, trust) | Runtime agent + Coordinator | Separate Automerge doc, frame type `0x05` |
@@ -480,9 +480,9 @@ The rule: `image/*` → binary (EXCEPT `image/svg+xml` — that's text). `audio/
 
 ### Renderer Plugins (Isolated Iframe)
 
-Heavy output renderers (markdown, plotly, vega, leaflet) are loaded as **on-demand CJS plugins** — not bundled into the core IIFE. Each plugin has its own Vite virtual module (`virtual:renderer-plugin/{name}`) for code splitting. The iframe's CJS loader provides React via a custom `require` shim — no window globals. See `contributing/iframe-isolation.md` § Renderer Plugins for the full architecture and step-by-step guide to adding new plugins.
+Heavy output renderers (markdown, plotly, vega, leaflet) are loaded as **on-demand CJS plugins** — not bundled into the core IIFE. Plugins are identified by **MIME types directly** — MIME types flow from CRDT outputs to the loading boundary without translation. Each plugin has its own Vite virtual module (`virtual:renderer-plugin/{name}`) for code splitting. The iframe's CJS loader provides React via a custom `require` shim — no window globals. `text/latex` is rendered via KaTeX inside the markdown renderer plugin. See `contributing/iframe-isolation.md` § Renderer Plugins for the full architecture and step-by-step guide to adding new plugins.
 
-**Key files:** `src/isolated-renderer/index.tsx` (registry + loader), `src/isolated-renderer/*-renderer.tsx` (plugins), `apps/notebook/vite-plugin-isolated-renderer.ts` (build), `src/components/isolated/iframe-libraries.ts` (on-demand loading).
+**Key files:** `src/isolated-renderer/index.tsx` (registry + loader), `src/isolated-renderer/*-renderer.tsx` (plugins), `apps/notebook/vite-plugin-isolated-renderer.ts` (build), `src/components/isolated/iframe-libraries.ts` (single MIME→plugin mapping layer: `PLUGIN_MIME_TYPES`, `needsPlugin`, `loadPluginForMime`).
 
 ### Cell List Stable DOM Order (Iframe Reload Prevention)
 

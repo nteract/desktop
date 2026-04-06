@@ -20,7 +20,7 @@ paths:
 
 4. **Local-first editing, synced execution.** Cell mutations happen instantly in the WASM Automerge peer. Execution always runs against the synced document. Source edits debounce at 20ms; `flushSync()` fires before execute/save.
 
-5. **Binary separation via manifests.** Cell outputs are content-addressed blobs with manifest references. The CRDT stores only 64-char SHA-256 hashes. Large outputs never block document sync.
+5. **Binary separation via blob store.** Cell outputs use inline manifest Maps in the CRDT with `ContentRef` entries pointing to the blob store. MIME types and sizes are readable directly from the CRDT without any blob fetch. Large binary content (>1KB) goes to the content-addressed blob store; small content is inlined.
 
 6. **Daemon manages runtime resources.** Clients request kernel launch; they never spawn kernels directly. Environment selection, tool availability, and lifecycle are the daemon's responsibility.
 
@@ -43,7 +43,7 @@ The Tauri app crate (`crates/notebook/`) is glue -- it wires Tauri commands to d
 | Cell source (`Text` CRDT) | Frontend WASM | Local-first, character-level merge |
 | Cell position, type, metadata | Frontend WASM | User-initiated via UI |
 | Notebook metadata (deps, runtime) | Frontend WASM | User edits deps, runtime picker |
-| Cell outputs (manifest hashes) | Daemon | Kernel IOPub -> blob store -> hash in doc |
+| Cell outputs (inline manifests) | Daemon | Kernel IOPub -> blob store -> inline manifest Maps in RuntimeStateDoc |
 | Execution count | Daemon | Set on `execute_input` from kernel |
 | Widget state | Daemon (via `CommState`) | Kernel `comm_open`/`comm_msg` |
 | RuntimeStateDoc (kernel status, queue, executions, env, trust) | Daemon | Separate per-notebook Automerge doc synced via frame `0x05` |
@@ -69,7 +69,7 @@ Key files: `crates/notebook-doc/src/runtime_state.rs`, `apps/notebook/src/lib/ru
 Jupyter kernels send binary data as base64-encoded strings on the wire. The daemon **base64-decodes binary MIME types before storing** so the blob store holds actual binary bytes.
 
 **Text MIME types** (`text/*`, `application/json`, `image/svg+xml`, anything `+json`/`+xml`):
-- Stored as UTF-8 string bytes (or inlined in manifest if < 8KB)
+- Stored as UTF-8 string bytes (or inlined in manifest if < 1KB)
 - Resolved via `read_to_string()` / `response.text()`
 
 **Binary MIME types** (`image/png`, `image/jpeg`, `audio/*`, `video/*`, most `application/*`):
@@ -82,13 +82,11 @@ Jupyter kernels send binary data as base64-encoded strings on the wire. The daem
 
 ### The `is_binary_mime` Contract
 
-Three implementations **MUST stay in sync**. Update all three when changing MIME classification:
+One canonical Rust implementation in `notebook-doc::mime` is the single source of truth for MIME classification. All Rust crates (`runtimed`, `runtimed-client`, `runtimed-wasm`) use this module — the old per-crate copies have been deleted. WASM now owns MIME classification end-to-end — it resolves `ContentRef`s to `Inline`/`Url`/`Blob` variants directly, so the frontend never needs to classify MIMEs itself.
 
-| Location | Language | Function |
-|----------|----------|----------|
-| `crates/runtimed/src/output_store.rs` | Rust | `is_binary_mime()` |
-| `crates/runtimed-client/src/output_resolver.rs` | Rust | `mime_kind()` |
-| `apps/notebook/src/lib/manifest-resolution.ts` | TypeScript | `isBinaryMime()` |
+| Location | Function |
+|----------|----------|
+| `crates/notebook-doc/src/mime.rs` | `is_binary_mime()`, `mime_kind()`, `MimeKind` |
 
 Classification rules:
 - `image/*` -> binary, **EXCEPT** `image/svg+xml`
@@ -107,7 +105,7 @@ Classification rules:
 
 | Consumer | Binary MIME | Text MIME |
 |----------|------------|-----------|
-| **Frontend** (`manifest-resolution.ts`) | Returns `http://` blob URL | `response.text()` -> string |
+| **Frontend** (WASM `ContentRef` resolution) | Resolves `ContentRef` to `Blob` variant -> `http://` blob URL | Resolves to `Inline` (string) or `Url` variant |
 | **Python** (`output_resolver.rs`) | `fs::read()` -> raw `bytes` | `read_to_string()` -> string |
 | **.ipynb save** (`output_store.rs`) | `resolve_binary_as_base64()` | `resolve()` -> UTF-8 string |
 
@@ -115,9 +113,7 @@ Classification rules:
 
 Content-addressed storage at `~/.cache/runt/blobs/`, sharded by first 2 hex chars. Each blob has a `.meta` sidecar with `{media_type, size, created_at}`. Blobs are ephemeral -- derived from notebook content, regenerated from `.ipynb` on daemon restart.
 
-**Two-tier indirection:**
-1. Cell outputs list -> manifest hashes (64-char hex strings in `doc.cells[id].outputs`)
-2. Manifest (JSON in blob store) -> `ContentRef` per MIME type: `{"inline": "<data>"}` for <=8KB text, `{"blob": "<hash>", "size": N}` for large text or ANY binary
+**One-hop indirection:** Manifests are inline Automerge Maps in RuntimeStateDoc (not stored in the blob store). Each manifest contains `ContentRef` entries per MIME type: `{"inline": "<data>"}` for <=1KB text, `{"blob": "<hash>", "size": N}` for content >1KB or ANY binary. The CRDT points directly to content blobs — no manifest blob hop. MIME types and sizes are readable directly from the CRDT.
 
 HTTP server at `127.0.0.1:<dynamic-port>` serves `GET /blob/{hash}` with correct `Content-Type` and `Cache-Control: immutable`.
 
@@ -161,14 +157,15 @@ Never pass code directly in execution requests. The correct flow: write to the C
 |------|------|
 | `crates/notebook-doc/src/lib.rs` | `NotebookDoc` -- Automerge schema, cell CRUD, output writes |
 | `crates/notebook-doc/src/diff.rs` | `CellChangeset` -- structural diff from Automerge patches |
+| `crates/notebook-doc/src/mime.rs` | Canonical MIME classification (`is_binary_mime`, `mime_kind`, `MimeKind`) |
 | `crates/notebook-protocol/src/protocol.rs` | Wire types: requests, responses, broadcasts |
 | `crates/notebook-sync/src/handle.rs` | `DocHandle` -- sync infrastructure, per-cell accessors |
 | `crates/runtimed/src/notebook_sync_server.rs` | `NotebookRoom`, room lifecycle, autosave, re-keying |
 | `crates/runtimed/src/kernel_manager.rs` | Kernel lifecycle, execution queue, IOPub routing |
-| `crates/runtimed/src/output_store.rs` | Manifest creation/resolution, `is_binary_mime()`, `ContentRef` |
+| `crates/runtimed/src/output_store.rs` | Manifest creation/resolution, `ContentRef` |
 | `crates/runtimed/src/blob_store.rs` | Content-addressed storage |
 | `crates/runtimed/src/blob_server.rs` | HTTP server for blob retrieval |
-| `crates/runtimed-client/src/output_resolver.rs` | Shared Rust resolution, `mime_kind()` |
-| `apps/notebook/src/lib/manifest-resolution.ts` | Frontend resolution, `isBinaryMime()` |
+| `crates/runtimed-client/src/output_resolver.rs` | Shared Rust resolution |
+| `apps/notebook/src/lib/manifest-resolution.ts` | Frontend resolution (WASM resolves `ContentRef` directly) |
 | `apps/notebook/src/lib/materialize-cells.ts` | WASM -> React conversion |
 | `apps/notebook/src/lib/notebook-cells.ts` | Split cell store, per-cell subscriptions |
