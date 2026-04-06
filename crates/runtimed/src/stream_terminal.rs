@@ -253,16 +253,21 @@ fn serialize_to_ansi(term: &Term<VoidListener>) -> String {
             // Emit attribute changes
             let mut attrs_changed = false;
 
-            // Check if we need to reset
-            let need_reset = (current_flags != cell.flags && !current_flags.is_empty())
-                || (current_fg.is_some() && current_fg != Some(cell.fg))
-                || (current_bg.is_some() && current_bg != Some(cell.bg));
+            // Check if we need to reset — only if we've actually emitted styling.
+            // Without this guard, wide-character spacer cells (emoji) can leave
+            // stale attribute state that triggers a spurious \x1b[0m reset when
+            // the next visible character has default attributes.
+            let need_reset = has_emitted_styling
+                && ((current_flags != cell.flags && !current_flags.is_empty())
+                    || (current_fg.is_some() && current_fg != Some(cell.fg))
+                    || (current_bg.is_some() && current_bg != Some(cell.bg)));
 
             if need_reset {
                 result.push_str("\x1b[0m");
                 current_fg = None;
                 current_bg = None;
                 current_flags = Flags::empty();
+                has_emitted_styling = false;
                 attrs_changed = true;
                 // Note: reset doesn't count as "active styling" since it clears state
             }
@@ -607,5 +612,68 @@ mod tests {
         terminals.clear("cell-1");
         assert!(terminals.get_output_state("cell-1", "stdout").is_none());
         assert!(terminals.get_output_state("cell-1", "stderr").is_none());
+    }
+
+    #[test]
+    fn test_emoji_no_spurious_ansi_reset() {
+        let mut terminals = StreamTerminals::new();
+        let result = terminals.feed("cell-1", "stdout", "Ñoño → αβγδ → 🎵🎶 → ∑∏∫∂");
+        // Plain unstyled text with emoji should have no ANSI escape codes at all
+        assert!(
+            !result.contains("\x1b["),
+            "Unstyled emoji text should have no ANSI codes, got: {:?}",
+            result
+        );
+        assert!(result.contains("🎵🎶 → ∑∏∫∂"));
+    }
+
+    #[test]
+    fn test_emoji_with_ansi_styling_preserved() {
+        let mut terminals = StreamTerminals::new();
+        let result = terminals.feed(
+            "cell-1",
+            "stdout",
+            "\x1b[34m🔵 Blue emoji\x1b[0m → 🎶 no color → \x1b[31m🔴 Red emoji\x1b[0m",
+        );
+        // Blue styling should be present
+        assert!(result.contains("\x1b[34m"), "Should have blue ANSI code");
+        // Red styling should be present
+        assert!(result.contains("\x1b[31m"), "Should have red ANSI code");
+        // The unstyled region between resets should have no ANSI codes
+        // Extract the middle section: after blue's reset, before red's start
+        let after_blue_reset = result.split("→ 🎶").nth(1).unwrap_or("");
+        let middle = after_blue_reset.split("→ \x1b[31m").next().unwrap_or("");
+        assert!(
+            !middle.contains("\x1b[0m"),
+            "Unstyled region after emoji should not have spurious reset, got middle: {:?}",
+            middle
+        );
+    }
+
+    #[test]
+    fn test_mixed_emoji_cjk_styled() {
+        let mut terminals = StreamTerminals::new();
+        let result = terminals.feed(
+            "cell-1",
+            "stdout",
+            "\x1b[1;33m⚠️ Warning:\x1b[0m 日本語テスト 🦕🦖 → \x1b[4munderlined\x1b[0m → café ☕",
+        );
+        // Bold+yellow should be present
+        assert!(result.contains("\x1b[1m"), "Should have bold code");
+        assert!(result.contains("\x1b[33m"), "Should have yellow code");
+        // Underline should be present
+        assert!(result.contains("\x1b[4m"), "Should have underline code");
+        // CJK and emoji should be preserved
+        assert!(result.contains("日本語テスト"));
+        assert!(result.contains("🦕🦖"));
+        assert!(result.contains("café ☕"));
+        // No spurious resets in unstyled regions
+        let after_warning = result.split("日本語テスト").nth(1).unwrap_or("");
+        let before_underline = after_warning.split("\x1b[4m").next().unwrap_or("");
+        assert!(
+            !before_underline.contains("\x1b[0m"),
+            "Unstyled region between styled sections should not have spurious reset, got: {:?}",
+            before_underline
+        );
     }
 }
