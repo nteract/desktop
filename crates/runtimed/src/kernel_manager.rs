@@ -2978,7 +2978,8 @@ impl RoomKernel {
     }
 
     /// Interrupt the currently executing cell and clear the execution queue.
-    pub async fn interrupt(&mut self) -> Result<()> {
+    /// Returns the list of cleared queue entries (for state_doc cleanup).
+    pub async fn interrupt(&mut self) -> Result<Vec<QueueEntry>> {
         let connection_info = self
             .connection_info
             .as_ref()
@@ -2992,6 +2993,23 @@ impl RoomKernel {
 
         info!("[kernel-manager] Sent interrupt_request");
 
+        // Wait for the kernel to acknowledge the interrupt so we know SIGINT
+        // landed before we clear state. Use a timeout — if the kernel is
+        // completely hung it may never reply.
+        match tokio::time::timeout(std::time::Duration::from_secs(5), control.read()).await {
+            Ok(Ok(_reply)) => {
+                info!("[kernel-manager] Received interrupt_reply");
+            }
+            Ok(Err(e)) => {
+                warn!("[kernel-manager] Error receiving interrupt_reply: {}", e);
+                // Proceed with queue clearing anyway — the signal was sent
+            }
+            Err(_) => {
+                warn!("[kernel-manager] Timed out waiting for interrupt_reply (5s)");
+                // Proceed with queue clearing anyway — the signal was sent
+            }
+        }
+
         // Clear the execution queue - interrupt semantically means "stop all pending work"
         let cleared = self.clear_queue();
         if !cleared.is_empty() {
@@ -3001,7 +3019,7 @@ impl RoomKernel {
             );
         }
 
-        Ok(())
+        Ok(cleared)
     }
 
     /// Send a comm message to the kernel (for widget interactions).
