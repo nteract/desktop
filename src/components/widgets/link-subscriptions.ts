@@ -19,9 +19,6 @@ function parseLinkTarget(tuple: unknown): [string, string] | null {
   return [modelId, tuple[1]];
 }
 
-/** Type for the sendUpdate function that syncs state to the kernel */
-type SendUpdate = (commId: string, state: Record<string, unknown>) => void;
-
 /**
  * Set up a one-way property subscription (source → target).
  * Returns a cleanup function to tear down the subscription.
@@ -29,7 +26,6 @@ type SendUpdate = (commId: string, state: Record<string, unknown>) => void;
 function setupDirectionalLink(
   store: WidgetStore,
   linkModelId: string,
-  sendUpdate: SendUpdate,
 ): () => void {
   let keyUnsub: (() => void) | undefined;
   let globalUnsub: (() => void) | undefined;
@@ -53,22 +49,22 @@ function setupDirectionalLink(
     }
     isSetUp = true;
 
-    // Initial sync: read source value, write to target
+    // Initial sync: read source value, write to target.
+    // Uses store.updateModel directly — jslink/jsdlink are client-side only,
+    // no CRDT write needed. The originating widget's sendUpdate handles persistence.
     const sourceModel = store.getModel(sourceModelId);
     if (sourceModel) {
       const currentValue = sourceModel.state[sourceAttr];
       if (currentValue !== undefined) {
-        sendUpdate(targetModelId, { [targetAttr]: currentValue });
+        store.updateModel(targetModelId, { [targetAttr]: currentValue });
       }
     }
 
     // Subscribe to source changes, propagate to target
     keyUnsub = store.subscribeToKey(sourceModelId, sourceAttr, (newValue) => {
-      // Value equality check — skip if target already has this value
-      // (prevents redundant propagation after CRDT echo suppression)
       const tgt = store.getModel(targetModelId);
       if (tgt && tgt.state[targetAttr] === newValue) return;
-      sendUpdate(targetModelId, { [targetAttr]: newValue });
+      store.updateModel(targetModelId, { [targetAttr]: newValue });
     });
 
     // Clean up global listener once setup is complete
@@ -100,7 +96,6 @@ function setupDirectionalLink(
 function setupBidirectionalLink(
   store: WidgetStore,
   linkModelId: string,
-  sendUpdate: SendUpdate,
 ): () => void {
   const keyUnsubs: (() => void)[] = [];
   let globalUnsub: (() => void) | undefined;
@@ -125,13 +120,14 @@ function setupBidirectionalLink(
     }
     isSetUp = true;
 
-    // Initial sync: source → target
+    // Initial sync: source → target.
+    // Local-only — jslink is client-side, no CRDT write needed.
     const sourceModel = store.getModel(sourceModelId);
     if (sourceModel) {
       const currentValue = sourceModel.state[sourceAttr];
       if (currentValue !== undefined) {
         isSyncing = true;
-        sendUpdate(targetModelId, { [targetAttr]: currentValue });
+        store.updateModel(targetModelId, { [targetAttr]: currentValue });
         isSyncing = false;
       }
     }
@@ -143,7 +139,7 @@ function setupBidirectionalLink(
         const tgt = store.getModel(targetModelId);
         if (tgt && tgt.state[targetAttr] === newValue) return;
         isSyncing = true;
-        sendUpdate(targetModelId, { [targetAttr]: newValue });
+        store.updateModel(targetModelId, { [targetAttr]: newValue });
         isSyncing = false;
       }),
     );
@@ -155,7 +151,7 @@ function setupBidirectionalLink(
         const src = store.getModel(sourceModelId);
         if (src && src.state[sourceAttr] === newValue) return;
         isSyncing = true;
-        sendUpdate(sourceModelId, { [sourceAttr]: newValue });
+        store.updateModel(sourceModelId, { [sourceAttr]: newValue });
         isSyncing = false;
       }),
     );
@@ -190,12 +186,9 @@ function setupBidirectionalLink(
  * (e.g. iframe isolation), call this directly after creating the store.
  *
  * @param store - The widget store instance
- * @param sendUpdate - Function to send state updates to the kernel. This ensures
- *   linked widget values are synced back to Python, not just updated in the frontend.
  */
 export function createLinkManager(
   store: WidgetStore,
-  sendUpdate: SendUpdate,
 ): () => void {
   const activeLinks = new Map<string, () => void>();
   let lastSize = -1;
@@ -213,9 +206,9 @@ export function createLinkManager(
       if (activeLinks.has(id)) return;
 
       if (model.modelName === "DirectionalLinkModel") {
-        activeLinks.set(id, setupDirectionalLink(store, id, sendUpdate));
+        activeLinks.set(id, setupDirectionalLink(store, id));
       } else if (model.modelName === "LinkModel") {
-        activeLinks.set(id, setupBidirectionalLink(store, id, sendUpdate));
+        activeLinks.set(id, setupBidirectionalLink(store, id));
       }
     });
 

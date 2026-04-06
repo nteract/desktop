@@ -102,8 +102,8 @@ export function WidgetStoreProvider({
   // Manage link subscriptions (jslink/jsdlink) at the store level.
   // Headless widgets like LinkModel have _view_name: null and won't be
   // in any container's children, so they need store-level subscriptions.
-  // Pass sendUpdate so linked values sync back to the Python kernel.
-  useEffect(() => createLinkManager(store, sendUpdate), [store, sendUpdate]);
+  // Links use store.updateModel directly (client-side only, no CRDT write).
+  useEffect(() => createLinkManager(store), [store]);
   useEffect(() => createCanvasManagerRouter(store), [store]);
 
   const value = useMemo(
