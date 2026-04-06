@@ -26,3 +26,6 @@ regex = "1"
 fancy-regex = "0.14"
 uuid = { version = "1", features = ["v4"] }
 tracing = "0.1"
+
+[dev-dependencies]
+chrono = "0.4"

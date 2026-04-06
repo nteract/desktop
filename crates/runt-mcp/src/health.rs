@@ -210,7 +210,16 @@ pub async fn daemon_health_monitor(
     }
 }
 
+/// Maximum retries for auto-rejoin. The daemon may answer pings before notebook
+/// connections are fully ready, so we retry a few times with short delays.
+const REJOIN_MAX_RETRIES: u32 = 3;
+const REJOIN_RETRY_DELAY: Duration = Duration::from_secs(1);
+
 /// Attempt to re-join the active notebook session after daemon reconnection.
+///
+/// Retries up to [`REJOIN_MAX_RETRIES`] times with [`REJOIN_RETRY_DELAY`] between
+/// attempts, since the daemon may respond to pings before it is ready to accept
+/// notebook sync connections.
 async fn auto_rejoin_session(
     socket_path: &Path,
     session: &Arc<RwLock<Option<NotebookSession>>>,
@@ -232,24 +241,101 @@ async fn auto_rejoin_session(
     *session.write().await = None;
 
     let label = peer_label.read().await.clone();
-    match notebook_sync::connect::connect(socket_path.to_path_buf(), notebook_id.clone(), &label)
-        .await
-    {
-        Ok(result) => {
-            // Announce presence
-            crate::presence::announce(&result.handle, &label).await;
 
-            let new_session = NotebookSession {
-                handle: result.handle,
-                broadcast_rx: result.broadcast_rx,
-                notebook_id: notebook_id.clone(),
-            };
-            *session.write().await = Some(new_session);
-            info!("Auto-rejoined notebook session: {notebook_id}");
+    for attempt in 0..=REJOIN_MAX_RETRIES {
+        match notebook_sync::connect::connect(
+            socket_path.to_path_buf(),
+            notebook_id.clone(),
+            &label,
+        )
+        .await
+        {
+            Ok(result) => {
+                crate::presence::announce(&result.handle, &label).await;
+
+                let new_session = NotebookSession {
+                    handle: result.handle,
+                    broadcast_rx: result.broadcast_rx,
+                    notebook_id: notebook_id.clone(),
+                };
+                *session.write().await = Some(new_session);
+                info!("Auto-rejoined notebook session: {notebook_id}");
+                return;
+            }
+            Err(e) => {
+                if attempt < REJOIN_MAX_RETRIES {
+                    warn!(
+                        "Failed to rejoin notebook {notebook_id} (attempt {}, retrying in {}s): {e}",
+                        attempt + 1,
+                        REJOIN_RETRY_DELAY.as_secs(),
+                    );
+                    tokio::time::sleep(REJOIN_RETRY_DELAY).await;
+                } else {
+                    warn!(
+                        "Failed to auto-rejoin notebook {notebook_id} after {} attempts: {e}",
+                        attempt + 1
+                    );
+                    // Session stays None — tools will prompt user to re-join
+                }
+            }
         }
-        Err(e) => {
-            warn!("Failed to auto-rejoin notebook {notebook_id}: {e}");
-            // Session stays None — tools will prompt user to re-join
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    fn test_daemon_info() -> DaemonInfo {
+        DaemonInfo {
+            endpoint: "/tmp/test.sock".to_string(),
+            pid: 1234,
+            version: "1.0.0".to_string(),
+            started_at: Utc::now(),
+            blob_port: None,
+            worktree_path: None,
+            workspace_description: None,
+        }
+    }
+
+    #[test]
+    fn backoff_grows_exponentially_then_caps() {
+        assert_eq!(backoff_duration(0), Duration::from_secs(1));
+        assert_eq!(backoff_duration(1), Duration::from_secs(2));
+        assert_eq!(backoff_duration(2), Duration::from_secs(4));
+        assert_eq!(backoff_duration(3), Duration::from_secs(8));
+        assert_eq!(backoff_duration(4), Duration::from_secs(16));
+        // Capped at BACKOFF_CAP (30s) from attempt 5 onward
+        assert_eq!(backoff_duration(5), Duration::from_secs(30));
+        assert_eq!(backoff_duration(6), Duration::from_secs(30));
+        assert_eq!(backoff_duration(100), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn backoff_does_not_overflow() {
+        // u32::MAX should not panic; saturating_mul handles overflow
+        let d = backoff_duration(u32::MAX);
+        assert!(d <= BACKOFF_CAP);
+    }
+
+    #[test]
+    fn reconnecting_message_only_in_reconnecting_state() {
+        let connected = DaemonState::Connected {
+            info: test_daemon_info(),
+        };
+        assert!(connected.reconnecting_message().is_none());
+
+        let reconnecting = DaemonState::Reconnecting {
+            since: Instant::now(),
+            attempt: 3,
+            last_info: None,
+        };
+        if let Some(msg) = reconnecting.reconnecting_message() {
+            assert!(msg.contains("attempt 3"));
+            assert!(msg.contains("Daemon is restarting"));
+        } else {
+            panic!("Reconnecting state should produce a message");
         }
     }
 }
