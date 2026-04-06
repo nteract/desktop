@@ -75,8 +75,24 @@ impl BlobStore {
         let hash = hex::encode(Sha256::digest(data));
         let (shard_dir, blob_path, meta_path) = self.paths(&hash);
 
-        // Fast path: both files already present — nothing to do.
+        // Fast path: both files already present.
+        // If the caller provides a different media_type than what's stored,
+        // update the metadata sidecar (e.g., blob was first stored as
+        // application/json but is now text/javascript for anywidget _esm).
         if blob_path.exists() && meta_path.exists() {
+            if let Ok(existing_meta_json) = tokio::fs::read_to_string(&meta_path).await {
+                if let Ok(existing_meta) = serde_json::from_str::<BlobMeta>(&existing_meta_json) {
+                    if existing_meta.media_type != media_type {
+                        let updated = BlobMeta {
+                            media_type: media_type.to_string(),
+                            ..existing_meta
+                        };
+                        if let Ok(json) = serde_json::to_string(&updated) {
+                            tokio::fs::write(&meta_path, json).await.ok();
+                        }
+                    }
+                }
+            }
             return Ok(hash);
         }
 
@@ -294,9 +310,11 @@ mod tests {
         let hash2 = store.put(data, "application/octet-stream").await.unwrap();
         // Same bytes = same hash (media type doesn't affect hash)
         assert_eq!(hash1, hash2);
-        // Metadata keeps the first media type (idempotent — didn't overwrite)
+        // Metadata updates to the latest media type (e.g., content first
+        // stored as application/json then re-stored as text/javascript
+        // for anywidget _esm).
         let meta = store.get_meta(&hash1).await.unwrap().unwrap();
-        assert_eq!(meta.media_type, "text/plain");
+        assert_eq!(meta.media_type, "application/octet-stream");
     }
 
     #[tokio::test]

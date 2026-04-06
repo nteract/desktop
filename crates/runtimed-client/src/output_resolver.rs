@@ -1042,6 +1042,50 @@ pub fn format_widget_summary(
             format!("{name} {short_id}\u{2026}: {val}")
         }
 
+        // Anywidget — detect via _anywidget_id or model_module == "anywidget".
+        // Extract the class name from _anywidget_id (e.g., "altair.jupyter.jupyter_chart.JupyterChart")
+        // and fingerprint chart types from state keys.
+        "Any" if entry.model_module == "anywidget" => {
+            let widget_name = entry
+                .state
+                .get("_anywidget_id")
+                .and_then(|v| v.as_str())
+                .and_then(|id| id.rsplit('.').next())
+                .unwrap_or("Anywidget");
+
+            // Fingerprint: if state has "spec" with an actual dict (not a $blob sentinel),
+            // try to identify the chart type via viz summarization.
+            if let Some(spec) = entry.state.get("spec") {
+                // Skip $blob sentinels — the spec was blob-stored and we don't have
+                // the content here. Just report it as a chart widget.
+                let is_blob_sentinel = spec
+                    .as_object()
+                    .is_some_and(|obj| obj.contains_key("$blob"));
+
+                if !is_blob_sentinel {
+                    if let Some(summary) =
+                        repr_llm::summarize_viz("application/vnd.vegalite.v5+json", spec)
+                    {
+                        return format!("{widget_name} {short_id}\u{2026}: {summary}");
+                    }
+                    // spec exists but summarizer didn't match — check for title
+                    let title = spec.get("title").and_then(|v| v.as_str()).or_else(|| {
+                        spec.get("title")
+                            .and_then(|v| v.get("text"))
+                            .and_then(|v| v.as_str())
+                    });
+                    if let Some(title) = title {
+                        return format!("{widget_name} {short_id}\u{2026}: \"{title}\"");
+                    }
+                }
+
+                // Has spec (inline or blob) — it's a chart widget
+                return format!("{widget_name} {short_id}\u{2026} (chart)");
+            }
+
+            format!("{widget_name} {short_id}\u{2026}")
+        }
+
         // Fallback — show description or value if available
         _ => match entry.state.get("description").and_then(|v| v.as_str()) {
             Some(d) if !d.is_empty() => format!("{name} {short_id}\u{2026}: {d:?}"),

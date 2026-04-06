@@ -182,19 +182,31 @@ async fn blob_store_large_state_values(
 
         if size > COMM_STATE_BLOB_THRESHOLD {
             // Serialize and store in blob store.
-            let json_bytes = match serde_json::to_vec(value) {
-                Ok(b) => b,
-                Err(e) => {
-                    log::warn!(
-                        "[kernel-manager] Failed to serialize comm state key '{}': {}",
-                        key,
-                        e
-                    );
-                    modified.insert(key.clone(), value.clone());
-                    continue;
+            // Use the raw string bytes for strings (preserves content type for
+            // _esm JavaScript, _css stylesheets, etc.) and JSON for structured values.
+            let (blob_bytes, media_type) = match value {
+                serde_json::Value::String(s) => {
+                    let mime = match key.as_str() {
+                        "_esm" => "text/javascript",
+                        "_css" => "text/css",
+                        _ => "text/plain",
+                    };
+                    (s.as_bytes().to_vec(), mime)
                 }
+                _ => match serde_json::to_vec(value) {
+                    Ok(b) => (b, "application/json"),
+                    Err(e) => {
+                        log::warn!(
+                            "[kernel-manager] Failed to serialize comm state key '{}': {}",
+                            key,
+                            e
+                        );
+                        modified.insert(key.clone(), value.clone());
+                        continue;
+                    }
+                },
             };
-            match blob_store.put(&json_bytes, "application/json").await {
+            match blob_store.put(&blob_bytes, media_type).await {
                 Ok(hash) => {
                     modified.insert(key.clone(), serde_json::json!({"$blob": hash}));
                 }

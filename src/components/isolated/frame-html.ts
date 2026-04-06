@@ -39,7 +39,7 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self' blob: data:; script-src 'unsafe-inline' 'unsafe-eval' blob: https:; style-src 'unsafe-inline' https:; img-src * data: blob:; font-src * data:; media-src * data: blob:; object-src * data: blob:; connect-src *;">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' blob: data:; script-src 'unsafe-inline' 'unsafe-eval' blob: https: http://127.0.0.1:*; style-src 'unsafe-inline' https: http://127.0.0.1:*; img-src * data: blob:; font-src * data:; media-src * data: blob:; object-src * data: blob:; connect-src *;">
   <style>
     :root {
       --bg-primary: ${darkMode ? "#0a0a0a" : "#ffffff"};
