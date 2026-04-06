@@ -22,7 +22,7 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 log = "0.4"
 dirs = "6"
 base64 = { workspace = true }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
 uuid = { workspace = true }
 automerge = "0.7"
 schemars = { workspace = true }
