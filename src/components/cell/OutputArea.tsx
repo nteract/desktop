@@ -6,10 +6,8 @@ import {
   IsolatedFrame,
   type IsolatedFrameHandle,
 } from "@/components/isolated";
-import {
-  getRequiredLibraries,
-  injectLibraries,
-} from "@/components/isolated/iframe-libraries";
+import { injectLibraries } from "@/components/isolated/iframe-libraries";
+import { computeRequiredPlugins } from "@/lib/renderer-plugins";
 import {
   AnsiErrorOutput,
   AnsiStreamOutput,
@@ -42,6 +40,11 @@ interface OutputAreaProps {
    * Cell ID for stable output keys in the iframe (enables smooth updates).
    */
   cellId?: string;
+  /**
+   * Pre-computed renderer plugins required by this cell's outputs.
+   * When provided, skips MIME scanning at render time.
+   */
+  requiredPlugins?: string[];
   /**
    * Whether the output area is collapsed.
    */
@@ -258,6 +261,7 @@ function renderOutput(
 export function OutputArea({
   outputs,
   cellId,
+  requiredPlugins,
   collapsed = false,
   onToggleCollapse,
   maxHeight,
@@ -349,22 +353,50 @@ export function OutputArea({
     // Use ref to avoid adding darkMode to deps which would cause re-renders on theme toggle
     frameRef.current.setTheme(darkModeRef.current);
 
-    // Inject any heavy libraries required by the outputs (e.g. plotly.js).
-    // Must happen before clear+render so the eval messages arrive first.
-    // Clear the tracking set on each call — a new or reloaded iframe won't
-    // have the previously-injected globals, so we must re-inject.
+    // Install renderer plugins required by the outputs (e.g. plotly, vega).
+    // Must happen before clear+render so the installRenderer messages arrive first.
+    // Clear the tracking set on each call — a reloaded iframe has a fresh registry.
     injectedLibsRef.current.clear();
-    const neededLibs = getRequiredLibraries(
-      outputs,
-      (data) => selectMimeType(data, priority),
-    );
-    if (neededLibs.length > 0) {
+
+    // Collect plugins from the cell's direct outputs
+    const allPlugins = new Set(requiredPlugins ?? []);
+
+    // Also scan output widgets for captured outputs that need plugins.
+    // A cell may output a widget view (application/vnd.jupyter.widget-view+json)
+    // whose OutputModel.outputs contain plotly/vega/etc MIME types.
+    if (widgetContext?.store) {
+      for (const output of outputs) {
+        if (
+          (output.output_type === "execute_result" ||
+            output.output_type === "display_data") &&
+          output.data?.["application/vnd.jupyter.widget-view+json"]
+        ) {
+          const widgetData = output.data[
+            "application/vnd.jupyter.widget-view+json"
+          ] as { model_id?: string };
+          if (widgetData?.model_id) {
+            const model = widgetContext.store.getModel(widgetData.model_id);
+            if (model?.modelName === "OutputModel" && model.state.outputs) {
+              const widgetOutputs = model.state.outputs as Array<{
+                output_type: string;
+                data?: Record<string, unknown>;
+              }>;
+              for (const p of computeRequiredPlugins(widgetOutputs)) {
+                allPlugins.add(p);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if (allPlugins.size > 0) {
       await injectLibraries(
         frameRef.current,
-        neededLibs,
+        allPlugins,
         injectedLibsRef.current,
       );
-      // Stale check: if outputs changed while we were loading the library,
+      // Stale check: if outputs changed while we were loading the plugin,
       // bail — a newer handleFrameReady call is already in flight.
       if (gen !== renderGenRef.current) return;
     }

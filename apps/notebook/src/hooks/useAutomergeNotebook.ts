@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { SyncableHandle } from "runtimed";
 import { SyncEngine } from "runtimed";
 import { concatMap, from, switchMap } from "rxjs";
+import { preWarmPlugins } from "@/components/isolated/iframe-libraries";
 import { getBlobPort, refreshBlobPort } from "../lib/blob-port";
 import { materializeChangeset } from "../lib/frame-pipeline";
 import { logger } from "../lib/logger";
@@ -110,6 +111,11 @@ export function useAutomergeNotebook() {
       blobPort,
       outputCacheRef.current,
     );
+    // Pre-warm plugin cache so iframe rendering doesn't wait for async loads
+    const allPlugins = newCells.flatMap((c) =>
+      c.cell_type === "code" ? c.requiredPlugins : [],
+    );
+    if (allPlugins.length > 0) preWarmPlugins(allPlugins);
     replaceNotebookCells(newCells);
     logger.debug(
       `[automerge-notebook] Full materialization: ${snapshots.length} cells in ${(performance.now() - start).toFixed(1)}ms`,

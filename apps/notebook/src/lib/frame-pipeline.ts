@@ -6,6 +6,8 @@
  * transforms coalesced CellChangesets into React store updates.
  */
 
+import { preWarmPlugins } from "@/components/isolated/iframe-libraries";
+import { computeRequiredPlugins } from "@/lib/renderer-plugins";
 import type { JupyterOutput } from "../types";
 import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 import { getBlobPort, refreshBlobPort } from "./blob-port";
@@ -141,12 +143,17 @@ export async function materializeChangeset(
           ? (handle.get_cell_source(cellId) ?? "")
           : (existingCell?.source ?? handle.get_cell_source(cellId) ?? "");
 
+        const plugins = computeRequiredPlugins(resolved);
+        // Pre-warm plugin cache so OutputArea.injectLibraries() resolves instantly
+        preWarmPlugins(plugins);
+
         updateCellById(cellId, () => ({
           id: cellId,
           cell_type: "code" as const,
           source,
           execution_count: Number.isNaN(ec) ? null : ec,
           outputs: resolved,
+          requiredPlugins: plugins,
           metadata,
         }));
       }

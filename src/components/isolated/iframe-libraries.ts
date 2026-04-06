@@ -13,23 +13,7 @@
 
 import type { JupyterOutput } from "@/components/cell/jupyter-output";
 import type { IsolatedFrameHandle } from "@/components/isolated/isolated-frame";
-import { isVegaMimeType } from "@/components/outputs/vega-mime";
-
-/**
- * Map of MIME types to the renderer plugin name they require.
- * Extend this when adding support for new visualization libraries.
- */
-const MIME_PLUGINS: Record<string, string> = {
-  "text/markdown": "markdown",
-  "application/vnd.plotly.v1+json": "plotly",
-  "application/geo+json": "leaflet",
-};
-
-function pluginForMime(mime: string): string | undefined {
-  if (MIME_PLUGINS[mime]) return MIME_PLUGINS[mime];
-  if (isVegaMimeType(mime)) return "vega";
-  return undefined;
-}
+import { pluginForMime } from "@/lib/renderer-plugins";
 
 /** Cache of plugin code promises (shared across all iframes). */
 const pluginCache = new Map<string, Promise<{ code: string; css?: string }>>();
@@ -66,6 +50,17 @@ function loadPlugin(name: string): Promise<{ code: string; css?: string }> {
 
   pluginCache.set(name, promise);
   return promise;
+}
+
+/**
+ * Pre-warm the plugin cache for the given plugin names.
+ * Fetches plugin code from virtual modules without installing into any iframe.
+ * Use at materialization time so that later injectLibraries() calls resolve instantly.
+ */
+export function preWarmPlugins(pluginNames: Iterable<string>): void {
+  for (const name of pluginNames) {
+    loadPlugin(name);
+  }
 }
 
 /**

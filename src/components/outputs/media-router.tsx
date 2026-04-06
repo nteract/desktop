@@ -1,4 +1,5 @@
 import { lazy, type ReactNode, Suspense } from "react";
+import { getRenderer } from "@/lib/renderer-registry";
 import { isSafeForMainDom } from "./safe-mime-types";
 import { useMediaContext } from "./media-provider";
 
@@ -327,6 +328,20 @@ export function MediaRouter({
         );
       }
       return null;
+    }
+
+    // Check the renderer plugin registry (populated by on-demand plugins
+    // like plotly, vega, leaflet, markdown). This allows output widgets to
+    // render rich MIME types using any plugin already installed in the iframe.
+    const PluginRenderer = getRenderer(mimeType);
+    if (PluginRenderer) {
+      return (
+        <PluginRenderer
+          data={content}
+          metadata={mimeMetadata}
+          mimeType={mimeType}
+        />
+      );
     }
 
     // Text/Markdown (only renders when in iframe)
