@@ -1330,8 +1330,8 @@ mod tests {
         }));
         let output = resolve_output_for_llm(&manifest, &None, &None, None)
             .await
-            .unwrap();
-        let data = output.data.unwrap();
+            .expect("resolve should succeed");
+        let data = output.data.expect("output should have data");
 
         // text/plain resolved
         assert!(matches!(data.get("text/plain"), Some(DataValue::Text(s)) if s == "hello world"));
@@ -1347,8 +1347,8 @@ mod tests {
         }));
         let output = resolve_output_for_llm(&manifest, &None, &None, None)
             .await
-            .unwrap();
-        let data = output.data.unwrap();
+            .expect("resolve should succeed");
+        let data = output.data.expect("output should have data");
 
         // text/latex should be resolved (it's higher priority than text/plain)
         assert!(matches!(data.get("text/latex"), Some(DataValue::Text(s)) if s == "$E=mc^2$"));
@@ -1365,8 +1365,8 @@ mod tests {
         }));
         let output = resolve_output_for_llm(&manifest, &None, &None, None)
             .await
-            .unwrap();
-        let data = output.data.unwrap();
+            .expect("resolve should succeed");
+        let data = output.data.expect("output should have data");
 
         assert!(
             matches!(data.get("text/llm+plain"), Some(DataValue::Text(s)) if s == "Author's summary")
@@ -1383,8 +1383,8 @@ mod tests {
         }));
         let output = resolve_output_for_llm(&manifest, &None, &None, None)
             .await
-            .unwrap();
-        let data = output.data.unwrap();
+            .expect("resolve should succeed");
+        let data = output.data.expect("output should have data");
 
         // text/plain is resolved (it's the content)
         assert!(data.contains_key("text/plain"));
@@ -1407,8 +1407,8 @@ mod tests {
         }));
         let output = resolve_output_for_llm(&manifest, &None, &None, None)
             .await
-            .unwrap();
-        let data = output.data.unwrap();
+            .expect("resolve should succeed");
+        let data = output.data.expect("output should have data");
 
         // No text/llm+plain synthesized — text/plain is under/at threshold
         assert!(!data.contains_key("text/llm+plain"));
@@ -1424,8 +1424,8 @@ mod tests {
         let blob_base = Some("http://localhost:9999".to_string());
         let output = resolve_output_for_llm(&manifest, &blob_base, &None, None)
             .await
-            .unwrap();
-        let data = output.data.unwrap();
+            .expect("resolve should succeed");
+        let data = output.data.expect("output should have data");
 
         // No image data resolved
         assert!(!data.contains_key("image/png"));
@@ -1447,7 +1447,10 @@ mod tests {
         let output = resolve_output_for_llm(&manifest, &None, &None, None).await;
         // Empty data map still produces an output, just with empty data
         assert!(output.is_some());
-        let data = output.unwrap().data.unwrap();
+        let data = output
+            .expect("should produce output")
+            .data
+            .expect("should have data");
         assert!(data.is_empty());
     }
 
@@ -1460,7 +1463,7 @@ mod tests {
         });
         let output = resolve_output_for_llm(&manifest, &None, &None, None)
             .await
-            .unwrap();
+            .expect("resolve should succeed");
         assert_eq!(output.output_type, "stream");
         assert_eq!(output.text.as_deref(), Some("hello from stdout"));
     }
@@ -1475,10 +1478,17 @@ mod tests {
         });
         let output = resolve_output_for_llm(&manifest, &None, &None, None)
             .await
-            .unwrap();
+            .expect("resolve should succeed");
         assert_eq!(output.output_type, "error");
         assert_eq!(output.ename.as_deref(), Some("ValueError"));
-        assert_eq!(output.traceback.as_ref().unwrap().len(), 2);
+        assert_eq!(
+            output
+                .traceback
+                .as_ref()
+                .expect("should have traceback")
+                .len(),
+            2
+        );
     }
 
     #[tokio::test]
@@ -1486,7 +1496,7 @@ mod tests {
         let manifest = make_execute_result_manifest(json!({"text/plain": inline_ref("42")}), 5);
         let output = resolve_output_for_llm(&manifest, &None, &None, None)
             .await
-            .unwrap();
+            .expect("resolve should succeed");
         assert_eq!(output.output_type, "execute_result");
         assert_eq!(output.execution_count, Some(5));
     }
@@ -1500,8 +1510,8 @@ mod tests {
         }));
         let output = resolve_output_for_llm(&manifest, &None, &None, None)
             .await
-            .unwrap();
-        let data = output.data.unwrap();
+            .expect("resolve should succeed");
+        let data = output.data.expect("output should have data");
 
         // text/latex resolution failed → fell through to text/plain
         assert!(!data.contains_key("text/latex"));
@@ -1519,8 +1529,8 @@ mod tests {
         let blob_base = Some("http://localhost:9999".to_string());
         let output = resolve_output_for_llm(&manifest, &blob_base, &None, None)
             .await
-            .unwrap();
-        let data = output.data.unwrap();
+            .expect("resolve should succeed");
+        let data = output.data.expect("output should have data");
 
         assert!(!data.contains_key("text/html"));
         let llm = match data.get("text/llm+plain") {
@@ -1550,7 +1560,10 @@ mod tests {
         assert_eq!(outputs[0].output_type, "stream");
         assert_eq!(outputs[1].output_type, "display_data");
         // The display_data should only have text/plain, not image/png
-        let data = outputs[1].data.as_ref().unwrap();
+        let data = outputs[1]
+            .data
+            .as_ref()
+            .expect("display_data should have data");
         assert!(data.contains_key("text/plain"));
         assert!(!data.contains_key("image/png"));
     }
