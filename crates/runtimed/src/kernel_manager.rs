@@ -45,7 +45,10 @@ use notebook_doc::runtime_state::{QueueEntry as DocQueueEntry, RuntimeStateDoc};
 const MAX_EXECUTION_ENTRIES: usize = 64;
 
 /// Store widget buffers in the blob store and replace values in the state
-/// dict with `{"$blob": "<hash>"}` sentinels at the given buffer_paths.
+/// dict with ContentRef objects at the given buffer_paths.
+///
+/// Uses `{"blob": hash, "size": N, "media_type": "application/octet-stream"}`
+/// — the same ContentRef shape as output data and `blob_store_large_state_values`.
 ///
 /// Returns the modified state and the buffer_paths used. If there are no
 /// buffers or no buffer_paths, returns the state unchanged and empty paths.
@@ -79,7 +82,7 @@ async fn store_widget_buffers(
             }
         };
 
-        // Navigate to the parent in the state dict and replace with sentinel.
+        // Navigate to the parent in the state dict and replace with ContentRef.
         // Handles both object keys (strings) and array indices (integers).
         if let Some(last_key) = path.last() {
             let parent_path = &path[..path.len() - 1];
@@ -87,14 +90,18 @@ async fn store_widget_buffers(
                 .iter()
                 .try_fold(&mut modified, |v, key| json_get_mut(v, key));
             if let Some(parent) = parent {
-                let sentinel = serde_json::json!({"$blob": hash});
+                let content_ref = serde_json::json!({
+                    "blob": hash,
+                    "size": buffers[i].len(),
+                    "media_type": "application/octet-stream",
+                });
                 if let Some(obj) = parent.as_object_mut() {
-                    obj.insert(last_key.clone(), sentinel);
+                    obj.insert(last_key.clone(), content_ref);
                     used_paths.push(path.clone());
                 } else if let Some(arr) = parent.as_array_mut() {
                     if let Ok(idx) = last_key.parse::<usize>() {
                         if idx < arr.len() {
-                            arr[idx] = sentinel;
+                            arr[idx] = content_ref;
                             used_paths.push(path.clone());
                         }
                     }
@@ -150,14 +157,19 @@ const COMM_STATE_BLOB_THRESHOLD: usize = 1024;
 
 /// Scan the top-level properties of a comm state object and replace any
 /// whose JSON-serialized size exceeds `COMM_STATE_BLOB_THRESHOLD` with
-/// `{"$blob": "<hash>"}` sentinels stored in the blob store.
+/// ContentRef-shaped objects stored in the blob store.
+///
+/// Uses the same `{"blob": hash, "size": N, "media_type": "..."}` format
+/// as output ContentRefs. The optional `media_type` field tells the WASM
+/// resolver how to classify the blob (Url for JS/CSS/binary, Blob for
+/// JSON/text that needs fetch + parse).
 ///
 /// Only top-level keys are checked — we don't recurse into nested objects.
 /// This is intentional: the Automerge cost comes from expanding large nested
 /// structures into per-key CRDT entries, and the top-level is where `spec`,
 /// `_esm`, and `_css` live.
 ///
-/// Returns the modified state with large values replaced by sentinels.
+/// Returns the modified state with large values replaced by ContentRefs.
 async fn blob_store_large_state_values(
     state: &serde_json::Value,
     blob_store: &BlobStore,
@@ -206,9 +218,17 @@ async fn blob_store_large_state_values(
                     }
                 },
             };
+            let blob_size = blob_bytes.len();
             match blob_store.put(&blob_bytes, media_type).await {
                 Ok(hash) => {
-                    modified.insert(key.clone(), serde_json::json!({"$blob": hash}));
+                    modified.insert(
+                        key.clone(),
+                        serde_json::json!({
+                            "blob": hash,
+                            "size": blob_size,
+                            "media_type": media_type,
+                        }),
+                    );
                 }
                 Err(e) => {
                     log::warn!(

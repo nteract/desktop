@@ -1213,6 +1213,85 @@ impl NotebookHandle {
         serialize_to_js(&state).unwrap_or(JsValue::UNDEFINED)
     }
 
+    /// Resolve ContentRef values in a comm's state for frontend consumption.
+    ///
+    /// Walks the top-level properties of `comms/{comm_id}/state` and resolves
+    /// any ContentRef objects (`{"blob": hash, "size": N, "media_type": "..."}`)
+    /// into `ResolvedContentRef` variants:
+    ///
+    /// - `text/javascript`, `text/css`, `application/octet-stream` → `Url`
+    ///   (browser loads directly via import/link/fetch)
+    /// - `application/json`, `text/plain` → `Blob` (frontend fetches + parses)
+    /// - `{"inline": value}` → `Inline` (unwrapped)
+    /// - Plain values (not ContentRef) → passed through unchanged
+    ///
+    /// Returns the resolved state as a JSON object, or undefined if the comm
+    /// doesn't exist.
+    pub fn resolve_comm_state(&self, comm_id: &str) -> JsValue {
+        let state = self.state_doc.read_state();
+        let Some(entry) = state.comms.get(comm_id) else {
+            return JsValue::UNDEFINED;
+        };
+
+        let Some(obj) = entry.state.as_object() else {
+            return serialize_to_js(&entry.state).unwrap_or(JsValue::UNDEFINED);
+        };
+
+        let mut resolved = serde_json::Map::with_capacity(obj.len());
+        for (key, val) in obj {
+            resolved.insert(key.clone(), self.resolve_comm_content_ref(val));
+        }
+
+        serialize_to_js(&serde_json::Value::Object(resolved)).unwrap_or(JsValue::UNDEFINED)
+    }
+
+    /// Resolve a single widget state value that may be a ContentRef.
+    ///
+    /// Unlike `resolve_content_ref` (for outputs, where the MIME is the map key),
+    /// this reads `media_type` from inside the ContentRef itself.
+    fn resolve_comm_content_ref(&self, val: &serde_json::Value) -> serde_json::Value {
+        // Inline refs — unwrap the value
+        if let Some(inline) = val.get("inline") {
+            return inline.clone();
+        }
+
+        // Blob refs — resolve based on media_type
+        if let Some(blob_hash) = val.get("blob").and_then(|v| v.as_str()) {
+            let size = val.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
+            let media_type = val
+                .get("media_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("text/plain");
+
+            // Executable/loadable content → Url (browser handles natively)
+            // Data content → Blob (frontend fetches and parses)
+            let use_url = matches!(
+                media_type,
+                "text/javascript" | "text/css" | "application/octet-stream"
+            ) || media_type.starts_with("image/")
+                || media_type.starts_with("audio/")
+                || media_type.starts_with("video/");
+
+            if use_url {
+                if let Some(port) = self.blob_port {
+                    return serde_json::to_value(ResolvedContentRef::Url {
+                        url: format!("http://127.0.0.1:{}/blob/{}", port, blob_hash),
+                    })
+                    .unwrap_or_else(|_| val.clone());
+                }
+            }
+
+            return serde_json::to_value(ResolvedContentRef::Blob {
+                blob: blob_hash.to_string(),
+                size,
+            })
+            .unwrap_or_else(|_| val.clone());
+        }
+
+        // Not a ContentRef — pass through unchanged
+        val.clone()
+    }
+
     /// Reset the sync state. Call this when reconnecting to a new daemon session.
     pub fn reset_sync_state(&mut self) {
         self.sync_state = sync::State::new();
