@@ -195,6 +195,7 @@ pub struct JsCell {
     outputs: Vec<serde_json::Value>,
     metadata: serde_json::Value,
     resolved_assets: std::collections::HashMap<String, String>,
+    required_plugins: Vec<String>,
 }
 
 #[wasm_bindgen]
@@ -242,6 +243,12 @@ impl JsCell {
     pub fn resolved_assets_json(&self) -> String {
         serde_json::to_string(&self.resolved_assets).unwrap_or_else(|_| "{}".to_string())
     }
+
+    /// Get renderer plugins required by this cell's outputs as a JSON array string.
+    #[wasm_bindgen(getter)]
+    pub fn required_plugins_json(&self) -> String {
+        serde_json::to_string(&self.required_plugins).unwrap_or_else(|_| "[]".to_string())
+    }
 }
 
 impl From<(usize, CellSnapshot)> for JsCell {
@@ -256,6 +263,7 @@ impl From<(usize, CellSnapshot)> for JsCell {
             outputs: snap.outputs,
             metadata: snap.metadata,
             resolved_assets: snap.resolved_assets,
+            required_plugins: snap.required_plugins,
         }
     }
 }
@@ -389,6 +397,7 @@ impl NotebookHandle {
                     cell.outputs = outputs;
                 }
             }
+            cell.required_plugins = notebook_doc::compute_required_plugins(&cell.outputs);
         }
         serde_json::to_string(&cells).unwrap_or_else(|_| "[]".to_string())
     }
@@ -438,6 +447,25 @@ impl NotebookHandle {
             Some(outputs) => serialize_to_js(&outputs).unwrap_or(JsValue::UNDEFINED),
             None => JsValue::UNDEFINED,
         }
+    }
+
+    /// Get renderer plugins required by a cell's outputs.
+    ///
+    /// Scans MIME type keys in the cell's output manifests from RuntimeStateDoc.
+    /// Returns undefined if the cell doesn't exist or has no outputs.
+    pub fn get_cell_required_plugins(&self, cell_id: &str) -> JsValue {
+        let outputs = match self.doc.get_execution_id(cell_id) {
+            Some(eid) => self.state_doc.get_outputs(&eid),
+            None => return JsValue::UNDEFINED,
+        };
+        if outputs.is_empty() {
+            return JsValue::UNDEFINED;
+        }
+        let plugins = notebook_doc::compute_required_plugins(&outputs);
+        if plugins.is_empty() {
+            return JsValue::UNDEFINED;
+        }
+        serialize_to_js(&plugins).unwrap_or(JsValue::UNDEFINED)
     }
 
     /// Get a cell's execution count.

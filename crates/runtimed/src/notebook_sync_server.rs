@@ -6324,6 +6324,7 @@ fn parse_cells_from_ipynb(json: &serde_json::Value) -> Option<Vec<CellSnapshot>>
                 outputs,
                 metadata,
                 resolved_assets: std::collections::HashMap::new(),
+                required_plugins: Vec::new(),
             }
         })
         .collect();
@@ -8481,6 +8482,7 @@ mod tests {
             outputs: vec![],
             metadata: serde_json::json!({}),
             resolved_assets: std::collections::HashMap::new(),
+            required_plugins: Vec::new(),
         }];
 
         let changed = apply_ipynb_changes(&room, &external_cells, &HashMap::new(), false).await;
@@ -8525,6 +8527,7 @@ mod tests {
             outputs: vec![],
             metadata: serde_json::json!({}),
             resolved_assets: std::collections::HashMap::new(),
+            required_plugins: Vec::new(),
         }];
 
         let changed = apply_ipynb_changes(&room, &external_cells, &HashMap::new(), true).await;
@@ -8566,6 +8569,7 @@ mod tests {
                 outputs: vec![],
                 metadata: serde_json::json!({}),
                 resolved_assets: std::collections::HashMap::new(),
+                required_plugins: Vec::new(),
             },
             CellSnapshot {
                 id: "new-cell".to_string(),
@@ -8576,6 +8580,7 @@ mod tests {
                 outputs: vec![serde_json::json!({"output_type":"execute_result"})],
                 metadata: serde_json::json!({}),
                 resolved_assets: std::collections::HashMap::new(),
+                required_plugins: Vec::new(),
             },
         ];
 
@@ -8648,6 +8653,7 @@ mod tests {
                 outputs: vec![],
                 metadata: serde_json::json!({}),
                 resolved_assets: std::collections::HashMap::new(),
+                required_plugins: Vec::new(),
             },
             CellSnapshot {
                 id: "new-2".to_string(),
@@ -8658,6 +8664,7 @@ mod tests {
                 outputs: vec![],
                 metadata: serde_json::json!({}),
                 resolved_assets: std::collections::HashMap::new(),
+                required_plugins: Vec::new(),
             },
         ];
 
@@ -8716,6 +8723,7 @@ mod tests {
             outputs: vec![],
             metadata: serde_json::json!({}),
             resolved_assets: std::collections::HashMap::new(),
+            required_plugins: Vec::new(),
         }];
 
         let changed = apply_ipynb_changes(&room, &external_cells, &HashMap::new(), false).await;

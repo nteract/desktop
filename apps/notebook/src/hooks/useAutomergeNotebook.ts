@@ -4,6 +4,7 @@ import type { SyncableHandle } from "runtimed";
 import { SyncEngine } from "runtimed";
 import { concatMap, from, switchMap } from "rxjs";
 import { preWarmPlugins } from "@/components/isolated/iframe-libraries";
+
 import { getBlobPort, refreshBlobPort } from "../lib/blob-port";
 import { materializeChangeset } from "../lib/frame-pipeline";
 import { logger } from "../lib/logger";
@@ -102,6 +103,14 @@ export function useAutomergeNotebook() {
     const start = performance.now();
     const json = handle.get_cells_json();
     const snapshots: CellSnapshot[] = JSON.parse(json);
+
+    // Pre-warm plugins immediately from raw manifest data (MIME keys are
+    // visible without resolution, so plugins start loading while blobs fetch)
+    const allPlugins = snapshots.flatMap((s) =>
+      s.cell_type === "code" ? (s.required_plugins ?? []) : [],
+    );
+    if (allPlugins.length > 0) preWarmPlugins(allPlugins);
+
     let blobPort = getBlobPort();
     if (blobPort === null) {
       blobPort = await refreshBlobPort();
@@ -111,11 +120,6 @@ export function useAutomergeNotebook() {
       blobPort,
       outputCacheRef.current,
     );
-    // Pre-warm plugin cache so iframe rendering doesn't wait for async loads
-    const allPlugins = newCells.flatMap((c) =>
-      c.cell_type === "code" ? c.requiredPlugins : [],
-    );
-    if (allPlugins.length > 0) preWarmPlugins(allPlugins);
     replaceNotebookCells(newCells);
     logger.debug(
       `[automerge-notebook] Full materialization: ${snapshots.length} cells in ${(performance.now() - start).toFixed(1)}ms`,

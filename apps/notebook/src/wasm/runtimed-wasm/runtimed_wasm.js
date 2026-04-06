@@ -147,6 +147,26 @@ export class JsCell {
         }
     }
     /**
+     * Get renderer plugins required by this cell's outputs as a JSON array string.
+     * @returns {string}
+     */
+    get required_plugins_json() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.jscell_required_plugins_json(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            deferred1_0 = r0;
+            deferred1_1 = r1;
+            return getStringFromWasm0(r0, r1);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+            wasm.__wbindgen_export4(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
      * Get resolved asset refs as a JSON object string (`ref` → blob hash).
      * @returns {string}
      */
@@ -812,6 +832,20 @@ export class NotebookHandle {
         } finally {
             wasm.__wbindgen_add_to_stack_pointer(16);
         }
+    }
+    /**
+     * Get renderer plugins required by a cell's outputs.
+     *
+     * Scans MIME type keys in the cell's output manifests from RuntimeStateDoc.
+     * Returns undefined if the cell doesn't exist or has no outputs.
+     * @param {string} cell_id
+     * @returns {any}
+     */
+    get_cell_required_plugins(cell_id) {
+        const ptr0 = passStringToWasm0(cell_id, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.notebookhandle_get_cell_required_plugins(this.__wbg_ptr, ptr0, len0);
+        return takeObject(ret);
     }
     /**
      * Get a cell's source text.

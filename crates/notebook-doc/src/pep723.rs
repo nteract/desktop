@@ -321,6 +321,7 @@ print(os.getcwd())"#;
             outputs: vec![],
             metadata: serde_json::json!({}),
             resolved_assets: std::collections::HashMap::new(),
+            required_plugins: Vec::new(),
         }
     }
 

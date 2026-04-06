@@ -38,6 +38,7 @@ function codeSnapshot(
   source: string,
   outputs: unknown[] = [],
   executionCount = "null",
+  requiredPlugins?: string[],
 ): CellSnapshot {
   return {
     id,
@@ -47,6 +48,7 @@ function codeSnapshot(
     execution_count: executionCount,
     outputs,
     metadata: {},
+    required_plugins: requiredPlugins,
   };
 }
 
@@ -449,6 +451,55 @@ describe("cellSnapshotsToNotebookCells", () => {
     });
   });
 
+  it("reads requiredPlugins from snapshot required_plugins (not computed from outputs)", async () => {
+    // Snapshot carries required_plugins computed by Rust — the frontend should
+    // use it directly instead of scanning output MIME keys.
+    const output = {
+      output_type: "display_data",
+      data: {
+        "text/plain": { inline: "plot" },
+        "application/vnd.plotly.v1+json": { inline: "{}" },
+      },
+    };
+    const snap = codeSnapshot("c1", "plot()", [output], "1", ["plotly"]);
+
+    const cells = await cellSnapshotsToNotebookCells([snap], null, new Map());
+    expect(cells).toHaveLength(1);
+    if (cells[0].cell_type === "code") {
+      expect(cells[0].requiredPlugins).toEqual(["plotly"]);
+    }
+  });
+
+  it("defaults requiredPlugins to empty when snapshot has no required_plugins", async () => {
+    // Snapshots without required_plugins (e.g. older daemon) should fall back to [].
+    const output = {
+      output_type: "display_data",
+      data: { "application/vnd.plotly.v1+json": { inline: "{}" } },
+    };
+    // No required_plugins in snapshot — should default to []
+    const snap = codeSnapshot("c1", "plot()", [output], "1");
+
+    const cells = await cellSnapshotsToNotebookCells([snap], null, new Map());
+    expect(cells).toHaveLength(1);
+    if (cells[0].cell_type === "code") {
+      expect(cells[0].requiredPlugins).toEqual([]);
+    }
+  });
+
+  it("passes through multiple plugins from snapshot", async () => {
+    const snap = codeSnapshot("c1", "viz()", [], "1", [
+      "plotly",
+      "vega",
+      "markdown",
+    ]);
+
+    const cells = await cellSnapshotsToNotebookCells([snap], null, new Map());
+    expect(cells).toHaveLength(1);
+    if (cells[0].cell_type === "code") {
+      expect(cells[0].requiredPlugins).toEqual(["plotly", "vega", "markdown"]);
+    }
+  });
+
   it("converts a markdown cell", async () => {
     const snap = markdownSnapshot("m1", "# Title");
 
@@ -490,6 +541,16 @@ describe("cellSnapshotsToNotebookCells", () => {
       metadata: {},
       resolvedAssets: { "images/foo.png": "abc123" },
     });
+  });
+
+  it("reads requiredPlugins from snapshot in sync path", () => {
+    const snap = codeSnapshot("c1", "plot()", [], "1", ["plotly", "vega"]);
+
+    const cells = cellSnapshotsToNotebookCellsSync([snap], new Map());
+    expect(cells).toHaveLength(1);
+    if (cells[0].cell_type === "code") {
+      expect(cells[0].requiredPlugins).toEqual(["plotly", "vega"]);
+    }
   });
 
   it("converts a raw cell", async () => {

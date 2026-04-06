@@ -391,6 +391,7 @@ describe("materializeChangeset", () => {
       get_cell_type: vi.fn((id: string) => cells[id]?.type ?? "code"),
       get_cell_source: vi.fn((id: string) => cells[id]?.source ?? ""),
       get_cell_outputs: vi.fn((id: string) => cells[id]?.outputs ?? []),
+      get_cell_required_plugins: vi.fn(() => undefined),
       get_cell_execution_count: vi.fn(
         (id: string) => cells[id]?.execution_count ?? "null",
       ),

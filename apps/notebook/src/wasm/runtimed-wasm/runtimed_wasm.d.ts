@@ -28,6 +28,10 @@ export class JsCell {
      */
     readonly position: string;
     /**
+     * Get renderer plugins required by this cell's outputs as a JSON array string.
+     */
+    readonly required_plugins_json: string;
+    /**
      * Get resolved asset refs as a JSON object string (`ref` → blob hash).
      */
     readonly resolved_assets_json: string;
@@ -247,6 +251,13 @@ export class NotebookHandle {
      * Get a cell's fractional index position string.
      */
     get_cell_position(cell_id: string): string | undefined;
+    /**
+     * Get renderer plugins required by a cell's outputs.
+     *
+     * Scans MIME type keys in the cell's output manifests from RuntimeStateDoc.
+     * Returns undefined if the cell doesn't exist or has no outputs.
+     */
+    get_cell_required_plugins(cell_id: string): any;
     /**
      * Get a cell's source text.
      */
@@ -566,6 +577,7 @@ export interface InitOutput {
     readonly jscell_metadata_json: (a: number, b: number) => void;
     readonly jscell_outputs_json: (a: number, b: number) => void;
     readonly jscell_position: (a: number, b: number) => void;
+    readonly jscell_required_plugins_json: (a: number, b: number) => void;
     readonly jscell_resolved_assets_json: (a: number, b: number) => void;
     readonly jscell_source: (a: number, b: number) => void;
     readonly notebookhandle_add_cell: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
@@ -596,6 +608,7 @@ export interface InitOutput {
     readonly notebookhandle_get_cell_metadata: (a: number, b: number, c: number) => number;
     readonly notebookhandle_get_cell_outputs: (a: number, b: number, c: number) => number;
     readonly notebookhandle_get_cell_position: (a: number, b: number, c: number, d: number) => void;
+    readonly notebookhandle_get_cell_required_plugins: (a: number, b: number, c: number) => number;
     readonly notebookhandle_get_cell_source: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_get_cell_type: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_get_cells: (a: number, b: number) => void;

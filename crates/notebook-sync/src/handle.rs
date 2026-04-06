@@ -421,6 +421,7 @@ impl DocHandle {
                 }
             }
         }
+        cell.required_plugins = notebook_doc::compute_required_plugins(&cell.outputs);
         Some(cell)
     }
 
@@ -677,6 +678,9 @@ impl DocHandle {
                     }
                 }
             }
+        }
+        for cell in &mut cells {
+            cell.required_plugins = notebook_doc::compute_required_plugins(&cell.outputs);
         }
         cells
     }

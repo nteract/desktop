@@ -1,4 +1,3 @@
-import { computeRequiredPlugins } from "@/lib/renderer-plugins";
 import type { JupyterOutput, NotebookCell } from "../types";
 import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 import { logger } from "./logger";
@@ -54,6 +53,7 @@ export interface CellSnapshot {
   outputs: unknown[]; // Structured output manifests (from WASM) or legacy JSON strings
   metadata: Record<string, unknown>; // Cell metadata (arbitrary JSON object)
   resolved_assets?: Record<string, string>; // asset ref → blob hash (markdown cells)
+  required_plugins?: string[]; // Renderer plugins needed (computed by Rust from output MIME keys)
 }
 
 /**
@@ -219,6 +219,9 @@ export function cellSnapshotsToNotebookCellsSync(
     const metadata = snap.metadata ?? {};
 
     if (snap.cell_type === "code") {
+      // Read plugins from snapshot (computed by Rust in notebook-sync/WASM)
+      const requiredPlugins = snap.required_plugins ?? [];
+
       // Resolve outputs from cache or sync-resolvable manifests
       const resolvedOutputs = snap.outputs
         .map((output) => resolveOutputSync(output, blobPort ?? null, cache))
@@ -236,7 +239,7 @@ export function cellSnapshotsToNotebookCellsSync(
         source: snap.source,
         execution_count: ec,
         outputs: resolvedOutputs,
-        requiredPlugins: computeRequiredPlugins(resolvedOutputs),
+        requiredPlugins,
         metadata,
       };
     }
@@ -283,6 +286,9 @@ export async function cellSnapshotsToNotebookCells(
       const metadata = snap.metadata ?? {};
 
       if (snap.cell_type === "code") {
+        // Read plugins from snapshot (computed by Rust in notebook-sync/WASM)
+        const requiredPlugins = snap.required_plugins ?? [];
+
         // Resolve all outputs (structured manifests or legacy JSON strings)
         const resolvedOutputs = (
           await Promise.all(
@@ -302,7 +308,7 @@ export async function cellSnapshotsToNotebookCells(
           source: snap.source,
           execution_count: ec,
           outputs: resolvedOutputs,
-          requiredPlugins: computeRequiredPlugins(resolvedOutputs),
+          requiredPlugins,
           metadata,
         };
       }
@@ -350,6 +356,11 @@ export function materializeCellFromWasm(
 
   if (cellType === "code") {
     const rawOutputs: unknown[] = handle.get_cell_outputs(cellId) ?? [];
+
+    // Read plugins from WASM accessor (computed by Rust from output MIME keys)
+    const requiredPlugins: string[] =
+      handle.get_cell_required_plugins(cellId) ?? [];
+
     const resolvedOutputs = rawOutputs
       .map((output) => resolveOutputSync(output, blobPort ?? null, cache))
       .filter((o): o is JupyterOutput => o !== null);
@@ -367,7 +378,7 @@ export function materializeCellFromWasm(
       source,
       execution_count: executionCount,
       outputs,
-      requiredPlugins: computeRequiredPlugins(outputs),
+      requiredPlugins,
       metadata,
     };
   }

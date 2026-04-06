@@ -106,10 +106,56 @@ pub struct CellSnapshot {
     /// Resolved markdown asset refs (e.g. `attachment:image.png`, `images/foo.png`) → blob hash
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub resolved_assets: HashMap<String, String>,
+    /// Renderer plugins required by this cell's outputs (e.g., ["plotly", "vega"]).
+    /// Derived from output MIME type keys. Not persisted — computed on read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_plugins: Vec<String>,
 }
 
 fn default_empty_object() -> serde_json::Value {
     serde_json::json!({})
+}
+
+/// Map a MIME type to the renderer plugin it requires, if any.
+///
+/// This is the canonical MIME→plugin mapping used by all consumers
+/// (WASM frontend, MCP server, Python client). Extend this when
+/// adding support for new visualization libraries.
+pub fn plugin_for_mime(mime: &str) -> Option<&'static str> {
+    // Exact matches
+    match mime {
+        "text/markdown" => return Some("markdown"),
+        "application/vnd.plotly.v1+json" => return Some("plotly"),
+        "application/geo+json" => return Some("leaflet"),
+        _ => {}
+    }
+    // Vega pattern: application/vnd.vega.v5+json, application/vnd.vegalite.v5+json, etc.
+    if mime.starts_with("application/vnd.vega") && mime.ends_with("+json") {
+        return Some("vega");
+    }
+    None
+}
+
+/// Compute the set of renderer plugins required by a list of output manifests.
+///
+/// Scans MIME type keys in `display_data` and `execute_result` outputs.
+/// Works on both inline manifests (with ContentRef values) and resolved
+/// outputs (with primitive values) — only the keys matter.
+pub fn compute_required_plugins(outputs: &[serde_json::Value]) -> Vec<String> {
+    let mut plugins = std::collections::BTreeSet::new();
+    for output in outputs {
+        let output_type = output.get("output_type").and_then(|v| v.as_str());
+        if matches!(output_type, Some("display_data" | "execute_result")) {
+            if let Some(data) = output.get("data").and_then(|d| d.as_object()) {
+                for mime in data.keys() {
+                    if let Some(plugin) = plugin_for_mime(mime) {
+                        plugins.insert(plugin.to_string());
+                    }
+                }
+            }
+        }
+    }
+    plugins.into_iter().collect()
 }
 
 impl CellSnapshot {
@@ -1952,6 +1998,7 @@ impl NotebookDoc {
             outputs,
             metadata,
             resolved_assets,
+            required_plugins: Vec::new(),
         })
     }
 }
@@ -2302,6 +2349,7 @@ pub fn get_cells_from_doc(doc: &AutoCommit) -> Vec<CellSnapshot> {
                 outputs,
                 metadata,
                 resolved_assets,
+                required_plugins: Vec::new(),
             })
         })
         .collect();
@@ -4187,5 +4235,81 @@ mod tests {
 
         let fp_after = doc.get_metadata_fingerprint().unwrap();
         assert_eq!(fp_before, fp_after);
+    }
+
+    #[test]
+    fn test_plugin_for_mime() {
+        assert_eq!(plugin_for_mime("text/markdown"), Some("markdown"));
+        assert_eq!(
+            plugin_for_mime("application/vnd.plotly.v1+json"),
+            Some("plotly")
+        );
+        assert_eq!(plugin_for_mime("application/geo+json"), Some("leaflet"));
+        assert_eq!(
+            plugin_for_mime("application/vnd.vegalite.v5+json"),
+            Some("vega")
+        );
+        assert_eq!(
+            plugin_for_mime("application/vnd.vega.v5+json"),
+            Some("vega")
+        );
+        assert_eq!(plugin_for_mime("text/plain"), None);
+        assert_eq!(plugin_for_mime("image/png"), None);
+    }
+
+    #[test]
+    fn test_compute_required_plugins() {
+        let outputs = vec![
+            serde_json::json!({
+                "output_type": "display_data",
+                "data": {
+                    "text/plain": {"inline": "chart"},
+                    "application/vnd.plotly.v1+json": {"blob": "abc", "size": 100}
+                }
+            }),
+            serde_json::json!({
+                "output_type": "stream",
+                "name": "stdout",
+                "text": {"inline": "hello"}
+            }),
+        ];
+        let plugins = compute_required_plugins(&outputs);
+        assert_eq!(plugins, vec!["plotly"]);
+    }
+
+    #[test]
+    fn test_compute_required_plugins_multiple() {
+        let outputs = vec![
+            serde_json::json!({
+                "output_type": "display_data",
+                "data": {
+                    "text/markdown": {"inline": "# hello"},
+                    "text/plain": {"inline": "hello"}
+                }
+            }),
+            serde_json::json!({
+                "output_type": "execute_result",
+                "data": {
+                    "application/vnd.vegalite.v5+json": {"blob": "def", "size": 200},
+                    "text/plain": {"inline": "chart"}
+                }
+            }),
+        ];
+        let plugins = compute_required_plugins(&outputs);
+        assert_eq!(plugins, vec!["markdown", "vega"]);
+    }
+
+    #[test]
+    fn test_compute_required_plugins_empty() {
+        let plugins = compute_required_plugins(&[]);
+        assert!(plugins.is_empty());
+
+        let outputs = vec![serde_json::json!({
+            "output_type": "stream",
+            "name": "stdout",
+            "text": {"inline": "hello"}
+        })];
+        let plugins = compute_required_plugins(&outputs);
+        assert!(plugins.is_empty());
     }
 }

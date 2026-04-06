@@ -7,7 +7,7 @@
  */
 
 import { preWarmPlugins } from "@/components/isolated/iframe-libraries";
-import { computeRequiredPlugins } from "@/lib/renderer-plugins";
+
 import type { JupyterOutput } from "../types";
 import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 import { getBlobPort, refreshBlobPort } from "./blob-port";
@@ -122,6 +122,13 @@ export async function materializeChangeset(
         }
       } else {
         cacheMisses++;
+
+        // Read plugins from WASM accessor (computed by Rust from output MIME keys)
+        // and pre-warm immediately — blob fetches and plugin loading happen in parallel.
+        const plugins: string[] =
+          handle.get_cell_required_plugins(cellId) ?? [];
+        preWarmPlugins(plugins);
+
         // Cache miss — resolve this cell's outputs async.
         if (blobPort === null) {
           blobPort = await refreshBlobPort();
@@ -141,10 +148,6 @@ export async function materializeChangeset(
         const source = fields.source
           ? (handle.get_cell_source(cellId) ?? "")
           : (existingCell?.source ?? handle.get_cell_source(cellId) ?? "");
-
-        const plugins = computeRequiredPlugins(resolved);
-        // Pre-warm plugin cache so OutputArea.injectLibraries() resolves instantly
-        preWarmPlugins(plugins);
 
         updateCellById(cellId, () => ({
           id: cellId,

@@ -37,20 +37,18 @@ export function pluginForMime(mime: string): string | undefined {
  * This is a pure data function — it doesn't load or install anything.
  * Use it at materialization time to pre-compute which plugins a cell needs.
  */
-export function computeRequiredPlugins(
-  outputs: Array<{
-    output_type: string;
-    data?: Record<string, unknown>;
-  }>,
-): string[] {
+export function computeRequiredPlugins(outputs: unknown[]): string[] {
   const plugins = new Set<string>();
   for (const output of outputs) {
+    if (typeof output !== "object" || output === null) continue;
+    const obj = output as Record<string, unknown>;
     if (
-      output.output_type === "execute_result" ||
-      output.output_type === "display_data"
+      obj.output_type === "execute_result" ||
+      obj.output_type === "display_data"
     ) {
-      if (output.data) {
-        for (const mime of Object.keys(output.data)) {
+      const data = obj.data;
+      if (typeof data === "object" && data !== null) {
+        for (const mime of Object.keys(data)) {
           const plugin = pluginForMime(mime);
           if (plugin) plugins.add(plugin);
         }
