@@ -8,8 +8,6 @@
 const MAIN_DOM_SAFE_TYPES = new Set([
   // Plain text with ANSI — no script risk
   "text/plain",
-  // LaTeX — KaTeX renders safe static HTML
-  "text/latex",
   // Raster images — <img> tags, no script risk
   "image/png",
   "image/jpeg",

@@ -35,6 +35,8 @@ function normalize(m: { code: string; css?: string }): PluginModule {
 const PLUGIN_MIME_TYPES: Record<string, () => Promise<PluginModule>> = {
   "text/markdown": () =>
     import("virtual:renderer-plugin/markdown").then(normalize),
+  "text/latex": () =>
+    import("virtual:renderer-plugin/markdown").then(normalize),
   "application/vnd.plotly.v1+json": () =>
     import("virtual:renderer-plugin/plotly").then(normalize),
   "application/geo+json": () =>
@@ -42,8 +44,7 @@ const PLUGIN_MIME_TYPES: Record<string, () => Promise<PluginModule>> = {
 };
 
 /** Lazy loader for all Vega/Vega-Lite MIME variants. */
-const loadVega = () =>
-  import("virtual:renderer-plugin/vega").then(normalize);
+const loadVega = () => import("virtual:renderer-plugin/vega").then(normalize);
 
 /**
  * Check whether a MIME type requires a renderer plugin.
@@ -64,7 +65,8 @@ function loadPluginForMime(mime: string): Promise<PluginModule> | undefined {
   const cached = pluginCache.get(mime);
   if (cached) return cached;
 
-  const loader = PLUGIN_MIME_TYPES[mime] ?? (isVegaMimeType(mime) ? loadVega : undefined);
+  const loader =
+    PLUGIN_MIME_TYPES[mime] ?? (isVegaMimeType(mime) ? loadVega : undefined);
   if (!loader) return undefined;
 
   const promise = loader();

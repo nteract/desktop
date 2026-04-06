@@ -9,6 +9,7 @@
  */
 
 import { MarkdownOutput } from "@/components/outputs/markdown-output";
+import { MathOutput } from "@/components/outputs/math-output";
 
 interface RendererProps {
   data: unknown;
@@ -20,6 +21,10 @@ function MarkdownRenderer({ data }: RendererProps) {
   return <MarkdownOutput content={String(data)} />;
 }
 
+function LatexRenderer({ data }: RendererProps) {
+  return <MathOutput content={String(data)} />;
+}
+
 export function install(ctx: {
   register: (
     mimeTypes: string[],
@@ -27,4 +32,5 @@ export function install(ctx: {
   ) => void;
 }) {
   ctx.register(["text/markdown"], MarkdownRenderer);
+  ctx.register(["text/latex"], LatexRenderer);
 }
