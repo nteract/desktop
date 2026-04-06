@@ -103,8 +103,8 @@ export function useAutomergeNotebook() {
   /** Full materialization: WASM doc → resolve manifests → write to store. */
   const materializeCells = useCallback(async (handle: NotebookHandle) => {
     const start = performance.now();
-    const json = handle.get_cells_json();
-    const snapshots: CellSnapshot[] = JSON.parse(json);
+    // Resolve blob port BEFORE reading cells — WASM needs it to
+    // convert binary ContentRefs to Url variants in get_cells_json().
     let blobPort = getBlobPort();
     if (blobPort === null) {
       blobPort = await refreshBlobPort();
@@ -112,6 +112,8 @@ export function useAutomergeNotebook() {
     if (blobPort !== null) {
       handle.set_blob_port(blobPort);
     }
+    const json = handle.get_cells_json();
+    const snapshots: CellSnapshot[] = JSON.parse(json);
     const newCells = await cellSnapshotsToNotebookCells(
       snapshots,
       blobPort,

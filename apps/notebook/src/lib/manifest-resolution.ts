@@ -1,6 +1,22 @@
 import type { JupyterOutput } from "../types";
 
 /**
+ * Quick check for binary MIME types — safety net for blob refs that WASM
+ * couldn't resolve to Url (blob port not yet set at cold start).
+ *
+ * The canonical classification lives in Rust (notebook_doc::mime::is_binary_mime).
+ * This is intentionally minimal — only covers the common cases that would
+ * otherwise break if fetched as text.
+ */
+function looksLikeBinaryMime(mime: string): boolean {
+  if (mime.startsWith("image/") && !mime.endsWith("+xml")) return true;
+  if (mime.startsWith("audio/") || mime.startsWith("video/")) return true;
+  if (mime === "application/pdf" || mime === "application/octet-stream")
+    return true;
+  return false;
+}
+
+/**
  * A content reference — either inlined data, a URL, or a blob-store hash.
  *
  * These variants match the `ResolvedContentRef` shape emitted by WASM:
@@ -87,12 +103,17 @@ function isContentRef(value: unknown): value is ContentRef {
  *
  * - `inline` refs return the embedded string directly.
  * - `url` refs return the pre-resolved URL (e.g., blob server URL for binary content).
- * - `blob` refs fetch text content from the blob server.
+ * - `blob` refs: binary MIME types resolve to a blob server URL (the browser
+ *   fetches raw bytes directly); text MIME types are fetched as strings.
+ *
+ * Normally WASM emits `url` for binary types, but a `blob` ref may arrive
+ * when the blob port wasn't set on the WASM handle yet (cold start, daemon
+ * restart). The mimeType fallback handles that gracefully.
  */
 export async function resolveContentRef(
   ref: ContentRef,
   blobPort: number,
-  _mimeType?: string,
+  mimeType?: string,
 ): Promise<string> {
   if ("inline" in ref) {
     return ref.inline;
@@ -100,7 +121,12 @@ export async function resolveContentRef(
   if ("url" in ref) {
     return ref.url;
   }
-  // Blob ref — fetch text content from blob server
+  // Safety net: binary blob refs that WASM couldn't resolve to Url
+  // (blob port wasn't set yet). Construct the URL directly.
+  if (mimeType && looksLikeBinaryMime(mimeType)) {
+    return `http://127.0.0.1:${blobPort}/blob/${ref.blob}`;
+  }
+  // Text blob ref — fetch content from blob server
   const response = await fetch(`http://127.0.0.1:${blobPort}/blob/${ref.blob}`);
   if (!response.ok) {
     throw new Error(`Failed to fetch blob ${ref.blob}: ${response.status}`);
@@ -115,13 +141,14 @@ export async function resolveContentRef(
  * Resolves:
  * - Inline refs → the embedded string
  * - URL refs → the pre-resolved URL
+ * - Binary blob refs → blob server URL (safety net for cold start)
  *
- * Returns null for blob refs (require HTTP fetch).
+ * Returns null for text blob refs (require HTTP fetch).
  */
 function resolveContentRefSync(
   ref: ContentRef,
-  _blobPort: number,
-  _mimeType?: string,
+  blobPort: number,
+  mimeType?: string,
 ): string | null {
   if ("inline" in ref) {
     return ref.inline;
@@ -129,7 +156,11 @@ function resolveContentRefSync(
   if ("url" in ref) {
     return ref.url;
   }
-  // Blob ref — needs async fetch
+  // Safety net: binary blob refs that WASM couldn't resolve to Url
+  if (mimeType && looksLikeBinaryMime(mimeType)) {
+    return `http://127.0.0.1:${blobPort}/blob/${ref.blob}`;
+  }
+  // Text blob ref — needs async fetch
   return null;
 }
 
