@@ -74,7 +74,7 @@ pub async fn get_cell(
 
     // Resolve outputs (with widget state synthesis)
     let comms = handle.get_runtime_state().ok().map(|rs| rs.comms);
-    let outputs = output_resolver::resolve_cell_outputs(
+    let outputs = output_resolver::resolve_cell_outputs_for_llm(
         &cell.outputs,
         &server.blob_base_url,
         &server.blob_store_path,
@@ -173,7 +173,7 @@ pub async fn get_all_cells(
 
                 // Resolve outputs through the output resolver so that
                 // text/llm+plain is synthesized and viz specs are summarized.
-                let resolved = output_resolver::resolve_cell_outputs(
+                let resolved = output_resolver::resolve_cell_outputs_for_llm(
                     &cell.outputs,
                     &server.blob_base_url,
                     &server.blob_store_path,
@@ -210,7 +210,7 @@ pub async fn get_all_cells(
             for cell in slice {
                 let status = cell_status_map.get(&cell.id).map(String::as_str);
                 let ec = cell_ec_map.get(&cell.id).map(String::as_str);
-                let outputs = output_resolver::resolve_cell_outputs(
+                let outputs = output_resolver::resolve_cell_outputs_for_llm(
                     &cell.outputs,
                     &server.blob_base_url,
                     &server.blob_store_path,
@@ -253,7 +253,7 @@ pub async fn get_all_cells(
                     preview_chars,
                 );
                 if include_outputs && !cell.outputs.is_empty() {
-                    let outputs = output_resolver::resolve_cell_outputs(
+                    let outputs = output_resolver::resolve_cell_outputs_for_llm(
                         &cell.outputs,
                         &server.blob_base_url,
                         &server.blob_store_path,

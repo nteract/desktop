@@ -3,8 +3,13 @@
 //! Tools that produce cell output (execute_cell, create_cell, set_cell, etc.)
 //! return both text content (for LLM consumption) and structured JSON that
 //! the output.html renderer can display.
+//!
+//! The manifest-based functions (`cell_structured_content_from_manifests`,
+//! `manifest_output_to_structured`) read inline content directly from
+//! ContentRef entries and emit blob URLs for blob-stored content. Zero blob
+//! fetches — structured content is always compact.
 
-use runtimed_client::resolved_output::{DataValue, Output, ResolvedCell};
+use runtimed_client::output_resolver;
 use serde_json::{json, Value};
 
 /// Check if a MIME type is a visualization spec (Plotly, Vega-Lite, Vega).
@@ -17,89 +22,98 @@ fn is_viz_mime(mime: &str) -> bool {
             && (mime.ends_with("+json") || mime.ends_with(".json")))
 }
 
-/// Return a blob URL for the given MIME type, or None to skip the entry.
-fn blob_url_or_skip(output: &Output, mime: &str) -> Option<Value> {
-    output
-        .blob_urls
-        .as_ref()
-        .and_then(|urls| urls.get(mime))
-        .map(|url| Value::String(url.clone()))
-}
-
-/// Build the structuredContent JSON for a resolved cell.
-pub fn cell_structured_content(cell: &ResolvedCell, status: &str) -> Value {
+/// Build structuredContent JSON directly from manifest Values and blob URLs.
+///
+/// Unlike [`cell_structured_content`] which requires fully-resolved outputs,
+/// this function reads inline content directly from ContentRef entries and
+/// emits blob URLs for anything stored in the blob store. Zero blob fetches.
+pub fn cell_structured_content_from_manifests(
+    cell_id: &str,
+    cell_type: &str,
+    source: &str,
+    output_manifests: &[serde_json::Value],
+    execution_count: Option<i64>,
+    status: &str,
+    blob_base_url: &Option<String>,
+) -> Value {
     json!({
         "cell": {
-            "cell_id": cell.id,
-            "source": cell.source,
-            "outputs": cell.outputs.iter().map(output_to_structured).collect::<Vec<_>>(),
-            "execution_count": cell.execution_count,
+            "cell_id": cell_id,
+            "source": source,
+            "cell_type": cell_type,
+            "outputs": output_manifests.iter().map(|m| manifest_output_to_structured(m, blob_base_url)).collect::<Vec<_>>(),
+            "execution_count": execution_count,
             "status": status,
         }
     })
 }
 
-/// Convert a resolved Output to the JSON structure expected by the output renderer.
-fn output_to_structured(output: &Output) -> Value {
-    match output.output_type.as_str() {
+/// Convert a single output manifest Value to structured JSON for the output renderer.
+///
+/// Reads inline content directly from ContentRef entries and emits blob URLs
+/// for blob-stored content. No blob fetches are performed.
+fn manifest_output_to_structured(manifest: &Value, blob_base_url: &Option<String>) -> Value {
+    let output_type = manifest
+        .get("output_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    match output_type {
         "stream" => {
+            let name = manifest.get("name").cloned().unwrap_or(Value::Null);
+            // text is a ContentRef: {"inline": "..."} or {"blob": "hash", "size": N}
+            let text = manifest
+                .get("text")
+                .and_then(|cr| resolve_text_content_ref(cr, blob_base_url))
+                .unwrap_or(Value::Null);
             json!({
                 "output_type": "stream",
-                "name": output.name,
-                "text": output.text,
+                "name": name,
+                "text": text,
             })
         }
         "error" => {
             json!({
                 "output_type": "error",
-                "ename": output.ename,
-                "evalue": output.evalue,
-                "traceback": output.traceback,
+                "ename": manifest.get("ename").cloned().unwrap_or(Value::Null),
+                "evalue": manifest.get("evalue").cloned().unwrap_or(Value::Null),
+                "traceback": manifest.get("traceback").cloned().unwrap_or(Value::Null),
             })
         }
         "display_data" | "execute_result" => {
             let mut data = serde_json::Map::new();
 
-            if let Some(ref output_data) = output.data {
-                // Check if the output has a raster image that the MCP app can
-                // render directly (png/jpeg/gif/webp via blob URL). When true,
-                // we can safely skip text/html (which is often a massive base64
-                // data URI for audio, or redundant chart HTML that duplicates
-                // the image).
-                let has_renderable_image = output_data.keys().any(|m| {
+            if let Some(data_map) = manifest.get("data").and_then(|v| v.as_object()) {
+                // Check for renderable raster images to skip redundant text/html
+                let has_renderable_image = data_map.keys().any(|m| {
                     matches!(
                         m.as_str(),
                         "image/png" | "image/jpeg" | "image/gif" | "image/webp"
                     )
                 });
 
-                for (mime, value) in output_data {
-                    // Skip text/llm+plain — it's for LLM consumption, not the widget
-                    if mime == "text/llm+plain" {
-                        continue;
-                    }
-
-                    // Skip text/html when the MCP app can render a raster image
-                    // instead. This avoids sending large base64 data URIs (audio
-                    // HTML embeds) or redundant chart HTML alongside the image.
+                for (mime, content_ref) in data_map {
+                    // Skip text/html when a raster image exists — avoids large
+                    // base64 data URIs or redundant chart HTML.
                     if mime == "text/html" && has_renderable_image {
                         continue;
                     }
-
-                    // Skip viz JSON specs — the MCP app doesn't render them, and
-                    // they're large (tens of KB). The app uses text/html or image
-                    // fallbacks for display.
                     if is_viz_mime(mime) {
                         continue;
                     }
 
-                    let json_value = match value {
-                        DataValue::Binary(_) => {
-                            // For binary data, use blob URL if available
-                            blob_url_or_skip(output, mime)
-                        }
-                        DataValue::Json(v) => Some(v.clone()),
-                        DataValue::Text(s) => Some(Value::String(s.clone())),
+                    let meta = output_resolver::content_ref_meta(content_ref);
+
+                    let json_value = if meta.is_inline {
+                        // Inline content — extract the value directly
+                        content_ref.get("inline").cloned()
+                    } else if let Some(hash) = meta.blob_hash {
+                        // Blob-stored content — emit blob URL
+                        blob_base_url
+                            .as_ref()
+                            .map(|base| Value::String(format!("{}/blob/{}", base, hash)))
+                    } else {
+                        None
                     };
 
                     if let Some(jv) = json_value {
@@ -109,16 +123,230 @@ fn output_to_structured(output: &Output) -> Value {
             }
 
             let mut result = json!({
-                "output_type": output.output_type,
+                "output_type": output_type,
                 "data": data,
             });
 
-            if let Some(count) = output.execution_count {
+            if let Some(count) = manifest.get("execution_count").and_then(|v| v.as_i64()) {
                 result["execution_count"] = json!(count);
             }
 
             result
         }
-        _ => json!({"output_type": output.output_type}),
+        _ => json!({"output_type": output_type}),
+    }
+}
+
+/// Resolve a text ContentRef to a JSON value (inline text or blob URL).
+fn resolve_text_content_ref(content_ref: &Value, blob_base_url: &Option<String>) -> Option<Value> {
+    let meta = output_resolver::content_ref_meta(content_ref);
+    if meta.is_inline {
+        content_ref.get("inline").cloned()
+    } else if let Some(hash) = meta.blob_hash {
+        blob_base_url
+            .as_ref()
+            .map(|base| Value::String(format!("{}/blob/{}", base, hash)))
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn inline_ref(content: &str) -> serde_json::Value {
+        json!({"inline": content})
+    }
+
+    fn blob_ref(hash: &str, size: u64) -> serde_json::Value {
+        json!({"blob": hash, "size": size})
+    }
+
+    #[test]
+    fn structured_inline_content_passes_through() {
+        let manifest = json!({
+            "output_type": "display_data",
+            "data": {
+                "text/plain": inline_ref("hello"),
+            },
+        });
+        let blob_base = Some("http://localhost:9999".to_string());
+        let result = manifest_output_to_structured(&manifest, &blob_base);
+        let data = result["data"].as_object().unwrap();
+        assert_eq!(data["text/plain"], "hello");
+    }
+
+    #[test]
+    fn structured_blob_becomes_url() {
+        let manifest = json!({
+            "output_type": "display_data",
+            "data": {
+                "image/png": blob_ref("abc123", 50_000),
+            },
+        });
+        let blob_base = Some("http://localhost:9999".to_string());
+        let result = manifest_output_to_structured(&manifest, &blob_base);
+        let data = result["data"].as_object().unwrap();
+        assert_eq!(data["image/png"], "http://localhost:9999/blob/abc123");
+    }
+
+    #[test]
+    fn structured_no_blob_base_url_omits_blobs() {
+        let manifest = json!({
+            "output_type": "display_data",
+            "data": {
+                "image/png": blob_ref("abc123", 50_000),
+                "text/plain": inline_ref("fallback"),
+            },
+        });
+        let result = manifest_output_to_structured(&manifest, &None);
+        let data = result["data"].as_object().unwrap();
+        // Blob entry not included (no base URL to construct from)
+        assert!(!data.contains_key("image/png"));
+        // Inline entry still present
+        assert_eq!(data["text/plain"], "fallback");
+    }
+
+    #[test]
+    fn structured_viz_mime_skipped() {
+        let manifest = json!({
+            "output_type": "display_data",
+            "data": {
+                "application/vnd.plotly.v1+json": inline_ref("{\"data\": []}"),
+                "text/plain": inline_ref("Figure()"),
+            },
+        });
+        let blob_base = Some("http://localhost:9999".to_string());
+        let result = manifest_output_to_structured(&manifest, &blob_base);
+        let data = result["data"].as_object().unwrap();
+        assert!(!data.contains_key("application/vnd.plotly.v1+json"));
+        assert_eq!(data["text/plain"], "Figure()");
+    }
+
+    #[test]
+    fn structured_html_skipped_when_raster_image_exists() {
+        let manifest = json!({
+            "output_type": "display_data",
+            "data": {
+                "text/html": inline_ref("<img src='data:...' />"),
+                "image/png": blob_ref("img_hash", 40_000),
+                "text/plain": inline_ref("<Figure>"),
+            },
+        });
+        let blob_base = Some("http://localhost:9999".to_string());
+        let result = manifest_output_to_structured(&manifest, &blob_base);
+        let data = result["data"].as_object().unwrap();
+        assert!(!data.contains_key("text/html"));
+        assert_eq!(data["image/png"], "http://localhost:9999/blob/img_hash");
+    }
+
+    #[test]
+    fn structured_html_included_without_raster_image() {
+        let manifest = json!({
+            "output_type": "display_data",
+            "data": {
+                "text/html": inline_ref("<b>bold</b>"),
+                "text/plain": inline_ref("bold"),
+            },
+        });
+        let blob_base = Some("http://localhost:9999".to_string());
+        let result = manifest_output_to_structured(&manifest, &blob_base);
+        let data = result["data"].as_object().unwrap();
+        assert_eq!(data["text/html"], "<b>bold</b>");
+    }
+
+    #[test]
+    fn structured_llm_plain_included_as_fallback() {
+        // text/llm+plain should NOT be filtered out in structured content
+        let manifest = json!({
+            "output_type": "display_data",
+            "data": {
+                "text/llm+plain": inline_ref("Summary of output"),
+                "image/png": blob_ref("img", 10_000),
+            },
+        });
+        let blob_base = Some("http://localhost:9999".to_string());
+        let result = manifest_output_to_structured(&manifest, &blob_base);
+        let data = result["data"].as_object().unwrap();
+        assert_eq!(data["text/llm+plain"], "Summary of output");
+    }
+
+    #[test]
+    fn structured_stream_inline() {
+        let manifest = json!({
+            "output_type": "stream",
+            "name": "stdout",
+            "text": inline_ref("hello"),
+        });
+        let result = manifest_output_to_structured(&manifest, &None);
+        assert_eq!(result["output_type"], "stream");
+        assert_eq!(result["name"], "stdout");
+        assert_eq!(result["text"], "hello");
+    }
+
+    #[test]
+    fn structured_stream_blob_text() {
+        let manifest = json!({
+            "output_type": "stream",
+            "name": "stdout",
+            "text": blob_ref("stream_hash", 5_000),
+        });
+        let blob_base = Some("http://localhost:9999".to_string());
+        let result = manifest_output_to_structured(&manifest, &blob_base);
+        assert_eq!(result["text"], "http://localhost:9999/blob/stream_hash");
+    }
+
+    #[test]
+    fn structured_error_passthrough() {
+        let manifest = json!({
+            "output_type": "error",
+            "ename": "ValueError",
+            "evalue": "bad",
+            "traceback": ["line 1", "line 2"],
+        });
+        let result = manifest_output_to_structured(&manifest, &None);
+        assert_eq!(result["output_type"], "error");
+        assert_eq!(result["ename"], "ValueError");
+        assert_eq!(result["traceback"][0], "line 1");
+    }
+
+    #[test]
+    fn structured_execute_result_has_count() {
+        let manifest = json!({
+            "output_type": "execute_result",
+            "data": {
+                "text/plain": inline_ref("42"),
+            },
+            "execution_count": 7,
+        });
+        let result = manifest_output_to_structured(&manifest, &None);
+        assert_eq!(result["execution_count"], 7);
+    }
+
+    #[test]
+    fn cell_structured_content_wrapper() {
+        let manifests = vec![json!({
+            "output_type": "stream",
+            "name": "stdout",
+            "text": inline_ref("output"),
+        })];
+        let blob_base = Some("http://localhost:9999".to_string());
+        let result = cell_structured_content_from_manifests(
+            "cell-123",
+            "code",
+            "print('hello')",
+            &manifests,
+            Some(3),
+            "done",
+            &blob_base,
+        );
+        assert_eq!(result["cell"]["cell_id"], "cell-123");
+        assert_eq!(result["cell"]["cell_type"], "code");
+        assert_eq!(result["cell"]["source"], "print('hello')");
+        assert_eq!(result["cell"]["execution_count"], 3);
+        assert_eq!(result["cell"]["status"], "done");
+        assert_eq!(result["cell"]["outputs"].as_array().unwrap().len(), 1);
     }
 }
