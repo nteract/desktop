@@ -1885,9 +1885,7 @@ class TestKernelLifecycle:
 
         # Now execute a NEW cell — it should work immediately, not hang
         verify_id = await session.create_cell("1 + 1")
-        verify_result = await asyncio.wait_for(
-            session.execute_cell(verify_id), timeout=10
-        )
+        verify_result = await asyncio.wait_for(session.execute_cell(verify_id), timeout=10)
         assert verify_result.success, f"Post-interrupt cell should succeed: {verify_result}"
 
     async def test_async_shutdown_kernel(self, session):

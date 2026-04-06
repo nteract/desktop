@@ -4903,9 +4903,11 @@ async fn handle_notebook_request(
                 )
                 .await
                 {
-                    Ok(notebook_protocol::protocol::RuntimeAgentResponse::InterruptAcknowledged {
-                        cleared,
-                    }) => {
+                    Ok(
+                        notebook_protocol::protocol::RuntimeAgentResponse::InterruptAcknowledged {
+                            cleared,
+                        },
+                    ) => {
                         // Update RuntimeStateDoc: clear CRDT queue, mark cleared
                         // executions as errored so the frontend reflects the interrupt.
                         apply_interrupt_to_state_doc(
@@ -4918,12 +4920,8 @@ async fn handle_notebook_request(
                     }
                     Ok(_) => {
                         // Legacy Ok response — still update state_doc with empty cleared list
-                        apply_interrupt_to_state_doc(
-                            &room.state_doc,
-                            &room.state_changed_tx,
-                            &[],
-                        )
-                        .await;
+                        apply_interrupt_to_state_doc(&room.state_doc, &room.state_changed_tx, &[])
+                            .await;
                         NotebookResponse::InterruptSent {}
                     }
                     Err(e) => NotebookResponse::Error {
