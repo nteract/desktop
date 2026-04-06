@@ -1857,10 +1857,38 @@ class TestKernelLifecycle:
         reason="Flaky on CI: daemon relay 30s timeout can expire on slow runners",
         strict=False,
     )
-    async def test_async_kernel_interrupt(self, session):
-        """Can interrupt a running kernel."""
+    async def test_interrupt_clears_queue_and_unblocks(self, session):
+        """Interrupt clears the CRDT queue and allows new cells to execute (#1583)."""
         await async_start_kernel_with_retry(session)
-        await session.interrupt()  # Should not raise
+
+        # Create a cell that blocks for a long time
+        blocking_id = await session.create_cell("import time; time.sleep(60)")
+        # Create a cell that will be queued behind the blocking cell
+        queued_id = await session.create_cell("queued = True")
+
+        # Execute both — blocking cell runs first, queued cell waits
+        blocking_task = asyncio.create_task(session.execute_cell(blocking_id))
+        await asyncio.sleep(0.5)  # Let blocking cell start
+        queued_task = asyncio.create_task(session.execute_cell(queued_id))
+        await asyncio.sleep(0.5)  # Let queue settle
+
+        # Interrupt — should clear the queue and send SIGINT
+        await session.interrupt()
+
+        # The blocking cell should fail with KeyboardInterrupt
+        blocking_result = await asyncio.wait_for(blocking_task, timeout=10)
+        assert not blocking_result.success, "Interrupted cell should report failure"
+
+        # The queued cell should also fail (cleared from queue, never ran)
+        queued_result = await asyncio.wait_for(queued_task, timeout=5)
+        assert not queued_result.success, "Cleared queued cell should report failure"
+
+        # Now execute a NEW cell — it should work immediately, not hang
+        verify_id = await session.create_cell("1 + 1")
+        verify_result = await asyncio.wait_for(
+            session.execute_cell(verify_id), timeout=10
+        )
+        assert verify_result.success, f"Post-interrupt cell should succeed: {verify_result}"
 
     async def test_async_shutdown_kernel(self, session):
         """Can shutdown the kernel."""
