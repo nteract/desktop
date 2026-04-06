@@ -4918,6 +4918,11 @@ async fn handle_notebook_request(
                         .await;
                         NotebookResponse::InterruptSent {}
                     }
+                    Ok(
+                        notebook_protocol::protocol::RuntimeAgentResponse::Error { error },
+                    ) => NotebookResponse::Error {
+                        error: format!("Agent interrupt error: {}", error),
+                    },
                     Ok(_) => {
                         // Legacy Ok response — still update state_doc with empty cleared list
                         apply_interrupt_to_state_doc(&room.state_doc, &room.state_changed_tx, &[])
