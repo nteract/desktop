@@ -670,6 +670,16 @@ async fn run_mcp_server(no_show: bool) -> Result<()> {
         .append(true)
         .open(&log_path)
     {
+        // Hold a shared flock for the process lifetime so the pruner
+        // (which tries an exclusive lock) skips files still in use.
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            unsafe {
+                libc::flock(log_file.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB);
+            }
+        }
+
         use tracing_subscriber::layer::SubscriberExt;
         use tracing_subscriber::util::SubscriberInitExt;
 
@@ -761,6 +771,10 @@ async fn run_mcp_server(no_show: bool) -> Result<()> {
 }
 
 /// Delete MCP log files older than `max_age_days` days.
+///
+/// On Unix, skips files that are still held open by a running MCP server
+/// (detected via a non-blocking exclusive flock — active servers hold a
+/// shared lock).
 fn prune_old_mcp_logs(dir: &std::path::Path, max_age_days: u64) {
     let cutoff =
         std::time::SystemTime::now() - std::time::Duration::from_secs(max_age_days * 24 * 60 * 60);
@@ -776,11 +790,37 @@ fn prune_old_mcp_logs(dir: &std::path::Path, max_age_days: u64) {
         if let Ok(meta) = path.metadata() {
             if let Ok(modified) = meta.modified() {
                 if modified < cutoff {
+                    #[cfg(unix)]
+                    if is_file_locked(&path) {
+                        continue;
+                    }
                     let _ = std::fs::remove_file(&path);
                 }
             }
         }
     }
+}
+
+/// Check if a file is held open by another process via flock.
+///
+/// Returns true if an exclusive lock cannot be acquired (another process
+/// holds a shared lock), meaning the file is still in use.
+#[cfg(unix)]
+fn is_file_locked(path: &std::path::Path) -> bool {
+    use std::os::unix::io::AsRawFd;
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if rc != 0 {
+        // EWOULDBLOCK — another process holds a shared lock
+        return true;
+    }
+    // Lock succeeded — no one else has it. Unlock immediately.
+    unsafe {
+        libc::flock(file.as_raw_fd(), libc::LOCK_UN);
+    }
+    false
 }
 
 async fn jupyter_command(command: JupyterCommands) -> Result<()> {
