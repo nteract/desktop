@@ -1249,11 +1249,11 @@ mod tests {
         // '€' is 3 bytes (U+20AC). Put it right at the cut boundary.
         // side_bytes=5, so we need text > 10 bytes total.
         let text = "ab€€€€cd"; // 2 + 4*3 + 2 = 16 bytes
-        let result = truncate_head_tail(&text, 5);
+        let result = truncate_head_tail(text, 5);
         // Should find a valid char boundary, not panic
         assert!(result.contains("[... truncated"));
         // Verify the result is valid UTF-8 (it is, since it's a String)
-        assert!(result.len() > 0);
+        assert!(!result.is_empty());
     }
 
     #[test]
@@ -1328,10 +1328,12 @@ mod tests {
             "text/plain": inline_ref("hello world"),
             "image/png": blob_ref("abc123", 50_000),
         }));
-        let output = resolve_output_for_llm(&manifest, &None, &None, None)
-            .await
-            .expect("resolve should succeed");
-        let data = output.data.expect("output should have data");
+        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+            panic!("resolve should succeed");
+        };
+        let Some(data) = output.data else {
+            panic!("output should have data");
+        };
 
         // text/plain resolved
         assert!(matches!(data.get("text/plain"), Some(DataValue::Text(s)) if s == "hello world"));
@@ -1345,10 +1347,12 @@ mod tests {
             "text/latex": inline_ref("$E=mc^2$"),
             "text/plain": inline_ref("E=mc^2"),
         }));
-        let output = resolve_output_for_llm(&manifest, &None, &None, None)
-            .await
-            .expect("resolve should succeed");
-        let data = output.data.expect("output should have data");
+        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+            panic!("resolve should succeed");
+        };
+        let Some(data) = output.data else {
+            panic!("output should have data");
+        };
 
         // text/latex should be resolved (it's higher priority than text/plain)
         assert!(matches!(data.get("text/latex"), Some(DataValue::Text(s)) if s == "$E=mc^2$"));
@@ -1363,10 +1367,12 @@ mod tests {
             "text/plain": inline_ref("raw repr"),
             "image/png": blob_ref("img123", 100_000),
         }));
-        let output = resolve_output_for_llm(&manifest, &None, &None, None)
-            .await
-            .expect("resolve should succeed");
-        let data = output.data.expect("output should have data");
+        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+            panic!("resolve should succeed");
+        };
+        let Some(data) = output.data else {
+            panic!("output should have data");
+        };
 
         assert!(
             matches!(data.get("text/llm+plain"), Some(DataValue::Text(s)) if s == "Author's summary")
@@ -1381,10 +1387,12 @@ mod tests {
         let manifest = make_display_manifest(json!({
             "text/plain": inline_ref(&large_text),
         }));
-        let output = resolve_output_for_llm(&manifest, &None, &None, None)
-            .await
-            .expect("resolve should succeed");
-        let data = output.data.expect("output should have data");
+        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+            panic!("resolve should succeed");
+        };
+        let Some(data) = output.data else {
+            panic!("output should have data");
+        };
 
         // text/plain is resolved (it's the content)
         assert!(data.contains_key("text/plain"));
@@ -1405,10 +1413,12 @@ mod tests {
         let manifest = make_display_manifest(json!({
             "text/plain": inline_ref(&text),
         }));
-        let output = resolve_output_for_llm(&manifest, &None, &None, None)
-            .await
-            .expect("resolve should succeed");
-        let data = output.data.expect("output should have data");
+        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+            panic!("resolve should succeed");
+        };
+        let Some(data) = output.data else {
+            panic!("output should have data");
+        };
 
         // No text/llm+plain synthesized — text/plain is under/at threshold
         assert!(!data.contains_key("text/llm+plain"));
@@ -1422,10 +1432,12 @@ mod tests {
             "image/svg+xml": blob_ref("svg456", 12_000),
         }));
         let blob_base = Some("http://localhost:9999".to_string());
-        let output = resolve_output_for_llm(&manifest, &blob_base, &None, None)
-            .await
-            .expect("resolve should succeed");
-        let data = output.data.expect("output should have data");
+        let Some(output) = resolve_output_for_llm(&manifest, &blob_base, &None, None).await else {
+            panic!("resolve should succeed");
+        };
+        let Some(data) = output.data else {
+            panic!("output should have data");
+        };
 
         // No image data resolved
         assert!(!data.contains_key("image/png"));
@@ -1446,11 +1458,12 @@ mod tests {
         let manifest = make_display_manifest(json!({}));
         let output = resolve_output_for_llm(&manifest, &None, &None, None).await;
         // Empty data map still produces an output, just with empty data
-        assert!(output.is_some());
-        let data = output
-            .expect("should produce output")
-            .data
-            .expect("should have data");
+        let Some(output) = output else {
+            panic!("should produce output");
+        };
+        let Some(data) = output.data else {
+            panic!("should have data");
+        };
         assert!(data.is_empty());
     }
 
@@ -1461,9 +1474,9 @@ mod tests {
             "name": "stdout",
             "text": inline_ref("hello from stdout"),
         });
-        let output = resolve_output_for_llm(&manifest, &None, &None, None)
-            .await
-            .expect("resolve should succeed");
+        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+            panic!("resolve should succeed");
+        };
         assert_eq!(output.output_type, "stream");
         assert_eq!(output.text.as_deref(), Some("hello from stdout"));
     }
@@ -1476,27 +1489,23 @@ mod tests {
             "evalue": "bad value",
             "traceback": ["line 1", "line 2"],
         });
-        let output = resolve_output_for_llm(&manifest, &None, &None, None)
-            .await
-            .expect("resolve should succeed");
+        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+            panic!("resolve should succeed");
+        };
         assert_eq!(output.output_type, "error");
         assert_eq!(output.ename.as_deref(), Some("ValueError"));
-        assert_eq!(
-            output
-                .traceback
-                .as_ref()
-                .expect("should have traceback")
-                .len(),
-            2
-        );
+        let Some(ref traceback) = output.traceback else {
+            panic!("should have traceback");
+        };
+        assert_eq!(traceback.len(), 2);
     }
 
     #[tokio::test]
     async fn llm_execute_result_has_execution_count() {
         let manifest = make_execute_result_manifest(json!({"text/plain": inline_ref("42")}), 5);
-        let output = resolve_output_for_llm(&manifest, &None, &None, None)
-            .await
-            .expect("resolve should succeed");
+        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+            panic!("resolve should succeed");
+        };
         assert_eq!(output.output_type, "execute_result");
         assert_eq!(output.execution_count, Some(5));
     }
@@ -1508,10 +1517,12 @@ mod tests {
             "text/latex": blob_ref("latex_hash", 5000),
             "text/plain": inline_ref("fallback plain"),
         }));
-        let output = resolve_output_for_llm(&manifest, &None, &None, None)
-            .await
-            .expect("resolve should succeed");
-        let data = output.data.expect("output should have data");
+        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+            panic!("resolve should succeed");
+        };
+        let Some(data) = output.data else {
+            panic!("output should have data");
+        };
 
         // text/latex resolution failed → fell through to text/plain
         assert!(!data.contains_key("text/latex"));
@@ -1527,10 +1538,12 @@ mod tests {
             "text/html": blob_ref("html_hash", 8_000),
         }));
         let blob_base = Some("http://localhost:9999".to_string());
-        let output = resolve_output_for_llm(&manifest, &blob_base, &None, None)
-            .await
-            .expect("resolve should succeed");
-        let data = output.data.expect("output should have data");
+        let Some(output) = resolve_output_for_llm(&manifest, &blob_base, &None, None).await else {
+            panic!("resolve should succeed");
+        };
+        let Some(data) = output.data else {
+            panic!("output should have data");
+        };
 
         assert!(!data.contains_key("text/html"));
         let llm = match data.get("text/llm+plain") {
@@ -1560,10 +1573,9 @@ mod tests {
         assert_eq!(outputs[0].output_type, "stream");
         assert_eq!(outputs[1].output_type, "display_data");
         // The display_data should only have text/plain, not image/png
-        let data = outputs[1]
-            .data
-            .as_ref()
-            .expect("display_data should have data");
+        let Some(ref data) = outputs[1].data else {
+            panic!("display_data should have data");
+        };
         assert!(data.contains_key("text/plain"));
         assert!(!data.contains_key("image/png"));
     }

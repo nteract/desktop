@@ -197,9 +197,9 @@ mod tests {
         });
         let blob_base = Some("http://localhost:9999".to_string());
         let result = manifest_output_to_structured(&manifest, &blob_base);
-        let data = result["data"]
-            .as_object()
-            .expect("data should be an object");
+        let Some(data) = result["data"].as_object() else {
+            panic!("data should be an object");
+        };
         assert_eq!(data["text/plain"], "hello");
     }
 
@@ -213,9 +213,9 @@ mod tests {
         });
         let blob_base = Some("http://localhost:9999".to_string());
         let result = manifest_output_to_structured(&manifest, &blob_base);
-        let data = result["data"]
-            .as_object()
-            .expect("data should be an object");
+        let Some(data) = result["data"].as_object() else {
+            panic!("data should be an object");
+        };
         assert_eq!(data["image/png"], "http://localhost:9999/blob/abc123");
     }
 
@@ -229,9 +229,9 @@ mod tests {
             },
         });
         let result = manifest_output_to_structured(&manifest, &None);
-        let data = result["data"]
-            .as_object()
-            .expect("data should be an object");
+        let Some(data) = result["data"].as_object() else {
+            panic!("data should be an object");
+        };
         // Blob entry not included (no base URL to construct from)
         assert!(!data.contains_key("image/png"));
         // Inline entry still present
@@ -249,9 +249,9 @@ mod tests {
         });
         let blob_base = Some("http://localhost:9999".to_string());
         let result = manifest_output_to_structured(&manifest, &blob_base);
-        let data = result["data"]
-            .as_object()
-            .expect("data should be an object");
+        let Some(data) = result["data"].as_object() else {
+            panic!("data should be an object");
+        };
         assert!(!data.contains_key("application/vnd.plotly.v1+json"));
         assert_eq!(data["text/plain"], "Figure()");
     }
@@ -268,9 +268,9 @@ mod tests {
         });
         let blob_base = Some("http://localhost:9999".to_string());
         let result = manifest_output_to_structured(&manifest, &blob_base);
-        let data = result["data"]
-            .as_object()
-            .expect("data should be an object");
+        let Some(data) = result["data"].as_object() else {
+            panic!("data should be an object");
+        };
         assert!(!data.contains_key("text/html"));
         assert_eq!(data["image/png"], "http://localhost:9999/blob/img_hash");
     }
@@ -286,9 +286,9 @@ mod tests {
         });
         let blob_base = Some("http://localhost:9999".to_string());
         let result = manifest_output_to_structured(&manifest, &blob_base);
-        let data = result["data"]
-            .as_object()
-            .expect("data should be an object");
+        let Some(data) = result["data"].as_object() else {
+            panic!("data should be an object");
+        };
         assert_eq!(data["text/html"], "<b>bold</b>");
     }
 
@@ -304,9 +304,9 @@ mod tests {
         });
         let blob_base = Some("http://localhost:9999".to_string());
         let result = manifest_output_to_structured(&manifest, &blob_base);
-        let data = result["data"]
-            .as_object()
-            .expect("data should be an object");
+        let Some(data) = result["data"].as_object() else {
+            panic!("data should be an object");
+        };
         assert_eq!(data["text/llm+plain"], "Summary of output");
     }
 
@@ -348,9 +348,9 @@ mod tests {
         assert_eq!(result["output_type"], "error");
         assert_eq!(result["ename"], "ValueError");
         // Traceback should be a parsed JSON array, not the raw ContentRef
-        let tb = result["traceback"]
-            .as_array()
-            .expect("traceback should be an array");
+        let Some(tb) = result["traceback"].as_array() else {
+            panic!("traceback should be an array");
+        };
         assert_eq!(tb.len(), 2);
         assert_eq!(tb[0], "line 1");
         assert_eq!(tb[1], "line 2");
@@ -382,9 +382,9 @@ mod tests {
             "traceback": ["line 1", "line 2"],
         });
         let result = manifest_output_to_structured(&manifest, &None);
-        let tb = result["traceback"]
-            .as_array()
-            .expect("legacy array should pass through");
+        let Some(tb) = result["traceback"].as_array() else {
+            panic!("legacy array should pass through");
+        };
         assert_eq!(tb.len(), 2);
     }
 
@@ -423,12 +423,9 @@ mod tests {
         assert_eq!(result["cell"]["source"], "print('hello')");
         assert_eq!(result["cell"]["execution_count"], 3);
         assert_eq!(result["cell"]["status"], "done");
-        assert_eq!(
-            result["cell"]["outputs"]
-                .as_array()
-                .expect("outputs should be an array")
-                .len(),
-            1
-        );
+        let Some(outputs) = result["cell"]["outputs"].as_array() else {
+            panic!("outputs should be an array");
+        };
+        assert_eq!(outputs.len(), 1);
     }
 }
