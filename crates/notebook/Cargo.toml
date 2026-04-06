@@ -42,8 +42,8 @@ log = "0.4"
 tauri-plugin-log = "2"
 strsim = "0.11"  # For Levenshtein distance (typosquat detection)
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
-dirs = "5"
-toml = "0.8"
+dirs = "6"
+toml = "1"
 serde_yaml = "0.9"
 pathdiff = "0.2"
 pyproject-toml = "0.13"
@@ -58,7 +58,7 @@ cocoa = "0.26"
 
 # Unix process group support for kernel cleanup
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.30", features = ["signal", "process"] }
+nix = { version = "0.31", features = ["signal", "process"] }
 
 [features]
 default = []

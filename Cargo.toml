@@ -38,7 +38,7 @@ base64 = "0.22"
 tokio = { version = "1.36.0", features = ["full"] }
 runtimelib = { version = "1.5.0", default-features = false }
 jupyter-protocol = "1.4.0"
-thiserror = "1"
+thiserror = "2"
 schemars = "1"
 notify = "8"
 notify-debouncer-mini = "0.7"

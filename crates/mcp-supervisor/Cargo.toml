@@ -18,7 +18,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 schemars = { workspace = true }
 runt-workspace = { path = "../runt-workspace" }
-dirs = "5"
+dirs = "6"
 notify = { workspace = true }
 notify-debouncer-mini = { workspace = true }
 tracing = "0.1"

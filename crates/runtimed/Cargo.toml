@@ -31,7 +31,7 @@ futures = { workspace = true }
 loro_fractional_index = { workspace = true }
 log = "0.4"
 env_logger = "0.11"
-dirs = "5"
+dirs = "6"
 
 # Jupyter kernel management
 jupyter-protocol = { workspace = true }
@@ -51,7 +51,7 @@ reqwest = { version = "0.12", default-features = false, features = ["native-tls"
 reqwest-middleware = "0.4"
 
 # Content-addressed blob store
-sha2 = "0.10"
+sha2 = "0.11"
 hex = "0.4"
 
 # Terminal emulation for stream outputs
@@ -102,7 +102,7 @@ jiter = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-nix = { version = "0.30", features = ["signal", "process"] }
+nix = { version = "0.31", features = ["signal", "process"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }

@@ -85,7 +85,7 @@ pub fn compute_env_hash(deps: &UvDependencies, env_id: Option<&str>) -> String {
     }
 
     let hash = hasher.finalize();
-    format!("{:x}", hash)[..16].to_string()
+    hex::encode(hash)[..16].to_string()
 }
 
 /// Prepare a virtual environment with the given dependencies.

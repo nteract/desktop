@@ -60,7 +60,7 @@ fn compute_tool_hash(tool_name: &str, version: Option<&str>) -> String {
     // Include platform in hash since binaries are platform-specific
     hasher.update(Platform::current().to_string().as_bytes());
     let hash = hasher.finalize();
-    format!("{:x}", hash)[..12].to_string()
+    hex::encode(hash)[..12].to_string()
 }
 
 /// Compute the binary path for a tool inside a given environment directory.
@@ -477,7 +477,7 @@ async fn download_deno_from_github(version: &str) -> Result<BootstrappedTool> {
     info!("Verifying checksum...");
     let mut hasher = Sha256::new();
     hasher.update(&zip_bytes);
-    let actual_hash = format!("{:x}", hasher.finalize());
+    let actual_hash = hex::encode(hasher.finalize());
 
     if actual_hash != expected_hash {
         return Err(anyhow!(
@@ -725,7 +725,7 @@ async fn download_uv_from_github(version: &str) -> Result<BootstrappedTool> {
     info!("Verifying checksum...");
     let mut hasher = Sha256::new();
     hasher.update(&archive_bytes);
-    let actual_hash = format!("{:x}", hasher.finalize());
+    let actual_hash = hex::encode(hasher.finalize());
 
     if actual_hash != expected_hash {
         return Err(anyhow!(

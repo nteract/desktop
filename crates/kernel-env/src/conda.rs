@@ -81,7 +81,7 @@ pub fn compute_env_hash(deps: &CondaDependencies) -> String {
     }
 
     let hash = hasher.finalize();
-    format!("{:x}", hash)[..16].to_string()
+    hex::encode(hash)[..16].to_string()
 }
 
 /// Prepare a conda environment with the given dependencies.
