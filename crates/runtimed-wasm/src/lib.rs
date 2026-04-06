@@ -101,6 +101,10 @@ pub enum FrameEvent {
         /// Cell IDs whose outputs changed in this sync frame.
         #[serde(skip_serializing_if = "Vec::is_empty")]
         output_changed_cells: Vec<String>,
+        /// Required renderer plugins per cell ID, derived from output MIME types.
+        /// Only populated for cells in `output_changed_cells`.
+        #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
+        required_plugins_by_cell: std::collections::HashMap<String, Vec<String>>,
     },
     /// Sync error recovered — doc rebuilt and sync state normalized.
     ///
@@ -436,6 +440,56 @@ impl NotebookHandle {
         };
         match outputs {
             Some(outputs) => serialize_to_js(&outputs).unwrap_or(JsValue::UNDEFINED),
+            None => JsValue::UNDEFINED,
+        }
+    }
+
+    /// Get deduplicated MIME types from a cell's current execution outputs.
+    ///
+    /// Reads the cell's `execution_id` from the notebook doc, then looks up
+    /// `mime_types` in the RuntimeStateDoc. Returns undefined if the cell has
+    /// no execution or no MIME types.
+    pub fn get_cell_output_mime_types(&self, cell_id: &str) -> JsValue {
+        let mimes = match self.doc.get_execution_id(cell_id) {
+            Some(eid) => {
+                let m = self.state_doc.get_mime_types(&eid);
+                if m.is_empty() {
+                    None
+                } else {
+                    Some(m)
+                }
+            }
+            None => None,
+        };
+        match mimes {
+            Some(m) => serialize_to_js(&m).unwrap_or(JsValue::UNDEFINED),
+            None => JsValue::UNDEFINED,
+        }
+    }
+
+    /// Get required renderer plugins for a cell, derived from output MIME types.
+    ///
+    /// Returns a JS array of plugin names (e.g., `["plotly", "vega"]`), or
+    /// undefined if the cell has no outputs requiring plugins.
+    pub fn get_cell_required_plugins(&self, cell_id: &str) -> JsValue {
+        let plugins = match self.doc.get_execution_id(cell_id) {
+            Some(eid) => {
+                let mimes = self.state_doc.get_mime_types(&eid);
+                if mimes.is_empty() {
+                    None
+                } else {
+                    let p = notebook_doc::required_plugins::compute_required_plugins(&mimes);
+                    if p.is_empty() {
+                        None
+                    } else {
+                        Some(p)
+                    }
+                }
+            }
+            None => None,
+        };
+        match plugins {
+            Some(p) => serialize_to_js(&p).unwrap_or(JsValue::UNDEFINED),
             None => JsValue::UNDEFINED,
         }
     }
@@ -1359,10 +1413,33 @@ impl NotebookHandle {
                     Vec::new()
                 };
 
+                // Compute required plugins for cells with output changes.
+                let required_plugins_by_cell = if !output_changed_cells.is_empty() {
+                    let mut map = std::collections::HashMap::new();
+                    for cell_id in &output_changed_cells {
+                        if let Some(eid) = self.doc.get_execution_id(cell_id) {
+                            let mimes = self.state_doc.get_mime_types(&eid);
+                            if !mimes.is_empty() {
+                                let plugins =
+                                    notebook_doc::required_plugins::compute_required_plugins(
+                                        &mimes,
+                                    );
+                                if !plugins.is_empty() {
+                                    map.insert(cell_id.clone(), plugins);
+                                }
+                            }
+                        }
+                    }
+                    map
+                } else {
+                    std::collections::HashMap::new()
+                };
+
                 events.push(FrameEvent::RuntimeStateSyncApplied {
                     changed,
                     state,
                     output_changed_cells,
+                    required_plugins_by_cell,
                 });
             }
             frame_types::POOL_STATE_SYNC => {

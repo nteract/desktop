@@ -244,6 +244,21 @@ export class NotebookHandle {
      */
     get_cell_outputs(cell_id: string): any;
     /**
+     * Get deduplicated MIME types from a cell's current execution outputs.
+     *
+     * Reads the cell's `execution_id` from the notebook doc, then looks up
+     * `mime_types` in the RuntimeStateDoc. Returns undefined if the cell has
+     * no execution or no MIME types.
+     */
+    get_cell_output_mime_types(cell_id: string): string[] | undefined;
+    /**
+     * Get required renderer plugins for a cell, derived from output MIME types.
+     *
+     * Returns a JS array of plugin names (e.g., `["plotly", "vega"]`), or
+     * undefined if the cell has no outputs requiring plugins.
+     */
+    get_cell_required_plugins(cell_id: string): string[] | undefined;
+    /**
      * Get a cell's fractional index position string.
      */
     get_cell_position(cell_id: string): string | undefined;

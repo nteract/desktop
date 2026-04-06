@@ -110,6 +110,7 @@ export function useAutomergeNotebook() {
       snapshots,
       blobPort,
       outputCacheRef.current,
+      handle,
     );
     // Pre-warm plugin cache so iframe rendering doesn't wait for async loads
     const allPlugins = newCells.flatMap((c) =>
@@ -129,6 +130,7 @@ export function useAutomergeNotebook() {
     const newCells = cellSnapshotsToNotebookCellsSync(
       snapshots,
       outputCacheRef.current,
+      handle,
     );
     replaceNotebookCells(newCells);
   }, []);

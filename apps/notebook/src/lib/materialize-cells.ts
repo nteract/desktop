@@ -124,6 +124,7 @@ export function reuseOutputsIfUnchanged(
 export function cellSnapshotsToNotebookCellsSync(
   snapshots: CellSnapshot[],
   cache: Map<string, JupyterOutput>,
+  handle?: NotebookHandle,
 ): NotebookCell[] {
   return snapshots.map((snap) => {
     const executionCount =
@@ -172,7 +173,9 @@ export function cellSnapshotsToNotebookCellsSync(
         source: snap.source,
         execution_count: ec,
         outputs: resolvedOutputs,
-        requiredPlugins: computeRequiredPlugins(resolvedOutputs),
+        requiredPlugins:
+          handle?.get_cell_required_plugins(snap.id) ??
+          computeRequiredPlugins(resolvedOutputs),
         metadata,
       };
     }
@@ -207,6 +210,7 @@ export async function cellSnapshotsToNotebookCells(
   snapshots: CellSnapshot[],
   blobPort: number | null,
   cache: Map<string, JupyterOutput>,
+  handle?: NotebookHandle,
 ): Promise<NotebookCell[]> {
   return Promise.all(
     snapshots.map(async (snap) => {
@@ -238,7 +242,9 @@ export async function cellSnapshotsToNotebookCells(
           source: snap.source,
           execution_count: ec,
           outputs: resolvedOutputs,
-          requiredPlugins: computeRequiredPlugins(resolvedOutputs),
+          requiredPlugins:
+            handle?.get_cell_required_plugins(snap.id) ??
+            computeRequiredPlugins(resolvedOutputs),
           metadata,
         };
       }
@@ -320,7 +326,7 @@ export function materializeCellFromWasm(
       source,
       execution_count: executionCount,
       outputs,
-      requiredPlugins: computeRequiredPlugins(outputs),
+      requiredPlugins: handle.get_cell_required_plugins(cellId) ?? [],
       metadata,
     };
   }

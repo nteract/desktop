@@ -122,6 +122,12 @@ pub struct ExecutionState {
     /// Output manifest hashes for this execution.
     #[serde(default)]
     pub outputs: Vec<String>,
+    /// Deduplicated MIME types across all outputs in this execution.
+    ///
+    /// Populated by the daemon at output creation time. Used by WASM and
+    /// runt-mcp to compute required renderer plugins without blob access.
+    #[serde(default)]
+    pub mime_types: Vec<String>,
     /// Source code that was executed (audit log).
     /// Set by the coordinator when creating the execution entry.
     #[serde(default)]
@@ -989,6 +995,7 @@ impl RuntimeStateDoc {
             });
 
         let outputs = self.read_str_list(&entry, "outputs");
+        let mime_types = self.read_str_list(&entry, "mime_types");
 
         let source = self.read_opt_str(&entry, "source");
 
@@ -1012,6 +1019,7 @@ impl RuntimeStateDoc {
             execution_count,
             success,
             outputs,
+            mime_types,
             source,
             seq,
         })
@@ -1253,6 +1261,142 @@ impl RuntimeStateDoc {
             }
         }
         results
+    }
+
+    // ── MIME type metadata (keyed by execution_id) ─────────────────
+
+    /// Get the ObjId for the `executions/{execution_id}/mime_types` list, if it exists.
+    fn get_mime_types_list(&self, execution_id: &str) -> Option<automerge::ObjId> {
+        let executions = self.get_map("executions")?;
+        let (_, entry) = self.doc.get(&executions, execution_id).ok().flatten()?;
+        self.doc
+            .get(&entry, "mime_types")
+            .ok()
+            .flatten()
+            .and_then(|(value, id)| match value {
+                Value::Object(ObjType::List) => Some(id),
+                _ => None,
+            })
+    }
+
+    /// Ensure the `executions/{execution_id}/mime_types` list exists.
+    #[allow(clippy::expect_used)]
+    fn ensure_mime_types_list(&mut self, execution_id: &str) -> automerge::ObjId {
+        let executions = self
+            .get_map("executions")
+            .expect("executions map must exist");
+        let (_, entry) = self
+            .doc
+            .get(&executions, execution_id)
+            .ok()
+            .flatten()
+            .expect("execution entry must exist");
+        match self.doc.get(&entry, "mime_types").ok().flatten() {
+            Some((Value::Object(ObjType::List), id)) => id,
+            _ => self
+                .doc
+                .put_object(&entry, "mime_types", ObjType::List)
+                .expect("create mime_types list on execution entry"),
+        }
+    }
+
+    /// Replace the MIME type list for an execution.
+    ///
+    /// Used during notebook load and when setting all outputs at once.
+    #[allow(clippy::expect_used)]
+    pub fn set_mime_types(
+        &mut self,
+        execution_id: &str,
+        mime_types: &[String],
+    ) -> Result<bool, AutomergeError> {
+        let executions = self
+            .get_map("executions")
+            .expect("executions map must exist");
+        let (_, entry) = self
+            .doc
+            .get(&executions, execution_id)
+            .ok()
+            .flatten()
+            .expect("execution entry must exist");
+
+        // Delete existing list and create fresh
+        let _ = self.doc.delete(&entry, "mime_types");
+        let list_id = self.doc.put_object(&entry, "mime_types", ObjType::List)?;
+        for (i, mime) in mime_types.iter().enumerate() {
+            self.doc.insert(&list_id, i, mime.as_str())?;
+        }
+        Ok(true)
+    }
+
+    /// Append new MIME types to an execution's list, deduplicating against existing entries.
+    ///
+    /// Used for incremental output appends (e.g., display_data arriving mid-execution).
+    pub fn append_mime_types(
+        &mut self,
+        execution_id: &str,
+        new_mimes: &[String],
+    ) -> Result<(), AutomergeError> {
+        if new_mimes.is_empty() {
+            return Ok(());
+        }
+        let list_id = self.ensure_mime_types_list(execution_id);
+
+        // Read existing MIME types for dedup
+        let len = self.doc.length(&list_id);
+        let mut existing = std::collections::HashSet::with_capacity(len);
+        for i in 0..len {
+            if let Some(s) = self
+                .doc
+                .get(&list_id, i)
+                .ok()
+                .flatten()
+                .and_then(|(value, _)| match value {
+                    Value::Scalar(s) => match s.as_ref() {
+                        ScalarValue::Str(s) => Some(s.to_string()),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+            {
+                existing.insert(s);
+            }
+        }
+
+        let mut insert_pos = len;
+        for mime in new_mimes {
+            if existing.insert(mime.clone()) {
+                self.doc.insert(&list_id, insert_pos, mime.as_str())?;
+                insert_pos += 1;
+            }
+        }
+        Ok(())
+    }
+
+    /// Read the MIME type list for an execution.
+    pub fn get_mime_types(&self, execution_id: &str) -> Vec<String> {
+        let Some(list_id) = self.get_mime_types_list(execution_id) else {
+            return Vec::new();
+        };
+        let len = self.doc.length(&list_id);
+        let mut out = Vec::with_capacity(len);
+        for i in 0..len {
+            if let Some(s) = self
+                .doc
+                .get(&list_id, i)
+                .ok()
+                .flatten()
+                .and_then(|(value, _)| match value {
+                    Value::Scalar(s) => match s.as_ref() {
+                        ScalarValue::Str(s) => Some(s.to_string()),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+            {
+                out.push(s);
+            }
+        }
+        out
     }
 
     // ── Execution lifecycle ────────────────────────────────────────
@@ -2910,6 +3054,7 @@ mod tests {
                 execution_count: Some(1),
                 success: Some(true),
                 outputs: vec!["hash1".to_string()],
+                mime_types: vec![],
                 source: None,
                 seq: None,
             },
@@ -2930,6 +3075,7 @@ mod tests {
                 execution_count: None,
                 success: None,
                 outputs: vec![],
+                mime_types: vec![],
                 source: None,
                 seq: None,
             },
@@ -2951,6 +3097,7 @@ mod tests {
                 execution_count: Some(1),
                 success: Some(true),
                 outputs: vec![],
+                mime_types: vec![],
                 source: None,
                 seq: None,
             },
@@ -2975,6 +3122,7 @@ mod tests {
                 execution_count: Some(1),
                 success: Some(true),
                 outputs: vec!["hash1".to_string()],
+                mime_types: vec![],
                 source: None,
                 seq: None,
             },
@@ -2996,6 +3144,7 @@ mod tests {
                 execution_count: None,
                 success: None,
                 outputs: vec![],
+                mime_types: vec![],
                 source: None,
                 seq: None,
             },
@@ -3029,6 +3178,7 @@ mod tests {
                 execution_count: Some(1),
                 success: Some(true),
                 outputs: vec![],
+                mime_types: vec![],
                 source: None,
                 seq: None,
             },

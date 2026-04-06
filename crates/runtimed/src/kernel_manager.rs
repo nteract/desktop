@@ -1706,6 +1706,14 @@ impl RoomKernel {
                                                 e
                                             );
                                         }
+                                        let mime_types =
+                                            output_store::extract_mime_types(&nbformat_value);
+                                        if let Err(e) = fork.append_mime_types(&eid, &mime_types) {
+                                            warn!(
+                                                "[kernel-manager] Failed to append mime types to state doc: {}",
+                                                e
+                                            );
+                                        }
 
                                         let merge_ok = {
                                             let mut sd = state_doc_for_iopub.write().await;
@@ -1955,6 +1963,15 @@ impl RoomKernel {
                                         if let Err(e) = fork.append_output(&eid, &output_ref) {
                                             warn!(
                                                 "[kernel-manager] Failed to append error output to state doc: {}",
+                                                e
+                                            );
+                                        }
+                                        // Error outputs have no MIME data keys, but call for consistency
+                                        let mime_types =
+                                            output_store::extract_mime_types(&nbformat_value);
+                                        if let Err(e) = fork.append_mime_types(&eid, &mime_types) {
+                                            warn!(
+                                                "[kernel-manager] Failed to append mime types to state doc: {}",
                                                 e
                                             );
                                         }
@@ -2358,6 +2375,16 @@ impl RoomKernel {
                                             if let Err(e) = fork.append_output(&eid, &output_ref) {
                                                 warn!(
                                                     "[kernel-manager] Failed to append page output to state doc: {}",
+                                                    e
+                                                );
+                                            }
+                                            let mime_types =
+                                                output_store::extract_mime_types(&nbformat_value);
+                                            if let Err(e) =
+                                                fork.append_mime_types(&eid, &mime_types)
+                                            {
+                                                warn!(
+                                                    "[kernel-manager] Failed to append mime types to state doc: {}",
                                                     e
                                                 );
                                             }

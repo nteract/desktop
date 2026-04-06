@@ -7,7 +7,6 @@ import {
   type IsolatedFrameHandle,
 } from "@/components/isolated";
 import { injectLibraries } from "@/components/isolated/iframe-libraries";
-import { computeRequiredPlugins } from "@/lib/renderer-plugins";
 import {
   AnsiErrorOutput,
   AnsiStreamOutput,
@@ -358,37 +357,9 @@ export function OutputArea({
     // Clear the tracking set on each call — a reloaded iframe has a fresh registry.
     injectedLibsRef.current.clear();
 
-    // Collect plugins from the cell's direct outputs
+    // Plugins are pre-computed by the WASM layer from RuntimeStateDoc MIME types,
+    // covering both direct outputs and widget-captured outputs.
     const allPlugins = new Set(requiredPlugins ?? []);
-
-    // Also scan output widgets for captured outputs that need plugins.
-    // A cell may output a widget view (application/vnd.jupyter.widget-view+json)
-    // whose OutputModel.outputs contain plotly/vega/etc MIME types.
-    if (widgetContext?.store) {
-      for (const output of outputs) {
-        if (
-          (output.output_type === "execute_result" ||
-            output.output_type === "display_data") &&
-          output.data?.["application/vnd.jupyter.widget-view+json"]
-        ) {
-          const widgetData = output.data[
-            "application/vnd.jupyter.widget-view+json"
-          ] as { model_id?: string };
-          if (widgetData?.model_id) {
-            const model = widgetContext.store.getModel(widgetData.model_id);
-            if (model?.modelName === "OutputModel" && model.state.outputs) {
-              const widgetOutputs = model.state.outputs as Array<{
-                output_type: string;
-                data?: Record<string, unknown>;
-              }>;
-              for (const p of computeRequiredPlugins(widgetOutputs)) {
-                allPlugins.add(p);
-              }
-            }
-          }
-        }
-      }
-    }
 
     if (allPlugins.size > 0) {
       await injectLibraries(

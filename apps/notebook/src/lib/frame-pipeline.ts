@@ -7,7 +7,6 @@
  */
 
 import { preWarmPlugins } from "@/components/isolated/iframe-libraries";
-import { computeRequiredPlugins } from "@/lib/renderer-plugins";
 import type { JupyterOutput } from "../types";
 import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 import { getBlobPort, refreshBlobPort } from "./blob-port";
@@ -143,7 +142,8 @@ export async function materializeChangeset(
           ? (handle.get_cell_source(cellId) ?? "")
           : (existingCell?.source ?? handle.get_cell_source(cellId) ?? "");
 
-        const plugins = computeRequiredPlugins(resolved);
+        const plugins: string[] =
+          handle.get_cell_required_plugins(cellId) ?? [];
         // Pre-warm plugin cache so OutputArea.injectLibraries() resolves instantly
         preWarmPlugins(plugins);
 

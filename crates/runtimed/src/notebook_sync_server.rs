@@ -43,6 +43,7 @@ use crate::kernel_manager::{DenoLaunchedConfig, LaunchedEnvConfig, RoomKernel};
 use crate::markdown_assets::resolve_markdown_assets;
 use crate::notebook_doc::{notebook_doc_filename, CellSnapshot, NotebookDoc};
 use crate::notebook_metadata::NotebookMetadataSnapshot;
+use crate::output_store;
 use crate::protocol::{
     EnvSyncDiff, NotebookBroadcast, NotebookRequest, NotebookResponse, QueueEntry,
 };
@@ -1210,6 +1211,8 @@ impl NotebookRoom {
                     let synthetic_eid = uuid::Uuid::new_v4().to_string();
                     sd.create_execution(&synthetic_eid, cell_id);
                     let _ = sd.set_outputs(&synthetic_eid, outputs);
+                    let mime_types = output_store::extract_all_mime_types(outputs);
+                    let _ = sd.set_mime_types(&synthetic_eid, &mime_types);
                     sd.set_execution_done(&synthetic_eid, true);
                     let _ = doc.set_execution_id(cell_id, Some(&synthetic_eid));
                 }
@@ -6728,6 +6731,8 @@ where
                     let synthetic_eid = uuid::Uuid::new_v4().to_string();
                     sd.create_execution(&synthetic_eid, &cell.id);
                     let _ = sd.set_outputs(&synthetic_eid, output_refs);
+                    let mime_types = output_store::extract_all_mime_types(output_refs);
+                    let _ = sd.set_mime_types(&synthetic_eid, &mime_types);
                     sd.set_execution_done(&synthetic_eid, true);
                     cell_eids.insert(cell.id.clone(), synthetic_eid);
                 }
@@ -6892,6 +6897,8 @@ pub async fn load_notebook_from_disk_with_state_doc(
                 if has_outputs {
                     sd.set_outputs(&synthetic_eid, &output_refs)
                         .map_err(|e| format!("Failed to set outputs in state doc: {}", e))?;
+                    let mime_types = output_store::extract_all_mime_types(&cell.outputs);
+                    let _ = sd.set_mime_types(&synthetic_eid, &mime_types);
                 }
                 if let Some(ec) = parsed_ec {
                     sd.set_execution_count(&synthetic_eid, ec);
@@ -7077,15 +7084,21 @@ async fn apply_ipynb_changes(
     // Pre-convert external outputs through the blob store so they're stored as
     // manifest hashes rather than raw JSON. This also ensures comparisons against
     // the doc's existing manifest hashes work correctly.
-    let converted_outputs: HashMap<String, Vec<String>> = {
-        let mut map = HashMap::new();
+    let (converted_outputs, converted_mime_types): (
+        HashMap<String, Vec<String>>,
+        HashMap<String, Vec<String>>,
+    ) = {
+        let mut output_map = HashMap::new();
+        let mut mime_map = HashMap::new();
         for cell in external_cells {
             if !cell.outputs.is_empty() {
                 let refs = outputs_to_manifest_refs(&cell.outputs, &room.blob_store).await;
-                map.insert(cell.id.clone(), refs);
+                let mimes = output_store::extract_all_mime_types(&cell.outputs);
+                output_map.insert(cell.id.clone(), refs);
+                mime_map.insert(cell.id.clone(), mimes);
             }
         }
-        map
+        (output_map, mime_map)
     };
     let notebook_path_for_assets = room.notebook_path.read().await.clone();
     let converted_assets: HashMap<String, ResolvedAssets> = {
@@ -7205,6 +7218,10 @@ async fn apply_ipynb_changes(
                             sd.create_execution(&synthetic_eid, &ext_cell.id);
                             if !ext_outputs.is_empty() {
                                 let _ = sd.set_outputs(&synthetic_eid, ext_outputs);
+                                if let Some(mimes) = converted_mime_types.get(ext_cell.id.as_str())
+                                {
+                                    let _ = sd.set_mime_types(&synthetic_eid, mimes);
+                                }
                             }
                             if let Some(ec) = parsed_ec {
                                 sd.set_execution_count(&synthetic_eid, ec);
@@ -7226,6 +7243,9 @@ async fn apply_ipynb_changes(
                         sd.create_execution(&synthetic_eid, &ext_cell.id);
                         if !ext_outputs.is_empty() {
                             let _ = sd.set_outputs(&synthetic_eid, ext_outputs);
+                            if let Some(mimes) = converted_mime_types.get(ext_cell.id.as_str()) {
+                                let _ = sd.set_mime_types(&synthetic_eid, mimes);
+                            }
                         }
                         if let Some(ec) = parsed_ec {
                             sd.set_execution_count(&synthetic_eid, ec);
@@ -7372,6 +7392,9 @@ async fn apply_ipynb_changes(
                         sd.create_execution(&synthetic_eid, &ext_cell.id);
                         if !ext_outputs.is_empty() {
                             let _ = sd.set_outputs(&synthetic_eid, ext_outputs);
+                            if let Some(mimes) = converted_mime_types.get(ext_cell.id.as_str()) {
+                                let _ = sd.set_mime_types(&synthetic_eid, mimes);
+                            }
                         }
                         if let Some(ec) = parsed_ec {
                             sd.set_execution_count(&synthetic_eid, ec);
@@ -7419,6 +7442,9 @@ async fn apply_ipynb_changes(
                     sd.create_execution(&synthetic_eid, &ext_cell.id);
                     if !ext_outputs.is_empty() {
                         let _ = sd.set_outputs(&synthetic_eid, ext_outputs);
+                        if let Some(mimes) = converted_mime_types.get(ext_cell.id.as_str()) {
+                            let _ = sd.set_mime_types(&synthetic_eid, mimes);
+                        }
                     }
                     if let Some(ec) = parsed_ec {
                         sd.set_execution_count(&synthetic_eid, ec);

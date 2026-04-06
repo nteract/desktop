@@ -5,6 +5,7 @@ use rmcp::ErrorData as McpError;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+use notebook_doc::required_plugins;
 use runtimed_client::output_resolver;
 
 use crate::formatting;
@@ -192,6 +193,28 @@ pub async fn get_all_cells(
                     .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
                     .unwrap_or_default();
 
+                // Extract MIME types from resolved outputs for plugin metadata
+                let mime_types: Vec<String> = {
+                    let mut seen = std::collections::HashSet::new();
+                    let mut result = Vec::new();
+                    for output in &resolved {
+                        if matches!(
+                            output.output_type.as_str(),
+                            "display_data" | "execute_result"
+                        ) {
+                            if let Some(ref data) = output.data {
+                                for mime in data.keys() {
+                                    if seen.insert(mime.clone()) {
+                                        result.push(mime.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    result
+                };
+                let plugins = required_plugins::compute_required_plugins(&mime_types);
+
                 json_cells.push(serde_json::json!({
                     "cell_id": cell.id,
                     "cell_type": cell.cell_type,
@@ -200,6 +223,8 @@ pub async fn get_all_cells(
                     "outputs": output_texts,
                     "status": status,
                     "tags": tags,
+                    "mime_types": mime_types,
+                    "required_plugins": plugins,
                 }));
             }
             let text = serde_json::to_string_pretty(&json_cells).unwrap_or_default();

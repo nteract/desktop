@@ -40,6 +40,7 @@ pub mod metadata;
 pub mod pep723;
 pub mod pool_state;
 pub mod presence;
+pub mod required_plugins;
 pub mod runtime_state;
 
 use std::collections::HashMap;

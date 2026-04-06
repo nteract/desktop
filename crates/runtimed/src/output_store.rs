@@ -372,6 +372,42 @@ pub fn get_display_id(manifest_json: &str) -> Option<String> {
     }
 }
 
+/// Extract MIME type keys from an nbformat output JSON value.
+///
+/// For `display_data` and `execute_result` outputs, returns the keys of the
+/// `data` bundle (e.g., `["text/plain", "image/png"]`). For `stream` and
+/// `error` outputs, returns an empty vec (no MIME types relevant for plugins).
+pub fn extract_mime_types(output_json: &Value) -> Vec<String> {
+    match output_json.get("output_type").and_then(|v| v.as_str()) {
+        Some("display_data") | Some("execute_result") => output_json
+            .get("data")
+            .and_then(|d| d.as_object())
+            .map(|obj| obj.keys().cloned().collect())
+            .unwrap_or_default(),
+        _ => vec![],
+    }
+}
+
+/// Extract deduplicated MIME types from a slice of output strings.
+///
+/// Each output string may be raw nbformat JSON or a manifest hash. For raw
+/// JSON, MIME type keys are extracted from the `data` bundle. Manifest hashes
+/// (64-char hex) are skipped since they require blob store access to resolve.
+pub fn extract_all_mime_types(output_strings: &[String]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut result = Vec::new();
+    for output_str in output_strings {
+        if let Ok(parsed) = serde_json::from_str::<Value>(output_str) {
+            for mime in extract_mime_types(&parsed) {
+                if seen.insert(mime.clone()) {
+                    result.push(mime);
+                }
+            }
+        }
+    }
+    result
+}
+
 /// Update display data in a manifest with new data and metadata.
 ///
 /// Returns the updated manifest JSON if the manifest is a display_data or execute_result

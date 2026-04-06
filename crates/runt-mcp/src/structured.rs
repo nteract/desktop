@@ -4,6 +4,7 @@
 //! return both text content (for LLM consumption) and structured JSON that
 //! the output.html renderer can display.
 
+use notebook_doc::required_plugins;
 use runtimed_client::resolved_output::{DataValue, Output, ResolvedCell};
 use serde_json::{json, Value};
 
@@ -26,8 +27,31 @@ fn blob_url_or_skip(output: &Output, mime: &str) -> Option<Value> {
         .map(|url| Value::String(url.clone()))
 }
 
+/// Extract deduplicated MIME types from resolved outputs.
+fn extract_mime_types(outputs: &[Output]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut result = Vec::new();
+    for output in outputs {
+        if matches!(
+            output.output_type.as_str(),
+            "display_data" | "execute_result"
+        ) {
+            if let Some(ref data) = output.data {
+                for mime in data.keys() {
+                    if seen.insert(mime.clone()) {
+                        result.push(mime.clone());
+                    }
+                }
+            }
+        }
+    }
+    result
+}
+
 /// Build the structuredContent JSON for a resolved cell.
 pub fn cell_structured_content(cell: &ResolvedCell, status: &str) -> Value {
+    let mime_types = extract_mime_types(&cell.outputs);
+    let plugins = required_plugins::compute_required_plugins(&mime_types);
     json!({
         "cell": {
             "cell_id": cell.id,
@@ -35,6 +59,8 @@ pub fn cell_structured_content(cell: &ResolvedCell, status: &str) -> Value {
             "outputs": cell.outputs.iter().map(output_to_structured).collect::<Vec<_>>(),
             "execution_count": cell.execution_count,
             "status": status,
+            "mime_types": mime_types,
+            "required_plugins": plugins,
         }
     })
 }
