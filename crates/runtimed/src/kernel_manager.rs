@@ -141,6 +141,81 @@ fn extract_buffer_paths(data: &serde_json::Value) -> Vec<Vec<String>> {
         .unwrap_or_default()
 }
 
+/// Threshold (bytes) for blob-storing comm state values.
+/// Properties whose JSON serialization exceeds this size are replaced with
+/// `{"$blob": "<hash>"}` sentinels. This prevents catastrophically slow
+/// Automerge writes for large state (e.g., anywidget `_esm` JS bundles,
+/// Vega-Lite `spec` dicts with embedded datasets).
+const COMM_STATE_BLOB_THRESHOLD: usize = 1024;
+
+/// Scan the top-level properties of a comm state object and replace any
+/// whose JSON-serialized size exceeds `COMM_STATE_BLOB_THRESHOLD` with
+/// `{"$blob": "<hash>"}` sentinels stored in the blob store.
+///
+/// Only top-level keys are checked — we don't recurse into nested objects.
+/// This is intentional: the Automerge cost comes from expanding large nested
+/// structures into per-key CRDT entries, and the top-level is where `spec`,
+/// `_esm`, and `_css` live.
+///
+/// Returns the modified state with large values replaced by sentinels.
+async fn blob_store_large_state_values(
+    state: &serde_json::Value,
+    blob_store: &BlobStore,
+) -> serde_json::Value {
+    let Some(obj) = state.as_object() else {
+        return state.clone();
+    };
+
+    let mut modified = serde_json::Map::with_capacity(obj.len());
+
+    for (key, value) in obj {
+        // Serialize to check size. For strings we can check len() directly;
+        // for objects/arrays we need the JSON representation.
+        let size = match value {
+            serde_json::Value::String(s) => s.len(),
+            serde_json::Value::Object(_) | serde_json::Value::Array(_) => {
+                serde_json::to_string(value).map(|s| s.len()).unwrap_or(0)
+            }
+            // Scalars (bool, number, null) are always small.
+            _ => 0,
+        };
+
+        if size > COMM_STATE_BLOB_THRESHOLD {
+            // Serialize and store in blob store.
+            let json_bytes = match serde_json::to_vec(value) {
+                Ok(b) => b,
+                Err(e) => {
+                    log::warn!(
+                        "[kernel-manager] Failed to serialize comm state key '{}': {}",
+                        key,
+                        e
+                    );
+                    modified.insert(key.clone(), value.clone());
+                    continue;
+                }
+            };
+            match blob_store.put(&json_bytes, "application/json").await {
+                Ok(hash) => {
+                    modified.insert(key.clone(), serde_json::json!({"$blob": hash}));
+                }
+                Err(e) => {
+                    log::warn!(
+                        "[kernel-manager] Failed to blob-store comm state key '{}' ({} bytes): {}",
+                        key,
+                        size,
+                        e
+                    );
+                    modified.insert(key.clone(), value.clone());
+                }
+            }
+        } else {
+            modified.insert(key.clone(), value.clone());
+        }
+    }
+
+    serde_json::Value::Object(modified)
+}
+
 /// Convert a protocol QueueEntry to a RuntimeStateDoc QueueEntry.
 fn to_doc_entry(e: &QueueEntry) -> DocQueueEntry {
     DocQueueEntry {
@@ -1180,9 +1255,11 @@ impl RoomKernel {
             loop {
                 match iopub.read().await {
                     Ok(message) => {
+                        let iopub_start = std::time::Instant::now();
+                        let msg_type = message.header.msg_type.clone();
                         debug!(
                             "[iopub] type={} parent_msg_id={:?}",
-                            message.header.msg_type,
+                            msg_type,
                             message.parent_header.as_ref().map(|h| &h.msg_id)
                         );
 
@@ -1943,9 +2020,12 @@ impl RoomKernel {
                                 // Track comm state for multi-window sync
                                 let data = serde_json::to_value(&open.data).unwrap_or_default();
 
+                                let comm_open_start = std::time::Instant::now();
+                                let state_json_size =
+                                    serde_json::to_string(&data).map(|s| s.len()).unwrap_or(0);
                                 debug!(
-                                    "[comm_open] comm_id={} target={}",
-                                    open.comm_id.0, open.target_name
+                                    "[comm_open] comm_id={} target={} state_size={} bytes",
+                                    open.comm_id.0, open.target_name, state_json_size
                                 );
                                 // Store binary buffers in blob store, replacing them with
                                 // {"$blob": "<hash>"} sentinels. The sentinel-carrying state
@@ -1963,8 +2043,25 @@ impl RoomKernel {
                                 )
                                 .await;
 
+                                let blob_elapsed = comm_open_start.elapsed();
+                                if blob_elapsed > std::time::Duration::from_millis(10) {
+                                    warn!(
+                                        "[iopub-timing] comm_open blob store took {:?} for comm_id={}",
+                                        blob_elapsed, open.comm_id.0
+                                    );
+                                }
+
+                                // Blob-store large state properties before CRDT write.
+                                // This prevents catastrophic Automerge slowdown from
+                                // expanding large nested JSON (e.g., 85KB Vega-Lite spec)
+                                // into thousands of per-key CRDT entries.
+                                let state_with_blobs =
+                                    blob_store_large_state_values(&state_with_blobs, &blob_store)
+                                        .await;
+
                                 // Write to RuntimeStateDoc (native Automerge map)
                                 {
+                                    let lock_start = std::time::Instant::now();
                                     let model_module = state_with_blobs
                                         .get("_model_module")
                                         .and_then(|v| v.as_str())
@@ -1975,6 +2072,14 @@ impl RoomKernel {
                                         .unwrap_or("");
                                     let seq = comm_seq.fetch_add(1, Ordering::Relaxed);
                                     let mut sd = state_doc_for_iopub.write().await;
+                                    let lock_wait = lock_start.elapsed();
+                                    if lock_wait > std::time::Duration::from_millis(5) {
+                                        warn!(
+                                            "[iopub-timing] comm_open state_doc write lock waited {:?} for comm_id={}",
+                                            lock_wait, open.comm_id.0
+                                        );
+                                    }
+                                    let crdt_start = std::time::Instant::now();
                                     sd.put_comm(
                                         &open.comm_id.0,
                                         &open.target_name,
@@ -1983,6 +2088,13 @@ impl RoomKernel {
                                         &state_with_blobs,
                                         seq,
                                     );
+                                    let crdt_elapsed = crdt_start.elapsed();
+                                    if crdt_elapsed > std::time::Duration::from_millis(10) {
+                                        warn!(
+                                            "[iopub-timing] comm_open put_comm CRDT write took {:?} for comm_id={}, state_size={} bytes",
+                                            crdt_elapsed, open.comm_id.0, state_json_size
+                                        );
+                                    }
 
                                     // If this is an OutputModel with msg_id set, register capture
                                     if model_name == "OutputModel" {
@@ -2002,6 +2114,13 @@ impl RoomKernel {
 
                                 // No broadcast — frontend receives comm_open via
                                 // CRDT sync of RuntimeStateDoc comms map.
+                                let total = comm_open_start.elapsed();
+                                if total > std::time::Duration::from_millis(50) {
+                                    warn!(
+                                        "[iopub-timing] comm_open TOTAL {:?} for comm_id={} target={} state_size={} bytes",
+                                        total, open.comm_id.0, open.target_name, state_json_size
+                                    );
+                                }
                             }
 
                             JupyterMessageContent::CommMsg(msg) => {
@@ -2017,6 +2136,7 @@ impl RoomKernel {
                                 let data = serde_json::to_value(&msg.data).unwrap_or_default();
                                 let method = data.get("method").and_then(|m| m.as_str());
 
+                                let comm_msg_start = std::time::Instant::now();
                                 debug!("[comm_msg] comm_id={} method={:?}", msg.comm_id.0, method);
                                 if method == Some("update") {
                                     if let Some(state_delta) = data.get("state") {
@@ -2074,6 +2194,14 @@ impl RoomKernel {
                                     }
                                 }
 
+                                let comm_msg_elapsed = comm_msg_start.elapsed();
+                                if comm_msg_elapsed > std::time::Duration::from_millis(10) {
+                                    warn!(
+                                        "[iopub-timing] comm_msg took {:?} for comm_id={} method={:?}",
+                                        comm_msg_elapsed, msg.comm_id.0, method
+                                    );
+                                }
+
                                 // State updates flow through the CRDT (coalescing writer).
                                 // Custom messages (buttons, model.send()) still need broadcast
                                 // since they are ephemeral events, not persistent state.
@@ -2088,6 +2216,15 @@ impl RoomKernel {
 
                             JupyterMessageContent::CommClose(close) => {
                                 debug!("[kernel-manager] comm_close: comm_id={}", close.comm_id.0);
+
+                                // Log total IOPub message processing time for slow messages
+                                let iopub_elapsed = iopub_start.elapsed();
+                                if iopub_elapsed > std::time::Duration::from_millis(50) {
+                                    warn!(
+                                        "[iopub-timing] message type={} took {:?} total",
+                                        msg_type, iopub_elapsed
+                                    );
+                                }
 
                                 // Remove from capture cache
                                 capture_cache.retain(|_, cid| cid != &close.comm_id.0);
@@ -2427,6 +2564,7 @@ impl RoomKernel {
         let mut coalesce_rx = coalesce_rx;
         let coalesce_state_doc = self.state_doc.clone();
         let coalesce_state_changed = self.state_changed_tx.clone();
+        let coalesce_blob_store = self.blob_store.clone();
         let comm_coalesce_task = tokio::spawn(async move {
             let mut pending: HashMap<String, serde_json::Value> = HashMap::new();
             let mut timer = tokio::time::interval(std::time::Duration::from_millis(16));
@@ -2455,7 +2593,11 @@ impl RoomKernel {
                         if pending.is_empty() {
                             continue;
                         }
-                        let batch = std::mem::take(&mut pending);
+                        let mut batch = std::mem::take(&mut pending);
+                        // Blob-store large delta values before CRDT merge.
+                        for (_comm_id, delta) in &mut batch {
+                            *delta = blob_store_large_state_values(delta, &coalesce_blob_store).await;
+                        }
                         let mut sd = coalesce_state_doc.write().await;
                         let mut any_changed = false;
                         for (comm_id, delta) in &batch {
