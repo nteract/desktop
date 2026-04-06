@@ -79,7 +79,7 @@ pub fn all_tools() -> Vec<Tool> {
         .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
         Tool::new(
             "join_notebook",
-            "Connect to an existing notebook session by ID, making it your active session. Replaces any previously active session on this connection. The notebook_id comes from list_active_notebooks.",
+            "Connect to an existing notebook session by ID, making it your active session. The notebook_id comes from list_active_notebooks.",
             schema_for::<session::JoinNotebookParams>(),
         )
         .annotate(
@@ -90,7 +90,7 @@ pub fn all_tools() -> Vec<Tool> {
         ),
         Tool::new(
             "open_notebook",
-            "Open a notebook file from disk, making it your active session. Replaces any previously active session on this connection.",
+            "Open a notebook file from disk, making it your active session.",
             schema_for::<session::OpenNotebookParams>(),
         )
         .annotate(
@@ -101,7 +101,7 @@ pub fn all_tools() -> Vec<Tool> {
         ),
         Tool::new(
             "create_notebook",
-            "Create a new notebook, making it your active session. Replaces any previously active session on this connection. Supports uv (default), conda, or pixi via package_manager param. The kernel starts automatically with deps installed. Call save_notebook(path) to persist to disk.",
+            "Create a new notebook, making it your active session. Supports uv (default), conda, or pixi via package_manager param. The kernel starts automatically with deps installed. Call save_notebook(path) to persist to disk.",
             schema_for::<session::CreateNotebookParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(false).open_world(false)),
