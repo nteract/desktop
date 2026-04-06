@@ -232,6 +232,14 @@ export class NotebookHandle {
      */
     get_cell_metadata(cell_id: string): any;
     /**
+     * Get deduplicated MIME types from a cell's current execution outputs.
+     *
+     * Reads the cell's `execution_id` from the notebook doc, then looks up
+     * `mime_types` in the RuntimeStateDoc. Returns undefined if the cell has
+     * no execution or no MIME types.
+     */
+    get_cell_output_mime_types(cell_id: string): any;
+    /**
      * Get a cell's outputs as a native JS array of strings.
      *
      * Each element is a JSON-encoded Jupyter output object (or manifest hash).
@@ -244,24 +252,16 @@ export class NotebookHandle {
      */
     get_cell_outputs(cell_id: string): any;
     /**
-     * Get deduplicated MIME types from a cell's current execution outputs.
-     *
-     * Reads the cell's `execution_id` from the notebook doc, then looks up
-     * `mime_types` in the RuntimeStateDoc. Returns undefined if the cell has
-     * no execution or no MIME types.
+     * Get a cell's fractional index position string.
      */
-    get_cell_output_mime_types(cell_id: string): string[] | undefined;
+    get_cell_position(cell_id: string): string | undefined;
     /**
      * Get required renderer plugins for a cell, derived from output MIME types.
      *
      * Returns a JS array of plugin names (e.g., `["plotly", "vega"]`), or
      * undefined if the cell has no outputs requiring plugins.
      */
-    get_cell_required_plugins(cell_id: string): string[] | undefined;
-    /**
-     * Get a cell's fractional index position string.
-     */
-    get_cell_position(cell_id: string): string | undefined;
+    get_cell_required_plugins(cell_id: string): any;
     /**
      * Get a cell's source text.
      */
@@ -609,8 +609,10 @@ export interface InitOutput {
     readonly notebookhandle_get_cell_execution_count: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_get_cell_ids: (a: number, b: number) => void;
     readonly notebookhandle_get_cell_metadata: (a: number, b: number, c: number) => number;
+    readonly notebookhandle_get_cell_output_mime_types: (a: number, b: number, c: number) => number;
     readonly notebookhandle_get_cell_outputs: (a: number, b: number, c: number) => number;
     readonly notebookhandle_get_cell_position: (a: number, b: number, c: number, d: number) => void;
+    readonly notebookhandle_get_cell_required_plugins: (a: number, b: number, c: number) => number;
     readonly notebookhandle_get_cell_source: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_get_cell_type: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_get_cells: (a: number, b: number) => void;
