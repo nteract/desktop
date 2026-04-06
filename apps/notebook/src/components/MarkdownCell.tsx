@@ -18,7 +18,7 @@ import { remoteCursorsExtension } from "@/components/editor/remote-cursors";
 import { searchHighlight } from "@/components/editor/search-highlight";
 import { textAttributionExtension } from "@/components/editor/text-attribution";
 import { IsolatedFrame, type IsolatedFrameHandle } from "@/components/isolated";
-import { injectLibraries } from "@/components/isolated/iframe-libraries";
+import { injectPluginsForMimes } from "@/components/isolated/iframe-libraries";
 import { useDarkMode } from "@/lib/dark-mode";
 import { cn } from "@/lib/utils";
 import { usePresenceContext } from "../contexts/PresenceContext";
@@ -240,9 +240,9 @@ export const MarkdownCell = memo(function MarkdownCell({
     // Clear injected set — a reloaded iframe has a fresh renderer registry
     injectedLibsRef.current.clear();
     // Inject markdown renderer plugin before rendering (idempotent, cached after first load)
-    await injectLibraries(
+    await injectPluginsForMimes(
       frameRef.current,
-      ["markdown"],
+      ["text/markdown"],
       injectedLibsRef.current,
     );
     const processedSource = rewriteMarkdownAssetRefs(
@@ -263,7 +263,11 @@ export const MarkdownCell = memo(function MarkdownCell({
     if (frameRef.current?.isReady && cell.source) {
       const frame = frameRef.current;
       // Inject markdown renderer plugin (idempotent) then render
-      injectLibraries(frame, ["markdown"], injectedLibsRef.current).then(() => {
+      injectPluginsForMimes(
+        frame,
+        ["text/markdown"],
+        injectedLibsRef.current,
+      ).then(() => {
         const processedSource = rewriteMarkdownAssetRefs(
           cell.source,
           cell.resolvedAssets,
