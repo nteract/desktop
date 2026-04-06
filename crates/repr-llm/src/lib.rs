@@ -34,7 +34,7 @@ pub use json::summarize_json;
 /// Attempt to produce an LLM-friendly text summary from a visualization spec.
 ///
 /// Returns `Some(summary)` if the MIME type is a recognized visualization format
-/// (Plotly, Vega-Lite, or Vega), `None` otherwise.
+/// (Plotly, Vega-Lite, Vega, or GeoJSON), `None` otherwise.
 pub fn summarize_viz(mime: &str, spec: &Value) -> Option<String> {
     if is_plotly_mime(mime) {
         Some(plotly::summarize(spec))

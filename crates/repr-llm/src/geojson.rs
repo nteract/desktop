@@ -4,6 +4,8 @@
 //! produces a compact text summary suitable for LLMs — feature count, geometry
 //! types, property schema, and bounding box.
 
+use std::collections::HashSet;
+
 use serde_json::Value;
 
 use crate::stats::fmt_num;
@@ -49,9 +51,10 @@ fn summarize_feature_collection(spec: &Value) -> String {
         let bbox_line = spec
             .get("bbox")
             .and_then(format_bbox)
+            .map(|b| format!("Bbox: {b}"))
             .or_else(|| compute_bbox(features));
         if let Some(b) = bbox_line {
-            lines.push(format!("Bbox: {b}"));
+            lines.push(b);
         }
     }
 
@@ -66,16 +69,15 @@ fn summarize_feature(spec: &Value) -> String {
         .get("geometry")
         .and_then(|g| g.get("type"))
         .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
+        .unwrap_or("Unknown");
 
-    // Try to find a human-readable name/id in properties
-    let label = spec.get("properties").and_then(|p| {
-        // Common name fields
+    // Try to find a human-readable label: check top-level `id` (per GeoJSON
+    // spec), then common property fields. Handles both string and numeric ids.
+    let label = spec.get("id").and_then(value_as_label).or_else(|| {
+        let props = spec.get("properties")?;
         for key in &["name", "NAME", "title", "id", "ID"] {
-            if let Some(s) = p.get(*key).and_then(|v| v.as_str()) {
-                if !s.is_empty() {
-                    return Some(s);
-                }
+            if let Some(s) = props.get(*key).and_then(value_as_label) {
+                return Some(s);
             }
         }
         None
@@ -96,13 +98,17 @@ fn summarize_feature(spec: &Value) -> String {
     }
 
     // Bbox from explicit field or geometry coordinates
-    let bbox_line = spec.get("bbox").and_then(format_bbox).or_else(|| {
-        spec.get("geometry")
-            .and_then(bbox_from_geometry)
-            .map(|b| format_bbox_values(b.0, b.1, b.2, b.3))
-    });
+    let bbox_line = spec
+        .get("bbox")
+        .and_then(format_bbox)
+        .map(|b| format!("Bbox: {b}"))
+        .or_else(|| {
+            spec.get("geometry")
+                .and_then(bbox_from_geometry)
+                .map(|b| format!("Bbox: {}", format_bbox_values(b.0, b.1, b.2, b.3)))
+        });
     if let Some(b) = bbox_line {
-        lines.push(format!("Bbox: {b}"));
+        lines.push(b);
     }
 
     lines.join("\n")
@@ -121,10 +127,11 @@ fn summarize_geometry_object(spec: &Value) -> String {
             let count = geometries.map(|g| g.len()).unwrap_or(0);
             let types: Vec<String> = geometries
                 .map(|gs| {
+                    let mut seen_set = HashSet::new();
                     let mut seen = Vec::new();
                     for g in gs {
                         if let Some(t) = g.get("type").and_then(|v| v.as_str()) {
-                            if !seen.contains(&t.to_string()) {
+                            if seen_set.insert(t) {
                                 seen.push(t.to_string());
                             }
                         }
@@ -147,7 +154,7 @@ fn summarize_geometry_object(spec: &Value) -> String {
                 let lon = coords.first().and_then(|v| v.as_f64());
                 let lat = coords.get(1).and_then(|v| v.as_f64());
                 if let (Some(lon), Some(lat)) = (lon, lat) {
-                    return format!("GeoJSON Point ({}, {})", fmt_num(lat), fmt_num(lon));
+                    return format!("GeoJSON Point (lat={}, lon={})", fmt_num(lat), fmt_num(lon));
                 }
             }
             "GeoJSON Point".to_string()
@@ -166,8 +173,20 @@ fn summarize_geometry_object(spec: &Value) -> String {
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-/// Collect deduplicated geometry types from a feature array, preserving order.
+/// Extract a display label from a JSON value (string, number, or bool).
+fn value_as_label(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) if !s.is_empty() => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
+/// Collect deduplicated geometry types from a feature array, preserving
+/// insertion order. Uses a HashSet for O(1) membership checks.
 fn collect_geometry_types(features: &[Value]) -> Vec<String> {
+    let mut seen = HashSet::new();
     let mut types = Vec::new();
     for f in features {
         if let Some(t) = f
@@ -175,7 +194,7 @@ fn collect_geometry_types(features: &[Value]) -> Vec<String> {
             .and_then(|g| g.get("type"))
             .and_then(|v| v.as_str())
         {
-            if !types.contains(&t.to_string()) {
+            if seen.insert(t) {
                 types.push(t.to_string());
             }
         }
@@ -221,6 +240,7 @@ fn format_bbox_values(west: f64, south: f64, east: f64, north: f64) -> String {
 }
 
 /// Compute a bounding box from feature geometries by walking coordinates.
+/// Returns a formatted "Bbox: …" or "Bbox (approx): …" line, or None.
 fn compute_bbox(features: &[Value]) -> Option<String> {
     let mut west = f64::INFINITY;
     let mut south = f64::INFINITY;
@@ -248,10 +268,21 @@ fn compute_bbox(features: &[Value]) -> Option<String> {
         }
     }
 
-    if found {
-        Some(format_bbox_values(west, south, east, north))
+    if !found {
+        return None;
+    }
+
+    let values = format_bbox_values(west, south, east, north);
+    // Check if coordinate walk was truncated
+    let total = features
+        .iter()
+        .filter_map(|f| f.get("geometry"))
+        .map(count_coordinates)
+        .sum::<usize>();
+    if total >= MAX_WALK_COORDS {
+        Some(format!("Bbox (approx): {values}"))
     } else {
-        None
+        Some(format!("Bbox: {values}"))
     }
 }
 
@@ -286,15 +317,17 @@ fn bbox_from_geometry(geom: &Value) -> Option<(f64, f64, f64, f64)> {
     }
 }
 
+/// Maximum coordinate pairs to walk before stopping.
+const MAX_WALK_COORDS: usize = 10_000;
+
 /// Walk all [lon, lat, …] coordinate pairs in a geometry, calling `cb` for each.
 ///
 /// Handles Point, MultiPoint, LineString, MultiLineString, Polygon,
-/// MultiPolygon, and GeometryCollection. Limits traversal to avoid
-/// spending too long on huge datasets.
+/// MultiPolygon, and GeometryCollection. Limits traversal to
+/// [`MAX_WALK_COORDS`] pairs to avoid spending too long on huge datasets.
 fn walk_coordinates(geom: &Value, cb: &mut dyn FnMut(f64, f64)) {
-    const MAX_COORDS: usize = 10_000;
     let mut count = 0;
-    walk_coordinates_inner(geom, cb, &mut count, MAX_COORDS);
+    walk_coordinates_inner(geom, cb, &mut count, MAX_WALK_COORDS);
 }
 
 fn walk_coordinates_inner(
@@ -450,7 +483,10 @@ mod tests {
         let result = summarize(&spec);
         assert!(result.contains("GeoJSON FeatureCollection: 2 feature(s)"));
         assert!(result.contains("Geometry types: [Point]"));
-        assert!(result.contains("Properties: [name, pop]"));
+        // Don't depend on map key iteration order
+        assert!(result.contains("Properties: ["));
+        assert!(result.contains("name"));
+        assert!(result.contains("pop"));
         assert!(result.contains("Bbox:"));
     }
 
@@ -533,7 +569,10 @@ mod tests {
         });
         let result = summarize(&spec);
         assert!(result.contains("GeoJSON Feature (Polygon): \"Central Park\""));
-        assert!(result.contains("Properties: [area_km2, name]"));
+        // Don't depend on map key iteration order
+        assert!(result.contains("Properties: ["));
+        assert!(result.contains("area_km2"));
+        assert!(result.contains("name"));
     }
 
     #[test]
@@ -548,6 +587,53 @@ mod tests {
         assert!(!result.contains("\""));
     }
 
+    #[test]
+    fn test_feature_with_top_level_id() {
+        let spec = json!({
+            "type": "Feature",
+            "id": "district-42",
+            "geometry": {"type": "Point", "coordinates": [0.0, 0.0]},
+            "properties": {"pop": 1000}
+        });
+        let result = summarize(&spec);
+        assert!(result.contains("GeoJSON Feature (Point): \"district-42\""));
+    }
+
+    #[test]
+    fn test_feature_with_numeric_id() {
+        let spec = json!({
+            "type": "Feature",
+            "id": 42,
+            "geometry": {"type": "Point", "coordinates": [0.0, 0.0]},
+            "properties": {}
+        });
+        let result = summarize(&spec);
+        assert!(result.contains("GeoJSON Feature (Point): \"42\""));
+    }
+
+    #[test]
+    fn test_feature_with_numeric_property_id() {
+        let spec = json!({
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [0.0, 0.0]},
+            "properties": {"id": 99}
+        });
+        let result = summarize(&spec);
+        assert!(result.contains("GeoJSON Feature (Point): \"99\""));
+    }
+
+    #[test]
+    fn test_feature_unknown_geometry_casing() {
+        // When geometry is null/missing, should say "Unknown" not "unknown"
+        let spec = json!({
+            "type": "Feature",
+            "geometry": null,
+            "properties": {"name": "test"}
+        });
+        let result = summarize(&spec);
+        assert!(result.contains("GeoJSON Feature (Unknown)"));
+    }
+
     // ── Bare geometry objects ───────────────────────────────────────
 
     #[test]
@@ -558,8 +644,8 @@ mod tests {
         });
         let result = summarize(&spec);
         assert!(result.contains("GeoJSON Point"));
-        assert!(result.contains("40.77"));
-        assert!(result.contains("-73.97"));
+        assert!(result.contains("lat=40.77"));
+        assert!(result.contains("lon=-73.97"));
     }
 
     #[test]
