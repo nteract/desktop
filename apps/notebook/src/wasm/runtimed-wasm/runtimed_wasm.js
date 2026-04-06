@@ -1266,6 +1266,14 @@ export class NotebookHandle {
         wasm.notebookhandle_set_actor(this.__wbg_ptr, ptr0, len0);
     }
     /**
+     * Set the blob server port for resolving binary ContentRefs to URLs.
+     * Call after init and whenever the daemon restarts with a new port.
+     * @param {number} port
+     */
+    set_blob_port(port) {
+        wasm.notebookhandle_set_blob_port(this.__wbg_ptr, port);
+    }
+    /**
      * Replace entire cell metadata (last-write-wins).
      *
      * Accepts metadata as a JSON object string.

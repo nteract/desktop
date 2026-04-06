@@ -10,7 +10,7 @@ use automerge::sync;
 use automerge::sync::SyncDoc;
 use automerge::Prop;
 use notebook_doc::diff::{diff_cells, CellChangeset};
-use notebook_doc::mime::is_binary_mime;
+use notebook_doc::mime::{is_binary_mime, ResolvedContentRef};
 use notebook_doc::pool_state::{PoolDoc, PoolState};
 use notebook_doc::presence;
 use notebook_doc::runtime_state::{diff_execution_outputs, RuntimeState, RuntimeStateDoc};
@@ -185,6 +185,9 @@ pub struct NotebookHandle {
     /// Types earlier in the list are preferred when narrowing output data bundles.
     /// If empty, all MIME types are returned (backward compatible).
     mime_priority: Vec<String>,
+    /// Blob server port for resolving binary ContentRefs to URLs.
+    /// Set via `set_blob_port()`. When None, binary refs pass through as-is.
+    blob_port: Option<u16>,
 }
 
 /// A cell snapshot returned to JavaScript.
@@ -284,6 +287,7 @@ impl NotebookHandle {
             pool_sync_state: sync::State::new(),
             metadata_fingerprint_cache: None,
             mime_priority: Vec::new(),
+            blob_port: None,
         }
     }
 
@@ -302,6 +306,7 @@ impl NotebookHandle {
             pool_sync_state: sync::State::new(),
             metadata_fingerprint_cache: None,
             mime_priority: Vec::new(),
+            blob_port: None,
         }
     }
 
@@ -334,6 +339,7 @@ impl NotebookHandle {
             pool_sync_state: sync::State::new(),
             metadata_fingerprint_cache: None,
             mime_priority: Vec::new(),
+            blob_port: None,
         })
     }
 
@@ -465,9 +471,19 @@ impl NotebookHandle {
         }
     }
 
+    /// Set the blob server port for resolving binary ContentRefs to URLs.
+    /// Call after init and whenever the daemon restarts with a new port.
+    pub fn set_blob_port(&mut self, port: u16) {
+        self.blob_port = Some(port);
+    }
+
     /// Narrow an output manifest's data bundle to the winning MIME type,
-    /// plus all binary MIME refs (cheap — just URL construction, no fetch)
-    /// and text/plain as a fallback candidate.
+    /// plus all binary MIME refs and text/plain as a fallback candidate.
+    ///
+    /// Resolves ContentRefs into `ResolvedContentRef` variants:
+    /// - Binary MIME types → `Url` (blob server URL, zero fetch cost)
+    /// - Inline refs → `Inline` (embedded text)
+    /// - Text blob refs → `Blob` (needs JS-side HTTP fetch)
     ///
     /// Only expensive text blob refs for non-winning types are dropped.
     /// Returns the manifest unchanged if mime_priority is empty or output_type
@@ -495,13 +511,53 @@ impl NotebookHandle {
                 let mut narrowed = serde_json::Map::new();
                 for (mime, val) in data {
                     if mime == winner_mime || mime == "text/plain" || is_binary_mime(mime) {
-                        narrowed.insert(mime.clone(), val.clone());
+                        let resolved = self.resolve_content_ref(mime, val);
+                        narrowed.insert(mime.clone(), resolved);
                     }
                 }
                 output["data"] = serde_json::Value::Object(narrowed);
             }
         }
         output
+    }
+
+    /// Resolve a ContentRef value into a ResolvedContentRef based on MIME type.
+    ///
+    /// - `{ "inline": "..." }` → `ResolvedContentRef::Inline`
+    /// - Binary MIME + `{ "blob": "hash", "size": N }` → `ResolvedContentRef::Url`
+    ///   (when blob_port is set)
+    /// - Text MIME + `{ "blob": "hash", "size": N }` → `ResolvedContentRef::Blob`
+    fn resolve_content_ref(&self, mime: &str, val: &serde_json::Value) -> serde_json::Value {
+        // Inline refs pass through as Inline variant
+        if let Some(inline) = val.get("inline").and_then(|v| v.as_str()) {
+            return serde_json::to_value(ResolvedContentRef::Inline {
+                inline: inline.to_string(),
+            })
+            .unwrap_or_else(|_| val.clone());
+        }
+
+        // Blob refs: resolve binary to URL, leave text as Blob
+        if let Some(blob_hash) = val.get("blob").and_then(|v| v.as_str()) {
+            let size = val.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
+
+            if is_binary_mime(mime) {
+                if let Some(port) = self.blob_port {
+                    return serde_json::to_value(ResolvedContentRef::Url {
+                        url: format!("http://127.0.0.1:{}/blob/{}", port, blob_hash),
+                    })
+                    .unwrap_or_else(|_| val.clone());
+                }
+            }
+
+            return serde_json::to_value(ResolvedContentRef::Blob {
+                blob: blob_hash.to_string(),
+                size,
+            })
+            .unwrap_or_else(|_| val.clone());
+        }
+
+        // Unknown shape — pass through unchanged
+        val.clone()
     }
 
     /// Get a cell's execution count.

@@ -1,53 +1,17 @@
 import type { JupyterOutput } from "../types";
 
 /**
- * Check if a MIME type represents binary content.
+ * A content reference — either inlined data, a URL, or a blob-store hash.
  *
- * Binary MIME types are stored as raw bytes in the blob store (decoded
- * from Jupyter's base64 wire format). The blob HTTP server serves them
- * with the correct Content-Type, so the frontend can use blob URLs
- * directly (e.g., `<img src="http://...">`) instead of base64 data URIs.
- *
- * **This is a TypeScript port of the canonical Rust implementation in
- * `crates/notebook-doc/src/mime.rs` (`is_binary_mime` / `mime_kind`).
- * Keep them in sync — see AGENTS.md § "The `is_binary_mime` Contract".**
+ * These variants match the `ResolvedContentRef` shape emitted by WASM:
+ * - `inline`: text content embedded directly
+ * - `url`: a pre-resolved URL (e.g., blob server URL for binary content)
+ * - `blob`: a blob-store hash for text content that needs fetching
  */
-export function isBinaryMime(mime: string): boolean {
-  if (mime.startsWith("image/")) {
-    // SVG is plain XML text in Jupyter, not base64-encoded binary.
-    return !mime.endsWith("+xml");
-  }
-  if (mime.startsWith("audio/") || mime.startsWith("video/")) {
-    return true;
-  }
-
-  // application/* is binary by default, with carve-outs for text-like formats.
-  if (mime.startsWith("application/")) {
-    const subtype = mime.slice("application/".length);
-    const isText =
-      subtype === "json" ||
-      subtype === "javascript" ||
-      subtype === "ecmascript" ||
-      subtype === "xml" ||
-      subtype === "xhtml+xml" ||
-      subtype === "mathml+xml" ||
-      subtype === "sql" ||
-      subtype === "graphql" ||
-      subtype === "x-latex" ||
-      subtype === "x-tex" ||
-      subtype.endsWith("+json") ||
-      subtype.endsWith(".json") ||
-      subtype.endsWith("+xml");
-    return !isText;
-  }
-
-  return false;
-}
-
-/**
- * A content reference — either inlined data or a blob-store hash.
- */
-export type ContentRef = { inline: string } | { blob: string; size: number };
+export type ContentRef =
+  | { inline: string }
+  | { url: string }
+  | { blob: string; size: number };
 
 /**
  * An output manifest with content refs that may need blob-store resolution.
@@ -83,7 +47,7 @@ export type OutputManifest =
  * (i.e., has ContentRef objects rather than already-resolved primitive data).
  *
  * Distinguishes manifests from raw JupyterOutputs by checking whether the
- * data fields contain ContentRef objects (`{ inline }` or `{ blob }`).
+ * data fields contain ContentRef objects (`{ inline }`, `{ url }`, or `{ blob }`).
  */
 export function isOutputManifest(value: unknown): value is OutputManifest {
   if (typeof value !== "object" || value === null) return false;
@@ -107,12 +71,13 @@ export function isOutputManifest(value: unknown): value is OutputManifest {
   }
 }
 
-/** Check if a value is a ContentRef (`{ inline }` or `{ blob, size }`). */
+/** Check if a value is a ContentRef (`{ inline }`, `{ url }`, or `{ blob, size }`). */
 function isContentRef(value: unknown): value is ContentRef {
   if (typeof value !== "object" || value === null) return false;
   const obj = value as Record<string, unknown>;
   return (
     ("inline" in obj && typeof obj.inline === "string") ||
+    ("url" in obj && typeof obj.url === "string") ||
     ("blob" in obj && typeof obj.blob === "string")
   );
 }
@@ -120,26 +85,22 @@ function isContentRef(value: unknown): value is ContentRef {
 /**
  * Resolve a content reference to its string value.
  *
- * For binary MIME types (images, etc.), blob refs resolve to an HTTP URL
- * pointing at the blob server. The browser fetches the raw bytes directly
- * when rendering (e.g., `<img src="http://...">`) — no base64 round-trip.
- *
- * For text MIME types, blob refs are fetched and returned as strings.
- * Inlined refs always return the embedded string directly.
+ * - `inline` refs return the embedded string directly.
+ * - `url` refs return the pre-resolved URL (e.g., blob server URL for binary content).
+ * - `blob` refs fetch text content from the blob server.
  */
 export async function resolveContentRef(
   ref: ContentRef,
   blobPort: number,
-  mimeType?: string,
+  _mimeType?: string,
 ): Promise<string> {
   if ("inline" in ref) {
     return ref.inline;
   }
-  // Binary blob refs resolve to a URL — the blob server serves raw bytes
-  // with the correct Content-Type. The browser/iframe fetches directly.
-  if (mimeType && isBinaryMime(mimeType)) {
-    return `http://127.0.0.1:${blobPort}/blob/${ref.blob}`;
+  if ("url" in ref) {
+    return ref.url;
   }
+  // Blob ref — fetch text content from blob server
   const response = await fetch(`http://127.0.0.1:${blobPort}/blob/${ref.blob}`);
   if (!response.ok) {
     throw new Error(`Failed to fetch blob ${ref.blob}: ${response.status}`);
@@ -149,36 +110,35 @@ export async function resolveContentRef(
 
 /**
  * Resolve a content reference synchronously, returning null if async
- * work (text blob fetch) would be required.
+ * work (blob fetch) would be required.
  *
  * Resolves:
  * - Inline refs → the embedded string
- * - Binary blob refs → blob server URL
+ * - URL refs → the pre-resolved URL
  *
- * Returns null for text blob refs (require HTTP fetch).
+ * Returns null for blob refs (require HTTP fetch).
  */
 function resolveContentRefSync(
   ref: ContentRef,
-  blobPort: number,
-  mimeType?: string,
+  _blobPort: number,
+  _mimeType?: string,
 ): string | null {
   if ("inline" in ref) {
     return ref.inline;
   }
-  // Binary blob refs → URL (no fetch needed)
-  if (mimeType && isBinaryMime(mimeType)) {
-    return `http://127.0.0.1:${blobPort}/blob/${ref.blob}`;
+  if ("url" in ref) {
+    return ref.url;
   }
-  // Text blob ref — needs async fetch
+  // Blob ref — needs async fetch
   return null;
 }
 
 /**
  * Resolve a MIME-type → ContentRef map to a fully hydrated data bundle.
  *
- * Binary MIME types resolve to blob URLs (the browser fetches raw bytes
- * directly from the blob server). JSON MIME types are auto-parsed.
- * Text MIME types are returned as strings.
+ * URL refs (binary content) pass through as URLs for the browser to fetch
+ * directly. JSON MIME types are auto-parsed. Text MIME types are returned
+ * as strings.
  */
 export async function resolveDataBundle(
   data: Record<string, ContentRef>,
@@ -208,7 +168,7 @@ export async function resolveDataBundle(
 }
 
 /**
- * Synchronously resolve a data bundle. Returns null if any text blob
+ * Synchronously resolve a data bundle. Returns null if any blob
  * fetch would be required.
  */
 function resolveDataBundleSync(
@@ -286,9 +246,8 @@ export async function resolveManifest(
 /**
  * Synchronously resolve a manifest into a JupyterOutput.
  *
- * Returns null if any content ref requires an async blob fetch (i.e.,
- * a text blob ref). Inline refs and binary blob refs (which resolve to
- * URLs) are handled synchronously.
+ * Returns null if any content ref requires an async blob fetch.
+ * Inline refs and URL refs are handled synchronously.
  *
  * Use this in the sync materialization path where blob fetches are not
  * available — the async path will pick up unresolved outputs later.

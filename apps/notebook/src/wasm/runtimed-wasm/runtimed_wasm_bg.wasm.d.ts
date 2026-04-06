@@ -67,6 +67,7 @@ export const notebookhandle_remove_uv_dependency: (a: number, b: number, c: numb
 export const notebookhandle_reset_sync_state: (a: number) => void;
 export const notebookhandle_save: (a: number, b: number) => void;
 export const notebookhandle_set_actor: (a: number, b: number, c: number) => void;
+export const notebookhandle_set_blob_port: (a: number, b: number) => void;
 export const notebookhandle_set_cell_metadata: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
 export const notebookhandle_set_cell_metadata_value: (a: number, b: number, c: number, d: number, e: number) => void;
 export const notebookhandle_set_cell_outputs_hidden: (a: number, b: number, c: number, d: number, e: number) => void;

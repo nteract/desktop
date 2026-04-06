@@ -698,7 +698,7 @@ describe("cellSnapshotsToNotebookCells", () => {
       },
       {
         output_type: "display_data",
-        data: { "image/png": { blob: "imgblob", size: 500 } },
+        data: { "image/png": { url: "http://127.0.0.1:8765/blob/imgblob" } },
       },
     ];
     const snap = codeSnapshot("c1", "compute()", outputs, "3");

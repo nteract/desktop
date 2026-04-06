@@ -109,6 +109,9 @@ export function useAutomergeNotebook() {
     if (blobPort === null) {
       blobPort = await refreshBlobPort();
     }
+    if (blobPort !== null) {
+      handle.set_blob_port(blobPort);
+    }
     const newCells = await cellSnapshotsToNotebookCells(
       snapshots,
       blobPort,
@@ -185,6 +188,10 @@ export function useAutomergeNotebook() {
     handleRef.current?.free();
     handleRef.current = handle;
     handle.set_mime_priority(DEFAULT_MIME_PRIORITY);
+    const initialBlobPort = getBlobPort();
+    if (initialBlobPort !== null) {
+      handle.set_blob_port(initialBlobPort);
+    }
     setNotebookHandle(handle);
 
     setIsLoading(true);

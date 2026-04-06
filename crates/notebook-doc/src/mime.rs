@@ -11,6 +11,8 @@
 //! Any changes here **must** be mirrored there — see the `is_binary_mime`
 //! contract in `AGENTS.md` for the full list of locations.
 
+use serde::{Deserialize, Serialize};
+
 /// Three-way classification of a MIME type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MimeKind {
@@ -89,6 +91,27 @@ pub fn mime_kind(mime: &str) -> MimeKind {
 #[inline]
 pub fn is_binary_mime(mime: &str) -> bool {
     matches!(mime_kind(mime), MimeKind::Binary)
+}
+
+/// A content reference resolved for frontend consumption.
+///
+/// WASM resolves binary blob refs to URLs (the browser fetches raw bytes
+/// directly) and passes through inline content and text blob refs that
+/// need JS-side fetching.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ResolvedContentRef {
+    /// Ready to use — inline text content (< 1KB threshold).
+    #[serde(rename_all = "camelCase")]
+    Inline { inline: String },
+    /// Ready to use — browser fetches raw bytes from this URL.
+    /// Used for binary MIME types (images, audio, video).
+    #[serde(rename_all = "camelCase")]
+    Url { url: String },
+    /// Needs JS-side fetch — text blob ref that WASM couldn't resolve
+    /// (requires HTTP fetch to blob server for text content).
+    #[serde(rename_all = "camelCase")]
+    Blob { blob: String, size: u64 },
 }
 
 #[cfg(test)]
@@ -193,5 +216,49 @@ mod tests {
             mime_kind("application/vnd.dataresource.json"),
             MimeKind::Json
         );
+    }
+
+    #[test]
+    fn resolved_content_ref_inline_json() {
+        let r = ResolvedContentRef::Inline {
+            inline: "hello".to_string(),
+        };
+        let json = serde_json::to_value(&r).unwrap();
+        assert_eq!(json, serde_json::json!({"inline": "hello"}));
+    }
+
+    #[test]
+    fn resolved_content_ref_url_json() {
+        let r = ResolvedContentRef::Url {
+            url: "http://127.0.0.1:8765/blob/abc".to_string(),
+        };
+        let json = serde_json::to_value(&r).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"url": "http://127.0.0.1:8765/blob/abc"})
+        );
+    }
+
+    #[test]
+    fn resolved_content_ref_blob_json() {
+        let r = ResolvedContentRef::Blob {
+            blob: "abc123".to_string(),
+            size: 4200,
+        };
+        let json = serde_json::to_value(&r).unwrap();
+        assert_eq!(json, serde_json::json!({"blob": "abc123", "size": 4200}));
+    }
+
+    #[test]
+    fn resolved_content_ref_roundtrip() {
+        let inline: ResolvedContentRef =
+            serde_json::from_value(serde_json::json!({"inline": "hi"})).unwrap();
+        assert!(matches!(inline, ResolvedContentRef::Inline { .. }));
+        let url: ResolvedContentRef =
+            serde_json::from_value(serde_json::json!({"url": "http://x"})).unwrap();
+        assert!(matches!(url, ResolvedContentRef::Url { .. }));
+        let blob: ResolvedContentRef =
+            serde_json::from_value(serde_json::json!({"blob": "h", "size": 1})).unwrap();
+        assert!(matches!(blob, ResolvedContentRef::Blob { .. }));
     }
 }

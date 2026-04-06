@@ -393,6 +393,11 @@ export class NotebookHandle {
      */
     set_actor(actor_label: string): void;
     /**
+     * Set the blob server port for resolving binary ContentRefs to URLs.
+     * Call after init and whenever the daemon restarts with a new port.
+     */
+    set_blob_port(port: number): void;
+    /**
      * Replace entire cell metadata (last-write-wins).
      *
      * Accepts metadata as a JSON object string.
@@ -625,6 +630,7 @@ export interface InitOutput {
     readonly notebookhandle_reset_sync_state: (a: number) => void;
     readonly notebookhandle_save: (a: number, b: number) => void;
     readonly notebookhandle_set_actor: (a: number, b: number, c: number) => void;
+    readonly notebookhandle_set_blob_port: (a: number, b: number) => void;
     readonly notebookhandle_set_cell_metadata: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly notebookhandle_set_cell_metadata_value: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly notebookhandle_set_cell_outputs_hidden: (a: number, b: number, c: number, d: number, e: number) => void;
