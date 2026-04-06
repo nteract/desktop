@@ -57,32 +57,17 @@ import "@/components/widgets/controls";
 // On-demand renderer plugins register React components for specific MIME types.
 // Plugins are CJS modules loaded via installRendererPlugin(). The custom
 // require shim provides the shared React instance so hooks work correctly.
+//
+// The registry lives in @/lib/renderer-registry so that both OutputRenderer
+// and MediaRouter (used by output widgets) can look up installed renderers.
 
 import type { ComponentType } from "react";
-
-interface RendererProps {
-  data: unknown;
-  metadata?: Record<string, unknown>;
-  mimeType: string;
-}
-
-const rendererRegistry = new Map<string, ComponentType<RendererProps>>();
-const rendererPatterns: Array<{
-  test: (mime: string) => boolean;
-  component: ComponentType<RendererProps>;
-}> = [];
-
-/** Look up a renderer by exact match first, then pattern matchers. */
-function getRenderer(
-  mimeType: string,
-): ComponentType<RendererProps> | undefined {
-  const exact = rendererRegistry.get(mimeType);
-  if (exact) return exact;
-  for (const entry of rendererPatterns) {
-    if (entry.test(mimeType)) return entry.component;
-  }
-  return undefined;
-}
+import {
+  type RendererProps,
+  getRenderer,
+  registerRenderer,
+  registerRendererPattern,
+} from "@/lib/renderer-registry";
 
 /**
  * Load and install a renderer plugin.
@@ -127,14 +112,8 @@ function installRendererPlugin(code: string, css?: string) {
   }
 
   install({
-    register(mimeTypes, component) {
-      for (const mt of mimeTypes) {
-        rendererRegistry.set(mt, component);
-      }
-    },
-    registerPattern(test, component) {
-      rendererPatterns.push({ test, component });
-    },
+    register: registerRenderer,
+    registerPattern: registerRendererPattern,
   });
 
   if (css) {
