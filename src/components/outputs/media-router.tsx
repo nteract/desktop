@@ -22,9 +22,7 @@ const SvgOutput = lazy(() =>
 const JsonOutput = lazy(() =>
   import("./json-output").then((m) => ({ default: m.JsonOutput })),
 );
-const MathOutput = lazy(() =>
-  import("./math-output").then((m) => ({ default: m.MathOutput })),
-);
+
 const AudioOutput = lazy(() =>
   import("./audio-output").then((m) => ({ default: m.AudioOutput })),
 );
@@ -349,11 +347,6 @@ export function MediaRouter({
       return <MarkdownOutput content={String(content)} className={className} />;
     }
 
-    // LaTeX math (KaTeX, rendered in-DOM — safe static HTML)
-    if (mimeType === "text/latex") {
-      return <MathOutput content={String(content)} className={className} />;
-    }
-
     // HTML (only renders when in iframe)
     if (mimeType === "text/html") {
       return <HtmlOutput content={String(content)} className={className} />;
@@ -408,9 +401,7 @@ export function MediaRouter({
 
     // JavaScript (only in iframe)
     if (mimeType === "application/javascript") {
-      return (
-        <JavaScriptOutput code={String(content)} className={className} />
-      );
+      return <JavaScriptOutput code={String(content)} className={className} />;
     }
 
     // JSON and structured data (but not custom +json types without a renderer)
