@@ -5728,7 +5728,6 @@ dependencies = [
 name = "repr-llm"
 version = "0.1.0"
 dependencies = [
- "log",
  "serde_json",
 ]
 
@@ -6198,7 +6197,6 @@ dependencies = [
 name = "runtimed-py"
 version = "2.1.0"
 dependencies = [
- "base64 0.22.1",
  "kernel-env",
  "log",
  "notebook-doc",
@@ -6206,11 +6204,9 @@ dependencies = [
  "notebook-sync",
  "pyo3",
  "pyo3-async-runtimes",
- "reqwest 0.12.28",
  "runt-workspace",
  "runtimed-client",
  "serde_json",
- "thiserror 1.0.69",
  "tokio",
  "uuid",
 ]
