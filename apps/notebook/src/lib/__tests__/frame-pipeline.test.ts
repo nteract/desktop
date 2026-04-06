@@ -370,6 +370,7 @@ describe("materializeChangeset", () => {
         (id: string) => cells[id]?.execution_count ?? "null",
       ),
       get_cell_metadata: vi.fn((id: string) => cells[id]?.metadata ?? {}),
+      get_cell_required_plugins: vi.fn(() => []),
     } as unknown as import("../../wasm/runtimed-wasm/runtimed_wasm.js").NotebookHandle;
   }
 
