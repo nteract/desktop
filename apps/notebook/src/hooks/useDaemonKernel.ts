@@ -10,26 +10,17 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  type CommDiffState,
   type DaemonQueueState,
   deriveEnvSyncState,
   deriveKernelInfo,
   deriveQueueState,
-  detectUnresolvedOutputs,
-  diffComms,
   isKernelStatus,
   KERNEL_STATUS,
   type KernelStatus,
   type NotebookClient,
   type NotebookResponse,
 } from "runtimed";
-import {
-  getBlobPort,
-  refreshBlobPort,
-  resetBlobPort,
-  useBlobPort,
-} from "../lib/blob-port";
-import { replaceSentinelsWithBlobUrls } from "../lib/blob-sentinel";
+import { getBlobPort, refreshBlobPort, resetBlobPort } from "../lib/blob-port";
 import { logger } from "../lib/logger";
 import { subscribeBroadcast } from "../lib/notebook-frame-bus";
 import {
@@ -40,7 +31,7 @@ import {
   setRuntimeState,
   useRuntimeState,
 } from "../lib/runtime-state";
-import type { DaemonBroadcast, JupyterMessage, JupyterOutput } from "../types";
+import type { DaemonBroadcast, JupyterOutput } from "../types";
 import { resolveOutputValue } from "./useManifestResolver";
 
 // ── Output widget manifest resolution ───────────────────────────────
@@ -48,66 +39,9 @@ import { resolveOutputValue } from "./useManifestResolver";
 /**
  * Resolve Output widget manifest hashes to JupyterOutput objects.
  *
- * Uses a generation counter per comm_id to discard stale async completions
- * when a newer CRDT update arrives before the old fetch finishes.
+ * Output widget manifest resolution is now handled in App.tsx via
+ * SyncEngine.commChanges$ (the unresolvedOutputs field on ResolvedComm).
  */
-const _outputResolveGen = new Map<string, number>();
-
-function resolveCommOutputHashes(
-  commId: string,
-  state: Record<string, unknown>,
-  callbacksRef: {
-    readonly current: { onCommMessage?: (msg: JupyterMessage) => void };
-  },
-): void {
-  const detected = detectUnresolvedOutputs(state);
-  if (!detected) {
-    // Bump generation so any in-flight fetch is discarded (for OutputModel with empty outputs)
-    if (state._model_name === "OutputModel") {
-      _outputResolveGen.set(commId, (_outputResolveGen.get(commId) ?? 0) + 1);
-    }
-    return;
-  }
-
-  const blobPort = getBlobPort();
-  if (blobPort === null) return; // Will retry on next CRDT update
-
-  const gen = (_outputResolveGen.get(commId) ?? 0) + 1;
-  _outputResolveGen.set(commId, gen);
-
-  void (async () => {
-    const resolved = await Promise.all(
-      detected.outputs.map((h) => resolveOutputValue(h, blobPort)),
-    );
-    if (_outputResolveGen.get(commId) !== gen) return;
-
-    const resolvedOutputs = resolved.filter(
-      (o): o is JupyterOutput => o !== null,
-    );
-    const cb = callbacksRef.current?.onCommMessage;
-    if (cb) {
-      cb({
-        header: {
-          msg_id: crypto.randomUUID(),
-          msg_type: "comm_msg",
-          session: "",
-          username: "kernel",
-          date: new Date().toISOString(),
-          version: "5.3",
-        },
-        metadata: {},
-        content: {
-          comm_id: commId,
-          data: {
-            method: "update",
-            state: { outputs: resolvedOutputs },
-          },
-        },
-        buffers: [],
-      });
-    }
-  })();
-}
 
 // ── Hook types ──────────────────────────────────────────────────────
 
@@ -138,8 +72,6 @@ interface UseDaemonKernelOptions {
   ) => void;
   /** Called when outputs are cleared for a cell (broadcast from another window) */
   onClearOutputs?: (cellId: string) => void;
-  /** Called when a comm message is received (for widgets) */
-  onCommMessage?: (msg: JupyterMessage) => void;
 }
 
 export function useDaemonKernel({
@@ -152,11 +84,9 @@ export function useDaemonKernel({
   onKernelError,
   onUpdateDisplayData,
   onClearOutputs,
-  onCommMessage,
 }: UseDaemonKernelOptions) {
   // ── State from RuntimeStateDoc (daemon-authoritative) ─────────────
   const runtimeState = useRuntimeState();
-  const blobPort = useBlobPort();
 
   const kernelInfo = useMemo(
     () => deriveKernelInfo(runtimeState),
@@ -230,7 +160,6 @@ export function useDaemonKernel({
     onKernelError,
     onUpdateDisplayData,
     onClearOutputs,
-    onCommMessage,
   });
   callbacksRef.current = {
     onOutput,
@@ -241,7 +170,6 @@ export function useDaemonKernel({
     onKernelError,
     onUpdateDisplayData,
     onClearOutputs,
-    onCommMessage,
   };
 
   // ── Fire callbacks when derived state changes ─────────────────────
@@ -376,30 +304,8 @@ export function useDaemonKernel({
           break;
         }
 
-        case "comm": {
-          const { onCommMessage: cb } = callbacksRef.current;
-          if (cb) {
-            const msg: JupyterMessage = {
-              header: {
-                msg_id: crypto.randomUUID(),
-                msg_type: broadcast.msg_type,
-                session: "",
-                username: "kernel",
-                date: new Date().toISOString(),
-                version: "5.3",
-              },
-              metadata: {},
-              content: broadcast.content,
-              buffers: broadcast.buffers?.length
-                ? broadcast.buffers.map(
-                    (arr: number[]) => new Uint8Array(arr).buffer,
-                  )
-                : [],
-            };
-            cb(msg);
-          }
-          break;
-        }
+        // Custom comm messages (buttons, model.send()) are now handled
+        // by the SyncEngine.commBroadcasts$ subscriber in App.tsx.
 
         case "env_progress":
           break;
@@ -459,105 +365,8 @@ export function useDaemonKernel({
     };
   }, []);
 
-  // ── Comm state diffing → WidgetStore ──────────────────────────────
-  const commDiffStateRef = useRef<CommDiffState>({
-    comms: {},
-    json: {},
-  });
-
-  useEffect(() => {
-    const { onCommMessage: commCb } = callbacksRef.current;
-    if (!commCb) return;
-
-    const docComms = runtimeState.comms ?? {};
-    const hasBlobPort = blobPort !== null;
-
-    const { result, next } = diffComms(commDiffStateRef.current, docComms);
-
-    // Process opened comms — synthesize comm_open
-    for (const { commId, entry } of result.opened) {
-      if (!hasBlobPort) {
-        // Remove from next state so it retries on next CRDT update
-        delete next.comms[commId];
-        delete next.json[commId];
-        continue;
-      }
-      const { state: resolvedState, bufferPaths } =
-        replaceSentinelsWithBlobUrls(entry.state as Record<string, unknown>);
-      commCb({
-        header: {
-          msg_id: crypto.randomUUID(),
-          msg_type: "comm_open",
-          session: "",
-          username: "kernel",
-          date: new Date().toISOString(),
-          version: "5.3",
-        },
-        metadata: {},
-        content: {
-          comm_id: commId,
-          target_name: entry.target_name,
-          data: {
-            state: {
-              ...resolvedState,
-              _model_module: entry.model_module || undefined,
-              _model_name: entry.model_name || undefined,
-            },
-            buffer_paths: bufferPaths,
-          },
-        },
-        buffers: [],
-      });
-      resolveCommOutputHashes(commId, entry.state, callbacksRef);
-    }
-
-    // Process updated comms — synthesize comm_msg(update)
-    for (const { commId, entry } of result.updated) {
-      const { state: resolvedState, bufferPaths } =
-        replaceSentinelsWithBlobUrls(entry.state as Record<string, unknown>);
-      commCb({
-        header: {
-          msg_id: crypto.randomUUID(),
-          msg_type: "comm_msg",
-          session: "",
-          username: "kernel",
-          date: new Date().toISOString(),
-          version: "5.3",
-        },
-        metadata: {},
-        content: {
-          comm_id: commId,
-          data: {
-            method: "update",
-            state: resolvedState,
-            buffer_paths: bufferPaths,
-          },
-        },
-        buffers: [],
-      });
-      resolveCommOutputHashes(commId, entry.state, callbacksRef);
-    }
-
-    // Process closed comms — synthesize comm_close
-    for (const commId of result.closed) {
-      commCb({
-        header: {
-          msg_id: crypto.randomUUID(),
-          msg_type: "comm_close",
-          session: "",
-          username: "kernel",
-          date: new Date().toISOString(),
-          version: "5.3",
-        },
-        metadata: {},
-        content: { comm_id: commId },
-        buffers: [],
-      });
-    }
-
-    commDiffStateRef.current = next;
-    // biome-ignore lint/correctness/useExhaustiveDependencies: blobPort triggers retry for comms deferred due to missing blob server
-  }, [runtimeState.comms, blobPort]);
+  // Comm state projection is now handled by SyncEngine.commChanges$
+  // (subscribed in App.tsx). No Jupyter message synthesis needed.
 
   // ── Actions (via NotebookClient) ──────────────────────────────────
 

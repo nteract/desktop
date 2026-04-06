@@ -46,11 +46,13 @@ import { type EnvSyncState, useDependencies } from "./hooks/useDependencies";
 import { useEnvProgress } from "./hooks/useEnvProgress";
 import { useDaemonInfo, useGitInfo } from "./hooks/useGitInfo";
 import { useGlobalFind } from "./hooks/useGlobalFind";
+import { resolveOutputValue } from "./hooks/useManifestResolver";
 import { usePixiDependencies } from "./hooks/usePixiDependencies";
 import { usePoolState } from "./hooks/usePoolState";
 import { useTrust } from "./hooks/useTrust";
 import { useUpdater } from "./hooks/useUpdater";
 import { startAttributionDispatch } from "./lib/attribution-registry";
+import { getBlobPort, useBlobPort } from "./lib/blob-port";
 import {
   flushCellUIState,
   setExecutingCellIds as storeSetExecutingCellIds,
@@ -66,7 +68,7 @@ import { getNotebookCellsSnapshot } from "./lib/notebook-cells";
 import { useDetectRuntime } from "./lib/notebook-metadata";
 import { TauriTransport } from "./lib/tauri-transport";
 import { startWindowFocusHandler } from "./lib/window-focus";
-import type { JupyterMessage } from "./types";
+import type { JupyterOutput } from "./types";
 
 /** MIME bundle type for output data */
 export type MimeBundle = Record<string, unknown>;
@@ -101,6 +103,43 @@ async function sendMessage(message: unknown): Promise<void> {
   } catch (e) {
     logger.error("[widget] send_comm_message failed:", e);
   }
+}
+
+// ── Output widget manifest resolution ─────────────────────────────────
+// Generation counter per comm to discard stale async results.
+const _outputResolveGen = new Map<string, number>();
+
+/**
+ * Resolve Output widget manifests and update the WidgetStore.
+ *
+ * When SyncEngine.commChanges$ emits a comm with `unresolvedOutputs`,
+ * this function fetches + resolves the manifests asynchronously and
+ * pushes the resolved outputs into the widget store.
+ */
+function resolveCommOutputs(
+  commId: string,
+  outputs: unknown[],
+  store: import("@/components/widgets/widget-store").WidgetStore,
+): void {
+  const port = getBlobPort();
+  if (port === null) return;
+
+  const gen = (_outputResolveGen.get(commId) ?? 0) + 1;
+  _outputResolveGen.set(commId, gen);
+
+  void (async () => {
+    const resolved = await Promise.all(
+      outputs.map((o) => resolveOutputValue(o, port)),
+    );
+    if (_outputResolveGen.get(commId) !== gen) return;
+
+    const resolvedOutputs = resolved.filter(
+      (o): o is JupyterOutput => o !== null,
+    );
+    if (resolvedOutputs.length > 0) {
+      store.updateModel(commId, { outputs: resolvedOutputs });
+    }
+  })();
 }
 
 function AppContent() {
@@ -154,6 +193,7 @@ function AppContent() {
     setCellOutputsHidden,
     flushSync,
     getHandle,
+    getEngine,
     triggerSync,
     localActor,
   } = useAutomergeNotebook();
@@ -251,8 +291,8 @@ function AppContent() {
   const { denoConfigInfo, flexibleNpmImports, setFlexibleNpmImports } =
     useDenoDependencies();
 
-  // Get widget store handler for routing comm messages
-  const { handleMessage: handleWidgetMessage } = useWidgetStoreRequired();
+  // Get widget store for CRDT → WidgetStore projection
+  const { store: widgetStore } = useWidgetStoreRequired();
 
   const handleExecutionCount = useCallback(
     (cellId: string, count: number) => {
@@ -265,14 +305,6 @@ function AppContent() {
   const handleExecutionDone = useCallback((_cellId: string) => {
     // Daemon queue handles execution tracking via broadcasts
   }, []);
-
-  const handleCommMessage = useCallback(
-    (msg: JupyterMessage) => {
-      // Forward comm messages to the widget store's comm router
-      handleWidgetMessage(msg as Parameters<typeof handleWidgetMessage>[0]);
-    },
-    [handleWidgetMessage],
-  );
 
   // NotebookClient for sending kernel commands via transport
   const notebookClient = useMemo(
@@ -300,8 +332,7 @@ function AppContent() {
     onExecutionCount: handleExecutionCount,
     onExecutionDone: handleExecutionDone,
     onUpdateDisplayData: updateOutputByDisplayId,
-    onClearOutputs: clearOutputsFromDaemon, // Handle broadcast from other windows
-    onCommMessage: handleCommMessage, // Route comm messages to widget store
+    onClearOutputs: clearOutputsFromDaemon,
   });
 
   // Derive values from daemon kernel
@@ -336,6 +367,62 @@ function AppContent() {
       setCrdtCommWriter(null);
     };
   }, [getHandle, triggerSync]);
+
+  // ── CRDT → WidgetStore projection via SyncEngine.commChanges$ ──────
+  // Replaces the old Jupyter message synthesis path. The SyncEngine diffs
+  // RuntimeStateDoc.comms, resolves ContentRefs via WASM, and emits
+  // opened/updated/closed events. We drive the WidgetStore directly.
+  useEffect(() => {
+    const engine = getEngine();
+    if (!engine) return;
+
+    const commSub = engine.commChanges$.subscribe((changes) => {
+      for (const comm of changes.opened) {
+        widgetStore.createModel(comm.commId, comm.state);
+        if (comm.unresolvedOutputs) {
+          resolveCommOutputs(comm.commId, comm.unresolvedOutputs, widgetStore);
+        }
+      }
+      for (const comm of changes.updated) {
+        widgetStore.updateModel(comm.commId, comm.state);
+        if (comm.unresolvedOutputs) {
+          resolveCommOutputs(comm.commId, comm.unresolvedOutputs, widgetStore);
+        }
+      }
+      for (const commId of changes.closed) {
+        widgetStore.deleteModel(commId);
+      }
+    });
+
+    // Custom comm messages (buttons, model.send()) are ephemeral events
+    // delivered via broadcast, not CRDT state. Route to WidgetStore.
+    const customSub = engine.commBroadcasts$.subscribe((broadcast) => {
+      const content = broadcast.content as Record<string, unknown> | undefined;
+      const data = content?.data as Record<string, unknown> | undefined;
+      if (data?.method === "custom") {
+        const commId = content?.comm_id as string;
+        const inner = (data?.content as Record<string, unknown>) ?? {};
+        const buffers = (broadcast as { buffers?: number[][] }).buffers;
+        const arrayBuffers = buffers?.map(
+          (arr: number[]) => new Uint8Array(arr).buffer,
+        );
+        widgetStore.emitCustomMessage(commId, inner, arrayBuffers);
+      }
+    });
+
+    return () => {
+      commSub.unsubscribe();
+      customSub.unsubscribe();
+    };
+  }, [getEngine, widgetStore]);
+
+  // Re-project comms when blob_port changes (deferred comms retry).
+  const blobPort = useBlobPort();
+  useEffect(() => {
+    if (blobPort !== null) {
+      getEngine()?.reProjectComms();
+    }
+  }, [blobPort, getEngine]);
 
   // Split queue state into executing (currently running) and queued (waiting).
   const executingCellIds = new Set(

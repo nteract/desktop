@@ -29,7 +29,6 @@ use wasm_bindgen::prelude::*;
 /// Using `serialize_maps_as_objects(true)` ensures all maps become plain
 /// JS Objects, matching what `JSON.parse()` would produce. The returned
 /// `JsValue` can be any JS type (object, array, scalar) depending on input.
-
 fn serialize_to_js<T: Serialize>(value: &T) -> Result<JsValue, serde_wasm_bindgen::Error> {
     let serializer = serde_wasm_bindgen::Serializer::new().serialize_maps_as_objects(true);
     value.serialize(&serializer)
@@ -266,6 +265,68 @@ impl From<(usize, CellSnapshot)> for JsCell {
             metadata: snap.metadata,
             resolved_assets: snap.resolved_assets,
         }
+    }
+}
+
+// ── Comm state ContentRef resolution ─────────────────────────────────
+
+/// Recursively walk a JSON value, resolving ContentRef objects in place.
+///
+/// - `{"inline": V}` → unwrap to `V`
+/// - `{"blob": H, "size": N, ...}` → plain URL string, path recorded in `buffer_paths`
+/// - Arrays/objects → recurse
+/// - Primitives → pass through
+fn walk_and_resolve_comm_state(
+    val: &serde_json::Value,
+    port: u16,
+    current_path: &mut Vec<String>,
+    buffer_paths: &mut Vec<Vec<String>>,
+) -> serde_json::Value {
+    match val {
+        serde_json::Value::Object(obj) => {
+            // Check for inline ContentRef: {"inline": ...}
+            if let Some(inner) = obj.get("inline") {
+                return inner.clone();
+            }
+
+            // Check for blob ContentRef: {"blob": string, "size": number}
+            if let (Some(serde_json::Value::String(hash)), Some(serde_json::Value::Number(_))) =
+                (obj.get("blob"), obj.get("size"))
+            {
+                buffer_paths.push(current_path.clone());
+                return serde_json::Value::String(format!(
+                    "http://127.0.0.1:{}/blob/{}",
+                    port, hash
+                ));
+            }
+
+            // Regular object — recurse into values
+            let mut resolved = serde_json::Map::with_capacity(obj.len());
+            for (key, child) in obj {
+                current_path.push(key.clone());
+                resolved.insert(
+                    key.clone(),
+                    walk_and_resolve_comm_state(child, port, current_path, buffer_paths),
+                );
+                current_path.pop();
+            }
+            serde_json::Value::Object(resolved)
+        }
+        serde_json::Value::Array(arr) => {
+            let resolved: Vec<serde_json::Value> = arr
+                .iter()
+                .enumerate()
+                .map(|(i, child)| {
+                    current_path.push(i.to_string());
+                    let r = walk_and_resolve_comm_state(child, port, current_path, buffer_paths);
+                    current_path.pop();
+                    r
+                })
+                .collect();
+            serde_json::Value::Array(resolved)
+        }
+        // Primitives pass through unchanged
+        _ => val.clone(),
     }
 }
 
@@ -1215,81 +1276,34 @@ impl NotebookHandle {
 
     /// Resolve ContentRef values in a comm's state for frontend consumption.
     ///
-    /// Walks the top-level properties of `comms/{comm_id}/state` and resolves
-    /// any ContentRef objects (`{"blob": hash, "size": N, "media_type": "..."}`)
-    /// into `ResolvedContentRef` variants:
+    /// Walks the state **recursively**, resolving ContentRef objects:
+    /// - `{"blob": hash, "size": N, ...}` → plain URL string
+    /// - `{"inline": value}` → unwrapped inner value
+    /// - Plain values → passed through unchanged
     ///
-    /// - `text/javascript`, `text/css`, `application/octet-stream` → `Url`
-    ///   (browser loads directly via import/link/fetch)
-    /// - `application/json`, `text/plain` → `Blob` (frontend fetches + parses)
-    /// - `{"inline": value}` → `Inline` (unwrapped)
-    /// - Plain values (not ContentRef) → passed through unchanged
+    /// Returns `{ state, buffer_paths }` where `buffer_paths` records the
+    /// JSON paths of blob refs that were resolved to URLs (so the iframe
+    /// knows which values to fetch as ArrayBuffers).
     ///
-    /// Returns the resolved state as a JSON object, or undefined if the comm
-    /// doesn't exist.
+    /// Returns undefined if blob_port is not set or comm doesn't exist.
     pub fn resolve_comm_state(&self, comm_id: &str) -> JsValue {
+        let Some(port) = self.blob_port else {
+            return JsValue::UNDEFINED;
+        };
         let state = self.state_doc.read_state();
         let Some(entry) = state.comms.get(comm_id) else {
             return JsValue::UNDEFINED;
         };
 
-        let Some(obj) = entry.state.as_object() else {
-            return serialize_to_js(&entry.state).unwrap_or(JsValue::UNDEFINED);
-        };
+        let mut buffer_paths: Vec<Vec<String>> = Vec::new();
+        let resolved =
+            walk_and_resolve_comm_state(&entry.state, port, &mut Vec::new(), &mut buffer_paths);
 
-        let mut resolved = serde_json::Map::with_capacity(obj.len());
-        for (key, val) in obj {
-            resolved.insert(key.clone(), self.resolve_comm_content_ref(val));
-        }
-
-        serialize_to_js(&serde_json::Value::Object(resolved)).unwrap_or(JsValue::UNDEFINED)
-    }
-
-    /// Resolve a single widget state value that may be a ContentRef.
-    ///
-    /// Unlike `resolve_content_ref` (for outputs, where the MIME is the map key),
-    /// this reads `media_type` from inside the ContentRef itself.
-    fn resolve_comm_content_ref(&self, val: &serde_json::Value) -> serde_json::Value {
-        // Inline refs — unwrap the value
-        if let Some(inline) = val.get("inline") {
-            return inline.clone();
-        }
-
-        // Blob refs — resolve based on media_type
-        if let Some(blob_hash) = val.get("blob").and_then(|v| v.as_str()) {
-            let size = val.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
-            let media_type = val
-                .get("media_type")
-                .and_then(|v| v.as_str())
-                .unwrap_or("text/plain");
-
-            // Executable/loadable content → Url (browser handles natively)
-            // Data content → Blob (frontend fetches and parses)
-            let use_url = matches!(
-                media_type,
-                "text/javascript" | "text/css" | "application/octet-stream"
-            ) || media_type.starts_with("image/")
-                || media_type.starts_with("audio/")
-                || media_type.starts_with("video/");
-
-            if use_url {
-                if let Some(port) = self.blob_port {
-                    return serde_json::to_value(ResolvedContentRef::Url {
-                        url: format!("http://127.0.0.1:{}/blob/{}", port, blob_hash),
-                    })
-                    .unwrap_or_else(|_| val.clone());
-                }
-            }
-
-            return serde_json::to_value(ResolvedContentRef::Blob {
-                blob: blob_hash.to_string(),
-                size,
-            })
-            .unwrap_or_else(|_| val.clone());
-        }
-
-        // Not a ContentRef — pass through unchanged
-        val.clone()
+        serialize_to_js(&serde_json::json!({
+            "state": resolved,
+            "buffer_paths": buffer_paths,
+        }))
+        .unwrap_or(JsValue::UNDEFINED)
     }
 
     /// Reset the sync state. Call this when reconnecting to a new daemon session.

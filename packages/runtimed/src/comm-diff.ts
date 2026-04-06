@@ -28,6 +28,32 @@ export interface CommDiffState {
   json: Record<string, string>;
 }
 
+// ── Resolved comm types (for SyncEngine.commChanges$) ──────────────
+
+/** A comm with metadata + ContentRef-resolved state, ready for a widget store. */
+export interface ResolvedComm {
+  commId: string;
+  targetName: string;
+  modelModule: string;
+  modelName: string;
+  /** State with blob ContentRefs replaced by URL strings, inlines unwrapped. */
+  state: Record<string, unknown>;
+  /** JSON paths where blob URLs replaced ContentRef objects (for binary fetch). */
+  bufferPaths: string[][];
+  /** Unresolved outputs for OutputModel widgets (null if not an OutputModel). */
+  unresolvedOutputs: unknown[] | null;
+}
+
+/** Comm lifecycle changes emitted by SyncEngine.commChanges$. */
+export interface CommChanges {
+  /** New comms (sorted by seq for dependency order), with resolved state. */
+  opened: ResolvedComm[];
+  /** Comms whose state changed, with resolved state. */
+  updated: ResolvedComm[];
+  /** Comm IDs that were removed. */
+  closed: string[];
+}
+
 // ── Output manifest detection ───────────────────────────────────────
 
 const MANIFEST_HASH_RE = /^[a-f0-9]{64}$/;

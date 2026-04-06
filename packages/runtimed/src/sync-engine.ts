@@ -47,6 +47,13 @@ import {
   isRuntimeStateSnapshotBroadcast,
 } from "./broadcast-types";
 import { type CellChangeset, mergeChangesets } from "./cell-changeset";
+import {
+  type CommChanges,
+  type CommDiffState,
+  type ResolvedComm,
+  detectUnresolvedOutputs,
+  diffComms,
+} from "./comm-diff";
 import { type KernelStatus, kernelStatus$ as deriveKernelStatus$ } from "./derived-state";
 import type { FrameEvent, SyncableHandle } from "./handle";
 import type { PoolState } from "./pool-state";
@@ -114,6 +121,7 @@ export class SyncEngine {
   private subscription: Subscription | null = null;
   private awaitingInitialSync = true;
   private prevExecutions: Record<string, ExecutionState> = {};
+  private commDiffState: CommDiffState = { comms: {}, json: {} };
 
   // Internal subjects
   private readonly frameIn$ = new Subject<number[]>();
@@ -174,6 +182,18 @@ export class SyncEngine {
   readonly kernelErrors$: Observable<KernelErrorBroadcast>;
 
   /**
+   * Comm state projection from RuntimeStateDoc.
+   *
+   * Emits resolved comm lifecycle changes (opened/updated/closed) with
+   * ContentRef blobs replaced by URL strings. Subscribers drive their
+   * widget store directly — no Jupyter message synthesis needed.
+   *
+   * Depends on `handle.resolve_comm_state()` (optional on SyncableHandle).
+   * If the handle doesn't implement it, this observable never emits.
+   */
+  readonly commChanges$: Observable<CommChanges>;
+
+  /**
    * Fires each time the initial sync handshake completes (daemon has
    * sent document content). Emits once per bootstrap cycle — after
    * `resetForBootstrap()`, the next `changed:true` frame triggers
@@ -192,6 +212,7 @@ export class SyncEngine {
     ExecutionTransition[]
   >();
   private readonly _initialSyncComplete$ = new Subject<void>();
+  private readonly _commChanges$ = new Subject<CommChanges>();
 
   constructor(opts: SyncEngineOptions) {
     this.opts = {
@@ -208,6 +229,7 @@ export class SyncEngine {
     this.poolState$ = this._poolState$.asObservable();
     this.executionTransitions$ = this._executionTransitions$.asObservable();
     this.initialSyncComplete$ = this._initialSyncComplete$.asObservable();
+    this.commChanges$ = this._commChanges$.asObservable();
     this.kernelStatus$ = deriveKernelStatus$(this.runtimeState$);
 
     // Typed broadcast sub-observables (derived from broadcasts$)
@@ -437,6 +459,7 @@ export class SyncEngine {
         .pipe(filter(isRuntimeStateSnapshotBroadcast))
         .subscribe((snapshot) => {
           this._runtimeState$.next(snapshot.state);
+          this.projectComms(snapshot.state);
         }),
     );
 
@@ -518,6 +541,7 @@ export class SyncEngine {
             if (transitions.length > 0) {
               this._executionTransitions$.next(transitions);
             }
+            this.projectComms(state);
           }
         }),
     );
@@ -600,6 +624,9 @@ export class SyncEngine {
                   });
                 }
               }
+
+              // ── Comm state projection ──────────────────────────────
+              this.projectComms(state);
             }
 
             // Send sync reply so the daemon knows our heads
@@ -725,6 +752,99 @@ export class SyncEngine {
   /** Whether the engine is currently running. */
   get running(): boolean {
     return this.subscription !== null;
+  }
+
+  // ── Comm state projection ──────────────────────────────────────────
+
+  /**
+   * Re-run comm projection against the latest RuntimeState.
+   *
+   * Call this when blob_port changes — it resets the diff state so all
+   * current comms appear as "opened" on the next runtimeState$ emission.
+   */
+  reProjectComms(): void {
+    this.commDiffState = { comms: {}, json: {} };
+  }
+
+  /**
+   * Project comm state from a RuntimeState snapshot.
+   *
+   * Diffs against previous state, resolves ContentRefs via the WASM handle,
+   * and emits to commChanges$.
+   */
+  private projectComms(state: RuntimeState): void {
+    const comms = state.comms ?? {};
+    const { result, next } = diffComms(this.commDiffState, comms);
+
+    if (
+      result.opened.length === 0 &&
+      result.updated.length === 0 &&
+      result.closed.length === 0
+    ) {
+      this.commDiffState = next;
+      return;
+    }
+
+    const handle = this.opts.getHandle();
+    const resolve = (commId: string) =>
+      handle?.resolve_comm_state?.(commId) as
+        | { state: Record<string, unknown>; buffer_paths: string[][] }
+        | undefined;
+
+    const opened: ResolvedComm[] = [];
+    for (const { commId, entry } of result.opened) {
+      const resolved = resolve(commId);
+      if (!resolved) {
+        // blob_port not ready — defer by excluding from next state.
+        // On the next runtimeState$ emission (after blob_port is set),
+        // diffComms will see this comm as "new" again and retry.
+        delete next.comms[commId];
+        delete next.json[commId];
+        continue;
+      }
+      opened.push({
+        commId,
+        targetName: entry.target_name,
+        modelModule: entry.model_module,
+        modelName: entry.model_name,
+        state: {
+          ...resolved.state,
+          _model_module: entry.model_module || undefined,
+          _model_name: entry.model_name || undefined,
+        },
+        bufferPaths: resolved.buffer_paths,
+        unresolvedOutputs:
+          detectUnresolvedOutputs(entry.state as Record<string, unknown>)
+            ?.outputs ?? null,
+      });
+    }
+
+    const updated: ResolvedComm[] = [];
+    for (const { commId, entry } of result.updated) {
+      const resolved = resolve(commId);
+      if (!resolved) continue;
+      updated.push({
+        commId,
+        targetName: entry.target_name,
+        modelModule: entry.model_module,
+        modelName: entry.model_name,
+        state: resolved.state,
+        bufferPaths: resolved.buffer_paths,
+        unresolvedOutputs:
+          detectUnresolvedOutputs(entry.state as Record<string, unknown>)
+            ?.outputs ?? null,
+      });
+    }
+
+    this.commDiffState = next;
+
+    if (opened.length > 0 || updated.length > 0 || result.closed.length > 0) {
+      this._commChanges$.next({
+        opened,
+        updated,
+        closed: result.closed,
+      });
+    }
   }
 
   // ── Outbound sync ────────────────────────────────────────────────
@@ -889,5 +1009,6 @@ export class SyncEngine {
     this.opts.logger.info("[sync-engine] Resetting for bootstrap");
     this.awaitingInitialSync = true;
     this.prevExecutions = {};
+    this.commDiffState = { comms: {}, json: {} };
   }
 }

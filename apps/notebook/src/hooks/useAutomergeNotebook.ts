@@ -572,6 +572,9 @@ export function useAutomergeNotebook() {
   const triggerSync = useCallback(() => engineRef.current?.scheduleFlush(), []);
   const localActor = `human:${sessionIdRef.current}`;
 
+  /** Accessor for the SyncEngine (for subscribing to commChanges$ etc.). */
+  const getEngine = useCallback(() => engineRef.current, []);
+
   return {
     cellIds,
     isLoading,
@@ -596,6 +599,7 @@ export function useAutomergeNotebook() {
     flushSync,
     // CRDT bridge context deps
     getHandle,
+    getEngine,
     triggerSync,
     localActor,
   };

@@ -109,4 +109,22 @@ export interface SyncableHandle {
 
   /** Number of cells in the document. */
   cell_count(): number;
+
+  /**
+   * Resolve ContentRef values in a comm's state.
+   *
+   * Returns `{ state, buffer_paths }` where blob ContentRefs are replaced
+   * with plain URL strings and inline ContentRefs are unwrapped.
+   * `buffer_paths` records which JSON paths were resolved from blob refs.
+   *
+   * Returns undefined if blob_port is not set or the comm doesn't exist.
+   *
+   * Optional — implementations that don't support comm state resolution
+   * (e.g. test mocks) may omit this method.
+   */
+  resolve_comm_state?(
+    comm_id: string,
+  ):
+    | { state: Record<string, unknown>; buffer_paths: string[][] }
+    | undefined;
 }

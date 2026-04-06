@@ -35,25 +35,61 @@ import {
 const BLOB_URL_RE = /^https?:\/\/127\.0\.0\.1:\d+\/blob\/[a-f0-9]+$/;
 
 /**
- * Resolve blob URLs in state at buffer_paths positions to ArrayBuffers.
- * Returns resolved buffers; also replaces the URL strings in state with
- * the ArrayBuffers (via applyBufferPaths).
+ * Resolve blob URLs in state to ArrayBuffers.
+ *
+ * When `bufferPaths` is provided, scopes the search to those paths.
+ * When absent (e.g. state from CommBridgeManager which doesn't carry
+ * bufferPaths), walks the entire state looking for blob URL strings.
  */
 async function resolveBlobUrls(
   state: Record<string, unknown>,
   bufferPaths?: string[][],
 ): Promise<ArrayBuffer[]> {
-  if (!bufferPaths || bufferPaths.length === 0) return [];
+  if (bufferPaths && bufferPaths.length > 0) {
+    return resolveAtPaths(state, bufferPaths);
+  }
+  // No bufferPaths — discover blob URLs by walking the state
+  const discovered: string[][] = [];
+  findBlobUrlPaths(state, [], discovered);
+  if (discovered.length === 0) return [];
+  return resolveAtPaths(state, discovered);
+}
 
+/** Walk state recursively, collecting paths to blob URL strings. */
+function findBlobUrlPaths(
+  value: unknown,
+  currentPath: string[],
+  paths: string[][],
+): void {
+  if (typeof value === "string" && BLOB_URL_RE.test(value)) {
+    paths.push([...currentPath]);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      findBlobUrlPaths(value[i], [...currentPath, String(i)], paths);
+    }
+    return;
+  }
+  if (typeof value === "object" && value !== null) {
+    for (const [key, val] of Object.entries(value)) {
+      findBlobUrlPaths(val, [...currentPath, key], paths);
+    }
+  }
+}
+
+/** Resolve blob URLs at known paths to ArrayBuffers. */
+async function resolveAtPaths(
+  state: Record<string, unknown>,
+  paths: string[][],
+): Promise<ArrayBuffer[]> {
   const resolved = await Promise.all(
-    bufferPaths.map(async (path) => {
-      // Navigate to the value at this path
+    paths.map(async (path) => {
       let current: unknown = state;
       for (const segment of path) {
         if (typeof current !== "object" || current === null) return null;
         current = (current as Record<string, unknown>)[segment];
       }
-      // If it's a blob URL string, fetch it
       if (typeof current === "string" && BLOB_URL_RE.test(current)) {
         try {
           const resp = await fetch(current);
@@ -73,7 +109,6 @@ async function resolveBlobUrls(
       return null;
     }),
   );
-
   return resolved.filter((b): b is ArrayBuffer => b !== null);
 }
 

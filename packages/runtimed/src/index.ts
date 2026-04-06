@@ -66,6 +66,7 @@ export {
 
 // Comm diffing
 export {
+  type CommChanges,
   type CommDiffResult,
   type CommDiffState,
   detectOutputManifestHashes,
@@ -73,6 +74,7 @@ export {
   diffComms,
   isManifestHash,
   type OutputManifestHashes,
+  type ResolvedComm,
   type UnresolvedOutputs,
 } from "./comm-diff";
 
