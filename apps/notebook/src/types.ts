@@ -7,6 +7,8 @@ export interface CodeCell {
   source: string;
   execution_count: number | null;
   outputs: JupyterOutput[];
+  /** Renderer plugins required by this cell's outputs (e.g., ["plotly", "vega"]). */
+  requiredPlugins: string[];
   metadata: CellMetadata;
 }
 
