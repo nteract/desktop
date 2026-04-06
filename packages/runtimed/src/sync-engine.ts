@@ -122,6 +122,7 @@ export class SyncEngine {
   private awaitingInitialSync = true;
   private prevExecutions: Record<string, ExecutionState> = {};
   private commDiffState: CommDiffState = { comms: {}, json: {} };
+  private lastRuntimeState: RuntimeState | null = null;
 
   // Internal subjects
   private readonly frameIn$ = new Subject<number[]>();
@@ -759,11 +760,16 @@ export class SyncEngine {
   /**
    * Re-run comm projection against the latest RuntimeState.
    *
-   * Call this when blob_port changes — it resets the diff state so all
-   * current comms appear as "opened" on the next runtimeState$ emission.
+   * Call this when blob_port changes — resets diff state so all current
+   * comms appear as "opened", then immediately re-projects against the
+   * last known state. Without the immediate replay, deferred comms
+   * would stay missing until an unrelated runtime-state change arrives.
    */
   reProjectComms(): void {
     this.commDiffState = { comms: {}, json: {} };
+    if (this.lastRuntimeState) {
+      this.projectComms(this.lastRuntimeState);
+    }
   }
 
   /**
@@ -773,6 +779,7 @@ export class SyncEngine {
    * and emits to commChanges$.
    */
   private projectComms(state: RuntimeState): void {
+    this.lastRuntimeState = state;
     const comms = state.comms ?? {};
     const { result, next } = diffComms(this.commDiffState, comms);
 
@@ -1010,5 +1017,6 @@ export class SyncEngine {
     this.awaitingInitialSync = true;
     this.prevExecutions = {};
     this.commDiffState = { comms: {}, json: {} };
+    this.lastRuntimeState = null;
   }
 }

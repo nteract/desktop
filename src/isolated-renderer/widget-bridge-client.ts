@@ -35,47 +35,20 @@ import {
 const BLOB_URL_RE = /^https?:\/\/127\.0\.0\.1:\d+\/blob\/[a-f0-9]+$/;
 
 /**
- * Resolve blob URLs in state to ArrayBuffers.
+ * Resolve blob URLs in state at buffer_paths positions to ArrayBuffers.
  *
- * When `bufferPaths` is provided, scopes the search to those paths.
- * When absent (e.g. state from CommBridgeManager which doesn't carry
- * bufferPaths), walks the entire state looking for blob URL strings.
+ * Only converts blob URLs to DataView/ArrayBuffer at explicitly listed
+ * `bufferPaths` positions (binary widget data like NumPy arrays).
+ * When `bufferPaths` is absent or empty, returns [] — blob URL strings
+ * (e.g. `_esm`, `_css`) stay as strings so `loadESM`/CSS injection
+ * can load them natively.
  */
 async function resolveBlobUrls(
   state: Record<string, unknown>,
   bufferPaths?: string[][],
 ): Promise<ArrayBuffer[]> {
-  if (bufferPaths && bufferPaths.length > 0) {
-    return resolveAtPaths(state, bufferPaths);
-  }
-  // No bufferPaths — discover blob URLs by walking the state
-  const discovered: string[][] = [];
-  findBlobUrlPaths(state, [], discovered);
-  if (discovered.length === 0) return [];
-  return resolveAtPaths(state, discovered);
-}
-
-/** Walk state recursively, collecting paths to blob URL strings. */
-function findBlobUrlPaths(
-  value: unknown,
-  currentPath: string[],
-  paths: string[][],
-): void {
-  if (typeof value === "string" && BLOB_URL_RE.test(value)) {
-    paths.push([...currentPath]);
-    return;
-  }
-  if (Array.isArray(value)) {
-    for (let i = 0; i < value.length; i++) {
-      findBlobUrlPaths(value[i], [...currentPath, String(i)], paths);
-    }
-    return;
-  }
-  if (typeof value === "object" && value !== null) {
-    for (const [key, val] of Object.entries(value)) {
-      findBlobUrlPaths(val, [...currentPath, key], paths);
-    }
-  }
+  if (!bufferPaths || bufferPaths.length === 0) return [];
+  return resolveAtPaths(state, bufferPaths);
 }
 
 /** Resolve blob URLs at known paths to ArrayBuffers. */
