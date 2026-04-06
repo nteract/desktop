@@ -58,10 +58,16 @@ pub async fn restart_kernel(
     // Brief pause for shutdown to complete
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    // Step 2: Read kernel type and env_source from RuntimeState before launching
-    let (kernel_type, env_source) = {
+    // Ensure daemon has latest metadata (deps may have changed since last sync)
+    if let Err(e) = handle.confirm_sync().await {
+        tracing::warn!("confirm_sync failed before restart_kernel launch: {e}");
+    }
+
+    // Step 2: Determine kernel type from RuntimeState, but let daemon auto-detect env_source
+    // from notebook metadata. This ensures newly added deps are picked up on restart.
+    let kernel_type = {
         let state = handle.get_runtime_state().ok();
-        let kernel_type = state
+        state
             .as_ref()
             .and_then(|s| {
                 let name = &s.kernel.name;
@@ -71,25 +77,12 @@ pub async fn restart_kernel(
                     Some(name.clone())
                 }
             })
-            .unwrap_or_else(|| "python".to_string());
-        let env_source = state
-            .as_ref()
-            .and_then(|s| {
-                let src = &s.kernel.env_source;
-                if src.is_empty() {
-                    None
-                } else {
-                    Some(src.clone())
-                }
-            })
-            .unwrap_or_else(|| {
-                if kernel_type == "deno" {
-                    "deno".to_string()
-                } else {
-                    "uv:inline".to_string()
-                }
-            });
-        (kernel_type, env_source)
+            .unwrap_or_else(|| "python".to_string())
+    };
+    let env_source = if kernel_type == "deno" {
+        "deno".to_string()
+    } else {
+        "auto".to_string()
     };
 
     // Step 3: Launch kernel

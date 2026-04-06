@@ -398,6 +398,16 @@ impl DocHandle {
         self.with_notebook_doc(|nd| nd.remove_conda_dependency(pkg))
     }
 
+    /// Add a Pixi dependency, deduplicating by package name.
+    pub fn add_pixi_dependency(&self, pkg: &str) -> Result<(), SyncError> {
+        self.with_notebook_doc(|nd| nd.add_pixi_dependency(pkg))
+    }
+
+    /// Remove a Pixi dependency by package name. Returns true if removed.
+    pub fn remove_pixi_dependency(&self, pkg: &str) -> Result<bool, SyncError> {
+        self.with_notebook_doc(|nd| nd.remove_pixi_dependency(pkg))
+    }
+
     /// Get a single cell by ID from the latest snapshot.
     pub fn get_cell(&self, cell_id: &str) -> Option<notebook_doc::CellSnapshot> {
         let snapshot = self.snapshot_rx.borrow();

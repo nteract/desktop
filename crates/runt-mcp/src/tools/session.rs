@@ -146,9 +146,12 @@ pub struct CreateNotebookParams {
     /// Working directory for the kernel.
     #[serde(default)]
     pub working_dir: Option<String>,
-    /// Python packages to pre-install.
+    /// Packages to pre-install.
     #[serde(default)]
     pub dependencies: Option<Vec<String>>,
+    /// Package manager for dependencies: "uv" (default), "conda", or "pixi".
+    #[serde(default)]
+    pub package_manager: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -340,9 +343,11 @@ pub async fn create_notebook(
                 .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
                 .unwrap_or_default();
 
-            if runtime == "python" {
+            let pkg_manager = arg_str(request, "package_manager").unwrap_or("uv");
+
+            if runtime != "deno" {
                 for dep in &deps {
-                    let _ = result.handle.add_uv_dependency(dep);
+                    let _ = super::deps::add_dep_for_manager(&result.handle, dep, pkg_manager);
                 }
             }
 
@@ -353,11 +358,16 @@ pub async fn create_notebook(
             };
             *server.session.write().await = Some(session);
 
-            // If dependencies were added, restart kernel to pick them up
-            if !deps.is_empty() && runtime == "python" {
+            // If dependencies were added, ensure daemon has them and restart kernel
+            if !deps.is_empty() && runtime != "deno" {
                 let session = server.session.read().await;
                 if let Some(s) = session.as_ref() {
-                    // Shutdown and relaunch
+                    // Ensure daemon has the dep metadata before restarting
+                    if let Err(e) = s.handle.confirm_sync().await {
+                        tracing::warn!("confirm_sync failed before create_notebook relaunch: {e}");
+                    }
+
+                    // Shutdown and relaunch with auto-detect (daemon reads deps from metadata)
                     let _ = s
                         .handle
                         .send_request(NotebookRequest::ShutdownKernel {})
@@ -367,10 +377,28 @@ pub async fn create_notebook(
                         .handle
                         .send_request(NotebookRequest::LaunchKernel {
                             kernel_type: runtime.to_string(),
-                            env_source: "uv:inline".to_string(),
+                            env_source: "auto".to_string(),
                             notebook_path: None,
                         })
                         .await;
+
+                    // Wait for kernel to become ready
+                    let start = std::time::Instant::now();
+                    let timeout = std::time::Duration::from_secs(120);
+                    loop {
+                        if start.elapsed() >= timeout {
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                        if let Ok(state) = s.handle.get_runtime_state() {
+                            if state.kernel.status == "idle" || state.kernel.status == "busy" {
+                                break;
+                            }
+                            if state.kernel.status == "error" {
+                                break;
+                            }
+                        }
+                    }
                 }
             }
 
@@ -378,6 +406,7 @@ pub async fn create_notebook(
                 "notebook_id": notebook_id,
                 "runtime": { "language": runtime },
                 "dependencies": deps,
+                "package_manager": pkg_manager,
             });
 
             Ok(CallToolResult::success(vec![Content::text(
