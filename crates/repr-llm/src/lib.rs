@@ -20,6 +20,7 @@
 //! assert!(summary.is_some());
 //! ```
 
+pub mod geojson;
 pub mod json;
 pub mod plotly;
 pub(crate) mod stats;
@@ -41,6 +42,8 @@ pub fn summarize_viz(mime: &str, spec: &Value) -> Option<String> {
         Some(vegalite::summarize(spec))
     } else if is_vega_mime(mime) {
         Some(vega::summarize(spec))
+    } else if is_geojson_mime(mime) {
+        Some(geojson::summarize(spec))
     } else {
         None
     }
@@ -57,6 +60,11 @@ fn is_vegalite_mime(mime: &str) -> bool {
         && (mime.ends_with("+json") || mime.ends_with(".json"))
 }
 
+/// Check if a MIME type is GeoJSON.
+fn is_geojson_mime(mime: &str) -> bool {
+    mime == "application/geo+json"
+}
+
 /// Check if a MIME type is Vega JSON (any version, excluding Vega-Lite).
 fn is_vega_mime(mime: &str) -> bool {
     mime.starts_with("application/vnd.vega.v")
@@ -68,6 +76,13 @@ fn is_vega_mime(mime: &str) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn test_geojson_mime() {
+        assert!(is_geojson_mime("application/geo+json"));
+        assert!(!is_geojson_mime("application/json"));
+        assert!(!is_geojson_mime("application/vnd.geo+json"));
+    }
 
     #[test]
     fn test_plotly_mime() {
@@ -126,6 +141,23 @@ mod tests {
         let result = summarize_viz("application/vnd.vega.v5+json", &spec);
         assert!(result.is_some());
         assert!(result.as_ref().is_some_and(|s| s.contains("Vega chart")));
+    }
+
+    #[test]
+    fn test_summarize_geojson() {
+        let spec = json!({
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [0.0, 0.0]},
+                    "properties": {"name": "origin"}
+                }
+            ]
+        });
+        let result = summarize_viz("application/geo+json", &spec);
+        assert!(result.is_some());
+        assert!(result.as_ref().is_some_and(|s| s.contains("GeoJSON")));
     }
 
     #[test]
