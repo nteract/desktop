@@ -1189,13 +1189,16 @@ impl RuntimeStateDoc {
             // Must be the last output — if something was appended after (e.g., stderr
             // between two stdout messages), we should append instead of updating
             if state.index + 1 == output_count {
-                // Read the existing output and check text.blob against state.blob_hash
+                // Read the existing output and check text content ref against state.blob_hash.
+                // ContentRef is either {"blob": "hash", "size": N} or {"inline": "text"}.
+                // The cached blob_hash stores the blob hash or the inline content itself.
                 if let Some(existing) = crate::read_json_value(&self.doc, &list_id, state.index) {
-                    let current_blob = existing
-                        .get("text")
-                        .and_then(|t| t.get("blob"))
-                        .and_then(|b| b.as_str());
-                    if current_blob == Some(&state.blob_hash) {
+                    let current_id = existing.get("text").and_then(|t| {
+                        t.get("blob")
+                            .and_then(|b| b.as_str())
+                            .or_else(|| t.get("inline").and_then(|i| i.as_str()))
+                    });
+                    if current_id == Some(&state.blob_hash) {
                         // Validated! Delete old and insert new at same index
                         self.doc.delete(&list_id, state.index)?;
                         crate::insert_json_at_index(
@@ -1949,12 +1952,21 @@ pub fn diff_execution_outputs(
 mod tests {
     use super::*;
 
-    /// Create a stream output manifest for tests.
+    /// Create a stream output manifest with a blob ContentRef for tests.
     fn test_stream(blob: &str) -> serde_json::Value {
         serde_json::json!({
             "output_type": "stream",
             "name": "stdout",
             "text": {"blob": blob, "size": blob.len()}
+        })
+    }
+
+    /// Create a stream output manifest with an inline ContentRef for tests.
+    fn test_stream_inline(text: &str) -> serde_json::Value {
+        serde_json::json!({
+            "output_type": "stream",
+            "name": "stdout",
+            "text": {"inline": text}
         })
     }
 
@@ -2607,6 +2619,49 @@ mod tests {
             blob_hash: "hash-a".to_string(),
         };
         let m_b = test_stream("hash-b");
+        let (updated, idx) = doc
+            .upsert_stream_output("exec-1", "stdout", &m_b, Some(&state))
+            .unwrap();
+        assert!(updated);
+        assert_eq!(idx, 0);
+        assert_eq!(doc.get_outputs("exec-1"), vec![m_b]);
+    }
+
+    #[test]
+    fn test_upsert_stream_output_inline_update_in_place() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.create_execution("exec-1", "cell-1");
+        let m_a = test_stream_inline("***");
+        doc.append_output("exec-1", &m_a).unwrap();
+
+        // blob_hash stores the inline content itself for inline ContentRefs
+        let state = StreamOutputState {
+            index: 0,
+            blob_hash: "***".to_string(),
+        };
+        let m_b = test_stream_inline("******");
+        let (updated, idx) = doc
+            .upsert_stream_output("exec-1", "stdout", &m_b, Some(&state))
+            .unwrap();
+        assert!(updated);
+        assert_eq!(idx, 0);
+        assert_eq!(doc.get_outputs("exec-1"), vec![m_b]);
+    }
+
+    #[test]
+    fn test_upsert_stream_output_inline_to_blob_transition() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.create_execution("exec-1", "cell-1");
+        // Start with inline content
+        let m_a = test_stream_inline("small");
+        doc.append_output("exec-1", &m_a).unwrap();
+
+        let state = StreamOutputState {
+            index: 0,
+            blob_hash: "small".to_string(),
+        };
+        // Transition to blob when content grows past threshold
+        let m_b = test_stream("blob-hash-after-growth");
         let (updated, idx) = doc
             .upsert_stream_output("exec-1", "stdout", &m_b, Some(&state))
             .unwrap();

@@ -78,8 +78,11 @@ use std::path::Path;
 pub struct StreamOutputState {
     /// Index in the cell's outputs list
     pub index: usize,
-    /// Blob hash from the output's identifying content (e.g., `text.blob` for streams).
-    /// Used for validating the cached position in `upsert_stream_output`.
+    /// Identifier for the ContentRef at this position: the blob hash if the
+    /// content was stored in the blob store (`text.blob`), or the inline
+    /// string itself if it was inlined (`text.inline`). Used by
+    /// `upsert_stream_output` to validate the cached position before
+    /// performing an in-place update.
     pub blob_hash: String,
 }
 
