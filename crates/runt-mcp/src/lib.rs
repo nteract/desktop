@@ -120,9 +120,11 @@ impl ServerHandler for NteractMcp {
         )
         .with_server_info(Implementation::new("nteract", env!("CARGO_PKG_VERSION")))
         .with_instructions(
-            "nteract MCP server for AI-powered Jupyter notebooks. \
+            "nteract MCP server for Jupyter notebooks. \
+             Each connection has one active notebook session. \
              Use list_active_notebooks to discover open notebooks, \
-             then join_notebook or open_notebook to start working.",
+             then join_notebook, open_notebook, or create_notebook to set your active session. \
+             Calling these again switches your active session.",
         )
     }
 

@@ -13,6 +13,16 @@ use crate::formatting;
 use crate::session::NotebookSession;
 use crate::NteractMcp;
 
+/// Read the current session's notebook_id (if any) before replacing it.
+async fn previous_notebook_id(server: &NteractMcp) -> Option<String> {
+    server
+        .session
+        .read()
+        .await
+        .as_ref()
+        .map(|s| s.notebook_id.clone())
+}
+
 /// Resolve a user-provided path: expand ~ to home dir and resolve relative paths
 /// against the current working directory. The MCP server runs in the expected cwd,
 /// so relative paths are meaningful here (unlike the daemon, which may run as launchd).
@@ -237,6 +247,8 @@ pub async fn join_notebook(
     // or opaque room name. resolve_notebook_path would corrupt non-path IDs.
     let notebook_id = notebook_id.to_string();
 
+    let prev = previous_notebook_id(server).await;
+
     match notebook_sync::connect::connect(
         server.socket_path.clone(),
         notebook_id.clone(),
@@ -255,13 +267,19 @@ pub async fn join_notebook(
             let deps = get_dependencies(handle);
             let cells_summary = format_cell_summaries(handle);
 
-            let response = serde_json::json!({
+            let mut response = serde_json::json!({
                 "notebook_id": handle.notebook_id(),
                 "connected": true,
                 "runtime": runtime_info,
                 "dependencies": deps,
                 "cells": cells_summary,
             });
+
+            if let Some(ref prev_id) = prev {
+                if *prev_id != notebook_id {
+                    response["switched_from"] = serde_json::json!(prev_id);
+                }
+            }
 
             // Announce presence so the peer is visible immediately
             let peer_label = server.get_peer_label().await;
@@ -296,6 +314,8 @@ pub async fn open_notebook(
     // Resolve ~ and relative paths to absolute for the daemon
     let abs_path = PathBuf::from(resolve_path(path));
 
+    let prev = previous_notebook_id(server).await;
+
     // Use connect_open which sends the OpenNotebook handshake —
     // the daemon loads the .ipynb from disk and creates a file-backed room.
     match notebook_sync::connect::connect_open(
@@ -317,13 +337,19 @@ pub async fn open_notebook(
             let deps = get_dependencies(handle);
             let cells_summary = format_cell_summaries(handle);
 
-            let response = serde_json::json!({
+            let mut response = serde_json::json!({
                 "notebook_id": notebook_id,
                 "path": abs_path.to_string_lossy(),
                 "runtime": runtime_info,
                 "dependencies": deps,
                 "cells": cells_summary,
             });
+
+            if let Some(ref prev_id) = prev {
+                if *prev_id != notebook_id {
+                    response["switched_from"] = serde_json::json!(prev_id);
+                }
+            }
 
             // Announce presence so the peer is visible immediately
             let peer_label = server.get_peer_label().await;
@@ -351,6 +377,8 @@ pub async fn create_notebook(
 ) -> Result<CallToolResult, McpError> {
     let runtime = arg_str(request, "runtime").unwrap_or("python");
     let working_dir = arg_str(request, "working_dir").map(|s| PathBuf::from(resolve_path(s)));
+
+    let prev = previous_notebook_id(server).await;
 
     match notebook_sync::connect::connect_create(
         server.socket_path.clone(),
@@ -434,12 +462,18 @@ pub async fn create_notebook(
                 }
             }
 
-            let info = serde_json::json!({
+            let mut info = serde_json::json!({
                 "notebook_id": notebook_id,
                 "runtime": { "language": runtime },
                 "dependencies": deps,
                 "package_manager": pkg_manager,
             });
+
+            if let Some(ref prev_id) = prev {
+                if *prev_id != notebook_id {
+                    info["switched_from"] = serde_json::json!(prev_id);
+                }
+            }
 
             Ok(CallToolResult::success(vec![Content::text(
                 serde_json::to_string_pretty(&info).unwrap_or_default(),
