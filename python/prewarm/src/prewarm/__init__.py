@@ -15,12 +15,20 @@ import argparse
 import compileall
 import contextlib
 import importlib
+import re
+
+# Critical packages that MUST import successfully for the environment to be
+# considered valid. If any of these fail, the warmup script exits non-zero
+# so the daemon does not admit a broken environment to the pool.
+CRITICAL_MODULES = [
+    "ipykernel",
+    "IPython",
+]
 
 # Base packages always imported during warmup — these are the core
 # notebook runtime dependencies whose first-import is expensive.
+# Failures are non-fatal (try/except) since the env is still usable.
 BASE_MODULES = [
-    "ipykernel",
-    "IPython",
     "ipywidgets",
     "anywidget",
     "nbformat",
@@ -38,6 +46,9 @@ CONDA_DEEP_IMPORTS = [
     ("ipykernel.ipkernel", "IPythonKernel"),
     ("ipykernel.comm", "CommManager"),
 ]
+
+# Pattern to strip version specifiers from dependency strings.
+_VERSION_SPEC_RE = re.compile(r"[<>=!~;\[\]].*$")
 
 
 def warm(
@@ -74,17 +85,40 @@ def warm(
         _warm_directly(all_modules, include_conda=include_conda)
 
 
+def normalize_module_name(spec: str) -> str | None:
+    """Convert a dependency specifier to a Python import name.
+
+    Strips version specifiers (``>=``, ``==``, etc.), extras (``[extra]``),
+    and replaces hyphens with underscores.  Returns ``None`` if the result
+    is not a valid Python identifier.
+
+    >>> normalize_module_name("numpy>=1.24")
+    'numpy'
+    >>> normalize_module_name("scikit-learn>=1.0")
+    'scikit_learn'
+    >>> normalize_module_name("")
+    """
+    name = _VERSION_SPEC_RE.sub("", spec).strip().replace("-", "_")
+    if not name or not name.isidentifier():
+        return None
+    return name
+
+
 def _compile_site_packages(path: str) -> None:
     """Pre-compile all .py files in site-packages to .pyc."""
     compileall.compile_dir(path, quiet=2, workers=0)
 
 
 def _collect_modules(extra: list[str], *, include_conda: bool = False) -> list[str]:
-    """Assemble the full module list: base + conda (optional) + user extras."""
+    """Assemble the full module list: base + conda (optional) + normalized user extras."""
     modules = list(BASE_MODULES)
     if include_conda:
         modules.extend(CONDA_MODULES)
-    modules.extend(extra)
+    # Normalize user-supplied dependency specifiers to import names
+    for spec in extra:
+        name = normalize_module_name(spec)
+        if name:
+            modules.append(name)
     # Deduplicate while preserving order
     seen: set[str] = set()
     result: list[str] = []
@@ -143,21 +177,21 @@ def build_warmup_script(
     if site_packages:
         lines.append(f"compileall.compile_dir({site_packages!r}, quiet=2, workers=0)")
 
-    # Phase 2: imports
+    # Phase 2: critical imports — these MUST succeed or the script exits non-zero,
+    # preventing a broken environment from being admitted to the pool.
+    for m in CRITICAL_MODULES:
+        lines.append(f"import {m}")
+
+    # Deep imports that validate the kernel runtime is functional
+    lines.append("from ipykernel.kernelbase import Kernel")
+    lines.append("from ipykernel.ipkernel import IPythonKernel")
+
+    # Phase 3: non-critical imports — failures are silently skipped
     lines.append("import importlib")
 
     all_modules = _collect_modules(extra_modules, include_conda=include_conda)
     for m in all_modules:
         lines.append(f"try:\n    importlib.import_module({m!r})\nexcept Exception:\n    pass")
-
-    # Deep imports (always — ipykernel classes)
-    lines.append(
-        "try:\n"
-        "    from ipykernel.kernelbase import Kernel\n"
-        "    from ipykernel.ipkernel import IPythonKernel\n"
-        "except Exception:\n"
-        "    pass"
-    )
 
     if include_conda:
         for mod, attr in CONDA_DEEP_IMPORTS:

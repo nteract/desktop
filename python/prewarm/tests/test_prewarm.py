@@ -44,8 +44,46 @@ def test_collect_modules_deduplicates():
     """Duplicate modules should be removed while preserving order."""
     from prewarm import _collect_modules
 
-    result = _collect_modules(["ipykernel", "numpy"], include_conda=False)
-    assert result.count("ipykernel") == 1
+    result = _collect_modules(["ipywidgets", "numpy"], include_conda=False)
+    assert result.count("ipywidgets") == 1
+
+
+def test_collect_modules_normalizes_specs():
+    """Version specifiers and hyphens are normalized to import names."""
+    from prewarm import _collect_modules
+
+    result = _collect_modules(["numpy>=1.24", "scikit-learn>=1.0"], include_conda=False)
+    assert "numpy" in result
+    assert "scikit_learn" in result
+    assert "numpy>=1.24" not in result
+
+
+def test_normalize_module_name():
+    """normalize_module_name strips specs and converts hyphens."""
+    from prewarm import normalize_module_name
+
+    assert normalize_module_name("numpy>=1.24") == "numpy"
+    assert normalize_module_name("scikit-learn>=1.0") == "scikit_learn"
+    assert normalize_module_name("pandas") == "pandas"
+    assert normalize_module_name("Pillow[extra]") == "Pillow"
+    assert normalize_module_name("") is None
+
+
+def test_build_warmup_script_critical_imports_not_wrapped():
+    """Critical imports (ipykernel, IPython) must NOT be in try/except."""
+    from prewarm import build_warmup_script
+
+    script = build_warmup_script([], include_conda=False)
+    # Critical imports should be bare import statements
+    assert "import ipykernel" in script
+    assert "import IPython" in script
+    # They should NOT be wrapped in try/except
+    lines = script.split("\n")
+    for i, line in enumerate(lines):
+        if line.strip() == "import ipykernel":
+            assert i == 0 or "try" not in lines[i - 1]
+        if line.strip() == "import IPython":
+            assert i == 0 or "try" not in lines[i - 1]
 
 
 def test_build_warmup_script_basic():
