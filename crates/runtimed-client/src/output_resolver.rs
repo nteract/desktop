@@ -84,7 +84,9 @@ pub fn has_synthesizable_mime(data_map: &serde_json::Map<String, Value>) -> bool
 /// Check if a single MIME string is a synthesizable viz type.
 fn has_synthesizable_mime_str(mime: &str) -> bool {
     SYNTHESIS_EXACT.contains(&mime)
-        || SYNTHESIS_PREFIXES.iter().any(|prefix| mime.starts_with(prefix))
+        || SYNTHESIS_PREFIXES
+            .iter()
+            .any(|prefix| mime.starts_with(prefix))
 }
 
 /// Extract metadata from a ContentRef Value without resolving the content.

@@ -109,7 +109,9 @@ fn decode_bdata(dtype: &str, bdata: &str) -> Option<Vec<Value>> {
     match dtype {
         "f8" => decode_chunks!(8, |a: [u8; 8]| serde_json::json!(f64::from_le_bytes(a))),
         "f4" => {
-            decode_chunks!(4, |a: [u8; 4]| serde_json::json!(f32::from_le_bytes(a) as f64))
+            decode_chunks!(4, |a: [u8; 4]| serde_json::json!(
+                f32::from_le_bytes(a) as f64
+            ))
         }
         "i4" => decode_chunks!(4, |a: [u8; 4]| serde_json::json!(i32::from_le_bytes(a))),
         "i2" => decode_chunks!(2, |a: [u8; 2]| serde_json::json!(i16::from_le_bytes(a))),
