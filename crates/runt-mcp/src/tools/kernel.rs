@@ -63,10 +63,11 @@ pub async fn restart_kernel(
         tracing::warn!("confirm_sync failed before restart_kernel launch: {e}");
     }
 
-    // Step 2: Determine kernel type and env_source from RuntimeState.
-    // Use scoped auto-detect (auto:uv, auto:conda, auto:pixi) to stay within
-    // the original package manager family while re-checking metadata for new deps.
-    // This matches the Python bindings' restart logic in session_core.rs.
+    // Step 2: Determine kernel type and env_source.
+    // Use metadata-based detection (not RuntimeState env_source) to scope the
+    // auto-detect. This ensures the correct package manager pool is used even
+    // if the previous kernel was launched with a different env (e.g., UV default
+    // when the notebook metadata says pixi). See #1605.
     let (kernel_type, env_source) = {
         let state = handle.get_runtime_state().ok();
         let kernel_type = state
@@ -80,12 +81,12 @@ pub async fn restart_kernel(
                 }
             })
             .unwrap_or_else(|| "python".to_string());
-        let env_source = match state.as_ref().map(|s| s.kernel.env_source.as_str()) {
-            Some("uv:prewarmed") => "auto:uv".to_string(),
-            Some("conda:prewarmed") => "auto:conda".to_string(),
-            Some("pixi:prewarmed") => "auto:pixi".to_string(),
-            Some("") | None => "auto".to_string(),
-            Some(s) => s.to_string(),
+        // Scope auto-detect based on notebook metadata, not stale env_source
+        let detected_manager = super::deps::detect_package_manager(&handle);
+        let env_source = match detected_manager.as_str() {
+            "pixi" => "auto:pixi".to_string(),
+            "conda" => "auto:conda".to_string(),
+            _ => "auto:uv".to_string(),
         };
         (kernel_type, env_source)
     };

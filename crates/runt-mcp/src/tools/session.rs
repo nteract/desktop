@@ -452,7 +452,15 @@ pub async fn create_notebook(
                         tracing::warn!("confirm_sync failed before create_notebook relaunch: {e}");
                     }
 
-                    // Shutdown and relaunch with auto-detect (daemon reads deps from metadata)
+                    // Shutdown and relaunch with scoped auto-detect so the daemon
+                    // uses the correct package manager pool (not the system default).
+                    // "auto:pixi" → pixi pool/inline, "auto:conda" → conda pool/inline,
+                    // "auto" → follows default_python_env (which may differ from requested).
+                    let scoped_env_source = match pkg_manager {
+                        "pixi" => "auto:pixi",
+                        "conda" => "auto:conda",
+                        _ => "auto:uv",
+                    };
                     let _ = s
                         .handle
                         .send_request(NotebookRequest::ShutdownKernel {})
@@ -462,7 +470,7 @@ pub async fn create_notebook(
                         .handle
                         .send_request(NotebookRequest::LaunchKernel {
                             kernel_type: runtime.to_string(),
-                            env_source: "auto".to_string(),
+                            env_source: scoped_env_source.to_string(),
                             notebook_path: None,
                         })
                         .await;
