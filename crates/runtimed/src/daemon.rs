@@ -2129,21 +2129,26 @@ impl Daemon {
             Request::ShutdownNotebook { notebook_id } => {
                 // Remove the room from the map and drop the lock before any .await
                 // to avoid holding notebook_rooms across async teardown calls.
+                // Teardown is spawned into a background task so a concurrent
+                // reconnect won't race against the in-progress shutdown.
                 let maybe_room = {
                     let mut rooms = self.notebook_rooms.lock().await;
                     rooms.remove(&notebook_id)
                 };
                 if let Some(room) = maybe_room {
-                    // Shut down runtime agent via RPC before dropping handle.
-                    // RuntimeAgentHandle doesn't own the Child (it's in a background
-                    // task), so dropping the handle alone doesn't kill it.
-                    {
+                    // Spawn teardown so we don't hold the caller while the
+                    // runtime agent shuts down (which may take a few seconds).
+                    let nb_id = notebook_id.clone();
+                    tokio::spawn(async move {
+                        // Shut down runtime agent via RPC before dropping handle.
+                        // RuntimeAgentHandle doesn't own the Child (it's in a background
+                        // task), so dropping the handle alone doesn't kill it.
                         let has_runtime_agent =
                             room.runtime_agent_request_tx.lock().await.is_some();
                         if has_runtime_agent {
                             info!(
                                 "[runtimed] Shutting down runtime agent for notebook: {}",
-                                notebook_id
+                                nb_id
                             );
                             let _ = crate::notebook_sync_server::send_runtime_agent_request(
                                 &room,
@@ -2155,8 +2160,8 @@ impl Daemon {
                         *ra_guard = None;
                         let mut tx = room.runtime_agent_request_tx.lock().await;
                         *tx = None;
-                    }
-                    info!("[runtimed] Evicted room for notebook: {}", notebook_id);
+                        info!("[runtimed] Evicted room for notebook: {}", nb_id);
+                    });
                     Response::NotebookShutdown { found: true }
                 } else {
                     Response::NotebookShutdown { found: false }
