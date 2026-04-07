@@ -1,8 +1,19 @@
 // Inline the built JS + CSS into a single self-contained HTML file.
 import { readFileSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
 
 const rawJs = readFileSync("dist/mcp-app.js", "utf-8");
-const css = readFileSync("src/style.css", "utf-8");
+const appCss = readFileSync("src/style.css", "utf-8");
+
+// Bundle KaTeX CSS from node_modules
+const katexCss = readFileSync(
+  require.resolve("katex/dist/katex.min.css"),
+  "utf-8",
+);
+
+const css = appCss + "\n" + katexCss;
 
 // Escape </script> inside the JS so the HTML parser doesn't prematurely
 // close the script block (e.g. from Zod regex literals in the MCP SDK).
@@ -18,7 +29,7 @@ ${css}
 </style>
 </head>
 <body>
-<div id="root">Loading...</div>
+<div id="root"></div>
 <script type="module">
 ${js}
 </script>
