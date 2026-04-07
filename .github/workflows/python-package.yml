@@ -94,7 +94,9 @@ jobs:
         run: uv run pytest tests/test_session_unit.py tests/test_binary.py tests/test_ipython_bridge.py -v --tb=short
 
       - name: Run prewarm unit tests
-        run: uv run pytest python/prewarm/tests/ -v --tb=short
+        run: |
+          uv pip install -e python/prewarm
+          uv run pytest python/prewarm/tests/ -v --tb=short
 
   python-lint-and-test-skip:
     name: Python Lint & Unit Tests
