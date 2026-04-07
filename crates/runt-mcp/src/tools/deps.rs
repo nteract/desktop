@@ -37,10 +37,31 @@ pub struct GetDependenciesParams {}
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SyncEnvironmentParams {}
 
-/// Detect the active package manager for a notebook from its env_source or metadata.
+/// Detect the active package manager for a notebook from its metadata or env_source.
 /// Each notebook has exactly one env manager type.
+///
+/// Priority: metadata section existence (authoritative) → env_source (runtime) → default.
+/// Metadata wins because the user explicitly chose the package manager (via
+/// `create_notebook(package_manager=...)` or the UI), while env_source reflects
+/// what the daemon happened to auto-launch with (which may be the system default,
+/// not the notebook's intent).
 pub(crate) fn detect_package_manager(handle: &notebook_sync::handle::DocHandle) -> String {
-    // Priority 1: env_source from running kernel
+    // Priority 1: metadata declares which package manager section exists.
+    // Check section existence, not just non-empty deps — an empty pixi section
+    // means "this is a pixi notebook with no deps yet".
+    if let Some(meta) = handle.get_notebook_metadata() {
+        if meta.runt.pixi.is_some() {
+            return "pixi".to_string();
+        }
+        if meta.runt.conda.is_some() {
+            return "conda".to_string();
+        }
+        if meta.runt.uv.is_some() {
+            return "uv".to_string();
+        }
+    }
+    // Priority 2: env_source from running kernel (fallback for notebooks
+    // with no runt metadata yet)
     if let Ok(state) = handle.get_runtime_state() {
         let src = &state.kernel.env_source;
         if src.starts_with("conda:") {
@@ -53,17 +74,83 @@ pub(crate) fn detect_package_manager(handle: &notebook_sync::handle::DocHandle) 
             return "uv".to_string();
         }
     }
-    // Priority 2: existing metadata deps
-    if let Some(meta) = handle.get_notebook_metadata() {
-        if !meta.pixi_dependencies().is_empty() {
-            return "pixi".to_string();
-        }
-        if !meta.conda_dependencies().is_empty() {
-            return "conda".to_string();
-        }
-    }
     // Default
     "uv".to_string()
+}
+
+/// Ensure the notebook metadata has the correct package manager section.
+///
+/// The daemon creates metadata based on `default_python_env`, which may
+/// differ from the MCP client's requested `package_manager`. This function
+/// reads the current metadata, and if the requested manager's section is
+/// missing, creates it (and clears competing sections so
+/// `detect_package_manager` picks the right one).
+/// Returns `true` if the metadata was changed.
+pub(crate) fn ensure_package_manager_metadata(
+    handle: &notebook_sync::handle::DocHandle,
+    manager: &str,
+) -> bool {
+    let current = handle.get_notebook_metadata();
+    let needs_fix = match manager {
+        "pixi" => current.as_ref().is_none_or(|m| m.runt.pixi.is_none()),
+        "conda" => current.as_ref().is_none_or(|m| m.runt.conda.is_none()),
+        // uv: fix if metadata has pixi/conda but not uv (daemon default was
+        // pixi/conda but user explicitly requested uv)
+        _ => current.as_ref().is_some_and(|m| {
+            m.runt.uv.is_none() && (m.runt.pixi.is_some() || m.runt.conda.is_some())
+        }),
+    };
+
+    if !needs_fix {
+        return false;
+    }
+
+    // Update the metadata snapshot to have the right package manager
+    let mut snapshot = current.unwrap_or_default();
+    match manager {
+        "pixi" => {
+            // Create pixi section, clear uv/conda so detect_package_manager
+            // picks pixi
+            if snapshot.runt.pixi.is_none() {
+                snapshot.runt.pixi = Some(notebook_doc::metadata::PixiInlineMetadata {
+                    dependencies: Vec::new(),
+                    pypi_dependencies: Vec::new(),
+                    channels: vec!["conda-forge".to_string()],
+                    python: None,
+                });
+            }
+            snapshot.runt.uv = None;
+            snapshot.runt.conda = None;
+        }
+        "conda" => {
+            if snapshot.runt.conda.is_none() {
+                snapshot.runt.conda = Some(notebook_doc::metadata::CondaInlineMetadata {
+                    dependencies: Vec::new(),
+                    channels: vec!["conda-forge".to_string()],
+                    python: None,
+                });
+            }
+            snapshot.runt.uv = None;
+            snapshot.runt.pixi = None;
+        }
+        _ => {
+            // uv: clear pixi/conda, ensure uv section exists
+            snapshot.runt.pixi = None;
+            snapshot.runt.conda = None;
+            if snapshot.runt.uv.is_none() {
+                snapshot.runt.uv = Some(notebook_doc::metadata::UvInlineMetadata {
+                    dependencies: Vec::new(),
+                    requires_python: None,
+                    prerelease: None,
+                });
+            }
+        }
+    }
+    if let Err(e) = handle.set_metadata_snapshot(&snapshot) {
+        tracing::warn!("Failed to fix package manager metadata: {e}");
+        return false;
+    }
+    true
 }
 
 /// Add a dependency using the appropriate package manager, return error string on failure.

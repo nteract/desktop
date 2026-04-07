@@ -405,14 +405,19 @@ pub async fn create_notebook(
 
             let pkg_manager = arg_str(request, "package_manager").unwrap_or("uv");
 
-            if runtime != "deno" && !deps.is_empty() {
-                // Flush any pending sync frames from the daemon so we have
-                // the full document structure (metadata map, runt map) before
-                // writing deps.  Without this, a concurrent daemon sync can
-                // race with the client-side put_object and shadow our writes.
+            // Ensure the daemon's doc structure is fully received before
+            // any metadata writes.
+            let mut metadata_changed = false;
+            if runtime != "deno" {
                 if let Err(e) = result.handle.confirm_sync().await {
-                    tracing::warn!("confirm_sync before create_notebook deps failed: {e}");
+                    tracing::warn!("confirm_sync before create_notebook metadata fix: {e}");
                 }
+
+                // The daemon creates metadata based on default_python_env,
+                // which may not match the requested package_manager. Fix the
+                // metadata to have the correct package manager section.
+                metadata_changed =
+                    super::deps::ensure_package_manager_metadata(&result.handle, pkg_manager);
 
                 for dep in &deps {
                     let _ = super::deps::add_dep_for_manager(&result.handle, dep, pkg_manager);
@@ -426,8 +431,12 @@ pub async fn create_notebook(
             };
             *server.session.write().await = Some(session);
 
-            // If dependencies were added, ensure daemon has them and restart kernel
-            if !deps.is_empty() && runtime != "deno" {
+            // Restart kernel if deps were added or package manager metadata
+            // was changed from the daemon's default (so the kernel picks up
+            // the right env). Skip for deno — deno doesn't use Python
+            // package managers.
+            let needs_restart = runtime != "deno" && (!deps.is_empty() || metadata_changed);
+            if needs_restart {
                 let session = server.session.read().await;
                 if let Some(s) = session.as_ref() {
                     // Ensure daemon has the dep metadata before restarting
