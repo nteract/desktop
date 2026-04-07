@@ -14,7 +14,7 @@ import { CellOutput } from "./components/cell-output";
  * This prevents empty MCP App containers from showing for tools
  * like replace_match that don't produce cell outputs.
  */
-function useCollapseWhenEmpty(ref: React.RefObject<HTMLDivElement | null>, hasContent: boolean) {
+function useCollapseWhenEmpty(hasContent: boolean) {
   useEffect(() => {
     const body = document.body;
     if (hasContent) {
@@ -29,7 +29,6 @@ function useCollapseWhenEmpty(ref: React.RefObject<HTMLDivElement | null>, hasCo
 
 function McpApp() {
   const [content, setContent] = useState<NteractContent | null>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const app = new App({ name: "nteract", version: "0.1.0" });
@@ -56,16 +55,16 @@ function McpApp() {
   const cells = content?.cells || (content?.cell ? [content.cell] : []);
   const hasOutputs = cells.some((c) => c.outputs?.length > 0);
 
-  useCollapseWhenEmpty(containerRef, hasOutputs);
+  useCollapseWhenEmpty(hasOutputs);
 
   if (!hasOutputs) return null;
 
   return (
-    <div ref={containerRef}>
+    <>
       {cells.map((cell) => (
         <CellOutput key={cell.cell_id} cell={cell} />
       ))}
-    </div>
+    </>
   );
 }
 
