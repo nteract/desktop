@@ -193,6 +193,7 @@ pub fn apply_replacement(source: &str, span: &EditSpan, replacement: &str) -> St
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
