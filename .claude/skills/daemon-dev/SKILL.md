@@ -163,7 +163,8 @@ crates/runtimed/src/
   daemon.rs                — Daemon state, pool management, connection routing
   notebook_sync_server.rs  — NotebookRoom, room lifecycle, autosave, re-keying
   kernel_manager.rs        — RoomKernel: lifecycle, execution queue, IOPub routing
-  comm_state.rs            — Widget comm state + Output widget capture routing
+  runtime_agent.rs         — Process-isolated runtime agent: kernel lifecycle, IOPub, RuntimeStateDoc writes
+  runtime_agent_handle.rs  — Coordinator-side runtime agent process management
   output_store.rs          — Output manifest creation, blob inlining threshold
   blob_store.rs            — Content-addressed blob store with metadata sidecars
   blob_server.rs           — HTTP read server for blobs
@@ -174,8 +175,14 @@ crates/runtimed/src/
   markdown_assets.rs       — Markdown output asset rendering and resolution
   terminal_size.rs         — Terminal size detection for kernel PTY
   project_file.rs          — Unified project file discovery (pyproject, pixi, env.yml)
+  sync_server.rs           — Settings Automerge sync handler
 crates/runtimed-client/src/
+  lib.rs                   — Crate root
   client.rs                — Client APIs used by Python bindings and MCP
+  daemon_paths.rs          — Shared socket/blob path resolution
+  output_resolver.rs       — Shared Rust manifest resolution
+  resolved_output.rs       — Output resolution types
+  singleton.rs             — File-based daemon discovery/locking helpers
   protocol.rs              — Client-side protocol helpers and typed request wrappers
   settings_doc.rs          — Settings Automerge document, schema, migration
   sync_client.rs           — Settings sync client wrapper

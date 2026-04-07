@@ -13,7 +13,7 @@ TypeScript types in `src/bindings/` are auto-generated from Rust structs and enu
 
 | Rust File | Generated Types |
 |-----------|-----------------|
-| `crates/runtimed-client/src/settings_doc.rs` | `ThemeMode`, `PythonEnvType`, `UvDefaults`, `CondaDefaults`, `SyncedSettings` |
+| `crates/runtimed-client/src/settings_doc.rs` | `ThemeMode`, `PythonEnvType`, `UvDefaults`, `CondaDefaults`, `PixiDefaults`, `SyncedSettings` |
 | `crates/runtimed-client/src/runtime.rs` | `Runtime` |
 
 ## How It Works
@@ -105,6 +105,7 @@ The ts-rs procedural macro exports types during test compilation. Generated file
 ```
 src/bindings/
   CondaDefaults.ts
+  PixiDefaults.ts
   PythonEnvType.ts
   Runtime.ts
   SyncedSettings.ts
