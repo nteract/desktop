@@ -293,7 +293,7 @@ impl NotebookDoc {
         key: &str,
         value: &serde_json::Value,
     ) -> Result<(), AutomergeError> {
-        put_json_at_key(&mut self.doc, parent, key, value)
+        update_json_at_key(&mut self.doc, parent, key, value)
     }
 
     /// Read an Automerge subtree back as a JSON value.
@@ -316,7 +316,7 @@ impl NotebookDoc {
                 .doc
                 .put_object(automerge::ROOT, "metadata", ObjType::Map)?,
         };
-        put_json_at_key(&mut self.doc, &meta_id, key, value)
+        update_json_at_key(&mut self.doc, &meta_id, key, value)
     }
 
     /// Read a top-level metadata key as JSON.
@@ -374,7 +374,7 @@ impl NotebookDoc {
                 let v = serde_json::to_value(ks).map_err(|e| {
                     AutomergeError::InvalidObjId(format!("serialize kernelspec: {}", e))
                 })?;
-                put_json_at_key(&mut self.doc, &meta_id, "kernelspec", &v)?;
+                update_json_at_key(&mut self.doc, &meta_id, "kernelspec", &v)?;
             }
             None => {
                 let _ = self.doc.delete(&meta_id, "kernelspec");
@@ -386,7 +386,7 @@ impl NotebookDoc {
                 let v = serde_json::to_value(li).map_err(|e| {
                     AutomergeError::InvalidObjId(format!("serialize language_info: {}", e))
                 })?;
-                put_json_at_key(&mut self.doc, &meta_id, "language_info", &v)?;
+                update_json_at_key(&mut self.doc, &meta_id, "language_info", &v)?;
             }
             None => {
                 let _ = self.doc.delete(&meta_id, "language_info");
@@ -395,7 +395,7 @@ impl NotebookDoc {
 
         let runt_v = serde_json::to_value(&snapshot.runt)
             .map_err(|e| AutomergeError::InvalidObjId(format!("serialize runt: {}", e)))?;
-        put_json_at_key(&mut self.doc, &meta_id, "runt", &runt_v)?;
+        update_json_at_key(&mut self.doc, &meta_id, "runt", &runt_v)?;
 
         Ok(())
     }
@@ -1268,9 +1268,12 @@ impl NotebookDoc {
             .put(&cell_map, "execution_count", execution_count)?;
 
         // Store metadata as native Automerge map
+        // Safe to use put_json_at_key here: meta_map was just created by put_object
+        // above, so no other peer can have a competing object at this key.
         let meta_map = self.doc.put_object(&cell_map, "metadata", ObjType::Map)?;
         if let Some(obj) = metadata.as_object() {
             for (k, v) in obj {
+                #[allow(deprecated)]
                 put_json_at_key(&mut self.doc, &meta_map, k, v)?;
             }
         }
@@ -1532,9 +1535,12 @@ impl NotebookDoc {
             None => return Ok(false),
         };
 
+        // Safe to use put_json_at_key: meta_map is freshly created by put_object
+        // (replaces entire cell metadata — this is a set_cell_metadata operation).
         let meta_map = self.doc.put_object(&cell_obj, "metadata", ObjType::Map)?;
         if let Some(obj) = metadata.as_object() {
             for (k, v) in obj {
+                #[allow(deprecated)]
                 put_json_at_key(&mut self.doc, &meta_map, k, v)?;
             }
         }
@@ -2030,6 +2036,20 @@ pub(crate) fn read_json_value<P: Into<automerge::Prop>>(
 }
 
 /// Recursively write a JSON value into an Automerge Map at a string key.
+///
+/// # Deprecation
+///
+/// This function creates new `Map`/`List` objects via `put_object`, which is
+/// dangerous in multi-peer CRDT scenarios: two peers calling `put_object` at
+/// the same key produce competing Automerge objects, and the loser's children
+/// become invisible. Use [`update_json_at_key`] instead — it reuses existing
+/// objects when possible.
+///
+/// See <https://github.com/nteract/desktop/issues/1594>.
+#[deprecated(
+    note = "Use update_json_at_key — put_json_at_key creates new Automerge objects that can conflict with other peers. See #1594."
+)]
+#[allow(deprecated)]
 pub(crate) fn put_json_at_key(
     doc: &mut AutoCommit,
     parent: &ObjId,
@@ -2072,6 +2092,14 @@ pub(crate) fn put_json_at_key(
 }
 
 /// Recursively insert a JSON value into an Automerge List at a given index.
+///
+/// # Safety note
+///
+/// This creates new `Map`/`List` children via `insert_object`, which is safe
+/// when the parent list was just created by the caller (no other peer can have
+/// a competing object at the same index). However, for updating existing list
+/// elements use [`update_json_at_index`] instead.
+#[allow(deprecated)] // Internal calls to put_json_at_key are safe — parent just created
 pub(crate) fn insert_json_at_index(
     doc: &mut AutoCommit,
     parent: &ObjId,
@@ -2107,6 +2135,181 @@ pub(crate) fn insert_json_at_index(
             let map_id = doc.insert_object(parent, index, ObjType::Map)?;
             for (k, v) in map {
                 put_json_at_key(doc, &map_id, k, v)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Recursively update a JSON value in an Automerge Map, reusing existing objects.
+///
+/// Unlike [`put_json_at_key`] which creates new `Map`/`List` objects (dangerous in
+/// multi-peer scenarios), this function looks up existing objects and updates
+/// them in-place. Only creates new objects if none exist at the key.
+///
+/// # Safety contract
+///
+/// **Conflict-free when target objects already exist** — the common case for
+/// shared keys like `metadata.runt`, `metadata.kernelspec`, and comm state.
+/// The daemon creates all document structure; clients update existing objects.
+///
+/// **First-write on absent keys still uses `put_object`** and can conflict if
+/// two peers independently create the same absent key. This is acceptable
+/// because our architecture guarantees the daemon is the sole structure creator
+/// — clients never independently create shared Map/List keys.
+///
+/// **List element type changes use delete+insert** which can produce duplicates
+/// under concurrent modification. In practice, concurrent type changes at the
+/// same list position don't occur in our document schema.
+///
+/// See <https://github.com/nteract/desktop/issues/1594>.
+pub(crate) fn update_json_at_key(
+    doc: &mut AutoCommit,
+    parent: &ObjId,
+    key: &str,
+    value: &serde_json::Value,
+) -> Result<(), AutomergeError> {
+    match value {
+        serde_json::Value::Null => {
+            doc.put(parent, key, automerge::ScalarValue::Null)?;
+        }
+        serde_json::Value::Bool(b) => {
+            doc.put(parent, key, *b)?;
+        }
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                doc.put(parent, key, i)?;
+            } else if let Some(u) = n.as_u64() {
+                doc.put(parent, key, u)?;
+            } else if let Some(f) = n.as_f64() {
+                doc.put(parent, key, f)?;
+            }
+        }
+        serde_json::Value::String(s) => {
+            doc.put(parent, key, s.as_str())?;
+        }
+        serde_json::Value::Object(map) => {
+            // Reuse existing Map if present, only create if missing or wrong type
+            let map_id = match doc.get(parent, key)? {
+                Some((automerge::Value::Object(ObjType::Map), id)) => id,
+                _ => doc.put_object(parent, key, ObjType::Map)?,
+            };
+            // Remove stale keys not in the new value
+            let existing_keys: Vec<String> = doc.keys(&map_id).collect();
+            for old_key in &existing_keys {
+                if !map.contains_key(old_key) {
+                    let _ = doc.delete(&map_id, old_key.as_str());
+                }
+            }
+            // Recursively update children
+            for (k, v) in map {
+                update_json_at_key(doc, &map_id, k, v)?;
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            // Reuse existing List if present, only create if missing or wrong type
+            let list_id = match doc.get(parent, key)? {
+                Some((automerge::Value::Object(ObjType::List), id)) => id,
+                _ => doc.put_object(parent, key, ObjType::List)?,
+            };
+            let existing_len = doc.length(&list_id);
+            let new_len = arr.len();
+
+            // Update existing elements in-place
+            for (i, item) in arr.iter().enumerate() {
+                if i < existing_len {
+                    update_json_at_index(doc, &list_id, i, item)?;
+                } else {
+                    insert_json_at_index(doc, &list_id, i, item)?;
+                }
+            }
+            // Remove excess elements from end to avoid index shifting
+            for i in (new_len..existing_len).rev() {
+                let _ = doc.delete(&list_id, i);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Recursively update a JSON value at an existing index in an Automerge List,
+/// reusing existing objects.
+///
+/// For scalars, uses `put()` at the index (last-writer-wins).
+/// For Objects/Arrays, reuses existing Automerge objects if possible.
+/// If the type at the index doesn't match (e.g. was a scalar, now an object),
+/// deletes and re-inserts.
+pub(crate) fn update_json_at_index(
+    doc: &mut AutoCommit,
+    parent: &ObjId,
+    index: usize,
+    value: &serde_json::Value,
+) -> Result<(), AutomergeError> {
+    match value {
+        serde_json::Value::Null => {
+            doc.put(parent, index, automerge::ScalarValue::Null)?;
+        }
+        serde_json::Value::Bool(b) => {
+            doc.put(parent, index, *b)?;
+        }
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                doc.put(parent, index, i)?;
+            } else if let Some(u) = n.as_u64() {
+                doc.put(parent, index, u)?;
+            } else if let Some(f) = n.as_f64() {
+                doc.put(parent, index, f)?;
+            }
+        }
+        serde_json::Value::String(s) => {
+            doc.put(parent, index, s.as_str())?;
+        }
+        serde_json::Value::Object(map) => {
+            // Reuse existing Map if present at this index
+            let map_id = match doc.get(parent, index)? {
+                Some((automerge::Value::Object(ObjType::Map), id)) => {
+                    // Reuse — remove stale keys
+                    let existing_keys: Vec<String> = doc.keys(&id).collect();
+                    for old_key in &existing_keys {
+                        if !map.contains_key(old_key) {
+                            let _ = doc.delete(&id, old_key.as_str());
+                        }
+                    }
+                    id
+                }
+                _ => {
+                    // Type mismatch or missing — delete and re-insert
+                    doc.delete(parent, index)?;
+                    doc.insert_object(parent, index, ObjType::Map)?
+                }
+            };
+            for (k, v) in map {
+                update_json_at_key(doc, &map_id, k, v)?;
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            // Reuse existing List if present at this index
+            let list_id = match doc.get(parent, index)? {
+                Some((automerge::Value::Object(ObjType::List), id)) => {
+                    let existing_len = doc.length(&id);
+                    // Remove excess elements from end
+                    for i in (arr.len()..existing_len).rev() {
+                        let _ = doc.delete(&id, i);
+                    }
+                    id
+                }
+                _ => {
+                    doc.delete(parent, index)?;
+                    doc.insert_object(parent, index, ObjType::List)?
+                }
+            };
+            let existing_len = doc.length(&list_id);
+            for (i, item) in arr.iter().enumerate() {
+                if i < existing_len {
+                    update_json_at_index(doc, &list_id, i, item)?;
+                } else {
+                    insert_json_at_index(doc, &list_id, i, item)?;
+                }
             }
         }
     }
@@ -4188,5 +4391,196 @@ mod tests {
 
         let fp_after = doc.get_metadata_fingerprint().unwrap();
         assert_eq!(fp_before, fp_after);
+    }
+
+    // ── update_json_at_key tests ──────────────────────────────────────
+
+    #[test]
+    fn test_update_json_preserves_existing_map_obj_id() {
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+
+        // Create initial map at "data"
+        let map_id = doc.put_object(&root, "data", ObjType::Map).unwrap();
+        doc.put(&map_id, "x", 1_i64).unwrap();
+
+        // Record the ObjId
+        let (_, original_id) = doc.get(&root, "data").unwrap().unwrap();
+
+        // Update via update_json_at_key — should reuse the same Map object
+        let new_val = serde_json::json!({"x": 2, "y": 3});
+        update_json_at_key(&mut doc, &root, "data", &new_val).unwrap();
+
+        let (_, updated_id) = doc.get(&root, "data").unwrap().unwrap();
+        assert_eq!(original_id, updated_id, "Map ObjId should be preserved");
+
+        // Verify contents updated
+        let read_back = read_json_value(&doc, &root, "data");
+        assert_eq!(read_back, Some(new_val));
+    }
+
+    #[test]
+    fn test_update_json_removes_stale_map_keys() {
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+
+        let initial = serde_json::json!({"a": 1, "b": 2, "c": 3});
+        update_json_at_key(&mut doc, &root, "m", &initial).unwrap();
+
+        // Update with fewer keys — "b" should be removed
+        let updated = serde_json::json!({"a": 10, "c": 30});
+        update_json_at_key(&mut doc, &root, "m", &updated).unwrap();
+
+        let read_back = read_json_value(&doc, &root, "m");
+        assert_eq!(read_back, Some(updated));
+    }
+
+    #[test]
+    fn test_update_json_resizes_list_grow() {
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+
+        let short = serde_json::json!([1, 2]);
+        update_json_at_key(&mut doc, &root, "arr", &short).unwrap();
+
+        let longer = serde_json::json!([1, 2, 3, 4]);
+        update_json_at_key(&mut doc, &root, "arr", &longer).unwrap();
+
+        let read_back = read_json_value(&doc, &root, "arr");
+        assert_eq!(read_back, Some(longer));
+    }
+
+    #[test]
+    fn test_update_json_resizes_list_shrink() {
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+
+        let long = serde_json::json!([1, 2, 3, 4, 5]);
+        update_json_at_key(&mut doc, &root, "arr", &long).unwrap();
+
+        let shorter = serde_json::json!([10, 20]);
+        update_json_at_key(&mut doc, &root, "arr", &shorter).unwrap();
+
+        let read_back = read_json_value(&doc, &root, "arr");
+        assert_eq!(read_back, Some(shorter));
+    }
+
+    #[test]
+    fn test_update_json_handles_type_change_scalar_to_object() {
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+
+        // Start with a scalar
+        doc.put(&root, "val", "hello").unwrap();
+
+        // Update to an object
+        let obj = serde_json::json!({"nested": true});
+        update_json_at_key(&mut doc, &root, "val", &obj).unwrap();
+
+        let read_back = read_json_value(&doc, &root, "val");
+        assert_eq!(read_back, Some(obj));
+    }
+
+    #[test]
+    fn test_update_json_handles_type_change_object_to_scalar() {
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+
+        // Start with an object
+        let obj = serde_json::json!({"nested": true});
+        update_json_at_key(&mut doc, &root, "val", &obj).unwrap();
+
+        // Replace with a scalar
+        let scalar = serde_json::json!("just a string");
+        update_json_at_key(&mut doc, &root, "val", &scalar).unwrap();
+
+        let read_back = read_json_value(&doc, &root, "val");
+        assert_eq!(read_back, Some(scalar));
+    }
+
+    #[test]
+    fn test_update_json_preserves_existing_list_obj_id() {
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+
+        let arr = serde_json::json!([1, 2, 3]);
+        update_json_at_key(&mut doc, &root, "list", &arr).unwrap();
+        let (_, original_id) = doc.get(&root, "list").unwrap().unwrap();
+
+        let arr2 = serde_json::json!([10, 20]);
+        update_json_at_key(&mut doc, &root, "list", &arr2).unwrap();
+        let (_, updated_id) = doc.get(&root, "list").unwrap().unwrap();
+
+        assert_eq!(original_id, updated_id, "List ObjId should be preserved");
+        let read_back = read_json_value(&doc, &root, "list");
+        assert_eq!(read_back, Some(arr2));
+    }
+
+    #[test]
+    fn test_update_json_nested_objects() {
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+
+        let v1 = serde_json::json!({"uv": {"dependencies": ["numpy", "pandas"]}});
+        update_json_at_key(&mut doc, &root, "runt", &v1).unwrap();
+
+        // Update nested — should reuse outer "runt" and inner "uv" maps
+        let v2 = serde_json::json!({"uv": {"dependencies": ["numpy", "scipy"]}, "pixi": {}});
+        update_json_at_key(&mut doc, &root, "runt", &v2).unwrap();
+
+        let read_back = read_json_value(&doc, &root, "runt");
+        assert_eq!(read_back, Some(v2));
+    }
+
+    #[test]
+    fn test_update_json_list_element_type_change() {
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+
+        // List with mixed types
+        let v1 = serde_json::json!([1, "two", {"three": 3}]);
+        update_json_at_key(&mut doc, &root, "mixed", &v1).unwrap();
+
+        // Change element types
+        let v2 = serde_json::json!([{"one": 1}, 2, "three"]);
+        update_json_at_key(&mut doc, &root, "mixed", &v2).unwrap();
+
+        let read_back = read_json_value(&doc, &root, "mixed");
+        assert_eq!(read_back, Some(v2));
+    }
+
+    #[test]
+    fn test_set_metadata_snapshot_with_update_json() {
+        let mut doc = NotebookDoc::new("nb-update-meta");
+
+        let snapshot1 = metadata::NotebookMetadataSnapshot {
+            kernelspec: Some(metadata::KernelspecSnapshot {
+                name: "python3".to_string(),
+                display_name: "Python 3".to_string(),
+                language: Some("python".to_string()),
+            }),
+            language_info: None,
+            runt: metadata::RuntMetadata::default(),
+        };
+        doc.set_metadata_snapshot(&snapshot1).unwrap();
+
+        // Update with different data
+        let snapshot2 = metadata::NotebookMetadataSnapshot {
+            kernelspec: Some(metadata::KernelspecSnapshot {
+                name: "deno".to_string(),
+                display_name: "Deno".to_string(),
+                language: Some("typescript".to_string()),
+            }),
+            language_info: Some(metadata::LanguageInfoSnapshot {
+                name: "typescript".to_string(),
+                version: None,
+            }),
+            runt: metadata::RuntMetadata::default(),
+        };
+        doc.set_metadata_snapshot(&snapshot2).unwrap();
+
+        let read_back = doc.get_metadata_snapshot().unwrap();
+        assert_eq!(read_back.kernelspec.as_ref().unwrap().name, "deno");
+        assert_eq!(read_back.language_info.as_ref().unwrap().name, "typescript");
     }
 }

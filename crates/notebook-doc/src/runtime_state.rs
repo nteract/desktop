@@ -1509,6 +1509,8 @@ impl RuntimeStateDoc {
             .put(&entry, "model_name", model_name)
             .expect("put comm.model_name");
         // Store state as a native Automerge map for per-property merge.
+        // Safe: `entry` was just created by `put_object` above — no competing peers.
+        #[allow(deprecated)]
         crate::put_json_at_key(&mut self.doc, &entry, "state", state).expect("put comm.state");
         self.doc
             .put(&entry, "seq", seq as i64)
@@ -1546,7 +1548,8 @@ impl RuntimeStateDoc {
         else {
             return false;
         };
-        crate::put_json_at_key(&mut self.doc, &state_id, key, value).expect("put comm.state.key");
+        crate::update_json_at_key(&mut self.doc, &state_id, key, value)
+            .expect("update comm.state.key");
         true
     }
 
@@ -1590,8 +1593,8 @@ impl RuntimeStateDoc {
                 _ => true,
             };
             if should_write {
-                crate::put_json_at_key(&mut self.doc, &state_id, key, new_value)
-                    .expect("put comm.state.key");
+                crate::update_json_at_key(&mut self.doc, &state_id, key, new_value)
+                    .expect("update comm.state.key");
                 any_changed = true;
             }
         }
