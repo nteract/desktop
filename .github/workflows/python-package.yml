@@ -45,6 +45,7 @@ jobs:
               - 'python/runtimed/**'
               - 'python/nteract/**'
               - 'python/gremlin/**'
+              - 'python/prewarm/**'
               - 'crates/runtimed-py/**'
               - 'crates/runtimed/**'
               - 'apps/mcp-app/**'
@@ -80,10 +81,10 @@ jobs:
         run: uv sync
 
       - name: Ruff check
-        run: uv run ruff check --config pyproject.toml python/nteract/src/ python/runtimed/src/ python/runtimed/tests/
+        run: uv run ruff check --config pyproject.toml python/nteract/src/ python/runtimed/src/ python/runtimed/tests/ python/prewarm/src/ python/prewarm/tests/
 
       - name: Ruff format check
-        run: uv run ruff format --check --config pyproject.toml python/nteract/src/ python/runtimed/src/ python/runtimed/tests/
+        run: uv run ruff format --check --config pyproject.toml python/nteract/src/ python/runtimed/src/ python/runtimed/tests/ python/prewarm/src/ python/prewarm/tests/
 
       - name: Type check
         run: uv run ty check python/
@@ -91,6 +92,9 @@ jobs:
       - name: Run runtimed-py unit tests
         working-directory: python/runtimed
         run: uv run pytest tests/test_session_unit.py tests/test_binary.py tests/test_ipython_bridge.py -v --tb=short
+
+      - name: Run prewarm unit tests
+        run: uv run pytest python/prewarm/tests/ -v --tb=short
 
   python-lint-and-test-skip:
     name: Python Lint & Unit Tests
