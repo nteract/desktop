@@ -233,86 +233,6 @@ fn pixi_prewarmed_packages(extra: &[String]) -> Vec<String> {
     packages
 }
 
-fn package_import_name(pkg: &str) -> Option<String> {
-    let name = pkg
-        .split("::")
-        .last()?
-        .split([
-            '<', '>', '=', '!', '~', ' ', '[', '"', '\'', '\\', '\n', '\r',
-        ])
-        .next()?
-        .trim();
-    if name.is_empty() {
-        return None;
-    }
-    let candidate = name.replace('-', "_");
-    if candidate.split('.').all(is_valid_python_identifier) {
-        Some(candidate)
-    } else {
-        None
-    }
-}
-
-fn is_valid_python_identifier(segment: &str) -> bool {
-    let mut chars = segment.chars();
-    match chars.next() {
-        Some(first) if first == '_' || first.is_ascii_alphabetic() => {}
-        _ => return false,
-    }
-    chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
-}
-
-fn build_python_warmup_script(extra_packages: &[String], include_conda_runtime: bool) -> String {
-    let mut script = r#"
-import ipykernel
-import IPython
-import ipywidgets
-import anywidget
-import nbformat
-"#
-    .to_string();
-
-    if include_conda_runtime {
-        script.push_str(
-            r#"
-import traitlets
-import zmq
-"#,
-        );
-    }
-
-    let mut modules = extra_packages
-        .iter()
-        .filter_map(|pkg| package_import_name(pkg))
-        .collect::<Vec<_>>();
-    modules.sort();
-    modules.dedup();
-
-    if !modules.is_empty() {
-        if let Ok(modules_json) = serde_json::to_string(&modules) {
-            script.push('\n');
-            script.push_str("for module_name in ");
-            script.push_str(&modules_json);
-            script.push_str(":\n");
-            script.push_str("    try:\n");
-            script.push_str("        __import__(module_name)\n");
-            script.push_str("    except Exception:\n");
-            script.push_str("        pass\n");
-        }
-    }
-
-    script.push_str(
-        r#"
-from ipykernel.kernelbase import Kernel
-from ipykernel.ipkernel import IPythonKernel
-"#,
-    );
-    if include_conda_runtime {
-        script.push_str("from ipykernel.comm import CommManager\n");
-    }
-    script.push_str("print(\"warmup complete\")\n");
-    script
-}
 
 impl Pool {
     fn new(target: usize, max_age_secs: u64) -> Self {
@@ -2946,7 +2866,28 @@ impl Daemon {
         env_path: &PathBuf,
         extra_packages: &[String],
     ) -> bool {
-        let warmup_script = build_python_warmup_script(extra_packages, true);
+        let site_packages = {
+            let lib_dir = env_path.join("lib");
+            std::fs::read_dir(&lib_dir)
+                .ok()
+                .and_then(|entries| {
+                    entries.flatten().find_map(|entry| {
+                        let path = entry.path();
+                        let name = path.file_name()?.to_str()?;
+                        if name.starts_with("python") {
+                            let sp = path.join("site-packages");
+                            sp.is_dir().then(|| sp.to_string_lossy().into_owned())
+                        } else {
+                            None
+                        }
+                    })
+                })
+        };
+        let warmup_script = kernel_env::warmup::build_warmup_command(
+            extra_packages,
+            true,
+            site_packages.as_deref(),
+        );
 
         let warmup_result = tokio::time::timeout(
             std::time::Duration::from_secs(30),
@@ -3339,7 +3280,28 @@ impl Daemon {
         }
 
         // Warm up the environment (30 second timeout)
-        let warmup_script = build_python_warmup_script(&user_default_packages, false);
+        let site_packages = {
+            let lib_dir = venv_path.join("lib");
+            std::fs::read_dir(&lib_dir)
+                .ok()
+                .and_then(|entries| {
+                    entries.flatten().find_map(|entry| {
+                        let path = entry.path();
+                        let name = path.file_name()?.to_str()?;
+                        if name.starts_with("python") {
+                            let sp = path.join("site-packages");
+                            sp.is_dir().then(|| sp.to_string_lossy().into_owned())
+                        } else {
+                            None
+                        }
+                    })
+                })
+        };
+        let warmup_script = kernel_env::warmup::build_warmup_command(
+            &user_default_packages,
+            false,
+            site_packages.as_deref(),
+        );
 
         let warmup_result = tokio::time::timeout(
             std::time::Duration::from_secs(30),
