@@ -405,7 +405,15 @@ pub async fn create_notebook(
 
             let pkg_manager = arg_str(request, "package_manager").unwrap_or("uv");
 
-            if runtime != "deno" {
+            if runtime != "deno" && !deps.is_empty() {
+                // Flush any pending sync frames from the daemon so we have
+                // the full document structure (metadata map, runt map) before
+                // writing deps.  Without this, a concurrent daemon sync can
+                // race with the client-side put_object and shadow our writes.
+                if let Err(e) = result.handle.confirm_sync().await {
+                    tracing::warn!("confirm_sync before create_notebook deps failed: {e}");
+                }
+
                 for dep in &deps {
                     let _ = super::deps::add_dep_for_manager(&result.handle, dep, pkg_manager);
                 }
