@@ -64,16 +64,12 @@ _KNOWN_IMPORT_NAMES: dict[str, str] = {
     "beautifulsoup4": "bs4",
     "opencv-python": "cv2",
     "opencv-python-headless": "cv2",
-    "pygments": "pygments",
     "attrs": "attr",
+    "python-dotenv": "dotenv",
+    "protobuf": "google.protobuf",
     "google-cloud-storage": "google.cloud.storage",
     "google-cloud-bigquery": "google.cloud.bigquery",
-    "python-dotenv": "dotenv",
-    "setuptools": "setuptools",
-    "protobuf": "google.protobuf",
-    "pymysql": "pymysql",
     "psycopg2-binary": "psycopg2",
-    "psycopg2": "psycopg2",
 }
 
 
