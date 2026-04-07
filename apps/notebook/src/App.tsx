@@ -434,7 +434,10 @@ function AppContent() {
   // Reset the update manager when kernel restarts so fresh echoes
   // from the new session aren't suppressed by stale optimistic state.
   useEffect(() => {
-    if (kernelStatus === KERNEL_STATUS.NOT_STARTED) {
+    if (
+      kernelStatus === KERNEL_STATUS.NOT_STARTED ||
+      kernelStatus === KERNEL_STATUS.AWAITING_TRUST
+    ) {
       updateManager.reset();
     }
   }, [kernelStatus]);
@@ -752,8 +755,11 @@ function AppContent() {
         // on execute_input and the SyncEngine injects a clear changeset
         // when the RuntimeStateDoc reports execution started.
 
-        // Start kernel via daemon if not running, then queue cell.
-        if (kernelStatus === KERNEL_STATUS.NOT_STARTED) {
+        // Start kernel via daemon if not running or awaiting trust, then queue cell.
+        if (
+          kernelStatus === KERNEL_STATUS.NOT_STARTED ||
+          kernelStatus === KERNEL_STATUS.AWAITING_TRUST
+        ) {
           const started = await tryStartKernel();
           // Only block execution when trust approval is pending.
           // For startup races (e.g. daemon already auto-starting), still try execute.
@@ -823,8 +829,11 @@ function AppContent() {
       // Flush pending source sync so daemon has latest code
       await flushSync();
 
-      // Start kernel via daemon if not running
-      if (kernelStatus === KERNEL_STATUS.NOT_STARTED) {
+      // Start kernel via daemon if not running or awaiting trust
+      if (
+        kernelStatus === KERNEL_STATUS.NOT_STARTED ||
+        kernelStatus === KERNEL_STATUS.AWAITING_TRUST
+      ) {
         const started = await tryStartKernel();
         if (!started) {
           logger.debug("[App] handleRunAllCells: kernel not started, skipping");
@@ -1208,14 +1217,16 @@ function AppContent() {
           onDismissUv={dismissPoolUvError}
           onDismissConda={dismissPoolCondaError}
         />
-        {needsApproval && kernelStatus === KERNEL_STATUS.NOT_STARTED && (
-          <UntrustedBanner
-            onReviewClick={() => {
-              pendingKernelStartRef.current = true;
-              setTrustDialogOpen(true);
-            }}
-          />
-        )}
+        {needsApproval &&
+          (kernelStatus === KERNEL_STATUS.NOT_STARTED ||
+            kernelStatus === KERNEL_STATUS.AWAITING_TRUST) && (
+            <UntrustedBanner
+              onReviewClick={() => {
+                pendingKernelStartRef.current = true;
+                setTrustDialogOpen(true);
+              }}
+            />
+          )}
         <NotebookToolbar
           kernelStatus={kernelStatus}
           startingPhase={startingPhase}
