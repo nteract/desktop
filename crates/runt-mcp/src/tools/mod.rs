@@ -39,6 +39,16 @@ fn app_tool_meta() -> Meta {
     Meta(meta)
 }
 
+/// Build `_meta` that opts a tool out of deferred-tool lists in Claude clients.
+/// Claude Code / Desktop / Cowork defer all MCP tools by default; setting
+/// `"anthropic/alwaysLoad": true` makes the tool immediately available
+/// without requiring a ToolSearch round-trip.
+fn always_load_meta() -> Meta {
+    let mut meta = serde_json::Map::new();
+    meta.insert("anthropic/alwaysLoad".to_string(), serde_json::json!(true));
+    Meta(meta)
+}
+
 mod cell_crud;
 mod cell_meta;
 pub(crate) mod cell_read;
@@ -73,24 +83,14 @@ pub fn all_tools() -> Vec<Tool> {
         // -- Session management --
         Tool::new(
             "list_active_notebooks",
-            "List all notebook sessions running in the daemon. Returns notebooks opened by any user or agent. Use join_notebook(notebook_id) to connect to one as your active session.",
+            "List all notebook sessions running in the daemon. Returns notebooks opened by any user or agent. Use open_notebook(notebook) to connect to one as your active session.",
             schema_for::<EmptyParams>(),
         )
-        .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
-        Tool::new(
-            "join_notebook",
-            "Connect to an existing notebook session by ID, making it your active session. The notebook_id comes from list_active_notebooks.",
-            schema_for::<session::JoinNotebookParams>(),
-        )
-        .annotate(
-            ToolAnnotations::new()
-                .destructive(false)
-                .idempotent(true)
-                .open_world(false),
-        ),
+        .annotate(ToolAnnotations::new().read_only(true).open_world(false))
+        .with_meta(always_load_meta()),
         Tool::new(
             "open_notebook",
-            "Open a notebook file from disk, making it your active session.",
+            "Open a notebook by file path or connect to a running session by ID. Accepts a file path (e.g. '~/analysis.ipynb') or a notebook_id from list_active_notebooks. Makes it your active session.",
             schema_for::<session::OpenNotebookParams>(),
         )
         .annotate(
@@ -98,7 +98,8 @@ pub fn all_tools() -> Vec<Tool> {
                 .destructive(false)
                 .idempotent(true)
                 .open_world(true),
-        ),
+        )
+        .with_meta(always_load_meta()),
         Tool::new(
             "create_notebook",
             "Create a new notebook, making it your active session. Supports uv (default), conda, or pixi via package_manager param. The kernel starts automatically with deps installed. Call save_notebook(path) to persist to disk.",
@@ -117,8 +118,8 @@ pub fn all_tools() -> Vec<Tool> {
                 .open_world(true),
         ),
         Tool::new(
-            "show_notebook",
-            "Open the notebook in the nteract desktop app. The notebook must be running in the daemon.",
+            "launch_app",
+            "Launch the nteract desktop app for the user, showing the current notebook. The notebook must be running in the daemon.",
             schema_for::<session::ShowNotebookParams>(),
         )
         .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
@@ -324,10 +325,13 @@ pub async fn dispatch(
     match request.name.as_ref() {
         // Session
         "list_active_notebooks" => session::list_active_notebooks(server).await,
-        "join_notebook" => session::join_notebook(server, request).await,
         "open_notebook" => session::open_notebook(server, request).await,
+        // Backward compat: join_notebook routes to open_notebook
+        "join_notebook" => session::open_notebook(server, request).await,
         "create_notebook" => session::create_notebook(server, request).await,
         "save_notebook" => session::save_notebook(server, request).await,
+        "launch_app" => session::show_notebook(server, request).await,
+        // Backward compat: show_notebook routes to launch_app
         "show_notebook" => session::show_notebook(server, request).await,
         // Cell read
         "get_cell" => cell_read::get_cell(server, request).await,

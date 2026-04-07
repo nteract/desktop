@@ -171,16 +171,19 @@ fn format_cell_summaries(handle: &notebook_sync::handle::DocHandle) -> String {
 
 #[allow(dead_code)] // Fields used by schemars for tool input schema generation
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct JoinNotebookParams {
-    /// The notebook ID from list_active_notebooks.
-    pub notebook_id: String,
-}
-
-#[allow(dead_code)] // Fields used by schemars for tool input schema generation
-#[derive(Debug, Deserialize, JsonSchema)]
 pub struct OpenNotebookParams {
-    /// Path to the notebook file on disk.
-    pub path: String,
+    /// A file path (e.g. "~/analysis.ipynb") or a notebook ID from
+    /// list_active_notebooks. Paths are opened from disk; IDs connect
+    /// to a running session.
+    pub notebook: Option<String>,
+
+    /// Backward compat: alias for `notebook` when called as open_notebook(path=...).
+    #[serde(default)]
+    pub path: Option<String>,
+
+    /// Backward compat: alias for `notebook` when called as join_notebook(notebook_id=...).
+    #[serde(default)]
+    pub notebook_id: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -231,142 +234,141 @@ pub async fn list_active_notebooks(server: &NteractMcp) -> Result<CallToolResult
     }
 }
 
-/// Join an existing notebook session.
-///
-/// Accepts the notebook_id exactly as returned by list_active_notebooks.
-/// Does NOT rewrite the ID — UUIDs, file paths, and opaque room names
-/// are all passed through unchanged.
-pub async fn join_notebook(
-    server: &NteractMcp,
-    request: &CallToolRequestParams,
-) -> Result<CallToolResult, McpError> {
-    let notebook_id = arg_str(request, "notebook_id")
-        .ok_or_else(|| McpError::invalid_params("Missing required parameter: notebook_id", None))?;
-
-    // Pass the notebook_id through unchanged — it may be a UUID, file path,
-    // or opaque room name. resolve_notebook_path would corrupt non-path IDs.
-    let notebook_id = notebook_id.to_string();
-
-    let prev = previous_notebook_id(server).await;
-
-    match notebook_sync::connect::connect(
-        server.socket_path.clone(),
-        notebook_id.clone(),
-        &server.get_peer_label().await,
-    )
-    .await
-    {
-        Ok(result) => {
-            let handle = &result.handle;
-
-            // Ensure initial sync converges — this processes any pending
-            // RuntimeStateSync frames so outputs are available immediately.
-            let _ = handle.confirm_sync().await;
-
-            let runtime_info = collect_runtime_info(handle).await;
-            let deps = get_dependencies(handle);
-            let cells_summary = format_cell_summaries(handle);
-
-            let mut response = serde_json::json!({
-                "notebook_id": handle.notebook_id(),
-                "connected": true,
-                "runtime": runtime_info,
-                "dependencies": deps,
-                "cells": cells_summary,
-            });
-
-            if let Some(ref prev_id) = prev {
-                if *prev_id != notebook_id {
-                    response["switched_from"] = serde_json::json!(prev_id);
-                }
-            }
-
-            // Announce presence so the peer is visible immediately
-            let peer_label = server.get_peer_label().await;
-            crate::presence::announce(handle, &peer_label).await;
-
-            let session = NotebookSession {
-                handle: result.handle,
-                broadcast_rx: result.broadcast_rx,
-                notebook_id,
-            };
-            *server.session.write().await = Some(session);
-
-            Ok(CallToolResult::success(vec![Content::text(
-                serde_json::to_string_pretty(&response).unwrap_or_default(),
-            )]))
-        }
-        Err(e) => tool_error(&format!("Failed to join notebook: {}", e)),
-    }
+/// Heuristic: does this string look like a file path rather than a daemon room ID?
+/// Paths contain separators, start with ~ or ., or end in .ipynb.
+fn looks_like_path(s: &str) -> bool {
+    s.contains('/')
+        || s.contains('\\')
+        || s.starts_with('~')
+        || s.starts_with('.')
+        || s.ends_with(".ipynb")
 }
 
-/// Open a notebook file from disk.
+/// Open a notebook — either from a file path on disk or by connecting to an
+/// existing daemon session by ID.
 ///
-/// Uses the OpenNotebook handshake so the daemon loads the .ipynb from disk,
-/// creates a file-backed room, and returns the notebook_id.
+/// Unified handler for `open_notebook` and the deprecated `join_notebook`.
+/// Accepts `notebook`, `path`, or `notebook_id` params (in that priority order)
+/// and auto-detects whether the value is a file path or a session ID.
 pub async fn open_notebook(
     server: &NteractMcp,
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
-    let path = arg_str(request, "path")
-        .ok_or_else(|| McpError::invalid_params("Missing required parameter: path", None))?;
-
-    // Resolve ~ and relative paths to absolute for the daemon
-    let abs_path = PathBuf::from(resolve_path(path));
+    // Resolve the notebook identifier from whichever param was provided.
+    let notebook = arg_str(request, "notebook")
+        .or_else(|| arg_str(request, "path"))
+        .or_else(|| arg_str(request, "notebook_id"))
+        .ok_or_else(|| {
+            McpError::invalid_params(
+                "Missing required parameter: notebook (a file path or notebook ID)",
+                None,
+            )
+        })?
+        .to_string();
 
     let prev = previous_notebook_id(server).await;
 
-    // Use connect_open which sends the OpenNotebook handshake —
-    // the daemon loads the .ipynb from disk and creates a file-backed room.
-    match notebook_sync::connect::connect_open(
-        server.socket_path.clone(),
-        abs_path.clone(),
-        &server.get_peer_label().await,
-    )
-    .await
-    {
-        Ok(result) => {
-            let handle = &result.handle;
-            let notebook_id = handle.notebook_id().to_string();
+    if looks_like_path(&notebook) {
+        // File path — resolve and open from disk via the daemon's OpenNotebook handshake.
+        let abs_path = PathBuf::from(resolve_path(&notebook));
 
-            // Ensure initial sync converges — this processes any pending
-            // RuntimeStateSync frames so outputs are available immediately.
-            let _ = handle.confirm_sync().await;
+        match notebook_sync::connect::connect_open(
+            server.socket_path.clone(),
+            abs_path.clone(),
+            &server.get_peer_label().await,
+        )
+        .await
+        {
+            Ok(result) => {
+                let handle = &result.handle;
+                let notebook_id = handle.notebook_id().to_string();
 
-            let runtime_info = collect_runtime_info(handle).await;
-            let deps = get_dependencies(handle);
-            let cells_summary = format_cell_summaries(handle);
+                let _ = handle.confirm_sync().await;
 
-            let mut response = serde_json::json!({
-                "notebook_id": notebook_id,
-                "path": abs_path.to_string_lossy(),
-                "runtime": runtime_info,
-                "dependencies": deps,
-                "cells": cells_summary,
-            });
+                let runtime_info = collect_runtime_info(handle).await;
+                let deps = get_dependencies(handle);
+                let cells_summary = format_cell_summaries(handle);
 
-            if let Some(ref prev_id) = prev {
-                if *prev_id != notebook_id {
-                    response["switched_from"] = serde_json::json!(prev_id);
+                let mut response = serde_json::json!({
+                    "notebook_id": notebook_id,
+                    "path": abs_path.to_string_lossy(),
+                    "runtime": runtime_info,
+                    "dependencies": deps,
+                    "cells": cells_summary,
+                });
+
+                if let Some(ref prev_id) = prev {
+                    if *prev_id != notebook_id {
+                        response["switched_from"] = serde_json::json!(prev_id);
+                    }
                 }
+
+                let peer_label = server.get_peer_label().await;
+                crate::presence::announce(handle, &peer_label).await;
+
+                let session = NotebookSession {
+                    handle: result.handle,
+                    broadcast_rx: result.broadcast_rx,
+                    notebook_id,
+                };
+                *server.session.write().await = Some(session);
+
+                Ok(CallToolResult::success(vec![Content::text(
+                    serde_json::to_string_pretty(&response).unwrap_or_default(),
+                )]))
             }
-
-            // Announce presence so the peer is visible immediately
-            let peer_label = server.get_peer_label().await;
-            crate::presence::announce(handle, &peer_label).await;
-
-            let session = NotebookSession {
-                handle: result.handle,
-                broadcast_rx: result.broadcast_rx,
-                notebook_id,
-            };
-            *server.session.write().await = Some(session);
-
-            Ok(CallToolResult::success(vec![Content::text(
-                serde_json::to_string_pretty(&response).unwrap_or_default(),
-            )]))
+            Err(e) => tool_error(&format!("Failed to open notebook '{}': {}", notebook, e)),
         }
-        Err(e) => tool_error(&format!("Failed to open notebook '{}': {}", path, e)),
+    } else {
+        // Session ID — connect to an existing daemon room.
+        let notebook_id = notebook;
+
+        match notebook_sync::connect::connect(
+            server.socket_path.clone(),
+            notebook_id.clone(),
+            &server.get_peer_label().await,
+        )
+        .await
+        {
+            Ok(result) => {
+                let handle = &result.handle;
+
+                let _ = handle.confirm_sync().await;
+
+                let runtime_info = collect_runtime_info(handle).await;
+                let deps = get_dependencies(handle);
+                let cells_summary = format_cell_summaries(handle);
+
+                let mut response = serde_json::json!({
+                    "notebook_id": handle.notebook_id(),
+                    "connected": true,
+                    "runtime": runtime_info,
+                    "dependencies": deps,
+                    "cells": cells_summary,
+                });
+
+                if let Some(ref prev_id) = prev {
+                    if *prev_id != notebook_id {
+                        response["switched_from"] = serde_json::json!(prev_id);
+                    }
+                }
+
+                let peer_label = server.get_peer_label().await;
+                crate::presence::announce(handle, &peer_label).await;
+
+                let session = NotebookSession {
+                    handle: result.handle,
+                    broadcast_rx: result.broadcast_rx,
+                    notebook_id,
+                };
+                *server.session.write().await = Some(session);
+
+                Ok(CallToolResult::success(vec![Content::text(
+                    serde_json::to_string_pretty(&response).unwrap_or_default(),
+                )]))
+            }
+            Err(e) => tool_error(&format!("Failed to join notebook: {}", e)),
+        }
     }
 }
 
