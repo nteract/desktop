@@ -54,7 +54,7 @@ def test_collect_modules_normalizes_specs():
 
     result = _collect_modules(["numpy>=1.24", "scikit-learn>=1.0"], include_conda=False)
     assert "numpy" in result
-    assert "scikit_learn" in result
+    assert "sklearn" in result
     assert "numpy>=1.24" not in result
 
 
@@ -63,10 +63,24 @@ def test_normalize_module_name():
     from prewarm import normalize_module_name
 
     assert normalize_module_name("numpy>=1.24") == "numpy"
-    assert normalize_module_name("scikit-learn>=1.0") == "scikit_learn"
     assert normalize_module_name("pandas") == "pandas"
-    assert normalize_module_name("Pillow[extra]") == "Pillow"
     assert normalize_module_name("") is None
+    # Fallback heuristic: hyphen → underscore
+    assert normalize_module_name("some-package") == "some_package"
+
+
+def test_normalize_known_packages():
+    """Well-known packages map to their correct import names."""
+    from prewarm import normalize_module_name
+
+    assert normalize_module_name("scikit-learn>=1.0") == "sklearn"
+    assert normalize_module_name("Pillow") == "PIL"
+    assert normalize_module_name("pillow[extra]") == "PIL"
+    assert normalize_module_name("pyyaml") == "yaml"
+    assert normalize_module_name("beautifulsoup4") == "bs4"
+    assert normalize_module_name("opencv-python") == "cv2"
+    assert normalize_module_name("python-dateutil") == "dateutil"
+    assert normalize_module_name("psycopg2-binary") == "psycopg2"
 
 
 def test_build_warmup_script_critical_imports_not_wrapped():

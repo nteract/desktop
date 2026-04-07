@@ -50,6 +50,28 @@ CONDA_DEEP_IMPORTS = [
 # Pattern to strip version specifiers from dependency strings.
 _VERSION_SPEC_RE = re.compile(r"[<>=!~;\[\]].*$")
 
+# Well-known pip-package → import-name mappings for packages where the
+# import name doesn't match the normalized package name.  This is a
+# best-effort table for common data-science and notebook packages;
+# it doesn't need to be exhaustive — unmapped packages fall through
+# to the hyphen→underscore heuristic which works for most packages.
+_KNOWN_IMPORT_NAMES: dict[str, str] = {
+    "pillow": "PIL",
+    "scikit-learn": "sklearn",
+    "scikit-image": "skimage",
+    "python-dateutil": "dateutil",
+    "pyyaml": "yaml",
+    "beautifulsoup4": "bs4",
+    "opencv-python": "cv2",
+    "opencv-python-headless": "cv2",
+    "attrs": "attr",
+    "python-dotenv": "dotenv",
+    "protobuf": "google.protobuf",
+    "google-cloud-storage": "google.cloud.storage",
+    "google-cloud-bigquery": "google.cloud.bigquery",
+    "psycopg2-binary": "psycopg2",
+}
+
 
 def warm(
     modules: list[str],
@@ -88,18 +110,28 @@ def warm(
 def normalize_module_name(spec: str) -> str | None:
     """Convert a dependency specifier to a Python import name.
 
-    Strips version specifiers (``>=``, ``==``, etc.), extras (``[extra]``),
-    and replaces hyphens with underscores.  Returns ``None`` if the result
-    is not a valid Python identifier.
+    First checks ``_KNOWN_IMPORT_NAMES`` for well-known packages where
+    the import name differs from the package name.  Falls back to
+    stripping version specifiers and replacing hyphens with underscores.
 
     >>> normalize_module_name("numpy>=1.24")
     'numpy'
     >>> normalize_module_name("scikit-learn>=1.0")
-    'scikit_learn'
+    'sklearn'
+    >>> normalize_module_name("Pillow")
+    'PIL'
     >>> normalize_module_name("")
     """
-    name = _VERSION_SPEC_RE.sub("", spec).strip().replace("-", "_")
-    if not name or not name.isidentifier():
+    pkg = _VERSION_SPEC_RE.sub("", spec).strip()
+    if not pkg:
+        return None
+    # Check known mappings (case-insensitive lookup on the raw package name)
+    known = _KNOWN_IMPORT_NAMES.get(pkg.lower())
+    if known:
+        return known
+    # Fallback: hyphen → underscore heuristic
+    name = pkg.replace("-", "_")
+    if not name.isidentifier():
         return None
     return name
 
