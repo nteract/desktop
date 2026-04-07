@@ -2036,9 +2036,14 @@ impl Daemon {
             Request::InspectNotebook { notebook_id } => {
                 info!("[runtimed] Inspecting notebook: {}", notebook_id);
 
-                // First try to get from an active room
-                let rooms = self.notebook_rooms.lock().await;
-                if let Some(room) = rooms.get(&notebook_id) {
+                // First try to get from an active room.
+                // Clone the Arc and drop the lock before any .await to avoid
+                // holding notebook_rooms across async calls.
+                let maybe_room = {
+                    let rooms = self.notebook_rooms.lock().await;
+                    rooms.get(&notebook_id).cloned()
+                };
+                if let Some(room) = maybe_room {
                     let doc = room.doc.read().await;
                     let cells = doc.get_cells();
                     let kernel_info = room.kernel_info().await.map(|(kt, es, status)| {
@@ -2056,7 +2061,6 @@ impl Daemon {
                     }
                 } else {
                     // No active room - try to load from persisted file
-                    drop(rooms); // Release lock before disk I/O
                     let filename = crate::notebook_doc::notebook_doc_filename(&notebook_id);
                     let persist_path = self.config.notebook_docs_dir.join(filename);
                     if persist_path.exists() {
@@ -2091,9 +2095,17 @@ impl Daemon {
             }
 
             Request::ListRooms => {
-                let rooms = self.notebook_rooms.lock().await;
+                // Snapshot room references and drop the lock before any .await
+                // to avoid holding notebook_rooms across async calls (convoy deadlock).
+                let snapshot: Vec<_> = {
+                    let rooms = self.notebook_rooms.lock().await;
+                    rooms
+                        .iter()
+                        .map(|(id, room)| (id.clone(), room.clone()))
+                        .collect()
+                };
                 let mut room_infos = Vec::new();
-                for (notebook_id, room) in rooms.iter() {
+                for (notebook_id, room) in &snapshot {
                     // Get kernel info if available
                     let (kernel_type, env_source, kernel_status) = room
                         .kernel_info()
@@ -2115,8 +2127,19 @@ impl Daemon {
             }
 
             Request::ShutdownNotebook { notebook_id } => {
-                let mut rooms = self.notebook_rooms.lock().await;
-                if let Some(room) = rooms.remove(&notebook_id) {
+                // Remove the room from the map and drop the lock before any .await
+                // to avoid holding notebook_rooms across async teardown calls.
+                //
+                // Note: the room is already removed from the map so concurrent
+                // get_or_create_room() calls will create a fresh room. This is
+                // identical to the original behavior (remove() was always called
+                // before teardown), but now the lock isn't held during the async
+                // teardown that follows.
+                let maybe_room = {
+                    let mut rooms = self.notebook_rooms.lock().await;
+                    rooms.remove(&notebook_id)
+                };
+                if let Some(room) = maybe_room {
                     // Shut down runtime agent via RPC before dropping handle.
                     // RuntimeAgentHandle doesn't own the Child (it's in a background
                     // task), so dropping the handle alone doesn't kill it.
@@ -2156,9 +2179,14 @@ impl Daemon {
 
     /// Collect env paths from all running kernels to protect from GC eviction.
     async fn collect_active_env_paths(&self) -> std::collections::HashSet<PathBuf> {
+        // Snapshot room references and drop the lock before any .await
+        // to avoid holding notebook_rooms across async calls.
+        let snapshot: Vec<_> = {
+            let rooms = self.notebook_rooms.lock().await;
+            rooms.values().cloned().collect()
+        };
         let mut paths = std::collections::HashSet::new();
-        let rooms = self.notebook_rooms.lock().await;
-        for room in rooms.values() {
+        for room in &snapshot {
             // Check runtime-agent-backed kernel
             if let Some(ref env_path) = *room.runtime_agent_env_path.read().await {
                 paths.insert(env_path.clone());
