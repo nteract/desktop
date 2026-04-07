@@ -238,10 +238,10 @@ enum Commands {
         socket: Option<PathBuf>,
     },
 
-    /// View or modify application settings
-    Settings {
+    /// View or modify application configuration
+    Config {
         #[command(subcommand)]
-        command: Option<SettingsCommands>,
+        command: Option<ConfigCommands>,
     },
 
     /// Manage cached Python environments
@@ -412,7 +412,7 @@ enum EnvCommands {
 
 /// Settings subcommands
 #[derive(Subcommand)]
-enum SettingsCommands {
+enum ConfigCommands {
     /// List all current settings
     List,
     /// Get a specific setting value
@@ -430,7 +430,7 @@ enum SettingsCommands {
 }
 
 /// Valid top-level and dotted settings keys. Used to reject typos.
-const VALID_SETTINGS_KEYS: &[&str] = &[
+const VALID_CONFIG_KEYS: &[&str] = &[
     "theme",
     "default_runtime",
     "default_python_env",
@@ -615,7 +615,7 @@ async fn async_main(command: Option<Commands>) -> Result<()> {
             daemon_command(DaemonCommands::Logs { follow, lines }).await?
         }
         Some(Commands::Diagnostics { output }) => diagnostics_command(output).await?,
-        Some(Commands::Settings { command }) => settings_command(command).await?,
+        Some(Commands::Config { command }) => config_command(command).await?,
         Some(Commands::Mcp { no_show, socket }) => {
             if let Some(socket) = socket {
                 std::env::set_var("RUNTIMED_SOCKET_PATH", socket);
@@ -4010,24 +4010,24 @@ async fn clean_worktree_command(
 // Settings commands
 // =============================================================================
 
-async fn settings_command(command: Option<SettingsCommands>) -> Result<()> {
+async fn config_command(command: Option<ConfigCommands>) -> Result<()> {
     let settings_path = runt_workspace::settings_json_path();
 
     match command {
-        None | Some(SettingsCommands::List) => {
+        None | Some(ConfigCommands::List) => {
             // Print all settings as pretty JSON
             let settings = read_settings_from_file(&settings_path)?;
             let json = serde_json::to_string_pretty(&settings)?;
             println!("{json}");
         }
-        Some(SettingsCommands::Get { key }) => {
-            validate_settings_key(&key)?;
+        Some(ConfigCommands::Get { key }) => {
+            validate_config_key(&key)?;
             let settings = read_settings_from_file(&settings_path)?;
             let value = get_setting_value(&settings, &key)?;
             println!("{value}");
         }
-        Some(SettingsCommands::Set { key, value }) => {
-            validate_settings_key(&key)?;
+        Some(ConfigCommands::Set { key, value }) => {
+            validate_config_key(&key)?;
             let mut json_value = if settings_path.exists() {
                 let content = std::fs::read_to_string(&settings_path)?;
                 serde_json::from_str::<serde_json::Value>(&content)?
@@ -4084,11 +4084,11 @@ fn get_setting_value(
 }
 
 /// Validate that a settings key is one of the known keys.
-fn validate_settings_key(key: &str) -> Result<()> {
-    if !VALID_SETTINGS_KEYS.contains(&key) {
+fn validate_config_key(key: &str) -> Result<()> {
+    if !VALID_CONFIG_KEYS.contains(&key) {
         anyhow::bail!(
             "Unknown setting '{key}'. Valid keys: {}",
-            VALID_SETTINGS_KEYS.join(", ")
+            VALID_CONFIG_KEYS.join(", ")
         );
     }
     Ok(())
