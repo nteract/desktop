@@ -439,30 +439,25 @@ async fn install_pixi_env(
 /// Warm up a pixi environment by running Python to trigger .pyc compilation.
 pub async fn warmup_environment(env: &PixiEnvironment) -> Result<()> {
     let warmup_start = Instant::now();
-    info!("[pixi] Warming up environment at {:?}", env.venv_path);
+    info!(
+        "[prewarm] Warming up pixi environment at {:?}",
+        env.venv_path
+    );
 
-    let warmup_script = r#"
-import sys
-import ipykernel
-import IPython
-import ipywidgets
-import nbformat
-import traitlets
-import zmq
-from ipykernel.kernelbase import Kernel
-from ipykernel.ipkernel import IPythonKernel
-from ipykernel.comm import CommManager
-print("warmup complete")
-"#;
+    let site_packages = find_site_packages(&env.venv_path);
+    let warmup_script = crate::warmup::build_warmup_command(&[], true, site_packages.as_deref());
 
     let output = tokio::process::Command::new(&env.python_path)
-        .args(["-c", warmup_script])
+        .args(["-c", &warmup_script])
         .output()
         .await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        warn!("[pixi] Warmup failed for {:?}: {}", env.venv_path, stderr);
+        warn!(
+            "[prewarm] Warmup failed for {:?}: {}",
+            env.venv_path, stderr
+        );
         return Ok(());
     }
 
@@ -470,7 +465,7 @@ print("warmup complete")
     tokio::fs::write(&marker_path, "").await.ok();
 
     info!(
-        "[pixi] Warmup complete for {:?} in {}ms",
+        "[prewarm] Warmup complete for {:?} in {}ms",
         env.venv_path,
         warmup_start.elapsed().as_millis()
     );
@@ -481,6 +476,27 @@ print("warmup complete")
 /// Check if a pixi environment has been warmed up.
 pub fn is_environment_warmed(env: &PixiEnvironment) -> bool {
     env.venv_path.join(".warmed").exists()
+}
+
+/// Find the site-packages directory inside a venv/env.
+fn find_site_packages(base_path: &std::path::Path) -> Option<String> {
+    let lib_dir = base_path.join("lib");
+    if let Ok(entries) = std::fs::read_dir(&lib_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if name.starts_with("python") {
+                        let sp = path.join("site-packages");
+                        if sp.is_dir() {
+                            return sp.to_str().map(String::from);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]

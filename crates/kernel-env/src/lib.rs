@@ -33,6 +33,7 @@ pub mod pixi;
 pub mod progress;
 #[cfg(feature = "runtime")]
 pub mod uv;
+pub mod warmup;
 
 // Re-export key types
 #[cfg(feature = "runtime")]

@@ -18,7 +18,7 @@ build-backend = "setuptools.build_meta"
 packages = []
 
 [tool.uv.workspace]
-members = ["python/runtimed", "python/nteract", "python/gremlin"]
+members = ["python/runtimed", "python/nteract", "python/gremlin", "python/prewarm"]
 
 [tool.uv.sources]
 runtimed = { workspace = true }
@@ -42,7 +42,7 @@ select = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["runtimed", "nteract"]
+known-first-party = ["runtimed", "nteract", "prewarm"]
 
 [tool.ruff.lint.per-file-ignores]
 "**/tests/**" = ["SIM105", "SIM117"]
@@ -71,6 +71,7 @@ extra-paths = [
     "python/runtimed/src",
     "python/nteract/src",
     "python/gremlin/src",
+    "python/prewarm/src",
 ]
 
 [tool.ty.rules]
