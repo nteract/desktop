@@ -1,6 +1,7 @@
 import type { CellData } from "../types";
-import { MimeRenderer, StreamOutput } from "./mime-renderer";
+import { CodeBlock } from "./code-block";
 import { ErrorOutput } from "./error-output";
+import { MimeRenderer, StreamOutput } from "./mime-renderer";
 
 interface CellOutputProps {
   cell: CellData;
@@ -16,7 +17,7 @@ export function CellOutput({ cell }: CellOutputProps) {
       {cell.source && (
         <details className="source-details">
           <summary className="source-summary">Source</summary>
-          <pre className="source">{cell.source}</pre>
+          <CodeBlock code={cell.source} language="python" />
         </details>
       )}
       <div className="outputs">
