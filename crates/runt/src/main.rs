@@ -413,19 +413,33 @@ enum EnvCommands {
 /// Settings subcommands
 #[derive(Subcommand)]
 enum SettingsCommands {
+    /// List all current settings
+    List,
     /// Get a specific setting value
     Get {
-        /// Setting key (e.g., default_python_env, theme)
+        /// Setting key (e.g., default_python_env, theme, uv.default_packages)
         key: String,
     },
     /// Set a specific setting value
     Set {
         /// Setting key
         key: String,
-        /// New value
+        /// New value (comma-separated for list keys like uv.default_packages)
         value: String,
     },
 }
+
+/// Valid top-level and dotted settings keys. Used to reject typos.
+const VALID_SETTINGS_KEYS: &[&str] = &[
+    "theme",
+    "default_runtime",
+    "default_python_env",
+    "keep_alive_secs",
+    "onboarding_completed",
+    "uv.default_packages",
+    "conda.default_packages",
+    "pixi.default_packages",
+];
 
 /// Daemon management commands (replaces Pool + runtimed service commands)
 #[derive(Subcommand)]
@@ -4000,18 +4014,20 @@ async fn settings_command(command: Option<SettingsCommands>) -> Result<()> {
     let settings_path = runt_workspace::settings_json_path();
 
     match command {
-        None => {
+        None | Some(SettingsCommands::List) => {
             // Print all settings as pretty JSON
             let settings = read_settings_from_file(&settings_path)?;
             let json = serde_json::to_string_pretty(&settings)?;
             println!("{json}");
         }
         Some(SettingsCommands::Get { key }) => {
+            validate_settings_key(&key)?;
             let settings = read_settings_from_file(&settings_path)?;
             let value = get_setting_value(&settings, &key)?;
             println!("{value}");
         }
         Some(SettingsCommands::Set { key, value }) => {
+            validate_settings_key(&key)?;
             let mut json_value = if settings_path.exists() {
                 let content = std::fs::read_to_string(&settings_path)?;
                 serde_json::from_str::<serde_json::Value>(&content)?
@@ -4019,12 +4035,23 @@ async fn settings_command(command: Option<SettingsCommands>) -> Result<()> {
                 serde_json::to_value(runtimed::settings_doc::SyncedSettings::default())?
             };
             set_setting_value(&mut json_value, &key, &value)?;
+
+            // Round-trip validate: ensure the JSON still deserializes to
+            // a valid SyncedSettings. This catches type mismatches (e.g.,
+            // writing a bool into an enum field).
+            let json_str = serde_json::to_string_pretty(&json_value)?;
+            if serde_json::from_str::<runtimed::settings_doc::SyncedSettings>(&json_str).is_err() {
+                anyhow::bail!(
+                    "Invalid value '{value}' for setting '{key}'. \
+                     The value would produce an invalid settings file."
+                );
+            }
+
             // Ensure parent directory exists
             if let Some(parent) = settings_path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            let pretty = serde_json::to_string_pretty(&json_value)?;
-            std::fs::write(&settings_path, pretty)?;
+            std::fs::write(&settings_path, &json_str)?;
             println!("Updated {key} in {}", settings_path.display());
         }
     }
@@ -4054,6 +4081,17 @@ fn get_setting_value(
         serde_json::Value::String(s) => Ok(s.to_string()),
         other => Ok(serde_json::to_string_pretty(other)?),
     }
+}
+
+/// Validate that a settings key is one of the known keys.
+fn validate_settings_key(key: &str) -> Result<()> {
+    if !VALID_SETTINGS_KEYS.contains(&key) {
+        anyhow::bail!(
+            "Unknown setting '{key}'. Valid keys: {}",
+            VALID_SETTINGS_KEYS.join(", ")
+        );
+    }
+    Ok(())
 }
 
 /// Navigate a JSON value by a dotted key path (e.g., "uv.default_packages").
