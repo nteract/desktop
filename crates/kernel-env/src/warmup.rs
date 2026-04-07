@@ -21,8 +21,7 @@
 /// This is the full `__init__.py` from `python/prewarm/src/prewarm/`.
 /// It contains `build_warmup_script()` which generates a self-contained
 /// Python script string — no prewarm import needed at runtime.
-pub const PREWARM_SOURCE: &str =
-    include_str!("../../../python/prewarm/src/prewarm/__init__.py");
+pub const PREWARM_SOURCE: &str = include_str!("../../../python/prewarm/src/prewarm/__init__.py");
 
 /// Build a complete Python script that can be passed to `python -c`.
 ///

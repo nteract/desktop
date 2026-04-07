@@ -633,11 +633,7 @@ pub async fn warmup_environment(env: &CondaEnvironment) -> Result<()> {
     );
 
     let site_packages = find_site_packages(&env.env_path);
-    let warmup_script = crate::warmup::build_warmup_command(
-        &[],
-        true,
-        site_packages.as_deref(),
-    );
+    let warmup_script = crate::warmup::build_warmup_command(&[], true, site_packages.as_deref());
 
     let output = tokio::process::Command::new(&env.python_path)
         .args(["-c", &warmup_script])

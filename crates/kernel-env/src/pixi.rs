@@ -439,14 +439,13 @@ async fn install_pixi_env(
 /// Warm up a pixi environment by running Python to trigger .pyc compilation.
 pub async fn warmup_environment(env: &PixiEnvironment) -> Result<()> {
     let warmup_start = Instant::now();
-    info!("[prewarm] Warming up pixi environment at {:?}", env.venv_path);
+    info!(
+        "[prewarm] Warming up pixi environment at {:?}",
+        env.venv_path
+    );
 
     let site_packages = find_site_packages(&env.venv_path);
-    let warmup_script = crate::warmup::build_warmup_command(
-        &[],
-        true,
-        site_packages.as_deref(),
-    );
+    let warmup_script = crate::warmup::build_warmup_command(&[], true, site_packages.as_deref());
 
     let output = tokio::process::Command::new(&env.python_path)
         .args(["-c", &warmup_script])
@@ -455,7 +454,10 @@ pub async fn warmup_environment(env: &PixiEnvironment) -> Result<()> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        warn!("[prewarm] Warmup failed for {:?}: {}", env.venv_path, stderr);
+        warn!(
+            "[prewarm] Warmup failed for {:?}: {}",
+            env.venv_path, stderr
+        );
         return Ok(());
     }
 

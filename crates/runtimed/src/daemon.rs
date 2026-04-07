@@ -233,7 +233,6 @@ fn pixi_prewarmed_packages(extra: &[String]) -> Vec<String> {
     packages
 }
 
-
 impl Pool {
     fn new(target: usize, max_age_secs: u64) -> Self {
         Self {
@@ -2868,20 +2867,18 @@ impl Daemon {
     ) -> bool {
         let site_packages = {
             let lib_dir = env_path.join("lib");
-            std::fs::read_dir(&lib_dir)
-                .ok()
-                .and_then(|entries| {
-                    entries.flatten().find_map(|entry| {
-                        let path = entry.path();
-                        let name = path.file_name()?.to_str()?;
-                        if name.starts_with("python") {
-                            let sp = path.join("site-packages");
-                            sp.is_dir().then(|| sp.to_string_lossy().into_owned())
-                        } else {
-                            None
-                        }
-                    })
+            std::fs::read_dir(&lib_dir).ok().and_then(|entries| {
+                entries.flatten().find_map(|entry| {
+                    let path = entry.path();
+                    let name = path.file_name()?.to_str()?;
+                    if name.starts_with("python") {
+                        let sp = path.join("site-packages");
+                        sp.is_dir().then(|| sp.to_string_lossy().into_owned())
+                    } else {
+                        None
+                    }
                 })
+            })
         };
         let warmup_script = kernel_env::warmup::build_warmup_command(
             extra_packages,
@@ -3282,20 +3279,18 @@ impl Daemon {
         // Warm up the environment (30 second timeout)
         let site_packages = {
             let lib_dir = venv_path.join("lib");
-            std::fs::read_dir(&lib_dir)
-                .ok()
-                .and_then(|entries| {
-                    entries.flatten().find_map(|entry| {
-                        let path = entry.path();
-                        let name = path.file_name()?.to_str()?;
-                        if name.starts_with("python") {
-                            let sp = path.join("site-packages");
-                            sp.is_dir().then(|| sp.to_string_lossy().into_owned())
-                        } else {
-                            None
-                        }
-                    })
+            std::fs::read_dir(&lib_dir).ok().and_then(|entries| {
+                entries.flatten().find_map(|entry| {
+                    let path = entry.path();
+                    let name = path.file_name()?.to_str()?;
+                    if name.starts_with("python") {
+                        let sp = path.join("site-packages");
+                        sp.is_dir().then(|| sp.to_string_lossy().into_owned())
+                    } else {
+                        None
+                    }
                 })
+            })
         };
         let warmup_script = kernel_env::warmup::build_warmup_command(
             &user_default_packages,

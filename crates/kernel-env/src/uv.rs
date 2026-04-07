@@ -555,11 +555,7 @@ pub async fn warmup_environment(env: &UvEnvironment) -> Result<()> {
     info!("[prewarm] Warming up UV environment at {:?}", env.venv_path);
 
     let site_packages = find_site_packages(&env.venv_path);
-    let warmup_script = crate::warmup::build_warmup_command(
-        &[],
-        true,
-        site_packages.as_deref(),
-    );
+    let warmup_script = crate::warmup::build_warmup_command(&[], true, site_packages.as_deref());
 
     let output = tokio::process::Command::new(&env.python_path)
         .args(["-c", &warmup_script])
