@@ -5909,6 +5909,7 @@ dependencies = [
 name = "repr-llm"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "serde_json",
 ]
 
@@ -6254,6 +6255,7 @@ dependencies = [
  "notebook-protocol",
  "notebook-sync",
  "regex",
+ "repr-llm",
  "rmcp",
  "runt-workspace",
  "runtimed-client",

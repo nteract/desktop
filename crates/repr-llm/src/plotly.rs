@@ -30,94 +30,45 @@ fn extract_trace_array(value: &Value) -> Option<Vec<Value>> {
 }
 
 /// Decode Plotly 6 binary data (base64-encoded typed arrays).
+///
+/// Returns `None` for unknown dtypes or malformed payloads (length not
+/// an exact multiple of the dtype width).
 fn decode_bdata(dtype: &str, bdata: &str) -> Option<Vec<Value>> {
     use base64::Engine;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(bdata)
         .ok()?;
 
+    // Helper: decode fixed-width numeric chunks. Returns None if the byte
+    // length isn't an exact multiple of `width` (malformed payload).
+    macro_rules! decode_chunks {
+        ($width:expr, $convert:expr) => {{
+            if bytes.len() % $width != 0 {
+                return None;
+            }
+            let nums: Vec<Value> = bytes
+                .chunks_exact($width)
+                .filter_map(|chunk| {
+                    let arr = chunk.try_into().ok()?;
+                    Some($convert(arr))
+                })
+                .collect();
+            Some(nums)
+        }};
+    }
+
     match dtype {
-        "f8" => {
-            // float64
-            let nums: Vec<Value> = bytes
-                .chunks_exact(8)
-                .filter_map(|chunk| {
-                    let arr: [u8; 8] = chunk.try_into().ok()?;
-                    let f = f64::from_le_bytes(arr);
-                    Some(serde_json::json!(f))
-                })
-                .collect();
-            Some(nums)
-        }
+        "f8" => decode_chunks!(8, |a: [u8; 8]| serde_json::json!(f64::from_le_bytes(a))),
         "f4" => {
-            // float32
-            let nums: Vec<Value> = bytes
-                .chunks_exact(4)
-                .filter_map(|chunk| {
-                    let arr: [u8; 4] = chunk.try_into().ok()?;
-                    let f = f32::from_le_bytes(arr);
-                    Some(serde_json::json!(f as f64))
-                })
-                .collect();
-            Some(nums)
+            decode_chunks!(4, |a: [u8; 4]| serde_json::json!(f32::from_le_bytes(a) as f64))
         }
-        "i4" => {
-            // int32
-            let nums: Vec<Value> = bytes
-                .chunks_exact(4)
-                .filter_map(|chunk| {
-                    let arr: [u8; 4] = chunk.try_into().ok()?;
-                    let i = i32::from_le_bytes(arr);
-                    Some(serde_json::json!(i))
-                })
-                .collect();
-            Some(nums)
-        }
-        "i2" => {
-            // int16
-            let nums: Vec<Value> = bytes
-                .chunks_exact(2)
-                .filter_map(|chunk| {
-                    let arr: [u8; 2] = chunk.try_into().ok()?;
-                    let i = i16::from_le_bytes(arr);
-                    Some(serde_json::json!(i))
-                })
-                .collect();
-            Some(nums)
-        }
-        "i1" => {
-            // int8
-            Some(bytes.iter().map(|&b| serde_json::json!(b as i8)).collect())
-        }
-        "u1" => {
-            // uint8
-            Some(bytes.iter().map(|&b| serde_json::json!(b)).collect())
-        }
-        "u2" => {
-            // uint16
-            let nums: Vec<Value> = bytes
-                .chunks_exact(2)
-                .filter_map(|chunk| {
-                    let arr: [u8; 2] = chunk.try_into().ok()?;
-                    let u = u16::from_le_bytes(arr);
-                    Some(serde_json::json!(u))
-                })
-                .collect();
-            Some(nums)
-        }
-        "u4" => {
-            // uint32
-            let nums: Vec<Value> = bytes
-                .chunks_exact(4)
-                .filter_map(|chunk| {
-                    let arr: [u8; 4] = chunk.try_into().ok()?;
-                    let u = u32::from_le_bytes(arr);
-                    Some(serde_json::json!(u))
-                })
-                .collect();
-            Some(nums)
-        }
-        _ => None, // Unknown dtype — graceful fallback
+        "i4" => decode_chunks!(4, |a: [u8; 4]| serde_json::json!(i32::from_le_bytes(a))),
+        "i2" => decode_chunks!(2, |a: [u8; 2]| serde_json::json!(i16::from_le_bytes(a))),
+        "u2" => decode_chunks!(2, |a: [u8; 2]| serde_json::json!(u16::from_le_bytes(a))),
+        "u4" => decode_chunks!(4, |a: [u8; 4]| serde_json::json!(u32::from_le_bytes(a))),
+        "i1" => Some(bytes.iter().map(|&b| serde_json::json!(b as i8)).collect()),
+        "u1" => Some(bytes.iter().map(|&b| serde_json::json!(b)).collect()),
+        _ => None,
     }
 }
 
