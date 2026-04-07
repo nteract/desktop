@@ -1,26 +1,112 @@
+/* ── Theme variables ──────────────────────────────────────
+ *
+ * The MCP host sends theme info via the ext-apps SDK:
+ * - `applyDocumentTheme(theme)` sets `data-theme="dark"|"light"` on <html>
+ * - `applyHostStyleVariables(styles)` sets CSS vars like --color-background-primary
+ *
+ * We use [data-theme] selectors (driven by host) with prefers-color-scheme
+ * as a fallback for environments that don't send theme context.
+ * Host CSS variables (--color-*) are used where available, with our own
+ * fallback values.
+ */
+
 :root {
-  --bg: #fff;
-  --fg: #1a1a1a;
-  --fg-muted: #6b7280;
-  --border: #e5e7eb;
-  --code-bg: #f9fafb;
-  --error-bg: #fef2f2;
-  --error-fg: #991b1b;
-  --stream-bg: #f9fafb;
+  --bg: transparent;
+  --fg: var(--color-text-primary, #1a1a1a);
+  --fg-muted: var(--color-text-secondary, #6b7280);
+  --border: var(--color-border-primary, #e5e7eb);
+  --code-bg: var(--color-background-secondary, #f9fafb);
+  --error-bg: var(--color-background-danger, #fef2f2);
+  --error-fg: var(--color-text-danger, #991b1b);
+  --stream-bg: var(--color-background-secondary, #f9fafb);
+}
+
+/* Dark mode via host theme */
+[data-theme="dark"] {
+  --fg: var(--color-text-primary, #e5e5e5);
+  --fg-muted: var(--color-text-secondary, #9ca3af);
+  --border: var(--color-border-primary, #374151);
+  --code-bg: var(--color-background-secondary, #262626);
+  --error-bg: var(--color-background-danger, #2d1b1b);
+  --error-fg: var(--color-text-danger, #fca5a5);
+  --stream-bg: var(--color-background-secondary, #262626);
+}
+
+/* Fallback: prefers-color-scheme for hosts that don't send theme */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --fg: var(--color-text-primary, #e5e5e5);
+    --fg-muted: var(--color-text-secondary, #9ca3af);
+    --border: var(--color-border-primary, #374151);
+    --code-bg: var(--color-background-secondary, #262626);
+    --error-bg: var(--color-background-danger, #2d1b1b);
+    --error-fg: var(--color-text-danger, #fca5a5);
+    --stream-bg: var(--color-background-secondary, #262626);
+  }
+}
+
+/* ── ANSI colors ─────────────────────────────────────────── */
+
+:root {
+  --ansi-black: #000;
+  --ansi-red: #c91b00;
+  --ansi-green: #00c200;
+  --ansi-yellow: #c7c400;
+  --ansi-blue: #0225c7;
+  --ansi-magenta: #c930c7;
+  --ansi-cyan: #00c5c7;
+  --ansi-white: #c7c7c7;
+  --ansi-bright-black: #676767;
+  --ansi-bright-red: #ff6d67;
+  --ansi-bright-green: #5ff967;
+  --ansi-bright-yellow: #fefb67;
+  --ansi-bright-blue: #6871ff;
+  --ansi-bright-magenta: #ff76ff;
+  --ansi-bright-cyan: #5ffdff;
+  --ansi-bright-white: #fff;
+}
+
+[data-theme="dark"] {
+  --ansi-black: #1e1e1e;
+  --ansi-red: #ff6b6b;
+  --ansi-green: #69db7c;
+  --ansi-yellow: #ffd43b;
+  --ansi-blue: #74c0fc;
+  --ansi-magenta: #da77f2;
+  --ansi-cyan: #66d9e8;
+  --ansi-white: #e5e5e5;
+  --ansi-bright-black: #676767;
+  --ansi-bright-red: #ff8787;
+  --ansi-bright-green: #8ce99a;
+  --ansi-bright-yellow: #ffe066;
+  --ansi-bright-blue: #91a7ff;
+  --ansi-bright-magenta: #e599f7;
+  --ansi-bright-cyan: #99e9f2;
+  --ansi-bright-white: #fff;
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #1e1e1e;
-    --fg: #e5e5e5;
-    --fg-muted: #9ca3af;
-    --border: #374151;
-    --code-bg: #262626;
-    --error-bg: #2d1b1b;
-    --error-fg: #fca5a5;
-    --stream-bg: #262626;
+  :root:not([data-theme="light"]) {
+    --ansi-black: #1e1e1e;
+    --ansi-red: #ff6b6b;
+    --ansi-green: #69db7c;
+    --ansi-yellow: #ffd43b;
+    --ansi-blue: #74c0fc;
+    --ansi-magenta: #da77f2;
+    --ansi-cyan: #66d9e8;
+    --ansi-white: #e5e5e5;
+    --ansi-bright-black: #676767;
+    --ansi-bright-red: #ff8787;
+    --ansi-bright-green: #8ce99a;
+    --ansi-bright-yellow: #ffe066;
+    --ansi-bright-blue: #91a7ff;
+    --ansi-bright-magenta: #e599f7;
+    --ansi-bright-cyan: #99e9f2;
+    --ansi-bright-white: #fff;
   }
 }
+
+/* ── Base layout ─────────────────────────────────────────── */
 
 * {
   box-sizing: border-box;
@@ -29,11 +115,11 @@
 }
 
 body {
-  font-family: system-ui, -apple-system, sans-serif;
+  font-family: var(--font-sans, system-ui, -apple-system, sans-serif);
   padding: 0;
   margin: 0;
   color: var(--fg);
-  background: var(--bg);
+  background: transparent;
 }
 
 #root {
@@ -44,6 +130,8 @@ body {
   padding: 12px;
 }
 
+/* ── Cell layout ─────────────────────────────────────────── */
+
 .cell {
   margin-bottom: 16px;
 }
@@ -51,6 +139,8 @@ body {
 .cell:last-child {
   margin-bottom: 0;
 }
+
+/* ── Source toggle ───────────────────────────────────────── */
 
 .source-details {
   margin-bottom: 4px;
@@ -90,19 +180,7 @@ body {
   background: var(--code-bg);
 }
 
-.source {
-  font-family: ui-monospace, SFMono-Regular, monospace;
-  font-size: 13px;
-  background: var(--code-bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 10px 12px;
-  white-space: pre-wrap;
-  word-break: break-word;
-  overflow-x: auto;
-  line-height: 1.5;
-  margin-top: 4px;
-}
+/* ── Outputs ─────────────────────────────────────────────── */
 
 .outputs {
   margin-top: 8px;
@@ -116,8 +194,10 @@ body {
   margin-bottom: 0;
 }
 
+/* ── Stream output ───────────────────────────────────────── */
+
 .stream {
-  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
   font-size: 13px;
   background: var(--stream-bg);
   border-radius: 4px;
@@ -131,8 +211,10 @@ body {
   color: var(--error-fg);
 }
 
+/* ── Error output ────────────────────────────────────────── */
+
 .error-output {
-  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
   font-size: 13px;
   background: var(--error-bg);
   color: var(--error-fg);
@@ -143,10 +225,14 @@ body {
   line-height: 1.4;
 }
 
+/* ── Image output ────────────────────────────────────────── */
+
 .image-output {
   max-width: 100%;
   border-radius: 4px;
 }
+
+/* ── HTML iframe output ──────────────────────────────────── */
 
 .html-output {
   width: 100%;
@@ -154,79 +240,15 @@ body {
   overflow: hidden;
 }
 
-
-.display-text {
-  font-family: ui-monospace, SFMono-Regular, monospace;
-  font-size: 13px;
-  padding: 6px 10px;
-  white-space: pre-wrap;
-  color: var(--fg-muted);
-}
-
-.status-indicator {
-  text-align: center;
-  padding: 8px;
-  font-size: 13px;
-  color: var(--fg-muted);
-}
-
-.status-error {
-  color: var(--error-fg);
-}
-
-.status-running {
-  color: var(--fg-muted);
-}
-
 /* ── ANSI output ─────────────────────────────────────────── */
 
 .ansi-output {
-  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
   font-size: 13px;
   white-space: pre-wrap;
   word-break: break-word;
   line-height: 1.4;
   margin: 0;
-}
-
-:root {
-  --ansi-black: #000;
-  --ansi-red: #c91b00;
-  --ansi-green: #00c200;
-  --ansi-yellow: #c7c400;
-  --ansi-blue: #0225c7;
-  --ansi-magenta: #c930c7;
-  --ansi-cyan: #00c5c7;
-  --ansi-white: #c7c7c7;
-  --ansi-bright-black: #676767;
-  --ansi-bright-red: #ff6d67;
-  --ansi-bright-green: #5ff967;
-  --ansi-bright-yellow: #fefb67;
-  --ansi-bright-blue: #6871ff;
-  --ansi-bright-magenta: #ff76ff;
-  --ansi-bright-cyan: #5ffdff;
-  --ansi-bright-white: #fff;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --ansi-black: #1e1e1e;
-    --ansi-red: #ff6b6b;
-    --ansi-green: #69db7c;
-    --ansi-yellow: #ffd43b;
-    --ansi-blue: #74c0fc;
-    --ansi-magenta: #da77f2;
-    --ansi-cyan: #66d9e8;
-    --ansi-white: #e5e5e5;
-    --ansi-bright-black: #676767;
-    --ansi-bright-red: #ff8787;
-    --ansi-bright-green: #8ce99a;
-    --ansi-bright-yellow: #ffe066;
-    --ansi-bright-blue: #91a7ff;
-    --ansi-bright-magenta: #e599f7;
-    --ansi-bright-cyan: #99e9f2;
-    --ansi-bright-white: #fff;
-  }
 }
 
 /* ── Markdown output ─────────────────────────────────────── */
@@ -275,8 +297,10 @@ body {
   font-weight: 600;
 }
 
+/* ── Code blocks ─────────────────────────────────────────── */
+
 .code-block {
-  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
   font-size: 13px;
   background: var(--code-bg);
   border: 1px solid var(--border);
@@ -288,7 +312,7 @@ body {
 }
 
 .inline-code {
-  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
   font-size: 0.9em;
   background: var(--code-bg);
   padding: 2px 5px;
@@ -298,7 +322,7 @@ body {
 /* ── JSON output ─────────────────────────────────────────── */
 
 .json-output {
-  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
   font-size: 13px;
   padding: 6px 10px;
   white-space: pre-wrap;

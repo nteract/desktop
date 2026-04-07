@@ -3,15 +3,26 @@ import { SyntaxHighlighter, oneDark, oneLight } from "../lib/syntax-highlighter"
 interface CodeBlockProps {
   code: string;
   language?: string;
-  isDark?: boolean;
+}
+
+/**
+ * Detect dark mode from data-theme attribute (set by host via ext-apps SDK)
+ * with prefers-color-scheme fallback.
+ */
+function isDarkMode(): boolean {
+  if (typeof document === "undefined") return false;
+  const theme = document.documentElement.getAttribute("data-theme");
+  if (theme === "dark") return true;
+  if (theme === "light") return false;
+  return window.matchMedia("(prefers-color-scheme: dark)").matches;
 }
 
 /**
  * Syntax-highlighted code block using PrismLight.
- * Falls back to plain text for unregistered languages.
+ * Respects the host theme via data-theme attribute.
  */
-export function CodeBlock({ code, language = "", isDark }: CodeBlockProps) {
-  const dark = isDark ?? (typeof window !== "undefined" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+export function CodeBlock({ code, language = "" }: CodeBlockProps) {
+  const dark = isDarkMode();
 
   return (
     <SyntaxHighlighter
@@ -23,9 +34,7 @@ export function CodeBlock({ code, language = "", isDark }: CodeBlockProps) {
         padding: "10px 12px",
         fontSize: "13px",
         overflow: "auto",
-        background: dark ? "#282c34" : "#fafafa",
         borderRadius: "6px",
-        border: `1px solid ${dark ? "#374151" : "#e5e7eb"}`,
         lineHeight: "1.5",
       }}
     >

@@ -3,6 +3,8 @@ import { useEffect, useRef, useState } from "react";
 import {
   App,
   applyDocumentTheme,
+  applyHostStyleVariables,
+  applyHostFonts,
   type McpUiHostContext,
 } from "@modelcontextprotocol/ext-apps";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
@@ -41,11 +43,19 @@ function McpApp() {
 
     app.onhostcontextchanged = (ctx: McpUiHostContext) => {
       if (ctx.theme) applyDocumentTheme(ctx.theme);
+      if (ctx.styles?.variables) applyHostStyleVariables(ctx.styles.variables);
+      if (ctx.styles?.css?.fonts) applyHostFonts(ctx.styles.css.fonts);
     };
 
     app.onerror = console.error;
 
-    app.connect();
+    // Apply initial theme after connecting
+    app.connect().then(() => {
+      const ctx = app.getHostContext();
+      if (ctx?.theme) applyDocumentTheme(ctx.theme);
+      if (ctx?.styles?.variables) applyHostStyleVariables(ctx.styles.variables);
+      if (ctx?.styles?.css?.fonts) applyHostFonts(ctx.styles.css.fonts);
+    });
 
     return () => {
       setContent(null);
