@@ -16,7 +16,7 @@ When changing the wire handshake or typed frame semantics, also inspect:
 
 ## MIME classification contract
 
-Single canonical Rust implementation in `crates/notebook-doc/src/mime.rs` (`is_binary_mime()`, `mime_kind()`, `MimeKind` enum). All Rust crates use this module. The old per-crate copies in `runtimed/src/output_store.rs`, `runtimed-client/src/output_resolver.rs`, and the TypeScript `isBinaryMime()` in `manifest-resolution.ts` have been deleted — WASM owns MIME classification end-to-end.
+Single canonical Rust implementation in `crates/notebook-doc/src/mime.rs` (`is_binary_mime()`, `mime_kind()`, `MimeKind` enum). All Rust crates use this module. The old per-crate copies have been deleted. WASM owns MIME classification end-to-end. A `looksLikeBinaryMime()` safety net remains in `manifest-resolution.ts` for blob refs that WASM couldn't resolve — it is not an authoritative copy.
 
 Important rule: `image/svg+xml` is text, not binary.
 
