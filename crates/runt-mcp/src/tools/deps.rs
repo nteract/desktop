@@ -210,7 +210,7 @@ pub async fn add_dependency(
             Some(s) => (s.handle.clone(), s.notebook_id.clone()),
             None => {
                 return tool_error(
-                    "No active notebook session. Call join_notebook or open_notebook first.",
+                    "No active notebook session. Call open_notebook or create_notebook first.",
                 )
             }
         }

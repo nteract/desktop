@@ -18,7 +18,7 @@ macro_rules! require_handle {
             Some(s) => s.handle.clone(),
             None => {
                 return $crate::tools::tool_error(
-                    "No active notebook session. Call join_notebook or open_notebook first.",
+                    "No active notebook session. Call open_notebook or create_notebook first.",
                 )
             }
         }

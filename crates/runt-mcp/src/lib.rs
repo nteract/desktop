@@ -38,7 +38,7 @@ pub struct NteractMcp {
     /// Used as the peer label in notebook sessions so the notebook app shows
     /// "Claude Desktop" or "Claude Code" instead of the default "Inkwell".
     peer_label: Arc<RwLock<String>>,
-    /// When true, the `show_notebook` tool is not registered (headless environments).
+    /// When true, the `launch_app` tool is not registered (headless environments).
     no_show: bool,
     /// Current daemon connection state, updated by the health monitor.
     daemon_state: Arc<RwLock<DaemonState>>,
@@ -63,7 +63,7 @@ impl NteractMcp {
         }
     }
 
-    /// Create a new MCP server with `show_notebook` disabled.
+    /// Create a new MCP server with `launch_app` disabled.
     pub fn new_no_show(
         socket_path: PathBuf,
         blob_base_url: Option<String>,
@@ -123,7 +123,7 @@ impl ServerHandler for NteractMcp {
             "nteract MCP server for Jupyter notebooks. \
              Each connection has one active notebook session. \
              Use list_active_notebooks to discover open notebooks, \
-             then join_notebook, open_notebook, or create_notebook to set your active session. \
+             then open_notebook or create_notebook to set your active session. \
              Calling these again switches your active session.",
         )
     }
@@ -135,7 +135,7 @@ impl ServerHandler for NteractMcp {
     ) -> Result<ListToolsResult, McpError> {
         let mut tools = tools::all_tools();
         if self.no_show {
-            tools.retain(|t| t.name.as_ref() != "show_notebook");
+            tools.retain(|t| t.name.as_ref() != "launch_app");
         }
         Ok(ListToolsResult {
             tools,

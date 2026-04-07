@@ -175,15 +175,7 @@ pub struct OpenNotebookParams {
     /// A file path (e.g. "~/analysis.ipynb") or a notebook ID from
     /// list_active_notebooks. Paths are opened from disk; IDs connect
     /// to a running session.
-    pub notebook: Option<String>,
-
-    /// Backward compat: alias for `notebook` when called as open_notebook(path=...).
-    #[serde(default)]
-    pub path: Option<String>,
-
-    /// Backward compat: alias for `notebook` when called as join_notebook(notebook_id=...).
-    #[serde(default)]
-    pub notebook_id: Option<String>,
+    pub notebook: String,
 }
 
 #[allow(dead_code)]
@@ -534,7 +526,7 @@ pub async fn save_notebook(
             Some(s) => (s.handle.clone(), s.notebook_id.clone()),
             None => {
                 return tool_error(
-                    "No active notebook session. Call join_notebook or open_notebook first.",
+                    "No active notebook session. Call open_notebook or create_notebook first.",
                 )
             }
         }

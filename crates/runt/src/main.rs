@@ -230,7 +230,7 @@ enum Commands {
     // =========================================================================
     /// Run as an MCP server (stdin/stdout JSON-RPC)
     Mcp {
-        /// Do not register the show_notebook tool (for headless environments)
+        /// Do not register the launch_app tool (for headless environments)
         #[arg(long)]
         no_show: bool,
         /// Explicit daemon socket path (bypasses RUNTIMED_DEV socket resolution)
