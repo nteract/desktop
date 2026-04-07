@@ -15,6 +15,7 @@ export const KERNEL_STATUS_LABELS: Record<KernelStatus, string> = {
   [KERNEL_STATUS.BUSY]: "busy",
   [KERNEL_STATUS.ERROR]: "error",
   [KERNEL_STATUS.SHUTDOWN]: "shutdown",
+  [KERNEL_STATUS.AWAITING_TRUST]: "awaiting approval",
 };
 
 const STARTING_PHASE_LABELS: Record<string, string> = {

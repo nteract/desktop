@@ -38,8 +38,8 @@ describe("getKernelStatusLabel", () => {
 });
 
 describe("KERNEL_STATUS", () => {
-  it("contains exactly six statuses", () => {
-    expect(Object.keys(KERNEL_STATUS)).toHaveLength(6);
+  it("contains exactly seven statuses", () => {
+    expect(Object.keys(KERNEL_STATUS)).toHaveLength(7);
   });
 
   it("has expected values", () => {
@@ -49,6 +49,7 @@ describe("KERNEL_STATUS", () => {
     expect(KERNEL_STATUS.BUSY).toBe("busy");
     expect(KERNEL_STATUS.ERROR).toBe("error");
     expect(KERNEL_STATUS.SHUTDOWN).toBe("shutdown");
+    expect(KERNEL_STATUS.AWAITING_TRUST).toBe("awaiting_trust");
   });
 });
 

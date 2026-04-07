@@ -26,6 +26,7 @@ export const KERNEL_STATUS = {
   BUSY: "busy",
   ERROR: "error",
   SHUTDOWN: "shutdown",
+  AWAITING_TRUST: "awaiting_trust",
 } as const;
 
 export type KernelStatus = (typeof KERNEL_STATUS)[keyof typeof KERNEL_STATUS];
@@ -92,7 +93,8 @@ export function deriveEnvSyncState(
   if (
     (state.kernel.status === "not_started" && !state.kernel.env_source) ||
     state.kernel.status === "shutdown" ||
-    state.kernel.status === "error"
+    state.kernel.status === "error" ||
+    state.kernel.status === "awaiting_trust"
   ) {
     return null;
   }

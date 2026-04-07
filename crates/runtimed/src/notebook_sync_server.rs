@@ -1921,6 +1921,25 @@ where
                 )
                 .await;
             });
+        } else if !has_kernel
+            && matches!(
+                trust_status,
+                runt_trust::TrustStatus::Untrusted | runt_trust::TrustStatus::SignatureInvalid
+            )
+        {
+            // Kernel blocked on trust approval — write this to RuntimeStateDoc
+            // so the frontend shows "Awaiting Trust Approval" instead of "Initializing"
+            info!(
+                "[notebook-sync] Kernel blocked on trust approval for {} (trust: {:?})",
+                notebook_id, trust_status
+            );
+            let mut sd = room.state_doc.write().await;
+            let mut changed = false;
+            changed |= sd.set_kernel_status("awaiting_trust");
+            changed |= sd.set_starting_phase("");
+            if changed {
+                let _ = room.state_changed_tx.send(());
+            }
         } else {
             info!(
                 "[notebook-sync] Auto-launch skipped for {} (trust: {:?}, has_kernel: {}, path_exists: {}, is_new: {}, created_at_path: {})",
