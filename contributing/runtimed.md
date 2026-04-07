@@ -233,7 +233,8 @@ crates/runtimed/
 │   ├── runtime_agent_handle.rs  # Coordinator-side runtime agent process management (spawn + monitor)
 │   ├── kernel_manager.rs        # RoomKernel: kernel lifecycle, execution queue, IOPub output routing
 │   ├── kernel_pids.rs           # Kernel PID tracking and orphan reaping
-│   ├── comm_state.rs            # Widget comm state + Output widget capture routing
+│   ├── singleton.rs             # Daemon locking/singleton management
+│   ├── sync_server.rs           # Settings Automerge sync handler
 │   ├── output_store.rs          # Output manifest creation, blob inlining threshold
 │   ├── blob_store.rs            # Content-addressed blob store with metadata sidecars
 │   ├── blob_server.rs           # HTTP read server for blobs (hyper 1.x)
@@ -245,7 +246,11 @@ crates/runtimed/
 ├── tests/
 │   └── integration.rs           # Integration tests (daemon, pool, settings sync, notebook sync)
 crates/runtimed-client/
+├── src/lib.rs                   # Crate root
 ├── src/client.rs                # Pool/notebook client APIs
+├── src/daemon_paths.rs          # Shared socket/blob path resolution
+├── src/output_resolver.rs       # Shared Rust manifest resolution
+├── src/resolved_output.rs       # Output resolution types
 ├── src/protocol.rs              # Client-side protocol helpers and typed request wrappers
 ├── src/settings_doc.rs          # Settings Automerge document, schema, migration
 ├── src/singleton.rs             # File-based daemon discovery/locking helpers

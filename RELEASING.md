@@ -33,7 +33,7 @@ macOS builds are signed and notarized. Windows builds are not code signed.
 
 ### Crate publishing
 
-`runt-cli`, `runtimed-py`, and `xtask` are **not published to crates.io** (`publish = false`).
+`runt-cli`, `runtimed-py`, `mcp-supervisor`, `runt-mcp`, and `xtask` are **not published to crates.io** (`publish = false`).
 
 ## Python Packages (runtimed, nteract)
 

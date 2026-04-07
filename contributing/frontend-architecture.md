@@ -29,6 +29,7 @@ This guide explains the frontend code organization and how shared components rel
 │   │   ├── wasm/                 ← WASM bindings (runtimed-wasm)
 │   │   ├── App.tsx               ← Root component
 │   │   └── types.ts              ← App types
+│   ├── notebook/feedback/        ← Feedback sub-app
 │   ├── notebook/onboarding/      ← Onboarding sub-app (separate HTML entry point)
 │   ├── notebook/settings/        ← Settings sub-app
 │   └── notebook/upgrade/         ← Upgrade sub-app
@@ -132,6 +133,9 @@ Security boundary for untrusted HTML/widget outputs. See [iframe-isolation.md](i
 | `useHistorySearch` | Kernel input history search |
 | `useTrust` | Notebook trust verification state |
 | `useUpdater` | App update checking and installation |
+| `usePixiDependencies` | Pixi/conda dependency management |
+| `usePoolState` | Daemon pool state |
+| `useCrdtBridge` | CodeMirror ↔ CRDT character-level sync |
 
 ## Data Flow
 

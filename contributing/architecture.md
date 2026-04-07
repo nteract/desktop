@@ -269,7 +269,7 @@ The frontend now owns a local Automerge doc via `runtimed-wasm` WASM bindings, m
 - `crates/runtimed/src/runtime_agent.rs` — Runtime agent subprocess: Unix socket peer, CRDT queue watching, kernel ownership
 - `crates/runtimed/src/runtime_agent_handle.rs` — Coordinator-side runtime agent process management (spawn + monitor)
 - `crates/runtimed/src/kernel_manager.rs` — `RoomKernel`: kernel process lifecycle, execution queue, IOPub output routing
-- `crates/runtimed/src/comm_state.rs` — Widget comm state + Output widget capture routing
+- `crates/runtimed/src/runtime_agent.rs` — Runtime agent subprocess: Unix socket peer, CRDT queue watching, comm state diffing, kernel ownership
 - `crates/runtimed/src/output_store.rs` — Output manifest creation/resolution, `ContentRef`
 - `crates/notebook-doc/src/mime.rs` — Canonical MIME classification (`is_binary_mime`, `mime_kind`, `MimeKind`)
 - `crates/notebook-sync/src/relay.rs` — `RelayHandle`: relay API for forwarding typed frames between WASM and daemon

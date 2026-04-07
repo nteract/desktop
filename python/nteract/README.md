@@ -86,6 +86,10 @@ You can open the same notebook in the [nteract desktop app](https://nteract.io) 
 | `move_cell` | Reorder a cell within the notebook |
 | `clear_outputs` | Clear a cell's outputs |
 | `delete_cell` | Remove a cell from the notebook |
+| `set_cells_source_hidden` | Show/hide cell source |
+| `set_cells_outputs_hidden` | Show/hide cell outputs |
+| `add_cell_tags` | Add tags to cells |
+| `remove_cell_tags` | Remove tags from cells |
 | `interrupt_kernel` | Interrupt the currently executing cell |
 | `restart_kernel` | Restart kernel with updated dependencies |
 | `show_notebook` | Open the notebook in the nteract desktop app (disabled with `--no-show`) |

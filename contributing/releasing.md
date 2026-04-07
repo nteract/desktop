@@ -36,6 +36,7 @@ All six version sources must stay in sync. When preparing a release:
 ```bash
 # Update all of these to the same version:
 #   crates/runtimed/Cargo.toml
+#   crates/runtimed-client/Cargo.toml
 #   crates/runt/Cargo.toml
 #   crates/notebook/Cargo.toml
 #   crates/notebook/tauri.conf.json

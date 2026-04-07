@@ -346,7 +346,7 @@ Widget state now lives in `doc.comms/` in RuntimeStateDoc. The daemon writes com
 |------|------|
 | `crates/notebook-protocol/src/connection.rs` | Frame protocol: length-prefixed typed frames, handshake, preamble |
 | `crates/notebook-protocol/src/protocol.rs` | Canonical wire types: `NotebookRequest`, `NotebookResponse`, `NotebookBroadcast` |
-| `crates/runtimed/src/protocol.rs` | Daemon-internal types (`Request`, `Response`, `BlobRequest`), re-exports from `notebook-protocol` |
+| `crates/runtimed-client/src/protocol.rs` | Daemon-internal types (`Request`, `Response`, `BlobRequest`), re-exports from `notebook-protocol` |
 | `crates/notebook-sync/src/relay.rs` | Relay handle for notebook sync connections |
 | `crates/notebook-sync/src/connect.rs` | Connection setup (`connect_open_relay`, `connect_create_relay`) |
 | `crates/notebook-sync/src/handle.rs` | `DocHandle` — sync infrastructure, per-cell accessors for Python clients |

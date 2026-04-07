@@ -73,7 +73,7 @@ describe("AnsiOutput", () => {
 Rust tests are inline modules using `#[cfg(test)]`:
 
 ```rust
-// crates/runtimed/src/runtime.rs
+// crates/runtimed-client/src/runtime.rs
 #[cfg(test)]
 mod tests {
     use super::*;

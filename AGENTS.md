@@ -338,10 +338,11 @@ All build, lint, and dev commands go through `cargo xtask`. **Run `cargo xtask h
 | | `cargo xtask run-mcp --print-config` | Print MCP client config JSON |
 | | `cargo xtask dev-mcp` | Direct nteract MCP (no supervisor) |
 | | `cargo xtask dev-mcp --print-config` | Print direct MCP client config JSON |
+| | `cargo xtask mcp-inspector` | Launch MCP Inspector UI for testing runt mcp |
 | Lint | `cargo xtask lint` | Check formatting (Rust, JS/TS, Python) |
 | | `cargo xtask lint --fix` | Auto-fix formatting |
 | Test | `cargo xtask integration [filter]` | Python integration tests with isolated daemon |
-| | `cargo xtask e2e` | E2E testing (WebdriverIO) |
+| | `cargo xtask e2e [build|test|test-fixture|test-all]` | E2E testing (WebdriverIO) |
 | Other | `cargo xtask wasm` | Rebuild runtimed-wasm |
 | | `cargo xtask icons [source.png]` | Generate icon variants |
 | | `cargo xtask mcpb` | Package nteract as a Claude Desktop extension (`.mcpb`) |
