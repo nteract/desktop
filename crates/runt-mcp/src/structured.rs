@@ -121,7 +121,19 @@ fn manifest_output_to_structured(manifest: &Value, blob_base_url: &Option<String
                     if mime == "text/html" && has_renderable_image {
                         continue;
                     }
-                    if is_viz_mime(mime) {
+                    if is_viz_mime(mime) || mime == "application/geo+json" {
+                        // Viz specs: include blob URL (for renderer) but skip
+                        // inline data (too large). Inline specs get synthesized
+                        // into text/llm+plain below.
+                        let meta = output_resolver::content_ref_meta(content_ref);
+                        if let Some(hash) = meta.blob_hash {
+                            if let Some(base) = blob_base_url.as_ref() {
+                                data.insert(
+                                    mime.clone(),
+                                    Value::String(format!("{}/blob/{}", base, hash)),
+                                );
+                            }
+                        }
                         continue;
                     }
 
