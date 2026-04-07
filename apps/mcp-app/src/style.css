@@ -58,14 +58,36 @@ body {
 
 .source-summary {
   cursor: pointer;
-  font-size: 12px;
+  font-size: 11px;
   color: var(--fg-muted);
-  padding: 2px 0;
+  padding: 2px 6px;
   user-select: none;
+  list-style: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 4px;
+  opacity: 0.6;
+  transition: opacity 0.15s, background 0.15s;
+}
+
+.source-summary::-webkit-details-marker {
+  display: none;
+}
+
+.source-summary::before {
+  content: "▶";
+  font-size: 8px;
+  transition: transform 0.15s;
+}
+
+.source-details[open] > .source-summary::before {
+  transform: rotate(90deg);
 }
 
 .source-summary:hover {
-  color: var(--fg);
+  opacity: 1;
+  background: var(--code-bg);
 }
 
 .source {
