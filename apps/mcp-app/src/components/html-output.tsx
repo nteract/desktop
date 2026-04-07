@@ -18,7 +18,7 @@ export function HtmlOutput({ html }: HtmlOutputProps) {
     };
     frame.addEventListener("load", handleLoad);
     return () => frame.removeEventListener("load", handleLoad);
-  }, [html]);
+  }, []);
 
   const styles = typeof document !== "undefined" ? getComputedStyle(document.documentElement) : null;
   const bg = styles?.getPropertyValue("--bg").trim() || "#1e1e1e";
