@@ -2147,8 +2147,20 @@ pub(crate) fn insert_json_at_index(
 /// multi-peer scenarios), this function looks up existing objects and updates
 /// them in-place. Only creates new objects if none exist at the key.
 ///
-/// Safe to call from any peer at any time — no `put_object` conflicts when the
-/// target object already exists.
+/// # Safety contract
+///
+/// **Conflict-free when target objects already exist** — the common case for
+/// shared keys like `metadata.runt`, `metadata.kernelspec`, and comm state.
+/// The daemon creates all document structure; clients update existing objects.
+///
+/// **First-write on absent keys still uses `put_object`** and can conflict if
+/// two peers independently create the same absent key. This is acceptable
+/// because our architecture guarantees the daemon is the sole structure creator
+/// — clients never independently create shared Map/List keys.
+///
+/// **List element type changes use delete+insert** which can produce duplicates
+/// under concurrent modification. In practice, concurrent type changes at the
+/// same list position don't occur in our document schema.
 ///
 /// See <https://github.com/nteract/desktop/issues/1594>.
 pub(crate) fn update_json_at_key(
