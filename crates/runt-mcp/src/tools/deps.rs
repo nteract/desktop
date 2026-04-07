@@ -91,26 +91,32 @@ pub(crate) fn ensure_package_manager_metadata(
     manager: &str,
 ) -> bool {
     let current = handle.get_notebook_metadata();
+
+    // Check if the metadata already has the right exclusive section.
+    // needs_fix is true when: (a) the requested section is missing, OR
+    // (b) competing sections exist (e.g. pixi requested but uv section present).
     let needs_fix = match manager {
-        "pixi" => current.as_ref().is_none_or(|m| m.runt.pixi.is_none()),
-        "conda" => current.as_ref().is_none_or(|m| m.runt.conda.is_none()),
-        // uv: fix if metadata has pixi/conda but not uv (daemon default was
-        // pixi/conda but user explicitly requested uv)
-        _ => current.as_ref().is_some_and(|m| {
-            m.runt.uv.is_none() && (m.runt.pixi.is_some() || m.runt.conda.is_some())
+        "pixi" => current
+            .as_ref()
+            .is_none_or(|m| m.runt.pixi.is_none() || m.runt.uv.is_some() || m.runt.conda.is_some()),
+        "conda" => current
+            .as_ref()
+            .is_none_or(|m| m.runt.conda.is_none() || m.runt.uv.is_some() || m.runt.pixi.is_some()),
+        "uv" => current.as_ref().is_some_and(|m| {
+            m.runt.uv.is_none() || m.runt.pixi.is_some() || m.runt.conda.is_some()
         }),
+        _ => return false, // Unknown manager — no-op
     };
 
     if !needs_fix {
         return false;
     }
 
-    // Update the metadata snapshot to have the right package manager
+    // Update the metadata snapshot to have exactly one package manager section.
+    // Clear competing sections so detect_package_manager picks the right one.
     let mut snapshot = current.unwrap_or_default();
     match manager {
         "pixi" => {
-            // Create pixi section, clear uv/conda so detect_package_manager
-            // picks pixi
             if snapshot.runt.pixi.is_none() {
                 snapshot.runt.pixi = Some(notebook_doc::metadata::PixiInlineMetadata {
                     dependencies: Vec::new(),
@@ -134,9 +140,7 @@ pub(crate) fn ensure_package_manager_metadata(
             snapshot.runt.pixi = None;
         }
         _ => {
-            // uv: clear pixi/conda, ensure uv section exists
-            snapshot.runt.pixi = None;
-            snapshot.runt.conda = None;
+            // uv
             if snapshot.runt.uv.is_none() {
                 snapshot.runt.uv = Some(notebook_doc::metadata::UvInlineMetadata {
                     dependencies: Vec::new(),

@@ -405,6 +405,14 @@ pub async fn create_notebook(
 
             let pkg_manager = arg_str(request, "package_manager").unwrap_or("uv");
 
+            // Validate package_manager
+            if !matches!(pkg_manager, "uv" | "conda" | "pixi") {
+                return tool_error(&format!(
+                    "Invalid package_manager '{}'. Must be 'uv', 'conda', or 'pixi'.",
+                    pkg_manager
+                ));
+            }
+
             // Ensure the daemon's doc structure is fully received before
             // any metadata writes.
             let mut metadata_changed = false;
