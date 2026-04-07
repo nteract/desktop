@@ -2887,7 +2887,7 @@ impl Daemon {
         );
 
         let warmup_result = tokio::time::timeout(
-            std::time::Duration::from_secs(30),
+            std::time::Duration::from_secs(120),
             tokio::process::Command::new(python_path)
                 .args(["-c", &warmup_script])
                 .stdout(Stdio::piped())
@@ -3299,7 +3299,7 @@ impl Daemon {
         );
 
         let warmup_result = tokio::time::timeout(
-            std::time::Duration::from_secs(30),
+            std::time::Duration::from_secs(120),
             tokio::process::Command::new(&python_path)
                 .args(["-c", &warmup_script])
                 .output(),
