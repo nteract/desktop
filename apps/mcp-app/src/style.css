@@ -150,3 +150,138 @@ body {
 .status-running {
   color: var(--fg-muted);
 }
+
+/* ── ANSI output ─────────────────────────────────────────── */
+
+.ansi-output {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.4;
+  margin: 0;
+}
+
+:root {
+  --ansi-black: #000;
+  --ansi-red: #c91b00;
+  --ansi-green: #00c200;
+  --ansi-yellow: #c7c400;
+  --ansi-blue: #0225c7;
+  --ansi-magenta: #c930c7;
+  --ansi-cyan: #00c5c7;
+  --ansi-white: #c7c7c7;
+  --ansi-bright-black: #676767;
+  --ansi-bright-red: #ff6d67;
+  --ansi-bright-green: #5ff967;
+  --ansi-bright-yellow: #fefb67;
+  --ansi-bright-blue: #6871ff;
+  --ansi-bright-magenta: #ff76ff;
+  --ansi-bright-cyan: #5ffdff;
+  --ansi-bright-white: #fff;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ansi-black: #1e1e1e;
+    --ansi-red: #ff6b6b;
+    --ansi-green: #69db7c;
+    --ansi-yellow: #ffd43b;
+    --ansi-blue: #74c0fc;
+    --ansi-magenta: #da77f2;
+    --ansi-cyan: #66d9e8;
+    --ansi-white: #e5e5e5;
+    --ansi-bright-black: #676767;
+    --ansi-bright-red: #ff8787;
+    --ansi-bright-green: #8ce99a;
+    --ansi-bright-yellow: #ffe066;
+    --ansi-bright-blue: #91a7ff;
+    --ansi-bright-magenta: #e599f7;
+    --ansi-bright-cyan: #99e9f2;
+    --ansi-bright-white: #fff;
+  }
+}
+
+/* ── Markdown output ─────────────────────────────────────── */
+
+.markdown-output {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--fg);
+}
+
+.markdown-output h1 { font-size: 1.5em; font-weight: 700; margin: 0.8em 0 0.4em; }
+.markdown-output h2 { font-size: 1.3em; font-weight: 700; margin: 0.7em 0 0.3em; }
+.markdown-output h3 { font-size: 1.1em; font-weight: 600; margin: 0.6em 0 0.3em; }
+.markdown-output h4,
+.markdown-output h5,
+.markdown-output h6 { font-size: 1em; font-weight: 600; margin: 0.5em 0 0.2em; }
+
+.markdown-output p { margin: 0.4em 0; }
+.markdown-output ul,
+.markdown-output ol { margin: 0.4em 0; padding-left: 1.5em; }
+.markdown-output li { margin: 0.2em 0; }
+.markdown-output blockquote {
+  border-left: 3px solid var(--border);
+  padding-left: 12px;
+  margin: 0.5em 0;
+  color: var(--fg-muted);
+}
+.markdown-output hr { border: none; border-top: 1px solid var(--border); margin: 1em 0; }
+.markdown-output a { color: #3b82f6; text-decoration: none; }
+.markdown-output a:hover { text-decoration: underline; }
+.markdown-output img { max-width: 100%; border-radius: 4px; margin: 0.5em 0; }
+
+.markdown-output table {
+  border-collapse: collapse;
+  font-size: 13px;
+  margin: 0.5em 0;
+}
+.markdown-output th,
+.markdown-output td {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  text-align: left;
+}
+.markdown-output th {
+  background: var(--code-bg);
+  font-weight: 600;
+}
+
+.code-block {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 13px;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  margin: 0.5em 0;
+  line-height: 1.5;
+}
+
+.inline-code {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.9em;
+  background: var(--code-bg);
+  padding: 2px 5px;
+  border-radius: 3px;
+}
+
+/* ── JSON output ─────────────────────────────────────────── */
+
+.json-output {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 13px;
+  padding: 6px 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--fg-muted);
+}
+
+/* ── LaTeX output ────────────────────────────────────────── */
+
+.latex-output {
+  padding: 4px 0;
+  overflow-x: auto;
+}
