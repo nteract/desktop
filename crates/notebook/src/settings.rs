@@ -5,9 +5,9 @@
 //! - Linux: ~/.config/nteract/settings.json
 //! - Windows: C:\Users\<User>\AppData\Roaming\nteract\settings.json
 //!
-//! The daemon (runtimed) is the sole writer to settings.json to prevent race
-//! conditions when multiple notebook windows are open. This module only reads
-//! settings for fallback when the daemon is unavailable.
+//! Settings are synced across all peers (notebook windows, MCP clients) via an
+//! Automerge document owned by the daemon. The daemon writes the JSON mirror to
+//! disk. This module reads settings as a fallback when the daemon is unavailable.
 //!
 //! Uses `runtimed::settings_doc::SyncedSettings` as the canonical settings type.
 

@@ -238,6 +238,12 @@ enum Commands {
         socket: Option<PathBuf>,
     },
 
+    /// View or modify application settings
+    Settings {
+        #[command(subcommand)]
+        command: Option<SettingsCommands>,
+    },
+
     /// Manage cached Python environments
     Env {
         #[command(subcommand)]
@@ -401,6 +407,23 @@ enum EnvCommands {
         /// Show what would be deleted without actually deleting
         #[arg(long)]
         dry_run: bool,
+    },
+}
+
+/// Settings subcommands
+#[derive(Subcommand)]
+enum SettingsCommands {
+    /// Get a specific setting value
+    Get {
+        /// Setting key (e.g., default_python_env, theme)
+        key: String,
+    },
+    /// Set a specific setting value
+    Set {
+        /// Setting key
+        key: String,
+        /// New value
+        value: String,
     },
 }
 
@@ -578,6 +601,7 @@ async fn async_main(command: Option<Commands>) -> Result<()> {
             daemon_command(DaemonCommands::Logs { follow, lines }).await?
         }
         Some(Commands::Diagnostics { output }) => diagnostics_command(output).await?,
+        Some(Commands::Settings { command }) => settings_command(command).await?,
         Some(Commands::Mcp { no_show, socket }) => {
             if let Some(socket) = socket {
                 std::env::set_var("RUNTIMED_SOCKET_PATH", socket);
@@ -3965,6 +3989,123 @@ async fn clean_worktree_command(
         std::process::exit(1);
     }
 
+    Ok(())
+}
+
+// =============================================================================
+// Settings commands
+// =============================================================================
+
+async fn settings_command(command: Option<SettingsCommands>) -> Result<()> {
+    let settings_path = runt_workspace::settings_json_path();
+
+    match command {
+        None => {
+            // Print all settings as pretty JSON
+            let settings = read_settings_from_file(&settings_path)?;
+            let json = serde_json::to_string_pretty(&settings)?;
+            println!("{json}");
+        }
+        Some(SettingsCommands::Get { key }) => {
+            let settings = read_settings_from_file(&settings_path)?;
+            let value = get_setting_value(&settings, &key)?;
+            println!("{value}");
+        }
+        Some(SettingsCommands::Set { key, value }) => {
+            let mut json_value = if settings_path.exists() {
+                let content = std::fs::read_to_string(&settings_path)?;
+                serde_json::from_str::<serde_json::Value>(&content)?
+            } else {
+                serde_json::to_value(runtimed::settings_doc::SyncedSettings::default())?
+            };
+            set_setting_value(&mut json_value, &key, &value)?;
+            // Ensure parent directory exists
+            if let Some(parent) = settings_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let pretty = serde_json::to_string_pretty(&json_value)?;
+            std::fs::write(&settings_path, pretty)?;
+            println!("Updated {key} in {}", settings_path.display());
+        }
+    }
+    Ok(())
+}
+
+/// Read settings from file, falling back to defaults if the file does not exist.
+fn read_settings_from_file(path: &Path) -> Result<runtimed::settings_doc::SyncedSettings> {
+    if path.exists() {
+        let content = std::fs::read_to_string(path)?;
+        let settings: runtimed::settings_doc::SyncedSettings = serde_json::from_str(&content)?;
+        Ok(settings)
+    } else {
+        Ok(runtimed::settings_doc::SyncedSettings::default())
+    }
+}
+
+/// Extract a setting value by dotted key path and return it as a formatted string.
+fn get_setting_value(
+    settings: &runtimed::settings_doc::SyncedSettings,
+    key: &str,
+) -> Result<String> {
+    let json = serde_json::to_value(settings)?;
+    let value = navigate_json(&json, key)?;
+    // For strings, print without quotes; for everything else, use pretty JSON
+    match value {
+        serde_json::Value::String(s) => Ok(s.to_string()),
+        other => Ok(serde_json::to_string_pretty(other)?),
+    }
+}
+
+/// Navigate a JSON value by a dotted key path (e.g., "uv.default_packages").
+fn navigate_json<'a>(value: &'a serde_json::Value, key: &str) -> Result<&'a serde_json::Value> {
+    let parts: Vec<&str> = key.split('.').collect();
+    let mut current = value;
+    for part in &parts {
+        current = current
+            .get(part)
+            .ok_or_else(|| anyhow::anyhow!("Unknown setting key: {key}"))?;
+    }
+    Ok(current)
+}
+
+/// Set a value in a JSON object at a dotted key path.
+/// For keys ending in `default_packages`, the value is split on commas into a list.
+fn set_setting_value(root: &mut serde_json::Value, key: &str, raw_value: &str) -> Result<()> {
+    let parts: Vec<&str> = key.split('.').collect();
+    let leaf = parts
+        .last()
+        .ok_or_else(|| anyhow::anyhow!("Empty setting key"))?;
+
+    // Navigate to the parent, creating intermediate objects as needed
+    let mut current = root;
+    for part in &parts[..parts.len() - 1] {
+        current = current
+            .as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("Expected object at key path"))?
+            .entry(part.to_string())
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    }
+
+    let obj = current
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("Expected object at key path"))?;
+
+    // For list-valued keys (*.default_packages), split on commas
+    let new_value = if *leaf == "default_packages" {
+        let items: Vec<serde_json::Value> = raw_value
+            .split(',')
+            .map(|s| serde_json::Value::String(s.trim().to_string()))
+            .collect();
+        serde_json::Value::Array(items)
+    } else if raw_value == "true" || raw_value == "false" {
+        serde_json::Value::Bool(raw_value == "true")
+    } else if let Ok(n) = raw_value.parse::<u64>() {
+        serde_json::Value::Number(n.into())
+    } else {
+        serde_json::Value::String(raw_value.to_string())
+    };
+
+    obj.insert(leaf.to_string(), new_value);
     Ok(())
 }
 
