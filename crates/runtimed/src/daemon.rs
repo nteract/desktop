@@ -2850,8 +2850,7 @@ impl Daemon {
                 .await
                 .warming_failed_with_error(Some(PackageInstallError {
                     failed_package: None,
-                    error_message: "Conda warmup script failed (ipykernel may not be installed)"
-                        .into(),
+                    error_message: "Conda warmup failed (timed out or imports errored)".into(),
                 }));
             self.update_pool_doc().await;
         }
@@ -3351,7 +3350,7 @@ impl Daemon {
                 .await
                 .warming_failed_with_error(Some(PackageInstallError {
                     failed_package: None,
-                    error_message: "Warmup script failed (ipykernel may not be installed)".into(),
+                    error_message: "UV warmup failed (timed out or imports errored)".into(),
                 }));
             self.update_pool_doc().await;
         }
