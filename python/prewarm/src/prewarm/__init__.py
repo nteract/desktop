@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib
-import sys
 
 
 def warm(modules: list[str], *, ipython: bool = True) -> None:
@@ -26,10 +26,8 @@ def warm(modules: list[str], *, ipython: bool = True) -> None:
 
 def _warm_directly(modules: list[str]) -> None:
     for m in modules:
-        try:
+        with contextlib.suppress(Exception):
             importlib.import_module(m)
-        except Exception:
-            pass
 
 
 def _warm_via_ipython(modules: list[str]) -> None:
