@@ -46,10 +46,10 @@ The system is split into 16 Rust crates, a React/TypeScript frontend, and 3
 Python packages. The major architectural seams are:
 
 ### Daemon ↔ Client Protocol
-- Unix socket, length-prefixed typed frames (6 frame types)
+- Unix socket, length-prefixed typed frames (7 frame types)
 - Preamble (magic + version) → JSON handshake → Automerge initial sync → steady state
 - Frame types: AutomergeSync (0x00), Request (0x01), Response (0x02),
-  Broadcast (0x03), Presence (0x04), RuntimeStateSync (0x05)
+  Broadcast (0x03), Presence (0x04), RuntimeStateSync (0x05), PoolStateSync (0x06)
 - Requests are fire-and-forget style (ExecuteCell, LaunchKernel, etc.)
 - Broadcasts push state changes to all connected clients
 
@@ -77,6 +77,12 @@ Python packages. The major architectural seams are:
 - `kernel-env`: UV/Conda venv creation with progress reporting
 - `runt-trust`: HMAC-SHA256 notebook trust
 - `runt-workspace`: Per-worktree daemon socket isolation
+- `runt`: CLI binary (daemon management, kernel control, notebook launching, MCP server)
+- `runtimed-client`: Shared client library (output resolution, daemon paths, pool client)
+- `runt-mcp`: Rust-native MCP server (27 tools for notebook interaction)
+- `mcp-supervisor`: nteract-dev MCP supervisor proxy, daemon/vite lifecycle
+- `repr-llm`: LLM-friendly text summaries of visualization specs
+- `notebook`: Tauri desktop app (main GUI, bundles daemon+CLI as sidecars)
 
 ### Frontend
 - React + CodeMirror, split cell store (per-cell subscriptions)
@@ -90,7 +96,7 @@ Python packages. The major architectural seams are:
 - Prewarmed pool: 3 UV + 3 Conda envs, warmed every 30s, max 2-day age
 
 ### Invariants That Bite
-- `is_binary_mime()` must be identical in 3 places (Rust daemon, Rust Python bindings, TypeScript)
+- `is_binary_mime()` has one canonical Rust implementation in `notebook-doc::mime` — the single source of truth. All Rust crates (`runtimed`, `runtimed-client`, `runtimed-wasm`) use this module. On the TypeScript side, `looksLikeBinaryMime()` in `manifest-resolution.ts` exists only as a safety net for blob refs that WASM couldn't resolve — it is not an authoritative copy.
 - Iframe must never get `allow-same-origin`
 - Per-cell accessors must stay in sync across WASM, Rust, and Python
 

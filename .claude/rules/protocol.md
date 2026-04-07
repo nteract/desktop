@@ -52,8 +52,9 @@ After handshake, frames are typed by first byte:
 | `0x03` | NotebookBroadcast | JSON |
 | `0x04` | Presence | Binary (CBOR) |
 | `0x05` | RuntimeStateSync | Binary (raw Automerge sync for RuntimeStateDoc) |
+| `0x06` | PoolStateSync | Binary (raw Automerge sync for PoolDoc — global daemon pool state) |
 
-Only `0x00` (AutomergeSync) and `0x04` (Presence) are valid outgoing types from the frontend.
+Only `0x00` (AutomergeSync), `0x04` (Presence), and `0x06` (PoolStateSync) are valid outgoing types from the frontend.
 
 ## Key Request Types
 
@@ -169,7 +170,7 @@ Each cell execution is assigned a unique `execution_id` (UUID). The `QueueEntry`
 | `crates/notebook-sync/src/relay.rs` | Relay handle for sync connections |
 | `crates/notebook-sync/src/connect.rs` | Connection setup |
 | `crates/notebook-sync/src/handle.rs` | `DocHandle` -- sync, per-cell accessors |
-| `crates/notebook-doc/src/frame_types.rs` | Shared frame type constants (0x00-0x05) |
+| `crates/notebook-doc/src/frame_types.rs` | Shared frame type constants (0x00-0x06) |
 | `crates/notebook-doc/src/runtime_state.rs` | `RuntimeStateDoc` schema |
 | `apps/notebook/src/lib/frame-types.ts` | Frame type constants + `sendFrame()` |
 | `apps/notebook/src/lib/notebook-frame-bus.ts` | In-memory pub/sub |

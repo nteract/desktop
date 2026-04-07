@@ -23,7 +23,7 @@ pnpm dlx shadcn@latest add dialog -yo
 ├── components.json          # shadcn configuration
 ├── tailwind.config.js       # Tailwind config (covers src/ and apps/)
 ├── src/
-│   ├── components/ui/       # 23 shared shadcn components
+│   ├── components/ui/       # 24 shared shadcn components
 │   └── lib/utils.ts         # cn() utility
 └── apps/
     └── notebook/            # Uses @/components/ui/* via path alias

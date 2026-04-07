@@ -32,6 +32,7 @@ paths:
 │   │   ├── wasm/                 <- WASM bindings (runtimed-wasm)
 │   │   ├── App.tsx               <- Root component
 │   │   └── types.ts              <- App types
+│   ├── notebook/feedback/         <- Feedback sub-app
 │   ├── notebook/onboarding/      <- Onboarding sub-app
 │   ├── notebook/settings/        <- Settings sub-app
 │   └── notebook/upgrade/         <- Upgrade sub-app
@@ -75,6 +76,9 @@ Put code in `apps/notebook/src/` when:
 | `usePresence` | Remote cursor/selection tracking via presence frames |
 | `useDependencies` | UV dependency management |
 | `useCondaDependencies` | Conda dependency management |
+| `usePixiDependencies` | Pixi/conda dependency management |
+| `usePoolState` | Daemon pool state via PoolDoc sync |
+| `useCrdtBridge` | CodeMirror ↔ CRDT character-level sync |
 | `useManifestResolver` | Resolves blob hashes to output data |
 | `useCellKeyboardNavigation` | Arrow keys, enter/escape modes |
 | `useEditorRegistry` | CodeMirror editor instance registry |
@@ -120,7 +124,7 @@ Execution requests go to the daemon via dedicated Tauri commands (`execute_cell_
 
 ## CellChangeset Types
 
-Defined in `notebook-doc/src/diff.rs`, with TypeScript mirrors in `useAutomergeNotebook.ts`:
+Defined in `notebook-doc/src/diff.rs`, with TypeScript types in `packages/runtimed/src/cell-changeset.ts` (re-exported via `apps/notebook/src/lib/cell-changeset.ts`):
 - `CellChangeset` -- `{ changed, added, removed, order_changed }`
 - `ChangedCell` -- `{ cell_id, fields }` where `fields` has boolean flags: `source`, `outputs`, `execution_count`, `cell_type`, `metadata`, `position`, `resolved_assets`
 - `mergeChangesets()` -- union semantics for the coalescing window

@@ -152,6 +152,9 @@ cargo xtask e2e test-fixture \
 | `3-conda-inline.ipynb` | `conda-inline.spec.js` | Conda inline dependency resolution |
 | `10-deno.ipynb` | `deno.spec.js` | Deno kernel start + TypeScript execution |
 | `pyproject-project/5-pyproject.ipynb` | `uv-pyproject.spec.js` | pyproject.toml environment detection |
+| `14-cell-visibility.ipynb` | `cell-visibility.spec.js` | Cell source/output visibility toggling |
+| `15-run-all-output-lifecycle.ipynb` | `run-all-output-lifecycle.spec.js` | Run-all output lifecycle |
+| (directory-based pyproject fixture) | `untitled-pyproject.spec.js` | Untitled notebook with pyproject directory context |
 
 ### Adding a New Fixture Test
 

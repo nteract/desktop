@@ -142,8 +142,8 @@ Use `nteract-dev` as the repo-local MCP server name so it stays distinct from an
 {
   "context_servers": {
     "nteract-dev": {
-      "command": "./target/debug/mcp-supervisor",
-      "args": [],
+      "command": "cargo",
+      "args": ["run", "-p", "mcp-supervisor"],
       "env": { "RUNTIMED_DEV": "1" }
     }
   }
