@@ -11,22 +11,71 @@ use crate::stats::{
 /// Extract a numeric array from a Plotly trace field.
 ///
 /// Handles both plain JSON arrays `[1, 2, 3]` and Plotly 6 binary encoding
-/// `{"dtype": "f8", "bdata": "base64..."}`.
+/// `{"dtype": "f8", "bdata": "base64..."}`. For bdata, returns the plain
+/// array only if small enough; otherwise returns `None` (callers should
+/// use [`bdata_element_count`] to get just the count).
 fn extract_trace_array(value: &Value) -> Option<Vec<Value>> {
-    // Plain array
+    // Plain array — always return
     if let Some(arr) = value.as_array() {
         return Some(arr.clone());
     }
-    // Plotly 6 bdata format
+    // Plotly 6 bdata format — only decode if small (≤1000 elements)
     if let Some(obj) = value.as_object() {
         if let (Some(dtype), Some(bdata)) = (
             obj.get("dtype").and_then(|v| v.as_str()),
             obj.get("bdata").and_then(|v| v.as_str()),
         ) {
-            return decode_bdata(dtype, bdata);
+            let count = bdata_element_count(dtype, bdata);
+            if count.is_some_and(|n| n <= 1000) {
+                return decode_bdata(dtype, bdata);
+            }
         }
     }
     None
+}
+
+/// Get the element count from a Plotly trace field without decoding.
+///
+/// Works for both plain arrays and bdata. Returns `None` if the value
+/// is neither an array nor valid bdata.
+fn trace_element_count(value: &Value) -> Option<usize> {
+    if let Some(arr) = value.as_array() {
+        return Some(arr.len());
+    }
+    if let Some(obj) = value.as_object() {
+        if let (Some(dtype), Some(bdata)) = (
+            obj.get("dtype").and_then(|v| v.as_str()),
+            obj.get("bdata").and_then(|v| v.as_str()),
+        ) {
+            return bdata_element_count(dtype, bdata);
+        }
+    }
+    None
+}
+
+/// Compute element count from bdata without decoding the payload.
+fn bdata_element_count(dtype: &str, bdata: &str) -> Option<usize> {
+    use base64::Engine;
+    let byte_len = base64::engine::general_purpose::STANDARD
+        .decode(bdata)
+        .ok()?
+        .len();
+    let width = dtype_width(dtype)?;
+    if byte_len % width != 0 {
+        return None;
+    }
+    Some(byte_len / width)
+}
+
+/// Byte width per element for a Plotly dtype string.
+fn dtype_width(dtype: &str) -> Option<usize> {
+    match dtype {
+        "f8" => Some(8),
+        "f4" | "i4" | "u4" => Some(4),
+        "i2" | "u2" => Some(2),
+        "i1" | "u1" => Some(1),
+        _ => None,
+    }
 }
 
 /// Decode Plotly 6 binary data (base64-encoded typed arrays).
@@ -242,7 +291,14 @@ fn summarize_bar(trace: &Value) -> String {
                 }
             }
         }
-        _ => return "no data".to_string(),
+        _ => {
+            let x_n = trace.get("x").and_then(trace_element_count);
+            let y_n = trace.get("y").and_then(trace_element_count);
+            if let Some(n) = x_n.or(y_n) {
+                return format!("n={} points", n);
+            }
+            return "no data".to_string();
+        }
     };
 
     // Use positional extraction to maintain index alignment with labels
@@ -289,7 +345,16 @@ fn summarize_pie(trace: &Value) -> String {
 
     let (labels_arr, values_arr) = match (labels_arr, values_arr) {
         (Some(l), Some(v)) => (l, v),
-        _ => return "no data".to_string(),
+        _ => {
+            let n = trace
+                .get("labels")
+                .and_then(trace_element_count)
+                .or_else(|| trace.get("values").and_then(trace_element_count));
+            if let Some(n) = n {
+                return format!("n={} slices", n);
+            }
+            return "no data".to_string();
+        }
     };
 
     // Use positional extraction to maintain index alignment with labels
@@ -340,7 +405,13 @@ enum XAxis {
 fn summarize_scatter(trace: &Value) -> String {
     let y_arr = match trace.get("y").and_then(extract_trace_array) {
         Some(arr) => arr,
-        None => return "no data".to_string(),
+        None => {
+            // Large bdata — report count without full decode
+            if let Some(n) = trace.get("y").and_then(trace_element_count) {
+                return format!("n={} points", n);
+            }
+            return "no data".to_string();
+        }
     };
 
     // Use positional extraction to preserve alignment with x-axis
@@ -510,7 +581,16 @@ fn summarize_choropleth(trace: &Value) -> String {
 
     let (locations, z_arr) = match (locations, z_arr) {
         (Some(l), Some(z)) => (l, z),
-        _ => return "no data".to_string(),
+        _ => {
+            let n = trace
+                .get("locations")
+                .and_then(trace_element_count)
+                .or_else(|| trace.get("z").and_then(trace_element_count));
+            if let Some(n) = n {
+                return format!("n={} regions", n);
+            }
+            return "no data".to_string();
+        }
     };
 
     // Use positional extraction to maintain alignment with location names
@@ -571,10 +651,10 @@ fn summarize_choropleth(trace: &Value) -> String {
 
 /// Generic fallback for unknown trace types.
 fn summarize_generic(trace: &Value, trace_type: &str) -> String {
-    // Try to determine data size from common fields
+    // Try to determine data size from common fields (cheap count, no decode)
     let n = ["x", "y", "z", "values", "labels", "locations"]
         .iter()
-        .filter_map(|key| extract_trace_array(trace.get(key)?).map(|a| a.len()))
+        .filter_map(|key| trace.get(key).and_then(trace_element_count))
         .max();
 
     match n {
