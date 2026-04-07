@@ -145,6 +145,29 @@ fn manifest_output_to_structured(manifest: &Value, blob_base_url: &Option<String
                 }
             }
 
+            // Synthesize text/llm+plain from viz specs that were skipped
+            if data.is_empty() || !data.contains_key("text/llm+plain") {
+                if let Some(data_map) = manifest.get("data").and_then(|v| v.as_object()) {
+                    for (mime, content_ref) in data_map {
+                        if is_viz_mime(mime) || mime == "application/geo+json" {
+                            // Only try inline content (no blob fetches)
+                            if let Some(inline) = content_ref.get("inline").and_then(|v| v.as_str())
+                            {
+                                if let Ok(spec) = serde_json::from_str::<Value>(inline) {
+                                    if let Some(summary) = repr_llm::summarize_viz(mime, &spec) {
+                                        data.insert(
+                                            "text/llm+plain".to_string(),
+                                            Value::String(summary),
+                                        );
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             let mut result = json!({
                 "output_type": output_type,
                 "data": data,

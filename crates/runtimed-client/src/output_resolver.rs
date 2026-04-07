@@ -716,12 +716,15 @@ fn synthesize_llm_plain_for_viz(output_data: &mut HashMap<String, DataValue>) {
     if output_data.contains_key("text/llm+plain") {
         return;
     }
-    let viz_summary = output_data.iter().find_map(|(mime, dv)| {
-        if let DataValue::Json(ref spec) = dv {
-            repr_llm::summarize_viz(mime, spec)
-        } else {
-            None
+    let viz_summary = output_data.iter().find_map(|(mime, dv)| match dv {
+        DataValue::Json(ref spec) => repr_llm::summarize_viz(mime, spec),
+        DataValue::Text(ref text) => {
+            // Try parsing Text values as JSON for viz MIME types
+            serde_json::from_str::<serde_json::Value>(text)
+                .ok()
+                .and_then(|spec| repr_llm::summarize_viz(mime, &spec))
         }
+        _ => None,
     });
     if let Some(summary) = viz_summary {
         let mut parts: Vec<String> = Vec::new();
