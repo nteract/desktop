@@ -1,8 +1,13 @@
 // Inline the built JS + CSS into a single self-contained HTML file.
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 const rawJs = readFileSync("dist/mcp-app.js", "utf-8");
-const css = readFileSync("src/style.css", "utf-8");
+let css = readFileSync("src/style.css", "utf-8");
+
+// Vite may extract CSS into a separate file — inline it alongside style.css
+if (existsSync("dist/style.css")) {
+  css += `\n${readFileSync("dist/style.css", "utf-8")}`;
+}
 
 // Escape </script> inside the JS so the HTML parser doesn't prematurely
 // close the script block (e.g. from Zod regex literals in the MCP SDK).
