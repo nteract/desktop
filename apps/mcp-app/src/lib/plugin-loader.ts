@@ -20,17 +20,25 @@ interface PluginModule {
 /**
  * Map MIME type → plugin name served at /plugins/{name}.js
  */
-const MIME_TO_PLUGIN: Record<string, string> = {
-  "application/vnd.plotly.v1+json": "plotly",
-  "application/geo+json": "leaflet",
+interface PluginInfo {
+  name: string;
+  /** Whether this plugin has a separate CSS file */
+  hasCss: boolean;
+}
+
+const MIME_TO_PLUGIN: Record<string, PluginInfo> = {
+  "application/vnd.plotly.v1+json": { name: "plotly", hasCss: false },
+  "application/geo+json": { name: "leaflet", hasCss: true },
 };
 
 /**
  * Get the plugin name for a MIME type, or undefined if no plugin needed.
  */
-function pluginNameForMime(mime: string): string | undefined {
+const VEGA_PLUGIN: PluginInfo = { name: "vega", hasCss: false };
+
+function pluginInfoForMime(mime: string): PluginInfo | undefined {
   if (MIME_TO_PLUGIN[mime]) return MIME_TO_PLUGIN[mime];
-  if (isVegaMimeType(mime)) return "vega";
+  if (isVegaMimeType(mime)) return VEGA_PLUGIN;
   return undefined;
 }
 
@@ -38,7 +46,7 @@ function pluginNameForMime(mime: string): string | undefined {
  * Check if a MIME type needs a daemon-served plugin to render.
  */
 export function needsDaemonPlugin(mime: string): boolean {
-  return pluginNameForMime(mime) !== undefined;
+  return pluginInfoForMime(mime) !== undefined;
 }
 
 /** Cache of loaded plugin code, keyed by plugin name. */
@@ -46,14 +54,12 @@ const pluginCache = new Map<string, Promise<PluginModule>>();
 
 /**
  * Fetch a plugin's JS (and optional CSS) from the daemon.
- * Caches successful loads; evicts failures for retry.
  */
 async function fetchPlugin(
   baseUrl: string,
-  pluginName: string,
+  info: PluginInfo,
 ): Promise<PluginModule> {
-  const jsUrl = `${baseUrl}/plugins/${pluginName}.js`;
-  const cssUrl = `${baseUrl}/plugins/${pluginName}.css`;
+  const jsUrl = `${baseUrl}/plugins/${info.name}.js`;
 
   const jsResponse = await fetch(jsUrl);
   if (!jsResponse.ok) {
@@ -61,15 +67,17 @@ async function fetchPlugin(
   }
   const code = await jsResponse.text();
 
-  // CSS is optional — try to fetch, ignore 404
+  // Only fetch CSS if the plugin has it
   let css: string | undefined;
-  try {
-    const cssResponse = await fetch(cssUrl);
-    if (cssResponse.ok) {
-      css = await cssResponse.text();
+  if (info.hasCss) {
+    try {
+      const cssResponse = await fetch(`${baseUrl}/plugins/${info.name}.css`);
+      if (cssResponse.ok) {
+        css = await cssResponse.text();
+      }
+    } catch {
+      // CSS fetch failed, continue without it
     }
-  } catch {
-    // CSS not available, that's fine
   }
 
   return { code, css };
@@ -91,17 +99,17 @@ export async function loadPluginForMime(
 ): Promise<PluginModule | undefined> {
   if (!blobBaseUrl) return undefined;
 
-  const pluginName = pluginNameForMime(mime);
-  if (!pluginName) return undefined;
+  const info = pluginInfoForMime(mime);
+  if (!info) return undefined;
 
-  const cached = pluginCache.get(pluginName);
+  const cached = pluginCache.get(info.name);
   if (cached) return cached;
 
-  const promise = fetchPlugin(blobBaseUrl, pluginName);
+  const promise = fetchPlugin(blobBaseUrl, info);
 
-  pluginCache.set(pluginName, promise);
+  pluginCache.set(info.name, promise);
   // Evict on failure so retries work
-  promise.catch(() => pluginCache.delete(pluginName));
+  promise.catch(() => pluginCache.delete(info.name));
 
   return promise;
 }

@@ -115,3 +115,4 @@ result
 # APT publisher secrets
 scripts/apt/.env
 scripts/apt/debs/*.deb
+crates/runt-mcp/assets/plugins/
