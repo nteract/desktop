@@ -31,9 +31,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use automerge::sync;
-use log::{debug, error, info, warn};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{broadcast, oneshot, watch, Mutex, RwLock};
+use tracing::{debug, error, info, warn};
 
 use notify_debouncer_mini::DebounceEventResult;
 
@@ -2745,7 +2745,7 @@ where
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
-                        log::debug!(
+                        tracing::debug!(
                             "[notebook-sync] Peer {} lagged {} runtime state updates",
                             peer_id, n
                         );
@@ -2816,7 +2816,7 @@ where
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
-                        log::debug!(
+                        tracing::debug!(
                             "[notebook-sync] Peer {} lagged {} pool state updates",
                             peer_id, n
                         );
@@ -2870,7 +2870,7 @@ where
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         // Missed some presence updates — send a full snapshot to catch up
-                        log::debug!(
+                        tracing::debug!(
                             "[notebook-sync] Peer {} lagged {} presence updates, sending snapshot",
                             peer_id, n
                         );

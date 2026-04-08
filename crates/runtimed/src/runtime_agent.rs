@@ -33,7 +33,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use log::{debug, info, warn};
 use notebook_doc::presence::PresenceState;
 use notebook_doc::runtime_state::{CommDocEntry, RuntimeStateDoc};
 use notebook_protocol::connection::{
@@ -42,6 +41,7 @@ use notebook_protocol::connection::{
 };
 use notebook_protocol::protocol::{RuntimeAgentRequest, RuntimeAgentResponse};
 use tokio::sync::{broadcast, RwLock};
+use tracing::{debug, info, warn};
 
 use crate::blob_store::BlobStore;
 use crate::kernel_manager::{QueueCommand, RoomKernel};

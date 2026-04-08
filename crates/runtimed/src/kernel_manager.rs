@@ -22,9 +22,9 @@ use jupyter_protocol::{
     CompleteRequest, ConnectionInfo, ExecuteRequest, HistoryRequest, InterruptRequest,
     JupyterMessage, JupyterMessageContent, KernelInfoRequest, ShutdownRequest,
 };
-use log::{debug, error, info, warn};
 use serde::Serialize;
 use tokio::sync::{broadcast, mpsc, oneshot, watch, RwLock};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::blob_store::BlobStore;
@@ -77,7 +77,7 @@ async fn store_widget_buffers(
         {
             Ok(h) => h,
             Err(e) => {
-                log::warn!("[kernel-manager] Failed to store widget buffer: {}", e);
+                tracing::warn!("[kernel-manager] Failed to store widget buffer: {}", e);
                 continue;
             }
         };
@@ -208,7 +208,7 @@ async fn blob_store_large_state_values(
                 _ => match serde_json::to_vec(value) {
                     Ok(b) => (b, "application/json"),
                     Err(e) => {
-                        log::warn!(
+                        tracing::warn!(
                             "[kernel-manager] Failed to serialize comm state key '{}': {}",
                             key,
                             e
@@ -231,7 +231,7 @@ async fn blob_store_large_state_values(
                     );
                 }
                 Err(e) => {
-                    log::warn!(
+                    tracing::warn!(
                         "[kernel-manager] Failed to blob-store comm state key '{}' ({} bytes): {}",
                         key,
                         size,

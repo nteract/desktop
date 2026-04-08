@@ -15,12 +15,12 @@
 //! so no file locking is needed — Tokio's cooperative scheduling ensures the
 //! synchronous read-modify-write won't interleave between tasks.
 
-use log::error;
-#[cfg(unix)]
-use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use tracing::error;
+#[cfg(unix)]
+use tracing::{info, warn};
 
 use crate::daemon_base_dir;
 

@@ -10,10 +10,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Context;
-use log::{debug, error, info, warn};
 use notify_debouncer_mini::DebounceEventResult;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{Mutex, Notify};
+use tracing::{debug, error, info, warn};
 
 #[cfg(unix)]
 use tokio::net::UnixListener;
@@ -500,7 +500,7 @@ impl Daemon {
 
         // Write the settings JSON Schema for editor autocomplete
         if let Err(e) = crate::settings_doc::write_settings_schema() {
-            log::warn!("[settings] Failed to write schema file: {}", e);
+            tracing::warn!("[settings] Failed to write schema file: {}", e);
         }
 
         let (settings_changed, _) = tokio::sync::broadcast::channel(16);
@@ -1193,7 +1193,7 @@ impl Daemon {
             } else {
                 // Legacy protocol (pre-2.0.0): first byte is part of a 4-byte
                 // big-endian length prefix. Read remaining 3 length bytes.
-                log::debug!("[runtimed] Legacy client detected (no magic preamble)");
+                tracing::debug!("[runtimed] Legacy client detected (no magic preamble)");
                 let mut len_rest = [0u8; 3];
                 tokio::io::AsyncReadExt::read_exact(&mut stream, &mut len_rest)
                     .await

@@ -16,7 +16,12 @@ use runtimed::protocol::{NotebookRequest, NotebookResponse};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
 
     let temp_dir = TempDir::new()?;
     println!("Test directory: {:?}", temp_dir.path());

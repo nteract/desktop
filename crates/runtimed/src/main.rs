@@ -6,11 +6,11 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use log::info;
 use runtimed::client::PoolClient;
 use runtimed::daemon::{Daemon, DaemonConfig};
 use runtimed::service::ServiceManager;
 use runtimed::singleton::get_running_daemon_info;
+use tracing::info;
 
 #[derive(Parser, Debug)]
 #[command(name = "runtimed")]
@@ -157,6 +157,18 @@ fn early_log(msg: &str) {
     }
 }
 
+/// Formats timestamps using local time, matching our existing log format.
+/// Uses chrono::Local directly to handle DST transitions correctly
+/// (unlike `OffsetTime` which captures the offset once at startup).
+#[derive(Clone)]
+struct LocalTime;
+
+impl tracing_subscriber::fmt::time::FormatTime for LocalTime {
+    fn format_time(&self, w: &mut tracing_subscriber::fmt::format::Writer<'_>) -> std::fmt::Result {
+        write!(w, "{}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"))
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Install panic hook to ensure panics are logged to the daemon log file.
@@ -230,35 +242,33 @@ async fn main() -> anyhow::Result<()> {
                 }
                 runt_workspace::BuildChannel::Stable => "warn".to_string(),
             });
-    let mut builder = env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or(&effective_log_level),
-    );
 
-    // If we can open the log file, write to it; otherwise just use stderr
-    if let Ok(file) = log_file {
-        use std::io::Write;
-        use std::sync::{Arc, Mutex};
+    // Build tracing subscriber with stderr + optional file output.
+    // EnvFilter respects RUST_LOG env var, falling back to channel defaults.
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(&effective_log_level));
 
-        let file = Arc::new(Mutex::new(file));
-        builder.format(move |_buf, record| {
-            let formatted = format!(
-                "{} [{}] {}: {}\n",
-                chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
-                record.level(),
-                record.target(),
-                record.args()
-            );
-            // Write to stderr (terminal)
-            eprint!("{}", formatted);
-            // Write to file
-            if let Ok(mut f) = file.lock() {
-                let _ = f.write_all(formatted.as_bytes());
-                let _ = f.flush();
-            }
-            Ok(())
-        });
-    }
-    builder.init();
+    let timer = LocalTime;
+
+    let stderr_layer = tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_timer(timer.clone());
+
+    // File layer writes to the log file without ANSI escape codes.
+    // If the file can't be opened, we fall back to stderr-only logging.
+    let file_layer = log_file.ok().map(|file| {
+        tracing_subscriber::fmt::layer()
+            .with_writer(std::sync::Mutex::new(file))
+            .with_ansi(false)
+            .with_timer(timer)
+    });
+
+    use tracing_subscriber::prelude::*;
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(stderr_layer)
+        .with(file_layer)
+        .init();
 
     // Log dev mode status
     if runtimed::is_dev_mode() {

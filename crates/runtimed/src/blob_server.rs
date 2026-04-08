@@ -23,8 +23,8 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use log::{error, info};
 use tokio::net::TcpListener;
+use tracing::{error, info};
 
 use crate::blob_store::BlobStore;
 use crate::embedded_plugins;

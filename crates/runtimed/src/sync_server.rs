@@ -7,9 +7,9 @@
 use std::sync::Arc;
 
 use automerge::sync;
-use log::{info, warn};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{broadcast, RwLock};
+use tracing::{info, warn};
 
 use crate::connection;
 use crate::settings_doc::SettingsDoc;

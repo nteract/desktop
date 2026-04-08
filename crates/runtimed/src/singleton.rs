@@ -8,7 +8,7 @@ use std::fs::{File, OpenOptions};
 use std::path::PathBuf;
 
 use chrono::Utc;
-use log::{info, warn};
+use tracing::{info, warn};
 
 // Re-export all client-side singleton items so `runtimed::singleton::*` still works.
 use runtimed_client::singleton as client_singleton;

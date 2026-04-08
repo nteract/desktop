@@ -8,7 +8,21 @@ paths:
 
 ## Rust Logging
 
-Use the `log` crate with `env_logger`. Import log macros at the top of your file:
+### runtimed daemon
+
+Use the `tracing` crate. Import log macros at the top of your file:
+
+```rust
+use tracing::{debug, info, warn, error};
+```
+
+The daemon uses `tracing-subscriber` with layered subscribers (stderr + file).
+Dependencies that use the `log` crate are automatically bridged into tracing
+via `tracing-log` (set up by `.init()`).
+
+### Tauri app (notebook crate)
+
+The notebook app still uses `log` with `tauri-plugin-log`:
 
 ```rust
 use log::{debug, info, warn, error};

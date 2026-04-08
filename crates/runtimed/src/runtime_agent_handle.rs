@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::Result;
-use log::{info, warn};
+use tracing::{info, warn};
 
 /// Handle to a running runtime agent subprocess.
 ///
