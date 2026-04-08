@@ -137,22 +137,52 @@ export function PixiDependencyHeader({
               </span>
             </div>
 
-            {(pixiInfo.has_dependencies || pixiInfo.has_pypi_dependencies) && (
-              <div className="mt-1.5 flex gap-2 text-muted-foreground">
-                {pixiInfo.has_dependencies && (
-                  <span className="rounded bg-muted px-1.5 py-0.5">
-                    {pixiInfo.dependency_count} conda dep
-                    {pixiInfo.dependency_count !== 1 ? "s" : ""}
+            {/* Show dep names from CRDT (bootstrapped from pixi.toml) */}
+            {pixiDeps && pixiDeps.dependencies.length > 0 && (
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                {pixiDeps.dependencies.map((dep) => (
+                  <span
+                    key={dep}
+                    className="rounded bg-muted px-1.5 py-0.5 font-mono text-muted-foreground"
+                  >
+                    {dep}
                   </span>
-                )}
-                {pixiInfo.has_pypi_dependencies && (
-                  <span className="rounded bg-muted px-1.5 py-0.5">
-                    {pixiInfo.pypi_dependency_count} pypi dep
-                    {pixiInfo.pypi_dependency_count !== 1 ? "s" : ""}
-                  </span>
-                )}
+                ))}
               </div>
             )}
+            {(pixiDeps?.pypiDependencies?.length ?? 0) > 0 && (
+                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                  <span className="text-muted-foreground text-[10px] uppercase tracking-wide self-center">
+                    PyPI
+                  </span>
+                  {pixiDeps.pypiDependencies.map((dep) => (
+                    <span
+                      key={dep}
+                      className="rounded bg-muted px-1.5 py-0.5 font-mono text-muted-foreground"
+                    >
+                      {dep}
+                    </span>
+                  ))}
+                </div>
+              )}
+            {/* Fallback: show counts if CRDT deps not yet bootstrapped */}
+            {(!pixiDeps || pixiDeps.dependencies.length === 0) &&
+              (pixiInfo.has_dependencies || pixiInfo.has_pypi_dependencies) && (
+                <div className="mt-1.5 flex gap-2 text-muted-foreground">
+                  {pixiInfo.has_dependencies && (
+                    <span className="rounded bg-muted px-1.5 py-0.5">
+                      {pixiInfo.dependency_count} conda dep
+                      {pixiInfo.dependency_count !== 1 ? "s" : ""}
+                    </span>
+                  )}
+                  {pixiInfo.has_pypi_dependencies && (
+                    <span className="rounded bg-muted px-1.5 py-0.5">
+                      {pixiInfo.pypi_dependency_count} pypi dep
+                      {pixiInfo.pypi_dependency_count !== 1 ? "s" : ""}
+                    </span>
+                  )}
+                </div>
+              )}
 
             {pixiInfo.channels.length > 0 && (
               <div className="mt-1.5 flex items-center gap-1.5 text-muted-foreground">
