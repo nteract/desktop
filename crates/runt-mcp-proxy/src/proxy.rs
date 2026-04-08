@@ -595,3 +595,451 @@ impl ServerHandler for McpProxy {
         self.forward_tool_call(request).await
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use rmcp::model::Content;
+    use std::collections::HashMap;
+
+    fn test_config() -> ProxyConfig {
+        ProxyConfig {
+            child_command: PathBuf::from("/nonexistent/runt"),
+            child_args: vec!["mcp".to_string()],
+            child_env: HashMap::new(),
+            server_name: "test-proxy".to_string(),
+            cache_dir: None,
+            daemon_info_path: None,
+        }
+    }
+
+    fn test_config_with_cache(dir: &std::path::Path) -> ProxyConfig {
+        ProxyConfig {
+            child_command: PathBuf::from("/nonexistent/runt"),
+            child_args: vec!["mcp".to_string()],
+            child_env: HashMap::new(),
+            server_name: "test-proxy".to_string(),
+            cache_dir: Some(dir.to_path_buf()),
+            daemon_info_path: None,
+        }
+    }
+
+    // ── Proxy creation ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn proxy_starts_with_no_child() {
+        let proxy = McpProxy::new(test_config(), None);
+        let state = proxy.state.read().await;
+        assert!(state.child_client.is_none());
+        assert_eq!(state.restart_count, 0);
+        assert!(state.last_notebook_id.is_none());
+        assert!(state.reconnection_message.is_none());
+        assert!(!state.should_exit);
+    }
+
+    #[tokio::test]
+    async fn proxy_starts_with_unknown_upstream() {
+        let proxy = McpProxy::new(test_config(), None);
+        let state = proxy.state.read().await;
+        assert_eq!(state.upstream_name, "unknown");
+        assert!(state.upstream_title.is_none());
+    }
+
+    #[tokio::test]
+    async fn set_upstream_identity() {
+        let proxy = McpProxy::new(test_config(), None);
+        proxy
+            .set_upstream_identity("Claude Code".to_string(), Some("Claude Code".to_string()))
+            .await;
+
+        let state = proxy.state.read().await;
+        assert_eq!(state.upstream_name, "Claude Code");
+        assert_eq!(state.upstream_title, Some("Claude Code".to_string()));
+    }
+
+    #[tokio::test]
+    async fn set_upstream_identity_without_title() {
+        let proxy = McpProxy::new(test_config(), None);
+        proxy.set_upstream_identity("zed".to_string(), None).await;
+
+        let state = proxy.state.read().await;
+        assert_eq!(state.upstream_name, "zed");
+        assert!(state.upstream_title.is_none());
+    }
+
+    // ── Tool cache loading at startup ─────────────────────────────────
+
+    #[tokio::test]
+    async fn proxy_loads_tool_cache_on_creation() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = rmcp::model::Tool::new(
+            "test_tool".to_string(),
+            "A test tool".to_string(),
+            serde_json::Map::new(),
+        );
+        tools::save_tool_cache(dir.path(), &[tool]);
+
+        let proxy = McpProxy::new(test_config_with_cache(dir.path()), None);
+        let state = proxy.state.read().await;
+        assert!(state.cached_tools.is_some());
+        assert_eq!(state.cached_tools.as_ref().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn proxy_starts_without_cache_when_dir_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let proxy = McpProxy::new(test_config_with_cache(dir.path()), None);
+        let state = proxy.state.read().await;
+        assert!(state.cached_tools.is_none());
+    }
+
+    #[tokio::test]
+    async fn proxy_starts_without_cache_when_no_dir() {
+        let proxy = McpProxy::new(test_config(), None);
+        let state = proxy.state.read().await;
+        assert!(state.cached_tools.is_none());
+    }
+
+    // ── should_exit ───────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn should_exit_starts_false() {
+        let proxy = McpProxy::new(test_config(), None);
+        assert!(!proxy.should_exit().await);
+    }
+
+    #[tokio::test]
+    async fn should_exit_reflects_state() {
+        let proxy = McpProxy::new(test_config(), None);
+        proxy.state.write().await.should_exit = true;
+        assert!(proxy.should_exit().await);
+    }
+
+    // ── reset_circuit_breaker ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn reset_circuit_breaker_clears_state() {
+        let proxy = McpProxy::new(test_config(), None);
+
+        // Trip the circuit breaker
+        {
+            let mut state = proxy.state.write().await;
+            for _ in 0..10 {
+                state.circuit_breaker.record_crash();
+            }
+            assert!(!state.circuit_breaker.record_crash(), "should be tripped");
+        }
+
+        proxy.reset_circuit_breaker().await;
+
+        {
+            let mut state = proxy.state.write().await;
+            assert!(
+                state.circuit_breaker.record_crash(),
+                "should allow crashes after reset"
+            );
+        }
+    }
+
+    // ── Reconnection message lifecycle ────────────────────────────────
+
+    #[tokio::test]
+    async fn reconnection_message_prepended_to_result() {
+        let proxy = McpProxy::new(test_config(), None);
+
+        // Set a reconnection message
+        proxy.state.write().await.reconnection_message =
+            Some("Daemon upgraded (2.1.2 → 2.1.3)".to_string());
+
+        // Create a tool result
+        let mut result = CallToolResult::success(vec![Content::text("tool output")]);
+
+        // Prepend should add the message
+        proxy.prepend_reconnection_message(&mut result).await;
+
+        assert_eq!(result.content.len(), 2);
+        // First content should be the reconnection notice
+        let first_text = result.content[0]
+            .raw
+            .as_text()
+            .expect("first content should be text");
+        assert!(first_text.text.contains("Daemon upgraded"));
+        assert!(first_text.text.starts_with("[nteract]"));
+        // Second should be the original
+        let second_text = result.content[1]
+            .raw
+            .as_text()
+            .expect("second content should be text");
+        assert_eq!(second_text.text, "tool output");
+    }
+
+    #[tokio::test]
+    async fn reconnection_message_cleared_after_prepend() {
+        let proxy = McpProxy::new(test_config(), None);
+
+        proxy.state.write().await.reconnection_message = Some("test message".to_string());
+
+        let mut result = CallToolResult::success(vec![Content::text("output")]);
+        proxy.prepend_reconnection_message(&mut result).await;
+
+        // Message should be consumed
+        assert!(proxy.state.read().await.reconnection_message.is_none());
+    }
+
+    #[tokio::test]
+    async fn no_reconnection_message_leaves_result_unchanged() {
+        let proxy = McpProxy::new(test_config(), None);
+
+        // No reconnection message set
+        let mut result = CallToolResult::success(vec![Content::text("output")]);
+        let original_len = result.content.len();
+
+        proxy.prepend_reconnection_message(&mut result).await;
+
+        assert_eq!(result.content.len(), original_len);
+    }
+
+    #[tokio::test]
+    async fn reconnection_message_only_prepended_once() {
+        let proxy = McpProxy::new(test_config(), None);
+        proxy.state.write().await.reconnection_message = Some("upgraded".to_string());
+
+        let mut result1 = CallToolResult::success(vec![Content::text("first")]);
+        proxy.prepend_reconnection_message(&mut result1).await;
+        assert_eq!(result1.content.len(), 2);
+
+        // Second call should not prepend anything
+        let mut result2 = CallToolResult::success(vec![Content::text("second")]);
+        proxy.prepend_reconnection_message(&mut result2).await;
+        assert_eq!(result2.content.len(), 1);
+    }
+
+    // ── Session tracking via track_session ────────────────────────────
+
+    #[tokio::test]
+    async fn track_session_captures_open_notebook() {
+        let proxy = McpProxy::new(test_config(), None);
+
+        let params: CallToolRequestParams = serde_json::from_value(serde_json::json!({
+            "name": "open_notebook",
+            "arguments": { "path": "/tmp/test.ipynb" }
+        }))
+        .unwrap();
+        let result = CallToolResult::success(vec![Content::text("ok")]);
+
+        proxy.track_session(&params, &result).await;
+
+        let state = proxy.state.read().await;
+        assert_eq!(state.last_notebook_id, Some("/tmp/test.ipynb".to_string()));
+    }
+
+    #[tokio::test]
+    async fn track_session_updates_on_new_notebook() {
+        let proxy = McpProxy::new(test_config(), None);
+
+        // Open first notebook
+        let params1: CallToolRequestParams = serde_json::from_value(serde_json::json!({
+            "name": "open_notebook",
+            "arguments": { "path": "/tmp/first.ipynb" }
+        }))
+        .unwrap();
+        proxy
+            .track_session(
+                &params1,
+                &CallToolResult::success(vec![Content::text("ok")]),
+            )
+            .await;
+
+        // Open second notebook — should replace
+        let params2: CallToolRequestParams = serde_json::from_value(serde_json::json!({
+            "name": "open_notebook",
+            "arguments": { "path": "/tmp/second.ipynb" }
+        }))
+        .unwrap();
+        proxy
+            .track_session(
+                &params2,
+                &CallToolResult::success(vec![Content::text("ok")]),
+            )
+            .await;
+
+        let state = proxy.state.read().await;
+        assert_eq!(
+            state.last_notebook_id,
+            Some("/tmp/second.ipynb".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn track_session_ignores_non_session_tools() {
+        let proxy = McpProxy::new(test_config(), None);
+
+        let params: CallToolRequestParams = serde_json::from_value(serde_json::json!({
+            "name": "execute_cell",
+            "arguments": { "cell_id": "abc" }
+        }))
+        .unwrap();
+
+        proxy
+            .track_session(&params, &CallToolResult::success(vec![Content::text("ok")]))
+            .await;
+
+        let state = proxy.state.read().await;
+        assert!(state.last_notebook_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn track_session_ignores_errors() {
+        let proxy = McpProxy::new(test_config(), None);
+
+        let params: CallToolRequestParams = serde_json::from_value(serde_json::json!({
+            "name": "open_notebook",
+            "arguments": { "path": "/tmp/test.ipynb" }
+        }))
+        .unwrap();
+        let mut result = CallToolResult::success(vec![Content::text("error")]);
+        result.is_error = Some(true);
+
+        proxy.track_session(&params, &result).await;
+
+        let state = proxy.state.read().await;
+        assert!(state.last_notebook_id.is_none());
+    }
+
+    // ── try_forward_tool_call without child ───────────────────────────
+
+    #[tokio::test]
+    async fn forward_fails_without_child() {
+        let proxy = McpProxy::new(test_config(), None);
+        let params: CallToolRequestParams = serde_json::from_value(serde_json::json!({
+            "name": "list_active_notebooks"
+        }))
+        .unwrap();
+
+        let result = proxy.try_forward_tool_call(&params).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.message.contains("not running"));
+    }
+
+    // ── child_tools falls back to cache ───────────────────────────────
+
+    #[tokio::test]
+    async fn child_tools_returns_cache_when_no_child() {
+        let proxy = McpProxy::new(test_config(), None);
+        let cached = vec![rmcp::model::Tool::new(
+            "cached_tool".to_string(),
+            "A cached tool".to_string(),
+            serde_json::Map::new(),
+        )];
+        proxy.state.write().await.cached_tools = Some(cached);
+
+        let tools = proxy.child_tools().await;
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name.as_ref(), "cached_tool");
+    }
+
+    #[tokio::test]
+    async fn child_tools_returns_empty_when_no_child_no_cache() {
+        let proxy = McpProxy::new(test_config(), None);
+        let tools = proxy.child_tools().await;
+        assert!(tools.is_empty());
+    }
+
+    // ── tool_list_changed notification channel ────────────────────────
+
+    #[tokio::test]
+    async fn tool_list_changed_tx_is_stored() {
+        let (tx, _rx) = mpsc::channel::<()>(4);
+        let proxy = McpProxy::new(test_config(), Some(tx));
+        let state = proxy.state.read().await;
+        assert!(state.tool_list_changed_tx.is_some());
+    }
+
+    #[tokio::test]
+    async fn no_tool_list_changed_tx_when_none() {
+        let proxy = McpProxy::new(test_config(), None);
+        let state = proxy.state.read().await;
+        assert!(state.tool_list_changed_tx.is_none());
+    }
+
+    // ── ProxyConfig ───────────────────────────────────────────────────
+
+    #[test]
+    fn proxy_config_accepts_env_vars() {
+        let mut env = HashMap::new();
+        env.insert("NTERACT_CHANNEL".to_string(), "stable".to_string());
+        env.insert(
+            "RUNTIMED_SOCKET_PATH".to_string(),
+            "/tmp/test.sock".to_string(),
+        );
+
+        let config = ProxyConfig {
+            child_command: PathBuf::from("/usr/local/bin/runt"),
+            child_args: vec!["mcp".to_string()],
+            child_env: env,
+            server_name: "nteract".to_string(),
+            cache_dir: None,
+            daemon_info_path: None,
+        };
+
+        assert_eq!(config.child_env.len(), 2);
+        assert_eq!(config.child_env.get("NTERACT_CHANNEL").unwrap(), "stable");
+    }
+
+    // ── Version tracking at creation ──────────────────────────────────
+
+    #[tokio::test]
+    async fn proxy_reads_daemon_version_at_creation() {
+        let dir = tempfile::tempdir().unwrap();
+        let info_path = dir.path().join("daemon.json");
+        let info = serde_json::json!({
+            "endpoint": "/tmp/test.sock",
+            "pid": 1234,
+            "version": "2.1.3",
+            "started_at": "2026-01-01T00:00:00Z"
+        });
+        std::fs::write(&info_path, serde_json::to_string(&info).unwrap()).unwrap();
+
+        let config = ProxyConfig {
+            child_command: PathBuf::from("/nonexistent/runt"),
+            child_args: vec!["mcp".to_string()],
+            child_env: HashMap::new(),
+            server_name: "test".to_string(),
+            cache_dir: None,
+            daemon_info_path: Some(info_path),
+        };
+
+        let proxy = McpProxy::new(config, None);
+        let state = proxy.state.read().await;
+        assert_eq!(state.last_daemon_version, Some("2.1.3".to_string()));
+    }
+
+    #[tokio::test]
+    async fn proxy_has_no_version_when_no_info_path() {
+        let proxy = McpProxy::new(test_config(), None);
+        let state = proxy.state.read().await;
+        assert!(state.last_daemon_version.is_none());
+    }
+
+    #[tokio::test]
+    async fn proxy_has_no_version_when_info_file_missing() {
+        let config = ProxyConfig {
+            child_command: PathBuf::from("/nonexistent/runt"),
+            child_args: vec!["mcp".to_string()],
+            child_env: HashMap::new(),
+            server_name: "test".to_string(),
+            cache_dir: None,
+            daemon_info_path: Some(PathBuf::from("/nonexistent/daemon.json")),
+        };
+
+        let proxy = McpProxy::new(config, None);
+        let state = proxy.state.read().await;
+        assert!(state.last_daemon_version.is_none());
+    }
+}

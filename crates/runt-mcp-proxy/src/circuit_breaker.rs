@@ -55,8 +55,8 @@ mod tests {
     #[test]
     fn allows_crashes_under_limit() {
         let mut cb = CircuitBreaker::new();
-        for _ in 0..MAX_CRASHES {
-            assert!(cb.record_crash());
+        for i in 0..MAX_CRASHES {
+            assert!(cb.record_crash(), "crash {i} should be allowed");
         }
     }
 
@@ -66,7 +66,19 @@ mod tests {
         for _ in 0..MAX_CRASHES {
             cb.record_crash();
         }
-        assert!(!cb.record_crash());
+        assert!(!cb.record_crash(), "crash beyond limit should trip breaker");
+    }
+
+    #[test]
+    fn stays_tripped_on_repeated_calls() {
+        let mut cb = CircuitBreaker::new();
+        for _ in 0..MAX_CRASHES {
+            cb.record_crash();
+        }
+        // Repeated calls should all return false
+        for _ in 0..10 {
+            assert!(!cb.record_crash());
+        }
     }
 
     #[test]
@@ -77,6 +89,53 @@ mod tests {
         }
         assert!(!cb.record_crash());
         cb.reset();
-        assert!(cb.record_crash());
+        assert!(cb.record_crash(), "should allow crashes after reset");
+    }
+
+    #[test]
+    fn reset_allows_full_window_again() {
+        let mut cb = CircuitBreaker::new();
+        // Fill up and trip
+        for _ in 0..MAX_CRASHES {
+            cb.record_crash();
+        }
+        assert!(!cb.record_crash());
+
+        // Reset and verify we get the full window again
+        cb.reset();
+        for i in 0..MAX_CRASHES {
+            assert!(cb.record_crash(), "crash {i} after reset should be allowed");
+        }
+        assert!(
+            !cb.record_crash(),
+            "should trip again after hitting limit post-reset"
+        );
+    }
+
+    #[test]
+    fn new_and_default_are_equivalent() {
+        let new = CircuitBreaker::new();
+        let default = CircuitBreaker::default();
+        // Both should allow the same number of crashes
+        assert_eq!(new.recent_crashes.len(), default.recent_crashes.len());
+    }
+
+    #[test]
+    fn first_crash_is_always_allowed() {
+        let mut cb = CircuitBreaker::new();
+        assert!(cb.record_crash(), "first crash should always be allowed");
+    }
+
+    #[test]
+    fn exact_limit_boundary() {
+        let mut cb = CircuitBreaker::new();
+        // Record exactly MAX_CRASHES - 1
+        for _ in 0..MAX_CRASHES - 1 {
+            cb.record_crash();
+        }
+        // The last one within the limit should work
+        assert!(cb.record_crash(), "crash at exactly the limit should work");
+        // One more should fail
+        assert!(!cb.record_crash(), "crash beyond limit should fail");
     }
 }

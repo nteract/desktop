@@ -87,10 +87,29 @@ mod tests {
         )
     }
 
+    // ── detect_divergence() ───────────────────────────────────────────
+
     #[test]
     fn same_tools() {
         let tools = vec![tool("a"), tool("b")];
         assert_eq!(detect_divergence(&tools, &tools), ToolDivergence::Same);
+    }
+
+    #[test]
+    fn same_tools_different_order() {
+        let old = vec![tool("b"), tool("a")];
+        let new = vec![tool("a"), tool("b")];
+        assert_eq!(
+            detect_divergence(&old, &new),
+            ToolDivergence::Same,
+            "order should not matter"
+        );
+    }
+
+    #[test]
+    fn both_empty() {
+        let empty: Vec<Tool> = vec![];
+        assert_eq!(detect_divergence(&empty, &empty), ToolDivergence::Same);
     }
 
     #[test]
@@ -100,6 +119,33 @@ mod tests {
         match detect_divergence(&old, &new) {
             ToolDivergence::Superset { added } => {
                 assert_eq!(added, vec!["c"]);
+            }
+            other => panic!("Expected Superset, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn superset_multiple_additions() {
+        let old = vec![tool("a")];
+        let new = vec![tool("a"), tool("b"), tool("c"), tool("d")];
+        match detect_divergence(&old, &new) {
+            ToolDivergence::Superset { added } => {
+                assert_eq!(added.len(), 3);
+                assert!(added.contains(&"b".to_string()));
+                assert!(added.contains(&"c".to_string()));
+                assert!(added.contains(&"d".to_string()));
+            }
+            other => panic!("Expected Superset, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_empty_to_tools_is_superset() {
+        let old: Vec<Tool> = vec![];
+        let new = vec![tool("a"), tool("b")];
+        match detect_divergence(&old, &new) {
+            ToolDivergence::Superset { added } => {
+                assert_eq!(added.len(), 2);
             }
             other => panic!("Expected Superset, got {other:?}"),
         }
@@ -117,5 +163,124 @@ mod tests {
             }
             other => panic!("Expected Incompatible, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn pure_removal_is_incompatible() {
+        let old = vec![tool("a"), tool("b"), tool("c")];
+        let new = vec![tool("a")];
+        match detect_divergence(&old, &new) {
+            ToolDivergence::Incompatible { removed, added } => {
+                assert_eq!(removed.len(), 2);
+                assert!(added.is_empty());
+            }
+            other => panic!("Expected Incompatible, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn all_removed_is_incompatible() {
+        let old = vec![tool("a"), tool("b")];
+        let new: Vec<Tool> = vec![];
+        match detect_divergence(&old, &new) {
+            ToolDivergence::Incompatible { removed, added } => {
+                assert_eq!(removed.len(), 2);
+                assert!(added.is_empty());
+            }
+            other => panic!("Expected Incompatible, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rename_is_incompatible() {
+        // A renamed tool shows up as removal + addition
+        let old = vec![tool("open_notebook"), tool("execute_cell")];
+        let new = vec![tool("open_file"), tool("execute_cell")];
+        match detect_divergence(&old, &new) {
+            ToolDivergence::Incompatible { removed, added } => {
+                assert!(removed.contains(&"open_notebook".to_string()));
+                assert!(added.contains(&"open_file".to_string()));
+            }
+            other => panic!("Expected Incompatible, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn complete_replacement_is_incompatible() {
+        let old = vec![tool("a"), tool("b")];
+        let new = vec![tool("c"), tool("d")];
+        match detect_divergence(&old, &new) {
+            ToolDivergence::Incompatible { removed, added } => {
+                assert_eq!(removed.len(), 2);
+                assert_eq!(added.len(), 2);
+            }
+            other => panic!("Expected Incompatible, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn single_tool_same() {
+        let tools = vec![tool("only_one")];
+        assert_eq!(detect_divergence(&tools, &tools), ToolDivergence::Same);
+    }
+
+    // ── Tool cache round-trip ─────────────────────────────────────────
+
+    #[test]
+    fn save_and_load_tool_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let tools = vec![
+            tool("open_notebook"),
+            tool("execute_cell"),
+            tool("get_cell"),
+        ];
+
+        save_tool_cache(dir.path(), &tools);
+        let loaded = load_cached_tools(dir.path()).expect("should load saved tools");
+
+        assert_eq!(loaded.len(), 3);
+        let names: Vec<&str> = loaded.iter().map(|t| t.name.as_ref()).collect();
+        assert!(names.contains(&"open_notebook"));
+        assert!(names.contains(&"execute_cell"));
+        assert!(names.contains(&"get_cell"));
+    }
+
+    #[test]
+    fn load_returns_none_for_missing_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(load_cached_tools(dir.path()).is_none());
+    }
+
+    #[test]
+    fn load_returns_none_for_invalid_json() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(TOOL_CACHE_FILENAME), "not json").unwrap();
+        assert!(load_cached_tools(dir.path()).is_none());
+    }
+
+    #[test]
+    fn save_empty_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let tools: Vec<Tool> = vec![];
+        save_tool_cache(dir.path(), &tools);
+        let loaded = load_cached_tools(dir.path()).expect("should load empty cache");
+        assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn save_overwrites_existing_cache() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let tools_v1 = vec![tool("a"), tool("b")];
+        save_tool_cache(dir.path(), &tools_v1);
+
+        let tools_v2 = vec![tool("c"), tool("d"), tool("e")];
+        save_tool_cache(dir.path(), &tools_v2);
+
+        let loaded = load_cached_tools(dir.path()).unwrap();
+        assert_eq!(loaded.len(), 3);
+        let names: Vec<&str> = loaded.iter().map(|t| t.name.as_ref()).collect();
+        assert!(names.contains(&"c"));
+        assert!(!names.contains(&"a"));
     }
 }
