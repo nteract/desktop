@@ -77,15 +77,21 @@ export async function materializeChangeset(
     return;
   }
 
-  // Structural changes (cells added/removed/reordered) require full
-  // materialization — the cell ID list and ordering need updating.
+  // Structural changes (cells added/removed/reordered) or resolved_assets
+  // changes require full materialization. resolved_assets are only available
+  // from get_cells_json() (full serialization), not per-cell WASM accessors,
+  // so the incremental path would serve stale values from the previous cell.
+  const hasResolvedAssetChanges = changeset.changed.some(
+    (c) => c.fields.resolved_assets,
+  );
   if (
     changeset.added.length > 0 ||
     changeset.removed.length > 0 ||
-    changeset.order_changed
+    changeset.order_changed ||
+    hasResolvedAssetChanges
   ) {
     logger.debug(
-      `[frame-pipeline] full materialization: +${changeset.added.length} -${changeset.removed.length} reorder=${changeset.order_changed}`,
+      `[frame-pipeline] full materialization: +${changeset.added.length} -${changeset.removed.length} reorder=${changeset.order_changed} assets=${hasResolvedAssetChanges}`,
     );
     await deps.materializeCells(handle);
     notifyMetadataChanged();
