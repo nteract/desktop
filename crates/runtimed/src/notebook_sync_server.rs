@@ -2341,25 +2341,33 @@ where
     // We filter out the receiver's own peer_id to prevent them from rendering
     // their own cursor as a remote peer (clients don't know their server-assigned ID).
     {
-        let presence_state = room.presence.read().await;
-        if presence_state.peer_count() > 0 {
-            // Build snapshot excluding this peer (they shouldn't see themselves)
-            let other_peers: Vec<presence::PeerSnapshot> = presence_state
-                .peers()
-                .values()
-                .filter(|p| p.peer_id != peer_id)
-                .map(|p| presence::PeerSnapshot {
-                    peer_id: p.peer_id.clone(),
-                    peer_label: p.peer_label.clone(),
-                    actor_label: p.actor_label.clone(),
-                    channels: p.channels.values().cloned().collect(),
-                })
-                .collect();
-            if !other_peers.is_empty() {
-                let snapshot_bytes = presence::encode_snapshot("daemon", &other_peers);
-                connection::send_typed_frame(writer, NotebookFrameType::Presence, &snapshot_bytes)
-                    .await?;
+        let snapshot_bytes = {
+            let presence_state = room.presence.read().await;
+            if presence_state.peer_count() > 0 {
+                // Build snapshot excluding this peer (they shouldn't see themselves)
+                let other_peers: Vec<presence::PeerSnapshot> = presence_state
+                    .peers()
+                    .values()
+                    .filter(|p| p.peer_id != peer_id)
+                    .map(|p| presence::PeerSnapshot {
+                        peer_id: p.peer_id.clone(),
+                        peer_label: p.peer_label.clone(),
+                        actor_label: p.actor_label.clone(),
+                        channels: p.channels.values().cloned().collect(),
+                    })
+                    .collect();
+                if !other_peers.is_empty() {
+                    Some(presence::encode_snapshot("daemon", &other_peers))
+                } else {
+                    None
+                }
+            } else {
+                None
             }
+        }; // presence read guard dropped
+        if let Some(snapshot_bytes) = snapshot_bytes {
+            connection::send_typed_frame(writer, NotebookFrameType::Presence, &snapshot_bytes)
+                .await?;
         }
     }
 
@@ -3937,9 +3945,12 @@ async fn auto_launch_kernel(
         {
             Ok(ra) => {
                 // Store handle and set provenance
+                // Scope each lock independently to avoid cross-lock ordering.
                 {
                     let mut ra_guard = room.runtime_agent_handle.lock().await;
                     *ra_guard = Some(ra);
+                }
+                {
                     let mut id = room.current_runtime_agent_id.write().await;
                     *id = Some(runtime_agent_id.clone());
                 }
