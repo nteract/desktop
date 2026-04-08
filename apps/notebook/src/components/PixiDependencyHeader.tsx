@@ -138,7 +138,7 @@ export function PixiDependencyHeader({
             </div>
 
             {/* Show dep names from CRDT (bootstrapped from pixi.toml) */}
-            {pixiDeps && pixiDeps.dependencies.length > 0 && (
+            {pixiDeps?.dependencies?.length ? (
               <div className="mt-1.5 flex flex-wrap gap-1.5">
                 {pixiDeps.dependencies.map((dep) => (
                   <span
@@ -149,22 +149,22 @@ export function PixiDependencyHeader({
                   </span>
                 ))}
               </div>
-            )}
-            {(pixiDeps?.pypiDependencies?.length ?? 0) > 0 && (
-                <div className="mt-1.5 flex flex-wrap gap-1.5">
-                  <span className="text-muted-foreground text-[10px] uppercase tracking-wide self-center">
-                    PyPI
+            ) : null}
+            {pixiDeps?.pypiDependencies?.length ? (
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                <span className="text-muted-foreground text-[10px] uppercase tracking-wide self-center">
+                  PyPI
+                </span>
+                {pixiDeps.pypiDependencies.map((dep) => (
+                  <span
+                    key={dep}
+                    className="rounded bg-muted px-1.5 py-0.5 font-mono text-muted-foreground"
+                  >
+                    {dep}
                   </span>
-                  {pixiDeps.pypiDependencies.map((dep) => (
-                    <span
-                      key={dep}
-                      className="rounded bg-muted px-1.5 py-0.5 font-mono text-muted-foreground"
-                    >
-                      {dep}
-                    </span>
-                  ))}
-                </div>
-              )}
+                ))}
+              </div>
+            ) : null}
             {/* Fallback: show counts if CRDT deps not yet bootstrapped */}
             {(!pixiDeps || pixiDeps.dependencies.length === 0) &&
               (pixiInfo.has_dependencies || pixiInfo.has_pypi_dependencies) && (
