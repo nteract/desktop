@@ -1,0 +1,8 @@
+{
+  "async-rust-lsp": {
+    "command": "/Users/kylekelley/code/src/github.com/rgbkrk/async-rust-lsp/target/release/async-rust-lsp",
+    "extensionToLanguage": {
+      ".rs": "rust"
+    }
+  }
+}
