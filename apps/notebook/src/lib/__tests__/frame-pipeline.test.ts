@@ -573,6 +573,23 @@ describe("materializeChangeset", () => {
     expect(deps.materializeCells).toHaveBeenCalledWith(handle);
   });
 
+  it("falls back to full materialization for resolved_assets changes", async () => {
+    const handle = createMockHandle({});
+    const deps = createDeps(handle);
+
+    await materializeChangeset(
+      {
+        changed: [{ cell_id: "c1", fields: { resolved_assets: true } }],
+        added: [],
+        removed: [],
+        order_changed: false,
+      },
+      deps,
+    );
+
+    expect(deps.materializeCells).toHaveBeenCalledWith(handle);
+  });
+
   it("resolves uncached manifest objects via async resolution", async () => {
     const execResult: JupyterOutput = {
       output_type: "execute_result",
