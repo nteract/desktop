@@ -897,6 +897,11 @@ impl Daemon {
                                 let mut doc = self.settings.write().await;
                                 let changed = doc.apply_json_changes(&json);
                                 if changed {
+                                    // Store the external values so they can be re-applied
+                                    // after sync messages that might revert them via CRDT
+                                    // conflict resolution. See #1598.
+                                    doc.set_pending_external_values(json.clone());
+
                                     // Only persist the Automerge binary — do NOT write
                                     // the JSON mirror back, as serde_json formatting
                                     // differs from editors (e.g. arrays expand to one

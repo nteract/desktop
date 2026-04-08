@@ -71,6 +71,12 @@ where
                         let mut doc = settings.write().await;
                         doc.receive_sync_message(&mut peer_state, message)?;
 
+                        // Re-apply any pending file-watcher values that CRDT
+                        // conflict resolution may have reverted. See #1598.
+                        if doc.enforce_external_values() {
+                            info!("[sync] Re-applied external settings after sync merge");
+                        }
+
                         // Persist and notify others
                         persist_settings(&mut doc);
                         let _ = changed_tx.send(());

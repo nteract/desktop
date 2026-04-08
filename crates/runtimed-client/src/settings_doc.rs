@@ -236,6 +236,11 @@ pub fn write_settings_schema() -> std::io::Result<()> {
 /// containing lists for environment-specific settings.
 pub struct SettingsDoc {
     doc: AutoCommit,
+    /// When the file watcher applies external JSON changes, the values are stored
+    /// here so they can be re-applied after incoming sync messages. This ensures
+    /// external edits are authoritative over stale window state.
+    /// See <https://github.com/nteract/desktop/issues/1598>.
+    pending_external_values: Option<serde_json::Value>,
 }
 
 impl SettingsDoc {
@@ -275,7 +280,10 @@ impl SettingsDoc {
             let _ = doc.put_object(&conda_id, "default_packages", ObjType::List);
         }
 
-        Self { doc }
+        Self {
+            doc,
+            pending_external_values: None,
+        }
     }
 
     /// Load a settings document from a saved binary, or create a new one with
@@ -292,7 +300,10 @@ impl SettingsDoc {
             if let Ok(data) = std::fs::read(automerge_path) {
                 if let Ok(doc) = AutoCommit::load(&data) {
                     info!("[settings] Loaded Automerge doc from {:?}", automerge_path);
-                    let mut settings = Self { doc };
+                    let mut settings = Self {
+                        doc,
+                        pending_external_values: None,
+                    };
                     settings.migrate_flat_to_nested();
                     settings.migrate_null_keep_alive();
 
@@ -430,7 +441,10 @@ impl SettingsDoc {
     /// Load a settings document from raw bytes.
     pub fn load(data: &[u8]) -> Result<Self, AutomergeError> {
         let doc = AutoCommit::load(data)?;
-        Ok(Self { doc })
+        Ok(Self {
+            doc,
+            pending_external_values: None,
+        })
     }
 
     /// Serialize the document to bytes for persistence.
@@ -596,7 +610,8 @@ impl SettingsDoc {
 
     /// Replace a list of strings at a dotted path.
     ///
-    /// Deletes the existing list (if any) and creates a new one with the given items.
+    /// Reuses the existing Automerge List object when possible to avoid
+    /// competing `put_object` calls from different peers. See #1594, #1602.
     pub fn put_list(&mut self, key: &str, values: &[String]) {
         let (map_key, sub_key) = match key.split_once('.') {
             Some(pair) => pair,
@@ -604,14 +619,24 @@ impl SettingsDoc {
         };
         let map_id = self.ensure_map(map_key);
 
-        // Delete existing value at this key (list or otherwise)
-        let _ = self.doc.delete(&map_id, sub_key);
-
-        // Create new list and insert items
-        if let Ok(list_id) = self.doc.put_object(&map_id, sub_key, ObjType::List) {
-            for (i, item) in values.iter().enumerate() {
-                let _ = self.doc.insert(&list_id, i, item.as_str());
+        // Reuse existing List if present, only create if missing or wrong type
+        let list_id = match self.doc.get(&map_id, sub_key).ok().flatten() {
+            Some((automerge::Value::Object(ObjType::List), id)) => {
+                // Clear existing elements from end to avoid index shifting
+                let len = self.doc.length(&id);
+                for i in (0..len).rev() {
+                    let _ = self.doc.delete(&id, i);
+                }
+                id
             }
+            _ => match self.doc.put_object(&map_id, sub_key, ObjType::List) {
+                Ok(id) => id,
+                Err(_) => return,
+            },
+        };
+
+        for (i, item) in values.iter().enumerate() {
+            let _ = self.doc.insert(&list_id, i, item.as_str());
         }
     }
 
@@ -817,6 +842,30 @@ impl SettingsDoc {
         }
 
         changed
+    }
+
+    /// Store the last externally-applied JSON so it can be re-applied after
+    /// sync messages that might revert it via conflict resolution.
+    pub fn set_pending_external_values(&mut self, json: serde_json::Value) {
+        self.pending_external_values = Some(json);
+    }
+
+    /// Re-apply pending external values if a sync merge reverted them.
+    ///
+    /// Returns `true` if any values were re-applied (i.e., a sync message
+    /// had overwritten the file watcher's changes). Clears the pending state
+    /// once all peers have converged (apply_json_changes returns false).
+    pub fn enforce_external_values(&mut self) -> bool {
+        let json = match self.pending_external_values.take() {
+            Some(json) => json,
+            None => return false,
+        };
+        let reapplied = self.apply_json_changes(&json);
+        if reapplied {
+            // Values drifted — keep enforcing until peers converge
+            self.pending_external_values = Some(json);
+        }
+        reapplied
     }
 }
 
@@ -1150,6 +1199,7 @@ mod tests {
         // Automerge CRDT conflicts that resolve nondeterministically).
         let mut client = SettingsDoc {
             doc: AutoCommit::new(),
+            pending_external_values: None,
         };
 
         let mut server_state = sync::State::new();
@@ -1389,7 +1439,10 @@ mod tests {
         let _ = automerge_doc.put(automerge::ROOT, "keep_alive_secs", -5_i64);
 
         // Wrap in SettingsDoc
-        let doc = SettingsDoc { doc: automerge_doc };
+        let doc = SettingsDoc {
+            doc: automerge_doc,
+            pending_external_values: None,
+        };
 
         // Negative Int should return None (invalid)
         let result = doc.get_u64("keep_alive_secs");
@@ -1408,7 +1461,10 @@ mod tests {
             automerge::ScalarValue::Null,
         );
 
-        let mut doc = SettingsDoc { doc: automerge_doc };
+        let mut doc = SettingsDoc {
+            doc: automerge_doc,
+            pending_external_values: None,
+        };
 
         // Verify it's detected as null
         assert!(doc.is_null("keep_alive_secs"));
@@ -1467,7 +1523,10 @@ mod tests {
 
         // Empty doc with no keep_alive_secs key
         let automerge_doc = AutoCommit::new();
-        let doc = SettingsDoc { doc: automerge_doc };
+        let doc = SettingsDoc {
+            doc: automerge_doc,
+            pending_external_values: None,
+        };
 
         // Missing key is not the same as null
         assert!(!doc.is_null("keep_alive_secs"));
