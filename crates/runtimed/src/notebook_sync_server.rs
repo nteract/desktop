@@ -2020,10 +2020,32 @@ where
                 return;
             }
 
-            // Evict the room and shut down kernel if running
-            let mut rooms_guard = rooms_for_eviction.lock().await;
-            // Re-check under lock
-            if room_for_eviction.active_peers.load(Ordering::Relaxed) == 0 {
+            // Remove room from the map under the lock, then drop the lock
+            // BEFORE async teardown. Holding the lock across runtime agent
+            // shutdown RPCs causes a convoy deadlock when the agent is
+            // unresponsive — all notebook operations block on the lock.
+            let should_teardown = {
+                let mut rooms_guard = rooms_for_eviction.lock().await;
+                if room_for_eviction.active_peers.load(Ordering::Relaxed) == 0 {
+                    if rooms_guard
+                        .get(&notebook_id_for_eviction)
+                        .is_some_and(|r| Arc::ptr_eq(r, &room_for_eviction))
+                    {
+                        rooms_guard.remove(&notebook_id_for_eviction);
+                        true
+                    } else {
+                        debug!(
+                            "[notebook-sync] Eviction skipped for {} (room was replaced)",
+                            notebook_id_for_eviction
+                        );
+                        false
+                    }
+                } else {
+                    false
+                }
+            }; // Lock dropped here — safe for async teardown below
+
+            if should_teardown {
                 // Shut down runtime agent subprocess if running. RuntimeAgentHandle::spawn
                 // moves Child into a background task, so kill_on_drop doesn't
                 // trigger on room drop — we need explicit shutdown via RPC.
@@ -2034,11 +2056,25 @@ where
                         .await
                         .is_some();
                     if has_runtime_agent {
-                        let _ = send_runtime_agent_request(
-                            &room_for_eviction,
-                            notebook_protocol::protocol::RuntimeAgentRequest::ShutdownKernel,
+                        // Timeout the shutdown RPC — a dead/stuck agent shouldn't
+                        // block teardown forever.
+                        match tokio::time::timeout(
+                            std::time::Duration::from_secs(5),
+                            send_runtime_agent_request(
+                                &room_for_eviction,
+                                notebook_protocol::protocol::RuntimeAgentRequest::ShutdownKernel,
+                            ),
                         )
-                        .await;
+                        .await
+                        {
+                            Ok(_) => {}
+                            Err(_) => {
+                                warn!(
+                                    "[notebook-sync] Runtime agent shutdown timed out for {}, force-dropping",
+                                    notebook_id_for_eviction
+                                );
+                            }
+                        }
                         let mut guard = room_for_eviction.runtime_agent_handle.lock().await;
                         *guard = None;
                         let mut tx = room_for_eviction.runtime_agent_request_tx.lock().await;
@@ -2056,23 +2092,10 @@ where
                     );
                 }
 
-                // Only remove if the room in the map is still the one we're evicting.
-                // A rekey may have replaced the room at this key with a different one.
-                if rooms_guard
-                    .get(&notebook_id_for_eviction)
-                    .is_some_and(|r| Arc::ptr_eq(r, &room_for_eviction))
-                {
-                    rooms_guard.remove(&notebook_id_for_eviction);
-                    info!(
-                        "[notebook-sync] Evicted room {} (idle timeout)",
-                        notebook_id_for_eviction
-                    );
-                } else {
-                    debug!(
-                        "[notebook-sync] Eviction skipped for {} (room was replaced)",
-                        notebook_id_for_eviction
-                    );
-                }
+                info!(
+                    "[notebook-sync] Evicted room {} (idle timeout)",
+                    notebook_id_for_eviction
+                );
             }
         });
     } else {
