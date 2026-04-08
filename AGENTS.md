@@ -395,6 +395,30 @@ Use `./target/debug/runt` to interact with the worktree daemon (or `supervisor_s
 
 These invariants prevent bad edits. Read before modifying the relevant subsystems.
 
+### No Tokio Mutex Guards Across `.await` Points
+
+**Never hold a `tokio::sync::Mutex` or `tokio::sync::RwLock` guard across an `.await` point.** This causes convoy deadlocks — all tasks waiting for the lock block indefinitely if the holder is suspended on an async operation. CI enforces this via `cargo test -p runtimed --test tokio_mutex_lint` (hard failure, no exceptions).
+
+**Use block scoping, not `drop()`:**
+```rust
+// GOOD: guard dropped at block boundary, lint can verify
+let data = {
+    let guard = shared.lock().await;
+    guard.get_data().clone()
+}; // guard dropped here
+do_async_work(&data).await;
+
+// BAD: lint can't track drop() calls
+let guard = shared.lock().await;
+let data = guard.get_data().clone();
+drop(guard);  // lint still sees guard as live
+do_async_work(&data).await;
+```
+
+**Prefer owned state over shared locks.** If a task is the sole consumer of some state, own it as a local variable instead of wrapping it in `Arc<Mutex<...>>`. The runtime agent's `select!` loop owns `KernelState` and `JupyterKernel` directly — no mutex needed because only one task touches them. This follows the [actor pattern](https://ryhl.io/blog/actors-with-tokio/): a `select!` loop owns state, communicates via channels.
+
+**Use `std::sync::Mutex` for synchronous-only access.** If you never hold the guard across an `.await`, `std::sync::Mutex` is faster than `tokio::sync::Mutex` and the compiler prevents holding it across `.await` when the future must be `Send`. `tokio::sync::Mutex` is only needed when you genuinely must hold the guard across an async operation (which this lint now prohibits).
+
 ### Fork+Merge for Async CRDT Mutations
 
 **Any code path that reads from the CRDT doc, does async work, then writes back MUST use `fork()` + `merge()`.** Direct mutation after an async gap can silently overwrite concurrent edits from other peers, the frontend, or background tasks.
