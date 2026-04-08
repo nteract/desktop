@@ -650,24 +650,32 @@ impl KernelConnection for JupyterKernel {
                                     .await
                                     {
                                         let manifest_json = manifest.to_json();
-                                        let mut sd = state_doc_for_iopub.write().await;
-                                        if pending_clear_widgets.remove(&widget_comm_id) {
-                                            sd.clear_comm_outputs(&widget_comm_id);
-                                        }
-                                        if sd.append_comm_output(&widget_comm_id, &manifest_json) {
-                                            let _ = state_changed_for_iopub.send(());
-                                        }
+                                        let output_manifests = {
+                                            let mut sd = state_doc_for_iopub.write().await;
+                                            if pending_clear_widgets.remove(&widget_comm_id) {
+                                                sd.clear_comm_outputs(&widget_comm_id);
+                                            }
+                                            if sd
+                                                .append_comm_output(&widget_comm_id, &manifest_json)
+                                            {
+                                                let _ = state_changed_for_iopub.send(());
+                                            }
 
-                                        if let Some(entry) = sd.get_comm(&widget_comm_id) {
-                                            let output_manifests = entry.outputs.clone();
-                                            let manifests_json =
-                                                serde_json::Value::Array(output_manifests.clone());
-                                            sd.set_comm_state_property(
-                                                &widget_comm_id,
-                                                "outputs",
-                                                &manifests_json,
-                                            );
-                                            drop(sd);
+                                            if let Some(entry) = sd.get_comm(&widget_comm_id) {
+                                                let manifests = entry.outputs.clone();
+                                                let manifests_json =
+                                                    serde_json::Value::Array(manifests.clone());
+                                                sd.set_comm_state_property(
+                                                    &widget_comm_id,
+                                                    "outputs",
+                                                    &manifests_json,
+                                                );
+                                                Some(manifests)
+                                            } else {
+                                                None
+                                            }
+                                        };
+                                        if let Some(output_manifests) = output_manifests {
                                             let mut resolved_outputs = Vec::new();
                                             for m in &output_manifests {
                                                 if let Ok(manifest) =
@@ -839,27 +847,33 @@ impl KernelConnection for JupyterKernel {
                                         .await
                                         {
                                             let manifest_json = manifest.to_json();
-                                            let mut sd = state_doc_for_iopub.write().await;
-                                            if pending_clear_widgets.remove(&widget_comm_id) {
-                                                sd.clear_comm_outputs(&widget_comm_id);
-                                            }
-                                            if sd
-                                                .append_comm_output(&widget_comm_id, &manifest_json)
-                                            {
-                                                let _ = state_changed_for_iopub.send(());
-                                            }
-
-                                            if let Some(entry) = sd.get_comm(&widget_comm_id) {
-                                                let output_manifests = entry.outputs.clone();
-                                                let manifests_json = serde_json::Value::Array(
-                                                    output_manifests.clone(),
-                                                );
-                                                sd.set_comm_state_property(
+                                            let output_manifests = {
+                                                let mut sd = state_doc_for_iopub.write().await;
+                                                if pending_clear_widgets.remove(&widget_comm_id) {
+                                                    sd.clear_comm_outputs(&widget_comm_id);
+                                                }
+                                                if sd.append_comm_output(
                                                     &widget_comm_id,
-                                                    "outputs",
-                                                    &manifests_json,
-                                                );
-                                                drop(sd);
+                                                    &manifest_json,
+                                                ) {
+                                                    let _ = state_changed_for_iopub.send(());
+                                                }
+
+                                                if let Some(entry) = sd.get_comm(&widget_comm_id) {
+                                                    let manifests = entry.outputs.clone();
+                                                    let manifests_json =
+                                                        serde_json::Value::Array(manifests.clone());
+                                                    sd.set_comm_state_property(
+                                                        &widget_comm_id,
+                                                        "outputs",
+                                                        &manifests_json,
+                                                    );
+                                                    Some(manifests)
+                                                } else {
+                                                    None
+                                                }
+                                            };
+                                            if let Some(output_manifests) = output_manifests {
                                                 let mut resolved_outputs = Vec::new();
                                                 for m in &output_manifests {
                                                     if let Ok(manifest) =
@@ -1056,27 +1070,33 @@ impl KernelConnection for JupyterKernel {
                                         .await
                                         {
                                             let manifest_json = manifest.to_json();
-                                            let mut sd = state_doc_for_iopub.write().await;
-                                            if pending_clear_widgets.remove(&widget_comm_id) {
-                                                sd.clear_comm_outputs(&widget_comm_id);
-                                            }
-                                            if sd
-                                                .append_comm_output(&widget_comm_id, &manifest_json)
-                                            {
-                                                let _ = state_changed_for_iopub.send(());
-                                            }
-
-                                            if let Some(entry) = sd.get_comm(&widget_comm_id) {
-                                                let output_manifests = entry.outputs.clone();
-                                                let manifests_json = serde_json::Value::Array(
-                                                    output_manifests.clone(),
-                                                );
-                                                sd.set_comm_state_property(
+                                            let output_manifests = {
+                                                let mut sd = state_doc_for_iopub.write().await;
+                                                if pending_clear_widgets.remove(&widget_comm_id) {
+                                                    sd.clear_comm_outputs(&widget_comm_id);
+                                                }
+                                                if sd.append_comm_output(
                                                     &widget_comm_id,
-                                                    "outputs",
-                                                    &manifests_json,
-                                                );
-                                                drop(sd);
+                                                    &manifest_json,
+                                                ) {
+                                                    let _ = state_changed_for_iopub.send(());
+                                                }
+
+                                                if let Some(entry) = sd.get_comm(&widget_comm_id) {
+                                                    let manifests = entry.outputs.clone();
+                                                    let manifests_json =
+                                                        serde_json::Value::Array(manifests.clone());
+                                                    sd.set_comm_state_property(
+                                                        &widget_comm_id,
+                                                        "outputs",
+                                                        &manifests_json,
+                                                    );
+                                                    Some(manifests)
+                                                } else {
+                                                    None
+                                                }
+                                            };
+                                            if let Some(output_manifests) = output_manifests {
                                                 let mut resolved_outputs = Vec::new();
                                                 for m in &output_manifests {
                                                     if let Ok(manifest) =
