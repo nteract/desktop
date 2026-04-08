@@ -36,7 +36,7 @@ pub fn cell_structured_content_from_manifests(
     status: &str,
     blob_base_url: &Option<String>,
 ) -> Value {
-    json!({
+    let mut content = json!({
         "cell": {
             "cell_id": cell_id,
             "source": source,
@@ -45,7 +45,13 @@ pub fn cell_structured_content_from_manifests(
             "execution_count": execution_count,
             "status": status,
         }
-    })
+    });
+
+    if let Some(base) = blob_base_url {
+        content["blob_base_url"] = Value::String(base.clone());
+    }
+
+    content
 }
 
 /// Convert a single output manifest Value to structured JSON for the output renderer.

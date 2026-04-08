@@ -31,4 +31,6 @@ export interface CellData {
 export interface NteractContent {
   cell?: CellData;
   cells?: CellData[];
+  /** Daemon HTTP base URL for fetching blob data and plugins */
+  blob_base_url?: string;
 }

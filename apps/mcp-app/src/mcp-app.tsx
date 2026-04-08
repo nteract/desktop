@@ -9,7 +9,6 @@ import {
 } from "@modelcontextprotocol/ext-apps";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { NteractContent } from "./types";
-import { findBlobBaseUrl } from "./lib/blob-fetch";
 import { CellOutput } from "./components/cell-output";
 
 /**
@@ -68,11 +67,7 @@ function McpApp() {
 
   useCollapseWhenEmpty(hasOutputs);
 
-  // Extract blob base URL from first blob URL in any output data
-  const blobBaseUrl = cells
-    .flatMap((c) => c.outputs || [])
-    .map((o) => o.data && findBlobBaseUrl(o.data))
-    .find(Boolean);
+  const blobBaseUrl = content?.blob_base_url;
 
   if (!hasOutputs) return null;
 
