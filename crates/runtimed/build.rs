@@ -2,7 +2,14 @@ use std::process::Command;
 
 fn main() {
     // Rebuild when plugin assets change (committed via Git LFS)
-    for file in ["plotly.js", "vega.js", "leaflet.js", "leaflet.css"] {
+    for file in [
+        "markdown.js",
+        "markdown.css",
+        "plotly.js",
+        "vega.js",
+        "leaflet.js",
+        "leaflet.css",
+    ] {
         println!("cargo:rerun-if-changed=../runt-mcp/assets/plugins/{file}");
     }
 

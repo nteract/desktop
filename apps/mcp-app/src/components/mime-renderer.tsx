@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { fetchBlobText, isBlobUrl } from "../lib/blob-fetch";
 import { selectMimeType } from "../lib/mime-priority";
 import { loadPluginForMime, needsDaemonPlugin } from "../lib/plugin-loader";
@@ -7,28 +7,7 @@ import { AnsiText } from "./ansi-text";
 import { HtmlOutput } from "./html-output";
 import { ImageOutput } from "./image-output";
 import { JsonOutput } from "./json-output";
-import { MarkdownOutput } from "./markdown-output";
 import type { CellOutput } from "../types";
-import katex from "katex";
-
-function LatexOutput({ content }: { content: string }) {
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!ref.current || !content.trim()) return;
-    let latex = content.trim();
-    if (latex.startsWith("$$") && latex.endsWith("$$")) {
-      latex = latex.slice(2, -2).trim();
-    } else if (latex.startsWith("$") && latex.endsWith("$")) {
-      latex = latex.slice(1, -1).trim();
-    }
-    katex.render(latex, ref.current, {
-      displayMode: true,
-      throwOnError: false,
-      trust: true,
-    });
-  }, [content]);
-  return <div className="latex-output" ref={ref} />;
-}
 
 interface MimeRendererProps {
   data: Record<string, string>;
@@ -50,7 +29,7 @@ export function MimeRenderer({ data, blobBaseUrl }: MimeRendererProps) {
   // text/plain fallback for when blob fetch or plugin load fails
   const plainFallback = data["text/plain"] ? String(data["text/plain"]) : undefined;
 
-  // Viz MIME types: need a daemon-served plugin to render
+  // Plugin-rendered MIME types (markdown, latex, plotly, vega, leaflet)
   if (needsDaemonPlugin(mime)) {
     return (
       <PluginRenderer
@@ -66,7 +45,7 @@ export function MimeRenderer({ data, blobBaseUrl }: MimeRendererProps) {
 }
 
 /**
- * Load a daemon-served plugin via <script> tag and render viz data.
+ * Load a daemon-served plugin via <script> tag and render data with it.
  * Loads plugin and fetches blob data in parallel.
  */
 function PluginRenderer({
@@ -87,11 +66,14 @@ function PluginRenderer({
   useEffect(() => {
     let cancelled = false;
 
-    // Load plugin via <script> tag and fetch blob data in parallel
+    // Load plugin via <script> tag and fetch/parse data in parallel
     const pluginPromise = loadPluginForMime(mime, blobBaseUrl) ?? Promise.resolve();
     const dataPromise = isBlobUrl(raw)
-      ? fetchBlobText(raw).then((text) => JSON.parse(text))
-      : Promise.resolve(typeof raw === "string" ? JSON.parse(raw) : raw);
+      ? fetchBlobText(raw).then((text) => {
+          // Try JSON parse for structured data, fall back to raw string
+          try { return JSON.parse(text); } catch { return text; }
+        })
+      : Promise.resolve(raw);
 
     Promise.all([pluginPromise, dataPromise])
       .then(([, parsedData]) => {
@@ -113,10 +95,8 @@ function PluginRenderer({
 
   if (!pluginReady || data === null) return null;
 
-  // Look up the registered renderer component
   const RendererComponent = getPluginRenderer(mime);
   if (!RendererComponent) {
-    // Plugin loaded but didn't register for this MIME type
     if (plainFallback) return <AnsiText text={plainFallback} />;
     return null;
   }
@@ -138,7 +118,6 @@ function FetchAndRender({ mime, raw, plainFallback }: { mime: string; raw: strin
     }
   }, [raw]);
 
-  // Blob fetch failed — show text/plain fallback if available
   if (failed) {
     if (plainFallback) return <AnsiText text={plainFallback} />;
     return null;
@@ -149,10 +128,6 @@ function FetchAndRender({ mime, raw, plainFallback }: { mime: string; raw: strin
   switch (mime) {
     case "text/html":
       return <HtmlOutput html={content} />;
-    case "text/markdown":
-      return <MarkdownOutput content={content} />;
-    case "text/latex":
-      return <LatexOutput content={content} />;
     case "image/svg+xml":
       return <HtmlOutput html={content} />;
     case "application/json":

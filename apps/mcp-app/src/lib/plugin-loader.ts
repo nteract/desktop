@@ -20,6 +20,8 @@ interface PluginInfo {
 }
 
 const MIME_TO_PLUGIN: Record<string, PluginInfo> = {
+  "text/markdown": { name: "markdown", hasCss: true },
+  "text/latex": { name: "markdown", hasCss: true },
   "application/vnd.plotly.v1+json": { name: "plotly", hasCss: false },
   "application/geo+json": { name: "leaflet", hasCss: true },
 };

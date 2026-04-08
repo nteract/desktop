@@ -23,6 +23,10 @@ const outDir = path.resolve(repoRoot, "crates/runt-mcp/assets/plugins");
 
 const PLUGINS = [
   {
+    name: "markdown",
+    entry: path.resolve(srcDir, "isolated-renderer/markdown-renderer.tsx"),
+  },
+  {
     name: "plotly",
     entry: path.resolve(srcDir, "isolated-renderer/plotly-renderer.tsx"),
   },

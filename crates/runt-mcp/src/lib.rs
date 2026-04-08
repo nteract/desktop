@@ -128,6 +128,16 @@ impl ServerHandler for NteractMcp {
         )
     }
 
+    /// Accept logging/setLevel requests (no-op — we don't change log level dynamically).
+    /// Without this, MCP Jam gets an error on connect.
+    async fn set_level(
+        &self,
+        _request: rmcp::model::SetLevelRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<(), McpError> {
+        Ok(())
+    }
+
     async fn list_tools(
         &self,
         _request: Option<rmcp::model::PaginatedRequestParams>,

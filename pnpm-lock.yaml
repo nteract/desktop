@@ -276,33 +276,15 @@ importers:
       escape-carriage:
         specifier: ^1.3.1
         version: 1.3.1
-      katex:
-        specifier: ^0.16.28
-        version: 0.16.38
       react:
         specifier: ^19.1.0
         version: 19.2.4
       react-dom:
         specifier: ^19.1.0
         version: 19.2.4(react@19.2.4)
-      react-markdown:
-        specifier: ^10.1.0
-        version: 10.1.0(@types/react@19.2.14)(react@19.2.4)
       react-syntax-highlighter:
         specifier: ^15.6.1
         version: 15.6.6(react@19.2.4)
-      rehype-katex:
-        specifier: ^7.0.1
-        version: 7.0.1
-      rehype-raw:
-        specifier: ^7.0.0
-        version: 7.0.0
-      remark-gfm:
-        specifier: ^4.0.1
-        version: 4.0.1
-      remark-math:
-        specifier: ^6.0.0
-        version: 6.0.0
     devDependencies:
       '@tailwindcss/vite':
         specifier: ^4.0.0
@@ -8051,7 +8033,7 @@ snapshots:
       style-mod: 4.1.3
       w3c-keyname: 2.2.8
 
-  '@convex-dev/auth@0.0.88(@auth/core@0.37.4)(convex@1.34.1(react@19.2.4))(react@19.1.0)':
+  '@convex-dev/auth@0.0.88(@auth/core@0.37.4)(convex@1.34.1(react@19.1.0))(react@19.1.0)':
     dependencies:
       '@auth/core': 0.37.4
       '@oslojs/crypto': 1.0.1
@@ -8068,7 +8050,7 @@ snapshots:
     optionalDependencies:
       react: 19.1.0
 
-  '@convex-dev/workos@0.0.1(@types/debug@4.1.12)(@types/node@20.19.37)(convex@1.34.1(react@19.2.4))(jiti@2.6.1)(jsdom@26.1.0)(lightningcss@1.31.1)(react@19.1.0)(typescript@5.8.3)':
+  '@convex-dev/workos@0.0.1(@types/debug@4.1.12)(@types/node@20.19.37)(convex@1.34.1(react@19.1.0))(jiti@2.6.1)(jsdom@26.1.0)(lightningcss@1.31.1)(react@19.1.0)(typescript@5.8.3)':
     dependencies:
       '@workos-inc/authkit-react': 0.11.0(react@19.1.0)
       convex: 1.34.1(react@19.1.0)
@@ -8529,8 +8511,8 @@ snapshots:
       '@ai-sdk/react': 3.0.151(react@19.1.0)(zod@4.3.6)
       '@ai-sdk/xai': 3.0.78(zod@4.3.6)
       '@axiomhq/js': 1.6.0
-      '@convex-dev/auth': 0.0.88(@auth/core@0.37.4)(convex@1.34.1(react@19.2.4))(react@19.1.0)
-      '@convex-dev/workos': 0.0.1(@types/debug@4.1.12)(@types/node@20.19.37)(convex@1.34.1(react@19.2.4))(jiti@2.6.1)(jsdom@26.1.0)(lightningcss@1.31.1)(react@19.1.0)(typescript@5.8.3)
+      '@convex-dev/auth': 0.0.88(@auth/core@0.37.4)(convex@1.34.1(react@19.1.0))(react@19.1.0)
+      '@convex-dev/workos': 0.0.1(@types/debug@4.1.12)(@types/node@20.19.37)(convex@1.34.1(react@19.1.0))(jiti@2.6.1)(jsdom@26.1.0)(lightningcss@1.31.1)(react@19.1.0)(typescript@5.8.3)
       '@dagrejs/dagre': 3.0.0
       '@dnd-kit/core': 6.3.1(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
       '@dnd-kit/sortable': 10.0.0(@dnd-kit/core@6.3.1(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react@19.1.0)
