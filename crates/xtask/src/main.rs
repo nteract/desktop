@@ -2173,20 +2173,41 @@ fn mcp_widget_needs_rebuild() -> Option<&'static str> {
         return Some("could not determine output timestamps");
     };
 
-    // Check all source files against the oldest output.
-    // Include pnpm-lock.yaml so transitive dependency updates also trigger a rebuild.
-    let sources = [
+    // Check build scripts, lockfile, and all source files against the oldest output.
+    let top_level_sources = [
         Path::new("apps/mcp-app/package.json"),
         Path::new("apps/mcp-app/build-html.js"),
-        Path::new("apps/mcp-app/src/mcp-app.ts"),
-        Path::new("apps/mcp-app/src/style.css"),
+        Path::new("apps/mcp-app/build-main.js"),
         Path::new("pnpm-lock.yaml"),
     ];
-    for src in &sources {
+    for src in &top_level_sources {
         if let Some(src_time) = modified_time(src) {
             if src_time > oldest_output {
                 return Some("source files changed");
             }
+        }
+    }
+    // Walk all files under apps/mcp-app/src/
+    if let Ok(entries) = std::fs::read_dir("apps/mcp-app/src") {
+        fn check_dir_recursive(dir: std::fs::ReadDir, threshold: std::time::SystemTime) -> bool {
+            for entry in dir.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    if let Ok(sub) = std::fs::read_dir(&path) {
+                        if check_dir_recursive(sub, threshold) {
+                            return true;
+                        }
+                    }
+                } else if let Some(t) = modified_time(&path) {
+                    if t > threshold {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+        if check_dir_recursive(entries, oldest_output) {
+            return Some("source files changed");
         }
     }
 
