@@ -1219,16 +1219,17 @@ impl KernelConnection for JupyterKernel {
                                         pending_clear_widgets.insert(widget_comm_id.clone());
                                     } else {
                                         pending_clear_widgets.remove(&widget_comm_id);
-                                        let mut sd = state_doc_for_iopub.write().await;
-                                        if sd.clear_comm_outputs(&widget_comm_id) {
-                                            let _ = state_changed_for_iopub.send(());
+                                        {
+                                            let mut sd = state_doc_for_iopub.write().await;
+                                            if sd.clear_comm_outputs(&widget_comm_id) {
+                                                let _ = state_changed_for_iopub.send(());
+                                            }
+                                            sd.set_comm_state_property(
+                                                &widget_comm_id,
+                                                "outputs",
+                                                &serde_json::json!([]),
+                                            );
                                         }
-                                        sd.set_comm_state_property(
-                                            &widget_comm_id,
-                                            "outputs",
-                                            &serde_json::json!([]),
-                                        );
-                                        drop(sd);
                                         let _ = iopub_cmd_tx
                                             .send(QueueCommand::SendCommUpdate {
                                                 comm_id: widget_comm_id.clone(),
