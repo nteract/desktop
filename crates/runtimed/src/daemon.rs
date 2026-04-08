@@ -910,11 +910,6 @@ impl Daemon {
                                     if let Err(e) = doc.save_to_file(&automerge_path) {
                                         warn!("[settings-watch] Failed to save Automerge doc: {}", e);
                                     }
-                                } else {
-                                    // Self-write detected (persist_settings wrote the JSON
-                                    // mirror and the watcher fired, but values already match).
-                                    // All peers have converged — clear the override.
-                                    doc.clear_pending_external_values();
                                 }
                                 changed
                             };

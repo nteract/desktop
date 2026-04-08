@@ -871,13 +871,6 @@ impl SettingsDoc {
         };
         self.apply_json_changes(&json)
     }
-
-    /// Clear pending external values. Called by the file watcher when it
-    /// detects a self-write (values already match the doc), indicating
-    /// all peers have converged and the override is no longer needed.
-    pub fn clear_pending_external_values(&mut self) {
-        self.pending_external_values = None;
-    }
 }
 
 impl Default for SettingsDoc {
