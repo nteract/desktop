@@ -322,6 +322,7 @@ export function useAutomergeNotebook() {
           resetNotebookCells();
           resetRuntimeState();
           resetPoolState();
+          outputCacheRef.current.clear();
           setIsLoading(true);
           return from(
             bootstrap().catch((err: unknown) => {
