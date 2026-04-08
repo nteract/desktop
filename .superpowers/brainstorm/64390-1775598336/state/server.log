@@ -1,0 +1,7 @@
+{"type":"server-started","port":51743,"host":"127.0.0.1","url_host":"localhost","url":"http://localhost:51743","screen_dir":"/Users/kylekelley/code/src/github.com/nteract/desktop/.superpowers/brainstorm/64390-1775598336/content","state_dir":"/Users/kylekelley/code/src/github.com/nteract/desktop/.superpowers/brainstorm/64390-1775598336/state"}
+{"type":"screen-added","file":"/Users/kylekelley/code/src/github.com/nteract/desktop/.superpowers/brainstorm/64390-1775598336/content/architecture-comparison.html"}
+{"source":"user-event","type":"click","text":"B\n    \n      Embed the renderer bundle (recommended)\n      Replace vanilla rendering with the React isolated renderer + plugin system. One codepath for notebook and MCP Apps. structured.rs sends inline viz specs instead of blob URLs. Bigger upfront but eliminates divergence.","choice":"b","id":null,"timestamp":1775598471504}
+{"type":"screen-added","file":"/Users/kylekelley/code/src/github.com/nteract/desktop/.superpowers/brainstorm/64390-1775598336/content/waiting.html"}
+{"type":"screen-added","file":"/Users/kylekelley/code/src/github.com/nteract/desktop/.superpowers/brainstorm/64390-1775598336/content/design-overview.html"}
+{"type":"screen-added","file":"/Users/kylekelley/code/src/github.com/nteract/desktop/.superpowers/brainstorm/64390-1775598336/content/waiting-2.html"}
+{"type":"server-stopped","reason":"idle timeout"}

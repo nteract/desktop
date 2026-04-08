@@ -1,0 +1,116 @@
+<h2>MCP App Renderer — Design Overview</h2>
+<p class="subtitle">Phase 1 scope: what we're building now vs. what comes later</p>
+
+<div class="split">
+  <div class="mockup">
+    <div class="mockup-header">Phase 1: Ship Now</div>
+    <div class="mockup-body" style="padding: 16px; font-size: 13px;">
+
+      <div style="margin-bottom: 16px;">
+        <div class="label">MCP App HTML (monolithic bundle)</div>
+        <div style="background: #1a2e1a; border-radius: 6px; padding: 10px; margin-top: 4px;">
+          <div style="color: #4ade80; font-size: 12px; margin-bottom: 6px;">include_str! in runt-mcp</div>
+          <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+            <span style="background: #065f46; color: #a7f3d0; padding: 3px 8px; border-radius: 4px; font-size: 11px;">React</span>
+            <span style="background: #065f46; color: #a7f3d0; padding: 3px 8px; border-radius: 4px; font-size: 11px;">MIME dispatch</span>
+            <span style="background: #065f46; color: #a7f3d0; padding: 3px 8px; border-radius: 4px; font-size: 11px;">ANSI renderer</span>
+            <span style="background: #065f46; color: #a7f3d0; padding: 3px 8px; border-radius: 4px; font-size: 11px;">text/plain</span>
+            <span style="background: #065f46; color: #a7f3d0; padding: 3px 8px; border-radius: 4px; font-size: 11px;">text/html</span>
+            <span style="background: #065f46; color: #a7f3d0; padding: 3px 8px; border-radius: 4px; font-size: 11px;">images</span>
+            <span style="background: #065f46; color: #a7f3d0; padding: 3px 8px; border-radius: 4px; font-size: 11px;">JSON</span>
+            <span style="background: #065f46; color: #a7f3d0; padding: 3px 8px; border-radius: 4px; font-size: 11px;">errors</span>
+            <span style="background: #065f46; color: #a7f3d0; padding: 3px 8px; border-radius: 4px; font-size: 11px;">streams</span>
+            <span style="background: #1e3a5f; color: #93c5fd; padding: 3px 8px; border-radius: 4px; font-size: 11px;">markdown plugin</span>
+            <span style="background: #1e3a5f; color: #93c5fd; padding: 3px 8px; border-radius: 4px; font-size: 11px;">KaTeX plugin</span>
+            <span style="background: #3b1764; color: #c4b5fd; padding: 3px 8px; border-radius: 4px; font-size: 11px;">ext-apps bridge</span>
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-bottom: 16px;">
+        <div class="label">Data flow</div>
+        <div style="font-family: monospace; font-size: 11px; color: #94a3b8; line-height: 1.8; margin-top: 4px;">
+          host → ext-apps SDK → ontoolresult<br>
+          → structuredContent (cells + blob URLs)<br>
+          → React renderer (MIME priority dispatch)<br>
+          → fetch blob URL → render with plugin<br>
+          → images: &lt;img src="blob_url"&gt; (no fetch)
+        </div>
+      </div>
+
+      <div>
+        <div class="label">Fixes</div>
+        <div style="color: #e2e8f0; font-size: 12px; line-height: 1.8; margin-top: 4px;">
+          ✓ No "Connected — waiting for execution..."<br>
+          ✓ No raw blob URLs ever shown<br>
+          ✓ Markdown + KaTeX rendered properly<br>
+          ✓ Same React renderer as notebook app<br>
+          ✓ ~1.2MB bundle (React + markdown + KaTeX)
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="mockup">
+    <div class="mockup-header">Phase 2: Later</div>
+    <div class="mockup-body" style="padding: 16px; font-size: 13px;">
+
+      <div style="margin-bottom: 16px;">
+        <div class="label">Daemon HTTP plugin serving</div>
+        <div style="background: #1a1a2e; border-radius: 6px; padding: 10px; margin-top: 4px;">
+          <div style="color: #60a5fa; font-size: 12px; margin-bottom: 6px;">http://localhost:{port}/plugins/{name}.js</div>
+          <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+            <span style="background: #1e3a5f; color: #93c5fd; padding: 3px 8px; border-radius: 4px; font-size: 11px;">plotly (~4MB)</span>
+            <span style="background: #1e3a5f; color: #93c5fd; padding: 3px 8px; border-radius: 4px; font-size: 11px;">vega (~2MB)</span>
+            <span style="background: #1e3a5f; color: #93c5fd; padding: 3px 8px; border-radius: 4px; font-size: 11px;">leaflet (~200KB)</span>
+            <span style="background: #1e3a5f; color: #93c5fd; padding: 3px 8px; border-radius: 4px; font-size: 11px;">parquet/WASM</span>
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-bottom: 16px;">
+        <div class="label">How it works</div>
+        <div style="font-family: monospace; font-size: 11px; color: #94a3b8; line-height: 1.8; margin-top: 4px;">
+          renderer sees plotly MIME type<br>
+          → fetch("{blob_base_url}/plugins/plotly.js")<br>
+          → installRendererPlugin(code, css)<br>
+          → render with plotly
+        </div>
+      </div>
+
+      <div style="margin-bottom: 16px;">
+        <div class="label">Daemon changes needed</div>
+        <div style="color: #e2e8f0; font-size: 12px; line-height: 1.8; margin-top: 4px;">
+          • Add /plugins/ route to daemon HTTP server<br>
+          • Serve pre-built CJS plugin bundles<br>
+          • Same include_str! build, different serving path<br>
+          • WASM: serve .wasm alongside .js loader
+        </div>
+      </div>
+
+      <div>
+        <div class="label">Architecture contract</div>
+        <div style="background: #27272a; border-radius: 6px; padding: 10px; margin-top: 4px;">
+          <code style="font-size: 11px; color: #e2e8f0;">installRendererPlugin(code, css?)</code>
+          <div style="color: #71717a; font-size: 11px; margin-top: 4px;">Same interface whether code comes from include_str!, Vite virtual module, or HTTP fetch</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<h3 style="margin-top: 24px;">Build system</h3>
+<div class="mockup" style="margin-top: 8px;">
+  <div class="mockup-header">apps/mcp-app/ build pipeline</div>
+  <div class="mockup-body" style="padding: 16px;">
+    <div style="font-family: monospace; font-size: 12px; color: #94a3b8; line-height: 2;">
+      <span style="color: #4ade80;">src/mcp-app.ts</span> — ext-apps bridge + React renderer host<br>
+      <span style="color: #60a5fa;">src/isolated-renderer/</span> — reuse existing renderer + markdown plugin<br>
+      <span style="color: #c4b5fd;">esbuild / vite</span> — bundle into single HTML<br>
+      → <span style="color: #fbbf24;">crates/runt-mcp/assets/_output.html</span> — include_str! into binary<br>
+      → <span style="color: #fbbf24;">python/nteract/src/nteract/_widget.html</span> — Python package
+    </div>
+  </div>
+</div>
