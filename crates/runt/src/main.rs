@@ -424,7 +424,7 @@ enum ConfigCommands {
     Set {
         /// Setting key
         key: String,
-        /// New value (comma-separated for list keys like uv.default_packages)
+        /// New value. For list keys (e.g. uv.default_packages): JSON array '["pandas","numpy"]' or comma-separated 'pandas,numpy'
         value: String,
     },
 }
@@ -4041,10 +4041,23 @@ async fn config_command(command: Option<ConfigCommands>) -> Result<()> {
             // writing a bool into an enum field).
             let json_str = serde_json::to_string_pretty(&json_value)?;
             if serde_json::from_str::<runtimed::settings_doc::SyncedSettings>(&json_str).is_err() {
-                anyhow::bail!(
-                    "Invalid value '{value}' for setting '{key}'. \
-                     The value would produce an invalid settings file."
-                );
+                let hint = match key.as_str() {
+                    "theme" => "Must be one of: system, light, dark".to_string(),
+                    "default_runtime" => "Must be one of: python, deno".to_string(),
+                    "default_python_env" => "Must be one of: uv, conda, pixi".to_string(),
+                    "keep_alive_secs" => format!(
+                        "Must be a number between {} and {}",
+                        runtimed::settings_doc::MIN_KEEP_ALIVE_SECS,
+                        runtimed::settings_doc::MAX_KEEP_ALIVE_SECS,
+                    ),
+                    "onboarding_completed" => "Must be true or false".to_string(),
+                    k if k.ends_with("default_packages") => {
+                        "Must be a JSON array '[\"pkg1\",\"pkg2\"]' or comma-separated 'pkg1,pkg2'"
+                            .to_string()
+                    }
+                    _ => "The value would produce an invalid settings file".to_string(),
+                };
+                anyhow::bail!("Invalid value '{value}' for setting '{key}'. {hint}");
             }
 
             // Ensure parent directory exists
@@ -4128,13 +4141,52 @@ fn set_setting_value(root: &mut serde_json::Value, key: &str, raw_value: &str) -
         .as_object_mut()
         .ok_or_else(|| anyhow::anyhow!("Expected object at key path"))?;
 
-    // For list-valued keys (*.default_packages), split on commas
+    // For list-valued keys (*.default_packages), parse as JSON array or comma-separated
     let new_value = if *leaf == "default_packages" {
-        let items: Vec<serde_json::Value> = raw_value
-            .split(',')
-            .map(|s| serde_json::Value::String(s.trim().to_string()))
-            .collect();
-        serde_json::Value::Array(items)
+        let trimmed = raw_value.trim();
+        if trimmed.starts_with('[') {
+            // Looks like JSON — parse it
+            let parsed: serde_json::Value = serde_json::from_str(trimmed).map_err(|e| {
+                anyhow::anyhow!(
+                    "Value looks like JSON but failed to parse: {e}\n\
+                     Hint: use valid JSON like '[\"pandas\",\"numpy\"]' \
+                     or comma-separated names like 'pandas,numpy'"
+                )
+            })?;
+            match &parsed {
+                serde_json::Value::Array(items) => {
+                    for item in items {
+                        match item {
+                            serde_json::Value::String(s) => {
+                                notebook_doc::metadata::validate_package_specifier(s)
+                                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                            }
+                            other => anyhow::bail!(
+                                "Expected array of strings, but found {other}. \
+                                 All elements must be quoted strings like '[\"pandas\",\"numpy\"]'."
+                            ),
+                        }
+                    }
+                    parsed
+                }
+                _ => anyhow::bail!(
+                    "Expected a JSON array, but got {parsed}. \
+                     Use '[\"pandas\",\"numpy\"]' or 'pandas,numpy'."
+                ),
+            }
+        } else {
+            // Comma-separated convenience syntax
+            let items: Vec<serde_json::Value> = trimmed
+                .split(',')
+                .map(|s| {
+                    let s = s.trim();
+                    notebook_doc::metadata::validate_package_specifier(s)
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    Ok(serde_json::Value::String(s.to_string()))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            serde_json::Value::Array(items)
+        }
     } else if raw_value == "true" || raw_value == "false" {
         serde_json::Value::Bool(raw_value == "true")
     } else if let Ok(n) = raw_value.parse::<u64>() {

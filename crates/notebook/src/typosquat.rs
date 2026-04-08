@@ -303,15 +303,7 @@ const POPULAR_PACKAGES: &[&str] = &[
     "scapy",
 ];
 
-/// Extract package name from a dependency specifier.
-/// Handles version specifiers like `pandas>=2.0`, `numpy[extra]`, etc.
-fn extract_package_name(dep: &str) -> &str {
-    // Split on version specifiers and extras
-    dep.split(&['>', '<', '=', '!', '~', '[', ';', '@'][..])
-        .next()
-        .unwrap_or(dep)
-        .trim()
-}
+use notebook_doc::metadata::extract_package_name;
 
 /// Normalize a package name for comparison.
 /// PyPI considers `_`, `-`, and `.` as equivalent, and is case-insensitive.
@@ -325,7 +317,7 @@ fn normalize_name(name: &str) -> String {
 /// threshold of a popular package (but not an exact match).
 pub fn check_typosquat(package: &str) -> Option<TyposquatWarning> {
     let pkg_name = extract_package_name(package);
-    let normalized = normalize_name(pkg_name);
+    let normalized = normalize_name(&pkg_name);
 
     // Skip if the package is itself a popular package (exact match)
     for &popular in POPULAR_PACKAGES {
