@@ -122,9 +122,9 @@ fn manifest_output_to_structured(manifest: &Value, blob_base_url: &Option<String
                         continue;
                     }
                     if is_viz_mime(mime) || mime == "application/geo+json" {
-                        // Viz specs: include blob URL (for renderer) but skip
-                        // inline data (too large). Inline specs get synthesized
-                        // into text/llm+plain below.
+                        // Viz specs: emit blob URL or inline data.
+                        // The MCP App renderer fetches blob URLs on demand
+                        // and parses inline JSON directly.
                         let meta = output_resolver::content_ref_meta(content_ref);
                         if let Some(hash) = meta.blob_hash {
                             if let Some(base) = blob_base_url.as_ref() {
@@ -132,6 +132,11 @@ fn manifest_output_to_structured(manifest: &Value, blob_base_url: &Option<String
                                     mime.clone(),
                                     Value::String(format!("{}/blob/{}", base, hash)),
                                 );
+                            }
+                        } else if meta.is_inline {
+                            // Small viz specs inlined in the CRDT — pass through
+                            if let Some(inline) = content_ref.get("inline") {
+                                data.insert(mime.clone(), inline.clone());
                             }
                         }
                         continue;
