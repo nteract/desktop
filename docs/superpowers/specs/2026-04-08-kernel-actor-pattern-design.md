@@ -4,7 +4,9 @@
 
 Eliminate the remaining 19 mutex-across-await violations in `runtime_agent.rs` (11) and `kernel_manager.rs` (8) by replacing `Arc<Mutex<Option<RoomKernel>>>` with an actor pattern where the kernel handle is owned directly by the runtime agent's `select!` loop — no mutex needed.
 
-Simultaneously introduce a `KernelBackend` trait boundary to enable future runtime backends (remote kernels, native runtimes, sandboxed kernels).
+Simultaneously extract a `KernelConnection` trait as an internal abstraction for the Jupyter ZeroMQ IO boundary within the runtime agent.
+
+**Important framing:** `KernelConnection` is NOT the extension point for new runtime types. Future non-Jupyter runtimes would speak the document protocol directly to the daemon — they wouldn't use the runtime agent or this trait at all. This trait is purely an internal seam within the Jupyter runtime agent to separate IO concerns from queue/state management.
 
 ## Context
 
@@ -16,14 +18,13 @@ Simultaneously introduce a `KernelBackend` trait boundary to enable future runti
 
 Split the current `RoomKernel` monolith into two parts:
 
-### `KernelBackend` (trait) — the IO boundary
+### `KernelConnection` (trait) — the Jupyter IO boundary
 
-Defines how to talk to a kernel. The current Jupyter/ZeroMQ implementation becomes `JupyterKernel`. Future backends implement the same trait.
+Internal abstraction for the ZeroMQ communication layer within the runtime agent. The current implementation becomes `JupyterKernel`. This is not a plugin interface — it's a code organization seam separating IO from state management.
 
 Responsibilities:
-- Launch the kernel process / connect to remote
-- Send execute requests
-- Interrupt / shut down
+- Launch the kernel process and establish ZeroMQ connections
+- Send execute requests, interrupt, shut down
 - Send comm messages (widget state)
 - Handle completions and history requests
 
@@ -37,7 +38,7 @@ Owned directly by the agent's `select!` loop — plain struct, no mutex. Only on
 
 ### Agent `select!` loop — the actor
 
-The runtime agent already acts as an actor (receives RPCs via `RuntimeAgentRequest`). Today it re-serializes kernel access via a mutex. After this refactor, the loop owns both `KernelState` and `KernelBackend` as local variables:
+The runtime agent already acts as an actor (receives RPCs via `RuntimeAgentRequest`). Today it re-serializes kernel access via a mutex. After this refactor, the loop owns both `KernelState` and `KernelConnection` as local variables:
 
 ```
 select! {
@@ -65,11 +66,11 @@ select! {
 
 No mutex anywhere. The `select!` loop is the sole owner.
 
-## `KernelBackend` Trait
+## `KernelConnection` Trait
 
 ```rust
 #[async_trait]
-pub trait KernelBackend: Send + 'static {
+pub trait KernelConnection: Send + 'static {
     async fn launch(
         config: KernelLaunchConfig,
         cmd_tx: mpsc::Sender<QueueCommand>,
@@ -112,11 +113,11 @@ pub struct KernelState {
 
 impl KernelState {
     fn queue_cell(&mut self, cell_id: String, execution_id: String, source: String);
-    async fn execution_done(&mut self, backend: &mut impl KernelBackend);
+    async fn execution_done(&mut self, backend: &mut impl KernelConnection);
     fn mark_execution_error(&mut self);
     fn clear_queue(&mut self);
     fn kernel_died(&mut self);
-    async fn process_next(&mut self, backend: &mut impl KernelBackend);
+    async fn process_next(&mut self, backend: &mut impl KernelConnection);
 
     fn status(&self) -> KernelStatus;
     fn is_running(&self) -> bool;
@@ -165,7 +166,7 @@ This goes through the actor loop but was already serialized by the mutex today. 
 
 | Component | Before | After |
 |-----------|--------|-------|
-| `RoomKernel` | Monolith with queue + IO + state | Split into `KernelBackend` + `KernelState` |
+| `RoomKernel` | Monolith with queue + IO + state | Split into `KernelConnection` + `KernelState` |
 | Kernel access | `Arc<Mutex<Option<RoomKernel>>>` | Local variables in `select!` loop |
 | `RuntimeAgentContext` | Holds `kernel: Arc<Mutex<...>>` | Removed or holds `cmd_tx` only |
 | `kernel_manager.rs` command loop | Locks kernel mutex, calls methods | Sends `QueueCommand` via channel (already does this for most operations) |
@@ -185,7 +186,7 @@ This goes through the actor loop but was already serialized by the mutex today. 
 ## Scope
 
 ### In scope
-- Extract `KernelBackend` trait with `JupyterKernel` as the sole implementation
+- Extract `KernelConnection` trait with `JupyterKernel` as the sole implementation
 - Extract `KernelState` from `RoomKernel`
 - Restructure runtime agent's `select!` loop to own both directly
 - Eliminate all 19 remaining mutex-across-await violations
@@ -201,9 +202,9 @@ This goes through the actor loop but was already serialized by the mutex today. 
 ## Future Work
 
 - **Completions/History simplification:** The current oneshot-channel pattern for `complete()` and `get_history()` works but is complex. Since we control the full stack, we could move to a simpler request-response model where the agent loop awaits the reply directly (no pending maps). This can be designed separately.
-- **Remote kernels:** `RemoteKernel` implementing `KernelBackend` — connects via WebSocket/SSH instead of local ZeroMQ.
-- **Native runtimes:** Runtimes that emit document protocol bits directly, no ZeroMQ wrapper. Implement `KernelBackend` without Jupyter protocol overhead.
-- **Sandboxing:** `SandboxedKernel<T: KernelBackend>` — wraps any backend with cgroup/seatbelt/bubblewrap isolation.
+- **Remote Jupyter kernels:** A `RemoteJupyterKernel` implementing `KernelConnection` could connect via WebSocket/SSH instead of local ZeroMQ. This is a Jupyter-specific concern within the runtime agent.
+- **Non-Jupyter runtimes:** Runtimes that speak the document protocol directly to the daemon. These would NOT use the runtime agent or `KernelConnection` at all — they're a separate process type. This needs its own design.
+- **Sandboxing:** OS-level isolation (bubblewrap/seatbelt) wrapping the runtime agent subprocess. Orthogonal to this refactor — sandboxing wraps the process, not the trait.
 - **Kernel actor pattern for `NotebookRoom` fields:** The daemon-side `runtime_agent_handle` / `runtime_agent_request_tx` fields on `NotebookRoom` could benefit from a similar actor treatment, but they were already cleaned up in #1642.
 
 ## Risks
@@ -216,10 +217,10 @@ This goes through the actor loop but was already serialized by the mutex today. 
 
 | File | Action |
 |------|--------|
-| `crates/runtimed/src/kernel_backend.rs` | New — `KernelBackend` trait definition |
+| `crates/runtimed/src/kernel_connection.rs` | New — `KernelConnection` trait definition |
 | `crates/runtimed/src/jupyter_kernel.rs` | New — `JupyterKernel` implementation (extracted from `RoomKernel`) |
 | `crates/runtimed/src/kernel_state.rs` | New — `KernelState` struct (extracted from `RoomKernel`) |
 | `crates/runtimed/src/kernel_manager.rs` | Modify — remove `RoomKernel`, update command loop to use `QueueCommand` channel |
-| `crates/runtimed/src/runtime_agent.rs` | Modify — own `KernelBackend` + `KernelState` directly in `select!` loop, remove `RuntimeAgentContext.kernel` mutex |
+| `crates/runtimed/src/runtime_agent.rs` | Modify — own `KernelConnection` + `KernelState` directly in `select!` loop, remove `RuntimeAgentContext.kernel` mutex |
 | `crates/runtimed/src/lib.rs` | Modify — add new modules |
 | `crates/runtimed/tests/tokio_mutex_lint.rs` | Modify — gate `runtime_agent.rs` and `kernel_manager.rs` |
