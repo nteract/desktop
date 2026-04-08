@@ -1013,7 +1013,7 @@ async fn test_pipe_mode_forwards_sync_frames() {
     // Connect pipe client (relay mode — no local doc, no initial sync)
     let _result = connect::connect_relay(
         socket_path.clone(),
-        "00000000-0000-0000-0000-pipe00sync01".to_string(),
+        "00000000-0000-0000-0000-000000000001".to_string(),
         frame_tx,
     )
     .await
@@ -1022,7 +1022,7 @@ async fn test_pipe_mode_forwards_sync_frames() {
     // Second client (full peer) adds a cell and updates source
     let client2 = connect::connect(
         socket_path.clone(),
-        "00000000-0000-0000-0000-pipe00sync01".to_string(),
+        "00000000-0000-0000-0000-000000000001".to_string(),
         "test",
     )
     .await
@@ -1080,7 +1080,7 @@ async fn test_pipe_mode_only_pipes_allowed_frame_types() {
 
     let _result = connect::connect_relay(
         socket_path.clone(),
-        "00000000-0000-0000-0000-pipe0bcast01".to_string(),
+        "00000000-0000-0000-0000-000000000002".to_string(),
         frame_tx,
     )
     .await
@@ -1092,7 +1092,7 @@ async fn test_pipe_mode_only_pipes_allowed_frame_types() {
     // verifies the type-byte filter, not broadcast-specific forwarding.
     let client2 = connect::connect(
         socket_path.clone(),
-        "00000000-0000-0000-0000-pipe0bcast01".to_string(),
+        "00000000-0000-0000-0000-000000000002".to_string(),
         "test",
     )
     .await
@@ -1158,7 +1158,7 @@ async fn test_pipe_mode_does_not_forward_response_frames() {
 
     let result = connect::connect_relay(
         socket_path.clone(),
-        "00000000-0000-0000-0000-pipe00resp01".to_string(),
+        "00000000-0000-0000-0000-000000000004".to_string(),
         frame_tx,
     )
     .await
@@ -1230,7 +1230,7 @@ async fn test_pipe_mode_preserves_frame_order() {
 
     let _result = connect::connect_relay(
         socket_path.clone(),
-        "00000000-0000-0000-0000-pipeorder001".to_string(),
+        "00000000-0000-0000-0000-000000000003".to_string(),
         frame_tx,
     )
     .await
@@ -1239,7 +1239,7 @@ async fn test_pipe_mode_preserves_frame_order() {
     // Second client rapidly adds multiple cells
     let client2 = connect::connect(
         socket_path.clone(),
-        "00000000-0000-0000-0000-pipeorder001".to_string(),
+        "00000000-0000-0000-0000-000000000003".to_string(),
         "test",
     )
     .await
@@ -1310,7 +1310,7 @@ async fn test_pipe_mode_preserves_frame_order() {
     // received (in channel order) represents the correct state transitions.
     let client3 = connect::connect(
         socket_path.clone(),
-        "00000000-0000-0000-0000-pipeorder001".to_string(),
+        "00000000-0000-0000-0000-000000000003".to_string(),
         "test",
     )
     .await
