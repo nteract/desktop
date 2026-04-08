@@ -98,14 +98,6 @@ pub fn default_blob_store_dir() -> PathBuf {
     daemon_base_dir().join("blobs")
 }
 
-/// Get the default directory for pre-built renderer plugin assets.
-///
-/// The MCP App build writes plugin JS/CSS files here so the blob server
-/// can serve them at `GET /plugins/{name}.js` and `GET /plugins/{name}.css`.
-pub fn default_plugins_dir() -> PathBuf {
-    daemon_base_dir().join("plugins")
-}
-
 /// Get the directory for kernel connection files.
 ///
 /// Connection files are stored here (rather than the shared Jupyter runtime

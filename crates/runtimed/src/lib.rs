@@ -21,6 +21,7 @@ pub use runtimed_client::*;
 pub mod blob_server;
 pub mod blob_store;
 pub mod daemon;
+pub mod embedded_plugins;
 pub mod inline_env;
 pub mod kernel_manager;
 pub mod kernel_pids;

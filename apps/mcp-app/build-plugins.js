@@ -133,21 +133,7 @@ async function main() {
   }
 
   console.log(`\nPlugins written to ${outDir}`);
-
-  // Also deploy to the daemon's plugins directory if --deploy is passed
-  // or RUNTIMED_PLUGINS_DIR is set (used by cargo xtask and dev workflows)
-  const deployDir = process.env.RUNTIMED_PLUGINS_DIR || (process.argv.includes("--deploy") ? null : undefined);
-  if (deployDir !== undefined && deployDir !== null) {
-    try {
-      await fs.mkdir(deployDir, { recursive: true });
-      for (const file of await fs.readdir(outDir)) {
-        await fs.copyFile(path.join(outDir, file), path.join(deployDir, file));
-      }
-      console.log(`Deployed to ${deployDir}`);
-    } catch (err) {
-      console.warn(`Deploy to ${deployDir} failed: ${err.message}`);
-    }
-  }
+  console.log("Rebuild the daemon (cargo build -p runtimed) to embed them.");
 }
 
 main().catch((err) => {
