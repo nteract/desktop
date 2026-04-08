@@ -1,11 +1,48 @@
 import { invoke } from "@tauri-apps/api/core";
-import { AlertTriangle, Settings, X } from "lucide-react";
+import { AlertTriangle, Clock, Settings, X } from "lucide-react";
 import type { PoolErrorWithTimestamp } from "../hooks/usePoolState";
 
 interface PoolErrorItemProps {
   envType: "UV" | "Conda";
   error: PoolErrorWithTimestamp;
   onDismiss: () => void;
+}
+
+function errorTitle(error: PoolErrorWithTimestamp): string {
+  switch (error.error_kind) {
+    case "timeout":
+      return "Environment setup timed out";
+    case "import_error":
+      return "Package import failed";
+    case "setup_failed":
+      return "Environment setup failed";
+    default:
+      return "Invalid or unavailable package";
+  }
+}
+
+function errorSubtitle(
+  error: PoolErrorWithTimestamp,
+  envType: "UV" | "Conda",
+): string {
+  switch (error.error_kind) {
+    case "timeout":
+      return "Retrying automatically";
+    case "import_error":
+      return `Check package compatibility in ${envType.toLowerCase()} settings`;
+    case "setup_failed":
+      return "Retrying automatically";
+    default:
+      return `Check package name in ${envType.toLowerCase()} settings`;
+  }
+}
+
+function showSettingsButton(error: PoolErrorWithTimestamp): boolean {
+  return (
+    error.error_kind === "invalid_package" ||
+    error.error_kind === "import_error" ||
+    error.error_kind === undefined
+  );
 }
 
 function PoolErrorItem({ envType, error, onDismiss }: PoolErrorItemProps) {
@@ -15,16 +52,20 @@ function PoolErrorItem({ envType, error, onDismiss }: PoolErrorItemProps) {
     });
   };
 
+  const isTimeout = error.error_kind === "timeout";
+
   return (
     <div
       className="flex items-center justify-between gap-2 bg-amber-600/90 px-3 py-1.5 text-xs text-white"
       title={error.message}
     >
       <div className="flex items-center gap-2 min-w-0">
-        <AlertTriangle className="h-3 w-3 flex-shrink-0" />
-        <span className="font-medium flex-shrink-0">
-          Invalid or unavailable package
-        </span>
+        {isTimeout ? (
+          <Clock className="h-3 w-3 flex-shrink-0" />
+        ) : (
+          <AlertTriangle className="h-3 w-3 flex-shrink-0" />
+        )}
+        <span className="font-medium flex-shrink-0">{errorTitle(error)}</span>
         {error.failed_package && (
           <>
             <span className="text-amber-200 flex-shrink-0">—</span>
@@ -34,19 +75,19 @@ function PoolErrorItem({ envType, error, onDismiss }: PoolErrorItemProps) {
           </>
         )}
         <span className="text-amber-200 flex-shrink-0">—</span>
-        <span className="text-amber-100">
-          Check package name in {envType.toLowerCase()} settings.
-        </span>
+        <span className="text-amber-100">{errorSubtitle(error, envType)}</span>
       </div>
       <div className="flex items-center gap-2 flex-shrink-0">
-        <button
-          type="button"
-          onClick={openSettings}
-          className="flex items-center gap-1 rounded bg-amber-700/60 px-2 py-0.5 hover:bg-amber-700 transition-colors"
-        >
-          <Settings className="h-3 w-3" />
-          <span>Settings</span>
-        </button>
+        {showSettingsButton(error) && (
+          <button
+            type="button"
+            onClick={openSettings}
+            className="flex items-center gap-1 rounded bg-amber-700/60 px-2 py-0.5 hover:bg-amber-700 transition-colors"
+          >
+            <Settings className="h-3 w-3" />
+            <span>Settings</span>
+          </button>
+        )}
         <button
           type="button"
           onClick={onDismiss}
@@ -71,7 +112,7 @@ interface PoolErrorBannerProps {
  * Banner component showing pool warming errors.
  *
  * Displays amber warning banners for UV and/or Conda pool errors,
- * with the failed package name and a link to open settings to fix the issue.
+ * with contextual messages based on error type.
  */
 export function PoolErrorBanner({
   uvError,

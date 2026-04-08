@@ -100,6 +100,8 @@ struct FailureState {
     last_error: Option<String>,
     /// Failed package name if identified.
     failed_package: Option<String>,
+    /// Error classification for the frontend banner.
+    error_kind: Option<String>,
 }
 
 /// Result of parsing a package installation error.
@@ -109,6 +111,8 @@ struct PackageInstallError {
     failed_package: Option<String>,
     /// Full error message from uv.
     error_message: String,
+    /// Error classification: "timeout", "invalid_package", "import_error", "setup_failed".
+    error_kind: String,
 }
 
 /// Parse UV stderr to identify the failed package.
@@ -147,6 +151,7 @@ fn parse_uv_error(stderr: &str) -> Option<PackageInstallError> {
                         return Some(PackageInstallError {
                             failed_package: Some(package_name),
                             error_message: stderr.to_string(),
+                            error_kind: "invalid_package".to_string(),
                         });
                     }
                 }
@@ -159,6 +164,7 @@ fn parse_uv_error(stderr: &str) -> Option<PackageInstallError> {
         return Some(PackageInstallError {
             failed_package: None,
             error_message: stderr.to_string(),
+            error_kind: "setup_failed".to_string(),
         });
     }
 
@@ -333,6 +339,7 @@ impl Pool {
         if let Some(err) = error {
             self.failure_state.last_error = Some(err.error_message);
             self.failure_state.failed_package = err.failed_package;
+            self.failure_state.error_kind = Some(err.error_kind);
         }
     }
 
@@ -1763,7 +1770,7 @@ impl Daemon {
     /// Returns `Some(PooledEnv)` if an environment is available, `None` otherwise.
     /// Automatically triggers replenishment when an environment is taken.
     pub async fn take_uv_env(self: &Arc<Self>) -> Option<PooledEnv> {
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(90);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
 
         loop {
             let (env, stale_paths) = self.uv_pool.lock().await.take();
@@ -1836,7 +1843,7 @@ impl Daemon {
     /// Returns `Some(PooledEnv)` if an environment is available, `None` otherwise.
     /// Automatically triggers replenishment when an environment is taken.
     pub async fn take_conda_env(self: &Arc<Self>) -> Option<PooledEnv> {
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(90);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
 
         loop {
             let (env, stale_paths) = self.conda_pool.lock().await.take();
@@ -2603,6 +2610,7 @@ impl Daemon {
                 .warming_failed_with_error(Some(PackageInstallError {
                     failed_package: None,
                     error_message: format!("Failed to create cache dir: {}", e),
+                    error_kind: "setup_failed".to_string(),
                 }));
             self.update_pool_doc().await;
             return;
@@ -2622,6 +2630,7 @@ impl Daemon {
                     .warming_failed_with_error(Some(PackageInstallError {
                         failed_package: None,
                         error_message: format!("Failed to parse conda-forge channel: {}", e),
+                        error_kind: "setup_failed".to_string(),
                     }));
                 self.update_pool_doc().await;
                 return;
@@ -2662,6 +2671,7 @@ impl Daemon {
                     .warming_failed_with_error(Some(PackageInstallError {
                         failed_package: None,
                         error_message: format!("Failed to parse match specs: {}", e),
+                        error_kind: "setup_failed".to_string(),
                     }));
                 self.update_pool_doc().await;
                 return;
@@ -2685,6 +2695,7 @@ impl Daemon {
                             "Could not determine rattler cache directory: {}",
                             e
                         ),
+                        error_kind: "setup_failed".to_string(),
                     }));
                 self.update_pool_doc().await;
                 return;
@@ -2699,6 +2710,7 @@ impl Daemon {
                 .warming_failed_with_error(Some(PackageInstallError {
                     failed_package: None,
                     error_message: format!("Could not create rattler cache directory: {}", e),
+                    error_kind: "setup_failed".to_string(),
                 }));
             self.update_pool_doc().await;
             return;
@@ -2715,6 +2727,7 @@ impl Daemon {
                     .warming_failed_with_error(Some(PackageInstallError {
                         failed_package: None,
                         error_message: format!("Failed to create HTTP client: {}", e),
+                        error_kind: "setup_failed".to_string(),
                     }));
                 self.update_pool_doc().await;
                 return;
@@ -2749,6 +2762,7 @@ impl Daemon {
                     .warming_failed_with_error(Some(PackageInstallError {
                         failed_package: None,
                         error_message: format!("Failed to fetch repodata: {}", e),
+                        error_kind: "setup_failed".to_string(),
                     }));
                 self.update_pool_doc().await;
                 return;
@@ -2773,6 +2787,7 @@ impl Daemon {
                     .warming_failed_with_error(Some(PackageInstallError {
                         failed_package: None,
                         error_message: format!("Failed to detect virtual packages: {}", e),
+                        error_kind: "setup_failed".to_string(),
                     }));
                 self.update_pool_doc().await;
                 return;
@@ -2796,6 +2811,7 @@ impl Daemon {
                     .warming_failed_with_error(Some(PackageInstallError {
                         failed_package: None,
                         error_message: format!("Failed to solve dependencies: {}", e),
+                        error_kind: "invalid_package".to_string(),
                     }));
                 self.update_pool_doc().await;
                 return;
@@ -2823,6 +2839,7 @@ impl Daemon {
                 .warming_failed_with_error(Some(PackageInstallError {
                     failed_package: None,
                     error_message: format!("Failed to install packages: {}", e),
+                    error_kind: "setup_failed".to_string(),
                 }));
             self.update_pool_doc().await;
             return;
@@ -2841,6 +2858,7 @@ impl Daemon {
                 .warming_failed_with_error(Some(PackageInstallError {
                     failed_package: None,
                     error_message: format!("Python not found at {:?} after install", python_path),
+                    error_kind: "setup_failed".to_string(),
                 }));
             self.update_pool_doc().await;
             return;
@@ -2879,6 +2897,7 @@ impl Daemon {
                 .warming_failed_with_error(Some(PackageInstallError {
                     failed_package: None,
                     error_message: "Conda warmup failed (timed out or imports errored)".into(),
+                    error_kind: "import_error".to_string(),
                 }));
             self.update_pool_doc().await;
         }
@@ -2914,7 +2933,7 @@ impl Daemon {
         );
 
         let warmup_result = tokio::time::timeout(
-            std::time::Duration::from_secs(120),
+            std::time::Duration::from_secs(180),
             tokio::process::Command::new(python_path)
                 .args(["-c", &warmup_script])
                 .stdout(Stdio::piped())
@@ -3019,6 +3038,7 @@ impl Daemon {
                     .warming_failed_with_error(Some(PackageInstallError {
                         error_message: format!("{}", e),
                         failed_package: None,
+                        error_kind: "setup_failed".to_string(),
                     }));
                 self.update_pool_doc().await;
             }
@@ -3046,6 +3066,7 @@ impl Daemon {
                 pool_size: self.config.uv_pool_size as u64,
                 error: pool.failure_state.last_error.clone(),
                 failed_package: pool.failure_state.failed_package.clone(),
+                error_kind: pool.failure_state.error_kind.clone(),
                 consecutive_failures: pool.failure_state.consecutive_failures,
                 retry_in_secs: pool.retry_in_secs(),
             }
@@ -3059,6 +3080,7 @@ impl Daemon {
                 pool_size: self.config.conda_pool_size as u64,
                 error: pool.failure_state.last_error.clone(),
                 failed_package: pool.failure_state.failed_package.clone(),
+                error_kind: pool.failure_state.error_kind.clone(),
                 consecutive_failures: pool.failure_state.consecutive_failures,
                 retry_in_secs: pool.retry_in_secs(),
             }
@@ -3073,6 +3095,7 @@ impl Daemon {
                 pool_size: self.config.pixi_pool_size as u64,
                 error: pool.failure_state.last_error.clone(),
                 failed_package: pool.failure_state.failed_package.clone(),
+                error_kind: pool.failure_state.error_kind.clone(),
                 consecutive_failures: pool.failure_state.consecutive_failures,
                 retry_in_secs: pool.retry_in_secs(),
             }
@@ -3106,6 +3129,7 @@ impl Daemon {
                     .warming_failed_with_error(Some(PackageInstallError {
                         failed_package: None,
                         error_message: format!("Failed to get uv path: {}", e),
+                        error_kind: "setup_failed".to_string(),
                     }));
                 self.update_pool_doc().await;
                 return;
@@ -3131,6 +3155,7 @@ impl Daemon {
                 .warming_failed_with_error(Some(PackageInstallError {
                     failed_package: None,
                     error_message: format!("Failed to create cache dir: {}", e),
+                    error_kind: "setup_failed".to_string(),
                 }));
             self.update_pool_doc().await;
             return;
@@ -3161,6 +3186,7 @@ impl Daemon {
                     .warming_failed_with_error(Some(PackageInstallError {
                         failed_package: None,
                         error_message: format!("Failed to create venv: {}", stderr),
+                        error_kind: "setup_failed".to_string(),
                     }));
                 self.update_pool_doc().await;
                 return;
@@ -3173,6 +3199,7 @@ impl Daemon {
                     .warming_failed_with_error(Some(PackageInstallError {
                         failed_package: None,
                         error_message: format!("Failed to create venv: {}", e),
+                        error_kind: "setup_failed".to_string(),
                     }));
                 self.update_pool_doc().await;
                 return;
@@ -3186,6 +3213,7 @@ impl Daemon {
                     .warming_failed_with_error(Some(PackageInstallError {
                         failed_package: None,
                         error_message: "Timeout creating venv after 60 seconds".to_string(),
+                        error_kind: "timeout".to_string(),
                     }));
                 self.update_pool_doc().await;
                 return;
@@ -3204,7 +3232,7 @@ impl Daemon {
         };
         let install_packages = uv_prewarmed_packages(&user_default_packages);
 
-        // Install packages (120 second timeout)
+        // Install packages (180 second timeout)
         // Use hardlink mode to share files from uv's global cache,
         // dramatically reducing per-env disk usage. uv falls back to
         // copies automatically if hardlinks aren't supported.
@@ -3219,7 +3247,7 @@ impl Daemon {
         install_args.extend(install_packages.clone());
 
         let install_result = tokio::time::timeout(
-            std::time::Duration::from_secs(120),
+            std::time::Duration::from_secs(180),
             tokio::process::Command::new(&uv_path)
                 .args(&install_args)
                 .stdout(Stdio::piped())
@@ -3284,19 +3312,21 @@ impl Daemon {
                     .warming_failed_with_error(Some(PackageInstallError {
                         failed_package: None,
                         error_message: e.to_string(),
+                        error_kind: "setup_failed".to_string(),
                     }));
                 self.update_pool_doc().await;
                 return;
             }
             Err(_) => {
-                error!("[runtimed] Timeout installing packages (120s)");
+                error!("[runtimed] Timeout installing packages (180s)");
                 tokio::fs::remove_dir_all(&venv_path).await.ok();
                 self.uv_pool
                     .lock()
                     .await
                     .warming_failed_with_error(Some(PackageInstallError {
                         failed_package: None,
-                        error_message: "Timeout after 120 seconds".to_string(),
+                        error_message: "Timeout after 180 seconds".to_string(),
+                        error_kind: "timeout".to_string(),
                     }));
                 self.update_pool_doc().await;
                 return;
@@ -3326,7 +3356,7 @@ impl Daemon {
         );
 
         let warmup_result = tokio::time::timeout(
-            std::time::Duration::from_secs(120),
+            std::time::Duration::from_secs(180),
             tokio::process::Command::new(&python_path)
                 .args(["-c", &warmup_script])
                 .output(),
@@ -3379,6 +3409,7 @@ impl Daemon {
                 .warming_failed_with_error(Some(PackageInstallError {
                     failed_package: None,
                     error_message: "UV warmup failed (timed out or imports errored)".into(),
+                    error_kind: "import_error".to_string(),
                 }));
             self.update_pool_doc().await;
         }
@@ -3675,6 +3706,7 @@ mod tests {
         pool.warming_failed_with_error(Some(PackageInstallError {
             failed_package: Some("bad-pkg".to_string()),
             error_message: "not found".to_string(),
+            error_kind: "invalid_package".to_string(),
         }));
         pool.warming_failed_with_error(None);
         assert_eq!(pool.failure_state.consecutive_failures, 2);
@@ -3695,6 +3727,7 @@ mod tests {
         pool.warming_failed_with_error(Some(PackageInstallError {
             failed_package: Some("scitkit-learn".to_string()),
             error_message: "Package not found".to_string(),
+            error_kind: "invalid_package".to_string(),
         }));
         assert_eq!(pool.failure_state.consecutive_failures, 1);
 

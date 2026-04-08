@@ -17,6 +17,7 @@ function errorsEqual(
   return (
     a.message === b.message &&
     a.failed_package === b.failed_package &&
+    a.error_kind === b.error_kind &&
     a.consecutive_failures === b.consecutive_failures &&
     a.retry_in_secs === b.retry_in_secs
   );
@@ -30,6 +31,7 @@ function extractError(
   return {
     message: pool.error,
     failed_package: pool.failed_package,
+    error_kind: pool.error_kind,
     consecutive_failures: pool.consecutive_failures,
     retry_in_secs: pool.retry_in_secs,
     receivedAt: Date.now(),
