@@ -18,6 +18,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 schemars = { workspace = true }
 runt-workspace = { path = "../runt-workspace" }
+runt-mcp-proxy = { path = "../runt-mcp-proxy" }
 dirs = "6"
 notify = { workspace = true }
 notify-debouncer-mini = { workspace = true }

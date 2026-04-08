@@ -2393,16 +2393,49 @@ fn cmd_mcpb(output: Option<&str>, variant: &str) {
     let dark_dest = staging_dir.join("icon-dark.png");
     resize_icon(dark_actual, &dark_dest.to_string_lossy());
 
-    // ── 4. Copy server launcher ────────────────────────────────────────────
+    // ── 4. Build and copy mcpb-runt binary ──────────────────────────────────
+    println!("Building mcpb-runt (release)...");
+    let build_status = Command::new("cargo")
+        .args(["build", "-p", "mcpb-runt", "--release"])
+        .status()
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to run cargo build -p mcpb-runt: {e}");
+            exit(1);
+        });
+    if !build_status.success() {
+        eprintln!("cargo build -p mcpb-runt --release failed");
+        let _ = fs::remove_dir_all(&staging_dir);
+        exit(1);
+    }
+
+    let binary_name = if cfg!(target_os = "windows") {
+        "mcpb-runt.exe"
+    } else {
+        "mcpb-runt"
+    };
+    let built_binary = Path::new("target/release").join(binary_name);
+    if !built_binary.exists() {
+        eprintln!("Built binary not found at {}", built_binary.display());
+        let _ = fs::remove_dir_all(&staging_dir);
+        exit(1);
+    }
+
     let server_dir = staging_dir.join("server");
     fs::create_dir_all(&server_dir).unwrap_or_else(|e| {
         eprintln!("Failed to create server directory: {e}");
         exit(1);
     });
-    fs::copy("mcpb/server/launch.js", server_dir.join("launch.js")).unwrap_or_else(|e| {
-        eprintln!("Failed to copy server/launch.js: {e}");
+    fs::copy(&built_binary, server_dir.join(binary_name)).unwrap_or_else(|e| {
+        eprintln!("Failed to copy mcpb-runt binary: {e}");
         exit(1);
     });
+
+    // Strip the binary on Unix to minimize bundle size
+    #[cfg(unix)]
+    {
+        let strip_target = server_dir.join(binary_name);
+        let _ = Command::new("strip").arg(&strip_target).status();
+    }
 
     // ── 5. Write manifest.json ──────────────────────────────────────────────
     fs::write(staging_dir.join("manifest.json"), &manifest_str).unwrap_or_else(|e| {

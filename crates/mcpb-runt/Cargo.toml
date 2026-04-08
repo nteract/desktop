@@ -1,0 +1,25 @@
+[package]
+name = "mcpb-runt"
+version = "0.1.0"
+edition.workspace = true
+description = "MCPB binary — resilient MCP proxy for runt mcp, ships in the .mcpb Claude Desktop extension"
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "mcpb-runt"
+path = "src/main.rs"
+
+[dependencies]
+runt-mcp-proxy = { path = "../runt-mcp-proxy" }
+runt-workspace = { path = "../runt-workspace" }
+runtimed-client = { path = "../runtimed-client" }
+rmcp = { version = "1.3", features = ["transport-io"] }
+tokio = { workspace = true }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dirs = "6"
+
+[lints]
+workspace = true

@@ -770,7 +770,7 @@ impl Supervisor {
 
     /// Track notebook_id from session-establishing tool calls.
     ///
-    /// When `open_notebook`, `join_notebook`, or `create_notebook` succeeds,
+    /// When `open_notebook` or `create_notebook` succeeds,
     /// persist the notebook_id so we can auto-rejoin after child restarts.
     async fn track_session_tool(&self, params: &CallToolRequestParams, result: &CallToolResult) {
         // Only track successful calls (is_error is None or Some(false))
@@ -780,7 +780,7 @@ impl Supervisor {
 
         let name: &str = &params.name;
         match name {
-            "open_notebook" | "join_notebook" | "create_notebook" => {
+            "open_notebook" | "create_notebook" => {
                 // Extract notebook_id from the tool arguments
                 let notebook_id = params
                     .arguments
@@ -1235,10 +1235,10 @@ impl Supervisor {
         info!("Auto-rejoining notebook session: {id}");
 
         let params: CallToolRequestParams = serde_json::from_value(serde_json::json!({
-            "name": "join_notebook",
-            "arguments": { "notebook_id": id }
+            "name": "open_notebook",
+            "arguments": { "path": id }
         }))
-        .expect("valid join_notebook params");
+        .expect("valid open_notebook params");
 
         match self.try_forward_tool_call(&params).await {
             Ok(result) if result.is_error != Some(true) => {

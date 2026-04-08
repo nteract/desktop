@@ -3638,10 +3638,25 @@ dependencies = [
  "notify",
  "notify-debouncer-mini",
  "rmcp",
+ "runt-mcp-proxy",
  "runt-workspace",
  "schemars 1.2.1",
  "serde",
  "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "mcpb-runt"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "rmcp",
+ "runt-mcp-proxy",
+ "runt-workspace",
+ "runtimed-client",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -6319,6 +6334,19 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "runt-mcp-proxy"
+version = "0.1.0"
+dependencies = [
+ "rmcp",
+ "runtimed-client",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

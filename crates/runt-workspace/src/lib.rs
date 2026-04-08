@@ -89,7 +89,7 @@ fn bundle_identifier_for(channel: BuildChannel) -> &'static str {
     }
 }
 
-fn cli_command_name_for(channel: BuildChannel) -> &'static str {
+pub fn cli_command_name_for(channel: BuildChannel) -> &'static str {
     match channel {
         BuildChannel::Stable => "runt",
         BuildChannel::Nightly => "runt-nightly",
