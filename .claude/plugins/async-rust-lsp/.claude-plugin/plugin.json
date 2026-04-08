@@ -1,0 +1,5 @@
+{
+  "name": "async-rust-lsp",
+  "description": "Detects tokio::sync::Mutex guards held across .await points",
+  "version": "0.1.0"
+}
