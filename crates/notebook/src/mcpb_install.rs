@@ -1,7 +1,7 @@
 //! Build and install the nteract .mcpb (Claude Desktop extension) from the running app.
 //!
 //! Creates a `.mcpb` ZIP archive at runtime from embedded assets (manifest,
-//! icons, launcher script), then opens it with the system handler so Claude
+//! icons, mcpb-runt binary), then opens it with the system handler so Claude
 //! Desktop shows the install prompt.
 
 use std::fs;
@@ -9,9 +9,6 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use runt_workspace::{build_channel, BuildChannel};
-
-/// The launcher script embedded at compile time.
-const LAUNCH_JS: &str = include_str!("../../../mcpb/server/launch.js");
 
 /// App icons embedded at compile time (both 512x512 PNG).
 const ICON_STABLE: &[u8] = include_bytes!("../icons/icon.png");
@@ -32,10 +29,10 @@ pub fn install_mcpb(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     }
 
     // ── 1. Build manifest ──────────────────────────────────────────────
-    let (name, display_name, command) = if is_nightly {
-        ("nteract-nightly", "nteract Nightly", "runt-nightly")
+    let (name, display_name) = if is_nightly {
+        ("nteract-nightly", "nteract Nightly")
     } else {
-        ("nteract", "nteract", "runt")
+        ("nteract", "nteract")
     };
 
     let channel = if is_nightly { "nightly" } else { "stable" };
@@ -59,18 +56,22 @@ pub fn install_mcpb(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         "support": "https://github.com/nteract/desktop/issues",
         "license": "BSD-3-Clause",
         "server": {
-            "type": "node",
-            "entry_point": "server/launch.js",
+            "type": "binary",
+            "entry_point": "server/mcpb-runt",
             "mcp_config": {
-                "command": command,
-                "args": ["mcp"],
-                "env": { "NTERACT_CHANNEL": channel }
+                "command": "${__dirname}/server/mcpb-runt",
+                "args": [],
+                "env": { "NTERACT_CHANNEL": channel },
+                "platform_overrides": {
+                    "win32": {
+                        "command": "${__dirname}/server/mcpb-runt.exe"
+                    }
+                }
             }
         },
         "tools": [
             { "name": "list_active_notebooks", "description": "List all open notebook sessions" },
-            { "name": "join_notebook", "description": "Connect to an existing notebook session" },
-            { "name": "open_notebook", "description": "Open a notebook file from disk" },
+            { "name": "open_notebook", "description": "Open a notebook by file path, connect to a running session by ID, or resume the last active session" },
             { "name": "create_notebook", "description": "Create a new notebook with optional dependencies" },
             { "name": "save_notebook", "description": "Save notebook to disk" },
             { "name": "get_cell", "description": "Get a cell's source and outputs" },
@@ -124,15 +125,22 @@ pub fn install_mcpb(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         format!("Failed to write manifest.json: {e}")
     })?;
 
-    // ── 4. Write launcher script ───────────────────────────────────────
+    // ── 4. Copy mcpb-runt binary from app sidecar ──────────────────────
     let server_dir = staging.join("server");
     fs::create_dir_all(&server_dir).map_err(|e| {
         cleanup();
         format!("Failed to create server directory: {e}")
     })?;
-    fs::write(server_dir.join("launch.js"), LAUNCH_JS).map_err(|e| {
+
+    let mcpb_runt_binary = get_bundled_mcpb_runt(app)?;
+    let binary_name = if cfg!(target_os = "windows") {
+        "mcpb-runt.exe"
+    } else {
+        "mcpb-runt"
+    };
+    fs::copy(&mcpb_runt_binary, server_dir.join(binary_name)).map_err(|e| {
         cleanup();
-        format!("Failed to write launch.js: {e}")
+        format!("Failed to copy mcpb-runt binary: {e}")
     })?;
 
     // ── 5. Write icons (pre-sized 512x512, no runtime resize needed) ──
@@ -214,6 +222,50 @@ fn cli_on_path(name: &str) -> bool {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+/// Find the bundled `mcpb-runt` binary in the app's sidecar directory.
+fn get_bundled_mcpb_runt(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    use tauri::Manager;
+
+    let binary_name = if cfg!(target_os = "windows") {
+        "mcpb-runt.exe"
+    } else {
+        "mcpb-runt"
+    };
+
+    // Try the Tauri resource directory (where sidecars are bundled)
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        let candidate = resource_dir.join(binary_name);
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+
+    // Fallback: look next to the main executable
+    if let Ok(exe_dir) = std::env::current_exe().and_then(|p| {
+        p.parent()
+            .map(|p| p.to_path_buf())
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no parent"))
+    }) {
+        let candidate = exe_dir.join(binary_name);
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+
+        // macOS: Contents/MacOS/mcpb-runt
+        #[cfg(target_os = "macos")]
+        {
+            let candidate = exe_dir.join(binary_name);
+            if candidate.exists() {
+                return Ok(candidate);
+            }
+        }
+    }
+
+    Err("mcpb-runt binary not found in app bundle. \
+         The app may need to be rebuilt with mcpb-runt as a sidecar."
+        .to_string())
 }
 
 /// Open a file with the platform's default handler.

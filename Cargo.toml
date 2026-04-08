@@ -16,6 +16,8 @@ members = [
     "crates/runtimed-wasm",
     "crates/mcp-supervisor",
     "crates/runt-mcp",
+    "crates/runt-mcp-proxy",
+    "crates/mcpb-runt",
     "crates/repr-llm",
 ]
 default-members = ["crates/notebook"]

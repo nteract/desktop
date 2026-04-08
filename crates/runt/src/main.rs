@@ -785,6 +785,11 @@ async fn run_mcp_server(no_show: bool) -> Result<()> {
     let transport = rmcp::transport::io::stdio();
     let handle = server.serve(transport).await?;
 
+    // Grab a cancellation token before `waiting()` moves ownership of `handle`.
+    // Used to gracefully close the MCP transport on daemon upgrade so the
+    // client sees a clean EOF instead of a broken pipe.
+    let cancel_token = handle.cancellation_token();
+
     // Spawn the health monitor alongside the MCP server
     let monitor_socket = socket_path;
     let monitor_handle = tokio::spawn(async move {
@@ -798,9 +803,14 @@ async fn run_mcp_server(no_show: bool) -> Result<()> {
             result?;
         }
         exit_code = monitor_handle => {
-            // Health monitor returned — daemon was upgraded
+            // Health monitor returned — daemon was upgraded.
+            // Gracefully close the MCP transport so the client sees a clean
+            // EOF rather than a broken pipe, then exit with EX_TEMPFAIL (75)
+            // so the wrapper or client knows to restart us.
             let code = exit_code.unwrap_or(runt_mcp::health::EXIT_DAEMON_UPGRADED);
             eprintln!("Daemon upgraded, exiting for restart (exit code {code}).");
+            cancel_token.cancel();
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             std::process::exit(code);
         }
     }
