@@ -1,11 +1,11 @@
 /**
  * MIME type priority for MCP App output rendering.
  * Higher priority types are preferred when multiple are available.
- *
- * Phase 1: markdown, KaTeX, HTML, images, JSON, text.
- * Phase 2 (deferred): plotly, vega, leaflet, geo+json.
  */
 export const MIME_PRIORITY: readonly string[] = [
+  // Visualizations (highest priority — rich interactive content)
+  "application/vnd.plotly.v1+json",
+  "application/geo+json",
   // Rich text
   "text/html",
   "text/markdown",
@@ -23,19 +23,10 @@ export const MIME_PRIORITY: readonly string[] = [
 ];
 
 /**
- * MIME types we know about but can't render yet.
- * Show text/plain fallback instead of the blob URL.
+ * Check if a MIME type is a Vega or Vega-Lite variant.
  */
-const DEFERRED_MIMES = new Set([
-  "application/vnd.plotly.v1+json",
-  "application/geo+json",
-]);
-
-function isDeferredVizMime(mime: string): boolean {
-  if (DEFERRED_MIMES.has(mime)) return true;
-  if (mime.startsWith("application/vnd.vegalite.v") && mime.includes("+json")) return true;
-  if (mime.startsWith("application/vnd.vega.v") && !mime.startsWith("application/vnd.vegalite.") && mime.includes("+json")) return true;
-  return false;
+export function isVegaMimeType(mime: string): boolean {
+  return /^application\/vnd\.vega(lite)?\.v\d/.test(mime);
 }
 
 /**
@@ -44,13 +35,18 @@ function isDeferredVizMime(mime: string): boolean {
  */
 export function selectMimeType(data: Record<string, unknown>): string | null {
   const available = Object.keys(data).filter(
-    (k) => data[k] != null && k !== "text/llm+plain" && !isDeferredVizMime(k),
+    (k) => data[k] != null && k !== "text/llm+plain",
   );
 
+  // Check priority list first
   for (const mime of MIME_PRIORITY) {
     if (available.includes(mime)) return mime;
   }
 
-  // Fallback: first available non-deferred type
+  // Check for Vega/Vega-Lite variants (version-agnostic pattern match)
+  const vegaMime = available.find(isVegaMimeType);
+  if (vegaMime) return vegaMime;
+
+  // Fallback: first available type
   return available[0] ?? null;
 }

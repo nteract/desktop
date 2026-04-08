@@ -1,5 +1,5 @@
 import { createRoot } from "react-dom/client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   App,
   applyDocumentTheme,
@@ -67,12 +67,14 @@ function McpApp() {
 
   useCollapseWhenEmpty(hasOutputs);
 
+  const blobBaseUrl = content?.blob_base_url;
+
   if (!hasOutputs) return null;
 
   return (
     <>
       {cells.map((cell) => (
-        <CellOutput key={cell.cell_id} cell={cell} />
+        <CellOutput key={cell.cell_id} cell={cell} blobBaseUrl={blobBaseUrl} />
       ))}
     </>
   );

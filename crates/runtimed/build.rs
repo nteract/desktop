@@ -1,6 +1,11 @@
 use std::process::Command;
 
 fn main() {
+    // Rebuild when plugin assets change (committed via Git LFS)
+    for file in ["plotly.js", "vega.js", "leaflet.js", "leaflet.css"] {
+        println!("cargo:rerun-if-changed=../runt-mcp/assets/plugins/{file}");
+    }
+
     // Capture short commit hash for version-mismatch detection.
     // This ensures the daemon gets restarted when the binary changes,
     // even if the crate version (Cargo.toml) hasn't been bumped.

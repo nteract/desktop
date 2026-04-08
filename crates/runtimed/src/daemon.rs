@@ -593,7 +593,7 @@ impl Daemon {
             }
         }
 
-        // Start the blob HTTP server
+        // Start the blob HTTP server (also serves renderer plugin assets)
         let blob_port = match blob_server::start_blob_server(self.blob_store.clone()).await {
             Ok(port) => {
                 info!("[runtimed] Blob server started on port {}", port);

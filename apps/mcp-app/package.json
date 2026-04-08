@@ -3,7 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "esbuild src/mcp-app.tsx --bundle --format=esm --jsx=automatic --loader:.tsx=tsx --loader:.ts=ts --outfile=dist/mcp-app.js --define:process.env.NODE_ENV=\\\"production\\\" && node build-html.js"
+    "build": "esbuild src/mcp-app.tsx --bundle --format=esm --jsx=automatic --loader:.tsx=tsx --loader:.ts=ts --outfile=dist/mcp-app.js --define:process.env.NODE_ENV=\\\"production\\\" && node build-html.js",
+    "build:plugins": "node build-plugins.js",
+    "build:all": "npm run build && npm run build:plugins"
   },
   "dependencies": {
     "@modelcontextprotocol/ext-apps": "^1.3.0",
@@ -20,9 +22,11 @@
     "react-syntax-highlighter": "^15.6.1"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.0.0",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
     "esbuild": "^0.25.0",
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0",
+    "vite": "^6.0.0"
   }
 }

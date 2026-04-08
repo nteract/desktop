@@ -5,9 +5,10 @@ import { MimeRenderer, StreamOutput } from "./mime-renderer";
 
 interface CellOutputProps {
   cell: CellData;
+  blobBaseUrl?: string;
 }
 
-export function CellOutput({ cell }: CellOutputProps) {
+export function CellOutput({ cell, blobBaseUrl }: CellOutputProps) {
   if (!cell.outputs?.length) {
     return null;
   }
@@ -30,7 +31,7 @@ export function CellOutput({ cell }: CellOutputProps) {
             case "display_data":
             case "execute_result":
               if (output.data) {
-                return <MimeRenderer key={i} data={output.data} />;
+                return <MimeRenderer key={i} data={output.data} blobBaseUrl={blobBaseUrl} />;
               }
               return null;
             default:

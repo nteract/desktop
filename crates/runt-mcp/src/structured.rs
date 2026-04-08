@@ -36,7 +36,7 @@ pub fn cell_structured_content_from_manifests(
     status: &str,
     blob_base_url: &Option<String>,
 ) -> Value {
-    json!({
+    let mut content = json!({
         "cell": {
             "cell_id": cell_id,
             "source": source,
@@ -45,7 +45,13 @@ pub fn cell_structured_content_from_manifests(
             "execution_count": execution_count,
             "status": status,
         }
-    })
+    });
+
+    if let Some(base) = blob_base_url {
+        content["blob_base_url"] = Value::String(base.clone());
+    }
+
+    content
 }
 
 /// Convert a single output manifest Value to structured JSON for the output renderer.
@@ -122,9 +128,9 @@ fn manifest_output_to_structured(manifest: &Value, blob_base_url: &Option<String
                         continue;
                     }
                     if is_viz_mime(mime) || mime == "application/geo+json" {
-                        // Viz specs: include blob URL (for renderer) but skip
-                        // inline data (too large). Inline specs get synthesized
-                        // into text/llm+plain below.
+                        // Viz specs: emit blob URL or inline data.
+                        // The MCP App renderer fetches blob URLs on demand
+                        // and parses inline JSON directly.
                         let meta = output_resolver::content_ref_meta(content_ref);
                         if let Some(hash) = meta.blob_hash {
                             if let Some(base) = blob_base_url.as_ref() {
@@ -132,6 +138,11 @@ fn manifest_output_to_structured(manifest: &Value, blob_base_url: &Option<String
                                     mime.clone(),
                                     Value::String(format!("{}/blob/{}", base, hash)),
                                 );
+                            }
+                        } else if meta.is_inline {
+                            // Small viz specs inlined in the CRDT — pass through
+                            if let Some(inline) = content_ref.get("inline") {
+                                data.insert(mime.clone(), inline.clone());
                             }
                         }
                         continue;
@@ -274,7 +285,11 @@ mod tests {
     }
 
     #[test]
-    fn structured_viz_mime_skipped() {
+    fn structured_viz_mime_inline_included() {
+        // Inline viz specs are included for MCP App plugin rendering.
+        // TODO: consider always blob-storing viz specs to avoid bloating
+        // structured content visible to Claude Code. Currently small specs
+        // (< 1KB) are inlined in the CRDT and passed through here.
         let manifest = json!({
             "output_type": "display_data",
             "data": {
@@ -287,7 +302,7 @@ mod tests {
         let Some(data) = result["data"].as_object() else {
             panic!("data should be an object");
         };
-        assert!(!data.contains_key("application/vnd.plotly.v1+json"));
+        assert_eq!(data["application/vnd.plotly.v1+json"], "{\"data\": []}");
         assert_eq!(data["text/plain"], "Figure()");
     }
 
