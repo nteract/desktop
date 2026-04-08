@@ -313,9 +313,14 @@ impl SettingsDoc {
                     if let Some(json_path) = settings_json_path {
                         if json_path.exists() {
                             if let Ok(contents) = std::fs::read_to_string(json_path) {
-                                if let Ok(json) = serde_json::from_str(&contents) {
+                                if let Ok(json) =
+                                    serde_json::from_str::<serde_json::Value>(&contents)
+                                {
                                     if settings.apply_json_changes(&json) {
                                         info!("[settings] Reconciled Automerge doc with settings.json");
+                                        // Protect against stale clients reconnecting after
+                                        // restart — same as the live file-watcher path.
+                                        settings.set_pending_external_values(json);
                                     }
                                 }
                             }
@@ -853,19 +858,25 @@ impl SettingsDoc {
     /// Re-apply pending external values if a sync merge reverted them.
     ///
     /// Returns `true` if any values were re-applied (i.e., a sync message
-    /// had overwritten the file watcher's changes). Clears the pending state
-    /// once all peers have converged (apply_json_changes returns false).
+    /// had overwritten the file watcher's changes via conflict resolution).
+    ///
+    /// Pending values are never cleared here — they persist until the next
+    /// file-watcher event replaces them. This is intentional: an up-to-date
+    /// peer's no-op sync must not disarm the protection before a stale peer
+    /// has a chance to sync.
     pub fn enforce_external_values(&mut self) -> bool {
-        let json = match self.pending_external_values.take() {
+        let json = match self.pending_external_values.clone() {
             Some(json) => json,
             None => return false,
         };
-        let reapplied = self.apply_json_changes(&json);
-        if reapplied {
-            // Values drifted — keep enforcing until peers converge
-            self.pending_external_values = Some(json);
-        }
-        reapplied
+        self.apply_json_changes(&json)
+    }
+
+    /// Clear pending external values. Called by the file watcher when it
+    /// detects a self-write (values already match the doc), indicating
+    /// all peers have converged and the override is no longer needed.
+    pub fn clear_pending_external_values(&mut self) {
+        self.pending_external_values = None;
     }
 }
 
