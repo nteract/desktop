@@ -722,10 +722,15 @@ impl Daemon {
                     )
                     .await;
                 }
-                let mut ra_guard = room.runtime_agent_handle.lock().await;
-                *ra_guard = None;
-                let mut tx = room.runtime_agent_request_tx.lock().await;
-                *tx = None;
+                // Scope each lock independently to avoid cross-lock ordering.
+                {
+                    let mut ra_guard = room.runtime_agent_handle.lock().await;
+                    *ra_guard = None;
+                }
+                {
+                    let mut tx = room.runtime_agent_request_tx.lock().await;
+                    *tx = None;
+                }
             }
         }
 
@@ -2190,10 +2195,15 @@ impl Daemon {
                             )
                             .await;
                         }
-                        let mut ra_guard = room.runtime_agent_handle.lock().await;
-                        *ra_guard = None;
-                        let mut tx = room.runtime_agent_request_tx.lock().await;
-                        *tx = None;
+                        // Scope each lock independently to avoid cross-lock ordering.
+                        {
+                            let mut ra_guard = room.runtime_agent_handle.lock().await;
+                            *ra_guard = None;
+                        }
+                        {
+                            let mut tx = room.runtime_agent_request_tx.lock().await;
+                            *tx = None;
+                        }
                     }
                     info!("[runtimed] Evicted room for notebook: {}", notebook_id);
                     Response::NotebookShutdown { found: true }

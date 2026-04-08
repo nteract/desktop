@@ -2075,10 +2075,15 @@ where
                                 );
                             }
                         }
-                        let mut guard = room_for_eviction.runtime_agent_handle.lock().await;
-                        *guard = None;
-                        let mut tx = room_for_eviction.runtime_agent_request_tx.lock().await;
-                        *tx = None;
+                        // Scope each lock independently to avoid cross-lock ordering.
+                        {
+                            let mut guard = room_for_eviction.runtime_agent_handle.lock().await;
+                            *guard = None;
+                        }
+                        {
+                            let mut tx = room_for_eviction.runtime_agent_request_tx.lock().await;
+                            *tx = None;
+                        }
                     }
                 }
 
@@ -2314,8 +2319,10 @@ where
     // The sync handshake takes multiple roundtrips; by the time it completes,
     // transient states like starting phases may have already passed.
     {
-        let sd = room.state_doc.read().await;
-        let state = sd.read_state();
+        let state = {
+            let sd = room.state_doc.read().await;
+            sd.read_state()
+        };
         connection::send_typed_json_frame(
             writer,
             NotebookFrameType::Broadcast,
@@ -2334,25 +2341,33 @@ where
     // We filter out the receiver's own peer_id to prevent them from rendering
     // their own cursor as a remote peer (clients don't know their server-assigned ID).
     {
-        let presence_state = room.presence.read().await;
-        if presence_state.peer_count() > 0 {
-            // Build snapshot excluding this peer (they shouldn't see themselves)
-            let other_peers: Vec<presence::PeerSnapshot> = presence_state
-                .peers()
-                .values()
-                .filter(|p| p.peer_id != peer_id)
-                .map(|p| presence::PeerSnapshot {
-                    peer_id: p.peer_id.clone(),
-                    peer_label: p.peer_label.clone(),
-                    actor_label: p.actor_label.clone(),
-                    channels: p.channels.values().cloned().collect(),
-                })
-                .collect();
-            if !other_peers.is_empty() {
-                let snapshot_bytes = presence::encode_snapshot("daemon", &other_peers);
-                connection::send_typed_frame(writer, NotebookFrameType::Presence, &snapshot_bytes)
-                    .await?;
+        let snapshot_bytes = {
+            let presence_state = room.presence.read().await;
+            if presence_state.peer_count() > 0 {
+                // Build snapshot excluding this peer (they shouldn't see themselves)
+                let other_peers: Vec<presence::PeerSnapshot> = presence_state
+                    .peers()
+                    .values()
+                    .filter(|p| p.peer_id != peer_id)
+                    .map(|p| presence::PeerSnapshot {
+                        peer_id: p.peer_id.clone(),
+                        peer_label: p.peer_label.clone(),
+                        actor_label: p.actor_label.clone(),
+                        channels: p.channels.values().cloned().collect(),
+                    })
+                    .collect();
+                if !other_peers.is_empty() {
+                    Some(presence::encode_snapshot("daemon", &other_peers))
+                } else {
+                    None
+                }
+            } else {
+                None
             }
+        }; // presence read guard dropped
+        if let Some(snapshot_bytes) = snapshot_bytes {
+            connection::send_typed_frame(writer, NotebookFrameType::Presence, &snapshot_bytes)
+                .await?;
         }
     }
 
@@ -3930,9 +3945,12 @@ async fn auto_launch_kernel(
         {
             Ok(ra) => {
                 // Store handle and set provenance
+                // Scope each lock independently to avoid cross-lock ordering.
                 {
                     let mut ra_guard = room.runtime_agent_handle.lock().await;
                     *ra_guard = Some(ra);
+                }
+                {
                     let mut id = room.current_runtime_agent_id.write().await;
                     *id = Some(runtime_agent_id.clone());
                 }
@@ -5077,6 +5095,10 @@ async fn handle_notebook_request(
                                 // Write kernel status + info + prewarmed packages
                                 // to RuntimeStateDoc
                                 {
+                                    // Read agent ID before taking the write lock to
+                                    // avoid holding state_doc across an .await.
+                                    let agent_id =
+                                        room.current_runtime_agent_id.read().await.clone();
                                     let mut sd = room.state_doc.write().await;
                                     let mut changed = false;
                                     changed |= sd.set_kernel_status("idle");
@@ -5088,9 +5110,7 @@ async fn handle_notebook_request(
                                     changed |= sd.set_prewarmed_packages(
                                         &launched_config.prewarmed_packages,
                                     );
-                                    if let Some(ref aid) =
-                                        *room.current_runtime_agent_id.read().await
-                                    {
+                                    if let Some(ref aid) = agent_id {
                                         changed |= sd.set_runtime_agent_id(aid);
                                     }
                                     if changed {
