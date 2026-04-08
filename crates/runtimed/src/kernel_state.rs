@@ -44,7 +44,7 @@ fn to_doc_entries(entries: &[QueueEntry]) -> Vec<DocQueueEntry> {
 
 // ── KernelState ────────────────────────────────────────────────────────────
 
-/// Execution state machine extracted from `RoomKernel`.
+/// Execution state machine for the runtime agent.
 ///
 /// Owns the queue, executing-cell slot, and kernel status. The runtime agent
 /// holds this as a local variable — all mutation goes through `&mut self`.

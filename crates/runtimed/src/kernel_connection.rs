@@ -3,10 +3,10 @@
 //! This trait separates ZeroMQ IO concerns (sending execute requests, reading
 //! completions, signalling interrupts) from queue/state management in the
 //! runtime agent's select loop. It is NOT a plugin interface — the only
-//! implementation is `RoomKernel` in `kernel_manager.rs`.
+//! implementation is `JupyterKernel` in `jupyter_kernel.rs`.
 //!
 //! By programming the runtime agent against this trait, we can:
-//! - Own the kernel directly (no `Arc<Mutex<Option<RoomKernel>>>`)
+//! - Own the kernel directly
 //! - Test queue logic with a mock kernel
 //! - Clearly delineate what crosses the ZeroMQ boundary
 

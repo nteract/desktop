@@ -39,7 +39,7 @@ use notify_debouncer_mini::DebounceEventResult;
 
 use crate::blob_store::BlobStore;
 use crate::connection::{self, NotebookFrameType};
-use crate::kernel_manager::{DenoLaunchedConfig, LaunchedEnvConfig, RoomKernel};
+use crate::kernel_manager::{DenoLaunchedConfig, LaunchedEnvConfig};
 use crate::markdown_assets::resolve_markdown_assets;
 use crate::notebook_doc::{notebook_doc_filename, CellSnapshot, NotebookDoc};
 use crate::notebook_metadata::NotebookMetadataSnapshot;
@@ -677,68 +677,6 @@ async fn check_and_broadcast_sync_state(room: &NotebookRoom) {
     }
 }
 
-/// Handle CellError: clear queue on the kernel, mark executions as errored
-/// in state_doc using fork+merge to avoid async gaps between the kernel lock
-/// and the state_doc write.
-pub(crate) async fn apply_cell_error_to_state_doc(
-    room_kernel: &Arc<Mutex<Option<RoomKernel>>>,
-    room_state_doc: &Arc<RwLock<RuntimeStateDoc>>,
-    room_state_changed_tx: &broadcast::Sender<()>,
-) {
-    // Fork state_doc before the kernel lock so mutations compose
-    // with any concurrent state_doc writes.
-    let mut fork = {
-        let mut sd = room_state_doc.write().await;
-        let mut f = sd.fork();
-        f.set_actor("runtimed:state:cell-error");
-        f
-    };
-
-    // Read+mutate kernel state under its own lock
-    let cleared = {
-        let mut guard = room_kernel.lock().await;
-        if let Some(ref mut k) = *guard {
-            k.mark_execution_error();
-            let cleared = k.clear_queue();
-            if !cleared.is_empty() {
-                info!(
-                    "[notebook-sync] Cleared {} queued cells due to error",
-                    cleared.len()
-                );
-            }
-            let exec = k.executing_entry().map(|e| DocQueueEntry {
-                cell_id: e.cell_id,
-                execution_id: e.execution_id,
-            });
-            // Apply queue + execution state to fork (no state_doc lock needed)
-            fork.set_queue(exec.as_ref(), &[]);
-            cleared
-        } else {
-            vec![]
-        }
-    };
-
-    // Mark cleared executions as errored on the fork
-    for entry in &cleared {
-        fork.set_execution_done(&entry.execution_id, false);
-    }
-
-    // Merge fork back — concurrent state_doc writes compose via CRDT
-    {
-        let mut sd = room_state_doc.write().await;
-        match catch_automerge_panic("cell-error-state-merge", || sd.merge(&mut fork)) {
-            Ok(Ok(_)) => {
-                let _ = room_state_changed_tx.send(());
-            }
-            Ok(Err(_)) => {}
-            Err(e) => {
-                warn!("{}", e);
-                sd.rebuild_from_save();
-            }
-        }
-    }
-}
-
 /// Handle interrupt: clear queued executions in state_doc and mark them as
 /// errored using fork+merge. The currently-executing cell is left alone —
 /// the kernel will send an `execute_reply` with error status for it, which
@@ -786,76 +724,6 @@ pub(crate) async fn apply_interrupt_to_state_doc(
             }
         }
     }
-}
-
-/// Handle KernelDied: set error status, clear queue, mark all executions
-/// as errored using fork+merge. Returns env_source for presence update.
-pub(crate) async fn apply_kernel_died_to_state_doc(
-    room_kernel: &Arc<Mutex<Option<RoomKernel>>>,
-    room_state_doc: &Arc<RwLock<RuntimeStateDoc>>,
-    room_state_changed_tx: &broadcast::Sender<()>,
-    room_broadcast_tx: &broadcast::Sender<NotebookBroadcast>,
-) -> Option<String> {
-    // Fork state_doc before the kernel lock
-    let mut fork = {
-        let mut sd = room_state_doc.write().await;
-        let mut f = sd.fork();
-        f.set_actor("runtimed:state:kernel-died");
-        f
-    };
-
-    let (env_source, interrupted, cleared) = {
-        let mut guard = room_kernel.lock().await;
-        if let Some(ref mut k) = *guard {
-            let es = k.env_source().to_string();
-            let (interrupted, cleared) = k.kernel_died();
-            (Some(es), interrupted, cleared)
-        } else {
-            (None, None, vec![])
-        }
-    };
-
-    // Broadcast ExecutionDone for the interrupted execution (no lock needed)
-    if let Some((ref cell_id, ref execution_id)) = interrupted {
-        info!(
-            "[notebook-sync] Emitting ExecutionDone for interrupted cell {} ({})",
-            cell_id, execution_id
-        );
-        let _ = room_broadcast_tx.send(NotebookBroadcast::ExecutionDone {
-            cell_id: cell_id.clone(),
-            execution_id: execution_id.clone(),
-        });
-    }
-
-    // Apply all mutations on the fork
-    fork.set_kernel_status("error");
-    fork.set_queue(None, &[]);
-    fork.set_prewarmed_packages(&[]);
-    if let Some((_, ref execution_id)) = interrupted {
-        fork.set_execution_done(execution_id, false);
-    }
-    for entry in &cleared {
-        fork.set_execution_done(&entry.execution_id, false);
-    }
-    // All widgets become invalid when kernel dies
-    fork.clear_comms();
-
-    // Merge fork back
-    {
-        let mut sd = room_state_doc.write().await;
-        match catch_automerge_panic("kernel-died-state-merge", || sd.merge(&mut fork)) {
-            Ok(Ok(_)) => {
-                let _ = room_state_changed_tx.send(());
-            }
-            Ok(Err(_)) => {}
-            Err(e) => {
-                warn!("{}", e);
-                sd.rebuild_from_save();
-            }
-        }
-    }
-
-    env_source
 }
 
 /// Re-verify trust from the Automerge doc and update room.trust_state + RuntimeStateDoc.
@@ -3395,16 +3263,6 @@ async fn auto_launch_kernel(
         }
     }
 
-    // Create new kernel (used for pool env acquisition; execution is runtime-agent-backed)
-    let _kernel = RoomKernel::new(
-        room.kernel_broadcast_tx.clone(),
-        room.blob_store.clone(),
-        room.state_doc.clone(),
-        room.state_changed_tx.clone(),
-        room.presence.clone(),
-        room.presence_tx.clone(),
-    );
-
     // Detection priority:
     // 1. Notebook's kernelspec (for existing notebooks) - determines python vs deno
     // 2. For Python: resolve environment (inline deps → project files → prewarmed)
@@ -4232,7 +4090,7 @@ async fn rekey_ephemeral_room(
 
         // Shut down the interloper's kernel and file watcher in
         // the background. Kernel migration is not safe because
-        // RoomKernel holds references to its original room's
+        // the kernel holds references to its original room's
         // doc/channels — moving the struct doesn't rewire them.
         // The winning room will launch its own kernel when needed.
         let canonical_for_task = canonical.clone();
@@ -4388,15 +4246,6 @@ async fn handle_notebook_request(
                 }
             }
 
-            // Create new kernel (used for pool env acquisition; execution is runtime-agent-backed)
-            let _kernel = RoomKernel::new(
-                room.kernel_broadcast_tx.clone(),
-                room.blob_store.clone(),
-                room.state_doc.clone(),
-                room.state_changed_tx.clone(),
-                room.presence.clone(),
-                room.presence_tx.clone(),
-            );
             let notebook_path = notebook_path.map(std::path::PathBuf::from);
             // Fall back to room.working_dir for untitled notebooks (mirrors auto-launch path).
             // Enables project file detection (environment.yaml, pyproject.toml, pixi.toml)

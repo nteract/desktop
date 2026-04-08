@@ -7,10 +7,6 @@
 //! Owns the IO-bound parts of a Jupyter kernel: ZeroMQ connections, spawned
 //! task handles, request/response infrastructure, process lifecycle.  Does
 //! **not** hold queue, executing cell, or status — those live in `KernelState`.
-//!
-//! Created by moving the IO fields and method bodies from `RoomKernel` in
-//! `kernel_manager.rs`.  Code duplication between the two is expected for now;
-//! `RoomKernel` continues to serve the daemon-side `start_command_loop` path.
 
 use std::collections::HashMap;
 use std::net::Ipv4Addr;

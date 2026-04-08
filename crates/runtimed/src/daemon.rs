@@ -695,9 +695,9 @@ impl Daemon {
         // so they do NOT receive the SIGINT/SIGTERM that the daemon receives.
         // Without explicit shutdown here, kernel processes become orphans.
         // We cannot rely on Drop alone because:
-        //   1. RoomKernel is behind Arc<Mutex<Option<...>>> inside Arc<NotebookRoom>
-        //      — multiple spawned tasks hold Arc clones that may not all unwind
-        //      during tokio runtime teardown.
+        //   1. The runtime agent handle is behind Arc<Mutex<Option<...>>> inside
+        //      Arc<NotebookRoom> — multiple spawned tasks hold Arc clones that
+        //      may not all unwind during tokio runtime teardown.
         //   2. A second ctrl-c or SIGKILL skips destructors entirely.
         //
         // To avoid holding the notebook_rooms lock across .await points, first
