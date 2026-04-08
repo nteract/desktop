@@ -285,7 +285,11 @@ mod tests {
     }
 
     #[test]
-    fn structured_viz_mime_skipped() {
+    fn structured_viz_mime_inline_included() {
+        // Inline viz specs are included for MCP App plugin rendering.
+        // TODO: consider always blob-storing viz specs to avoid bloating
+        // structured content visible to Claude Code. Currently small specs
+        // (< 1KB) are inlined in the CRDT and passed through here.
         let manifest = json!({
             "output_type": "display_data",
             "data": {
@@ -298,7 +302,7 @@ mod tests {
         let Some(data) = result["data"].as_object() else {
             panic!("data should be an object");
         };
-        assert!(!data.contains_key("application/vnd.plotly.v1+json"));
+        assert_eq!(data["application/vnd.plotly.v1+json"], "{\"data\": []}");
         assert_eq!(data["text/plain"], "Figure()");
     }
 
