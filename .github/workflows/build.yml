@@ -79,6 +79,14 @@ jobs:
       - name: Check Biome (format + lint + imports)
         run: npx @biomejs/biome check apps/notebook/src/ e2e/
 
+      - name: Check MCP App renderer plugins are up to date
+        run: |
+          pnpm --filter nteract-mcp-app run build:plugins
+          git diff --exit-code crates/runt-mcp/assets/plugins/ || {
+            echo "::error::MCP App renderer plugins are stale. Run 'cd apps/mcp-app && pnpm build:plugins' and commit the changes."
+            exit 1
+          }
+
       - name: Lint GitHub Actions workflows
         uses: raven-actions/actionlint@v2
         with:
