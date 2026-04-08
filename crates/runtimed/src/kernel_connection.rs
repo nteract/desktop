@@ -116,15 +116,21 @@ pub trait KernelConnection: Send {
     ) -> impl std::future::Future<Output = Result<()>> + Send;
 
     /// Request code completions from the kernel.
+    ///
+    /// Takes `&mut self` because it sends via the primary shell connection.
+    /// This is safe because the agent's select! loop is the sole caller.
     fn complete(
-        &self,
+        &mut self,
         code: &str,
         cursor_pos: usize,
     ) -> impl std::future::Future<Output = Result<(Vec<CompletionItem>, usize, usize)>> + Send;
 
     /// Search kernel input history.
+    ///
+    /// Takes `&mut self` because it sends via the primary shell connection.
+    /// This is safe because the agent's select! loop is the sole caller.
     fn get_history(
-        &self,
+        &mut self,
         pattern: Option<&str>,
         n: i32,
         unique: bool,

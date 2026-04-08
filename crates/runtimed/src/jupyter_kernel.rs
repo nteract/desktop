@@ -2038,40 +2038,17 @@ impl KernelConnection for JupyterKernel {
     // ── Completions ──────────────────────────────────────────────────────
 
     async fn complete(
-        &self,
+        &mut self,
         code: &str,
         cursor_pos: usize,
     ) -> Result<(Vec<CompletionItem>, usize, usize)> {
-        // complete() needs to send via shell_writer, but the trait declares &self.
-        // We cannot send via shell_writer (needs &mut). Instead, we use a separate
-        // control connection or the pending_completions pattern that doesn't need
-        // mutable shell access — but the current RoomKernel impl requires &mut self.
-        //
-        // For now, use the same pattern: register a oneshot, but we need a cmd_tx
-        // to tell the agent to send the message. However, the simplest correct
-        // approach that matches the trait signature is to create a new shell
-        // connection for the request.
-        //
-        // Actually, looking at the trait signature more carefully: &self is correct
-        // because we only need to lock pending_completions (Arc<Mutex>) and use
-        // cmd_tx (mpsc::Sender, which has send(&self)). The shell_writer send
-        // goes through cmd_tx in the agent pattern. But for now, to match
-        // RoomKernel's behavior, we'll use cmd_tx to request the send.
-        //
-        // SIMPLIFIED: Use a fresh shell connection for the request. This avoids
-        // needing &mut self for the shell_writer.
-        let connection_info = self
-            .connection_info
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("No kernel running"))?;
+        // Clone Arc before taking &mut shell_writer to avoid borrow conflicts.
+        let pending = self.pending_completions.clone();
 
-        let identity = runtimelib::peer_identity_for_session(&self.session_id)?;
-        let mut shell = runtimelib::create_client_shell_connection_with_identity(
-            connection_info,
-            &self.session_id,
-            identity,
-        )
-        .await?;
+        let shell = self
+            .shell_writer
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("No kernel running"))?;
 
         let request = CompleteRequest {
             code: code.to_string(),
@@ -2082,14 +2059,14 @@ impl KernelConnection for JupyterKernel {
 
         // Register pending request
         let (tx, rx) = oneshot::channel();
-        self.pending_completions
+        pending
             .lock()
             .map_err(|_| anyhow::anyhow!("Lock poisoned"))?
             .insert(msg_id.clone(), tx);
 
         if let Err(e) = shell.send(message).await {
-            if let Ok(mut pending) = self.pending_completions.lock() {
-                pending.remove(&msg_id);
+            if let Ok(mut guard) = pending.lock() {
+                guard.remove(&msg_id);
             }
             return Err(e.into());
         }
@@ -2100,8 +2077,8 @@ impl KernelConnection for JupyterKernel {
             Ok(Ok(result)) => Ok(result),
             Ok(Err(_)) => Err(anyhow::anyhow!("Completion request cancelled")),
             Err(_) => {
-                if let Ok(mut pending) = self.pending_completions.lock() {
-                    pending.remove(&msg_id);
+                if let Ok(mut guard) = pending.lock() {
+                    guard.remove(&msg_id);
                 }
                 Err(anyhow::anyhow!("Completion request timed out"))
             }
@@ -2111,24 +2088,18 @@ impl KernelConnection for JupyterKernel {
     // ── History ──────────────────────────────────────────────────────────
 
     async fn get_history(
-        &self,
+        &mut self,
         pattern: Option<&str>,
         n: i32,
         unique: bool,
     ) -> Result<Vec<HistoryEntry>> {
-        // Same approach as complete(): use a fresh shell connection to avoid &mut self.
-        let connection_info = self
-            .connection_info
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("No kernel running"))?;
+        // Clone Arc before taking &mut shell_writer to avoid borrow conflicts.
+        let pending = self.pending_history.clone();
 
-        let identity = runtimelib::peer_identity_for_session(&self.session_id)?;
-        let mut shell = runtimelib::create_client_shell_connection_with_identity(
-            connection_info,
-            &self.session_id,
-            identity,
-        )
-        .await?;
+        let shell = self
+            .shell_writer
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("No kernel running"))?;
 
         let glob_pattern = escape_glob_pattern(pattern);
         let request = HistoryRequest::Search {
@@ -2143,7 +2114,7 @@ impl KernelConnection for JupyterKernel {
         let msg_id = message.header.msg_id.clone();
 
         let (tx, rx) = oneshot::channel();
-        self.pending_history
+        pending
             .lock()
             .map_err(|_| anyhow::anyhow!("Lock poisoned"))?
             .insert(msg_id.clone(), tx);
@@ -2155,8 +2126,8 @@ impl KernelConnection for JupyterKernel {
             Ok(Ok(entries)) => Ok(entries),
             Ok(Err(_)) => Err(anyhow::anyhow!("History request cancelled")),
             Err(_) => {
-                if let Ok(mut pending) = self.pending_history.lock() {
-                    pending.remove(&msg_id);
+                if let Ok(mut guard) = pending.lock() {
+                    guard.remove(&msg_id);
                 }
                 Err(anyhow::anyhow!("History request timed out"))
             }
