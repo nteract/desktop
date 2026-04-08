@@ -7,7 +7,7 @@
 fn daemon_has_no_tokio_mutex_across_await() {
     let daemon_source =
         std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/daemon.rs"))
-            .expect("failed to read daemon.rs");
+            .unwrap_or_else(|e| panic!("failed to read daemon.rs: {e}"));
 
     let diagnostics =
         async_rust_lsp::rules::mutex_across_await::check_mutex_across_await(&daemon_source);
