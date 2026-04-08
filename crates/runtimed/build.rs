@@ -63,10 +63,10 @@ fn main() {
 
 /// Generate the embedded_plugins module based on which plugin files exist.
 /// If no plugins are built (clean checkout), generates an empty lookup.
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 fn generate_embedded_plugins() {
-    let out_dir = std::env::var("OUT_DIR").unwrap();
-    // Resolve absolute path for include_bytes! (works from any OUT_DIR location)
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR");
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
     let plugins_dir = Path::new(&manifest_dir).join("../runt-mcp/assets/plugins");
 
     let plugins: &[(&str, &str)] = &[
@@ -79,8 +79,7 @@ fn generate_embedded_plugins() {
     let mut arms = Vec::new();
     for (filename, content_type) in plugins {
         let path = plugins_dir.join(filename);
-        if path.exists() {
-            let abs_path = path.canonicalize().unwrap();
+        if let Ok(abs_path) = path.canonicalize() {
             let abs_str = abs_path.display();
             arms.push(format!(
                 "        \"{filename}\" => Some((include_bytes!(\"{abs_str}\"), \"{content_type}\")),",
@@ -105,5 +104,6 @@ fn generate_embedded_plugins() {
         arms.join("\n")
     );
 
-    std::fs::write(Path::new(&out_dir).join("embedded_plugins.rs"), code).unwrap();
+    std::fs::write(Path::new(&out_dir).join("embedded_plugins.rs"), code)
+        .expect("failed to write embedded_plugins.rs");
 }
