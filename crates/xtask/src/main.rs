@@ -639,6 +639,7 @@ fn cmd_build(rust_only: bool) {
     // Copy sidecar binaries for Tauri bundling
     copy_sidecar_binary("runtimed", false);
     copy_sidecar_binary("runt", false);
+    copy_sidecar_binary("mcpb-runt", false);
 
     // Wait for pnpm install before starting frontend build
     if let Some(handle) = pnpm_handle {
@@ -2018,6 +2019,7 @@ fn run_cmd_ok(cmd: &str, args: &[&str]) -> bool {
 fn build_runtimed_daemon(release: bool) {
     build_external_binary("runtimed", "runtimed", release);
     build_external_binary("runt-cli", "runt", release);
+    build_external_binary("mcpb-runt", "mcpb-runt", release);
 }
 
 /// Build a binary and copy to binaries/ with target triple suffix for Tauri bundling.

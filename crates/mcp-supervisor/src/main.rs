@@ -32,11 +32,10 @@ use rmcp::model::{
 };
 use rmcp::schemars;
 use rmcp::service::{RequestContext, RoleServer};
-use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
-use rmcp::{ClientHandler, ErrorData as McpError, ServerHandler, ServiceExt};
+use rmcp::{ErrorData as McpError, ServerHandler, ServiceExt};
+use runt_mcp_proxy::{McpProxy, ProxyConfig};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::process::Command;
 use tokio::sync::{mpsc, Notify, RwLock};
 use tracing::{error, info, warn};
 
@@ -400,67 +399,6 @@ fn run_maturin_develop(project_root: &Path) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Child process (nteract MCP server)
-// ---------------------------------------------------------------------------
-
-/// Spawn `runt mcp` as a child process and return an rmcp client.
-///
-/// The upstream client's `name` and `title` are forwarded through the MCP
-/// initialize handshake so the child's peer label sniffing picks up the
-/// real client identity (e.g. "Claude Code") rather than the supervisor's.
-async fn spawn_nteract_child(
-    project_root: &Path,
-    socket_path: &str,
-    upstream_name: &str,
-    upstream_title: Option<&str>,
-) -> Result<rmcp::service::RunningService<RoleNteractClient, NteractClientHandler>, String> {
-    let runt = cargo_binary(project_root, "runt");
-    if !runt.exists() {
-        return Err(format!(
-            "runt binary not found at {}. Run `cargo build -p runt-cli` first.",
-            runt.display()
-        ));
-    }
-    info!("Spawning runt mcp server (client={upstream_name:?})...");
-    let transport = TokioChildProcess::new(Command::new(&runt).configure(|cmd| {
-        cmd.arg("mcp")
-            .env("RUNTIMED_DEV", "1")
-            .env("RUNTIMED_SOCKET_PATH", socket_path);
-    }))
-    .map_err(|e| format!("Failed to spawn runt mcp child: {e}"))?;
-
-    let handler = NteractClientHandler {
-        upstream_name: upstream_name.to_string(),
-        upstream_title: upstream_title.map(|s| s.to_string()),
-    };
-    let client = handler
-        .serve(transport)
-        .await
-        .map_err(|e| format!("Failed to initialize nteract MCP client: {e}"))?;
-
-    Ok(client)
-}
-
-type RoleNteractClient = rmcp::service::RoleClient;
-
-/// Client handler that presents the upstream MCP client's identity to the
-/// child process, so the child sees the real client name (e.g. "Claude Code")
-/// instead of the supervisor's name.
-#[derive(Clone)]
-struct NteractClientHandler {
-    upstream_name: String,
-    upstream_title: Option<String>,
-}
-
-impl ClientHandler for NteractClientHandler {
-    fn get_info(&self) -> rmcp::model::ClientInfo {
-        let mut impl_info = Implementation::new(&self.upstream_name, env!("CARGO_PKG_VERSION"));
-        impl_info.title = self.upstream_title.clone();
-        rmcp::model::ClientInfo::new(Default::default(), impl_info)
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Supervisor server (faces the MCP client)
 // ---------------------------------------------------------------------------
 
@@ -494,56 +432,19 @@ impl ManagedProcess {
     }
 }
 
-const TOOL_CACHE_FILENAME: &str = "tool-cache.json";
-
-/// Load cached child tool definitions from disk.
-fn load_cached_tools(project_root: &Path) -> Option<Vec<Tool>> {
-    let path = project_root.join(".context").join(TOOL_CACHE_FILENAME);
-    let data = std::fs::read_to_string(&path).ok()?;
-    match serde_json::from_str::<Vec<Tool>>(&data) {
-        Ok(tools) => Some(tools),
-        Err(e) => {
-            warn!("Failed to parse tool cache at {}: {e}", path.display());
-            None
-        }
-    }
-}
-
-/// Save child tool definitions to disk for optimistic serving on next startup.
-fn save_tool_cache(project_root: &Path, tools: &[Tool]) {
-    let path = project_root.join(".context").join(TOOL_CACHE_FILENAME);
-    match serde_json::to_string_pretty(tools) {
-        Ok(json) => {
-            if let Err(e) = std::fs::write(&path, json) {
-                warn!("Failed to write tool cache to {}: {e}", path.display());
-            } else {
-                info!("Saved {} tools to cache at {}", tools.len(), path.display());
-            }
-        }
-        Err(e) => warn!("Failed to serialize tool cache: {e}"),
-    }
-}
-
 /// Shared state for the supervisor.
 struct SupervisorState {
-    /// rmcp client connected to the nteract child process.
-    child_client: Option<rmcp::service::RunningService<RoleNteractClient, NteractClientHandler>>,
+    /// MCP proxy core — handles child spawning, forwarding, restart, session tracking.
+    /// Created after daemon discovery in the background init task.
+    proxy: Option<McpProxy>,
     /// Project root path.
     project_root: PathBuf,
     /// Log directory (.context/ in the project root).
     log_dir: PathBuf,
     /// Daemon socket path.
     socket_path: String,
-    /// Number of times the child has been restarted.
-    restart_count: u32,
-    /// Timestamps of recent crashes for circuit breaker.
-    recent_crashes: Vec<Instant>,
     /// Last error message from child.
     last_error: Option<String>,
-    /// Upstream MCP client name (e.g. "claude-code"), forwarded to child.
-    upstream_name: String,
-    /// Upstream MCP client title (e.g. "Claude Code"), forwarded to child.
-    upstream_title: Option<String>,
     /// Whether we started the daemon (so we know to clean it up).
     daemon_child: Option<std::process::Child>,
     /// Channel to request a tool list changed notification from the server context.
@@ -551,30 +452,6 @@ struct SupervisorState {
     tool_list_changed_tx: Option<mpsc::Sender<()>>,
     /// Managed long-running processes (vite dev server, notebook app, etc.).
     managed: HashMap<String, ManagedProcess>,
-    /// Cached child tool definitions, loaded from disk at startup.
-    /// Served optimistically before the child connects.
-    cached_tools: Option<Vec<Tool>>,
-    /// Last active notebook ID. Persisted across child restarts so the
-    /// supervisor can auto-rejoin the session after file watcher restarts.
-    last_notebook_id: Option<String>,
-}
-
-impl SupervisorState {
-    /// Check circuit breaker: too many crashes in a short window.
-    fn should_retry(&mut self) -> bool {
-        let now = Instant::now();
-        self.recent_crashes
-            .retain(|t| now.duration_since(*t) < Duration::from_secs(30));
-        if self.recent_crashes.len() >= 5 {
-            error!(
-                "Circuit breaker: {} crashes in 30s, stopping auto-restart",
-                self.recent_crashes.len()
-            );
-            return false;
-        }
-        self.recent_crashes.push(now);
-        true
-    }
 }
 
 #[derive(Clone)]
@@ -587,291 +464,90 @@ struct Supervisor {
 }
 
 impl Supervisor {
-    /// Create a supervisor with no child client yet. The stdio MCP server
-    /// starts immediately so the client doesn't time out; the child is
+    /// Create a supervisor with no proxy yet. The stdio MCP server starts
+    /// immediately so the client doesn't time out; the proxy and child are
     /// connected later via a background task.
     fn new_empty(project_root: PathBuf, tool_list_changed_tx: mpsc::Sender<()>) -> Self {
         let log_dir = project_root.join(".context");
         let _ = std::fs::create_dir_all(&log_dir);
-        let cached_tools = load_cached_tools(&project_root);
-        if let Some(ref tools) = cached_tools {
-            info!("Loaded {} cached child tools from disk", tools.len());
-        } else {
-            info!("No tool cache found — child tools will appear after startup");
-        }
         Self {
             state: Arc::new(RwLock::new(SupervisorState {
-                child_client: None,
+                proxy: None,
                 log_dir,
                 project_root,
                 socket_path: String::new(),
-                restart_count: 0,
-                recent_crashes: Vec::new(),
                 last_error: None,
-                upstream_name: "nteract-dev".to_string(),
-                upstream_title: None,
                 daemon_child: None,
                 tool_list_changed_tx: Some(tool_list_changed_tx),
                 managed: HashMap::new(),
-                cached_tools,
-                last_notebook_id: None,
             })),
             child_ready: Arc::new(Notify::new()),
         }
     }
 
-    /// Attempt to restart the nteract child process.
-    ///
-    /// The child (`runt mcp`) handles daemon reconnection internally with
-    /// exponential backoff. It only exits when the daemon has been upgraded
-    /// (exit code 75 / EX_TEMPFAIL), so restarts here typically mean the
-    /// MCP client should pick up the new binary — not a crash loop.
+    /// Get the proxy, returning an error if not yet initialized.
+    fn get_proxy(state: &SupervisorState) -> Result<&McpProxy, McpError> {
+        state
+            .proxy
+            .as_ref()
+            .ok_or_else(|| McpError::internal_error("nteract MCP server not yet initialized", None))
+    }
+
+    /// Restart the child process via the proxy.
     async fn restart_child(&self) -> Result<(), String> {
-        // Phase 1: Drop old client and check circuit breaker (hold lock briefly)
-        let (project_root, socket_path, child_was_dead) = {
-            let mut state = self.state.write().await;
-
-            // Check if the child already exited (e.g., daemon upgrade exit code 75)
-            // vs still running but failing (protocol error during a call).
-            let child_was_dead = state.child_client.as_ref().is_none();
-
-            // Drop old client
-            if let Some(old) = state.child_client.take() {
-                let _ = old.cancel().await;
-            }
-
-            info!(
-                "Restarting nteract MCP server (restart #{}{})",
-                state.restart_count + 1,
-                if child_was_dead {
-                    ", child had exited"
-                } else {
-                    ""
-                }
-            );
-
-            // Check circuit breaker (skip if child exited on its own — likely
-            // a daemon upgrade, not a crash)
-            if !child_was_dead && !state.should_retry() {
-                let msg =
-                    "Too many crashes, auto-restart disabled. Call supervisor_restart to retry.";
-                state.last_error = Some(msg.to_string());
-                return Err(msg.to_string());
-            }
-
-            (
-                state.project_root.clone(),
-                state.socket_path.clone(),
-                child_was_dead,
-            )
-            // Lock dropped here
-        };
-
-        // Phase 2: Sleep without holding the lock (other tasks can read state).
-        // Skip the sleep if the child already exited (daemon upgrade) — it's
-        // not a crash loop, no need to throttle.
-        if !child_was_dead {
-            tokio::time::sleep(Duration::from_secs(2)).await;
-        }
-
-        // Phase 3: Spawn child without holding the lock
-        let (upstream_name, upstream_title) = {
+        let proxy = {
             let state = self.state.read().await;
-            (state.upstream_name.clone(), state.upstream_title.clone())
+            state.proxy.clone()
         };
-        match spawn_nteract_child(
-            &project_root,
-            &socket_path,
-            &upstream_name,
-            upstream_title.as_deref(),
-        )
-        .await
-        {
-            Ok(client) => {
-                // Phase 4: Re-acquire lock to store the new client
-                let mut state = self.state.write().await;
-                state.child_client = Some(client);
-                state.restart_count += 1;
-                state.last_error = None;
-
-                // Refresh the tool cache from the new child
-                if let Some(ref client) = state.child_client {
-                    match client.list_tools(None).await {
-                        Ok(child_tools) => {
-                            save_tool_cache(&state.project_root, &child_tools.tools);
-                            state.cached_tools = Some(child_tools.tools);
-                        }
-                        Err(e) => {
-                            warn!("Failed to refresh tool cache after restart: {e}");
-                        }
-                    }
+        match proxy {
+            Some(proxy) => {
+                let result = proxy.restart_child().await;
+                if let Err(ref e) = result {
+                    self.state.write().await.last_error = Some(e.clone());
+                } else {
+                    self.state.write().await.last_error = None;
+                    self.child_ready.notify_waiters();
                 }
-
-                info!("nteract MCP server restarted successfully");
-                // Unblock any call_tool waiting for the child
-                self.child_ready.notify_waiters();
-                Ok(())
+                result
             }
-            Err(e) => {
-                let mut state = self.state.write().await;
-                state.last_error = Some(e.clone());
-                error!("Failed to restart nteract child: {e}");
-                Err(e)
-            }
+            None => Err("Proxy not initialized".to_string()),
         }
     }
 
-    /// Forward a tool call to the child, restarting only if the child exited.
-    ///
-    /// A transport error from `call_tool` means the child's stdio pipe broke —
-    /// the process likely exited. Only then do we restart and retry. Application
-    /// errors (tool returned `is_error: true`) come back as `Ok(CallToolResult)`
-    /// and never reach this retry path.
-    ///
-    /// Previously this restarted on *any* error, which killed sessions when the
-    /// error was transient (e.g., timeout, backpressure).
+    /// Forward a tool call via the proxy (handles restart-on-disconnect, session tracking).
     async fn forward_tool_call(
         &self,
         params: CallToolRequestParams,
     ) -> Result<CallToolResult, McpError> {
-        // First attempt
-        match self.try_forward_tool_call(&params).await {
-            Ok(result) => {
-                // Track session-establishing tool calls so we can auto-rejoin
-                // after file watcher restarts.
-                self.track_session_tool(&params, &result).await;
-                return Ok(result);
-            }
-            Err(e) => {
-                // Check if the child is still connected before restarting.
-                // If child_client is Some, the transport is alive — propagate the error.
-                let state = self.state.read().await;
-                if state.child_client.is_some() {
-                    warn!("Tool call failed but child still connected, not restarting: {e}");
-                    return Err(e);
-                }
-                warn!("Tool call failed and child disconnected, attempting restart: {e}");
-            }
-        }
-
-        // Child is gone — restart and retry once
-        if let Err(e) = self.restart_child().await {
-            return Err(McpError::internal_error(
-                format!("Child restart failed: {e}"),
-                None,
-            ));
-        }
-
-        // Second attempt after restart
-        let result = self.try_forward_tool_call(&params).await?;
-        self.track_session_tool(&params, &result).await;
-        Ok(result)
-    }
-
-    /// Track notebook_id from session-establishing tool calls.
-    ///
-    /// When `open_notebook` or `create_notebook` succeeds,
-    /// persist the notebook_id so we can auto-rejoin after child restarts.
-    async fn track_session_tool(&self, params: &CallToolRequestParams, result: &CallToolResult) {
-        // Only track successful calls (is_error is None or Some(false))
-        if result.is_error == Some(true) {
-            return;
-        }
-
-        let name: &str = &params.name;
-        match name {
-            "open_notebook" | "create_notebook" => {
-                // Extract notebook_id from the tool arguments
-                let notebook_id = params
-                    .arguments
-                    .as_ref()
-                    .and_then(|args| {
-                        args.get("notebook_id")
-                            .or_else(|| args.get("path"))
-                            .and_then(Value::as_str)
-                    })
-                    .map(String::from);
-
-                if let Some(ref id) = notebook_id {
-                    info!("Tracking active notebook session: {id}");
-                    let mut state = self.state.write().await;
-                    state.last_notebook_id = Some(id.clone());
-                }
-            }
-            _ => {}
-        }
-    }
-
-    async fn try_forward_tool_call(
-        &self,
-        params: &CallToolRequestParams,
-    ) -> Result<CallToolResult, McpError> {
         let state = self.state.read().await;
-        let client = state
-            .child_client
-            .as_ref()
-            .ok_or_else(|| McpError::internal_error("nteract MCP server not running", None))?;
-
-        client
-            .call_tool(params.clone())
-            .await
-            .map_err(|e| McpError::internal_error(format!("Child tool call failed: {e}"), None))
+        let proxy = Self::get_proxy(&state)?;
+        let proxy = proxy.clone();
+        drop(state);
+        proxy.forward_tool_call(params).await
     }
 
-    /// Forward a resource read to the child, restarting only if the child exited.
+    /// Forward a resource read via the proxy.
     async fn forward_read_resource(
         &self,
         params: ReadResourceRequestParams,
     ) -> Result<ReadResourceResult, McpError> {
-        // First attempt
-        match self.try_forward_read_resource(&params).await {
-            Ok(result) => return Ok(result),
-            Err(e) => {
-                let state = self.state.read().await;
-                if state.child_client.is_some() {
-                    warn!("Resource read failed but child still connected, not restarting: {e}");
-                    return Err(e);
-                }
-                warn!("Resource read failed and child disconnected, attempting restart: {e}");
-            }
-        }
-
-        // Child is gone — restart and retry once
-        if let Err(e) = self.restart_child().await {
-            return Err(McpError::internal_error(
-                format!("Child restart failed: {e}"),
-                None,
-            ));
-        }
-
-        // Second attempt after restart
-        self.try_forward_read_resource(&params).await
-    }
-
-    async fn try_forward_read_resource(
-        &self,
-        params: &ReadResourceRequestParams,
-    ) -> Result<ReadResourceResult, McpError> {
         let state = self.state.read().await;
-        let client = state
-            .child_client
-            .as_ref()
-            .ok_or_else(|| McpError::internal_error("nteract MCP server not running", None))?;
-
-        client
-            .read_resource(params.clone())
-            .await
-            .map_err(|e| McpError::internal_error(format!("Child resource read failed: {e}"), None))
+        let proxy = Self::get_proxy(&state)?;
+        let proxy = proxy.clone();
+        drop(state);
+        proxy.forward_read_resource(params).await
     }
 
     /// Build the supervisor_status result.
     async fn status(&self) -> SupervisorStatus {
         let mut state = self.state.write().await;
-        // Just check if we have a client handle. A full liveness probe
-        // (list_tools) can hang if the child is wedged, which blocks the
-        // entire status call. The forward_tool_call path handles detection
-        // and auto-restart on actual failures.
-        let child_running = state.child_client.is_some();
+        // Check proxy's child status
+        let (child_running, restart_count) = if let Some(ref proxy) = state.proxy {
+            let ps = proxy.state.read().await;
+            (ps.child_client.is_some(), ps.restart_count)
+        } else {
+            (false, 0)
+        };
         let managed_processes: HashMap<String, ManagedProcessStatus> = state
             .managed
             .iter_mut()
@@ -918,7 +594,7 @@ impl Supervisor {
 
         SupervisorStatus {
             child_running,
-            restart_count: state.restart_count,
+            restart_count,
             last_error: state.last_error.clone(),
             socket_path: state.socket_path.clone(),
             project_root: state.project_root.to_string_lossy().to_string(),
@@ -1195,10 +871,13 @@ impl Supervisor {
 
         // Clear circuit breaker for file-change-triggered restarts
         {
-            let mut state = self.state.write().await;
-            state.recent_crashes.clear();
+            let state = self.state.read().await;
+            if let Some(ref proxy) = state.proxy {
+                proxy.reset_circuit_breaker().await;
+            }
         }
 
+        // Restart child via proxy (auto-rejoin is handled inside restart_child)
         match self.restart_child().await {
             Ok(()) => {
                 info!("Child restarted after file change ({kind:?})");
@@ -1207,50 +886,9 @@ impl Supervisor {
                 if let Some(ref tx) = state.tool_list_changed_tx {
                     let _ = tx.send(()).await;
                 }
-                drop(state);
-
-                // Auto-rejoin the last active notebook session so agents
-                // don't lose their session across hot-reload restarts.
-                self.auto_rejoin_session().await;
             }
             Err(e) => {
                 error!("Failed to restart child after file change: {e}");
-            }
-        }
-    }
-
-    /// Re-join the last active notebook session in the new child process.
-    ///
-    /// Called after file watcher restarts to preserve session continuity.
-    /// Failures are logged but not propagated — the agent can always
-    /// manually rejoin.
-    async fn auto_rejoin_session(&self) {
-        let notebook_id = {
-            let state = self.state.read().await;
-            state.last_notebook_id.clone()
-        };
-
-        let Some(id) = notebook_id else { return };
-
-        info!("Auto-rejoining notebook session: {id}");
-
-        let params: CallToolRequestParams = serde_json::from_value(serde_json::json!({
-            "name": "open_notebook",
-            "arguments": { "path": id }
-        }))
-        .expect("valid open_notebook params");
-
-        match self.try_forward_tool_call(&params).await {
-            Ok(result) if result.is_error != Some(true) => {
-                info!("Auto-rejoin succeeded for {id}");
-            }
-            Ok(_) => {
-                warn!("Auto-rejoin returned error for {id} (notebook may have closed)");
-                let mut state = self.state.write().await;
-                state.last_notebook_id = None;
-            }
-            Err(e) => {
-                warn!("Auto-rejoin failed for {id}: {e}");
             }
         }
     }
@@ -1434,29 +1072,13 @@ impl ServerHandler for Supervisor {
                 .unwrap_or_default(),
         ));
 
-        // Serve child tools optimistically: live from child if connected,
-        // otherwise from the disk cache. Never block waiting for the child —
-        // the agent sees tools instantly and can plan while the child starts.
-        let state = self.state.read().await;
-        if let Some(ref client) = state.child_client {
-            // Child is connected — query live tools
-            match client.list_tools(None).await {
-                Ok(child_tools) => {
-                    tools.extend(child_tools.tools);
-                }
-                Err(e) => {
-                    warn!("Failed to list child tools: {e}");
-                    // Fall back to cache if live query fails
-                    if let Some(ref cached) = state.cached_tools {
-                        info!("Serving {} cached tools (child query failed)", cached.len());
-                        tools.extend(cached.iter().cloned());
-                    }
-                }
+        // Get child tools from the proxy (live or cached).
+        {
+            let state = self.state.read().await;
+            if let Some(ref proxy) = state.proxy {
+                let child_tools = proxy.child_tools().await;
+                tools.extend(child_tools);
             }
-        } else if let Some(ref cached) = state.cached_tools {
-            // Child not ready yet — serve cached tools immediately
-            info!("Serving {} cached tools (child not ready)", cached.len());
-            tools.extend(cached.iter().cloned());
         }
 
         Ok(ListToolsResult {
@@ -1472,14 +1094,8 @@ impl ServerHandler for Supervisor {
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, McpError> {
         let state = self.state.read().await;
-        if let Some(ref client) = state.child_client {
-            match client.list_resources(request).await {
-                Ok(result) => Ok(result),
-                Err(e) => {
-                    warn!("Failed to list child resources: {e}");
-                    Ok(ListResourcesResult::default())
-                }
-            }
+        if let Some(ref proxy) = state.proxy {
+            Ok(proxy.child_resources(request).await)
         } else {
             Ok(ListResourcesResult::default())
         }
@@ -1491,14 +1107,8 @@ impl ServerHandler for Supervisor {
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourceTemplatesResult, McpError> {
         let state = self.state.read().await;
-        if let Some(ref client) = state.child_client {
-            match client.list_resource_templates(request).await {
-                Ok(result) => Ok(result),
-                Err(e) => {
-                    warn!("Failed to list child resource templates: {e}");
-                    Ok(ListResourceTemplatesResult::default())
-                }
-            }
+        if let Some(ref proxy) = state.proxy {
+            Ok(proxy.child_resource_templates(request).await)
         } else {
             Ok(ListResourceTemplatesResult::default())
         }
@@ -1581,8 +1191,10 @@ impl ServerHandler for Supervisor {
                         // Restart child only
                         // Clear the circuit breaker on manual restart
                         {
-                            let mut state = self.state.write().await;
-                            state.recent_crashes.clear();
+                            let state = self.state.read().await;
+                            if let Some(ref proxy) = state.proxy {
+                                proxy.reset_circuit_breaker().await;
+                            }
                         }
                         match self.restart_child().await {
                             Ok(()) => Ok(CallToolResult::success(vec![Content::text(
@@ -1740,8 +1352,10 @@ impl ServerHandler for Supervisor {
 
                 // 4. Clear circuit breaker and restart child MCP server
                 {
-                    let mut state = self.state.write().await;
-                    state.recent_crashes.clear();
+                    let state = self.state.read().await;
+                    if let Some(ref proxy) = state.proxy {
+                        proxy.reset_circuit_breaker().await;
+                    }
                 }
                 let version_warning = if !version_ok {
                     "\n\n⚠️  Warning: daemon version mismatch — another process may have \
@@ -1924,17 +1538,16 @@ impl ServerHandler for Supervisor {
                     }
                 }
             }
-            // Everything else → forward to child.
-            // If the child isn't connected yet (tools served from cache),
-            // wait for it to come up before forwarding.
+            // Everything else → forward to child via proxy.
+            // If the proxy isn't ready yet, wait for it.
             _ => {
-                // Register the notified future BEFORE checking is_none to
-                // avoid a lost-wakeup race where notify_waiters() fires
-                // between our check and the await.
                 let notified = self.child_ready.notified();
                 let needs_wait = {
                     let state = self.state.read().await;
-                    state.child_client.is_none()
+                    state.proxy.is_none()
+                        || state.proxy.as_ref().is_some_and(|p| {
+                            p.state.try_read().is_ok_and(|s| s.child_client.is_none())
+                        })
                 };
                 if needs_wait {
                     info!(
@@ -2346,52 +1959,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         });
 
-        // 2c: Spawn runt mcp child
-        let child_client = match spawn_nteract_child(
-            &project_root,
-            &socket_path,
-            &upstream_name,
-            upstream_title.as_deref(),
-        )
-        .await
-        {
-            Ok(client) => {
-                info!("nteract MCP server connected");
-                client
-            }
+        // 2c: Create the MCP proxy and spawn the child
+        let mut child_env = std::collections::HashMap::new();
+        child_env.insert("RUNTIMED_DEV".to_string(), "1".to_string());
+        child_env.insert("RUNTIMED_SOCKET_PATH".to_string(), socket_path.clone());
+
+        // Extract tool_list_changed_tx from state for the proxy
+        let tool_list_changed_tx = {
+            let mut state = state_for_init.write().await;
+            state.tool_list_changed_tx.take()
+        };
+
+        let proxy = McpProxy::new(
+            ProxyConfig {
+                child_command: cargo_binary(&project_root, "runt"),
+                child_args: vec!["mcp".to_string()],
+                child_env,
+                server_name: "nteract-dev".to_string(),
+                cache_dir: Some(project_root.join(".context")),
+                daemon_info_path: None,
+            },
+            tool_list_changed_tx,
+        );
+        proxy
+            .set_upstream_identity(upstream_name, upstream_title)
+            .await;
+
+        match proxy.init_child().await {
+            Ok(()) => info!("nteract MCP server connected via proxy"),
             Err(e) => {
-                error!("Failed to spawn nteract MCP child: {e}");
+                error!("Failed to initialize MCP proxy child: {e}");
                 let mut state = state_for_init.write().await;
                 state.socket_path = socket_path;
                 state.daemon_child = daemon_child;
                 state.last_error = Some(e);
+                state.proxy = Some(proxy);
                 child_ready.notify_waiters();
                 return;
             }
-        };
+        }
 
-        // 2d: Populate state with child client, socket, daemon, and upstream info.
-        // Then fetch live tools, update the cache, and notify the client.
+        // 2d: Store proxy, socket, daemon in supervisor state
         {
             let mut state = state_for_init.write().await;
-            state.child_client = Some(child_client);
+            state.proxy = Some(proxy);
             state.socket_path = socket_path;
             state.daemon_child = daemon_child;
-            state.upstream_name = upstream_name;
-            state.upstream_title = upstream_title;
-
-            // Fetch live tools from the child and update the disk cache
-            if let Some(ref client) = state.child_client {
-                match client.list_tools(None).await {
-                    Ok(child_tools) => {
-                        save_tool_cache(&state.project_root, &child_tools.tools);
-                        state.cached_tools = Some(child_tools.tools);
-                    }
-                    Err(e) => {
-                        warn!("Failed to fetch child tools for cache: {e}");
-                    }
-                }
-            }
         }
         // Unblock any call_tool waiting for the child
         child_ready.notify_waiters();
