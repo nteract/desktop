@@ -15,6 +15,7 @@
 //!     consecutive_failures: u64
 //!     retry_in_secs: u64
 //!     error: Str (optional — deleted when None)
+//!     error_kind: Str (optional — "timeout"|"invalid_package"|"import_error"|"setup_failed")
 //!   conda/
 //!     available: u64
 //!     warming: u64
@@ -22,6 +23,7 @@
 //!     consecutive_failures: u64
 //!     retry_in_secs: u64
 //!     error: Str (optional — deleted when None)
+//!     error_kind: Str (optional — "timeout"|"invalid_package"|"import_error"|"setup_failed")
 //! ```
 
 use automerge::{
@@ -44,6 +46,10 @@ pub struct RuntimePoolState {
     /// Package that failed to install (None if not identified or healthy).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failed_package: Option<String>,
+    /// Error classification: "timeout", "invalid_package", "import_error", "setup_failed".
+    /// None if healthy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<String>,
     /// Number of consecutive failures (0 if healthy).
     #[serde(default)]
     pub consecutive_failures: u32,
@@ -219,6 +225,16 @@ impl PoolDoc {
             }
         }
 
+        // Error kind: set string when Some, delete key when None
+        match &state.error_kind {
+            Some(kind) => {
+                self.doc.put(&obj, "error_kind", kind.as_str())?;
+            }
+            None => {
+                let _ = self.doc.delete(&obj, "error_kind");
+            }
+        }
+
         Ok(())
     }
 
@@ -267,6 +283,7 @@ impl PoolDoc {
             pool_size: get_u64("pool_size"),
             error: get_str("error"),
             failed_package: get_str("failed_package"),
+            error_kind: get_str("error_kind"),
             consecutive_failures: get_u64("consecutive_failures") as u32,
             retry_in_secs: get_u64("retry_in_secs"),
         }
@@ -338,6 +355,7 @@ mod tests {
                 pool_size: 4,
                 error: None,
                 failed_package: None,
+                error_kind: None,
                 consecutive_failures: 0,
                 retry_in_secs: 0,
             },
@@ -347,6 +365,7 @@ mod tests {
                 pool_size: 3,
                 error: Some("Failed to create env".into()),
                 failed_package: Some("badpkg".into()),
+                error_kind: Some("invalid_package".into()),
                 consecutive_failures: 2,
                 retry_in_secs: 30,
             },
@@ -384,6 +403,7 @@ mod tests {
                 pool_size: 4,
                 error: Some("test error".into()),
                 failed_package: Some("badpkg".into()),
+                error_kind: Some("timeout".into()),
                 consecutive_failures: 3,
                 retry_in_secs: 60,
             },

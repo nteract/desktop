@@ -20,6 +20,8 @@ export interface RuntimePoolState {
   error?: string;
   /** Package that failed to install (undefined if not identified). */
   failed_package?: string;
+  /** Error classification: "timeout", "invalid_package", "import_error", "setup_failed". */
+  error_kind?: string;
   /** Number of consecutive failures (0 if healthy). */
   consecutive_failures: number;
   /** Seconds until next retry (0 if retry is imminent or healthy). */
@@ -36,6 +38,7 @@ export interface PoolState {
 export interface PoolErrorWithTimestamp {
   message: string;
   failed_package?: string;
+  error_kind?: string;
   consecutive_failures: number;
   retry_in_secs: number;
   /** When this state was received (epoch ms). */
