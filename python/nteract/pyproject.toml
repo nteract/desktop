@@ -1,6 +1,6 @@
 [project]
 name = "nteract"
-version = "2.1.2"
+version = "2.1.3"
 description = "Bring AI to Jupyter notebooks. MCP server for Claude, ChatGPT, Gemini, OpenCode and any agent."
 readme = "README.md"
 license = "BSD-3-Clause"
