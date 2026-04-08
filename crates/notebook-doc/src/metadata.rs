@@ -665,10 +665,13 @@ impl Default for RuntMetadata {
 /// assert_eq!(extract_package_name("pandas>=2.0"), "pandas");
 /// assert_eq!(extract_package_name("requests[security]"), "requests");
 /// assert_eq!(extract_package_name("NumPy"), "numpy");
+/// assert_eq!(extract_package_name("conda-forge::numpy>=1.24"), "numpy");
 /// ```
 pub fn extract_package_name(spec: &str) -> String {
-    spec.trim()
-        .split(&['>', '<', '=', '!', '~', '[', ';', '@', ' '][..])
+    let spec = spec.trim();
+    // Strip conda channel qualifier (e.g. "conda-forge::numpy" -> "numpy")
+    let spec = spec.rsplit_once("::").map_or(spec, |(_, name)| name);
+    spec.split(&['>', '<', '=', '!', '~', '[', ';', '@', ' '][..])
         .next()
         .unwrap_or(spec)
         .to_lowercase()
@@ -947,6 +950,13 @@ mod tests {
         assert_eq!(extract_package_name("  pandas  >=2.0"), "pandas");
     }
 
+    #[test]
+    fn test_extract_package_name_conda_channel_qualifier() {
+        assert_eq!(extract_package_name("conda-forge::numpy"), "numpy");
+        assert_eq!(extract_package_name("conda-forge::numpy>=1.24"), "numpy");
+        assert_eq!(extract_package_name("defaults::scipy"), "scipy");
+    }
+
     // ── validate_package_specifier ─────────────────────────────
 
     #[test]
@@ -961,6 +971,10 @@ mod tests {
         assert!(validate_package_specifier("my-package").is_ok());
         assert!(validate_package_specifier("my_package").is_ok());
         assert!(validate_package_specifier("zope.interface").is_ok());
+        // Conda channel-qualified matchspecs
+        assert!(validate_package_specifier("conda-forge::numpy").is_ok());
+        assert!(validate_package_specifier("conda-forge::numpy>=1.24").is_ok());
+        assert!(validate_package_specifier("defaults::scipy").is_ok());
     }
 
     #[test]
