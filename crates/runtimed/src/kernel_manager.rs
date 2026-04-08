@@ -52,7 +52,7 @@ const MAX_EXECUTION_ENTRIES: usize = 64;
 ///
 /// Returns the modified state and the buffer_paths used. If there are no
 /// buffers or no buffer_paths, returns the state unchanged and empty paths.
-async fn store_widget_buffers(
+pub(crate) async fn store_widget_buffers(
     state: &serde_json::Value,
     buffer_paths: &[Vec<String>],
     buffers: &[Vec<u8>],
@@ -123,7 +123,7 @@ fn json_get_mut<'a>(v: &'a mut serde_json::Value, key: &str) -> Option<&'a mut s
 }
 
 /// Extract buffer_paths from a Jupyter comm data payload.
-fn extract_buffer_paths(data: &serde_json::Value) -> Vec<Vec<String>> {
+pub(crate) fn extract_buffer_paths(data: &serde_json::Value) -> Vec<Vec<String>> {
     data.get("buffer_paths")
         .or_else(|| data.get("state").and_then(|s| s.get("buffer_paths")))
         .and_then(|v| v.as_array())
@@ -170,7 +170,7 @@ const COMM_STATE_BLOB_THRESHOLD: usize = 1024;
 /// `_esm`, and `_css` live.
 ///
 /// Returns the modified state with large values replaced by ContentRefs.
-async fn blob_store_large_state_values(
+pub(crate) async fn blob_store_large_state_values(
     state: &serde_json::Value,
     blob_store: &BlobStore,
 ) -> serde_json::Value {
@@ -273,7 +273,9 @@ pub use notebook_protocol::protocol::{DenoLaunchedConfig, LaunchedEnvConfig};
 ///
 /// jupyter_protocol serializes as: `{"ExecuteResult": {"data": {...}, ...}}`
 /// nbformat expects: `{"output_type": "execute_result", "data": {...}, ...}`
-fn message_content_to_nbformat(content: &JupyterMessageContent) -> Option<serde_json::Value> {
+pub(crate) fn message_content_to_nbformat(
+    content: &JupyterMessageContent,
+) -> Option<serde_json::Value> {
     use serde_json::json;
 
     match content {
@@ -322,7 +324,7 @@ fn message_content_to_nbformat(content: &JupyterMessageContent) -> Option<serde_
 ///
 /// Page payloads are used by IPython for `?` and `??` help. This converts
 /// them to display_data outputs so help content appears in cell outputs.
-fn media_to_display_data(media: &jupyter_protocol::Media) -> serde_json::Value {
+pub(crate) fn media_to_display_data(media: &jupyter_protocol::Media) -> serde_json::Value {
     serde_json::json!({
         "output_type": "display_data",
         "data": media,
@@ -337,7 +339,7 @@ fn media_to_display_data(media: &jupyter_protocol::Media) -> serde_json::Value {
 /// and replaces the manifest with updated data when found.
 ///
 /// Returns true if an output was found and updated, false otherwise.
-async fn update_output_by_display_id_with_manifests(
+pub(crate) async fn update_output_by_display_id_with_manifests(
     state_doc: &mut RuntimeStateDoc,
     display_id: &str,
     new_data: &serde_json::Value,
@@ -544,7 +546,7 @@ fn prepend_to_path(dir: &std::path::Path) -> String {
 ///
 /// Without this, a search for "for" would only match entries exactly equal
 /// to "for", not entries containing "for".
-fn escape_glob_pattern(pattern: Option<&str>) -> String {
+pub(crate) fn escape_glob_pattern(pattern: Option<&str>) -> String {
     match pattern {
         Some(p) if !p.is_empty() => {
             let mut escaped = String::with_capacity(p.len() + 2);

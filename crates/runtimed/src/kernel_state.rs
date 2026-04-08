@@ -363,10 +363,7 @@ impl KernelState {
 
     /// Whether the kernel is running (not Dead, not ShuttingDown).
     pub fn is_running(&self) -> bool {
-        !matches!(
-            self.status,
-            KernelStatus::Dead | KernelStatus::ShuttingDown
-        )
+        !matches!(self.status, KernelStatus::Dead | KernelStatus::ShuttingDown)
     }
 
     /// The `(cell_id, execution_id)` of the currently executing cell, if any.
