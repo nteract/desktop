@@ -620,7 +620,7 @@ fn cmd_build(rust_only: bool) {
     // Building all packages together ensures workspace feature unification
     // happens in one pass, so the later `cargo tauri build` finds everything
     // cached instead of recompiling the entire dependency tree.
-    println!("Building all Rust targets (runtimed, runt, mcp-supervisor, notebook)...");
+    println!("Building all Rust targets (runtimed, runt, mcpb-runt, mcp-supervisor, notebook)...");
     run_cmd(
         "cargo",
         &[
@@ -629,6 +629,8 @@ fn cmd_build(rust_only: bool) {
             "runtimed",
             "-p",
             "runt-cli",
+            "-p",
+            "mcpb-runt",
             "-p",
             "mcp-supervisor",
             "-p",
