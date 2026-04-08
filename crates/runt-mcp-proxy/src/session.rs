@@ -10,6 +10,10 @@ use crate::child::RunningChild;
 ///
 /// When `open_notebook` or `create_notebook` succeeds, returns the notebook_id
 /// to persist for auto-rejoin after restarts.
+///
+/// Checks request arguments first (open_notebook passes path/notebook_id),
+/// then falls back to parsing the response content (create_notebook returns
+/// notebook_id in its JSON response, not in request args).
 pub fn extract_session_id(
     params: &CallToolRequestParams,
     result: &CallToolResult,
@@ -21,17 +25,42 @@ pub fn extract_session_id(
 
     let name: &str = &params.name;
     match name {
-        "open_notebook" | "create_notebook" => params
-            .arguments
-            .as_ref()
-            .and_then(|args| {
-                args.get("notebook_id")
-                    .or_else(|| args.get("path"))
-                    .and_then(Value::as_str)
-            })
-            .map(String::from),
+        "open_notebook" | "create_notebook" => {
+            // Try request arguments first (open_notebook)
+            let from_args = params
+                .arguments
+                .as_ref()
+                .and_then(|args| {
+                    args.get("notebook_id")
+                        .or_else(|| args.get("path"))
+                        .and_then(Value::as_str)
+                })
+                .map(String::from);
+
+            if from_args.is_some() {
+                return from_args;
+            }
+
+            // Fall back to parsing the response content (create_notebook returns
+            // notebook_id in its JSON text response body)
+            extract_notebook_id_from_result(result)
+        }
         _ => None,
     }
+}
+
+/// Parse notebook_id from a tool result's text content (JSON response body).
+fn extract_notebook_id_from_result(result: &CallToolResult) -> Option<String> {
+    for content in &result.content {
+        if let Some(text) = content.raw.as_text() {
+            if let Ok(json) = serde_json::from_str::<Value>(&text.text) {
+                if let Some(id) = json.get("notebook_id").and_then(Value::as_str) {
+                    return Some(id.to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Attempt to re-join a notebook session in the new child process.
@@ -134,7 +163,7 @@ mod tests {
     // ── create_notebook tracking ──────────────────────────────────────
 
     #[test]
-    fn tracks_create_notebook() {
+    fn tracks_create_notebook_with_path_arg() {
         let params = make_params(
             "create_notebook",
             serde_json::json!({"path": "/tmp/new.ipynb"}),
@@ -146,7 +175,7 @@ mod tests {
     }
 
     #[test]
-    fn tracks_create_notebook_with_notebook_id() {
+    fn tracks_create_notebook_with_notebook_id_arg() {
         let params = make_params(
             "create_notebook",
             serde_json::json!({"notebook_id": "new-uuid"}),
@@ -154,6 +183,36 @@ mod tests {
         assert_eq!(
             extract_session_id(&params, &success_result()),
             Some("new-uuid".to_string())
+        );
+    }
+
+    #[test]
+    fn tracks_create_notebook_from_response() {
+        // create_notebook typically has no path/notebook_id in args —
+        // the notebook_id is in the JSON response body
+        let params = make_params("create_notebook", serde_json::json!({}));
+        let result = CallToolResult::success(vec![Content::text(
+            r#"{"notebook_id": "8540eb53-8609-471d-88f4-5c3e92c3b396", "runtime": {"language": "python"}}"#,
+        )]);
+        assert_eq!(
+            extract_session_id(&params, &result),
+            Some("8540eb53-8609-471d-88f4-5c3e92c3b396".to_string())
+        );
+    }
+
+    #[test]
+    fn tracks_create_notebook_with_deps_from_response() {
+        // Real-world create_notebook: deps in args, notebook_id in response
+        let params = make_params(
+            "create_notebook",
+            serde_json::json!({"dependencies": ["numpy", "pandas"]}),
+        );
+        let result = CallToolResult::success(vec![Content::text(
+            r#"{"notebook_id": "abc-123", "runtime": {"language": "python"}, "dependencies": ["numpy", "pandas"], "package_manager": "uv"}"#,
+        )]);
+        assert_eq!(
+            extract_session_id(&params, &result),
+            Some("abc-123".to_string())
         );
     }
 
@@ -263,8 +322,9 @@ mod tests {
     }
 
     #[test]
-    fn returns_none_when_arguments_empty() {
+    fn returns_none_when_arguments_empty_and_no_response_id() {
         let params = make_params("open_notebook", serde_json::json!({}));
+        // success_result() has "ok" text, not JSON with notebook_id
         assert_eq!(extract_session_id(&params, &success_result()), None);
     }
 

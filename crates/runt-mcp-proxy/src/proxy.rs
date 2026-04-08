@@ -74,6 +74,8 @@ pub struct McpProxy {
     pub config: Arc<ProxyConfig>,
     /// Signaled when the child client is first connected.
     pub child_ready: Arc<Notify>,
+    /// Signaled when the proxy should exit (incompatible tool divergence).
+    pub exit_signal: Arc<Notify>,
 }
 
 impl McpProxy {
@@ -111,6 +113,7 @@ impl McpProxy {
             })),
             config: Arc::new(config),
             child_ready: Arc::new(Notify::new()),
+            exit_signal: Arc::new(Notify::new()),
         }
     }
 
@@ -241,7 +244,8 @@ impl McpProxy {
                                  Exiting so the MCP client can restart with the new tool set."
                             );
                             state.should_exit = true;
-                            // Don't return error — let the proxy exit cleanly
+                            // Signal the exit so mcpb-runt can shut down
+                            self.exit_signal.notify_waiters();
                         }
                     }
                 }

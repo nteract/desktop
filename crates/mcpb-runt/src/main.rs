@@ -66,6 +66,25 @@ fn find_runt_binary(channel: &str) -> Option<PathBuf> {
             if local_bin.exists() {
                 return Some(local_bin);
             }
+
+            // Check packaged app locations (/usr/share/<app>/, /opt/<app>/)
+            let build_channel = if channel == "nightly" {
+                runt_workspace::BuildChannel::Nightly
+            } else {
+                runt_workspace::BuildChannel::Stable
+            };
+            for app_name in runt_workspace::desktop_app_launch_candidates_for(build_channel) {
+                let slug = app_name.to_lowercase().replace(' ', "-");
+                let usr_share =
+                    std::path::PathBuf::from(format!("/usr/share/{slug}/{binary_name}"));
+                if usr_share.exists() {
+                    return Some(usr_share);
+                }
+                let opt = std::path::PathBuf::from(format!("/opt/{slug}/{binary_name}"));
+                if opt.exists() {
+                    return Some(opt);
+                }
+            }
         }
 
         #[cfg(target_os = "windows")]
@@ -217,15 +236,24 @@ async fn main() -> ExitCode {
         info!("Child initialized, tools available");
     });
 
-    // Wait for the MCP client to disconnect
-    match server.waiting().await {
-        Ok(reason) => info!("Shutting down: {reason:?}"),
-        Err(e) => error!("Server error: {e}"),
-    }
-
-    // Check if we should exit due to tool divergence
-    if proxy_ref.should_exit().await {
-        info!("Exiting due to incompatible tool list change after daemon upgrade");
+    // Wait for client disconnect OR exit signal from incompatible tool divergence.
+    let exit_signal = proxy_ref.exit_signal.clone();
+    let cancel_token = server.cancellation_token();
+    tokio::select! {
+        result = server.waiting() => {
+            match result {
+                Ok(reason) => info!("Shutting down: {reason:?}"),
+                Err(e) => error!("Server error: {e}"),
+            }
+        }
+        _ = exit_signal.notified() => {
+            info!(
+                "Exiting due to incompatible tool list change after daemon upgrade. \
+                 The MCP client will restart us with the updated tools."
+            );
+            cancel_token.cancel();
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
     }
 
     ExitCode::SUCCESS
