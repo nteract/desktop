@@ -1511,12 +1511,15 @@ impl Daemon {
             }
         };
 
-        // Get trust state (already verified during room creation)
-        let trust_state = room.trust_state.read().await;
-        let needs_trust_approval = !matches!(
-            trust_state.status,
-            runt_trust::TrustStatus::Trusted | runt_trust::TrustStatus::NoDependencies
-        );
+        // Get trust state (already verified during room creation).
+        // Scope the read guard so it's dropped before the .await on send_json_frame.
+        let needs_trust_approval = {
+            let trust_state = room.trust_state.read().await;
+            !matches!(
+                trust_state.status,
+                runt_trust::TrustStatus::Trusted | runt_trust::TrustStatus::NoDependencies
+            )
+        };
 
         // Send NotebookConnectionInfo response
         let (reader, mut writer) = tokio::io::split(stream);
@@ -1533,9 +1536,6 @@ impl Daemon {
 
         // working_dir derived from path's parent directory
         let working_dir_path = path_buf.parent().map(|p| p.to_path_buf());
-
-        // Drop the trust_state lock before continuing
-        drop(trust_state);
 
         // Continue with normal notebook sync (handles auto-launch internally).
         // If needs_load is Some, the sync loop will stream cells from disk
@@ -1743,12 +1743,14 @@ impl Daemon {
                     connection::send_json_frame(&mut stream, &response).await?;
                 }
                 BlobRequest::GetPort => {
-                    let port = self.blob_port.lock().await;
-                    let response = match *port {
-                        Some(p) => BlobResponse::Port { port: p },
-                        None => BlobResponse::Error {
-                            error: "blob server not running".to_string(),
-                        },
+                    let response = {
+                        let port = self.blob_port.lock().await;
+                        match *port {
+                            Some(p) => BlobResponse::Port { port: p },
+                            None => BlobResponse::Error {
+                                error: "blob server not running".to_string(),
+                            },
+                        }
                     };
                     connection::send_json_frame(&mut stream, &response).await?;
                 }
