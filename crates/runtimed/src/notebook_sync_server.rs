@@ -230,16 +230,25 @@ fn extract_pixi_toml_deps(content: &str) -> Vec<String> {
     deps
 }
 
-/// Extract dependency strings from a pyproject.toml's [project.dependencies] list.
+/// Extract dependency strings from a pyproject.toml's `[project].dependencies` list.
 /// Returns PEP 508 dependency strings (e.g., "pandas>=2.0", "numpy").
+///
+/// Only matches `dependencies` when inside the `[project]` table. Resets on
+/// any other `[...]` header so deps from `[tool.*]` tables are not captured.
 fn extract_pyproject_deps(content: &str) -> Vec<String> {
+    let mut in_project = false;
     let mut in_deps = false;
     let mut deps = Vec::new();
 
     for line in content.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("[project") && trimmed.contains(']') {
-            // We only want the [project] table, not [project.scripts] etc.
+        // Track which TOML table we're inside
+        if trimmed.starts_with('[') {
+            in_deps = false;
+            in_project = trimmed == "[project]";
+            continue;
+        }
+        if !in_project {
             continue;
         }
         if trimmed == "dependencies = [" || trimmed.starts_with("dependencies = [") {
@@ -332,7 +341,9 @@ fn build_launched_config(
             }
         }
         "uv:pyproject" => {
-            // Store pyproject.toml path for project-aware dep management.
+            // Store pyproject.toml path and env paths for project-aware dep management.
+            config.venv_path = venv_path;
+            config.python_path = python_path;
             if let Some(nb_path) = notebook_path {
                 if let Some(detected) = crate::project_file::detect_project_file(nb_path) {
                     if detected.kind == crate::project_file::ProjectFileKind::PyprojectToml {
@@ -5894,43 +5905,57 @@ async fn promote_inline_deps_to_project(
             .await
             .map_err(|e| format!("Failed to find pixi: {e}"))?;
 
+        let mut errors = Vec::new();
+
         for dep in &to_add {
             info!("[notebook-sync] Promoting dep to pixi.toml: {}", dep);
-            let output = tokio::process::Command::new(&pixi_path)
+            match tokio::process::Command::new(&pixi_path)
                 .args(["add", dep, "--manifest-path"])
                 .arg(pixi_toml_path)
                 .output()
                 .await
-                .map_err(|e| format!("Failed to run pixi add: {e}"))?;
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(format!("pixi add {} failed: {}", dep, stderr.trim()));
+            {
+                Ok(output) if output.status.success() => {
+                    promoted.push(format!("+{}", dep));
+                }
+                Ok(output) => {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    errors.push(format!("pixi add {} failed: {}", dep, stderr.trim()));
+                }
+                Err(e) => {
+                    errors.push(format!("Failed to run pixi add {}: {}", dep, e));
+                }
             }
-            promoted.push(format!("+{}", dep));
         }
 
         for dep in &to_remove {
             info!("[notebook-sync] Removing dep from pixi.toml: {}", dep);
-            let output = tokio::process::Command::new(&pixi_path)
+            match tokio::process::Command::new(&pixi_path)
                 .args(["remove", dep, "--manifest-path"])
                 .arg(pixi_toml_path)
                 .output()
                 .await
-                .map_err(|e| format!("Failed to run pixi remove: {e}"))?;
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                warn!(
-                    "[notebook-sync] pixi remove {} failed: {}",
-                    dep,
-                    stderr.trim()
-                );
-            } else {
-                promoted.push(format!("-{}", dep));
+            {
+                Ok(output) if output.status.success() => {
+                    promoted.push(format!("-{}", dep));
+                }
+                Ok(output) => {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    warn!(
+                        "[notebook-sync] pixi remove {} failed: {}",
+                        dep,
+                        stderr.trim()
+                    );
+                }
+                Err(e) => {
+                    warn!("[notebook-sync] Failed to run pixi remove {}: {}", dep, e);
+                }
             }
         }
 
-        // Re-bootstrap CRDT from updated pixi.toml (clears stale inline deps)
-        if !promoted.is_empty() {
+        // Always re-bootstrap CRDT from pixi.toml (even on partial failure)
+        // so the CRDT reflects what actually happened.
+        if !promoted.is_empty() || !errors.is_empty() {
             if let Ok(info) = kernel_launch::tools::pixi_info(pixi_toml_path).await {
                 let deps = info.default_deps_snapshot();
                 let mut doc = room.doc.write().await;
@@ -5941,6 +5966,9 @@ async fn promote_inline_deps_to_project(
                     let _ = fork.set_metadata_snapshot(&snap);
                 });
             }
+        }
+        if !errors.is_empty() {
+            return Err(errors.join("; "));
         }
     } else if env_source == "uv:pyproject" {
         let pyproject_path = launched_config.pyproject_path.as_ref().ok_or_else(|| {
@@ -5998,43 +6026,56 @@ async fn promote_inline_deps_to_project(
             .await
             .map_err(|e| format!("Failed to find uv: {e}"))?;
 
+        let mut errors = Vec::new();
+
         for dep in &to_add {
             info!("[notebook-sync] Promoting dep to pyproject.toml: {}", dep);
-            let output = tokio::process::Command::new(&uv_path)
+            match tokio::process::Command::new(&uv_path)
                 .args(["add", dep, "--project"])
                 .arg(project_dir)
                 .output()
                 .await
-                .map_err(|e| format!("Failed to run uv add: {e}"))?;
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(format!("uv add {} failed: {}", dep, stderr.trim()));
+            {
+                Ok(output) if output.status.success() => {
+                    promoted.push(format!("+{}", dep));
+                }
+                Ok(output) => {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    errors.push(format!("uv add {} failed: {}", dep, stderr.trim()));
+                }
+                Err(e) => {
+                    errors.push(format!("Failed to run uv add {}: {}", dep, e));
+                }
             }
-            promoted.push(format!("+{}", dep));
         }
 
         for dep in &to_remove {
             info!("[notebook-sync] Removing dep from pyproject.toml: {}", dep);
-            let output = tokio::process::Command::new(&uv_path)
+            match tokio::process::Command::new(&uv_path)
                 .args(["remove", dep, "--project"])
                 .arg(project_dir)
                 .output()
                 .await
-                .map_err(|e| format!("Failed to run uv remove: {e}"))?;
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                warn!(
-                    "[notebook-sync] uv remove {} failed: {}",
-                    dep,
-                    stderr.trim()
-                );
-            } else {
-                promoted.push(format!("-{}", dep));
+            {
+                Ok(output) if output.status.success() => {
+                    promoted.push(format!("-{}", dep));
+                }
+                Ok(output) => {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    warn!(
+                        "[notebook-sync] uv remove {} failed: {}",
+                        dep,
+                        stderr.trim()
+                    );
+                }
+                Err(e) => {
+                    warn!("[notebook-sync] Failed to run uv remove {}: {}", dep, e);
+                }
             }
         }
 
-        // Re-bootstrap CRDT from updated pyproject.toml
-        if !promoted.is_empty() {
+        // Always re-bootstrap CRDT from pyproject.toml (even on partial failure)
+        if !promoted.is_empty() || !errors.is_empty() {
             if let Ok(content) = std::fs::read_to_string(pyproject_path) {
                 let deps = extract_pyproject_deps(&content);
                 let mut doc = room.doc.write().await;
@@ -6051,6 +6092,9 @@ async fn promote_inline_deps_to_project(
                     let _ = fork.set_metadata_snapshot(&snap);
                 });
             }
+        }
+        if !errors.is_empty() {
+            return Err(errors.join("; "));
         }
     }
 
