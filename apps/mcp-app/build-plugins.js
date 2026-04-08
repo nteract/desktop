@@ -14,6 +14,7 @@ import tailwindcss from "@tailwindcss/vite";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import fs from "node:fs/promises";
+import { wrapForMcpApp } from "./src/lib/wrap-plugin.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../..");
@@ -117,8 +118,9 @@ async function main() {
     const { code, css } = await buildRendererPlugin(entry, name);
 
     const jsPath = path.join(outDir, `${name}.js`);
-    await fs.writeFile(jsPath, code, "utf8");
-    const jsSizeKb = (code.length / 1024).toFixed(1);
+    const wrapped = wrapForMcpApp(code);
+    await fs.writeFile(jsPath, wrapped, "utf8");
+    const jsSizeKb = (wrapped.length / 1024).toFixed(1);
 
     let cssSizeKb = "0.0";
     if (css) {

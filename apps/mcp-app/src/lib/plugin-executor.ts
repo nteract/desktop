@@ -1,13 +1,16 @@
 /**
- * Execute a CJS renderer plugin via <script> tag loading.
+ * Plugin registration and loading for daemon-served renderer plugins.
  *
- * Plugins are CJS modules built with React externalized. They export
- * an `install(ctx)` function that calls `ctx.register(mimeTypes, component)`
- * to register React components for specific MIME types.
+ * Plugins are CJS modules built with React externalized. At build time,
+ * they're wrapped in an IIFE that calls `window.__nteract.register()`
+ * to self-register during script execution. This avoids `unsafe-eval`
+ * (no `new Function()`) and global scope pollution (no `window.module`).
  *
- * We load plugins via <script src="..."> to avoid needing `unsafe-eval`
- * in the host's CSP. The CJS require/module/exports context is provided
- * via window globals that the script picks up during execution.
+ * The `window.__nteract` global is set once at module load time and
+ * provides:
+ * - `require(name)` — returns React or jsx-runtime
+ * - `register(mimeTypes, component)` — exact MIME type registration
+ * - `registerPattern(test, component)` — pattern-based registration
  */
 
 import React from "react";
@@ -20,53 +23,66 @@ type RendererComponent = React.ComponentType<{
 }>;
 
 interface PluginRegistry {
-  /** Exact MIME type → component */
   exact: Map<string, RendererComponent>;
-  /** Pattern matchers (test function + component) */
   patterns: Array<{
     test: (mime: string) => boolean;
     component: RendererComponent;
   }>;
 }
 
-/** Global registry of installed plugin components. */
 const registry: PluginRegistry = {
   exact: new Map(),
   patterns: [],
 };
 
-// Set up the CJS shim globals. The <script> tag executes in the global
-// scope and will find these via the implicit `module`, `exports`, `require`
-// references that CJS bundles use.
-const win = window as Record<string, unknown>;
+// Set up the global plugin API. Plugins call these during their IIFE
+// execution (synchronous, before <script> onload fires).
+declare global {
+  interface Window {
+    __nteract: {
+      require: (name: string) => unknown;
+      register: (
+        mimeTypes: string[],
+        component: RendererComponent,
+      ) => void;
+      registerPattern: (
+        test: (mime: string) => boolean,
+        component: RendererComponent,
+      ) => void;
+    };
+  }
+}
 
-function setupCjsGlobals(): { exports: Record<string, unknown> } {
-  const mod = { exports: {} as Record<string, unknown> };
-  win.module = mod;
-  win.exports = mod.exports;
-  win.require = (name: string): unknown => {
+window.__nteract = {
+  require(name: string): unknown {
     if (name === "react") return React;
     if (name === "react/jsx-runtime") return jsxRuntime;
-    throw new Error(`Unknown module: ${name}`);
-  };
-  return mod;
-}
-
-function cleanupCjsGlobals(): void {
-  delete win.module;
-  delete win.exports;
-  delete win.require;
-}
+    throw new Error(`Plugin require: unknown module "${name}"`);
+  },
+  register(mimeTypes: string[], component: RendererComponent) {
+    for (const mime of mimeTypes) {
+      registry.exact.set(mime, component);
+    }
+  },
+  registerPattern(
+    test: (mime: string) => boolean,
+    component: RendererComponent,
+  ) {
+    registry.patterns.push({ test, component });
+  },
+};
 
 /**
- * Load and install a CJS renderer plugin via <script> tag.
+ * Load a renderer plugin via <script> tag.
  *
- * The plugin URL must be from an origin in the host's CSP resourceDomains
- * (the daemon's blob server URL is already declared there).
+ * The plugin self-registers via `window.__nteract` during execution.
+ * By the time `onload` fires, the plugin's components are in the registry.
  */
-export function installPluginFromUrl(jsUrl: string, cssUrl?: string): Promise<void> {
+export function installPluginFromUrl(
+  jsUrl: string,
+  cssUrl?: string,
+): Promise<void> {
   return new Promise((resolve, reject) => {
-    // Inject CSS if provided
     if (cssUrl) {
       const link = document.createElement("link");
       link.rel = "stylesheet";
@@ -74,51 +90,16 @@ export function installPluginFromUrl(jsUrl: string, cssUrl?: string): Promise<vo
       document.head.appendChild(link);
     }
 
-    // Set up CJS globals before the script runs
-    const mod = setupCjsGlobals();
-
     const script = document.createElement("script");
     script.src = jsUrl;
-    script.onload = () => {
-      cleanupCjsGlobals();
-
-      // Extract install function from the CJS exports
-      const install = mod.exports.install as
-        | ((ctx: {
-            register: (mimeTypes: string[], component: RendererComponent) => void;
-            registerPattern: (
-              test: (mime: string) => boolean,
-              component: RendererComponent,
-            ) => void;
-          }) => void)
-        | undefined;
-
-      if (install) {
-        install({
-          register(mimeTypes, component) {
-            for (const mime of mimeTypes) {
-              registry.exact.set(mime, component);
-            }
-          },
-          registerPattern(test, component) {
-            registry.patterns.push({ test, component });
-          },
-        });
-      }
-
-      resolve();
-    };
-    script.onerror = () => {
-      cleanupCjsGlobals();
-      reject(new Error(`Failed to load plugin: ${jsUrl}`));
-    };
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error(`Failed to load plugin: ${jsUrl}`));
     document.head.appendChild(script);
   });
 }
 
 /**
  * Look up a registered renderer component for a MIME type.
- * Returns undefined if no plugin has registered for this MIME type.
  */
 export function getPluginRenderer(
   mime: string,
