@@ -68,12 +68,13 @@ function PluginRenderer({
 
     // Load plugin via <script> tag and fetch/parse data in parallel
     const pluginPromise = loadPluginForMime(mime, blobBaseUrl) ?? Promise.resolve();
+    // Parse data: try JSON (for plotly/vega specs), fall back to raw string (for markdown/latex)
+    const parseData = (text: string) => {
+      try { return JSON.parse(text); } catch { return text; }
+    };
     const dataPromise = isBlobUrl(raw)
-      ? fetchBlobText(raw).then((text) => {
-          // Try JSON parse for structured data, fall back to raw string
-          try { return JSON.parse(text); } catch { return text; }
-        })
-      : Promise.resolve(raw);
+      ? fetchBlobText(raw).then(parseData)
+      : Promise.resolve(parseData(raw));
 
     Promise.all([pluginPromise, dataPromise])
       .then(([, parsedData]) => {

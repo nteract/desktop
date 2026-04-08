@@ -16,6 +16,11 @@ const _: () = {
         PLOTLY.len() > 1024,
         "plotly.js appears to be a Git LFS pointer — run `git lfs pull`"
     );
+    const MARKDOWN: &[u8] = include_bytes!("../../runt-mcp/assets/plugins/markdown.js");
+    assert!(
+        MARKDOWN.len() > 1024,
+        "markdown.js appears to be a Git LFS pointer — run `git lfs pull`"
+    );
 };
 
 /// Look up an embedded renderer plugin asset by filename.
