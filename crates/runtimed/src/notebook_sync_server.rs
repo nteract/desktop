@@ -230,6 +230,54 @@ fn extract_pixi_toml_deps(content: &str) -> Vec<String> {
     deps
 }
 
+/// Extract dependency strings from a pyproject.toml's [project.dependencies] list.
+/// Returns PEP 508 dependency strings (e.g., "pandas>=2.0", "numpy").
+fn extract_pyproject_deps(content: &str) -> Vec<String> {
+    let mut in_deps = false;
+    let mut deps = Vec::new();
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("[project") && trimmed.contains(']') {
+            // We only want the [project] table, not [project.scripts] etc.
+            continue;
+        }
+        if trimmed == "dependencies = [" || trimmed.starts_with("dependencies = [") {
+            in_deps = true;
+            // Handle single-line: dependencies = ["foo", "bar"]
+            if let Some(rest) = trimmed.strip_prefix("dependencies = [") {
+                if let Some(inner) = rest.strip_suffix(']') {
+                    for dep in inner.split(',') {
+                        let dep = dep.trim().trim_matches('"').trim_matches('\'').trim();
+                        if !dep.is_empty() {
+                            deps.push(dep.to_string());
+                        }
+                    }
+                    in_deps = false;
+                }
+            }
+            continue;
+        }
+        if in_deps {
+            if trimmed == "]" || trimmed.starts_with(']') {
+                in_deps = false;
+                continue;
+            }
+            let dep = trimmed
+                .trim_matches(',')
+                .trim()
+                .trim_matches('"')
+                .trim_matches('\'')
+                .trim();
+            if !dep.is_empty() && !dep.starts_with('#') {
+                deps.push(dep.to_string());
+            }
+        }
+    }
+    deps.sort();
+    deps
+}
+
 /// Build a LaunchedEnvConfig from the current metadata snapshot.
 /// This captures what configuration was used at kernel launch time.
 #[allow(clippy::too_many_arguments)]
@@ -281,6 +329,16 @@ fn build_launched_config(
             config.python_path = python_path;
             if let Some(pkgs) = prewarmed_packages {
                 config.prewarmed_packages = pkgs.to_vec();
+            }
+        }
+        "uv:pyproject" => {
+            // Store pyproject.toml path for project-aware dep management.
+            if let Some(nb_path) = notebook_path {
+                if let Some(detected) = crate::project_file::detect_project_file(nb_path) {
+                    if detected.kind == crate::project_file::ProjectFileKind::PyprojectToml {
+                        config.pyproject_path = Some(detected.path);
+                    }
+                }
             }
         }
         "pixi:toml" => {
@@ -3319,6 +3377,52 @@ async fn auto_launch_kernel(
         .as_ref()
         .map(|d| d.to_env_source().to_string());
 
+    // Step 3b: Bootstrap project deps into CRDT metadata.
+    // When a project file exists, populate the inline dep section with the
+    // project's deps so that the UI and MCP tools can see what's available.
+    if let Some(ref detected) = detected_project_file {
+        match detected.kind {
+            crate::project_file::ProjectFileKind::PixiToml => {
+                if let Ok(info) = kernel_launch::tools::pixi_info(&detected.path).await {
+                    let deps = info.default_deps_snapshot();
+                    if !deps.is_empty() {
+                        let mut doc = room.doc.write().await;
+                        doc.fork_and_merge(|fork| {
+                            let mut snap = fork.get_metadata_snapshot().unwrap_or_default();
+                            let pixi = snap.pixi_section_or_default();
+                            pixi.dependencies = deps;
+                            let _ = fork.set_metadata_snapshot(&snap);
+                        });
+                        info!("[notebook-sync] Bootstrapped pixi.toml deps into CRDT");
+                    }
+                }
+            }
+            crate::project_file::ProjectFileKind::PyprojectToml => {
+                // Read [project.dependencies] from pyproject.toml
+                if let Ok(content) = std::fs::read_to_string(&detected.path) {
+                    let deps = extract_pyproject_deps(&content);
+                    if !deps.is_empty() {
+                        let mut doc = room.doc.write().await;
+                        doc.fork_and_merge(|fork| {
+                            let mut snap = fork.get_metadata_snapshot().unwrap_or_default();
+                            let uv = snap.runt.uv.get_or_insert_with(|| {
+                                notebook_doc::metadata::UvInlineMetadata {
+                                    dependencies: Vec::new(),
+                                    requires_python: None,
+                                    prerelease: None,
+                                }
+                            });
+                            uv.dependencies = deps;
+                            let _ = fork.set_metadata_snapshot(&snap);
+                        });
+                        info!("[notebook-sync] Bootstrapped pyproject.toml deps into CRDT");
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     // Determine kernel type and environment
     let (kernel_type, env_source, pooled_env) = match notebook_kernel_type.as_deref() {
         Some("deno") => {
@@ -3328,7 +3432,16 @@ async fn auto_launch_kernel(
         }
         Some("python") => {
             // Notebook is a Python notebook - resolve environment
-            let env_source = if let Some(ref source) = inline_source {
+            // Priority: project file > inline deps > prewarmed
+            // Project file wins because inline deps get promoted to the
+            // project file at sync/launch time (project is source of truth).
+            let env_source = if let Some(ref proj) = project_source {
+                info!(
+                    "[notebook-sync] Auto-launch: using project file -> {}",
+                    proj
+                );
+                proj.clone()
+            } else if let Some(ref source) = inline_source {
                 // Skip "deno" inline source for Python notebooks (kernelspec takes priority)
                 if source != "deno" {
                     info!(
@@ -3336,12 +3449,6 @@ async fn auto_launch_kernel(
                         source
                     );
                     source.clone()
-                } else if let Some(ref proj) = project_source {
-                    info!(
-                        "[notebook-sync] Auto-launch: using project file -> {}",
-                        proj
-                    );
-                    proj.clone()
                 } else {
                     let prewarmed = match default_python_env {
                         crate::settings_doc::PythonEnvType::Conda => "conda:prewarmed",
@@ -3350,12 +3457,6 @@ async fn auto_launch_kernel(
                     };
                     prewarmed.to_string()
                 }
-            } else if let Some(ref source) = project_source {
-                info!(
-                    "[notebook-sync] Auto-launch: using project file -> {}",
-                    source
-                );
-                source.clone()
             } else {
                 let prewarmed = match default_python_env {
                     crate::settings_doc::PythonEnvType::Conda => "conda:prewarmed",
@@ -3406,15 +3507,16 @@ async fn auto_launch_kernel(
                 ("deno", "deno".to_string(), None)
             } else {
                 // Default to Python
-                let env_source = if let Some(ref source) = inline_source {
+                // Priority: project file > inline deps > prewarmed
+                let env_source = if let Some(ref source) = project_source {
                     info!(
-                        "[notebook-sync] Auto-launch: found inline deps -> {}",
+                        "[notebook-sync] Auto-launch: using project file -> {}",
                         source
                     );
                     source.clone()
-                } else if let Some(ref source) = project_source {
+                } else if let Some(ref source) = inline_source {
                     info!(
-                        "[notebook-sync] Auto-launch: using project file -> {}",
+                        "[notebook-sync] Auto-launch: found inline deps -> {}",
                         source
                     );
                     source.clone()
@@ -4264,7 +4366,8 @@ async fn handle_notebook_request(
             };
 
             // Resolve metadata snapshot from Automerge doc (preferred) or disk
-            let metadata_snapshot = resolve_metadata_snapshot(room, notebook_path.as_deref()).await;
+            let mut metadata_snapshot =
+                resolve_metadata_snapshot(room, notebook_path.as_deref()).await;
 
             // Auto-detect kernel type if "auto" or empty
             let resolved_kernel_type = if kernel_type == "auto" || kernel_type.is_empty() {
@@ -4323,11 +4426,33 @@ async fn handle_notebook_request(
                     None
                 };
 
-                // Priority 1: Check inline deps in notebook metadata (filter out "deno" - we're resolving Python env)
-                // When scoped, check the target family directly instead of relying on
-                // check_inline_deps() which has UV-first priority and would miss conda
-                // deps in notebooks that have both UV and conda dependency blocks.
-                if let Some(inline_source) =
+                // Priority 1: Detect project files near notebook path.
+                // Project file wins because inline deps get promoted to the
+                // project file at sync/launch time (project is source of truth).
+                if let Some(detected) = notebook_path.as_ref().and_then(|path| match auto_scope {
+                    Some("uv") => crate::project_file::find_nearest_project_file(
+                        path,
+                        &[crate::project_file::ProjectFileKind::PyprojectToml],
+                    ),
+                    Some("conda") => crate::project_file::find_nearest_project_file(
+                        path,
+                        &[crate::project_file::ProjectFileKind::EnvironmentYml],
+                    ),
+                    Some("pixi") => crate::project_file::find_nearest_project_file(
+                        path,
+                        &[crate::project_file::ProjectFileKind::PixiToml],
+                    ),
+                    _ => crate::project_file::detect_project_file(path),
+                }) {
+                    info!(
+                        "[notebook-sync] Auto-detected project file: {:?} -> {}",
+                        detected.path,
+                        detected.to_env_source()
+                    );
+                    detected.to_env_source().to_string()
+                }
+                // Priority 2: Check inline deps in notebook metadata
+                else if let Some(inline_source) =
                     metadata_snapshot
                         .as_ref()
                         .and_then(|snap| match auto_scope {
@@ -4358,10 +4483,7 @@ async fn handle_notebook_request(
                     );
                     inline_source
                 } else {
-                    // Priority 2: Check PEP 723 script blocks in cell source
-                    // Only parsed if metadata check above didn't find inline deps (lazy evaluation).
-                    // Skipped for conda scope — conda doesn't have a PEP 723 handler.
-                    // Pixi and UV both support PEP 723 via their exec/run paths.
+                    // Priority 3: Check PEP 723 script blocks in cell source
                     let has_pep723_deps = if auto_scope == Some("conda") {
                         false
                     } else {
@@ -4380,13 +4502,11 @@ async fn handle_notebook_request(
                     };
 
                     if has_pep723_deps {
-                        // Respect explicit scope: auto:uv → uv:pep723, auto:conda → skip (no handler)
                         let pep723_source = match auto_scope {
                             Some("uv") => "uv:pep723",
                             Some("pixi") => "pixi:pep723",
                             Some("conda") => unreachable!("conda scope skips PEP 723"),
                             _ => {
-                                // Unscoped auto: use default_python_env
                                 let default_env = daemon.default_python_env().await;
                                 match default_env {
                                     crate::settings_doc::PythonEnvType::Pixi => "pixi:pep723",
@@ -4399,31 +4519,6 @@ async fn handle_notebook_request(
                             pep723_source
                         );
                         pep723_source.to_string()
-                    }
-                    // Priority 3: Detect project files near notebook path
-                    else if let Some(detected) =
-                        notebook_path.as_ref().and_then(|path| match auto_scope {
-                            Some("uv") => crate::project_file::find_nearest_project_file(
-                                path,
-                                &[crate::project_file::ProjectFileKind::PyprojectToml],
-                            ),
-                            Some("conda") => crate::project_file::find_nearest_project_file(
-                                path,
-                                &[crate::project_file::ProjectFileKind::EnvironmentYml],
-                            ),
-                            Some("pixi") => crate::project_file::find_nearest_project_file(
-                                path,
-                                &[crate::project_file::ProjectFileKind::PixiToml],
-                            ),
-                            _ => crate::project_file::detect_project_file(path),
-                        })
-                    {
-                        info!(
-                            "[notebook-sync] Auto-detected project file: {:?} -> {}",
-                            detected.path,
-                            detected.to_env_source()
-                        );
-                        detected.to_env_source().to_string()
                     }
                     // Priority 4: Fall back to prewarmed (scoped to family)
                     else {
@@ -4465,6 +4560,78 @@ async fn handle_notebook_request(
                         return NotebookResponse::Error {
                             error: "ipykernel not found in pixi.toml — run `pixi add ipykernel` in your project directory".to_string(),
                         };
+                    }
+                }
+            }
+
+            // For project-backed envs, promote any inline deps to the project
+            // file before launching. This handles the case where add_dependency
+            // wrote to CRDT metadata and then triggered a restart.
+            if resolved_env_source == "pixi:toml" || resolved_env_source == "uv:pyproject" {
+                if let Some(ref snap) = metadata_snapshot {
+                    let has_inline = match resolved_env_source.as_str() {
+                        "pixi:toml" => snap
+                            .runt
+                            .pixi
+                            .as_ref()
+                            .is_some_and(|p| !p.dependencies.is_empty()),
+                        "uv:pyproject" => snap
+                            .runt
+                            .uv
+                            .as_ref()
+                            .is_some_and(|u| !u.dependencies.is_empty()),
+                        _ => false,
+                    };
+                    if has_inline {
+                        // Build a minimal launched config with project paths for promotion
+                        let mut promo_config =
+                            notebook_protocol::protocol::LaunchedEnvConfig::default();
+                        if resolved_env_source == "pixi:toml" {
+                            promo_config.pixi_toml_path = notebook_path.as_ref().and_then(|p| {
+                                crate::project_file::detect_project_file(p)
+                                    .filter(|d| {
+                                        d.kind == crate::project_file::ProjectFileKind::PixiToml
+                                    })
+                                    .map(|d| d.path)
+                            });
+                            // Launched baseline = current pixi.toml deps (before promotion)
+                            if let Some(ref path) = promo_config.pixi_toml_path {
+                                if let Ok(content) = std::fs::read_to_string(path) {
+                                    promo_config.pixi_toml_deps =
+                                        Some(extract_pixi_toml_deps(&content));
+                                }
+                            }
+                        } else {
+                            promo_config.pyproject_path = notebook_path.as_ref().and_then(|p| {
+                                crate::project_file::detect_project_file(p)
+                                    .filter(|d| {
+                                        d.kind
+                                            == crate::project_file::ProjectFileKind::PyprojectToml
+                                    })
+                                    .map(|d| d.path)
+                            });
+                        }
+                        match promote_inline_deps_to_project(
+                            room,
+                            &resolved_env_source,
+                            &promo_config,
+                        )
+                        .await
+                        {
+                            Ok(promoted) if !promoted.is_empty() => {
+                                info!(
+                                    "[notebook-sync] Promoted deps to project file: {:?}",
+                                    promoted
+                                );
+                                // Re-read metadata snapshot after CRDT was updated
+                                metadata_snapshot =
+                                    resolve_metadata_snapshot(room, notebook_path.as_deref()).await;
+                            }
+                            Err(e) => {
+                                warn!("[notebook-sync] Failed to promote deps: {}", e);
+                            }
+                            _ => {}
+                        }
                     }
                 }
             }
@@ -5650,6 +5817,246 @@ async fn handle_notebook_request(
     }
 }
 
+/// Promote inline deps from CRDT metadata to a project file.
+///
+/// When a kernel is project-backed (pixi:toml or uv:pyproject), inline deps in
+/// the CRDT are "intent" — the user wants this package. This function promotes
+/// them to the project file via `pixi add` / `uv add`, then clears the inline
+/// section from the CRDT.
+///
+/// For removals, compares CRDT deps against launched baseline and runs
+/// `pixi remove` / `uv remove` for any deps that were removed.
+///
+/// Returns the list of packages that were added or removed.
+async fn promote_inline_deps_to_project(
+    room: &NotebookRoom,
+    env_source: &str,
+    launched_config: &notebook_protocol::protocol::LaunchedEnvConfig,
+) -> Result<Vec<String>, String> {
+    let current_metadata = {
+        let doc = room.doc.read().await;
+        doc.get_metadata_snapshot()
+    };
+    let Some(current_metadata) = current_metadata else {
+        return Ok(vec![]);
+    };
+
+    let mut promoted = Vec::new();
+
+    if env_source == "pixi:toml" {
+        let pixi_toml_path = launched_config.pixi_toml_path.as_ref().ok_or_else(|| {
+            "pixi:toml kernel has no pixi_toml_path in launched config".to_string()
+        })?;
+
+        // Determine what deps are in the CRDT vs what was launched
+        let current_deps: Vec<String> = current_metadata
+            .runt
+            .pixi
+            .as_ref()
+            .map(|p| p.dependencies.clone())
+            .unwrap_or_default();
+        let launched_deps: Vec<String> = launched_config.pixi_toml_deps.clone().unwrap_or_default();
+
+        // Find additions: deps in CRDT but not in launched baseline.
+        // Launched baseline uses "name = version" format; CRDT uses package names.
+        // Compare by extracted package name.
+        let launched_names: std::collections::HashSet<String> = launched_deps
+            .iter()
+            .map(|d| d.split('=').next().unwrap_or(d).trim().to_lowercase())
+            .collect();
+        let current_names: std::collections::HashSet<String> = current_deps
+            .iter()
+            .map(|d| notebook_doc::metadata::extract_package_name(d).to_lowercase())
+            .collect();
+
+        let to_add: Vec<&str> = current_deps
+            .iter()
+            .filter(|d| {
+                let name = notebook_doc::metadata::extract_package_name(d).to_lowercase();
+                !launched_names.contains(&name)
+            })
+            .map(|d| d.as_str())
+            .collect();
+
+        let to_remove: Vec<String> = launched_deps
+            .iter()
+            .filter_map(|d| {
+                let name = d.split('=').next().unwrap_or(d).trim().to_lowercase();
+                if !current_names.contains(&name) {
+                    Some(name)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let pixi_path = kernel_launch::tools::get_pixi_path()
+            .await
+            .map_err(|e| format!("Failed to find pixi: {e}"))?;
+
+        for dep in &to_add {
+            info!("[notebook-sync] Promoting dep to pixi.toml: {}", dep);
+            let output = tokio::process::Command::new(&pixi_path)
+                .args(["add", dep, "--manifest-path"])
+                .arg(pixi_toml_path)
+                .output()
+                .await
+                .map_err(|e| format!("Failed to run pixi add: {e}"))?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(format!("pixi add {} failed: {}", dep, stderr.trim()));
+            }
+            promoted.push(format!("+{}", dep));
+        }
+
+        for dep in &to_remove {
+            info!("[notebook-sync] Removing dep from pixi.toml: {}", dep);
+            let output = tokio::process::Command::new(&pixi_path)
+                .args(["remove", dep, "--manifest-path"])
+                .arg(pixi_toml_path)
+                .output()
+                .await
+                .map_err(|e| format!("Failed to run pixi remove: {e}"))?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                warn!(
+                    "[notebook-sync] pixi remove {} failed: {}",
+                    dep,
+                    stderr.trim()
+                );
+            } else {
+                promoted.push(format!("-{}", dep));
+            }
+        }
+
+        // Re-bootstrap CRDT from updated pixi.toml (clears stale inline deps)
+        if !promoted.is_empty() {
+            if let Ok(info) = kernel_launch::tools::pixi_info(pixi_toml_path).await {
+                let deps = info.default_deps_snapshot();
+                let mut doc = room.doc.write().await;
+                doc.fork_and_merge(|fork| {
+                    let mut snap = fork.get_metadata_snapshot().unwrap_or_default();
+                    let pixi = snap.pixi_section_or_default();
+                    pixi.dependencies = deps;
+                    let _ = fork.set_metadata_snapshot(&snap);
+                });
+            }
+        }
+    } else if env_source == "uv:pyproject" {
+        let pyproject_path = launched_config.pyproject_path.as_ref().ok_or_else(|| {
+            "uv:pyproject kernel has no pyproject_path in launched config".to_string()
+        })?;
+        let project_dir = pyproject_path
+            .parent()
+            .ok_or_else(|| "Cannot determine project directory".to_string())?;
+
+        let current_deps: Vec<String> = current_metadata
+            .runt
+            .uv
+            .as_ref()
+            .map(|u| u.dependencies.clone())
+            .unwrap_or_default();
+        // For uv:pyproject, the launched baseline is the pyproject.toml deps.
+        // Read them from the file for comparison.
+        let launched_deps = if let Ok(content) = std::fs::read_to_string(pyproject_path) {
+            extract_pyproject_deps(&content)
+        } else {
+            vec![]
+        };
+
+        let launched_names: std::collections::HashSet<String> = launched_deps
+            .iter()
+            .map(|d| notebook_doc::metadata::extract_package_name(d).to_lowercase())
+            .collect();
+        let current_names: std::collections::HashSet<String> = current_deps
+            .iter()
+            .map(|d| notebook_doc::metadata::extract_package_name(d).to_lowercase())
+            .collect();
+
+        let to_add: Vec<&str> = current_deps
+            .iter()
+            .filter(|d| {
+                let name = notebook_doc::metadata::extract_package_name(d).to_lowercase();
+                !launched_names.contains(&name)
+            })
+            .map(|d| d.as_str())
+            .collect();
+
+        let to_remove: Vec<String> = launched_deps
+            .iter()
+            .filter_map(|d| {
+                let name = notebook_doc::metadata::extract_package_name(d).to_lowercase();
+                if !current_names.contains(&name) {
+                    Some(name)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let uv_path = kernel_launch::tools::get_uv_path()
+            .await
+            .map_err(|e| format!("Failed to find uv: {e}"))?;
+
+        for dep in &to_add {
+            info!("[notebook-sync] Promoting dep to pyproject.toml: {}", dep);
+            let output = tokio::process::Command::new(&uv_path)
+                .args(["add", dep, "--project"])
+                .arg(project_dir)
+                .output()
+                .await
+                .map_err(|e| format!("Failed to run uv add: {e}"))?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(format!("uv add {} failed: {}", dep, stderr.trim()));
+            }
+            promoted.push(format!("+{}", dep));
+        }
+
+        for dep in &to_remove {
+            info!("[notebook-sync] Removing dep from pyproject.toml: {}", dep);
+            let output = tokio::process::Command::new(&uv_path)
+                .args(["remove", dep, "--project"])
+                .arg(project_dir)
+                .output()
+                .await
+                .map_err(|e| format!("Failed to run uv remove: {e}"))?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                warn!(
+                    "[notebook-sync] uv remove {} failed: {}",
+                    dep,
+                    stderr.trim()
+                );
+            } else {
+                promoted.push(format!("-{}", dep));
+            }
+        }
+
+        // Re-bootstrap CRDT from updated pyproject.toml
+        if !promoted.is_empty() {
+            if let Ok(content) = std::fs::read_to_string(pyproject_path) {
+                let deps = extract_pyproject_deps(&content);
+                let mut doc = room.doc.write().await;
+                doc.fork_and_merge(|fork| {
+                    let mut snap = fork.get_metadata_snapshot().unwrap_or_default();
+                    let uv = snap.runt.uv.get_or_insert_with(|| {
+                        notebook_doc::metadata::UvInlineMetadata {
+                            dependencies: Vec::new(),
+                            requires_python: None,
+                            prerelease: None,
+                        }
+                    });
+                    uv.dependencies = deps;
+                    let _ = fork.set_metadata_snapshot(&snap);
+                });
+            }
+        }
+    }
+
+    Ok(promoted)
+}
+
 /// Handle sync environment request - hot-install new packages without kernel restart.
 ///
 /// Only supported for UV inline dependencies when there are only additions (no removals).
@@ -5668,6 +6075,37 @@ async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResponse {
             }
         }
     };
+
+    // For project-backed environments, promote inline deps to the project file.
+    // Project envs can't hot-install — they need a kernel restart.
+    let env_source = {
+        let sd = room.state_doc.read().await;
+        sd.read_state().kernel.env_source.clone()
+    };
+    if env_source == "pixi:toml" || env_source == "uv:pyproject" {
+        match promote_inline_deps_to_project(room, &env_source, &launched).await {
+            Ok(promoted) if promoted.is_empty() => {
+                return NotebookResponse::SyncEnvironmentComplete {
+                    synced_packages: vec![],
+                };
+            }
+            Ok(promoted) => {
+                return NotebookResponse::SyncEnvironmentFailed {
+                    error: format!(
+                        "Updated project file ({}). Restart kernel to apply changes.",
+                        promoted.join(", ")
+                    ),
+                    needs_restart: true,
+                };
+            }
+            Err(e) => {
+                return NotebookResponse::SyncEnvironmentFailed {
+                    error: e,
+                    needs_restart: false,
+                };
+            }
+        }
+    }
 
     // Read current metadata from the doc
     let current_metadata = {
@@ -10183,6 +10621,7 @@ mod tests {
             pixi_deps: None,
             pixi_toml_deps: None,
             pixi_toml_path: None,
+            pyproject_path: None,
             deno_config: None,
             venv_path: None,
             python_path: None,
@@ -10205,6 +10644,7 @@ mod tests {
             pixi_deps: None,
             pixi_toml_deps: None,
             pixi_toml_path: None,
+            pyproject_path: None,
             deno_config: None,
             venv_path: None,
             python_path: None,
@@ -10227,6 +10667,7 @@ mod tests {
             pixi_deps: None,
             pixi_toml_deps: None,
             pixi_toml_path: None,
+            pyproject_path: None,
             deno_config: None,
             venv_path: None,
             python_path: None,
@@ -10248,6 +10689,7 @@ mod tests {
             pixi_deps: None,
             pixi_toml_deps: None,
             pixi_toml_path: None,
+            pyproject_path: None,
             deno_config: None,
             venv_path: None,
             python_path: None,
@@ -10269,6 +10711,7 @@ mod tests {
             pixi_deps: None,
             pixi_toml_deps: None,
             pixi_toml_path: None,
+            pyproject_path: None,
             deno_config: None,
             venv_path: None,
             python_path: None,

@@ -259,7 +259,7 @@ pub fn all_tools() -> Vec<Tool> {
         // -- Dependencies --
         Tool::new(
             "add_dependency",
-            "Add a package dependency (e.g. 'pandas>=2.0'). Auto-detects package manager (uv, conda, or pixi). Use after='sync' to hot-install (UV only) or after='restart' to restart kernel with new deps.",
+            "Add a package dependency (e.g. 'pandas>=2.0'). When a project file (pixi.toml, pyproject.toml) exists, promotes the dependency to the project file via 'pixi add' or 'uv add'. Otherwise stores in notebook metadata. Use after='sync' or after='restart' to apply.",
             schema_for::<deps::AddDependencyParams>(),
         )
         .annotate(
@@ -270,7 +270,7 @@ pub fn all_tools() -> Vec<Tool> {
         ),
         Tool::new(
             "remove_dependency",
-            "Remove a package dependency. Auto-detects package manager. Requires restart_kernel() to take effect.",
+            "Remove a package dependency. When a project file exists, runs 'pixi remove' or 'uv remove'. Otherwise removes from notebook metadata. Requires restart_kernel() to take effect.",
             schema_for::<deps::RemoveDependencyParams>(),
         )
         .annotate(

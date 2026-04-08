@@ -393,9 +393,20 @@ pub async fn get_dependencies(
         .map(|s| s.env.prewarmed_packages)
         .unwrap_or_default();
 
+    // Indicate whether deps come from a project file or notebook metadata
+    let env_source = handle
+        .get_runtime_state()
+        .ok()
+        .map(|s| s.kernel.env_source.clone());
+    let mode = match env_source.as_deref() {
+        Some("pixi:toml") | Some("uv:pyproject") => "project",
+        _ => "inline",
+    };
+
     let mut result = serde_json::json!({
         "dependencies": deps,
         "package_manager": manager,
+        "mode": mode,
     });
     if !prewarmed.is_empty() {
         result["available_packages"] = serde_json::json!(prewarmed);

@@ -498,7 +498,7 @@ impl NotebookMetadataSnapshot {
 
     // ── Pixi dependency operations ──────────────────────────────────
 
-    fn pixi_section_or_default(&mut self) -> &mut PixiInlineMetadata {
+    pub fn pixi_section_or_default(&mut self) -> &mut PixiInlineMetadata {
         self.runt.pixi.get_or_insert_with(|| PixiInlineMetadata {
             dependencies: Vec::new(),
             pypi_dependencies: Vec::new(),

@@ -38,6 +38,10 @@ pub struct LaunchedEnvConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pixi_toml_path: Option<PathBuf>,
 
+    /// Path to pyproject.toml (uv:pyproject only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pyproject_path: Option<PathBuf>,
+
     /// Deno config (if kernel_type is "deno")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deno_config: Option<DenoLaunchedConfig>,

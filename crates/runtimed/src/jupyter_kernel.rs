@@ -266,6 +266,9 @@ impl KernelConnection for JupyterKernel {
                                     );
                                     let mut cmd = tokio::process::Command::new(&python);
                                     cmd.envs(&env_vars);
+                                    if let Some(parent) = manifest.parent() {
+                                        cmd.current_dir(parent);
+                                    }
                                     cmd.args([
                                         "-Xfrozen_modules=off",
                                         "-m",
