@@ -8,14 +8,50 @@ use tracing::{info, warn};
 
 const TOOL_CACHE_FILENAME: &str = "tool-cache.json";
 
-/// Load cached child tool definitions from disk.
+/// Checked-in tool definitions, embedded at compile time.
+/// Used as a fallback when no runtime cache exists on disk (e.g., fresh worktrees).
+const BUILTIN_TOOL_CACHE: &str = include_str!("../tool-cache.json");
+
+/// Load cached child tool definitions from disk, falling back to the
+/// checked-in tool cache if no runtime cache exists.
 pub fn load_cached_tools(cache_dir: &Path) -> Option<Vec<Tool>> {
     let path = cache_dir.join(TOOL_CACHE_FILENAME);
-    let data = std::fs::read_to_string(&path).ok()?;
-    match serde_json::from_str::<Vec<Tool>>(&data) {
-        Ok(tools) => Some(tools),
+    let data = std::fs::read_to_string(&path).ok();
+
+    let source = if let Some(ref data) = data {
+        ("disk", data.as_str())
+    } else {
+        ("builtin", BUILTIN_TOOL_CACHE)
+    };
+
+    match serde_json::from_str::<Vec<Tool>>(source.1) {
+        Ok(tools) => {
+            if data.is_none() {
+                info!(
+                    "Loaded {} tools from built-in cache (no runtime cache at {})",
+                    tools.len(),
+                    path.display()
+                );
+            }
+            Some(tools)
+        }
         Err(e) => {
-            warn!("Failed to parse tool cache at {}: {e}", path.display());
+            warn!("Failed to parse tool cache from {}: {e}", source.0);
+            None
+        }
+    }
+}
+
+/// Load the built-in tool cache (compiled into the binary).
+/// Used when no cache_dir is configured (e.g., mcpb-runt).
+pub fn load_builtin_tools() -> Option<Vec<Tool>> {
+    match serde_json::from_str::<Vec<Tool>>(BUILTIN_TOOL_CACHE) {
+        Ok(tools) => {
+            info!("Loaded {} tools from built-in cache", tools.len());
+            Some(tools)
+        }
+        Err(e) => {
+            warn!("Failed to parse built-in tool cache: {e}");
             None
         }
     }
@@ -246,9 +282,15 @@ mod tests {
     }
 
     #[test]
-    fn load_returns_none_for_missing_cache() {
+    fn load_falls_back_to_builtin_when_no_cache_file() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(load_cached_tools(dir.path()).is_none());
+        // With no cache file on disk, should fall back to built-in cache
+        let tools = load_cached_tools(dir.path());
+        assert!(tools.is_some(), "should fall back to built-in cache");
+        assert!(
+            !tools.unwrap().is_empty(),
+            "built-in cache should have tools"
+        );
     }
 
     #[test]

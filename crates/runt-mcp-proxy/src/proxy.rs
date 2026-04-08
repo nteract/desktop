@@ -83,10 +83,11 @@ impl McpProxy {
         let cached_tools = config
             .cache_dir
             .as_ref()
-            .and_then(|dir| tools::load_cached_tools(dir));
+            .map(|dir| tools::load_cached_tools(dir))
+            .unwrap_or_else(tools::load_builtin_tools);
 
         if let Some(ref cached) = cached_tools {
-            info!("Loaded {} cached child tools from disk", cached.len());
+            info!("Loaded {} cached child tools", cached.len());
         }
 
         let daemon_version = config
@@ -691,18 +692,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn proxy_starts_without_cache_when_dir_empty() {
+    async fn proxy_falls_back_to_builtin_when_dir_empty() {
         let dir = tempfile::tempdir().unwrap();
         let proxy = McpProxy::new(test_config_with_cache(dir.path()), None);
         let state = proxy.state.read().await;
-        assert!(state.cached_tools.is_none());
+        // Falls back to built-in tool cache
+        assert!(state.cached_tools.is_some());
+        assert!(!state.cached_tools.as_ref().unwrap().is_empty());
     }
 
     #[tokio::test]
-    async fn proxy_starts_without_cache_when_no_dir() {
+    async fn proxy_uses_builtin_when_no_cache_dir() {
         let proxy = McpProxy::new(test_config(), None);
         let state = proxy.state.read().await;
-        assert!(state.cached_tools.is_none());
+        // Built-in tool cache is always available
+        assert!(state.cached_tools.is_some());
+        assert!(!state.cached_tools.as_ref().unwrap().is_empty());
     }
 
     // ── should_exit ───────────────────────────────────────────────────
@@ -945,10 +950,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn child_tools_returns_empty_when_no_child_no_cache() {
+    async fn child_tools_returns_builtin_when_no_child() {
         let proxy = McpProxy::new(test_config(), None);
         let tools = proxy.child_tools().await;
-        assert!(tools.is_empty());
+        // Falls back to built-in cache even without a child
+        assert!(!tools.is_empty());
     }
 
     // ── tool_list_changed notification channel ────────────────────────

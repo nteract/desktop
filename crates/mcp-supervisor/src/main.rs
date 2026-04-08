@@ -1072,12 +1072,16 @@ impl ServerHandler for Supervisor {
                 .unwrap_or_default(),
         ));
 
-        // Get child tools from the proxy (live or cached).
+        // Get child tools from the proxy (live or cached), falling back
+        // to the built-in tool cache if the proxy isn't ready yet.
         {
             let state = self.state.read().await;
             if let Some(ref proxy) = state.proxy {
                 let child_tools = proxy.child_tools().await;
                 tools.extend(child_tools);
+            } else if let Some(builtin) = runt_mcp_proxy::tools::load_builtin_tools() {
+                info!("Serving {} built-in tools (proxy not ready)", builtin.len());
+                tools.extend(builtin);
             }
         }
 
