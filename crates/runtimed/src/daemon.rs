@@ -171,6 +171,16 @@ fn parse_uv_error(stderr: &str) -> Option<PackageInstallError> {
     None
 }
 
+/// Outcome of a warmup script execution.
+enum WarmupOutcome {
+    /// Warmup succeeded — environment is ready.
+    Ok,
+    /// Warmup timed out.
+    Timeout,
+    /// Warmup script failed (import error or process failure).
+    ImportError(String),
+}
+
 /// Spawn background deletion of environment directories.
 fn spawn_env_deletions(paths: Vec<PathBuf>) {
     if paths.is_empty() {
@@ -2865,52 +2875,68 @@ impl Daemon {
         }
 
         // Run warmup script
-        let warmup_ok = self
+        let warmup_outcome = self
             .warmup_conda_env(&python_path, &env_path, &extra_conda_packages)
             .await;
 
-        if warmup_ok {
-            {
-                let mut pool = self.conda_pool.lock().await;
-                pool.add(PooledEnv {
-                    env_type: EnvType::Conda,
-                    venv_path: env_path.clone(),
-                    python_path,
-                    prewarmed_packages: conda_install_packages,
-                });
+        match warmup_outcome {
+            WarmupOutcome::Ok => {
+                {
+                    let mut pool = self.conda_pool.lock().await;
+                    pool.add(PooledEnv {
+                        env_type: EnvType::Conda,
+                        venv_path: env_path.clone(),
+                        python_path,
+                        prewarmed_packages: conda_install_packages,
+                    });
+                }
+
+                info!(
+                    "[runtimed] Conda environment ready: {:?} (pool: {}/{})",
+                    env_path,
+                    self.conda_pool.lock().await.stats().0,
+                    self.config.conda_pool_size
+                );
+
+                self.update_pool_doc().await;
             }
-
-            info!(
-                "[runtimed] Conda environment ready: {:?} (pool: {}/{})",
-                env_path,
-                self.conda_pool.lock().await.stats().0,
-                self.config.conda_pool_size
-            );
-
-            self.update_pool_doc().await;
-        } else {
-            // Clean up failed env and record failure
-            let _ = tokio::fs::remove_dir_all(&env_path).await;
-            self.conda_pool
-                .lock()
-                .await
-                .warming_failed_with_error(Some(PackageInstallError {
-                    failed_package: None,
-                    error_message: "Conda warmup failed (timed out or imports errored)".into(),
-                    error_kind: "import_error".to_string(),
-                }));
-            self.update_pool_doc().await;
+            WarmupOutcome::Timeout => {
+                let _ = tokio::fs::remove_dir_all(&env_path).await;
+                self.conda_pool
+                    .lock()
+                    .await
+                    .warming_failed_with_error(Some(PackageInstallError {
+                        failed_package: None,
+                        error_message: "Conda warmup timed out".into(),
+                        error_kind: "timeout".to_string(),
+                    }));
+                self.update_pool_doc().await;
+            }
+            WarmupOutcome::ImportError(msg) => {
+                let _ = tokio::fs::remove_dir_all(&env_path).await;
+                self.conda_pool
+                    .lock()
+                    .await
+                    .warming_failed_with_error(Some(PackageInstallError {
+                        failed_package: None,
+                        error_message: format!(
+                            "Conda warmup failed: {}",
+                            msg.chars().take(200).collect::<String>()
+                        ),
+                        error_kind: "import_error".to_string(),
+                    }));
+                self.update_pool_doc().await;
+            }
         }
     }
 
     /// Warm up a conda environment by running Python to trigger .pyc compilation.
-    /// Returns `true` if warmup succeeded (ipykernel imports work).
     async fn warmup_conda_env(
         &self,
         python_path: &PathBuf,
         env_path: &PathBuf,
         extra_packages: &[String],
-    ) -> bool {
+    ) -> WarmupOutcome {
         let site_packages = {
             let lib_dir = env_path.join("lib");
             std::fs::read_dir(&lib_dir).ok().and_then(|entries| {
@@ -2947,7 +2973,7 @@ impl Daemon {
                 // Create marker file
                 tokio::fs::write(env_path.join(".warmed"), "").await.ok();
                 info!("[runtimed] Conda warmup complete for {:?}", env_path);
-                true
+                WarmupOutcome::Ok
             }
             Ok(Ok(output)) => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
@@ -2956,15 +2982,15 @@ impl Daemon {
                     env_path,
                     stderr.lines().take(3).collect::<Vec<_>>().join(" | ")
                 );
-                false
+                WarmupOutcome::ImportError(stderr.to_string())
             }
             Ok(Err(e)) => {
                 error!("[runtimed] Failed to run conda warmup: {}", e);
-                false
+                WarmupOutcome::ImportError(e.to_string())
             }
             Err(_) => {
-                error!("[runtimed] Conda warmup timed out");
-                false
+                error!("[runtimed] Conda warmup timed out (180s)");
+                WarmupOutcome::Timeout
             }
         }
     }
@@ -3363,11 +3389,11 @@ impl Daemon {
         )
         .await;
 
-        let warmup_ok = match warmup_result {
+        let warmup_outcome = match warmup_result {
             Ok(Ok(output)) if output.status.success() => {
                 // Create marker file
                 tokio::fs::write(venv_path.join(".warmed"), "").await.ok();
-                true
+                WarmupOutcome::Ok
             }
             Ok(Ok(output)) => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
@@ -3375,43 +3401,60 @@ impl Daemon {
                     "[runtimed] UV warmup failed, NOT adding to pool: {}",
                     stderr.lines().take(3).collect::<Vec<_>>().join(" | ")
                 );
-                false
+                WarmupOutcome::ImportError(stderr.to_string())
             }
             Ok(Err(e)) => {
                 error!("[runtimed] Failed to run UV warmup: {}", e);
-                false
+                WarmupOutcome::ImportError(e.to_string())
             }
             Err(_) => {
-                error!("[runtimed] UV warmup timed out, NOT adding to pool");
-                false
+                error!("[runtimed] UV warmup timed out, NOT adding to pool (180s)");
+                WarmupOutcome::Timeout
             }
         };
 
-        if warmup_ok {
-            info!("[runtimed] UV environment ready at {:?}", venv_path);
+        match warmup_outcome {
+            WarmupOutcome::Ok => {
+                info!("[runtimed] UV environment ready at {:?}", venv_path);
 
-            {
-                let mut pool = self.uv_pool.lock().await;
-                pool.add(PooledEnv {
-                    env_type: EnvType::Uv,
-                    venv_path,
-                    python_path,
-                    prewarmed_packages: install_packages,
-                });
+                {
+                    let mut pool = self.uv_pool.lock().await;
+                    pool.add(PooledEnv {
+                        env_type: EnvType::Uv,
+                        venv_path,
+                        python_path,
+                        prewarmed_packages: install_packages,
+                    });
+                }
+                self.update_pool_doc().await;
             }
-            self.update_pool_doc().await;
-        } else {
-            // Clean up failed env and record failure
-            let _ = tokio::fs::remove_dir_all(&venv_path).await;
-            self.uv_pool
-                .lock()
-                .await
-                .warming_failed_with_error(Some(PackageInstallError {
-                    failed_package: None,
-                    error_message: "UV warmup failed (timed out or imports errored)".into(),
-                    error_kind: "import_error".to_string(),
-                }));
-            self.update_pool_doc().await;
+            WarmupOutcome::Timeout => {
+                let _ = tokio::fs::remove_dir_all(&venv_path).await;
+                self.uv_pool
+                    .lock()
+                    .await
+                    .warming_failed_with_error(Some(PackageInstallError {
+                        failed_package: None,
+                        error_message: "UV warmup timed out".into(),
+                        error_kind: "timeout".to_string(),
+                    }));
+                self.update_pool_doc().await;
+            }
+            WarmupOutcome::ImportError(msg) => {
+                let _ = tokio::fs::remove_dir_all(&venv_path).await;
+                self.uv_pool
+                    .lock()
+                    .await
+                    .warming_failed_with_error(Some(PackageInstallError {
+                        failed_package: None,
+                        error_message: format!(
+                            "UV warmup failed: {}",
+                            msg.chars().take(200).collect::<String>()
+                        ),
+                        error_kind: "import_error".to_string(),
+                    }));
+                self.update_pool_doc().await;
+            }
         }
     }
 }
