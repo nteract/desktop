@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { fetchBlobText, isBlobUrl } from "../lib/blob-fetch";
 import { selectMimeType } from "../lib/mime-priority";
-import { needsDaemonPlugin, loadPluginForMime } from "../lib/plugin-loader";
-import { getPluginRenderer, installPlugin } from "../lib/plugin-executor";
+import { loadPluginForMime, needsDaemonPlugin } from "../lib/plugin-loader";
+import { getPluginRenderer } from "../lib/plugin-executor";
 import { AnsiText } from "./ansi-text";
 import { HtmlOutput } from "./html-output";
 import { ImageOutput } from "./image-output";
@@ -66,8 +66,8 @@ export function MimeRenderer({ data, blobBaseUrl }: MimeRendererProps) {
 }
 
 /**
- * Load a daemon-served plugin and render viz data with it.
- * Fetches both the plugin JS and the blob data in parallel.
+ * Load a daemon-served plugin via <script> tag and render viz data.
+ * Loads plugin and fetches blob data in parallel.
  */
 function PluginRenderer({
   mime,
@@ -87,20 +87,16 @@ function PluginRenderer({
   useEffect(() => {
     let cancelled = false;
 
-    // Fetch plugin and blob data in parallel
-    const pluginPromise = loadPluginForMime(mime, blobBaseUrl);
+    // Load plugin via <script> tag and fetch blob data in parallel
+    const pluginPromise = loadPluginForMime(mime, blobBaseUrl) ?? Promise.resolve();
     const dataPromise = isBlobUrl(raw)
       ? fetchBlobText(raw).then((text) => JSON.parse(text))
       : Promise.resolve(typeof raw === "string" ? JSON.parse(raw) : raw);
 
     Promise.all([pluginPromise, dataPromise])
-      .then(([plugin, parsedData]) => {
+      .then(([, parsedData]) => {
         if (cancelled) return;
-        if (plugin) {
-          // Install plugin (idempotent — registry deduplicates)
-          installPlugin(plugin.code, plugin.css);
-          setPluginReady(true);
-        }
+        setPluginReady(true);
         setData(parsedData);
       })
       .catch(() => {
