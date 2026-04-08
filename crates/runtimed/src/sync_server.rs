@@ -52,9 +52,13 @@ where
 
     // Phase 1: Initial sync -- server sends first
     {
-        let mut doc = settings.write().await;
-        if let Some(msg) = doc.generate_sync_message(&mut peer_state) {
-            connection::send_frame(&mut writer, &msg.encode()).await?;
+        let encoded = {
+            let mut doc = settings.write().await;
+            doc.generate_sync_message(&mut peer_state)
+                .map(|msg| msg.encode())
+        };
+        if let Some(data) = encoded {
+            connection::send_frame(&mut writer, &data).await?;
         }
     }
 

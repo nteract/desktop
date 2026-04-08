@@ -576,10 +576,15 @@ async fn check_and_broadcast_sync_state(room: &NotebookRoom) {
         return;
     };
 
-    // Read launched_config from room (set when runtime agent launched/restarted)
-    let launched_guard = room.runtime_agent_launched_config.read().await;
-    let Some(ref launched) = *launched_guard else {
-        return;
+    // Read launched_config from room (set when runtime agent launched/restarted).
+    // Clone the config and drop the guard before any `.await` to avoid holding
+    // a lock across await points (deadlock prevention).
+    let launched = {
+        let launched_guard = room.runtime_agent_launched_config.read().await;
+        match &*launched_guard {
+            Some(l) => l.clone(),
+            None => return,
+        }
     };
 
     // Check kernel is actually running via RuntimeStateDoc
@@ -600,7 +605,7 @@ async fn check_and_broadcast_sync_state(room: &NotebookRoom) {
 
     if is_tracking {
         // Kernel launched with inline deps - compute drift
-        let diff = compute_env_sync_diff(launched, &current_metadata);
+        let diff = compute_env_sync_diff(&launched, &current_metadata);
         let in_sync = diff.is_none();
 
         // Write to RuntimeStateDoc
@@ -1404,9 +1409,13 @@ impl NotebookRoom {
     ///
     /// Reads from RuntimeStateDoc (source of truth for runtime agent).
     pub async fn kernel_info(&self) -> Option<(String, String, String)> {
-        // Check runtime agent — read from RuntimeStateDoc
-        let ra = self.runtime_agent_handle.lock().await;
-        if ra.as_ref().is_some_and(|a| a.is_alive()) {
+        // Check runtime agent — scope the lock so it drops before the next
+        // `.await` on state_doc (deadlock prevention: no cross-lock holds).
+        let is_alive = {
+            let ra = self.runtime_agent_handle.lock().await;
+            ra.as_ref().is_some_and(|a| a.is_alive())
+        };
+        if is_alive {
             let sd = self.state_doc.read().await;
             let state = sd.read_state();
             if state.kernel.status != "not_started" && !state.kernel.status.is_empty() {
@@ -1562,36 +1571,41 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
     }
 
     // ── 1. Initial NotebookDoc sync ──────────────────────────────────
+    // Scope the doc write guard so it drops before the async send
+    // (deadlock prevention: no lock held across `.await`).
     let mut doc_sync_state = automerge::sync::State::new();
-    {
+    let doc_sync_msg = {
         let mut doc = room.doc.write().await;
         // Generate our sync message (full doc state for fresh peer)
-        if let Some(msg) = doc.generate_sync_message(&mut doc_sync_state) {
-            let encoded = msg.encode();
-            if let Err(e) =
-                send_typed_frame(&mut writer, NotebookFrameType::AutomergeSync, &encoded).await
-            {
-                warn!("[notebook-sync] Agent initial doc sync send failed: {}", e);
-                return;
-            }
+        doc.generate_sync_message(&mut doc_sync_state)
+            .map(|msg| msg.encode())
+    };
+    if let Some(encoded) = doc_sync_msg {
+        if let Err(e) =
+            send_typed_frame(&mut writer, NotebookFrameType::AutomergeSync, &encoded).await
+        {
+            warn!("[notebook-sync] Agent initial doc sync send failed: {}", e);
+            return;
         }
     }
 
     // ── 2. Initial RuntimeStateDoc sync ──────────────────────────────
+    // Scope the state_doc write guard so it drops before the async send.
     let mut state_sync_state = automerge::sync::State::new();
-    {
+    let state_sync_msg = {
         let mut sd = room.state_doc.write().await;
-        if let Some(msg) = sd.generate_sync_message(&mut state_sync_state) {
-            let encoded = msg.encode();
-            if let Err(e) =
-                send_typed_frame(&mut writer, NotebookFrameType::RuntimeStateSync, &encoded).await
-            {
-                warn!(
-                    "[notebook-sync] Agent initial state sync send failed: {}",
-                    e
-                );
-                return;
-            }
+        sd.generate_sync_message(&mut state_sync_state)
+            .map(|msg| msg.encode())
+    };
+    if let Some(encoded) = state_sync_msg {
+        if let Err(e) =
+            send_typed_frame(&mut writer, NotebookFrameType::RuntimeStateSync, &encoded).await
+        {
+            warn!(
+                "[notebook-sync] Agent initial state sync send failed: {}",
+                e
+            );
+            return;
         }
     }
 
@@ -1756,17 +1770,22 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
     // Cleanup: only clear state if we're still the current runtime agent.
     // A stale runtime agent disconnecting after a new one connected must not
     // clobber the new runtime agent's channel.
-    {
+    //
+    // Scope the id read guard so it drops before acquiring other locks
+    // (deadlock prevention: no lock held across `.await`).
+    let is_current = {
         let expected = room.current_runtime_agent_id.read().await;
-        let is_current = expected.as_deref() == Some(&runtime_agent_id);
-        if is_current {
+        expected.as_deref() == Some(&runtime_agent_id)
+    };
+    if is_current {
+        {
             let mut tx_guard = room.runtime_agent_request_tx.lock().await;
             *tx_guard = None;
-            let _ = room.runtime_agent_connected_tx.send(false);
-            // Clear runtime_agent_handle so LaunchKernel spawns a new runtime agent
-            let mut guard = room.runtime_agent_handle.lock().await;
-            *guard = None;
         }
+        let _ = room.runtime_agent_connected_tx.send(false);
+        // Clear runtime_agent_handle so LaunchKernel spawns a new runtime agent
+        let mut guard = room.runtime_agent_handle.lock().await;
+        *guard = None;
     }
     info!(
         "[notebook-sync] Runtime agent sync connection closed: {}",
@@ -1838,7 +1857,10 @@ where
     // Write trust state to RuntimeStateDoc so frontend can read it reactively.
     // Start with room.trust_state (from disk at room creation), then re-verify
     // from the doc in case initial_metadata was just seeded with a trust signature.
-    {
+    //
+    // Scope the trust_state read guard so it drops before acquiring state_doc
+    // write lock (deadlock prevention: no lock held across `.await`).
+    let (status_str, needs_approval) = {
         let trust_state = room.trust_state.read().await;
         let needs_approval = !matches!(
             trust_state.status,
@@ -1850,6 +1872,9 @@ where
             runt_trust::TrustStatus::SignatureInvalid => "signature_invalid",
             runt_trust::TrustStatus::NoDependencies => "no_dependencies",
         };
+        (status_str, needs_approval)
+    };
+    {
         let mut sd = room.state_doc.write().await;
         if sd.set_trust(status_str, needs_approval) {
             let _ = room.state_changed_tx.send(());
@@ -1877,21 +1902,22 @@ where
         let is_new_notebook =
             !notebook_path_snapshot.exists() && uuid::Uuid::parse_str(&notebook_id).is_ok();
 
-        let (should_auto_launch, trust_status, has_kernel) = {
+        // Scope the trust_state read guard so it drops before
+        // `has_kernel()` which acquires another lock (deadlock prevention).
+        let trust_status = {
             let trust_state = room.trust_state.read().await;
-            let has_kernel = room.has_kernel().await;
-            let status = trust_state.status.clone();
-            let should_launch = !has_kernel
-                && matches!(
-                    status,
-                    runt_trust::TrustStatus::Trusted | runt_trust::TrustStatus::NoDependencies
-                )
-                // For existing files: trust must be verified (Trusted or NoDependencies)
-                // For new notebooks (UUID, no file): NoDependencies is safe to auto-launch
-                // For newly-created notebooks at a path: also safe to auto-launch
-                && (notebook_path_snapshot.exists() || is_new_notebook || created_new_at_path);
-            (should_launch, status, has_kernel)
+            trust_state.status.clone()
         };
+        let has_kernel = room.has_kernel().await;
+        let should_auto_launch = !has_kernel
+            && matches!(
+                trust_status,
+                runt_trust::TrustStatus::Trusted | runt_trust::TrustStatus::NoDependencies
+            )
+            // For existing files: trust must be verified (Trusted or NoDependencies)
+            // For new notebooks (UUID, no file): NoDependencies is safe to auto-launch
+            // For newly-created notebooks at a path: also safe to auto-launch
+            && (notebook_path_snapshot.exists() || is_new_notebook || created_new_at_path);
 
         if should_auto_launch {
             info!(
@@ -3115,12 +3141,16 @@ fn is_untitled_notebook(notebook_id: &str) -> bool {
 /// Reset runtime state to "not_started" (clears any stale starting phase).
 /// Used when an early exit prevents kernel launch after status was set to "starting".
 async fn reset_starting_state(room: &NotebookRoom) {
-    let mut sd = room.state_doc.write().await;
-    let mut changed = false;
-    changed |= sd.set_kernel_status("not_started");
-    changed |= sd.set_prewarmed_packages(&[]);
-    if changed {
-        let _ = room.state_changed_tx.send(());
+    // Scope the state_doc write guard so it drops before acquiring
+    // runtime_agent_handle lock (deadlock prevention).
+    {
+        let mut sd = room.state_doc.write().await;
+        let mut changed = false;
+        changed |= sd.set_kernel_status("not_started");
+        changed |= sd.set_prewarmed_packages(&[]);
+        if changed {
+            let _ = room.state_changed_tx.send(());
+        }
     }
     // Clear stale runtime agent handle so auto-launch can retry
     let mut guard = room.runtime_agent_handle.lock().await;
@@ -4131,12 +4161,16 @@ async fn rekey_ephemeral_room(
 
     // Re-key in the rooms map: remove UUID key, insert canonical path key.
     // We hold on to the Arc clone for spawning the file watcher below.
-    let room_arc = {
+    //
+    // Scope the rooms_guard so it drops before any doc write `.await` or
+    // spawned task lock (deadlock prevention: no lock held across `.await`).
+    let (room_arc, interloper_to_merge) = {
         let mut rooms_guard = rooms.lock().await;
 
         // Guard against overwriting an existing room at the canonical path.
         // This can happen if two peers save concurrently, or if the path was
         // already opened via open_notebook(path).
+        let mut extracted_interloper = None;
         if rooms_guard.contains_key(&canonical) {
             let existing = rooms_guard.get(&canonical);
             let is_same_room = existing
@@ -4146,50 +4180,14 @@ async fn rekey_ephemeral_room(
                     "[notebook-sync] Re-key collision at {} — migrating interloper peers to winning room",
                     canonical
                 );
-                // Remove the interloper from the map and clean up in the
-                // background to minimize time holding the rooms lock.
-                let interloper = rooms_guard.remove(&canonical);
-                if let Some(interloper) = interloper {
-                    // Merge the interloper's doc into the winning room so no
-                    // edits are lost (the interloper may have loaded from disk
-                    // or received edits from its peers).
-                    {
-                        let mut winning_doc = room.doc.write().await;
-                        let mut interloper_doc = interloper.doc.write().await;
-                        winning_doc.merge(&mut interloper_doc).ok();
-                    }
-                    // Signal winning room peers to sync the merged content.
-                    let _ = room.changed_tx.send(());
-
-                    // Shut down the interloper's kernel and file watcher in
-                    // the background. Kernel migration is not safe because
-                    // RoomKernel holds references to its original room's
-                    // doc/channels — moving the struct doesn't rewire them.
-                    // The winning room will launch its own kernel when needed.
-                    let canonical_for_task = canonical.clone();
-                    tokio::spawn(async move {
-                        // Notify interloper peers about the rename so they
-                        // can update their notebook_id. Note: current
-                        // frontend/Python clients don't fully reconnect on
-                        // this signal yet, but it prevents stale IDs on
-                        // manual reconnect.
-                        let _ =
-                            interloper
-                                .kernel_broadcast_tx
-                                .send(NotebookBroadcast::RoomRenamed {
-                                    new_notebook_id: canonical_for_task,
-                                });
-                        // Agent subprocess handles its own shutdown via kill_on_drop(true)
-                        if let Some(tx) = interloper.watcher_shutdown_tx.lock().await.take() {
-                            let _ = tx.send(());
-                        }
-                    });
-                }
+                // Remove the interloper from the map. Merge and cleanup
+                // happen after the rooms lock is dropped.
+                extracted_interloper = rooms_guard.remove(&canonical);
                 // Fall through to normal rekey below
             }
         }
 
-        if let Some(room_arc) = rooms_guard.remove(old_notebook_id) {
+        let arc = if let Some(room_arc) = rooms_guard.remove(old_notebook_id) {
             rooms_guard.insert(canonical.clone(), room_arc.clone());
             room_arc
         } else {
@@ -4198,8 +4196,63 @@ async fn rekey_ephemeral_room(
                 old_notebook_id
             );
             return None;
-        }
+        };
+        (arc, extracted_interloper)
     };
+
+    // Merge interloper doc and clean up outside the rooms lock
+    // (deadlock prevention: doc write locks must not be held under rooms lock).
+    if let Some(interloper) = interloper_to_merge {
+        // Merge the interloper's doc into the winning room so no
+        // edits are lost (the interloper may have loaded from disk
+        // or received edits from its peers).
+        //
+        // Save the interloper doc and load into a temporary to avoid
+        // holding two doc write guards simultaneously, which the lint
+        // flags as a potential deadlock (even though these are
+        // different rooms' docs).
+        let interloper_bytes = {
+            let mut interloper_doc = interloper.doc.write().await;
+            interloper_doc.save()
+        };
+        match NotebookDoc::load(&interloper_bytes) {
+            Ok(mut temp_doc) => {
+                let mut winning_doc = room.doc.write().await;
+                winning_doc.merge(&mut temp_doc).ok();
+            }
+            Err(e) => {
+                warn!(
+                    "[notebook-sync] Failed to load interloper doc after save — edits may be lost: {}",
+                    e
+                );
+            }
+        }
+        // Signal winning room peers to sync the merged content.
+        let _ = room.changed_tx.send(());
+
+        // Shut down the interloper's kernel and file watcher in
+        // the background. Kernel migration is not safe because
+        // RoomKernel holds references to its original room's
+        // doc/channels — moving the struct doesn't rewire them.
+        // The winning room will launch its own kernel when needed.
+        let canonical_for_task = canonical.clone();
+        tokio::spawn(async move {
+            // Notify interloper peers about the rename so they
+            // can update their notebook_id. Note: current
+            // frontend/Python clients don't fully reconnect on
+            // this signal yet, but it prevents stale IDs on
+            // manual reconnect.
+            let _ = interloper
+                .kernel_broadcast_tx
+                .send(NotebookBroadcast::RoomRenamed {
+                    new_notebook_id: canonical_for_task,
+                });
+            // Agent subprocess handles its own shutdown via kill_on_drop(true)
+            if let Some(tx) = interloper.watcher_shutdown_tx.lock().await.take() {
+                let _ = tx.send(());
+            }
+        });
+    }
 
     // Update the room's notebook_path so subsequent saves without an explicit
     // path write to the correct file
@@ -4268,65 +4321,70 @@ async fn handle_notebook_request(
             // Uses write lock so we can atomically check + set "starting"
             // to prevent two concurrent LaunchKernel requests from both
             // proceeding past this gate.
-            {
+            //
+            // Scope the write guard so it drops before any async work
+            // (deadlock prevention: no lock held across `.await`).
+            let kernel_status = {
                 let mut sd = room.state_doc.write().await;
                 let status = sd.read_state().kernel.status.clone();
-                match status.as_str() {
-                    "idle" | "busy" => {
-                        drop(sd);
-                        // Agent already has a running kernel — check for restart path below
+                if status != "idle" && status != "busy" && status != "starting" {
+                    // not_started, error, shutdown — atomically claim the
+                    // launch by writing "starting" while we hold the write lock.
+                    // This prevents a concurrent LaunchKernel from also proceeding.
+                    let mut changed = false;
+                    changed |= sd.clear_comms();
+                    changed |= sd.set_trust("trusted", false);
+                    changed |= sd.set_kernel_status("starting");
+                    changed |= sd.set_starting_phase("resolving");
+                    if changed {
+                        let _ = room.state_changed_tx.send(());
                     }
-                    "starting" => {
-                        drop(sd);
-                        // Another launch in progress — wait for it to complete
-                        let wait_result =
-                            tokio::time::timeout(std::time::Duration::from_secs(60), async {
-                                loop {
-                                    let s = room
-                                        .state_doc
-                                        .read()
-                                        .await
-                                        .read_state()
-                                        .kernel
-                                        .status
-                                        .clone();
-                                    if s == "idle"
-                                        || s == "busy"
-                                        || s == "error"
-                                        || s == "shutdown"
-                                        || s == "not_started"
-                                    {
-                                        return s;
-                                    }
-                                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                status
+            };
+            match kernel_status.as_str() {
+                "idle" | "busy" => {
+                    // Agent already has a running kernel — check for restart path below
+                }
+                "starting" => {
+                    // Another launch in progress — wait for it to complete
+                    let wait_result =
+                        tokio::time::timeout(std::time::Duration::from_secs(60), async {
+                            loop {
+                                let s = room
+                                    .state_doc
+                                    .read()
+                                    .await
+                                    .read_state()
+                                    .kernel
+                                    .status
+                                    .clone();
+                                if s == "idle"
+                                    || s == "busy"
+                                    || s == "error"
+                                    || s == "shutdown"
+                                    || s == "not_started"
+                                {
+                                    return s;
                                 }
-                            })
-                            .await;
+                                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                            }
+                        })
+                        .await;
 
-                        match wait_result {
-                            Ok(ref s) if s == "idle" || s == "busy" => {
-                                // Launch completed — fall through to restart check below
-                            }
-                            Ok(_) | Err(_) => {
-                                return NotebookResponse::Error {
-                                    error: "Kernel launch timed out or failed".to_string(),
-                                };
-                            }
+                    match wait_result {
+                        Ok(ref s) if s == "idle" || s == "busy" => {
+                            // Launch completed — fall through to restart check below
+                        }
+                        Ok(_) | Err(_) => {
+                            return NotebookResponse::Error {
+                                error: "Kernel launch timed out or failed".to_string(),
+                            };
                         }
                     }
-                    _ => {
-                        // not_started, error, shutdown — atomically claim the
-                        // launch by writing "starting" while we hold the write lock.
-                        // This prevents a concurrent LaunchKernel from also proceeding.
-                        let mut changed = false;
-                        changed |= sd.clear_comms();
-                        changed |= sd.set_trust("trusted", false);
-                        changed |= sd.set_kernel_status("starting");
-                        changed |= sd.set_starting_phase("resolving");
-                        if changed {
-                            let _ = room.state_changed_tx.send(());
-                        }
-                    }
+                }
+                _ => {
+                    // Already handled above (set to "starting") — fall through
                 }
             }
 
@@ -5478,30 +5536,42 @@ async fn handle_notebook_request(
                         doc.get_cells()
                     };
 
+                    // Pre-compute execution entries so we can write to
+                    // state_doc and doc in separate scoped blocks, avoiding
+                    // holding one lock across the other's `.await` (deadlock
+                    // prevention).
                     let mut queued = Vec::new();
+                    let mut entries: Vec<(String, String, String, u64)> = Vec::new();
+                    for cell in &cells {
+                        if cell.cell_type == "code" {
+                            let execution_id = uuid::Uuid::new_v4().to_string();
+                            let seq = room
+                                .next_queue_seq
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            entries.push((
+                                execution_id.clone(),
+                                cell.id.clone(),
+                                cell.source.clone(),
+                                seq,
+                            ));
+                            queued.push(QueueEntry {
+                                cell_id: cell.id.clone(),
+                                execution_id,
+                            });
+                        }
+                    }
                     {
                         let mut sd = room.state_doc.write().await;
-                        let mut doc = room.doc.write().await;
-                        for cell in &cells {
-                            if cell.cell_type == "code" {
-                                let execution_id = uuid::Uuid::new_v4().to_string();
-                                let seq = room
-                                    .next_queue_seq
-                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                sd.create_execution_with_source(
-                                    &execution_id,
-                                    &cell.id,
-                                    &cell.source,
-                                    seq,
-                                );
-                                let _ = doc.set_execution_id(&cell.id, Some(&execution_id));
-                                queued.push(QueueEntry {
-                                    cell_id: cell.id.clone(),
-                                    execution_id,
-                                });
-                            }
+                        for (execution_id, cell_id, source, seq) in &entries {
+                            sd.create_execution_with_source(execution_id, cell_id, source, *seq);
                         }
                         let _ = room.state_changed_tx.send(());
+                    }
+                    {
+                        let mut doc = room.doc.write().await;
+                        for (execution_id, cell_id, _, _) in &entries {
+                            let _ = doc.set_execution_id(cell_id, Some(execution_id));
+                        }
                         let _ = room.changed_tx.send(());
                     }
 
@@ -5674,23 +5744,30 @@ async fn handle_notebook_request(
         NotebookRequest::SetMetadataSnapshot { snapshot } => {
             match serde_json::from_str::<NotebookMetadataSnapshot>(&snapshot) {
                 Ok(snap) => {
-                    let mut doc = room.doc.write().await;
-                    match doc.set_metadata_snapshot(&snap) {
+                    // Scope the doc write guard so it drops before the async
+                    // sync/trust checks (deadlock prevention).
+                    let result = {
+                        let mut doc = room.doc.write().await;
+                        match doc.set_metadata_snapshot(&snap) {
+                            Ok(()) => {
+                                // Notify peers of the change
+                                let _ = room.changed_tx.send(());
+                                // Persist
+                                let bytes = doc.save();
+                                let _ = room.persist_tx.send(Some(bytes));
+                                Ok(())
+                            }
+                            Err(e) => Err(format!("Failed to set metadata snapshot: {e}")),
+                        }
+                    };
+                    match result {
                         Ok(()) => {
-                            // Notify peers of the change
-                            let _ = room.changed_tx.send(());
-                            // Persist
-                            let bytes = doc.save();
-                            let _ = room.persist_tx.send(Some(bytes));
                             // Check for env sync state and trust changes
-                            drop(doc);
                             check_and_broadcast_sync_state(room).await;
                             check_and_update_trust_state(room).await;
                             NotebookResponse::MetadataSet {}
                         }
-                        Err(e) => NotebookResponse::Error {
-                            error: format!("Failed to set metadata snapshot: {e}"),
-                        },
+                        Err(error) => NotebookResponse::Error { error },
                     }
                 }
                 Err(e) => NotebookResponse::Error {
@@ -7610,7 +7687,6 @@ async fn apply_ipynb_changes(
         *cache = external_attachments.clone();
     }
 
-    let mut doc = room.doc.write().await;
     let empty_assets = HashMap::new();
 
     // Build maps for comparison
@@ -7647,7 +7723,14 @@ async fn apply_ipynb_changes(
         && !external_ids.is_empty()
         && !current_ids.iter().any(|id| external_map.contains_key(id));
 
-    let mut changed = false;
+    // Struct for collecting deferred state_doc writes so the doc write
+    // guard is not held across state_doc `.await` (deadlock prevention).
+    struct DeferredExecution<'a> {
+        synthetic_eid: String,
+        cell_id: String,
+        outputs: &'a [serde_json::Value],
+        execution_count: Option<i64>,
+    }
 
     // If order changed or the file was wholesale-replaced, rebuild the
     // cell list. Use fork + merge so the structural rebuild from disk
@@ -7667,33 +7750,56 @@ async fn apply_ipynb_changes(
             }
         );
 
-        let mut fork = doc.fork();
-        fork.set_actor("runtimed:filesystem");
+        // Scope the doc write guard so it drops before state_doc and
+        // saved_sources `.await`s (deadlock prevention).
+        let deferred_executions = {
+            let mut doc = room.doc.write().await;
+            let mut fork = doc.fork();
+            fork.set_actor("runtimed:filesystem");
 
-        // Delete all current cells and re-add in external order on the fork
-        for cell in &current_cells {
-            let _ = fork.delete_cell(&cell.id);
-        }
+            // Delete all current cells and re-add in external order on the fork
+            for cell in &current_cells {
+                let _ = fork.delete_cell(&cell.id);
+            }
 
-        for (index, ext_cell) in external_cells.iter().enumerate() {
-            if fork
-                .add_cell(index, &ext_cell.id, &ext_cell.cell_type)
-                .is_ok()
-            {
-                let _ = fork.update_source(&ext_cell.id, &ext_cell.source);
+            let mut deferred: Vec<DeferredExecution> = Vec::new();
 
-                // For existing cells with running kernel: preserve current execution_id
-                // (outputs live in RuntimeStateDoc, keyed by execution_id)
-                // For new cells: store external outputs in RuntimeStateDoc with synthetic eid
-                if has_running_kernel {
-                    if let Some(_current) = current_map.get(ext_cell.id.as_str()) {
-                        // Existing cell - preserve in-progress state (execution_id stays)
-                        // execution_count is in RuntimeStateDoc via execution_id
-                        if let Some(eid) = doc.get_execution_id(&ext_cell.id) {
-                            let _ = fork.set_execution_id(&ext_cell.id, Some(&eid));
+            for (index, ext_cell) in external_cells.iter().enumerate() {
+                if fork
+                    .add_cell(index, &ext_cell.id, &ext_cell.cell_type)
+                    .is_ok()
+                {
+                    let _ = fork.update_source(&ext_cell.id, &ext_cell.source);
+
+                    // For existing cells with running kernel: preserve current execution_id
+                    // (outputs live in RuntimeStateDoc, keyed by execution_id)
+                    // For new cells: defer state_doc writes until after doc lock is released
+                    if has_running_kernel {
+                        if let Some(_current) = current_map.get(ext_cell.id.as_str()) {
+                            // Existing cell - preserve in-progress state (execution_id stays)
+                            // execution_count is in RuntimeStateDoc via execution_id
+                            if let Some(eid) = doc.get_execution_id(&ext_cell.id) {
+                                let _ = fork.set_execution_id(&ext_cell.id, Some(&eid));
+                            }
+                        } else {
+                            // New cell - collect for deferred state_doc write
+                            let ext_outputs = converted_outputs
+                                .get(ext_cell.id.as_str())
+                                .map(|v| v.as_slice())
+                                .unwrap_or(&[]);
+                            let parsed_ec: Option<i64> = ext_cell.execution_count.parse().ok();
+                            if !ext_outputs.is_empty() || parsed_ec.is_some() {
+                                let synthetic_eid = uuid::Uuid::new_v4().to_string();
+                                let _ = fork.set_execution_id(&ext_cell.id, Some(&synthetic_eid));
+                                deferred.push(DeferredExecution {
+                                    synthetic_eid,
+                                    cell_id: ext_cell.id.clone(),
+                                    outputs: ext_outputs,
+                                    execution_count: parsed_ec,
+                                });
+                            }
                         }
                     } else {
-                        // New cell - store external outputs and execution_count in state doc
                         let ext_outputs = converted_outputs
                             .get(ext_cell.id.as_str())
                             .map(|v| v.as_slice())
@@ -7701,50 +7807,46 @@ async fn apply_ipynb_changes(
                         let parsed_ec: Option<i64> = ext_cell.execution_count.parse().ok();
                         if !ext_outputs.is_empty() || parsed_ec.is_some() {
                             let synthetic_eid = uuid::Uuid::new_v4().to_string();
-                            let mut sd = room.state_doc.write().await;
-                            sd.create_execution(&synthetic_eid, &ext_cell.id);
-                            if !ext_outputs.is_empty() {
-                                let _ = sd.set_outputs(&synthetic_eid, ext_outputs);
-                            }
-                            if let Some(ec) = parsed_ec {
-                                sd.set_execution_count(&synthetic_eid, ec);
-                            }
-                            sd.set_execution_done(&synthetic_eid, true);
                             let _ = fork.set_execution_id(&ext_cell.id, Some(&synthetic_eid));
-                            let _ = room.state_changed_tx.send(());
+                            deferred.push(DeferredExecution {
+                                synthetic_eid,
+                                cell_id: ext_cell.id.clone(),
+                                outputs: ext_outputs,
+                                execution_count: parsed_ec,
+                            });
                         }
                     }
-                } else {
-                    let ext_outputs = converted_outputs
+                    let ext_assets = converted_assets
                         .get(ext_cell.id.as_str())
-                        .map(|v| v.as_slice())
-                        .unwrap_or(&[]);
-                    let parsed_ec: Option<i64> = ext_cell.execution_count.parse().ok();
-                    if !ext_outputs.is_empty() || parsed_ec.is_some() {
-                        let synthetic_eid = uuid::Uuid::new_v4().to_string();
-                        let mut sd = room.state_doc.write().await;
-                        sd.create_execution(&synthetic_eid, &ext_cell.id);
-                        if !ext_outputs.is_empty() {
-                            let _ = sd.set_outputs(&synthetic_eid, ext_outputs);
-                        }
-                        if let Some(ec) = parsed_ec {
-                            sd.set_execution_count(&synthetic_eid, ec);
-                        }
-                        sd.set_execution_done(&synthetic_eid, true);
-                        let _ = fork.set_execution_id(&ext_cell.id, Some(&synthetic_eid));
-                        let _ = room.state_changed_tx.send(());
-                    }
+                        .unwrap_or(&empty_assets);
+                    let _ = fork.set_cell_resolved_assets(&ext_cell.id, ext_assets);
                 }
-                let ext_assets = converted_assets
-                    .get(ext_cell.id.as_str())
-                    .unwrap_or(&empty_assets);
-                let _ = fork.set_cell_resolved_assets(&ext_cell.id, ext_assets);
             }
-        }
 
-        if let Err(e) = catch_automerge_panic("file-watcher-order-merge", || doc.merge(&mut fork)) {
-            warn!("{}", e);
-            doc.rebuild_from_save();
+            if let Err(e) =
+                catch_automerge_panic("file-watcher-order-merge", || doc.merge(&mut fork))
+            {
+                warn!("{}", e);
+                doc.rebuild_from_save();
+            }
+
+            deferred
+        }; // doc guard dropped here
+
+        // Apply deferred state_doc writes
+        if !deferred_executions.is_empty() {
+            let mut sd = room.state_doc.write().await;
+            for de in &deferred_executions {
+                sd.create_execution(&de.synthetic_eid, &de.cell_id);
+                if !de.outputs.is_empty() {
+                    let _ = sd.set_outputs(&de.synthetic_eid, de.outputs);
+                }
+                if let Some(ec) = de.execution_count {
+                    sd.set_execution_count(&de.synthetic_eid, ec);
+                }
+                sd.set_execution_done(&de.synthetic_eid, true);
+            }
+            let _ = room.state_changed_tx.send(());
         }
 
         // Update saved_sources baseline so subsequent external edits are
@@ -7758,6 +7860,14 @@ async fn apply_ipynb_changes(
         return true;
     }
 
+    // Snapshot saved_sources before the doc write lock to avoid holding
+    // doc across saved_sources `.await` (deadlock prevention).
+    let saved_sources_snapshot: HashMap<String, String> = {
+        let saved_sources = room.last_save_sources.read().await;
+        saved_sources.clone()
+    };
+    let have_save_snapshot = !saved_sources_snapshot.is_empty();
+
     // Find cells to delete — only cells that existed in our last save
     // but are no longer on disk (genuine external deletion). Cells that
     // are in the CRDT but NOT in last_save_sources were created after
@@ -7766,185 +7876,232 @@ async fn apply_ipynb_changes(
     // If we've never saved (last_save_sources is empty), fall back to the
     // old behavior: delete any cell not on disk. This handles the initial
     // load case where there's no save snapshot yet.
-    let saved_sources = room.last_save_sources.read().await;
-    let have_save_snapshot = !saved_sources.is_empty();
     let cells_to_delete: Vec<String> = current_cells
         .iter()
         .filter(|c| {
             !external_map.contains_key(c.id.as_str())
-                && (!have_save_snapshot || saved_sources.contains_key(c.id.as_str()))
+                && (!have_save_snapshot || saved_sources_snapshot.contains_key(c.id.as_str()))
         })
         .map(|c| c.id.clone())
         .collect();
-    drop(saved_sources);
 
-    for cell_id in cells_to_delete {
-        debug!("[notebook-watch] Deleting cell: {}", cell_id);
-        if let Ok(true) = doc.delete_cell(&cell_id) {
-            changed = true;
-        }
-    }
-
-    // For source updates on existing cells, use fork + merge so that
-    // external edits compose with concurrent CRDT changes rather than
-    // overwriting them. We use fork() instead of fork_at(save_heads)
-    // to avoid the automerge MissingOps bug (automerge/automerge#1327).
-    //
-    // Source comparison uses last_save_sources (what we wrote to disk)
-    // instead of the live CRDT (which may have progressed with new user
-    // typing since the save). This prevents the file watcher from
-    // treating our own autosave as an "external change" and overwriting
-    // the user's recent edits. Only genuine external changes (git pull,
-    // external editor) — where the disk content differs from what we
-    // last saved — trigger a source update.
-    let saved_sources = room.last_save_sources.read().await;
-    let mut source_fork = {
-        let mut f = doc.fork();
-        f.set_actor("runtimed:filesystem");
-        Some(f)
-    };
-
-    // Process external cells in order (add new or update existing)
-    for (index, ext_cell) in external_cells.iter().enumerate() {
-        if let Some(current_cell) = current_map.get(ext_cell.id.as_str()) {
-            // Cell exists — check if source genuinely changed externally.
-            // Compare disk content against what we last saved, NOT the live
-            // CRDT. If disk matches our last save, the change is from our
-            // own autosave and should be ignored (the CRDT may have
-            // progressed with new typing since then).
-            let saved_source = saved_sources.get(ext_cell.id.as_str());
-            let is_external_change = match saved_source {
-                Some(saved) => ext_cell.source != *saved,
-                None => current_cell.source != ext_cell.source,
+    // Snapshot current execution state from state_doc before acquiring
+    // the doc write lock, so we don't hold state_doc and doc simultaneously
+    // (deadlock prevention).
+    let current_execution_state: HashMap<String, (Vec<serde_json::Value>, Option<i64>)> =
+        if !has_running_kernel {
+            // Need doc read to get execution IDs, then state_doc read for outputs.
+            // Do both reads in scoped blocks.
+            let eid_map: HashMap<String, String> = {
+                let doc = room.doc.read().await;
+                let mut map = HashMap::new();
+                for ext_cell in external_cells.iter() {
+                    if current_map.contains_key(ext_cell.id.as_str()) {
+                        if let Some(eid) = doc.get_execution_id(&ext_cell.id) {
+                            map.insert(ext_cell.id.clone(), eid);
+                        }
+                    }
+                }
+                map
             };
-
-            if is_external_change {
-                debug!("[notebook-watch] Updating source for cell: {}", ext_cell.id);
-                if let Some(ref mut fork) = source_fork {
-                    let _ = fork.update_source(&ext_cell.id, &ext_cell.source);
-                    changed = true;
-                } else if let Ok(true) = doc.update_source(&ext_cell.id, &ext_cell.source) {
-                    changed = true;
-                }
+            let sd = room.state_doc.read().await;
+            let mut state_map = HashMap::new();
+            for (cell_id, eid) in &eid_map {
+                let outputs = sd.get_outputs(eid);
+                let ec = sd.get_execution(eid).and_then(|e| e.execution_count);
+                state_map.insert(cell_id.clone(), (outputs, ec));
             }
-
-            // Update cell type if changed
-            if current_cell.cell_type != ext_cell.cell_type {
-                debug!(
-                    "[notebook-watch] Cell type changed for {}: {} -> {}",
-                    ext_cell.id, current_cell.cell_type, ext_cell.cell_type
-                );
-                // Cell type changes require recreating the cell (rare case)
-                // For now, just log - full support would need more work
-            }
-
-            // Preserve outputs and execution_count if kernel is running
-            if !has_running_kernel {
-                let ext_outputs = converted_outputs
-                    .get(ext_cell.id.as_str())
-                    .map(|v| v.as_slice())
-                    .unwrap_or(&[]);
-                let parsed_ec: Option<i64> = ext_cell.execution_count.parse().ok();
-
-                // Compare external outputs and execution_count against RuntimeStateDoc
-                let current_eid = doc.get_execution_id(&ext_cell.id);
-                let (current_outputs, current_ec): (Vec<serde_json::Value>, Option<i64>) =
-                    if let Some(ref eid) = current_eid {
-                        let sd = room.state_doc.read().await;
-                        let outputs = sd.get_outputs(eid);
-                        let ec = sd.get_execution(eid).and_then(|e| e.execution_count);
-                        (outputs, ec)
-                    } else {
-                        (Vec::new(), None)
-                    };
-
-                let outputs_changed = current_outputs.as_slice() != ext_outputs;
-                let ec_changed = current_ec != parsed_ec;
-
-                if outputs_changed || ec_changed {
-                    if !ext_outputs.is_empty() || parsed_ec.is_some() {
-                        debug!(
-                            "[notebook-watch] Updating outputs/execution_count for cell: {}",
-                            ext_cell.id
-                        );
-                        let synthetic_eid = uuid::Uuid::new_v4().to_string();
-                        let mut sd = room.state_doc.write().await;
-                        sd.create_execution(&synthetic_eid, &ext_cell.id);
-                        if !ext_outputs.is_empty() {
-                            let _ = sd.set_outputs(&synthetic_eid, ext_outputs);
-                        }
-                        if let Some(ec) = parsed_ec {
-                            sd.set_execution_count(&synthetic_eid, ec);
-                        }
-                        sd.set_execution_done(&synthetic_eid, true);
-                        let _ = doc.set_execution_id(&ext_cell.id, Some(&synthetic_eid));
-                        let _ = room.state_changed_tx.send(());
-                        changed = true;
-                    } else if current_eid.is_some() {
-                        let _ = doc.set_execution_id(&ext_cell.id, None);
-                        changed = true;
-                    }
-                }
-            }
-
-            let ext_assets = converted_assets
-                .get(ext_cell.id.as_str())
-                .unwrap_or(&empty_assets);
-            if current_cell.resolved_assets != *ext_assets {
-                if let Ok(true) = doc.set_cell_resolved_assets(&ext_cell.id, ext_assets) {
-                    changed = true;
-                }
-            }
+            state_map
         } else {
-            // New cell - add it
-            // New cells don't have any in-progress state, so always use external values
-            debug!(
-                "[notebook-watch] Adding new cell at index {}: {}",
-                index, ext_cell.id
-            );
-            if doc
-                .add_cell(index, &ext_cell.id, &ext_cell.cell_type)
-                .is_ok()
-            {
+            HashMap::new()
+        };
+
+    // Scope the doc write guard so it drops before state_doc and
+    // saved_sources `.await`s (deadlock prevention: no lock held
+    // across `.await`).
+    let (changed, deferred_execs) = {
+        let mut doc = room.doc.write().await;
+        let mut changed = false;
+
+        for cell_id in cells_to_delete {
+            debug!("[notebook-watch] Deleting cell: {}", cell_id);
+            if let Ok(true) = doc.delete_cell(&cell_id) {
                 changed = true;
-                let _ = doc.update_source(&ext_cell.id, &ext_cell.source);
-                let ext_outputs = converted_outputs
-                    .get(ext_cell.id.as_str())
-                    .map(|v| v.as_slice())
-                    .unwrap_or(&[]);
-                let parsed_ec: Option<i64> = ext_cell.execution_count.parse().ok();
-                if !ext_outputs.is_empty() || parsed_ec.is_some() {
-                    let synthetic_eid = uuid::Uuid::new_v4().to_string();
-                    let mut sd = room.state_doc.write().await;
-                    sd.create_execution(&synthetic_eid, &ext_cell.id);
-                    if !ext_outputs.is_empty() {
-                        let _ = sd.set_outputs(&synthetic_eid, ext_outputs);
+            }
+        }
+
+        // For source updates on existing cells, use fork + merge so that
+        // external edits compose with concurrent CRDT changes rather than
+        // overwriting them. We use fork() instead of fork_at(save_heads)
+        // to avoid the automerge MissingOps bug (automerge/automerge#1327).
+        //
+        // Source comparison uses last_save_sources (what we wrote to disk)
+        // instead of the live CRDT (which may have progressed with new user
+        // typing since the save). This prevents the file watcher from
+        // treating our own autosave as an "external change" and overwriting
+        // the user's recent edits. Only genuine external changes (git pull,
+        // external editor) — where the disk content differs from what we
+        // last saved — trigger a source update.
+        let mut source_fork = {
+            let mut f = doc.fork();
+            f.set_actor("runtimed:filesystem");
+            Some(f)
+        };
+
+        let mut deferred_execs: Vec<DeferredExecution> = Vec::new();
+        // Track cells whose execution_id should be cleared (no new outputs)
+        let mut clear_execution_ids: Vec<String> = Vec::new();
+
+        // Process external cells in order (add new or update existing)
+        for (index, ext_cell) in external_cells.iter().enumerate() {
+            if let Some(current_cell) = current_map.get(ext_cell.id.as_str()) {
+                // Cell exists — check if source genuinely changed externally.
+                // Compare disk content against what we last saved, NOT the live
+                // CRDT. If disk matches our last save, the change is from our
+                // own autosave and should be ignored (the CRDT may have
+                // progressed with new typing since then).
+                let saved_source = saved_sources_snapshot.get(ext_cell.id.as_str());
+                let is_external_change = match saved_source {
+                    Some(saved) => ext_cell.source != *saved,
+                    None => current_cell.source != ext_cell.source,
+                };
+
+                if is_external_change {
+                    debug!("[notebook-watch] Updating source for cell: {}", ext_cell.id);
+                    if let Some(ref mut fork) = source_fork {
+                        let _ = fork.update_source(&ext_cell.id, &ext_cell.source);
+                        changed = true;
+                    } else if let Ok(true) = doc.update_source(&ext_cell.id, &ext_cell.source) {
+                        changed = true;
                     }
-                    if let Some(ec) = parsed_ec {
-                        sd.set_execution_count(&synthetic_eid, ec);
-                    }
-                    sd.set_execution_done(&synthetic_eid, true);
-                    let _ = doc.set_execution_id(&ext_cell.id, Some(&synthetic_eid));
-                    let _ = room.state_changed_tx.send(());
                 }
+
+                // Update cell type if changed
+                if current_cell.cell_type != ext_cell.cell_type {
+                    debug!(
+                        "[notebook-watch] Cell type changed for {}: {} -> {}",
+                        ext_cell.id, current_cell.cell_type, ext_cell.cell_type
+                    );
+                    // Cell type changes require recreating the cell (rare case)
+                    // For now, just log - full support would need more work
+                }
+
+                // Preserve outputs and execution_count if kernel is running
+                if !has_running_kernel {
+                    let ext_outputs = converted_outputs
+                        .get(ext_cell.id.as_str())
+                        .map(|v| v.as_slice())
+                        .unwrap_or(&[]);
+                    let parsed_ec: Option<i64> = ext_cell.execution_count.parse().ok();
+
+                    // Compare external outputs and execution_count against
+                    // pre-snapshotted RuntimeStateDoc state
+                    let current_eid = doc.get_execution_id(&ext_cell.id);
+                    let (current_outputs, current_ec) = current_execution_state
+                        .get(ext_cell.id.as_str())
+                        .cloned()
+                        .unwrap_or((Vec::new(), None));
+
+                    let outputs_changed = current_outputs.as_slice() != ext_outputs;
+                    let ec_changed = current_ec != parsed_ec;
+
+                    if outputs_changed || ec_changed {
+                        if !ext_outputs.is_empty() || parsed_ec.is_some() {
+                            debug!(
+                                "[notebook-watch] Updating outputs/execution_count for cell: {}",
+                                ext_cell.id
+                            );
+                            let synthetic_eid = uuid::Uuid::new_v4().to_string();
+                            let _ = doc.set_execution_id(&ext_cell.id, Some(&synthetic_eid));
+                            deferred_execs.push(DeferredExecution {
+                                synthetic_eid,
+                                cell_id: ext_cell.id.clone(),
+                                outputs: ext_outputs,
+                                execution_count: parsed_ec,
+                            });
+                            changed = true;
+                        } else if current_eid.is_some() {
+                            clear_execution_ids.push(ext_cell.id.clone());
+                            changed = true;
+                        }
+                    }
+                }
+
                 let ext_assets = converted_assets
                     .get(ext_cell.id.as_str())
                     .unwrap_or(&empty_assets);
-                let _ = doc.set_cell_resolved_assets(&ext_cell.id, ext_assets);
+                if current_cell.resolved_assets != *ext_assets {
+                    if let Ok(true) = doc.set_cell_resolved_assets(&ext_cell.id, ext_assets) {
+                        changed = true;
+                    }
+                }
+            } else {
+                // New cell - add it
+                // New cells don't have any in-progress state, so always use external values
+                debug!(
+                    "[notebook-watch] Adding new cell at index {}: {}",
+                    index, ext_cell.id
+                );
+                if doc
+                    .add_cell(index, &ext_cell.id, &ext_cell.cell_type)
+                    .is_ok()
+                {
+                    changed = true;
+                    let _ = doc.update_source(&ext_cell.id, &ext_cell.source);
+                    let ext_outputs = converted_outputs
+                        .get(ext_cell.id.as_str())
+                        .map(|v| v.as_slice())
+                        .unwrap_or(&[]);
+                    let parsed_ec: Option<i64> = ext_cell.execution_count.parse().ok();
+                    if !ext_outputs.is_empty() || parsed_ec.is_some() {
+                        let synthetic_eid = uuid::Uuid::new_v4().to_string();
+                        let _ = doc.set_execution_id(&ext_cell.id, Some(&synthetic_eid));
+                        deferred_execs.push(DeferredExecution {
+                            synthetic_eid,
+                            cell_id: ext_cell.id.clone(),
+                            outputs: ext_outputs,
+                            execution_count: parsed_ec,
+                        });
+                    }
+                    let ext_assets = converted_assets
+                        .get(ext_cell.id.as_str())
+                        .unwrap_or(&empty_assets);
+                    let _ = doc.set_cell_resolved_assets(&ext_cell.id, ext_assets);
+                }
             }
         }
-    }
 
-    // Drop the saved_sources read guard before merging
-    drop(saved_sources);
-
-    // Merge source fork back — source changes from disk compose with
-    // post-save CRDT changes via Automerge's text CRDT merge.
-    if let Some(ref mut fork) = source_fork {
-        if let Err(e) = catch_automerge_panic("file-watcher-source-merge", || doc.merge(fork)) {
-            warn!("{}", e);
-            doc.rebuild_from_save();
+        // Apply clear_execution_ids before merge
+        for cell_id in &clear_execution_ids {
+            let _ = doc.set_execution_id(cell_id, None);
         }
+
+        // Merge source fork back — source changes from disk compose with
+        // post-save CRDT changes via Automerge's text CRDT merge.
+        if let Some(ref mut fork) = source_fork {
+            if let Err(e) = catch_automerge_panic("file-watcher-source-merge", || doc.merge(fork)) {
+                warn!("{}", e);
+                doc.rebuild_from_save();
+            }
+        }
+
+        (changed, deferred_execs)
+    }; // doc guard dropped here
+
+    // Apply deferred state_doc writes
+    if !deferred_execs.is_empty() {
+        let mut sd = room.state_doc.write().await;
+        for de in &deferred_execs {
+            sd.create_execution(&de.synthetic_eid, &de.cell_id);
+            if !de.outputs.is_empty() {
+                let _ = sd.set_outputs(&de.synthetic_eid, de.outputs);
+            }
+            if let Some(ec) = de.execution_count {
+                sd.set_execution_count(&de.synthetic_eid, ec);
+            }
+            sd.set_execution_done(&de.synthetic_eid, true);
+        }
+        let _ = room.state_changed_tx.send(());
     }
 
     // Update saved_sources baseline after applying external changes so

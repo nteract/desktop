@@ -1492,35 +1492,41 @@ impl Daemon {
         let mut created_new_at_path = false;
         let (cell_count, needs_load) = if !file_exists {
             // File doesn't exist - create empty notebook in the doc
-            let mut doc = room.doc.write().await;
-            if doc.cell_count() == 0 {
-                match crate::notebook_sync_server::create_empty_notebook(
-                    &mut doc,
-                    &default_runtime.to_string(),
-                    default_python_env.clone(),
-                    Some(&notebook_id),
-                ) {
-                    Ok(_cell_id) => {
-                        info!("[runtimed] Created new notebook at {}", path);
-                        created_new_at_path = true;
-                    }
-                    Err(e) => {
-                        error!(
-                            "[runtimed] Failed to create new notebook at {}: {}",
-                            path, e
-                        );
-                        drop(doc);
-                        let (_reader, mut writer) = tokio::io::split(stream);
-                        send_error_response(
-                            &mut writer,
-                            format!("Failed to create notebook '{}': {}", path, e),
-                        )
-                        .await?;
-                        return Ok(());
+            let mut create_error = None;
+            let count = {
+                let mut doc = room.doc.write().await;
+                if doc.cell_count() == 0 {
+                    match crate::notebook_sync_server::create_empty_notebook(
+                        &mut doc,
+                        &default_runtime.to_string(),
+                        default_python_env.clone(),
+                        Some(&notebook_id),
+                    ) {
+                        Ok(_cell_id) => {
+                            info!("[runtimed] Created new notebook at {}", path);
+                            created_new_at_path = true;
+                        }
+                        Err(e) => {
+                            error!(
+                                "[runtimed] Failed to create new notebook at {}: {}",
+                                path, e
+                            );
+                            create_error = Some(e);
+                        }
                     }
                 }
+                doc.cell_count()
+            }; // doc lock dropped
+            if let Some(e) = create_error {
+                let (_reader, mut writer) = tokio::io::split(stream);
+                send_error_response(
+                    &mut writer,
+                    format!("Failed to create notebook '{}': {}", path, e),
+                )
+                .await?;
+                return Ok(());
             }
-            (doc.cell_count(), None) // No streaming load needed
+            (count, None) // No streaming load needed
         } else {
             let doc = room.doc.read().await;
             let existing_count = doc.cell_count();
@@ -1640,8 +1646,9 @@ impl Daemon {
         // Populate the room's doc with the empty notebook content — but only if the
         // room is empty. If a persisted doc was loaded (session restore with notebook_id
         // hint), the room already has cells and we skip creation.
-        let cell_count = {
+        let (cell_count, create_error) = {
             let mut doc = room.doc.write().await;
+            let mut err = None;
             if doc.cell_count() > 0 {
                 // Room already has content (loaded from persisted doc)
                 info!(
@@ -1649,7 +1656,6 @@ impl Daemon {
                     notebook_id,
                     doc.cell_count()
                 );
-                doc.cell_count()
             } else {
                 match crate::notebook_sync_server::create_empty_notebook(
                     &mut doc,
@@ -1657,36 +1663,39 @@ impl Daemon {
                     default_python_env.clone(),
                     Some(&notebook_id),
                 ) {
-                    Ok(_) => doc.cell_count(),
+                    Ok(_) => {}
                     Err(e) => {
-                        // Drop the doc lock before removing room
-                        drop(doc);
-                        // Remove the room to prevent stale state (consistency with OpenNotebook)
-                        {
-                            let mut rooms = self.notebook_rooms.lock().await;
-                            rooms.remove(&notebook_id);
-                            info!(
-                                "[runtimed] Removed room {} after create failure",
-                                notebook_id
-                            );
-                        }
-                        let (mut reader, mut writer) = tokio::io::split(stream);
-                        let response = NotebookConnectionInfo {
-                            protocol: PROTOCOL_V2.to_string(),
-                            protocol_version: Some(PROTOCOL_VERSION),
-                            daemon_version: Some(crate::daemon_version().to_string()),
-                            notebook_id: String::new(),
-                            cell_count: 0,
-                            needs_trust_approval: false,
-                            error: Some(format!("Failed to create notebook: {}", e)),
-                        };
-                        send_json_frame(&mut writer, &response).await?;
-                        let _ = tokio::io::copy(&mut reader, &mut tokio::io::sink()).await;
-                        return Ok(());
+                        err = Some(e);
                     }
                 }
             }
-        };
+            (doc.cell_count(), err)
+        }; // doc lock dropped
+
+        if let Some(e) = create_error {
+            // Remove the room to prevent stale state (consistency with OpenNotebook)
+            {
+                let mut rooms = self.notebook_rooms.lock().await;
+                rooms.remove(&notebook_id);
+                info!(
+                    "[runtimed] Removed room {} after create failure",
+                    notebook_id
+                );
+            }
+            let (mut reader, mut writer) = tokio::io::split(stream);
+            let response = NotebookConnectionInfo {
+                protocol: PROTOCOL_V2.to_string(),
+                protocol_version: Some(PROTOCOL_VERSION),
+                daemon_version: Some(crate::daemon_version().to_string()),
+                notebook_id: String::new(),
+                cell_count: 0,
+                needs_trust_approval: false,
+                error: Some(format!("Failed to create notebook: {}", e)),
+            };
+            send_json_frame(&mut writer, &response).await?;
+            let _ = tokio::io::copy(&mut reader, &mut tokio::io::sink()).await;
+            return Ok(());
+        }
 
         // Send NotebookConnectionInfo response
         // New notebooks have no deps, so no trust approval needed
@@ -1823,7 +1832,7 @@ impl Daemon {
                 return None;
             }
 
-            let (warming, can_retry, retry_in_secs) = {
+            let (warming, can_retry, retry_in_secs, should_spawn) = {
                 let mut pool = self.uv_pool.lock().await;
                 let (_, warming) = pool.stats();
                 let can_retry = pool.should_retry();
@@ -1831,15 +1840,17 @@ impl Daemon {
 
                 if warming == 0 && can_retry {
                     pool.mark_warming(1);
-                    let daemon = self.clone();
-                    tokio::spawn(async move {
-                        daemon.create_uv_env().await;
-                    });
-                    (1, can_retry, retry_in_secs)
+                    (1, can_retry, retry_in_secs, true)
                 } else {
-                    (warming, can_retry, retry_in_secs)
+                    (warming, can_retry, retry_in_secs, false)
                 }
-            };
+            }; // pool lock dropped
+            if should_spawn {
+                let daemon = self.clone();
+                tokio::spawn(async move {
+                    daemon.create_uv_env().await;
+                });
+            }
 
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
@@ -1896,7 +1907,7 @@ impl Daemon {
                 return None;
             }
 
-            let (warming, can_retry, retry_in_secs) = {
+            let (warming, can_retry, retry_in_secs, should_spawn) = {
                 let mut pool = self.conda_pool.lock().await;
                 let (_, warming) = pool.stats();
                 let can_retry = pool.should_retry();
@@ -1904,15 +1915,17 @@ impl Daemon {
 
                 if warming == 0 && can_retry {
                     pool.mark_warming(1);
-                    let daemon = self.clone();
-                    tokio::spawn(async move {
-                        daemon.create_conda_env().await;
-                    });
-                    (1, can_retry, retry_in_secs)
+                    (1, can_retry, retry_in_secs, true)
                 } else {
-                    (warming, can_retry, retry_in_secs)
+                    (warming, can_retry, retry_in_secs, false)
                 }
-            };
+            }; // pool lock dropped
+            if should_spawn {
+                let daemon = self.clone();
+                tokio::spawn(async move {
+                    daemon.create_conda_env().await;
+                });
+            }
 
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
@@ -1984,8 +1997,10 @@ impl Daemon {
             }
 
             Request::Return { env } => {
-                // Return an environment to the pool (e.g., if notebook closed without using it)
-                match env.env_type {
+                // Return an environment to the pool (e.g., if notebook closed without using it).
+                // Check if the pool is full under the lock, then drop the lock before
+                // any async filesystem cleanup.
+                let should_delete = match env.env_type {
                     EnvType::Uv => {
                         let mut pool = self.uv_pool.lock().await;
                         if pool.available.len() < pool.target {
@@ -1994,9 +2009,9 @@ impl Daemon {
                                 created_at: Instant::now(),
                             });
                             debug!("[runtimed] Returned UV env: {:?}", env.venv_path);
+                            false
                         } else {
-                            // Pool is full, clean up
-                            tokio::fs::remove_dir_all(&env.venv_path).await.ok();
+                            true
                         }
                     }
                     EnvType::Conda => {
@@ -2007,8 +2022,9 @@ impl Daemon {
                                 created_at: Instant::now(),
                             });
                             debug!("[runtimed] Returned Conda env: {:?}", env.venv_path);
+                            false
                         } else {
-                            tokio::fs::remove_dir_all(&env.venv_path).await.ok();
+                            true
                         }
                     }
                     EnvType::Pixi => {
@@ -2019,10 +2035,14 @@ impl Daemon {
                                 created_at: Instant::now(),
                             });
                             debug!("[runtimed] Returned Pixi env: {:?}", env.venv_path);
+                            false
                         } else {
-                            tokio::fs::remove_dir_all(&env.venv_path).await.ok();
+                            true
                         }
                     }
+                }; // pool lock dropped
+                if should_delete {
+                    tokio::fs::remove_dir_all(&env.venv_path).await.ok();
                 }
                 self.update_pool_doc().await;
                 Response::Returned
@@ -2046,24 +2066,23 @@ impl Daemon {
             Request::FlushPool => {
                 info!("[runtimed] Flushing all pooled environments");
 
-                // Drain UV pool and delete env directories
-                {
+                // Drain pools under locks, then delete directories after locks drop
+                let uv_entries: Vec<_> = {
                     let mut pool = self.uv_pool.lock().await;
-                    let entries: Vec<_> = pool.available.drain(..).collect();
-                    for entry in entries {
-                        info!("[runtimed] Removing UV env: {:?}", entry.env.venv_path);
-                        tokio::fs::remove_dir_all(&entry.env.venv_path).await.ok();
-                    }
+                    pool.available.drain(..).collect()
+                };
+                for entry in uv_entries {
+                    info!("[runtimed] Removing UV env: {:?}", entry.env.venv_path);
+                    tokio::fs::remove_dir_all(&entry.env.venv_path).await.ok();
                 }
 
-                // Drain Conda pool and delete env directories
-                {
+                let conda_entries: Vec<_> = {
                     let mut pool = self.conda_pool.lock().await;
-                    let entries: Vec<_> = pool.available.drain(..).collect();
-                    for entry in entries {
-                        info!("[runtimed] Removing Conda env: {:?}", entry.env.venv_path);
-                        tokio::fs::remove_dir_all(&entry.env.venv_path).await.ok();
-                    }
+                    pool.available.drain(..).collect()
+                };
+                for entry in conda_entries {
+                    info!("[runtimed] Removing Conda env: {:?}", entry.env.venv_path);
+                    tokio::fs::remove_dir_all(&entry.env.venv_path).await.ok();
                 }
 
                 // Warming loops will detect the deficit and rebuild on their next iteration
@@ -2082,8 +2101,10 @@ impl Daemon {
                     rooms.get(&notebook_id).cloned()
                 };
                 if let Some(room) = maybe_room {
-                    let doc = room.doc.read().await;
-                    let cells = doc.get_cells();
+                    let cells = {
+                        let doc = room.doc.read().await;
+                        doc.get_cells()
+                    }; // doc read lock dropped
                     let kernel_info = room.kernel_info().await.map(|(kt, es, status)| {
                         crate::protocol::NotebookKernelInfo {
                             kernel_type: kt,
