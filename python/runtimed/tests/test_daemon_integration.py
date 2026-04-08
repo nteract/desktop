@@ -2447,6 +2447,37 @@ class TestCreateNotebook:
 
         assert await session.is_connected()
 
+    async def test_create_notebook_conda_with_environment_yml(self, client, tmp_path):
+        """create_notebook() with working_dir containing environment.yml detects conda.
+
+        When working_dir points to a directory with an environment.yml file,
+        the daemon should detect it via project file search and use conda:env_yml
+        as the env_source (not conda:prewarmed or uv:prewarmed).
+
+        Regression test for nteract/desktop#1643.
+        """
+        # Create environment.yml in tmp_path
+        (tmp_path / "environment.yml").write_text(
+            "name: test-conda\nchannels:\n  - conda-forge\ndependencies:\n  - python\n"
+        )
+
+        session = await client.create_notebook(runtime="python", working_dir=str(tmp_path))
+        assert await session.is_connected()
+
+        # Shutdown auto-launched kernel and restart with auto:conda to trigger
+        # project file detection. The daemon should find environment.yml via
+        # room.working_dir and resolve to conda:env_yml.
+        await async_shutdown_and_start_kernel(
+            session,
+            kernel_type="python",
+            env_source="auto:conda",
+            expected_env_source="conda:env_yml",
+            retries=8,
+            delay=2.0,
+        )
+
+        assert await session.env_source() == "conda:env_yml"
+
 
 class TestTrustApproval:
     """Test trust approval flow for notebooks with inline dependencies."""

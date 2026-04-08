@@ -4398,6 +4398,21 @@ async fn handle_notebook_request(
                 room.presence_tx.clone(),
             );
             let notebook_path = notebook_path.map(std::path::PathBuf::from);
+            // Fall back to room.working_dir for untitled notebooks (mirrors auto-launch path).
+            // Enables project file detection (environment.yaml, pyproject.toml, pixi.toml)
+            // when MCP callers send notebook_path: None for UUID-based notebooks.
+            let notebook_path = match notebook_path {
+                some @ Some(_) => some,
+                None => {
+                    let wd = room.working_dir.read().await;
+                    wd.clone().inspect(|p| {
+                        info!(
+                            "[notebook-sync] LaunchKernel: using room working_dir for project file detection: {}",
+                            p.display()
+                        );
+                    })
+                }
+            };
 
             // Resolve metadata snapshot from Automerge doc (preferred) or disk
             let metadata_snapshot = resolve_metadata_snapshot(room, notebook_path.as_deref()).await;
