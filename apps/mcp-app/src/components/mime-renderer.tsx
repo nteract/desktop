@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import { selectMimeType } from "../lib/mime-priority";
 import { fetchBlobText, isBlobUrl } from "../lib/blob-fetch";
+import { selectMimeType } from "../lib/mime-priority";
+import { needsDaemonPlugin, loadPluginForMime } from "../lib/plugin-loader";
+import { getPluginRenderer, installPlugin } from "../lib/plugin-executor";
 import { AnsiText } from "./ansi-text";
-import { ImageOutput } from "./image-output";
 import { HtmlOutput } from "./html-output";
-import { MarkdownOutput } from "./markdown-output";
+import { ImageOutput } from "./image-output";
 import { JsonOutput } from "./json-output";
+import { MarkdownOutput } from "./markdown-output";
 import type { CellOutput } from "../types";
 import katex from "katex";
 
@@ -30,9 +32,11 @@ function LatexOutput({ content }: { content: string }) {
 
 interface MimeRendererProps {
   data: Record<string, string>;
+  /** Base URL for daemon HTTP server (for fetching blob data and plugins) */
+  blobBaseUrl?: string;
 }
 
-export function MimeRenderer({ data }: MimeRendererProps) {
+export function MimeRenderer({ data, blobBaseUrl }: MimeRendererProps) {
   const mime = selectMimeType(data);
   if (!mime) return null;
   const raw = data[mime];
@@ -43,10 +47,85 @@ export function MimeRenderer({ data }: MimeRendererProps) {
     return <ImageOutput data={String(raw)} mediaType={mime} alt={data["text/plain"] || undefined} />;
   }
 
-  // text/plain fallback for when blob fetch fails
+  // text/plain fallback for when blob fetch or plugin load fails
   const plainFallback = data["text/plain"] ? String(data["text/plain"]) : undefined;
 
+  // Viz MIME types: need a daemon-served plugin to render
+  if (needsDaemonPlugin(mime)) {
+    return (
+      <PluginRenderer
+        mime={mime}
+        raw={String(raw)}
+        blobBaseUrl={blobBaseUrl}
+        plainFallback={plainFallback}
+      />
+    );
+  }
+
   return <FetchAndRender mime={mime} raw={String(raw)} plainFallback={plainFallback} />;
+}
+
+/**
+ * Load a daemon-served plugin and render viz data with it.
+ * Fetches both the plugin JS and the blob data in parallel.
+ */
+function PluginRenderer({
+  mime,
+  raw,
+  blobBaseUrl,
+  plainFallback,
+}: {
+  mime: string;
+  raw: string;
+  blobBaseUrl?: string;
+  plainFallback?: string;
+}) {
+  const [data, setData] = useState<unknown>(null);
+  const [pluginReady, setPluginReady] = useState(false);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    // Fetch plugin and blob data in parallel
+    const pluginPromise = loadPluginForMime(mime, blobBaseUrl);
+    const dataPromise = isBlobUrl(raw)
+      ? fetchBlobText(raw).then((text) => JSON.parse(text))
+      : Promise.resolve(typeof raw === "string" ? JSON.parse(raw) : raw);
+
+    Promise.all([pluginPromise, dataPromise])
+      .then(([plugin, parsedData]) => {
+        if (cancelled) return;
+        if (plugin) {
+          // Install plugin (idempotent — registry deduplicates)
+          installPlugin(plugin.code, plugin.css);
+          setPluginReady(true);
+        }
+        setData(parsedData);
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true);
+      });
+
+    return () => { cancelled = true; };
+  }, [mime, raw, blobBaseUrl]);
+
+  if (failed) {
+    if (plainFallback) return <AnsiText text={plainFallback} />;
+    return null;
+  }
+
+  if (!pluginReady || data === null) return null;
+
+  // Look up the registered renderer component
+  const RendererComponent = getPluginRenderer(mime);
+  if (!RendererComponent) {
+    // Plugin loaded but didn't register for this MIME type
+    if (plainFallback) return <AnsiText text={plainFallback} />;
+    return null;
+  }
+
+  return <RendererComponent data={data} mimeType={mime} />;
 }
 
 function FetchAndRender({ mime, raw, plainFallback }: { mime: string; raw: string; plainFallback?: string }) {

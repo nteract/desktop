@@ -7,6 +7,8 @@
 //!
 //! Endpoints:
 //! - `GET /blob/{hash}` — raw bytes with `Content-Type` from metadata
+//! - `GET /plugins/{name}.js` — renderer plugin JavaScript
+//! - `GET /plugins/{name}.css` — renderer plugin CSS
 //! - `GET /health` — 200 OK
 //!
 //! The server binds `127.0.0.1:0` (OS-assigned random port) and runs on
@@ -14,6 +16,7 @@
 //! explicit cancellation is implemented yet.
 
 use std::convert::Infallible;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use http_body_util::Full;
@@ -29,22 +32,34 @@ use crate::blob_store::BlobStore;
 
 /// Start the blob HTTP server on a random localhost port.
 ///
+/// `plugins_dir` is an optional directory from which renderer plugin JS/CSS
+/// files are served at `GET /plugins/{name}`. Pass `None` to disable plugin
+/// serving (the `/plugins/` route will return 404).
+///
 /// Returns the port the server is listening on. The server runs as a
 /// spawned task on the current tokio runtime.
-pub async fn start_blob_server(store: Arc<BlobStore>) -> std::io::Result<u16> {
+pub async fn start_blob_server(
+    store: Arc<BlobStore>,
+    plugins_dir: Option<PathBuf>,
+) -> std::io::Result<u16> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
 
     info!("[blob-server] Listening on http://127.0.0.1:{}", port);
+
+    let plugins_dir = Arc::new(plugins_dir);
 
     tokio::spawn(async move {
         loop {
             match listener.accept().await {
                 Ok((stream, _)) => {
                     let store = store.clone();
+                    let plugins_dir = plugins_dir.clone();
                     let io = TokioIo::new(stream);
                     tokio::spawn(async move {
-                        let service = service_fn(move |req| handle_request(req, store.clone()));
+                        let service = service_fn(move |req| {
+                            handle_request(req, store.clone(), plugins_dir.clone())
+                        });
                         if let Err(e) = http1::Builder::new().serve_connection(io, service).await {
                             if !e.is_incomplete_message() && !e.is_canceled() {
                                 error!("[blob-server] Connection error: {}", e);
@@ -66,6 +81,7 @@ pub async fn start_blob_server(store: Arc<BlobStore>) -> std::io::Result<u16> {
 async fn handle_request(
     req: Request<hyper::body::Incoming>,
     store: Arc<BlobStore>,
+    plugins_dir: Arc<Option<PathBuf>>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     let path = req.uri().path();
     let method = req.method();
@@ -76,6 +92,12 @@ async fn handle_request(
         text_response(StatusCode::OK, "OK")
     } else if let Some(hash) = path.strip_prefix("/blob/") {
         serve_blob(&store, hash).await
+    } else if let Some(name) = path.strip_prefix("/plugins/") {
+        if let Some(dir) = plugins_dir.as_ref() {
+            serve_plugin(dir, name).await
+        } else {
+            text_response(StatusCode::NOT_FOUND, "Not Found")
+        }
     } else {
         text_response(StatusCode::NOT_FOUND, "Not Found")
     };
@@ -112,6 +134,41 @@ async fn serve_blob(store: &BlobStore, hash: &str) -> Response<Full<Bytes>> {
     }
 }
 
+/// Serve a renderer plugin asset (`.js` or `.css`) from the plugins directory.
+///
+/// Only `.js` and `.css` extensions are permitted. Path traversal characters
+/// (`/` and `..`) are rejected with 404 to prevent directory escape.
+async fn serve_plugin(plugins_dir: &Path, name: &str) -> Response<Full<Bytes>> {
+    // Reject path traversal and disallow subdirectory access.
+    if name.contains('/') || name.contains("..") {
+        return text_response(StatusCode::NOT_FOUND, "Not Found");
+    }
+
+    let content_type = if name.ends_with(".js") {
+        "application/javascript; charset=utf-8"
+    } else if name.ends_with(".css") {
+        "text/css; charset=utf-8"
+    } else {
+        return text_response(StatusCode::NOT_FOUND, "Not Found");
+    };
+
+    let file_path = plugins_dir.join(name);
+    match tokio::fs::read(&file_path).await {
+        Ok(data) => Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", content_type)
+            .header("Content-Length", data.len().to_string())
+            .header("Cache-Control", "public, max-age=3600")
+            .header("Access-Control-Allow-Origin", "*")
+            .header("X-Content-Type-Options", "nosniff")
+            .body(Full::new(Bytes::from(data)))
+            .unwrap_or_else(|_| {
+                text_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
+            }),
+        Err(_) => text_response(StatusCode::NOT_FOUND, "Not Found"),
+    }
+}
+
 /// Build a simple text response.
 #[allow(clippy::expect_used)] // Response::builder only fails with invalid StatusCode, we use valid enum values
 fn text_response(status: StatusCode, body: &str) -> Response<Full<Bytes>> {
@@ -131,7 +188,20 @@ mod tests {
     async fn setup() -> (TempDir, Arc<BlobStore>, u16) {
         let dir = TempDir::new().unwrap();
         let store = Arc::new(BlobStore::new(dir.path().join("blobs")));
-        let port = start_blob_server(store.clone()).await.unwrap();
+        let port = start_blob_server(store.clone(), None).await.unwrap();
+        // Give the server a moment to start accepting
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        (dir, store, port)
+    }
+
+    async fn setup_with_plugins() -> (TempDir, Arc<BlobStore>, u16) {
+        let dir = TempDir::new().unwrap();
+        let store = Arc::new(BlobStore::new(dir.path().join("blobs")));
+        let plugins_dir = dir.path().join("plugins");
+        tokio::fs::create_dir_all(&plugins_dir).await.unwrap();
+        let port = start_blob_server(store.clone(), Some(plugins_dir))
+            .await
+            .unwrap();
         // Give the server a moment to start accepting
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         (dir, store, port)
@@ -237,8 +307,84 @@ mod tests {
     async fn test_two_servers_get_different_ports() {
         let dir = TempDir::new().unwrap();
         let store = Arc::new(BlobStore::new(dir.path().join("blobs")));
-        let port1 = start_blob_server(store.clone()).await.unwrap();
-        let port2 = start_blob_server(store.clone()).await.unwrap();
+        let port1 = start_blob_server(store.clone(), None).await.unwrap();
+        let port2 = start_blob_server(store.clone(), None).await.unwrap();
         assert_ne!(port1, port2);
+    }
+
+    #[tokio::test]
+    async fn test_plugin_js_served() {
+        let (dir, _store, port) = setup_with_plugins().await;
+        let plugins_dir = dir.path().join("plugins");
+        tokio::fs::write(plugins_dir.join("plotly.js"), b"console.log('plotly');")
+            .await
+            .unwrap();
+
+        let (status, headers, body) = get(port, "/plugins/plotly.js").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, b"console.log('plotly');");
+        assert_eq!(
+            header_value(&headers, "content-type"),
+            Some("application/javascript; charset=utf-8".into())
+        );
+        assert_eq!(
+            header_value(&headers, "cache-control"),
+            Some("public, max-age=3600".into())
+        );
+        assert_eq!(
+            header_value(&headers, "access-control-allow-origin"),
+            Some("*".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_plugin_css_served() {
+        let (dir, _store, port) = setup_with_plugins().await;
+        let plugins_dir = dir.path().join("plugins");
+        tokio::fs::write(plugins_dir.join("leaflet.css"), b"body { margin: 0; }")
+            .await
+            .unwrap();
+
+        let (status, headers, body) = get(port, "/plugins/leaflet.css").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, b"body { margin: 0; }");
+        assert_eq!(
+            header_value(&headers, "content-type"),
+            Some("text/css; charset=utf-8".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_plugin_not_found() {
+        let (_dir, _store, port) = setup_with_plugins().await;
+        let (status, _, _) = get(port, "/plugins/missing.js").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_plugin_no_dir_returns_404() {
+        // Server started without a plugins_dir
+        let (_dir, _store, port) = setup().await;
+        let (status, _, _) = get(port, "/plugins/plotly.js").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_plugin_path_traversal_rejected() {
+        let (_dir, _store, port) = setup_with_plugins().await;
+        let (status, _, _) = get(port, "/plugins/../secret").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_plugin_unknown_extension_rejected() {
+        let (dir, _store, port) = setup_with_plugins().await;
+        let plugins_dir = dir.path().join("plugins");
+        tokio::fs::write(plugins_dir.join("evil.exe"), b"nope")
+            .await
+            .unwrap();
+
+        let (status, _, _) = get(port, "/plugins/evil.exe").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 }

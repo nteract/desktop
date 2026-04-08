@@ -10,6 +10,29 @@ export function isBlobUrl(value: unknown): value is string {
 }
 
 /**
+ * Extract the base URL (scheme + host + port) from a blob URL.
+ * e.g., "http://localhost:54321/blob/abc123" → "http://localhost:54321"
+ */
+export function extractBaseUrl(blobUrl: string): string | undefined {
+  const match = /^(https?:\/\/(?:localhost|127\.0\.0\.1):\d+)\/blob\//.exec(
+    blobUrl,
+  );
+  return match?.[1];
+}
+
+/**
+ * Scan structured content for blob URLs and extract the daemon base URL.
+ */
+export function findBlobBaseUrl(data: Record<string, unknown>): string | undefined {
+  for (const value of Object.values(data)) {
+    if (typeof value === "string" && isBlobUrl(value)) {
+      return extractBaseUrl(value);
+    }
+  }
+  return undefined;
+}
+
+/**
  * Fetch text content from a blob URL, with caching.
  * Returns the original value if it's not a blob URL.
  * Evicts failed promises from cache so retries are possible.

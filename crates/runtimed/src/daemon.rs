@@ -30,7 +30,10 @@ use crate::notebook_sync_server::NotebookRooms;
 use crate::protocol::{BlobRequest, BlobResponse, Request, Response};
 use crate::settings_doc::SettingsDoc;
 use crate::singleton::DaemonLock;
-use crate::{default_blob_store_dir, default_cache_dir, default_socket_path, EnvType, PooledEnv};
+use crate::{
+    default_blob_store_dir, default_cache_dir, default_plugins_dir, default_socket_path, EnvType,
+    PooledEnv,
+};
 use runtimed_client::singleton::DaemonInfo;
 
 /// Configuration for the pool daemon.
@@ -42,6 +45,11 @@ pub struct DaemonConfig {
     pub cache_dir: PathBuf,
     /// Directory for the content-addressed blob store.
     pub blob_store_dir: PathBuf,
+    /// Directory for pre-built renderer plugin assets (JS/CSS).
+    ///
+    /// The blob server serves files from this directory at `GET /plugins/{name}`.
+    /// If `None`, the `/plugins/` route returns 404.
+    pub plugins_dir: Option<PathBuf>,
     /// Directory for persisted notebook Automerge documents.
     pub notebook_docs_dir: PathBuf,
     /// Target number of UV environments to maintain.
@@ -70,6 +78,7 @@ impl Default for DaemonConfig {
             socket_path: default_socket_path(),
             cache_dir: default_cache_dir(),
             blob_store_dir: default_blob_store_dir(),
+            plugins_dir: Some(default_plugins_dir()),
             notebook_docs_dir: crate::default_notebook_docs_dir(),
             uv_pool_size: 3,
             conda_pool_size: 3,
@@ -593,8 +602,13 @@ impl Daemon {
             }
         }
 
-        // Start the blob HTTP server
-        let blob_port = match blob_server::start_blob_server(self.blob_store.clone()).await {
+        // Start the blob HTTP server (also serves renderer plugin assets)
+        let blob_port = match blob_server::start_blob_server(
+            self.blob_store.clone(),
+            self.config.plugins_dir.clone(),
+        )
+        .await
+        {
             Ok(port) => {
                 info!("[runtimed] Blob server started on port {}", port);
                 *self.blob_port.lock().await = Some(port);
