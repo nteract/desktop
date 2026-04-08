@@ -316,11 +316,13 @@ impl SettingsDoc {
                                 if let Ok(json) =
                                     serde_json::from_str::<serde_json::Value>(&contents)
                                 {
-                                    if settings.apply_json_changes(&json) {
+                                    if let Some(changed_fields) =
+                                        settings.apply_json_changes_with_diff(&json)
+                                    {
                                         info!("[settings] Reconciled Automerge doc with settings.json");
                                         // Protect against stale clients reconnecting after
-                                        // restart — same as the live file-watcher path.
-                                        settings.set_pending_external_values(json);
+                                        // restart — store only the changed fields.
+                                        settings.set_pending_external_values(changed_fields);
                                     }
                                 }
                             }
@@ -784,7 +786,26 @@ impl SettingsDoc {
     /// Only updates fields that are **present** in the JSON and **differ** from
     /// the current document state. Returns `true` if any field was modified.
     pub fn apply_json_changes(&mut self, json: &serde_json::Value) -> bool {
-        let mut changed = false;
+        self.apply_json_changes_inner(json).is_some()
+    }
+
+    /// Like [`apply_json_changes`], but also returns a JSON object containing
+    /// only the fields that were actually modified. Returns `None` if nothing
+    /// changed.
+    ///
+    /// This is used by the file watcher to store only the changed fields as
+    /// pending external values, so that `enforce_external_values` only
+    /// protects those specific fields — leaving other fields free to change
+    /// via the UI. See #1598.
+    pub fn apply_json_changes_with_diff(
+        &mut self,
+        json: &serde_json::Value,
+    ) -> Option<serde_json::Value> {
+        self.apply_json_changes_inner(json)
+    }
+
+    fn apply_json_changes_inner(&mut self, json: &serde_json::Value) -> Option<serde_json::Value> {
+        let mut diff = serde_json::Map::new();
 
         // Scalar fields — only update if present in JSON and different
         for key in &["theme", "default_runtime", "default_python_env"] {
@@ -796,7 +817,10 @@ impl SettingsDoc {
                         current.as_deref()
                     );
                     self.put(key, value);
-                    changed = true;
+                    diff.insert(
+                        (*key).to_string(),
+                        serde_json::Value::String(value.to_string()),
+                    );
                 }
             }
         }
@@ -806,7 +830,9 @@ impl SettingsDoc {
             let uv_packages = Self::extract_packages_from_json(json, "uv");
             if self.get_list("uv.default_packages") != uv_packages {
                 self.put_list("uv.default_packages", &uv_packages);
-                changed = true;
+                if let Some(uv_val) = json.get("uv") {
+                    diff.insert("uv".to_string(), uv_val.clone());
+                }
             }
         }
 
@@ -815,11 +841,12 @@ impl SettingsDoc {
             let conda_packages = Self::extract_packages_from_json(json, "conda");
             if self.get_list("conda.default_packages") != conda_packages {
                 self.put_list("conda.default_packages", &conda_packages);
-                changed = true;
+                if let Some(conda_val) = json.get("conda") {
+                    diff.insert("conda".to_string(), conda_val.clone());
+                }
             }
         }
 
-        // keep_alive_secs (numeric or null for forever)
         // keep_alive_secs: numeric value in seconds (invalid values are ignored)
         if let Some(new_secs) = json.get("keep_alive_secs").and_then(|v| v.as_u64()) {
             let current = self.get_u64("keep_alive_secs");
@@ -829,7 +856,10 @@ impl SettingsDoc {
                     current, new_secs
                 );
                 self.put_u64("keep_alive_secs", new_secs);
-                changed = true;
+                diff.insert(
+                    "keep_alive_secs".to_string(),
+                    serde_json::Value::Number(new_secs.into()),
+                );
             }
         }
 
@@ -842,15 +872,26 @@ impl SettingsDoc {
                     current, completed
                 );
                 self.put_bool("onboarding_completed", completed);
-                changed = true;
+                diff.insert(
+                    "onboarding_completed".to_string(),
+                    serde_json::Value::Bool(completed),
+                );
             }
         }
 
-        changed
+        if diff.is_empty() {
+            None
+        } else {
+            Some(serde_json::Value::Object(diff))
+        }
     }
 
-    /// Store the last externally-applied JSON so it can be re-applied after
-    /// sync messages that might revert it via conflict resolution.
+    /// Store the externally-changed fields so they can be re-applied after
+    /// sync messages that might revert them via conflict resolution.
+    ///
+    /// Only the fields that were actually modified should be stored (use
+    /// the return value of `apply_json_changes_with_diff`), so that
+    /// unrelated fields remain free to change via the UI.
     pub fn set_pending_external_values(&mut self, json: serde_json::Value) {
         self.pending_external_values = Some(json);
     }
@@ -860,10 +901,9 @@ impl SettingsDoc {
     /// Returns `true` if any values were re-applied (i.e., a sync message
     /// had overwritten the file watcher's changes via conflict resolution).
     ///
-    /// Pending values are never cleared here — they persist until the next
-    /// file-watcher event replaces them. This is intentional: an up-to-date
-    /// peer's no-op sync must not disarm the protection before a stale peer
-    /// has a chance to sync.
+    /// Only the fields originally changed by the external edit are enforced —
+    /// other fields remain free to change via the UI. Pending values persist
+    /// until a new external edit replaces them or the daemon restarts.
     pub fn enforce_external_values(&mut self) -> bool {
         let json = match self.pending_external_values.clone() {
             Some(json) => json,

@@ -892,15 +892,16 @@ impl Daemon {
                                 }
                             };
 
-                            // Apply changes to the Automerge doc
+                            // Apply changes to the Automerge doc, capturing only the
+                            // fields that actually changed so we can enforce just those
+                            // fields without blocking unrelated UI changes. See #1598.
                             let changed = {
                                 let mut doc = self.settings.write().await;
-                                let changed = doc.apply_json_changes(&json);
-                                if changed {
-                                    // Store the external values so they can be re-applied
-                                    // after sync messages that might revert them via CRDT
-                                    // conflict resolution. See #1598.
-                                    doc.set_pending_external_values(json.clone());
+                                let changed = doc.apply_json_changes_with_diff(&json);
+                                if let Some(changed_fields) = changed {
+                                    // Store only the changed fields so enforce_external_values
+                                    // protects just those fields, not the entire settings JSON.
+                                    doc.set_pending_external_values(changed_fields);
 
                                     // Only persist the Automerge binary — do NOT write
                                     // the JSON mirror back, as serde_json formatting
@@ -910,8 +911,10 @@ impl Daemon {
                                     if let Err(e) = doc.save_to_file(&automerge_path) {
                                         warn!("[settings-watch] Failed to save Automerge doc: {}", e);
                                     }
+                                    true
+                                } else {
+                                    false
                                 }
-                                changed
                             };
 
                             if changed {
