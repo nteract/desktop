@@ -327,11 +327,12 @@ jobs:
 
       - name: Build external binaries
         run: |
-          cargo build --release -p runtimed -p runt-cli
+          cargo build --release -p runtimed -p runt-cli -p mcpb-runt
           TARGET=$(rustc --print host-tuple)
           mkdir -p crates/notebook/binaries
           cp target/release/runtimed "crates/notebook/binaries/runtimed-$TARGET"
           cp target/release/runt "crates/notebook/binaries/runt-$TARGET"
+          cp target/release/mcpb-runt "crates/notebook/binaries/mcpb-runt-$TARGET"
 
       - name: Build with tauri-action
         uses: tauri-apps/tauri-action@v0
@@ -482,11 +483,12 @@ jobs:
       - name: Build external binaries
         shell: bash
         run: |
-          cargo build --release -p runtimed -p runt-cli
+          cargo build --release -p runtimed -p runt-cli -p mcpb-runt
           TARGET=$(rustc --print host-tuple)
           mkdir -p crates/notebook/binaries
           cp target/release/runtimed.exe "crates/notebook/binaries/runtimed-$TARGET.exe"
           cp target/release/runt.exe "crates/notebook/binaries/runt-$TARGET.exe"
+          cp target/release/mcpb-runt.exe "crates/notebook/binaries/mcpb-runt-$TARGET.exe"
 
       - name: Build with tauri-action
         uses: tauri-apps/tauri-action@v0
@@ -617,11 +619,12 @@ jobs:
 
       - name: Build external binaries
         run: |
-          cargo build --release -p runtimed -p runt-cli
+          cargo build --release -p runtimed -p runt-cli -p mcpb-runt
           TARGET=$(rustc --print host-tuple)
           mkdir -p crates/notebook/binaries
           cp target/release/runtimed "crates/notebook/binaries/runtimed-$TARGET"
           cp target/release/runt "crates/notebook/binaries/runt-$TARGET"
+          cp target/release/mcpb-runt "crates/notebook/binaries/mcpb-runt-$TARGET"
 
       - name: Build with tauri-action
         uses: tauri-apps/tauri-action@v0
