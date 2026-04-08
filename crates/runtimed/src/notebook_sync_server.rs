@@ -250,6 +250,9 @@ fn build_launched_config(
             config.uv_deps = inline_deps.map(|d| d.to_vec());
             config.venv_path = venv_path;
             config.python_path = python_path;
+            if let Some(pkgs) = prewarmed_packages {
+                config.prewarmed_packages = pkgs.to_vec();
+            }
         }
         "conda:inline" => {
             config.conda_deps = inline_deps.map(|d| d.to_vec());
@@ -257,6 +260,9 @@ fn build_launched_config(
             config.python_path = python_path;
             if let Some(snapshot) = metadata_snapshot {
                 config.conda_channels = Some(get_inline_conda_channels(snapshot));
+            }
+            if let Some(pkgs) = prewarmed_packages {
+                config.prewarmed_packages = pkgs.to_vec();
             }
         }
         "uv:prewarmed" => {
@@ -3083,6 +3089,163 @@ async fn reset_starting_state(room: &NotebookRoom) {
     *guard = None;
 }
 
+/// Try to satisfy UV inline deps from the prewarmed pool.
+///
+/// Returns `Ok((PooledEnv, pool_packages))` if the pool can serve the deps
+/// (either as a direct subset or by installing a small delta).
+/// Returns `Err(())` if the deps are incompatible or the pool is unavailable.
+async fn try_uv_pool_for_inline_deps(
+    deps: &[String],
+    daemon: &std::sync::Arc<crate::daemon::Daemon>,
+    progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler>,
+) -> Result<(crate::PooledEnv, Vec<String>), ()> {
+    let pool_packages = daemon.uv_pool_packages().await;
+    let relation = crate::inline_env::compare_deps_to_pool(deps, &pool_packages);
+
+    match relation {
+        crate::inline_env::PoolDepRelation::Subset => {
+            info!("[notebook-sync] Inline UV deps are subset of pool, taking pool env");
+            match daemon.take_uv_env().await {
+                Some(env) => Ok((env, pool_packages)),
+                None => {
+                    info!("[notebook-sync] UV pool empty, falling back to full build");
+                    Err(())
+                }
+            }
+        }
+        crate::inline_env::PoolDepRelation::Additive { delta } => {
+            info!(
+                "[notebook-sync] Inline UV deps are additive to pool, delta: {:?}",
+                delta
+            );
+            match daemon.take_uv_env().await {
+                Some(env) => {
+                    let uv_env = kernel_env::UvEnvironment {
+                        venv_path: env.venv_path.clone(),
+                        python_path: env.python_path.clone(),
+                    };
+                    progress_handler.on_progress(
+                        "uv",
+                        kernel_env::EnvProgressPhase::Installing { total: delta.len() },
+                    );
+                    match kernel_env::uv::sync_dependencies(&uv_env, &delta).await {
+                        Ok(()) => {
+                            info!(
+                                "[notebook-sync] Installed {} delta packages into pool env",
+                                delta.len()
+                            );
+                            Ok((env, pool_packages))
+                        }
+                        Err(e) => {
+                            warn!(
+                                "[notebook-sync] Failed to install delta into UV pool env: {}, falling back",
+                                e
+                            );
+                            Err(())
+                        }
+                    }
+                }
+                None => {
+                    info!("[notebook-sync] UV pool empty, falling back to full build");
+                    Err(())
+                }
+            }
+        }
+        crate::inline_env::PoolDepRelation::Independent => {
+            debug!("[notebook-sync] UV inline deps have version constraints, skipping pool reuse");
+            Err(())
+        }
+    }
+}
+
+/// Try to satisfy Conda inline deps from the prewarmed pool.
+///
+/// Only attempts pool reuse when channels are default (conda-forge).
+/// Returns `Ok((PooledEnv, pool_packages))` on success, `Err(())` on failure.
+async fn try_conda_pool_for_inline_deps(
+    deps: &[String],
+    channels: &[String],
+    daemon: &std::sync::Arc<crate::daemon::Daemon>,
+    progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler>,
+) -> Result<(crate::PooledEnv, Vec<String>), ()> {
+    // Only use pool for default conda-forge channel
+    let is_default_channels =
+        channels.is_empty() || (channels.len() == 1 && channels[0] == "conda-forge");
+    if !is_default_channels {
+        debug!(
+            "[notebook-sync] Conda inline deps use non-default channels {:?}, skipping pool reuse",
+            channels
+        );
+        return Err(());
+    }
+
+    let pool_packages = daemon.conda_pool_packages().await;
+    let relation = crate::inline_env::compare_deps_to_pool(deps, &pool_packages);
+
+    match relation {
+        crate::inline_env::PoolDepRelation::Subset => {
+            info!("[notebook-sync] Inline Conda deps are subset of pool, taking pool env");
+            match daemon.take_conda_env().await {
+                Some(env) => Ok((env, pool_packages)),
+                None => {
+                    info!("[notebook-sync] Conda pool empty, falling back to full build");
+                    Err(())
+                }
+            }
+        }
+        crate::inline_env::PoolDepRelation::Additive { delta } => {
+            info!(
+                "[notebook-sync] Inline Conda deps are additive to pool, delta: {:?}",
+                delta
+            );
+            match daemon.take_conda_env().await {
+                Some(env) => {
+                    let conda_env = kernel_env::CondaEnvironment {
+                        env_path: env.venv_path.clone(),
+                        python_path: env.python_path.clone(),
+                    };
+                    let conda_deps = kernel_env::CondaDependencies {
+                        dependencies: delta.clone(),
+                        channels: vec!["conda-forge".to_string()],
+                        python: None,
+                        env_id: None,
+                    };
+                    progress_handler.on_progress(
+                        "conda",
+                        kernel_env::EnvProgressPhase::Installing { total: delta.len() },
+                    );
+                    match kernel_env::conda::sync_dependencies(&conda_env, &conda_deps).await {
+                        Ok(()) => {
+                            info!(
+                                "[notebook-sync] Installed {} delta packages into Conda pool env",
+                                delta.len()
+                            );
+                            Ok((env, pool_packages))
+                        }
+                        Err(e) => {
+                            warn!(
+                                "[notebook-sync] Failed to install delta into Conda pool env: {}, falling back",
+                                e
+                            );
+                            Err(())
+                        }
+                    }
+                }
+                None => {
+                    info!("[notebook-sync] Conda pool empty, falling back to full build");
+                    Err(())
+                }
+            }
+        }
+        crate::inline_env::PoolDepRelation::Independent => {
+            debug!(
+                "[notebook-sync] Conda inline deps have version constraints, skipping pool reuse"
+            );
+            Err(())
+        }
+    }
+}
+
 /// Auto-launch kernel for a trusted notebook when first peer connects.
 /// This is similar to handle_notebook_request(LaunchKernel) but without a request/response.
 ///
@@ -3462,40 +3625,110 @@ async fn auto_launch_kernel(
             let prerelease = metadata_snapshot
                 .as_ref()
                 .and_then(get_inline_uv_prerelease);
-            info!(
-                "[notebook-sync] Preparing cached UV env for inline deps: {:?} (prerelease: {:?})",
-                deps, prerelease
-            );
-            match crate::inline_env::prepare_uv_inline_env(
-                &deps,
-                prerelease.as_deref(),
-                progress_handler.clone(),
-            )
-            .await
+
+            // Fast path: check inline env cache first (instant on hit)
+            if let Some(cached) =
+                crate::inline_env::check_uv_inline_cache(&deps, prerelease.as_deref())
             {
-                Ok(prepared) => {
-                    info!(
-                        "[notebook-sync] Using cached inline env at {:?}",
-                        prepared.python_path
-                    );
-                    let env = Some(crate::PooledEnv {
-                        env_type: crate::EnvType::Uv,
-                        venv_path: prepared.env_path,
-                        python_path: prepared.python_path,
-                        prewarmed_packages: vec![],
-                    });
-                    (env, Some(deps))
+                info!(
+                    "[notebook-sync] UV inline cache hit at {:?}",
+                    cached.python_path
+                );
+                let env = Some(crate::PooledEnv {
+                    env_type: crate::EnvType::Uv,
+                    venv_path: cached.env_path,
+                    python_path: cached.python_path,
+                    prewarmed_packages: vec![],
+                });
+                (env, Some(deps))
+            } else if prerelease.is_none() {
+                // Try pool reuse for bare deps without prerelease
+                match try_uv_pool_for_inline_deps(&deps, &daemon, progress_handler.clone()).await {
+                    Ok((env, pool_pkgs)) => {
+                        let mut pooled = env;
+                        pooled.prewarmed_packages = pool_pkgs;
+                        (Some(pooled), Some(deps))
+                    }
+                    Err(_) => {
+                        // Pool path failed, fall back to full build
+                        info!(
+                            "[notebook-sync] Preparing cached UV env for inline deps: {:?}",
+                            deps
+                        );
+                        match crate::inline_env::prepare_uv_inline_env(
+                            &deps,
+                            prerelease.as_deref(),
+                            progress_handler.clone(),
+                        )
+                        .await
+                        {
+                            Ok(prepared) => {
+                                info!(
+                                    "[notebook-sync] Using cached inline env at {:?}",
+                                    prepared.python_path
+                                );
+                                let env = Some(crate::PooledEnv {
+                                    env_type: crate::EnvType::Uv,
+                                    venv_path: prepared.env_path,
+                                    python_path: prepared.python_path,
+                                    prewarmed_packages: vec![],
+                                });
+                                (env, Some(deps))
+                            }
+                            Err(e) => {
+                                error!("[notebook-sync] Failed to prepare inline env: {}", e);
+                                let _ = room.kernel_broadcast_tx.send(
+                                    NotebookBroadcast::KernelStatus {
+                                        status: format!(
+                                            "error: Failed to prepare environment: {}",
+                                            e
+                                        ),
+                                        cell_id: None,
+                                    },
+                                );
+                                reset_starting_state(room).await;
+                                return;
+                            }
+                        }
+                    }
                 }
-                Err(e) => {
-                    error!("[notebook-sync] Failed to prepare inline env: {}", e);
-                    let _ = room
-                        .kernel_broadcast_tx
-                        .send(NotebookBroadcast::KernelStatus {
-                            status: format!("error: Failed to prepare environment: {}", e),
-                            cell_id: None,
+            } else {
+                // Has prerelease — can't use pool, go straight to full build
+                info!(
+                    "[notebook-sync] Preparing cached UV env for inline deps: {:?} (prerelease: {:?})",
+                    deps, prerelease
+                );
+                match crate::inline_env::prepare_uv_inline_env(
+                    &deps,
+                    prerelease.as_deref(),
+                    progress_handler.clone(),
+                )
+                .await
+                {
+                    Ok(prepared) => {
+                        info!(
+                            "[notebook-sync] Using cached inline env at {:?}",
+                            prepared.python_path
+                        );
+                        let env = Some(crate::PooledEnv {
+                            env_type: crate::EnvType::Uv,
+                            venv_path: prepared.env_path,
+                            python_path: prepared.python_path,
+                            prewarmed_packages: vec![],
                         });
-                    reset_starting_state(room).await;
-                    return;
+                        (env, Some(deps))
+                    }
+                    Err(e) => {
+                        error!("[notebook-sync] Failed to prepare inline env: {}", e);
+                        let _ = room
+                            .kernel_broadcast_tx
+                            .send(NotebookBroadcast::KernelStatus {
+                                status: format!("error: Failed to prepare environment: {}", e),
+                                cell_id: None,
+                            });
+                        reset_starting_state(room).await;
+                        return;
+                    }
                 }
             }
         } else {
@@ -3507,40 +3740,77 @@ async fn auto_launch_kernel(
                 .as_ref()
                 .map(get_inline_conda_channels)
                 .unwrap_or_else(|| vec!["conda-forge".to_string()]);
-            info!(
-                "[notebook-sync] Preparing cached Conda env for inline deps: {:?} (channels: {:?})",
-                deps, channels
-            );
-            match crate::inline_env::prepare_conda_inline_env(
-                &deps,
-                &channels,
-                progress_handler.clone(),
-            )
-            .await
-            {
-                Ok(prepared) => {
-                    info!(
-                        "[notebook-sync] Using cached conda inline env at {:?}",
-                        prepared.python_path
-                    );
-                    let env = Some(crate::PooledEnv {
-                        env_type: crate::EnvType::Conda,
-                        venv_path: prepared.env_path,
-                        python_path: prepared.python_path,
-                        prewarmed_packages: vec![],
-                    });
-                    (env, Some(deps))
-                }
-                Err(e) => {
-                    error!("[notebook-sync] Failed to prepare conda inline env: {}", e);
-                    let _ = room
-                        .kernel_broadcast_tx
-                        .send(NotebookBroadcast::KernelStatus {
-                            status: format!("error: Failed to prepare conda environment: {}", e),
-                            cell_id: None,
-                        });
-                    reset_starting_state(room).await;
-                    return;
+
+            // Fast path: check inline env cache first (instant on hit)
+            if let Some(cached) = crate::inline_env::check_conda_inline_cache(&deps, &channels) {
+                info!(
+                    "[notebook-sync] Conda inline cache hit at {:?}",
+                    cached.python_path
+                );
+                let env = Some(crate::PooledEnv {
+                    env_type: crate::EnvType::Conda,
+                    venv_path: cached.env_path,
+                    python_path: cached.python_path,
+                    prewarmed_packages: vec![],
+                });
+                (env, Some(deps))
+            } else {
+                // Try pool reuse (only for default conda-forge channel)
+                match try_conda_pool_for_inline_deps(
+                    &deps,
+                    &channels,
+                    &daemon,
+                    progress_handler.clone(),
+                )
+                .await
+                {
+                    Ok((env, pool_pkgs)) => {
+                        let mut pooled = env;
+                        pooled.prewarmed_packages = pool_pkgs;
+                        (Some(pooled), Some(deps))
+                    }
+                    Err(_) => {
+                        // Pool path failed, fall back to full build
+                        info!(
+                            "[notebook-sync] Preparing cached Conda env for inline deps: {:?} (channels: {:?})",
+                            deps, channels
+                        );
+                        match crate::inline_env::prepare_conda_inline_env(
+                            &deps,
+                            &channels,
+                            progress_handler.clone(),
+                        )
+                        .await
+                        {
+                            Ok(prepared) => {
+                                info!(
+                                    "[notebook-sync] Using cached conda inline env at {:?}",
+                                    prepared.python_path
+                                );
+                                let env = Some(crate::PooledEnv {
+                                    env_type: crate::EnvType::Conda,
+                                    venv_path: prepared.env_path,
+                                    python_path: prepared.python_path,
+                                    prewarmed_packages: vec![],
+                                });
+                                (env, Some(deps))
+                            }
+                            Err(e) => {
+                                error!("[notebook-sync] Failed to prepare conda inline env: {}", e);
+                                let _ = room.kernel_broadcast_tx.send(
+                                    NotebookBroadcast::KernelStatus {
+                                        status: format!(
+                                            "error: Failed to prepare conda environment: {}",
+                                            e
+                                        ),
+                                        cell_id: None,
+                                    },
+                                );
+                                reset_starting_state(room).await;
+                                return;
+                            }
+                        }
+                    }
                 }
             }
         } else {
@@ -4376,35 +4646,98 @@ async fn handle_notebook_request(
                     let prerelease = metadata_snapshot
                         .as_ref()
                         .and_then(get_inline_uv_prerelease);
-                    info!(
-                        "[notebook-sync] LaunchKernel: Preparing cached UV env for inline deps: {:?} (prerelease: {:?})",
-                        deps, prerelease
-                    );
-                    match crate::inline_env::prepare_uv_inline_env(
-                        &deps,
-                        prerelease.as_deref(),
-                        launch_progress_handler.clone(),
-                    )
-                    .await
+
+                    // Fast path: check inline env cache first (instant on hit)
+                    if let Some(cached) =
+                        crate::inline_env::check_uv_inline_cache(&deps, prerelease.as_deref())
                     {
-                        Ok(prepared) => {
-                            info!(
-                                "[notebook-sync] LaunchKernel: Using cached inline env at {:?}",
-                                prepared.python_path
-                            );
-                            let env = Some(crate::PooledEnv {
-                                env_type: crate::EnvType::Uv,
-                                venv_path: prepared.env_path,
-                                python_path: prepared.python_path,
-                                prewarmed_packages: vec![],
-                            });
-                            (env, Some(deps))
+                        info!(
+                            "[notebook-sync] LaunchKernel: UV inline cache hit at {:?}",
+                            cached.python_path
+                        );
+                        let env = Some(crate::PooledEnv {
+                            env_type: crate::EnvType::Uv,
+                            venv_path: cached.env_path,
+                            python_path: cached.python_path,
+                            prewarmed_packages: vec![],
+                        });
+                        (env, Some(deps))
+                    } else if prerelease.is_none() {
+                        // Try pool reuse for bare deps without prerelease
+                        match try_uv_pool_for_inline_deps(
+                            &deps,
+                            &daemon,
+                            launch_progress_handler.clone(),
+                        )
+                        .await
+                        {
+                            Ok((env, pool_pkgs)) => {
+                                let mut pooled = env;
+                                pooled.prewarmed_packages = pool_pkgs;
+                                (Some(pooled), Some(deps))
+                            }
+                            Err(_) => {
+                                // Pool path failed, fall back to full build
+                                info!(
+                                    "[notebook-sync] LaunchKernel: Preparing cached UV env for inline deps: {:?}",
+                                    deps
+                                );
+                                match crate::inline_env::prepare_uv_inline_env(
+                                    &deps,
+                                    prerelease.as_deref(),
+                                    launch_progress_handler.clone(),
+                                )
+                                .await
+                                {
+                                    Ok(prepared) => {
+                                        let env = Some(crate::PooledEnv {
+                                            env_type: crate::EnvType::Uv,
+                                            venv_path: prepared.env_path,
+                                            python_path: prepared.python_path,
+                                            prewarmed_packages: vec![],
+                                        });
+                                        (env, Some(deps))
+                                    }
+                                    Err(e) => {
+                                        reset_starting_state(room).await;
+                                        return NotebookResponse::Error {
+                                            error: format!(
+                                                "Failed to prepare inline environment: {}",
+                                                e
+                                            ),
+                                        };
+                                    }
+                                }
+                            }
                         }
-                        Err(e) => {
-                            reset_starting_state(room).await;
-                            return NotebookResponse::Error {
-                                error: format!("Failed to prepare inline environment: {}", e),
-                            };
+                    } else {
+                        // Has prerelease — can't use pool, go straight to full build
+                        info!(
+                            "[notebook-sync] LaunchKernel: Preparing cached UV env for inline deps: {:?} (prerelease: {:?})",
+                            deps, prerelease
+                        );
+                        match crate::inline_env::prepare_uv_inline_env(
+                            &deps,
+                            prerelease.as_deref(),
+                            launch_progress_handler.clone(),
+                        )
+                        .await
+                        {
+                            Ok(prepared) => {
+                                let env = Some(crate::PooledEnv {
+                                    env_type: crate::EnvType::Uv,
+                                    venv_path: prepared.env_path,
+                                    python_path: prepared.python_path,
+                                    prewarmed_packages: vec![],
+                                });
+                                (env, Some(deps))
+                            }
+                            Err(e) => {
+                                reset_starting_state(room).await;
+                                return NotebookResponse::Error {
+                                    error: format!("Failed to prepare inline environment: {}", e),
+                                };
+                            }
                         }
                     }
                 } else {
@@ -4416,35 +4749,70 @@ async fn handle_notebook_request(
                         .as_ref()
                         .map(get_inline_conda_channels)
                         .unwrap_or_else(|| vec!["conda-forge".to_string()]);
-                    info!(
-                        "[notebook-sync] LaunchKernel: Preparing cached Conda env for inline deps: {:?} (channels: {:?})",
-                        deps, channels
-                    );
-                    match crate::inline_env::prepare_conda_inline_env(
-                        &deps,
-                        &channels,
-                        launch_progress_handler.clone(),
-                    )
-                    .await
+
+                    // Fast path: check inline env cache first (instant on hit)
+                    if let Some(cached) =
+                        crate::inline_env::check_conda_inline_cache(&deps, &channels)
                     {
-                        Ok(prepared) => {
-                            info!(
-                                "[notebook-sync] LaunchKernel: Using cached conda inline env at {:?}",
-                                prepared.python_path
-                            );
-                            let env = Some(crate::PooledEnv {
-                                env_type: crate::EnvType::Conda,
-                                venv_path: prepared.env_path,
-                                python_path: prepared.python_path,
-                                prewarmed_packages: vec![],
-                            });
-                            (env, Some(deps))
-                        }
-                        Err(e) => {
-                            reset_starting_state(room).await;
-                            return NotebookResponse::Error {
-                                error: format!("Failed to prepare conda inline environment: {}", e),
-                            };
+                        info!(
+                            "[notebook-sync] LaunchKernel: Conda inline cache hit at {:?}",
+                            cached.python_path
+                        );
+                        let env = Some(crate::PooledEnv {
+                            env_type: crate::EnvType::Conda,
+                            venv_path: cached.env_path,
+                            python_path: cached.python_path,
+                            prewarmed_packages: vec![],
+                        });
+                        (env, Some(deps))
+                    } else {
+                        // Try pool reuse (only for default conda-forge channel)
+                        match try_conda_pool_for_inline_deps(
+                            &deps,
+                            &channels,
+                            &daemon,
+                            launch_progress_handler.clone(),
+                        )
+                        .await
+                        {
+                            Ok((env, pool_pkgs)) => {
+                                let mut pooled = env;
+                                pooled.prewarmed_packages = pool_pkgs;
+                                (Some(pooled), Some(deps))
+                            }
+                            Err(_) => {
+                                // Pool path failed, fall back to full build
+                                info!(
+                                    "[notebook-sync] LaunchKernel: Preparing cached Conda env for inline deps: {:?} (channels: {:?})",
+                                    deps, channels
+                                );
+                                match crate::inline_env::prepare_conda_inline_env(
+                                    &deps,
+                                    &channels,
+                                    launch_progress_handler.clone(),
+                                )
+                                .await
+                                {
+                                    Ok(prepared) => {
+                                        let env = Some(crate::PooledEnv {
+                                            env_type: crate::EnvType::Conda,
+                                            venv_path: prepared.env_path,
+                                            python_path: prepared.python_path,
+                                            prewarmed_packages: vec![],
+                                        });
+                                        (env, Some(deps))
+                                    }
+                                    Err(e) => {
+                                        reset_starting_state(room).await;
+                                        return NotebookResponse::Error {
+                                            error: format!(
+                                                "Failed to prepare conda inline environment: {}",
+                                                e
+                                            ),
+                                        };
+                                    }
+                                }
+                            }
                         }
                     }
                 } else {

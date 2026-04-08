@@ -454,6 +454,20 @@ impl Daemon {
         self.settings.read().await.get_all().pixi.default_packages
     }
 
+    /// Get the full list of UV pool packages (base + user default_packages).
+    pub async fn uv_pool_packages(&self) -> Vec<String> {
+        let settings = self.settings.read().await;
+        let synced = settings.get_all();
+        uv_prewarmed_packages(&synced.uv.default_packages)
+    }
+
+    /// Get the full list of Conda pool packages (base + user default_packages).
+    pub async fn conda_pool_packages(&self) -> Vec<String> {
+        let settings = self.settings.read().await;
+        let synced = settings.get_all();
+        conda_prewarmed_packages(&synced.conda.default_packages)
+    }
+
     /// Create a new daemon with the given configuration.
     ///
     /// Returns an error if another daemon is already running.
