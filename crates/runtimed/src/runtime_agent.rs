@@ -420,6 +420,15 @@ async fn handle_runtime_agent_request(
                 kernel_type, env_source
             );
 
+            // Capture in-flight executions before shutdown so we can mark them
+            // as failed in RuntimeStateDoc (the old kernel can't finish them).
+            let interrupted_eid = state.executing_cell().map(|(_, eid)| eid.clone());
+            let stale_queue: Vec<_> = state
+                .queued_entries()
+                .iter()
+                .map(|e| e.execution_id.clone())
+                .collect();
+
             // Shut down existing kernel
             if let Some(ref mut k) = kernel {
                 k.shutdown().await.ok();
@@ -461,6 +470,21 @@ async fn handle_runtime_agent_request(
                 env_vars: vec![],
                 pooled_env,
             };
+
+            // Mark stale executions as failed in RuntimeStateDoc.
+            // The old kernel is gone after shutdown, so these executions
+            // can never complete — do this before launching the new kernel.
+            {
+                let mut sd = ctx.state_doc.write().await;
+                if let Some(ref eid) = interrupted_eid {
+                    sd.set_execution_done(eid, false);
+                }
+                for eid in &stale_queue {
+                    sd.set_execution_done(eid, false);
+                }
+                sd.set_queue(None, &[]);
+                let _ = ctx.state_changed_tx.send(());
+            }
 
             match JupyterKernel::launch(config, shared).await {
                 Ok((k, rx)) => {
@@ -708,8 +732,14 @@ async fn handle_queue_command(
 
         QueueCommand::KernelDied => {
             warn!("[runtime-agent] Kernel died");
-            state.kernel_died();
+            let (interrupted, cleared) = state.kernel_died();
             let mut sd = ctx.state_doc.write().await;
+            if let Some((_, ref eid)) = interrupted {
+                sd.set_execution_done(eid, false);
+            }
+            for entry in &cleared {
+                sd.set_execution_done(&entry.execution_id, false);
+            }
             sd.set_kernel_status("error");
             sd.set_queue(None, &[]);
             let _ = ctx.state_changed_tx.send(());
