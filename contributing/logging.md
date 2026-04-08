@@ -4,7 +4,19 @@ This guide covers logging conventions for contributors working on the nteract de
 
 ## Rust Logging
 
-We use the `log` crate with `env_logger`. Import log macros at the top of your file:
+### runtimed daemon
+
+The daemon uses `tracing` with `tracing-subscriber` (layered subscribers for stderr + file output). Import tracing macros at the top of your file:
+
+```rust
+use tracing::{debug, info, warn, error};
+```
+
+Dependencies that use the `log` crate (runtimelib, automerge, rattler, etc.) are automatically bridged into the tracing subscriber via `tracing-log`.
+
+### Tauri app (notebook crate)
+
+The notebook app uses `log` with `tauri-plugin-log`:
 
 ```rust
 use log::{debug, info, warn, error};

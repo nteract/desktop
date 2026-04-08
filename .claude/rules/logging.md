@@ -62,7 +62,7 @@ Use consistent prefixes for filtering:
 
 ### Log File Rotation
 
-Daemon logs rotate on startup — each daemon session gets a clean log file. Previous logs are preserved as `runtimed.log.prev`. This makes `runt daemon logs -f` show only the current session.
+Daemon logs rotate on startup — each daemon session gets a clean log file. Previous logs are preserved as `runtimed.log.1`. This makes `runt daemon logs -f` show only the current session.
 
 ### Enabling Debug Logs
 
