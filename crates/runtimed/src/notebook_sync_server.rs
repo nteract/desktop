@@ -1184,9 +1184,26 @@ impl NotebookRoom {
         let (persist_tx, persist_rx) = watch::channel::<Option<Vec<u8>>>(None);
         spawn_persist_debouncer(persist_rx, persist_path.clone());
 
-        // Verify trust from the notebook file
         let notebook_path = PathBuf::from(notebook_id);
-        let trust_state = verify_trust_from_file(&notebook_path);
+        let trust_state = if is_untitled_notebook(notebook_id) {
+            // Untitled notebooks have no .ipynb on disk — trust signature lives
+            // in the persisted Automerge doc we just loaded.
+            match doc.get_metadata_snapshot() {
+                Some(snapshot) => verify_trust_from_snapshot(&snapshot),
+                None => TrustState {
+                    status: runt_trust::TrustStatus::NoDependencies,
+                    info: runt_trust::TrustInfo {
+                        status: runt_trust::TrustStatus::NoDependencies,
+                        uv_dependencies: vec![],
+                        conda_dependencies: vec![],
+                        conda_channels: vec![],
+                    },
+                    pending_launch: false,
+                },
+            }
+        } else {
+            verify_trust_from_file(&notebook_path)
+        };
         info!(
             "[notebook-sync] Trust status for {}: {:?}",
             notebook_id, trust_state.status
@@ -1295,7 +1312,23 @@ impl NotebookRoom {
         spawn_persist_debouncer(persist_rx, persist_path.clone());
         let (presence_tx, _) = broadcast::channel(64);
         let notebook_path = PathBuf::from(notebook_id);
-        let trust_state = verify_trust_from_file(&notebook_path);
+        let trust_state = if is_untitled_notebook(notebook_id) {
+            match doc.get_metadata_snapshot() {
+                Some(snapshot) => verify_trust_from_snapshot(&snapshot),
+                None => TrustState {
+                    status: runt_trust::TrustStatus::NoDependencies,
+                    info: runt_trust::TrustInfo {
+                        status: runt_trust::TrustStatus::NoDependencies,
+                        uv_dependencies: vec![],
+                        conda_dependencies: vec![],
+                        conda_channels: vec![],
+                    },
+                    pending_launch: false,
+                },
+            }
+        } else {
+            verify_trust_from_file(&notebook_path)
+        };
         let state_doc = Arc::new(RwLock::new(RuntimeStateDoc::new()));
         let (state_changed_tx, _) = broadcast::channel(16);
         Self {
@@ -8899,6 +8932,54 @@ mod tests {
         );
         let cells = doc.get_cells();
         assert_eq!(cells[0].source, "restored content");
+    }
+
+    /// Regression test for #1646: untitled notebooks must read trust from
+    /// the persisted Automerge doc, not from a non-existent .ipynb file.
+    #[tokio::test]
+    #[serial]
+    async fn test_new_fresh_untitled_trust_from_doc() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let key_path = temp_dir.path().join("trust-key");
+        std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let blob_store = test_blob_store(&tmp);
+
+        let notebook_id = "550e8400-e29b-41d4-a716-446655440000";
+
+        // Build a snapshot with UV deps and a valid trust signature.
+        let mut snapshot = snapshot_with_uv(vec!["numpy".to_string()]);
+        let mut metadata = std::collections::HashMap::new();
+        if let Ok(runt_value) = serde_json::to_value(&snapshot.runt) {
+            metadata.insert("runt".to_string(), runt_value);
+        }
+        let signature = runt_trust::sign_notebook_dependencies(&metadata).unwrap();
+        snapshot.runt.trust_signature = Some(signature);
+
+        // Create a room, write the signed metadata, and persist to disk.
+        {
+            let room = NotebookRoom::load_or_create(notebook_id, tmp.path(), blob_store.clone());
+            {
+                let mut doc = room.doc.try_write().unwrap();
+                doc.set_metadata_snapshot(&snapshot).unwrap();
+                let bytes = doc.save();
+                persist_notebook_bytes(&bytes, &room.persist_path);
+            }
+        }
+
+        // Simulate daemon restart: create a fresh room with the same UUID.
+        // new_fresh should load the persisted doc and read trust from it.
+        let room = NotebookRoom::new_fresh(notebook_id, tmp.path(), blob_store);
+
+        let ts = room.trust_state.try_read().unwrap();
+        assert_eq!(
+            ts.status,
+            runt_trust::TrustStatus::Trusted,
+            "Untitled notebook trust should survive daemon restart"
+        );
+
+        std::env::remove_var("RUNT_TRUST_KEY_PATH");
     }
 
     /// Helper to build a snapshot with UV inline deps.
