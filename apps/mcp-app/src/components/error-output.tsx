@@ -9,6 +9,7 @@ interface ErrorOutputProps {
 
 export function ErrorOutput({ output }: ErrorOutputProps) {
   const [tracebackLines, setTracebackLines] = useState<string[]>([]);
+  const [fetchFailed, setFetchFailed] = useState(false);
 
   const header = output.ename
     ? `${output.ename}: ${output.evalue || ""}`
@@ -24,7 +25,7 @@ export function ErrorOutput({ output }: ErrorOutputProps) {
         .then((lines: string[]) => {
           if (Array.isArray(lines)) setTracebackLines(lines);
         })
-        .catch(() => { /* show header only */ });
+        .catch(() => setFetchFailed(true));
     }
   }, [output.traceback]);
 
@@ -33,6 +34,11 @@ export function ErrorOutput({ output }: ErrorOutputProps) {
       {header && <AnsiText text={header} />}
       {tracebackLines.length > 0 && (
         <AnsiText text={tracebackLines.join("\n")} />
+      )}
+      {fetchFailed && tracebackLines.length === 0 && (
+        <div style={{ opacity: 0.6, fontSize: "12px", marginTop: "4px" }}>
+          (traceback could not be loaded)
+        </div>
       )}
     </div>
   );

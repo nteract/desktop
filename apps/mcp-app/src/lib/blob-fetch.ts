@@ -12,6 +12,7 @@ export function isBlobUrl(value: unknown): value is string {
 /**
  * Fetch text content from a blob URL, with caching.
  * Returns the original value if it's not a blob URL.
+ * Evicts failed promises from cache so retries are possible.
  */
 export async function fetchBlobText(value: string): Promise<string> {
   if (!isBlobUrl(value)) return value;
@@ -25,6 +26,10 @@ export async function fetchBlobText(value: string): Promise<string> {
   });
 
   cache.set(value, promise);
+
+  // Evict on failure so future attempts can retry
+  promise.catch(() => cache.delete(value));
+
   return promise;
 }
 

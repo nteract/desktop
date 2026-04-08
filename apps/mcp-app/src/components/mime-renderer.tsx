@@ -43,19 +43,31 @@ export function MimeRenderer({ data }: MimeRendererProps) {
     return <ImageOutput data={String(raw)} mediaType={mime} alt={data["text/plain"] || undefined} />;
   }
 
-  return <FetchAndRender mime={mime} raw={String(raw)} />;
+  // text/plain fallback for when blob fetch fails
+  const plainFallback = data["text/plain"] ? String(data["text/plain"]) : undefined;
+
+  return <FetchAndRender mime={mime} raw={String(raw)} plainFallback={plainFallback} />;
 }
 
-function FetchAndRender({ mime, raw }: { mime: string; raw: string }) {
+function FetchAndRender({ mime, raw, plainFallback }: { mime: string; raw: string; plainFallback?: string }) {
   const [content, setContent] = useState<string | null>(
     isBlobUrl(raw) ? null : raw,
   );
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     if (isBlobUrl(raw)) {
-      fetchBlobText(raw).then(setContent).catch(() => setContent(null));
+      fetchBlobText(raw)
+        .then(setContent)
+        .catch(() => setFailed(true));
     }
   }, [raw]);
+
+  // Blob fetch failed — show text/plain fallback if available
+  if (failed) {
+    if (plainFallback) return <AnsiText text={plainFallback} />;
+    return null;
+  }
 
   if (content === null) return null;
 

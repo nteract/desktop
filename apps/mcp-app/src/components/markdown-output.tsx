@@ -1,6 +1,5 @@
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
-import rehypeRaw from "rehype-raw";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import { CodeBlock } from "./code-block";
@@ -15,7 +14,7 @@ export function MarkdownOutput({ content }: MarkdownOutputProps) {
     <div className="markdown-output">
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath]}
-        rehypePlugins={[rehypeKatex, rehypeRaw]}
+        rehypePlugins={[rehypeKatex]}
         components={{
           code({ className, children }) {
             const codeContent = String(children).replace(/\n$/, "");
