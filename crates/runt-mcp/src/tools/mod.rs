@@ -102,7 +102,7 @@ pub fn all_tools() -> Vec<Tool> {
         .with_meta(always_load_meta()),
         Tool::new(
             "create_notebook",
-            "Create a new notebook, making it your active session. Supports uv (default), conda, or pixi via package_manager param. The kernel starts automatically with deps installed. Call save_notebook(path) to persist to disk.",
+            "Create a new notebook, making it your active session. Supports uv, conda, or pixi via package_manager param (defaults to user's default_python_env setting). The kernel starts automatically with deps installed. Call save_notebook(path) to persist to disk.",
             schema_for::<session::CreateNotebookParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(false).open_world(false)),

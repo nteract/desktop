@@ -44,7 +44,7 @@
   },
   {
     "name": "create_notebook",
-    "description": "Create a new notebook, making it your active session. Supports uv (default), conda, or pixi via package_manager param. The kernel starts automatically with deps installed. Call save_notebook(path) to persist to disk.",
+    "description": "Create a new notebook, making it your active session. Supports uv, conda, or pixi via package_manager param (defaults to user's default_python_env setting). The kernel starts automatically with deps installed. Call save_notebook(path) to persist to disk.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -61,7 +61,7 @@
         },
         "package_manager": {
           "default": null,
-          "description": "Package manager for dependencies: \"uv\" (default), \"conda\", or \"pixi\".",
+          "description": "Package manager for dependencies: \"uv\", \"conda\", or \"pixi\".\nDefaults to the user's default_python_env setting.",
           "type": [
             "string",
             "null"

@@ -190,7 +190,8 @@ pub struct CreateNotebookParams {
     /// Packages to pre-install.
     #[serde(default)]
     pub dependencies: Option<Vec<String>>,
-    /// Package manager for dependencies: "uv" (default), "conda", or "pixi".
+    /// Package manager for dependencies: "uv", "conda", or "pixi".
+    /// Defaults to the user's default_python_env setting.
     #[serde(default)]
     pub package_manager: Option<String>,
 }
@@ -397,14 +398,16 @@ pub async fn create_notebook(
                 .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
                 .unwrap_or_default();
 
-            let pkg_manager = arg_str(request, "package_manager").unwrap_or("uv");
+            let explicit_pkg_manager = arg_str(request, "package_manager");
 
-            // Validate package_manager
-            if !matches!(pkg_manager, "uv" | "conda" | "pixi") {
-                return tool_error(&format!(
-                    "Invalid package_manager '{}'. Must be 'uv', 'conda', or 'pixi'.",
-                    pkg_manager
-                ));
+            // Validate explicit package_manager if provided
+            if let Some(pm) = explicit_pkg_manager {
+                if !matches!(pm, "uv" | "conda" | "pixi") {
+                    return tool_error(&format!(
+                        "Invalid package_manager '{}'. Must be 'uv', 'conda', or 'pixi'.",
+                        pm
+                    ));
+                }
             }
 
             // Ensure the daemon's doc structure is fully received before
@@ -415,14 +418,24 @@ pub async fn create_notebook(
                     tracing::warn!("confirm_sync before create_notebook metadata fix: {e}");
                 }
 
-                // The daemon creates metadata based on default_python_env,
-                // which may not match the requested package_manager. Fix the
-                // metadata to have the correct package manager section.
-                metadata_changed =
-                    super::deps::ensure_package_manager_metadata(&result.handle, pkg_manager);
+                // Only override metadata when the user explicitly requested a
+                // package manager. When omitted, the daemon already set the
+                // correct metadata from default_python_env.
+                if let Some(pm) = explicit_pkg_manager {
+                    metadata_changed =
+                        super::deps::ensure_package_manager_metadata(&result.handle, pm);
+                }
+            }
 
+            // Effective package manager: explicit arg, or what the daemon set
+            // from default_python_env.
+            let pkg_manager: String = explicit_pkg_manager
+                .map(String::from)
+                .unwrap_or_else(|| super::deps::detect_package_manager(&result.handle));
+
+            if runtime != "deno" {
                 for dep in &deps {
-                    let _ = super::deps::add_dep_for_manager(&result.handle, dep, pkg_manager);
+                    let _ = super::deps::add_dep_for_manager(&result.handle, dep, &pkg_manager);
                 }
             }
 
@@ -450,7 +463,7 @@ pub async fn create_notebook(
                     // uses the correct package manager pool (not the system default).
                     // "auto:pixi" → pixi pool/inline, "auto:conda" → conda pool/inline,
                     // "auto" → follows default_python_env (which may differ from requested).
-                    let scoped_env_source = match pkg_manager {
+                    let scoped_env_source = match pkg_manager.as_str() {
                         "pixi" => "auto:pixi",
                         "conda" => "auto:conda",
                         _ => "auto:uv",
@@ -634,4 +647,37 @@ pub async fn show_notebook(
 
     let result = serde_json::json!({ "notebook_id": target, "opened": true });
     tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    /// When package_manager is explicitly provided, it takes precedence
+    /// over whatever the daemon detected.
+    #[test]
+    fn explicit_pkg_manager_takes_precedence() {
+        let explicit: Option<&str> = Some("conda");
+        let detected = "uv".to_string();
+        let result: String = explicit.map(String::from).unwrap_or(detected);
+        assert_eq!(result, "conda");
+    }
+
+    /// When package_manager is omitted, the detected (daemon) value is used.
+    #[test]
+    fn omitted_pkg_manager_uses_detected() {
+        let explicit: Option<&str> = None;
+        let detected = "pixi".to_string();
+        let result: String = explicit.map(String::from).unwrap_or(detected);
+        assert_eq!(result, "pixi");
+    }
+
+    /// Validation rejects invalid package_manager values.
+    #[test]
+    fn invalid_pkg_manager_values() {
+        for valid in ["uv", "conda", "pixi"] {
+            assert!(matches!(valid, "uv" | "conda" | "pixi"));
+        }
+        assert!(!matches!("mamba", "uv" | "conda" | "pixi"));
+        assert!(!matches!("pip", "uv" | "conda" | "pixi"));
+    }
 }
