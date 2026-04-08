@@ -3091,68 +3091,75 @@ async fn reset_starting_state(room: &NotebookRoom) {
 
 /// Try to satisfy UV inline deps from the prewarmed pool.
 ///
-/// Returns `Ok((PooledEnv, pool_packages))` if the pool can serve the deps
-/// (either as a direct subset or by installing a small delta).
-/// Returns `Err(())` if the deps are incompatible or the pool is unavailable.
+/// Takes the pool env first, then compares against its *actual* `prewarmed_packages`
+/// (not current settings) to avoid misclassifying stale pool entries.
+/// Returns `Ok((PooledEnv, actual_packages))` on success, `Err(())` on failure.
 async fn try_uv_pool_for_inline_deps(
     deps: &[String],
     daemon: &std::sync::Arc<crate::daemon::Daemon>,
     progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler>,
 ) -> Result<(crate::PooledEnv, Vec<String>), ()> {
-    let pool_packages = daemon.uv_pool_packages().await;
-    let relation = crate::inline_env::compare_deps_to_pool(deps, &pool_packages);
+    // Quick pre-check: if any dep has version specifiers, skip pool entirely
+    // (avoids consuming a pool env we'd have to discard)
+    let settings_packages = daemon.uv_pool_packages().await;
+    if matches!(
+        crate::inline_env::compare_deps_to_pool(deps, &settings_packages),
+        crate::inline_env::PoolDepRelation::Independent
+    ) {
+        debug!("[notebook-sync] UV inline deps have version constraints, skipping pool reuse");
+        return Err(());
+    }
+
+    // Take the env, then compare against what it *actually* has installed
+    let env = match daemon.take_uv_env().await {
+        Some(env) => env,
+        None => {
+            info!("[notebook-sync] UV pool empty, falling back to full build");
+            return Err(());
+        }
+    };
+
+    let actual_packages = env.prewarmed_packages.clone();
+    let relation = crate::inline_env::compare_deps_to_pool(deps, &actual_packages);
 
     match relation {
         crate::inline_env::PoolDepRelation::Subset => {
-            info!("[notebook-sync] Inline UV deps are subset of pool, taking pool env");
-            match daemon.take_uv_env().await {
-                Some(env) => Ok((env, pool_packages)),
-                None => {
-                    info!("[notebook-sync] UV pool empty, falling back to full build");
-                    Err(())
-                }
-            }
+            info!("[notebook-sync] Inline UV deps are subset of pool env, reusing directly");
+            Ok((env, actual_packages))
         }
         crate::inline_env::PoolDepRelation::Additive { delta } => {
             info!(
-                "[notebook-sync] Inline UV deps are additive to pool, delta: {:?}",
+                "[notebook-sync] Inline UV deps are additive to pool env, delta: {:?}",
                 delta
             );
-            match daemon.take_uv_env().await {
-                Some(env) => {
-                    let uv_env = kernel_env::UvEnvironment {
-                        venv_path: env.venv_path.clone(),
-                        python_path: env.python_path.clone(),
-                    };
-                    progress_handler.on_progress(
-                        "uv",
-                        kernel_env::EnvProgressPhase::Installing { total: delta.len() },
+            let uv_env = kernel_env::UvEnvironment {
+                venv_path: env.venv_path.clone(),
+                python_path: env.python_path.clone(),
+            };
+            progress_handler.on_progress(
+                "uv",
+                kernel_env::EnvProgressPhase::Installing { total: delta.len() },
+            );
+            match kernel_env::uv::sync_dependencies(&uv_env, &delta).await {
+                Ok(()) => {
+                    info!(
+                        "[notebook-sync] Installed {} delta packages into pool env",
+                        delta.len()
                     );
-                    match kernel_env::uv::sync_dependencies(&uv_env, &delta).await {
-                        Ok(()) => {
-                            info!(
-                                "[notebook-sync] Installed {} delta packages into pool env",
-                                delta.len()
-                            );
-                            Ok((env, pool_packages))
-                        }
-                        Err(e) => {
-                            warn!(
-                                "[notebook-sync] Failed to install delta into UV pool env: {}, falling back",
-                                e
-                            );
-                            Err(())
-                        }
-                    }
+                    Ok((env, actual_packages))
                 }
-                None => {
-                    info!("[notebook-sync] UV pool empty, falling back to full build");
+                Err(e) => {
+                    warn!(
+                        "[notebook-sync] Failed to install delta into UV pool env: {}, falling back",
+                        e
+                    );
                     Err(())
                 }
             }
         }
         crate::inline_env::PoolDepRelation::Independent => {
-            debug!("[notebook-sync] UV inline deps have version constraints, skipping pool reuse");
+            // Shouldn't reach here (pre-check above), but handle gracefully
+            debug!("[notebook-sync] UV pool env doesn't match inline deps, falling back");
             Err(())
         }
     }
@@ -3161,7 +3168,8 @@ async fn try_uv_pool_for_inline_deps(
 /// Try to satisfy Conda inline deps from the prewarmed pool.
 ///
 /// Only attempts pool reuse when channels are default (conda-forge).
-/// Returns `Ok((PooledEnv, pool_packages))` on success, `Err(())` on failure.
+/// Takes the pool env first, then compares against its *actual* `prewarmed_packages`.
+/// Returns `Ok((PooledEnv, actual_packages))` on success, `Err(())` on failure.
 async fn try_conda_pool_for_inline_deps(
     deps: &[String],
     channels: &[String],
@@ -3179,68 +3187,71 @@ async fn try_conda_pool_for_inline_deps(
         return Err(());
     }
 
-    let pool_packages = daemon.conda_pool_packages().await;
-    let relation = crate::inline_env::compare_deps_to_pool(deps, &pool_packages);
+    // Quick pre-check: if any dep has version specifiers, skip pool entirely
+    let settings_packages = daemon.conda_pool_packages().await;
+    if matches!(
+        crate::inline_env::compare_deps_to_pool(deps, &settings_packages),
+        crate::inline_env::PoolDepRelation::Independent
+    ) {
+        debug!("[notebook-sync] Conda inline deps have version constraints, skipping pool reuse");
+        return Err(());
+    }
+
+    // Take the env, then compare against what it *actually* has installed
+    let env = match daemon.take_conda_env().await {
+        Some(env) => env,
+        None => {
+            info!("[notebook-sync] Conda pool empty, falling back to full build");
+            return Err(());
+        }
+    };
+
+    let actual_packages = env.prewarmed_packages.clone();
+    let relation = crate::inline_env::compare_deps_to_pool(deps, &actual_packages);
 
     match relation {
         crate::inline_env::PoolDepRelation::Subset => {
-            info!("[notebook-sync] Inline Conda deps are subset of pool, taking pool env");
-            match daemon.take_conda_env().await {
-                Some(env) => Ok((env, pool_packages)),
-                None => {
-                    info!("[notebook-sync] Conda pool empty, falling back to full build");
-                    Err(())
-                }
-            }
+            info!("[notebook-sync] Inline Conda deps are subset of pool env, reusing directly");
+            Ok((env, actual_packages))
         }
         crate::inline_env::PoolDepRelation::Additive { delta } => {
             info!(
-                "[notebook-sync] Inline Conda deps are additive to pool, delta: {:?}",
+                "[notebook-sync] Inline Conda deps are additive to pool env, delta: {:?}",
                 delta
             );
-            match daemon.take_conda_env().await {
-                Some(env) => {
-                    let conda_env = kernel_env::CondaEnvironment {
-                        env_path: env.venv_path.clone(),
-                        python_path: env.python_path.clone(),
-                    };
-                    let conda_deps = kernel_env::CondaDependencies {
-                        dependencies: delta.clone(),
-                        channels: vec!["conda-forge".to_string()],
-                        python: None,
-                        env_id: None,
-                    };
-                    progress_handler.on_progress(
-                        "conda",
-                        kernel_env::EnvProgressPhase::Installing { total: delta.len() },
+            let conda_env = kernel_env::CondaEnvironment {
+                env_path: env.venv_path.clone(),
+                python_path: env.python_path.clone(),
+            };
+            let conda_deps = kernel_env::CondaDependencies {
+                dependencies: delta.clone(),
+                channels: vec!["conda-forge".to_string()],
+                python: None,
+                env_id: None,
+            };
+            progress_handler.on_progress(
+                "conda",
+                kernel_env::EnvProgressPhase::Installing { total: delta.len() },
+            );
+            match kernel_env::conda::sync_dependencies(&conda_env, &conda_deps).await {
+                Ok(()) => {
+                    info!(
+                        "[notebook-sync] Installed {} delta packages into Conda pool env",
+                        delta.len()
                     );
-                    match kernel_env::conda::sync_dependencies(&conda_env, &conda_deps).await {
-                        Ok(()) => {
-                            info!(
-                                "[notebook-sync] Installed {} delta packages into Conda pool env",
-                                delta.len()
-                            );
-                            Ok((env, pool_packages))
-                        }
-                        Err(e) => {
-                            warn!(
-                                "[notebook-sync] Failed to install delta into Conda pool env: {}, falling back",
-                                e
-                            );
-                            Err(())
-                        }
-                    }
+                    Ok((env, actual_packages))
                 }
-                None => {
-                    info!("[notebook-sync] Conda pool empty, falling back to full build");
+                Err(e) => {
+                    warn!(
+                        "[notebook-sync] Failed to install delta into Conda pool env: {}, falling back",
+                        e
+                    );
                     Err(())
                 }
             }
         }
         crate::inline_env::PoolDepRelation::Independent => {
-            debug!(
-                "[notebook-sync] Conda inline deps have version constraints, skipping pool reuse"
-            );
+            debug!("[notebook-sync] Conda pool env doesn't match inline deps, falling back");
             Err(())
         }
     }
