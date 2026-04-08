@@ -20,6 +20,7 @@ pub mod execution;
 pub mod formatting;
 pub mod health;
 pub mod presence;
+pub mod project_file;
 mod resources;
 mod session;
 mod structured;

@@ -372,6 +372,7 @@ pub async fn create_notebook(
 ) -> Result<CallToolResult, McpError> {
     let runtime = arg_str(request, "runtime").unwrap_or("python");
     let working_dir = arg_str(request, "working_dir").map(|s| PathBuf::from(resolve_path(s)));
+    let working_dir_for_detection = working_dir.clone();
 
     let prev = previous_notebook_id(server).await;
 
@@ -421,9 +422,17 @@ pub async fn create_notebook(
                 // Only override metadata when the user explicitly requested a
                 // package manager. When omitted, the daemon already set the
                 // correct metadata from default_python_env.
+                // Skip when a matching project file exists — the daemon already
+                // detected it and will bootstrap deps into CRDT.
                 if let Some(pm) = explicit_pkg_manager {
-                    metadata_changed =
-                        super::deps::ensure_package_manager_metadata(&result.handle, pm);
+                    let project_matches = working_dir_for_detection
+                        .as_ref()
+                        .and_then(|wd| crate::project_file::detect_project_file(wd))
+                        .is_some_and(|d| d.manager() == pm);
+                    if !project_matches {
+                        metadata_changed =
+                            super::deps::ensure_package_manager_metadata(&result.handle, pm);
+                    }
                 }
             }
 
