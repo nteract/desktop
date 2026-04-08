@@ -12,7 +12,7 @@
 
 /// Files that have been fully cleaned of mutex-across-await violations.
 /// Adding a file here makes violations in it a hard CI failure.
-const GATED_FILES: &[&str] = &["daemon.rs", "sync_server.rs"];
+const GATED_FILES: &[&str] = &["daemon.rs", "notebook_sync_server.rs", "sync_server.rs"];
 
 #[test]
 fn runtimed_has_no_tokio_mutex_across_await() {
