@@ -16,9 +16,15 @@ const OUTPUT_MIME_TYPE: &str = "text/html;profile=mcp-app";
 /// The build script copies the file to `crates/runt-mcp/assets/_output.html`.
 const OUTPUT_HTML: &str = include_str!("../assets/_output.html");
 
-/// Build `_meta` for the output widget resource with CSP allowing blob image loading.
+/// Build `_meta` for the output widget resource with CSP domains.
 ///
-/// Wire format: `{ "ui": { "csp": { "resourceDomains": ["http://localhost:{port}"] } } }`
+/// MCP Apps spec CSP fields (from ext-apps specification):
+/// - `resourceDomains` → `img-src`, `script-src`, `style-src`, `font-src`, `media-src`
+/// - `connectDomains`  → `connect-src` (fetch/XHR/WebSocket)
+///
+/// The daemon's blob HTTP server URL is needed in both: `resourceDomains` for
+/// loading plugin JS/CSS via `<script>`/`<link>` tags, and `connectDomains` for
+/// `fetch()` calls to resolve blob-stored output data (plotly JSON, geojson, etc.).
 ///
 /// Claude Desktop requires `localhost` (not `127.0.0.1`) for domain allowlists.
 fn resource_ui_meta(blob_base_url: &Option<String>) -> Option<Meta> {
@@ -28,7 +34,12 @@ fn resource_ui_meta(blob_base_url: &Option<String>) -> Option<Meta> {
         "ui".to_string(),
         serde_json::json!({
             "csp": {
-                "resourceDomains": [url]
+                "resourceDomains": [
+                    url,
+                    // CartoDB basemap tiles used by the Leaflet renderer plugin
+                    "https://*.basemaps.cartocdn.com",
+                ],
+                "connectDomains": [url]
             }
         }),
     );
