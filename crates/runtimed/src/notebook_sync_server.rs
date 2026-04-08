@@ -2075,10 +2075,15 @@ where
                                 );
                             }
                         }
-                        let mut guard = room_for_eviction.runtime_agent_handle.lock().await;
-                        *guard = None;
-                        let mut tx = room_for_eviction.runtime_agent_request_tx.lock().await;
-                        *tx = None;
+                        // Scope each lock independently to avoid cross-lock ordering.
+                        {
+                            let mut guard = room_for_eviction.runtime_agent_handle.lock().await;
+                            *guard = None;
+                        }
+                        {
+                            let mut tx = room_for_eviction.runtime_agent_request_tx.lock().await;
+                            *tx = None;
+                        }
                     }
                 }
 
@@ -2314,8 +2319,10 @@ where
     // The sync handshake takes multiple roundtrips; by the time it completes,
     // transient states like starting phases may have already passed.
     {
-        let sd = room.state_doc.read().await;
-        let state = sd.read_state();
+        let state = {
+            let sd = room.state_doc.read().await;
+            sd.read_state()
+        };
         connection::send_typed_json_frame(
             writer,
             NotebookFrameType::Broadcast,
@@ -5077,6 +5084,10 @@ async fn handle_notebook_request(
                                 // Write kernel status + info + prewarmed packages
                                 // to RuntimeStateDoc
                                 {
+                                    // Read agent ID before taking the write lock to
+                                    // avoid holding state_doc across an .await.
+                                    let agent_id =
+                                        room.current_runtime_agent_id.read().await.clone();
                                     let mut sd = room.state_doc.write().await;
                                     let mut changed = false;
                                     changed |= sd.set_kernel_status("idle");
@@ -5088,9 +5099,7 @@ async fn handle_notebook_request(
                                     changed |= sd.set_prewarmed_packages(
                                         &launched_config.prewarmed_packages,
                                     );
-                                    if let Some(ref aid) =
-                                        *room.current_runtime_agent_id.read().await
-                                    {
+                                    if let Some(ref aid) = agent_id {
                                         changed |= sd.set_runtime_agent_id(aid);
                                     }
                                     if changed {
