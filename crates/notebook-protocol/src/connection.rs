@@ -108,6 +108,10 @@ pub enum Handshake {
         /// a new notebook is created and this ID is used as the notebook_id/env_id.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         notebook_id: Option<String>,
+        /// When true, the notebook exists only in memory — no .automerge persisted to disk.
+        /// Defaults to false (backward compat). MCP agents use true for scratch compute.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ephemeral: Option<bool>,
     },
 }
 
@@ -232,6 +236,9 @@ pub struct NotebookConnectionInfo {
     /// Error message if the notebook could not be opened/created.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Whether this notebook is ephemeral (in-memory only, no persistence).
+    #[serde(default)]
+    pub ephemeral: bool,
 }
 
 /// Frame types for notebook sync connections.
@@ -619,6 +626,7 @@ mod tests {
             runtime: "python".into(),
             working_dir: None,
             notebook_id: None,
+            ephemeral: None,
         })
         .unwrap();
         assert_eq!(json, r#"{"channel":"create_notebook","runtime":"python"}"#);
@@ -628,6 +636,7 @@ mod tests {
             runtime: "deno".into(),
             working_dir: Some("/home/user/project".into()),
             notebook_id: None,
+            ephemeral: None,
         })
         .unwrap();
         assert_eq!(
@@ -640,6 +649,7 @@ mod tests {
             runtime: "python".into(),
             working_dir: None,
             notebook_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
+            ephemeral: None,
         })
         .unwrap();
         assert_eq!(
@@ -659,11 +669,12 @@ mod tests {
             cell_count: 5,
             needs_trust_approval: false,
             error: None,
+            ephemeral: false,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert_eq!(
             json,
-            r#"{"protocol":"v2","notebook_id":"/home/user/notebook.ipynb","cell_count":5,"needs_trust_approval":false}"#
+            r#"{"protocol":"v2","notebook_id":"/home/user/notebook.ipynb","cell_count":5,"needs_trust_approval":false,"ephemeral":false}"#
         );
 
         // With version info
@@ -675,6 +686,7 @@ mod tests {
             cell_count: 5,
             needs_trust_approval: false,
             error: None,
+            ephemeral: false,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains(&format!(r#""protocol_version":{}"#, PROTOCOL_VERSION)));
@@ -689,6 +701,7 @@ mod tests {
             cell_count: 1,
             needs_trust_approval: true,
             error: None,
+            ephemeral: false,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains(r#""needs_trust_approval":true"#));
@@ -702,6 +715,7 @@ mod tests {
             cell_count: 0,
             needs_trust_approval: false,
             error: Some("File not found".into()),
+            ephemeral: false,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains(r#""error":"File not found""#));

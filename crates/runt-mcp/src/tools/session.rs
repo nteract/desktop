@@ -197,6 +197,10 @@ pub struct CreateNotebookParams {
     /// Defaults to the user's default_python_env setting.
     #[serde(default)]
     pub package_manager: Option<String>,
+    /// When true (default for MCP), notebook exists only in memory.
+    /// Use save_notebook(path=...) to persist to disk.
+    #[serde(default)]
+    pub ephemeral: Option<bool>,
 }
 
 #[allow(dead_code)]
@@ -381,6 +385,12 @@ pub async fn create_notebook(
 
     let working_dir = arg_str(request, "working_dir").map(|s| PathBuf::from(resolve_path(s)));
     let working_dir_for_detection = working_dir.clone();
+    let ephemeral = request
+        .arguments
+        .as_ref()
+        .and_then(|a| a.get("ephemeral"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
 
     let prev = previous_notebook_id(server).await;
 
@@ -389,6 +399,7 @@ pub async fn create_notebook(
         runtime,
         working_dir,
         &server.get_peer_label().await,
+        ephemeral,
     )
     .await
     {
@@ -524,6 +535,7 @@ pub async fn create_notebook(
                 "runtime": { "language": runtime },
                 "dependencies": deps,
                 "package_manager": pkg_manager,
+                "ephemeral": ephemeral,
             });
 
             if let Some(ref prev_id) = prev {
@@ -654,6 +666,12 @@ pub async fn show_notebook(
         ));
     }
 
+    let is_ephemeral = rooms
+        .iter()
+        .find(|r| r.notebook_id == target)
+        .map(|r| r.ephemeral)
+        .unwrap_or(false);
+
     // Launch the app using the binary's build channel.
     // NOTE: If RUNTIMED_SOCKET_PATH points at a different channel's daemon,
     // this may open the wrong app. That's a known dev-only edge case.
@@ -666,7 +684,11 @@ pub async fn show_notebook(
             .map_err(|e| McpError::internal_error(format!("Failed to open app: {e}"), None))?;
     }
 
-    let result = serde_json::json!({ "notebook_id": target, "opened": true });
+    let mut result = serde_json::json!({ "notebook_id": target, "opened": true });
+    if is_ephemeral {
+        result["warning"] =
+            serde_json::json!("This notebook is ephemeral. Save it from the app to keep it.");
+    }
     tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
 }
 

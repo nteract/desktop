@@ -21,6 +21,7 @@ struct RoomInfoData {
     kernel_type: Option<String>,
     kernel_status: Option<String>,
     env_source: Option<String>,
+    ephemeral: bool,
 }
 
 /// Async client for the runtimed daemon.
@@ -116,6 +117,7 @@ impl AsyncClient {
                     kernel_type: room.kernel_type,
                     kernel_status: room.kernel_status,
                     env_source: room.env_source,
+                    ephemeral: room.ephemeral,
                 })
                 .collect();
             Ok(result)

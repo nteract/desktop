@@ -361,6 +361,7 @@ pub(crate) async fn connect_create(
         runtime,
         working_dir.clone(),
         label,
+        false,
     )
     .await
     .map_err(to_py_err)?;

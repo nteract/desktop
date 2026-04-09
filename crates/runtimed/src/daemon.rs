@@ -417,6 +417,12 @@ impl Pool {
     }
 }
 
+/// Entry in the redirect map for re-keyed ephemeral rooms.
+pub(crate) struct RedirectEntry {
+    pub(crate) new_notebook_id: String,
+    pub(crate) created_at: tokio::time::Instant,
+}
+
 /// The pool daemon state.
 pub struct Daemon {
     config: DaemonConfig,
@@ -446,6 +452,9 @@ pub struct Daemon {
     blob_port: Mutex<Option<u16>>,
     /// Per-notebook Automerge sync rooms.
     notebook_rooms: NotebookRooms,
+    /// Redirect map: old ephemeral UUID -> new canonical path after rekey.
+    /// Used so peers reconnecting with the old UUID find the re-keyed room.
+    pub(crate) redirect_map: std::sync::Mutex<HashMap<String, RedirectEntry>>,
 }
 
 /// Error returned when another daemon is already running.
@@ -527,6 +536,7 @@ impl Daemon {
             blob_store,
             blob_port: Mutex::new(None),
             notebook_rooms: Arc::new(Mutex::new(HashMap::new())),
+            redirect_map: std::sync::Mutex::new(HashMap::new()),
         }))
     }
 
@@ -1258,6 +1268,7 @@ impl Daemon {
                         &notebook_id,
                         &docs_dir,
                         self.blob_store.clone(),
+                        false, // NotebookSync handshake is always persistent
                     )
                 };
                 let (reader, writer) = tokio::io::split(stream);
@@ -1290,8 +1301,9 @@ impl Daemon {
                 runtime,
                 working_dir,
                 notebook_id,
+                ephemeral,
             } => {
-                self.handle_create_notebook(stream, runtime, working_dir, notebook_id)
+                self.handle_create_notebook(stream, runtime, working_dir, notebook_id, ephemeral)
                     .await
             }
             Handshake::RuntimeAgent {
@@ -1360,6 +1372,7 @@ impl Daemon {
                 cell_count: 0,
                 needs_trust_approval: false,
                 error: Some(error),
+                ephemeral: false,
             };
             send_json_frame(writer, &response).await?;
             Ok(())
@@ -1401,6 +1414,7 @@ impl Daemon {
                         stream,
                         settings.default_runtime.to_string(),
                         Some(dir_path),
+                        None,
                         None,
                     )
                     .await;
@@ -1461,6 +1475,22 @@ impl Daemon {
                 .to_string()
         };
 
+        // Check if this notebook_id was re-keyed (ephemeral -> saved).
+        let notebook_id = match self.redirect_map.lock() {
+            Ok(redirects) => {
+                if let Some(entry) = redirects.get(&notebook_id) {
+                    info!(
+                        "[runtimed] Redirecting open {} -> {} (re-keyed room)",
+                        notebook_id, entry.new_notebook_id
+                    );
+                    entry.new_notebook_id.clone()
+                } else {
+                    notebook_id
+                }
+            }
+            Err(_) => notebook_id,
+        };
+
         // Get or create room for this notebook.
         // First check if an existing room (including UUID-keyed ephemeral rooms)
         // already owns this path — prevents duplicate rooms and re-key collisions.
@@ -1477,6 +1507,7 @@ impl Daemon {
                     &notebook_id,
                     &docs_dir,
                     self.blob_store.clone(),
+                    false, // OpenNotebook handshake is always persistent
                 )
             }
         };
@@ -1573,6 +1604,7 @@ impl Daemon {
             cell_count,
             needs_trust_approval,
             error: None,
+            ephemeral: false,
         };
         send_json_frame(&mut writer, &response).await?;
 
@@ -1610,6 +1642,7 @@ impl Daemon {
         runtime: String,
         working_dir: Option<String>,
         notebook_id_hint: Option<String>,
+        ephemeral: Option<bool>,
     ) -> anyhow::Result<()>
     where
         S: AsyncRead + AsyncWrite + Unpin,
@@ -1631,6 +1664,26 @@ impl Daemon {
         // Use provided notebook_id (session restore) or generate a new UUID
         let notebook_id = notebook_id_hint.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
+        // Check if this notebook_id was re-keyed (ephemeral -> saved).
+        // If so, redirect to the new canonical path so the peer joins the
+        // existing room instead of creating a new empty one.
+        // Check redirect map and resolve ephemeral flag together.
+        // If the UUID was re-keyed (saved), the room is now file-backed — force persistent.
+        let (notebook_id, ephemeral) = match self.redirect_map.lock() {
+            Ok(redirects) => {
+                if let Some(entry) = redirects.get(&notebook_id) {
+                    info!(
+                        "[runtimed] Redirecting {} -> {} (re-keyed room)",
+                        notebook_id, entry.new_notebook_id
+                    );
+                    (entry.new_notebook_id.clone(), false)
+                } else {
+                    (notebook_id, ephemeral.unwrap_or(false))
+                }
+            }
+            Err(_) => (notebook_id, ephemeral.unwrap_or(false)),
+        };
+
         // Create room for this notebook
         let docs_dir = self.config.notebook_docs_dir.clone();
         let room = {
@@ -1640,6 +1693,7 @@ impl Daemon {
                 &notebook_id,
                 &docs_dir,
                 self.blob_store.clone(),
+                ephemeral,
             )
         };
 
@@ -1691,6 +1745,7 @@ impl Daemon {
                 cell_count: 0,
                 needs_trust_approval: false,
                 error: Some(format!("Failed to create notebook: {}", e)),
+                ephemeral: false,
             };
             send_json_frame(&mut writer, &response).await?;
             let _ = tokio::io::copy(&mut reader, &mut tokio::io::sink()).await;
@@ -1708,6 +1763,7 @@ impl Daemon {
             cell_count,
             needs_trust_approval: false,
             error: None,
+            ephemeral,
         };
         send_json_frame(&mut writer, &response).await?;
 
@@ -2180,6 +2236,7 @@ impl Daemon {
                         kernel_type,
                         env_source,
                         kernel_status,
+                        ephemeral: room.is_ephemeral.load(std::sync::atomic::Ordering::Relaxed),
                     });
                 }
                 Response::RoomsList { rooms: room_infos }
@@ -2314,6 +2371,46 @@ impl Daemon {
                     info!(
                         "[runtimed] Cleaned up {} stale worktree directories",
                         total_cleaned
+                    );
+                }
+            }
+
+            // Clean up orphaned notebook-docs (emergency persist files, legacy untitled docs)
+            let notebook_docs_dir = self.config.notebook_docs_dir.clone();
+            if notebook_docs_dir.exists() {
+                let active_rooms = self.notebook_rooms.lock().await;
+                let active_hashes: std::collections::HashSet<String> = active_rooms
+                    .keys()
+                    .map(|id| notebook_doc::notebook_doc_filename(id))
+                    .collect();
+                drop(active_rooms);
+
+                let docs_max_age = std::time::Duration::from_secs(24 * 3600); // 24 hours
+                let mut docs_cleaned = 0;
+                if let Ok(mut entries) = tokio::fs::read_dir(&notebook_docs_dir).await {
+                    while let Ok(Some(entry)) = entries.next_entry().await {
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        if !name.ends_with(".automerge") {
+                            continue;
+                        }
+                        if active_hashes.contains(&name) {
+                            continue;
+                        }
+                        let is_stale = entry
+                            .metadata()
+                            .await
+                            .ok()
+                            .and_then(|m| m.modified().ok())
+                            .is_some_and(|t| t.elapsed().unwrap_or_default() > docs_max_age);
+                        if is_stale && tokio::fs::remove_file(entry.path()).await.is_ok() {
+                            docs_cleaned += 1;
+                        }
+                    }
+                }
+                if docs_cleaned > 0 {
+                    info!(
+                        "[runtimed] GC: cleaned up {} orphaned notebook-doc files",
+                        docs_cleaned
                     );
                 }
             }

@@ -44,7 +44,7 @@
   },
   {
     "name": "create_notebook",
-    "description": "Create a new notebook, making it your active session. Supports uv, conda, or pixi via package_manager param (defaults to user's default_python_env setting). The kernel starts automatically with deps installed. Call save_notebook(path) to persist to disk.",
+    "description": "Create a new notebook, making it your active session. Notebooks are ephemeral by default (in-memory only) — use save_notebook(path) to persist to disk. Set ephemeral=false for session-restorable persistence. Supports uv, conda, or pixi via package_manager param.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -80,6 +80,14 @@
           "description": "Working directory for the kernel.",
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "ephemeral": {
+          "default": true,
+          "description": "When true (default), notebook exists only in memory. Use save_notebook(path) to persist.",
+          "type": [
+            "boolean",
             "null"
           ]
         }

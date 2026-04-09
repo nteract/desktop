@@ -626,7 +626,9 @@ async fn process_markdown_assets(room: &NotebookRoom) {
     };
 
     let _ = room.changed_tx.send(());
-    let _ = room.persist_tx.send(Some(persist_bytes));
+    if let Some(ref tx) = room.persist_tx {
+        let _ = tx.send(Some(persist_bytes));
+    }
 }
 
 /// Check if the current metadata differs from kernel's launched config and broadcast sync state.
@@ -978,13 +980,15 @@ pub struct NotebookRoom {
     pub presence: Arc<RwLock<PresenceState>>,
     /// Channel to send doc bytes to the debounced persistence task.
     /// Uses watch for "latest value" semantics - always keeps most recent state.
-    pub persist_tx: watch::Sender<Option<Vec<u8>>>,
+    pub persist_tx: Option<watch::Sender<Option<Vec<u8>>>>,
     /// Persistence path for this room's document.
     pub persist_path: PathBuf,
     /// Number of active peer connections in this room.
     pub active_peers: AtomicUsize,
     /// Whether at least one peer has ever connected to this room.
     pub had_peers: AtomicBool,
+    /// Whether this notebook is ephemeral (in-memory only, no persistence).
+    pub is_ephemeral: AtomicBool,
     /// Blob store for output manifests.
     pub blob_store: Arc<BlobStore>,
     /// Trust state for this notebook (for auto-launch decisions).
@@ -1149,7 +1153,12 @@ impl NotebookRoom {
     /// Note: Trust state is initialized from disk because the Automerge doc
     /// starts empty (first client hasn't synced yet). Once the doc is populated,
     /// `check_and_update_trust_state` keeps room.trust_state current.
-    pub fn new_fresh(notebook_id: &str, docs_dir: &Path, blob_store: Arc<BlobStore>) -> Self {
+    pub fn new_fresh(
+        notebook_id: &str,
+        docs_dir: &Path,
+        blob_store: Arc<BlobStore>,
+        ephemeral: bool,
+    ) -> Self {
         let filename = notebook_doc_filename(notebook_id);
         let persist_path = docs_dir.join(&filename);
 
@@ -1159,14 +1168,14 @@ impl NotebookRoom {
         // For saved notebooks (file paths), .ipynb is the source of truth, so
         // delete stale persisted docs and start fresh (daemon loads from disk).
         let runtimed_actor = "runtimed";
-        let mut doc = if is_untitled_notebook(notebook_id) && persist_path.exists() {
+        let mut doc = if !ephemeral && is_untitled_notebook(notebook_id) && persist_path.exists() {
             info!(
                 "[notebook-sync] Loading persisted doc for untitled notebook: {:?}",
                 persist_path
             );
             NotebookDoc::load_or_create_with_actor(&persist_path, notebook_id, runtimed_actor)
         } else {
-            if persist_path.exists() {
+            if !ephemeral && persist_path.exists() {
                 if snapshot_before_delete(&persist_path, docs_dir) {
                     let _ = std::fs::remove_file(&persist_path);
                 } else {
@@ -1182,8 +1191,19 @@ impl NotebookRoom {
         let (kernel_broadcast_tx, _) = broadcast::channel(KERNEL_BROADCAST_CAPACITY);
 
         // Spawn debounced persistence task (watch channel keeps latest value only)
-        let (persist_tx, persist_rx) = watch::channel::<Option<Vec<u8>>>(None);
-        spawn_persist_debouncer(persist_rx, persist_path.clone());
+        // Ephemeral rooms skip persistence entirely.
+        // Store ephemeral flag in doc metadata so the GUI can show a banner
+        if ephemeral {
+            let _ = doc.set_metadata("ephemeral", "true");
+        }
+
+        let persist_tx = if ephemeral {
+            None
+        } else {
+            let (persist_tx, persist_rx) = watch::channel::<Option<Vec<u8>>>(None);
+            spawn_persist_debouncer(persist_rx, persist_path.clone());
+            Some(persist_tx)
+        };
 
         let notebook_path = PathBuf::from(notebook_id);
         let trust_state = if is_untitled_notebook(notebook_id) {
@@ -1254,6 +1274,7 @@ impl NotebookRoom {
             persist_path,
             active_peers: AtomicUsize::new(0),
             had_peers: AtomicBool::new(false),
+            is_ephemeral: AtomicBool::new(ephemeral),
             blob_store,
             trust_state: Arc::new(RwLock::new(trust_state)),
             notebook_path: RwLock::new(notebook_path),
@@ -1338,10 +1359,11 @@ impl NotebookRoom {
             kernel_broadcast_tx,
             presence_tx,
             presence: Arc::new(RwLock::new(PresenceState::new())),
-            persist_tx,
+            persist_tx: Some(persist_tx),
             persist_path,
             active_peers: AtomicUsize::new(0),
             had_peers: AtomicBool::new(false),
+            is_ephemeral: AtomicBool::new(false),
             blob_store,
             trust_state: Arc::new(RwLock::new(trust_state)),
             notebook_path: RwLock::new(notebook_path),
@@ -1458,12 +1480,18 @@ pub fn get_or_create_room(
     notebook_id: &str,
     docs_dir: &Path,
     blob_store: Arc<BlobStore>,
+    ephemeral: bool,
 ) -> Arc<NotebookRoom> {
     rooms
         .entry(notebook_id.to_string())
         .or_insert_with(|| {
             info!("[notebook-sync] Creating room for {}", notebook_id);
-            let room = Arc::new(NotebookRoom::new_fresh(notebook_id, docs_dir, blob_store));
+            let room = Arc::new(NotebookRoom::new_fresh(
+                notebook_id,
+                docs_dir,
+                blob_store,
+                ephemeral,
+            ));
 
             // Spawn file watcher for .ipynb files (not for untitled notebooks with UUID IDs)
             if !is_untitled_notebook(notebook_id) {
@@ -2447,7 +2475,9 @@ where
                                 }
 
                                 // Send to debounced persistence task
-                                let _ = room.persist_tx.send(Some(persist_bytes));
+                                if let Some(ref tx) = room.persist_tx {
+                                    let _ = tx.send(Some(persist_bytes));
+                                }
 
                                 // Check if metadata changed and kernel is running - broadcast sync state
                                 if metadata_changed {
@@ -2475,6 +2505,17 @@ where
                                         path,
                                         room,
                                     ).await {
+                                        // Insert redirect so peers reconnecting with the old UUID
+                                        // get routed to the re-keyed room.
+                                        if let Ok(mut redirects) = daemon.redirect_map.lock() {
+                                            redirects.insert(notebook_id.clone(), crate::daemon::RedirectEntry {
+                                                new_notebook_id: new_id.clone(),
+                                                created_at: tokio::time::Instant::now(),
+                                            });
+                                            // Prune old entries (older than 1 hour)
+                                            let cutoff = tokio::time::Instant::now() - std::time::Duration::from_secs(3600);
+                                            redirects.retain(|_, v| v.created_at > cutoff);
+                                        }
                                         notebook_id = new_id.clone();
                                         NotebookResponse::NotebookSaved {
                                             path: path.clone(),
@@ -4311,8 +4352,15 @@ async fn rekey_ephemeral_room(
             new_notebook_id: canonical.clone(),
         });
 
+    // Clear the ephemeral flag — this room is now backed by a file on disk.
+    room.is_ephemeral.store(false, Ordering::Relaxed);
+    {
+        let mut doc = room.doc.write().await;
+        let _ = doc.set_metadata("ephemeral", "");
+    }
+
     info!(
-        "[notebook-sync] Re-keyed room {} -> {}",
+        "[notebook-sync] Re-keyed room {} -> {} (ephemeral cleared)",
         old_notebook_id, canonical
     );
 
@@ -5468,7 +5516,9 @@ async fn handle_notebook_request(
             }
 
             // Send to debounced persistence task
-            let _ = room.persist_tx.send(Some(persist_bytes));
+            if let Some(ref tx) = room.persist_tx {
+                let _ = tx.send(Some(persist_bytes));
+            }
 
             // Broadcast for cross-window UI sync (fast path)
             let _ = room
@@ -5774,9 +5824,21 @@ async fn handle_notebook_request(
                     path: saved_path,
                     new_notebook_id: None,
                 },
-                Err(e) => NotebookResponse::Error {
-                    error: format!("Failed to save notebook: {e}"),
-                },
+                Err(e) => {
+                    // Emergency persist for ephemeral rooms: if saving to .ipynb
+                    // failed, at least write the Automerge doc so data isn't lost.
+                    if room.is_ephemeral.load(Ordering::Relaxed) && room.persist_tx.is_none() {
+                        let bytes = room.doc.write().await.save();
+                        persist_notebook_bytes(&bytes, &room.persist_path);
+                        warn!(
+                            "[notebook-sync] Save failed for ephemeral room — emergency persist to {:?}",
+                            room.persist_path
+                        );
+                    }
+                    NotebookResponse::Error {
+                        error: format!("Failed to save notebook: {e}"),
+                    }
+                }
             }
         }
 
@@ -5810,8 +5872,10 @@ async fn handle_notebook_request(
                     // Notify peers of the change
                     let _ = room.changed_tx.send(());
                     // Persist
-                    let bytes = doc.save();
-                    let _ = room.persist_tx.send(Some(bytes));
+                    if let Some(ref tx) = room.persist_tx {
+                        let bytes = doc.save();
+                        let _ = tx.send(Some(bytes));
+                    }
                     NotebookResponse::MetadataSet {}
                 }
                 Err(e) => NotebookResponse::Error {
@@ -5840,8 +5904,10 @@ async fn handle_notebook_request(
                                 // Notify peers of the change
                                 let _ = room.changed_tx.send(());
                                 // Persist
-                                let bytes = doc.save();
-                                let _ = room.persist_tx.send(Some(bytes));
+                                if let Some(ref tx) = room.persist_tx {
+                                    let bytes = doc.save();
+                                    let _ = tx.send(Some(bytes));
+                                }
                                 Ok(())
                             }
                             Err(e) => Err(format!("Failed to set metadata snapshot: {e}")),
@@ -8859,8 +8925,8 @@ mod tests {
         let blob_store = test_blob_store(&tmp);
         let mut rooms = HashMap::new();
 
-        let room1 = get_or_create_room(&mut rooms, "nb1", tmp.path(), blob_store.clone());
-        let room2 = get_or_create_room(&mut rooms, "nb1", tmp.path(), blob_store);
+        let room1 = get_or_create_room(&mut rooms, "nb1", tmp.path(), blob_store.clone(), false);
+        let room2 = get_or_create_room(&mut rooms, "nb1", tmp.path(), blob_store, false);
 
         // Should be the same Arc (same room)
         assert!(Arc::ptr_eq(&room1, &room2));
@@ -8872,8 +8938,8 @@ mod tests {
         let blob_store = test_blob_store(&tmp);
         let mut rooms = HashMap::new();
 
-        let room1 = get_or_create_room(&mut rooms, "nb1", tmp.path(), blob_store.clone());
-        let room2 = get_or_create_room(&mut rooms, "nb2", tmp.path(), blob_store);
+        let room1 = get_or_create_room(&mut rooms, "nb1", tmp.path(), blob_store.clone(), false);
+        let room2 = get_or_create_room(&mut rooms, "nb2", tmp.path(), blob_store, false);
 
         // Should be different rooms
         assert!(!Arc::ptr_eq(&room1, &room2));
@@ -8903,7 +8969,7 @@ mod tests {
     async fn test_new_fresh_creates_empty_doc() {
         let tmp = tempfile::TempDir::new().unwrap();
         let blob_store = test_blob_store(&tmp);
-        let room = NotebookRoom::new_fresh("fresh-test", tmp.path(), blob_store);
+        let room = NotebookRoom::new_fresh("fresh-test", tmp.path(), blob_store, false);
 
         let doc = room.doc.try_read().unwrap();
         assert_eq!(doc.notebook_id(), Some("fresh-test".to_string()));
@@ -8931,7 +8997,7 @@ mod tests {
         assert!(persist_path.exists(), "Persisted file should exist");
 
         // Create fresh room - should delete persisted doc and start empty
-        let room = NotebookRoom::new_fresh("stale-test", tmp.path(), blob_store);
+        let room = NotebookRoom::new_fresh("stale-test", tmp.path(), blob_store, false);
 
         // Persisted file should be deleted
         assert!(
@@ -8968,7 +9034,7 @@ mod tests {
         assert!(persist_path.exists(), "Persisted file should exist");
 
         // Create fresh room for untitled notebook — should load persisted doc
-        let room = NotebookRoom::new_fresh(notebook_id, tmp.path(), blob_store);
+        let room = NotebookRoom::new_fresh(notebook_id, tmp.path(), blob_store, false);
 
         // Persisted file should still exist (not deleted)
         assert!(
@@ -9023,7 +9089,7 @@ mod tests {
 
         // Simulate daemon restart: create a fresh room with the same UUID.
         // new_fresh should load the persisted doc and read trust from it.
-        let room = NotebookRoom::new_fresh(notebook_id, tmp.path(), blob_store);
+        let room = NotebookRoom::new_fresh(notebook_id, tmp.path(), blob_store, false);
 
         let ts = room.trust_state.try_read().unwrap();
         assert_eq!(
@@ -9033,6 +9099,43 @@ mod tests {
         );
 
         std::env::remove_var("RUNT_TRUST_KEY_PATH");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_ephemeral_room_skips_persistence() {
+        let dir = tempfile::tempdir().unwrap();
+        let blob_store = Arc::new(BlobStore::new(dir.path().join("blobs")));
+        let notebook_id = uuid::Uuid::new_v4().to_string();
+        let room = NotebookRoom::new_fresh(&notebook_id, dir.path(), blob_store, true);
+
+        assert!(room.persist_tx.is_none());
+        assert!(room.is_ephemeral.load(std::sync::atomic::Ordering::Relaxed));
+
+        // No .automerge file should exist
+        let filename = notebook_doc_filename(&notebook_id);
+        assert!(!dir.path().join(&filename).exists());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_session_room_persists() {
+        let dir = tempfile::tempdir().unwrap();
+        let blob_store = Arc::new(BlobStore::new(dir.path().join("blobs")));
+        let notebook_id = uuid::Uuid::new_v4().to_string();
+        let room = NotebookRoom::new_fresh(&notebook_id, dir.path(), blob_store, false);
+
+        assert!(room.persist_tx.is_some());
+        assert!(!room.is_ephemeral.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_ephemeral_room_has_metadata_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let blob_store = Arc::new(BlobStore::new(dir.path().join("blobs")));
+        let notebook_id = uuid::Uuid::new_v4().to_string();
+        let room = NotebookRoom::new_fresh(&notebook_id, dir.path(), blob_store, true);
+
+        let doc = room.doc.read().await;
+        assert_eq!(doc.get_metadata("ephemeral"), Some("true".to_string()));
     }
 
     /// Helper to build a snapshot with UV inline deps.
@@ -9218,10 +9321,11 @@ mod tests {
             kernel_broadcast_tx,
             presence_tx,
             presence: Arc::new(RwLock::new(PresenceState::new())),
-            persist_tx,
+            persist_tx: Some(persist_tx),
             persist_path,
             active_peers: AtomicUsize::new(0),
             had_peers: AtomicBool::new(false),
+            is_ephemeral: AtomicBool::new(false),
             blob_store,
             trust_state: Arc::new(RwLock::new(TrustState {
                 status: runt_trust::TrustStatus::Untrusted,
@@ -10699,7 +10803,9 @@ mod tests {
 
         // 1. Create an ephemeral room with a UUID notebook_id
         let uuid_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
-        let room = Arc::new(NotebookRoom::new_fresh(uuid_id, &docs_dir, blob_store));
+        let room = Arc::new(NotebookRoom::new_fresh(
+            uuid_id, &docs_dir, blob_store, false,
+        ));
         assert!(is_untitled_notebook(uuid_id));
 
         // Add an initial cell so the first save has content

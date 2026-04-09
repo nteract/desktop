@@ -725,6 +725,8 @@ pub struct NotebookConnectionInfo {
     pub cell_count: usize,
     /// True if the notebook has untrusted dependencies requiring user approval.
     pub needs_trust_approval: bool,
+    /// Whether this notebook is ephemeral (in-memory only, no persistence).
+    pub ephemeral: bool,
 }
 
 #[pymethods]
@@ -748,6 +750,7 @@ impl NotebookConnectionInfo {
             notebook_id: info.notebook_id,
             cell_count: info.cell_count,
             needs_trust_approval: info.needs_trust_approval,
+            ephemeral: info.ephemeral,
         }
     }
 }
