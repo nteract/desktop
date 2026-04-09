@@ -619,14 +619,16 @@ async fn handle_runtime_agent_request(
             }
         }
 
-        RuntimeAgentRequest::SyncEnvironment { packages } => {
+        RuntimeAgentRequest::SyncEnvironment { packages, channels } => {
             info!("[runtime-agent] SyncEnvironment: installing {:?}", packages);
             if let Some(ref kernel_ref) = kernel {
                 let es = kernel_ref.env_source().to_string();
-                if !es.starts_with("uv:") {
+
+                // Deno doesn't support hot-sync - just return success as a no-op
+                if es == "deno" {
                     return (
-                        RuntimeAgentResponse::Error {
-                            error: "Hot-sync only supported for UV environments".to_string(),
+                        RuntimeAgentResponse::EnvironmentSynced {
+                            synced_packages: packages,
                         },
                         None,
                     );
@@ -657,25 +659,63 @@ async fn handle_runtime_agent_request(
                     }
                 };
 
-                // Run uv pip install (no kernel access needed during sync)
-                let uv_env = kernel_env::uv::UvEnvironment {
-                    venv_path,
-                    python_path,
-                };
+                if es.starts_with("uv:") {
+                    // UV hot-sync path
+                    let uv_env = kernel_env::uv::UvEnvironment {
+                        venv_path,
+                        python_path,
+                    };
 
-                match kernel_env::uv::sync_dependencies(&uv_env, &packages).await {
-                    Ok(()) => (
-                        RuntimeAgentResponse::EnvironmentSynced {
-                            synced_packages: packages,
-                        },
-                        None,
-                    ),
-                    Err(e) => (
+                    match kernel_env::uv::sync_dependencies(&uv_env, &packages).await {
+                        Ok(()) => (
+                            RuntimeAgentResponse::EnvironmentSynced {
+                                synced_packages: packages,
+                            },
+                            None,
+                        ),
+                        Err(e) => (
+                            RuntimeAgentResponse::Error {
+                                error: format!("Failed to install packages: {}", e),
+                            },
+                            None,
+                        ),
+                    }
+                } else if es.starts_with("conda:") {
+                    // Conda hot-sync path
+                    let conda_env = kernel_env::conda::CondaEnvironment {
+                        env_path: venv_path,
+                        python_path,
+                    };
+
+                    let conda_deps = kernel_env::conda::CondaDependencies {
+                        dependencies: packages.clone(),
+                        channels: channels.unwrap_or_else(|| vec!["conda-forge".to_string()]),
+                        python: None,
+                        env_id: None,
+                    };
+
+                    match kernel_env::conda::sync_dependencies(&conda_env, &conda_deps).await {
+                        Ok(()) => (
+                            RuntimeAgentResponse::EnvironmentSynced {
+                                synced_packages: packages,
+                            },
+                            None,
+                        ),
+                        Err(e) => (
+                            RuntimeAgentResponse::Error {
+                                error: format!("Failed to install packages: {}", e),
+                            },
+                            None,
+                        ),
+                    }
+                } else {
+                    (
                         RuntimeAgentResponse::Error {
-                            error: format!("Failed to install packages: {}", e),
+                            error: "Hot-sync only supported for UV and Conda environments"
+                                .to_string(),
                         },
                         None,
-                    ),
+                    )
                 }
             } else {
                 (

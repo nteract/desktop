@@ -6219,9 +6219,11 @@ async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResponse {
         }
         let env_type = if launched.uv_deps.is_some() {
             "uv"
+        } else if launched.conda_deps.is_some() {
+            "conda"
         } else {
             return NotebookResponse::SyncEnvironmentFailed {
-                error: "Hot-sync only supported for UV environments".to_string(),
+                error: "Hot-sync only supported for UV and Conda environments".to_string(),
                 needs_restart: true,
             };
         };
@@ -6239,9 +6241,18 @@ async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResponse {
                 }
                 (added, "uv")
             }
+            Some("conda:inline") => {
+                let added = get_inline_conda_deps(&current_metadata).unwrap_or_default();
+                if added.is_empty() {
+                    return NotebookResponse::SyncEnvironmentComplete {
+                        synced_packages: vec![],
+                    };
+                }
+                (added, "conda")
+            }
             _ => {
                 return NotebookResponse::SyncEnvironmentFailed {
-                    error: "Hot-sync only supported for UV environments".to_string(),
+                    error: "Hot-sync only supported for UV and Conda environments".to_string(),
                     needs_restart: true,
                 };
             }
@@ -6254,17 +6265,25 @@ async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResponse {
         };
     }
 
-    if env_type != "uv" {
+    if env_type != "uv" && env_type != "conda" {
         return NotebookResponse::SyncEnvironmentFailed {
-            error: "Hot-sync only supported for UV environments. Conda and Deno require restart."
+            error: "Hot-sync only supported for UV and Conda environments. Deno requires restart."
                 .to_string(),
             needs_restart: true,
         };
     }
 
+    // Get conda channels if this is a conda environment
+    let channels = if env_type == "conda" {
+        Some(get_inline_conda_channels(&current_metadata))
+    } else {
+        None
+    };
+
     // Send SyncEnvironment to the runtime agent
     let sync_request = notebook_protocol::protocol::RuntimeAgentRequest::SyncEnvironment {
         packages: packages_to_install.clone(),
+        channels,
     };
 
     // Notify frontend that sync is starting
