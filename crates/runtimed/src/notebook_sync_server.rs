@@ -6215,7 +6215,7 @@ async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResponse {
         || launched.conda_deps.is_some()
         || launched.deno_config.is_some();
 
-    let (packages_to_install, env_type) = if is_tracking {
+    let (packages_to_install, env_kind) = if is_tracking {
         // Kernel launched with inline deps — compute drift
         let diff = compute_env_sync_diff(&launched, &current_metadata);
         let Some(diff) = diff else {
@@ -6229,17 +6229,22 @@ async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResponse {
                 needs_restart: true,
             };
         }
-        let env_type = if launched.uv_deps.is_some() {
-            "uv"
+        let env_kind = if launched.uv_deps.is_some() {
+            notebook_protocol::protocol::EnvKind::Uv {
+                packages: diff.added.clone(),
+            }
         } else if launched.conda_deps.is_some() {
-            "conda"
+            notebook_protocol::protocol::EnvKind::Conda {
+                packages: diff.added.clone(),
+                channels: get_inline_conda_channels(&current_metadata),
+            }
         } else {
             return NotebookResponse::SyncEnvironmentFailed {
                 error: "Hot-sync only supported for UV and Conda environments".to_string(),
                 needs_restart: true,
             };
         };
-        (diff.added, env_type)
+        (diff.added, env_kind)
     } else {
         // Prewarmed kernel — check if user added inline deps
         let inline = check_inline_deps(&current_metadata);
@@ -6251,7 +6256,10 @@ async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResponse {
                         synced_packages: vec![],
                     };
                 }
-                (added, "uv")
+                let env_kind = notebook_protocol::protocol::EnvKind::Uv {
+                    packages: added.clone(),
+                };
+                (added, env_kind)
             }
             Some("conda:inline") => {
                 let added = get_inline_conda_deps(&current_metadata).unwrap_or_default();
@@ -6260,7 +6268,11 @@ async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResponse {
                         synced_packages: vec![],
                     };
                 }
-                (added, "conda")
+                let env_kind = notebook_protocol::protocol::EnvKind::Conda {
+                    packages: added.clone(),
+                    channels: get_inline_conda_channels(&current_metadata),
+                };
+                (added, env_kind)
             }
             _ => {
                 return NotebookResponse::SyncEnvironmentFailed {
@@ -6276,18 +6288,6 @@ async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResponse {
             synced_packages: vec![],
         };
     }
-
-    // Build typed EnvKind — eliminates string-based branching
-    let env_kind = if env_type == "uv" {
-        notebook_protocol::protocol::EnvKind::Uv {
-            packages: packages_to_install.clone(),
-        }
-    } else {
-        notebook_protocol::protocol::EnvKind::Conda {
-            packages: packages_to_install.clone(),
-            channels: get_inline_conda_channels(&current_metadata),
-        }
-    };
 
     // Send SyncEnvironment to the runtime agent
     let sync_request =
