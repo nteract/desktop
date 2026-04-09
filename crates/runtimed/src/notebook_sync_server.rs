@@ -9073,6 +9073,32 @@ mod tests {
         std::env::remove_var("RUNT_TRUST_KEY_PATH");
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn test_ephemeral_room_skips_persistence() {
+        let dir = tempfile::tempdir().unwrap();
+        let blob_store = Arc::new(BlobStore::new(dir.path().join("blobs")));
+        let notebook_id = uuid::Uuid::new_v4().to_string();
+        let room = NotebookRoom::new_fresh(&notebook_id, dir.path(), blob_store, true);
+
+        assert!(room.persist_tx.is_none());
+        assert!(room.is_ephemeral.load(std::sync::atomic::Ordering::Relaxed));
+
+        // No .automerge file should exist
+        let filename = notebook_doc_filename(&notebook_id);
+        assert!(!dir.path().join(&filename).exists());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_session_room_persists() {
+        let dir = tempfile::tempdir().unwrap();
+        let blob_store = Arc::new(BlobStore::new(dir.path().join("blobs")));
+        let notebook_id = uuid::Uuid::new_v4().to_string();
+        let room = NotebookRoom::new_fresh(&notebook_id, dir.path(), blob_store, false);
+
+        assert!(room.persist_tx.is_some());
+        assert!(!room.is_ephemeral.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
     /// Helper to build a snapshot with UV inline deps.
     fn snapshot_with_uv(deps: Vec<String>) -> NotebookMetadataSnapshot {
         NotebookMetadataSnapshot {
