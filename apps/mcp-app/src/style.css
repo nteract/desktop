@@ -130,14 +130,118 @@ body {
   padding: 12px;
 }
 
+/* ── Summary header ─────────────────────────────────────── */
+
+.summary-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background: var(--code-bg);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.summary-counts {
+  color: var(--fg);
+}
+
+.summary-toggle {
+  background: none;
+  border: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font-size: 11px;
+  text-decoration: underline;
+  padding: 0;
+}
+
+.summary-toggle:hover {
+  color: var(--fg);
+}
+
 /* ── Cell layout ─────────────────────────────────────────── */
 
 .cell {
-  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border);
 }
 
 .cell:last-child {
-  margin-bottom: 0;
+  border-bottom: none;
+}
+
+/* ── Cell header ────────────────────────────────────────── */
+
+.cell-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  user-select: none;
+  transition: background 0.1s;
+  /* Button reset */
+  width: 100%;
+  background: none;
+  border: none;
+  color: inherit;
+  font-family: inherit;
+  text-align: left;
+}
+
+.cell-header:hover {
+  background: var(--code-bg);
+}
+
+.cell-chevron {
+  color: var(--fg-muted);
+  font-size: 10px;
+  width: 12px;
+  flex-shrink: 0;
+}
+
+.cell-ec {
+  color: var(--fg-muted);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: 12px;
+  min-width: 28px;
+  flex-shrink: 0;
+}
+
+.cell-status {
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.status-done {
+  color: #22c55e;
+}
+
+.status-error {
+  color: #ef4444;
+}
+
+.status-cancelled {
+  color: var(--fg-muted);
+}
+
+.cell-preview {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+/* ── Cell body ──────────────────────────────────────────── */
+
+.cell-body {
+  padding: 0 12px 10px 12px;
 }
 
 /* ── Source toggle ───────────────────────────────────────── */
