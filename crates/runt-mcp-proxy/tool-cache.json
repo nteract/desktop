@@ -582,7 +582,7 @@
   },
   {
     "name": "run_all_cells",
-    "description": "Execute all code cells in order, wait for completion, and return the notebook summary. Use get_cell() to inspect specific outputs.",
+    "description": "Execute all code cells in order. With wait=true (default), waits for completion and returns per-cell outputs with structured content. With wait=false, queues cells and returns immediately.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -594,6 +594,14 @@
             "number",
             "null"
           ]
+        },
+        "wait": {
+          "default": null,
+          "description": "If true (default), wait for all cells to finish and return outputs.\nIf false, queue cells and return immediately.",
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       },
       "title": "RunAllCellsParams",
@@ -602,6 +610,11 @@
     "annotations": {
       "destructiveHint": true,
       "openWorldHint": true
+    },
+    "_meta": {
+      "ui": {
+        "resourceUri": "ui://nteract/output.html"
+      }
     }
   },
   {
@@ -635,7 +648,7 @@
   },
   {
     "name": "add_dependency",
-    "description": "Add a package dependency (e.g. 'pandas>=2.0'). Auto-detects package manager (uv, conda, or pixi). Use after='sync' to hot-install (UV only) or after='restart' to restart kernel with new deps.",
+    "description": "Add a package dependency (e.g. 'pandas>=2.0'). When a project file (pixi.toml, pyproject.toml) exists, promotes the dependency to the project file via 'pixi add' or 'uv add'. Otherwise stores in notebook metadata. Use after='sync' or after='restart' to apply.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -666,7 +679,7 @@
   },
   {
     "name": "remove_dependency",
-    "description": "Remove a package dependency. Auto-detects package manager. Requires restart_kernel() to take effect.",
+    "description": "Remove a package dependency. When a project file exists, runs 'pixi remove' or 'uv remove'. Otherwise removes from notebook metadata. Requires restart_kernel() to take effect.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
