@@ -6280,6 +6280,9 @@ async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResponse {
         None
     };
 
+    // Store env_type for use in success handler
+    let sync_env_type = env_type;
+
     // Send SyncEnvironment to the runtime agent
     let sync_request = notebook_protocol::protocol::RuntimeAgentRequest::SyncEnvironment {
         packages: packages_to_install.clone(),
@@ -6307,14 +6310,29 @@ async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResponse {
             {
                 let mut lc = room.runtime_agent_launched_config.write().await;
                 if let Some(ref mut config) = *lc {
-                    // Promote prewarmed to uv:inline baseline if needed
-                    if config.uv_deps.is_none() {
-                        config.uv_deps = Some(vec![]);
-                    }
-                    if let Some(ref mut deps) = config.uv_deps {
-                        for pkg in &synced_packages {
-                            if !deps.contains(pkg) {
-                                deps.push(pkg.clone());
+                    // Update the correct deps field based on environment type
+                    if sync_env_type == "uv" {
+                        // Promote prewarmed to uv:inline baseline if needed
+                        if config.uv_deps.is_none() {
+                            config.uv_deps = Some(vec![]);
+                        }
+                        if let Some(ref mut deps) = config.uv_deps {
+                            for pkg in &synced_packages {
+                                if !deps.contains(pkg) {
+                                    deps.push(pkg.clone());
+                                }
+                            }
+                        }
+                    } else if sync_env_type == "conda" {
+                        // Promote prewarmed to conda:inline baseline if needed
+                        if config.conda_deps.is_none() {
+                            config.conda_deps = Some(vec![]);
+                        }
+                        if let Some(ref mut deps) = config.conda_deps {
+                            for pkg in &synced_packages {
+                                if !deps.contains(pkg) {
+                                    deps.push(pkg.clone());
+                                }
                             }
                         }
                     }
@@ -6339,19 +6357,29 @@ async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResponse {
             NotebookResponse::SyncEnvironmentComplete { synced_packages }
         }
         Ok(notebook_protocol::protocol::RuntimeAgentResponse::Error { error }) => {
+            error!("[notebook-sync] SyncEnvironment failed: {}", error);
             NotebookResponse::SyncEnvironmentFailed {
                 error,
                 needs_restart: true,
             }
         }
-        Ok(_) => NotebookResponse::SyncEnvironmentFailed {
-            error: "Unexpected runtime agent response".to_string(),
-            needs_restart: true,
-        },
-        Err(e) => NotebookResponse::SyncEnvironmentFailed {
-            error: format!("Agent communication error: {}", e),
-            needs_restart: false,
-        },
+        Ok(_) => {
+            error!("[notebook-sync] SyncEnvironment received unexpected response type");
+            NotebookResponse::SyncEnvironmentFailed {
+                error: "Unexpected runtime agent response".to_string(),
+                needs_restart: true,
+            }
+        }
+        Err(e) => {
+            error!(
+                "[notebook-sync] SyncEnvironment agent communication error: {}",
+                e
+            );
+            NotebookResponse::SyncEnvironmentFailed {
+                error: format!("Agent communication error: {}", e),
+                needs_restart: false,
+            }
+        }
     }
 }
 

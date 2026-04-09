@@ -645,7 +645,12 @@ function AppContent() {
         !response.needs_restart
       ) {
         // Error but doesn't need restart (e.g., install failed)
-        logger.error("[App] Hot-sync failed:", response.error);
+        logger.error("[App] Hot-sync failed:", {
+          error: response.error,
+          envSource,
+          packages: envSyncState?.diff?.added,
+        });
+        envProgress.reset();
         return false;
       }
 

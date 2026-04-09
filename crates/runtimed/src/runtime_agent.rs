@@ -41,7 +41,7 @@ use notebook_protocol::connection::{
 };
 use notebook_protocol::protocol::{RuntimeAgentRequest, RuntimeAgentResponse};
 use tokio::sync::{broadcast, mpsc, RwLock};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::blob_store::BlobStore;
 use crate::jupyter_kernel::JupyterKernel;
@@ -624,11 +624,11 @@ async fn handle_runtime_agent_request(
             if let Some(ref kernel_ref) = kernel {
                 let es = kernel_ref.env_source().to_string();
 
-                // Deno doesn't support hot-sync - just return success as a no-op
+                // Deno doesn't support hot-sync - requires kernel restart
                 if es == "deno" {
                     return (
-                        RuntimeAgentResponse::EnvironmentSynced {
-                            synced_packages: packages,
+                        RuntimeAgentResponse::Error {
+                            error: "Hot-sync not supported for Deno environments. Kernel restart required.".to_string(),
                         },
                         None,
                     );
@@ -673,12 +673,18 @@ async fn handle_runtime_agent_request(
                             },
                             None,
                         ),
-                        Err(e) => (
-                            RuntimeAgentResponse::Error {
-                                error: format!("Failed to install packages: {}", e),
-                            },
-                            None,
-                        ),
+                        Err(e) => {
+                            error!(
+                                "[runtime-agent] Failed to sync UV packages {:?}: {}",
+                                packages, e
+                            );
+                            (
+                                RuntimeAgentResponse::Error {
+                                    error: format!("Failed to install packages: {}", e),
+                                },
+                                None,
+                            )
+                        }
                     }
                 } else if es.starts_with("conda:") {
                     // Conda hot-sync path
@@ -701,12 +707,18 @@ async fn handle_runtime_agent_request(
                             },
                             None,
                         ),
-                        Err(e) => (
-                            RuntimeAgentResponse::Error {
-                                error: format!("Failed to install packages: {}", e),
-                            },
-                            None,
-                        ),
+                        Err(e) => {
+                            error!(
+                                "[runtime-agent] Failed to sync Conda packages {:?} with channels {:?}: {}",
+                                packages, conda_deps.channels, e
+                            );
+                            (
+                                RuntimeAgentResponse::Error {
+                                    error: format!("Failed to install packages: {}", e),
+                                },
+                                None,
+                            )
+                        }
                     }
                 } else {
                     (
