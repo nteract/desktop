@@ -8,19 +8,6 @@ interface PoolErrorItemProps {
   onDismiss: () => void;
 }
 
-function errorTitle(error: PoolErrorWithTimestamp): string {
-  switch (error.error_kind) {
-    case "timeout":
-      return "Environment setup timed out";
-    case "import_error":
-      return "Package import failed";
-    case "setup_failed":
-      return "Environment setup failed";
-    default:
-      return "Invalid or unavailable package";
-  }
-}
-
 function errorSubtitle(
   error: PoolErrorWithTimestamp,
   envType: "UV" | "Conda",
@@ -55,17 +42,14 @@ function PoolErrorItem({ envType, error, onDismiss }: PoolErrorItemProps) {
   const isTimeout = error.error_kind === "timeout";
 
   return (
-    <div
-      className="flex items-center justify-between gap-2 bg-amber-600/90 px-3 py-1.5 text-xs text-white"
-      title={error.message}
-    >
+    <div className="flex items-center justify-between gap-2 bg-amber-600/90 px-3 py-1.5 text-xs text-white">
       <div className="flex items-center gap-2 min-w-0">
         {isTimeout ? (
           <Clock className="h-3 w-3 flex-shrink-0" />
         ) : (
           <AlertTriangle className="h-3 w-3 flex-shrink-0" />
         )}
-        <span className="font-medium flex-shrink-0">{errorTitle(error)}</span>
+        <span className="font-medium flex-shrink-0">{error.message}</span>
         {error.failed_package && (
           <>
             <span className="text-amber-200 flex-shrink-0">—</span>
