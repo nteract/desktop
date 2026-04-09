@@ -1199,6 +1199,11 @@ impl NotebookRoom {
 
         // Spawn debounced persistence task (watch channel keeps latest value only)
         // Ephemeral rooms skip persistence entirely.
+        // Store ephemeral flag in doc metadata so the GUI can show a banner
+        if ephemeral {
+            let _ = doc.set_metadata("ephemeral", "true");
+        }
+
         let persist_tx = if ephemeral {
             None
         } else {

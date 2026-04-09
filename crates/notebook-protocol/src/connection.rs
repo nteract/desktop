@@ -666,11 +666,12 @@ mod tests {
             cell_count: 5,
             needs_trust_approval: false,
             error: None,
+            ephemeral: false,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert_eq!(
             json,
-            r#"{"protocol":"v2","notebook_id":"/home/user/notebook.ipynb","cell_count":5,"needs_trust_approval":false}"#
+            r#"{"protocol":"v2","notebook_id":"/home/user/notebook.ipynb","cell_count":5,"needs_trust_approval":false,"ephemeral":false}"#
         );
 
         // With version info
@@ -682,6 +683,7 @@ mod tests {
             cell_count: 5,
             needs_trust_approval: false,
             error: None,
+            ephemeral: false,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains(&format!(r#""protocol_version":{}"#, PROTOCOL_VERSION)));
@@ -696,6 +698,7 @@ mod tests {
             cell_count: 1,
             needs_trust_approval: true,
             error: None,
+            ephemeral: false,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains(r#""needs_trust_approval":true"#));
@@ -709,6 +712,7 @@ mod tests {
             cell_count: 0,
             needs_trust_approval: false,
             error: Some("File not found".into()),
+            ephemeral: false,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains(r#""error":"File not found""#));
