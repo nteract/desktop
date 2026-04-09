@@ -4366,7 +4366,7 @@ async fn rekey_ephemeral_room(
 
     // Clear the ephemeral flag — this room is now backed by a file on disk.
     // After promotion, persist_tx remains None — the room gets .ipynb autosave
-    // (via the file watcher spawned below) but NOT .automerge persistence.
+    // (via the autosave debouncer spawned above) but NOT .automerge persistence.
     // This is intentional: .ipynb is the source of truth for file-backed notebooks.
     room.is_ephemeral.store(false, Ordering::Relaxed);
     {
