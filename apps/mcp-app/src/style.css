@@ -183,6 +183,13 @@ body {
   font-size: 13px;
   user-select: none;
   transition: background 0.1s;
+  /* Button reset */
+  width: 100%;
+  background: none;
+  border: none;
+  color: inherit;
+  font-family: inherit;
+  text-align: left;
 }
 
 .cell-header:hover {

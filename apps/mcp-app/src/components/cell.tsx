@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { CellData } from "../types";
 import { getPreviewText } from "../lib/rich-output";
 import { CodeBlock } from "./code-block";
@@ -24,25 +24,38 @@ const STATUS_ICONS: Record<string, string> = {
 
 export function Cell({ cell, blobBaseUrl, defaultExpanded, forceExpanded, hideSource }: CellProps) {
 	const [manualExpanded, setManualExpanded] = useState<boolean | null>(null);
+	const prevForceExpanded = useRef(forceExpanded);
 
-	// Priority: forceExpanded (from expand-all) > manual toggle > default
-	const expanded = forceExpanded != null ? forceExpanded : manualExpanded != null ? manualExpanded : defaultExpanded;
+	// Reset manual toggle when expand-all/collapse-all changes,
+	// so the new forceExpanded becomes the baseline and individual
+	// clicks can override it again.
+	useEffect(() => {
+		if (forceExpanded !== prevForceExpanded.current) {
+			setManualExpanded(null);
+			prevForceExpanded.current = forceExpanded;
+		}
+	}, [forceExpanded]);
+
+	// Priority: manual toggle > forceExpanded > default
+	const expanded =
+		manualExpanded != null ? manualExpanded : forceExpanded != null ? forceExpanded : defaultExpanded;
 
 	const toggle = () => setManualExpanded(!expanded);
 
 	const statusIcon = STATUS_ICONS[cell.status] || "";
-	const statusClass = cell.status === "error" ? "status-error" : cell.status === "cancelled" ? "status-cancelled" : "status-done";
+	const statusClass =
+		cell.status === "error" ? "status-error" : cell.status === "cancelled" ? "status-cancelled" : "status-done";
 	const ecDisplay = cell.execution_count != null ? `[${cell.execution_count}]` : "";
 	const preview = !expanded ? getPreviewText(cell) : "";
 
 	return (
 		<div className={`cell ${expanded ? "cell-expanded" : "cell-collapsed"}`}>
-			<div className="cell-header" onClick={toggle} onKeyDown={undefined}>
+			<button type="button" className="cell-header" onClick={toggle}>
 				<span className="cell-chevron">{expanded ? "▼" : "▶"}</span>
 				{ecDisplay && <span className="cell-ec">{ecDisplay}</span>}
 				{statusIcon && <span className={`cell-status ${statusClass}`}>{statusIcon}</span>}
 				{!expanded && preview && <span className="cell-preview">{preview}</span>}
-			</div>
+			</button>
 			{expanded && (
 				<div className="cell-body">
 					{!hideSource && cell.source && (
