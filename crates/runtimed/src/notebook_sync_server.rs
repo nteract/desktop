@@ -2512,6 +2512,18 @@ where
                                         path,
                                         room,
                                     ).await {
+                                        // Insert redirect so peers reconnecting with the old UUID
+                                        // get routed to the re-keyed room.
+                                        {
+                                            let mut redirects = daemon.redirect_map.lock().unwrap();
+                                            redirects.insert(notebook_id.clone(), crate::daemon::RedirectEntry {
+                                                new_notebook_id: new_id.clone(),
+                                                created_at: tokio::time::Instant::now(),
+                                            });
+                                            // Prune old entries (older than 1 hour)
+                                            let cutoff = tokio::time::Instant::now() - std::time::Duration::from_secs(3600);
+                                            redirects.retain(|_, v| v.created_at > cutoff);
+                                        }
                                         notebook_id = new_id.clone();
                                         NotebookResponse::NotebookSaved {
                                             path: path.clone(),
@@ -4348,8 +4360,15 @@ async fn rekey_ephemeral_room(
             new_notebook_id: canonical.clone(),
         });
 
+    // Clear the ephemeral flag — this room is now backed by a file on disk.
+    room.is_ephemeral.store(false, Ordering::Relaxed);
+    {
+        let mut doc = room.doc.write().await;
+        let _ = doc.set_metadata("ephemeral", "");
+    }
+
     info!(
-        "[notebook-sync] Re-keyed room {} -> {}",
+        "[notebook-sync] Re-keyed room {} -> {} (ephemeral cleared)",
         old_notebook_id, canonical
     );
 
@@ -5813,9 +5832,21 @@ async fn handle_notebook_request(
                     path: saved_path,
                     new_notebook_id: None,
                 },
-                Err(e) => NotebookResponse::Error {
-                    error: format!("Failed to save notebook: {e}"),
-                },
+                Err(e) => {
+                    // Emergency persist for ephemeral rooms: if saving to .ipynb
+                    // failed, at least write the Automerge doc so data isn't lost.
+                    if room.is_ephemeral.load(Ordering::Relaxed) && room.persist_tx.is_none() {
+                        let bytes = room.doc.write().await.save();
+                        persist_notebook_bytes(&bytes, &room.persist_path);
+                        warn!(
+                            "[notebook-sync] Save failed for ephemeral room — emergency persist to {:?}",
+                            room.persist_path
+                        );
+                    }
+                    NotebookResponse::Error {
+                        error: format!("Failed to save notebook: {e}"),
+                    }
+                }
             }
         }
 
