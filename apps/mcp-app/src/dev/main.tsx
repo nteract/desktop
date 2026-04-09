@@ -42,45 +42,39 @@ function AppFrame({ toolResult }: { toolResult: CallToolResult }) {
 		const iframe = iframeRef.current;
 		if (!iframe) return;
 
-		let bridge: AppBridge | null = null;
+		const win = iframe.contentWindow;
+		if (!win) return;
 
-		const onLoad = async () => {
-			const win = iframe.contentWindow;
-			if (!win) return;
-
-			// Create AppBridge (no MCP client — manual mode)
-			bridge = new AppBridge(
-				null,
-				{ name: "nteract-dev-preview", version: "0.1.0" },
-				{},
-				{
-					hostContext: {
-						theme: "dark",
-					},
+		// Create AppBridge BEFORE iframe finishes loading so we catch the
+		// App's initialize request. contentWindow exists as soon as the
+		// iframe element is in the DOM.
+		const bridge = new AppBridge(
+			null,
+			{ name: "nteract-dev-preview", version: "0.1.0" },
+			{},
+			{
+				hostContext: {
+					theme: "dark",
 				},
-			);
-			bridgeRef.current = bridge;
+			},
+		);
+		bridgeRef.current = bridge;
 
-			// Resize iframe to match content
-			bridge.onsizechange = ({ height: h }) => {
-				if (h != null) setHeight(h);
-			};
-
-			bridge.oninitialized = () => {
-				// Send empty tool input (required before tool result)
-				bridge!.sendToolInput({ arguments: {} });
-				// Send the actual tool result with structured content
-				bridge!.sendToolResult(toolResult);
-			};
-
-			const transport = new PostMessageTransport(win, win);
-			await bridge.connect(transport);
+		// Resize iframe to match content
+		bridge.onsizechange = ({ height: h }) => {
+			if (h != null) setHeight(h);
 		};
 
-		iframe.addEventListener("load", onLoad);
+		bridge.oninitialized = () => {
+			bridge.sendToolInput({ arguments: {} });
+			bridge.sendToolResult(toolResult);
+		};
+
+		const transport = new PostMessageTransport(win, win);
+		bridge.connect(transport);
+
 		return () => {
-			iframe.removeEventListener("load", onLoad);
-			bridge?.close();
+			bridge.close();
 		};
 	}, [toolResult]);
 
