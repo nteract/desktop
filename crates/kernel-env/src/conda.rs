@@ -695,9 +695,21 @@ pub async fn sync_dependencies(env: &CondaEnvironment, deps: &CondaDependencies)
     };
 
     let match_spec_options = ParseMatchSpecOptions::strict();
-    let mut specs: Vec<MatchSpec> = Vec::new();
+
+    // Always include base runtime packages — the solver only returns packages
+    // needed to satisfy specs, and locked_packages are "preferred" not "required".
+    // Without these, the Installer will remove ipykernel etc from the env.
+    let mut specs: Vec<MatchSpec> = vec![
+        MatchSpec::from_str("ipykernel", match_spec_options)?,
+        MatchSpec::from_str("ipywidgets", match_spec_options)?,
+        MatchSpec::from_str("anywidget", match_spec_options)?,
+        MatchSpec::from_str("nbformat", match_spec_options)?,
+    ];
+
     for dep in &deps.dependencies {
-        specs.push(MatchSpec::from_str(dep, match_spec_options)?);
+        if dep != "ipykernel" && dep != "ipywidgets" && dep != "anywidget" && dep != "nbformat" {
+            specs.push(MatchSpec::from_str(dep, match_spec_options)?);
+        }
     }
 
     let rattler_cache_dir = default_cache_dir()
