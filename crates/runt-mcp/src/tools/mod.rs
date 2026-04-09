@@ -234,10 +234,11 @@ pub fn all_tools() -> Vec<Tool> {
         .with_meta(app_tool_meta()),
         Tool::new(
             "run_all_cells",
-            "Execute all code cells in order, wait for completion, and return the notebook summary. Use get_cell() to inspect specific outputs.",
+            "Execute all code cells in order. With wait=true (default), waits for completion and returns per-cell outputs with structured content. With wait=false, queues cells and returns immediately.",
             schema_for::<execution::RunAllCellsParams>(),
         )
-        .annotate(ToolAnnotations::new().destructive(true).open_world(true)),
+        .annotate(ToolAnnotations::new().destructive(true).open_world(true))
+        .with_meta(app_tool_meta()),
         // -- Kernel --
         Tool::new(
             "interrupt_kernel",

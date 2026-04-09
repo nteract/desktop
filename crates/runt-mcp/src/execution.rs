@@ -197,6 +197,47 @@ pub struct RunAllResult {
     pub cell_execution_ids: HashMap<String, String>,
 }
 
+/// Queue all cells for execution without waiting for completion.
+///
+/// 1. Calls `confirm_sync()` to ensure the daemon has the latest cell sources.
+/// 2. Sends `RunAllCells` request.
+///
+/// Returns immediately with the queued cell→execution ID mapping.
+pub async fn run_all_and_queue(handle: &DocHandle) -> RunAllResult {
+    if let Err(e) = handle.confirm_sync().await {
+        warn!("confirm_sync failed before run_all_cells: {e}");
+    }
+
+    let response = handle.send_request(NotebookRequest::RunAllCells {}).await;
+
+    let cell_execution_ids: HashMap<String, String> = match response {
+        Ok(NotebookResponse::AllCellsQueued { queued }) => queued
+            .into_iter()
+            .map(|q| (q.cell_id, q.execution_id))
+            .collect(),
+        _ => {
+            return RunAllResult {
+                timed_out: false,
+                status: "error".to_string(),
+                cell_execution_ids: HashMap::new(),
+            };
+        }
+    };
+
+    let status = if cell_execution_ids.is_empty() {
+        "completed"
+    } else {
+        "queued"
+    }
+    .to_string();
+
+    RunAllResult {
+        timed_out: false,
+        status,
+        cell_execution_ids,
+    }
+}
+
 /// Run all cells and wait for completion.
 ///
 /// 1. Calls `confirm_sync()` to ensure the daemon has the latest cell sources.
