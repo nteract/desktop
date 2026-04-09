@@ -2514,8 +2514,7 @@ where
                                     ).await {
                                         // Insert redirect so peers reconnecting with the old UUID
                                         // get routed to the re-keyed room.
-                                        {
-                                            let mut redirects = daemon.redirect_map.lock().unwrap();
+                                        if let Ok(mut redirects) = daemon.redirect_map.lock() {
                                             redirects.insert(notebook_id.clone(), crate::daemon::RedirectEntry {
                                                 new_notebook_id: new_id.clone(),
                                                 created_at: tokio::time::Instant::now(),

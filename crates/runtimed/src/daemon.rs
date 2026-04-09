@@ -1476,17 +1476,19 @@ impl Daemon {
         };
 
         // Check if this notebook_id was re-keyed (ephemeral -> saved).
-        let notebook_id = {
-            let redirects = self.redirect_map.lock().unwrap();
-            if let Some(entry) = redirects.get(&notebook_id) {
-                info!(
-                    "[runtimed] Redirecting open {} -> {} (re-keyed room)",
-                    notebook_id, entry.new_notebook_id
-                );
-                entry.new_notebook_id.clone()
-            } else {
-                notebook_id
+        let notebook_id = match self.redirect_map.lock() {
+            Ok(redirects) => {
+                if let Some(entry) = redirects.get(&notebook_id) {
+                    info!(
+                        "[runtimed] Redirecting open {} -> {} (re-keyed room)",
+                        notebook_id, entry.new_notebook_id
+                    );
+                    entry.new_notebook_id.clone()
+                } else {
+                    notebook_id
+                }
             }
+            Err(_) => notebook_id,
         };
 
         // Get or create room for this notebook.
@@ -1665,17 +1667,19 @@ impl Daemon {
         // Check if this notebook_id was re-keyed (ephemeral -> saved).
         // If so, redirect to the new canonical path so the peer joins the
         // existing room instead of creating a new empty one.
-        let notebook_id = {
-            let redirects = self.redirect_map.lock().unwrap();
-            if let Some(entry) = redirects.get(&notebook_id) {
-                info!(
-                    "[runtimed] Redirecting {} -> {} (re-keyed room)",
-                    notebook_id, entry.new_notebook_id
-                );
-                entry.new_notebook_id.clone()
-            } else {
-                notebook_id
+        let notebook_id = match self.redirect_map.lock() {
+            Ok(redirects) => {
+                if let Some(entry) = redirects.get(&notebook_id) {
+                    info!(
+                        "[runtimed] Redirecting {} -> {} (re-keyed room)",
+                        notebook_id, entry.new_notebook_id
+                    );
+                    entry.new_notebook_id.clone()
+                } else {
+                    notebook_id
+                }
             }
+            Err(_) => notebook_id,
         };
 
         let ephemeral = ephemeral.unwrap_or(false);
@@ -2392,14 +2396,14 @@ impl Daemon {
                         if active_hashes.contains(&name) {
                             continue;
                         }
-                        if let Ok(metadata) = entry.metadata().await {
-                            if let Ok(modified) = metadata.modified() {
-                                if modified.elapsed().unwrap_or_default() > docs_max_age {
-                                    if tokio::fs::remove_file(entry.path()).await.is_ok() {
-                                        docs_cleaned += 1;
-                                    }
-                                }
-                            }
+                        let is_stale = entry
+                            .metadata()
+                            .await
+                            .ok()
+                            .and_then(|m| m.modified().ok())
+                            .is_some_and(|t| t.elapsed().unwrap_or_default() > docs_max_age);
+                        if is_stale && tokio::fs::remove_file(entry.path()).await.is_ok() {
+                            docs_cleaned += 1;
                         }
                     }
                 }
