@@ -1258,6 +1258,7 @@ impl Daemon {
                         &notebook_id,
                         &docs_dir,
                         self.blob_store.clone(),
+                        false, // NotebookSync handshake is always persistent
                     )
                 };
                 let (reader, writer) = tokio::io::split(stream);
@@ -1290,8 +1291,9 @@ impl Daemon {
                 runtime,
                 working_dir,
                 notebook_id,
+                ephemeral,
             } => {
-                self.handle_create_notebook(stream, runtime, working_dir, notebook_id)
+                self.handle_create_notebook(stream, runtime, working_dir, notebook_id, ephemeral)
                     .await
             }
             Handshake::RuntimeAgent {
@@ -1360,6 +1362,7 @@ impl Daemon {
                 cell_count: 0,
                 needs_trust_approval: false,
                 error: Some(error),
+                ephemeral: false,
             };
             send_json_frame(writer, &response).await?;
             Ok(())
@@ -1477,6 +1480,7 @@ impl Daemon {
                     &notebook_id,
                     &docs_dir,
                     self.blob_store.clone(),
+                    false, // OpenNotebook handshake is always persistent
                 )
             }
         };
@@ -1573,6 +1577,7 @@ impl Daemon {
             cell_count,
             needs_trust_approval,
             error: None,
+            ephemeral: false,
         };
         send_json_frame(&mut writer, &response).await?;
 
@@ -1610,6 +1615,7 @@ impl Daemon {
         runtime: String,
         working_dir: Option<String>,
         notebook_id_hint: Option<String>,
+        ephemeral: Option<bool>,
     ) -> anyhow::Result<()>
     where
         S: AsyncRead + AsyncWrite + Unpin,
@@ -1630,6 +1636,7 @@ impl Daemon {
 
         // Use provided notebook_id (session restore) or generate a new UUID
         let notebook_id = notebook_id_hint.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let ephemeral = ephemeral.unwrap_or(false);
 
         // Create room for this notebook
         let docs_dir = self.config.notebook_docs_dir.clone();
@@ -1640,6 +1647,7 @@ impl Daemon {
                 &notebook_id,
                 &docs_dir,
                 self.blob_store.clone(),
+                ephemeral,
             )
         };
 
@@ -1691,6 +1699,7 @@ impl Daemon {
                 cell_count: 0,
                 needs_trust_approval: false,
                 error: Some(format!("Failed to create notebook: {}", e)),
+                ephemeral: false,
             };
             send_json_frame(&mut writer, &response).await?;
             let _ = tokio::io::copy(&mut reader, &mut tokio::io::sink()).await;
@@ -1708,6 +1717,7 @@ impl Daemon {
             cell_count,
             needs_trust_approval: false,
             error: None,
+            ephemeral,
         };
         send_json_frame(&mut writer, &response).await?;
 

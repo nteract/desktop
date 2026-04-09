@@ -373,6 +373,7 @@ async fn connect_create_inner(
             .as_ref()
             .map(|p| p.to_string_lossy().to_string()),
         notebook_id,
+        ephemeral: None,
     };
     connection::send_json_frame(&mut writer, &handshake)
         .await
@@ -601,6 +602,7 @@ pub async fn connect_create_relay(
             .as_ref()
             .map(|p| p.to_string_lossy().to_string()),
         notebook_id,
+        ephemeral: None,
     };
     connection::send_json_frame(&mut writer, &handshake)
         .await
