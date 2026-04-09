@@ -1141,13 +1141,6 @@ fn snapshot_before_delete(persist_path: &Path, docs_dir: &Path) -> bool {
 }
 
 impl NotebookRoom {
-    /// Persist the current doc state to disk (no-op for ephemeral rooms).
-    pub fn persist_doc(&self, doc: &mut NotebookDoc) {
-        if let Some(ref tx) = self.persist_tx {
-            let _ = tx.send(Some(doc.save()));
-        }
-    }
-
     /// Create a fresh room, ignoring any persisted state.
     ///
     /// The .ipynb file is the source of truth. When a room is created, we start
@@ -9132,6 +9125,17 @@ mod tests {
 
         assert!(room.persist_tx.is_some());
         assert!(!room.is_ephemeral.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_ephemeral_room_has_metadata_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let blob_store = Arc::new(BlobStore::new(dir.path().join("blobs")));
+        let notebook_id = uuid::Uuid::new_v4().to_string();
+        let room = NotebookRoom::new_fresh(&notebook_id, dir.path(), blob_store, true);
+
+        let doc = room.doc.read().await;
+        assert_eq!(doc.get_metadata("ephemeral"), Some("true".to_string()));
     }
 
     /// Helper to build a snapshot with UV inline deps.

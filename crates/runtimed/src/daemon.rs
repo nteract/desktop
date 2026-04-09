@@ -1667,22 +1667,22 @@ impl Daemon {
         // Check if this notebook_id was re-keyed (ephemeral -> saved).
         // If so, redirect to the new canonical path so the peer joins the
         // existing room instead of creating a new empty one.
-        let notebook_id = match self.redirect_map.lock() {
+        // Check redirect map and resolve ephemeral flag together.
+        // If the UUID was re-keyed (saved), the room is now file-backed — force persistent.
+        let (notebook_id, ephemeral) = match self.redirect_map.lock() {
             Ok(redirects) => {
                 if let Some(entry) = redirects.get(&notebook_id) {
                     info!(
                         "[runtimed] Redirecting {} -> {} (re-keyed room)",
                         notebook_id, entry.new_notebook_id
                     );
-                    entry.new_notebook_id.clone()
+                    (entry.new_notebook_id.clone(), false)
                 } else {
-                    notebook_id
+                    (notebook_id, ephemeral.unwrap_or(false))
                 }
             }
-            Err(_) => notebook_id,
+            Err(_) => (notebook_id, ephemeral.unwrap_or(false)),
         };
-
-        let ephemeral = ephemeral.unwrap_or(false);
 
         // Create room for this notebook
         let docs_dir = self.config.notebook_docs_dir.clone();
