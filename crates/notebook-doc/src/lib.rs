@@ -1723,6 +1723,21 @@ impl NotebookDoc {
         Ok(())
     }
 
+    /// Delete a metadata key. Returns `true` if the key existed and was removed.
+    pub fn delete_metadata(&mut self, key: &str) -> Result<bool, AutomergeError> {
+        let meta_id = match self.metadata_map_id() {
+            Some(id) => id,
+            None => return Ok(false),
+        };
+        match self.doc.get(&meta_id, key)? {
+            Some(_) => {
+                self.doc.delete(&meta_id, key)?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
     // ── Sync protocol ───────────────────────────────────────────────
 
     /// Generate a sync message to send to a peer.

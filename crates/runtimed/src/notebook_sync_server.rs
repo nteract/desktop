@@ -2515,6 +2515,18 @@ where
                                             // Prune old entries (older than 1 hour)
                                             let cutoff = tokio::time::Instant::now() - std::time::Duration::from_secs(3600);
                                             redirects.retain(|_, v| v.created_at > cutoff);
+                                            // Cap at 1000 entries to bound memory under extreme agent churn
+                                            while redirects.len() > 1000 {
+                                                if let Some(oldest_key) = redirects
+                                                    .iter()
+                                                    .min_by_key(|(_, v)| v.created_at)
+                                                    .map(|(k, _)| k.clone())
+                                                {
+                                                    redirects.remove(&oldest_key);
+                                                } else {
+                                                    break;
+                                                }
+                                            }
                                         }
                                         notebook_id = new_id.clone();
                                         NotebookResponse::NotebookSaved {
@@ -4353,10 +4365,13 @@ async fn rekey_ephemeral_room(
         });
 
     // Clear the ephemeral flag — this room is now backed by a file on disk.
+    // After promotion, persist_tx remains None — the room gets .ipynb autosave
+    // (via the file watcher spawned below) but NOT .automerge persistence.
+    // This is intentional: .ipynb is the source of truth for file-backed notebooks.
     room.is_ephemeral.store(false, Ordering::Relaxed);
     {
         let mut doc = room.doc.write().await;
-        let _ = doc.set_metadata("ephemeral", "");
+        let _ = doc.delete_metadata("ephemeral");
     }
 
     info!(
