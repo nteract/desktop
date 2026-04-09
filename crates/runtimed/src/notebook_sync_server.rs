@@ -46,6 +46,7 @@ use crate::notebook_metadata::NotebookMetadataSnapshot;
 use crate::protocol::{
     EnvSyncDiff, NotebookBroadcast, NotebookRequest, NotebookResponse, QueueEntry,
 };
+use notebook_doc::diff::diff_metadata_touched;
 use notebook_doc::presence::{self, PresenceState};
 use notebook_doc::runtime_state::{QueueEntry as DocQueueEntry, RuntimeStateDoc};
 
@@ -2382,8 +2383,10 @@ where
 
                                 // Complete all document mutations inside the lock, encode the
                                 // reply, then release the lock before performing async I/O.
-                                let (persist_bytes, reply_encoded) = {
+                                let (persist_bytes, reply_encoded, metadata_changed) = {
                                     let mut doc = room.doc.write().await;
+
+                                    let heads_before = doc.get_heads();
 
                                     // Guard receive_sync_message against automerge panics
                                     let recv_result = catch_automerge_panic("doc-receive-sync", || {
@@ -2402,6 +2405,13 @@ where
                                             continue;
                                         }
                                     }
+
+                                    let heads_after = doc.get_heads();
+                                    let metadata_changed = diff_metadata_touched(
+                                        doc.doc_mut(),
+                                        &heads_before,
+                                        &heads_after,
+                                    );
 
                                     let bytes = doc.save();
 
@@ -2422,7 +2432,7 @@ where
                                         }
                                     };
 
-                                    (bytes, encoded)
+                                    (bytes, encoded, metadata_changed)
                                 };
 
                                 // Send reply outside the lock so other peers can
@@ -2440,7 +2450,9 @@ where
                                 let _ = room.persist_tx.send(Some(persist_bytes));
 
                                 // Check if metadata changed and kernel is running - broadcast sync state
-                                check_and_broadcast_sync_state(room).await;
+                                if metadata_changed {
+                                    check_and_broadcast_sync_state(room).await;
+                                }
 
                                 // Re-verify trust from doc metadata (detects trust approval)
                                 check_and_update_trust_state(room).await;
