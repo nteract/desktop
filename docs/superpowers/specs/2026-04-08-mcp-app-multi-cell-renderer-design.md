@@ -84,26 +84,21 @@ The collapsed row shows a one-line preview extracted from the cell's outputs:
 
 Preview text is truncated with CSS `text-overflow: ellipsis`.
 
-### Live polling via `callServerTool`
+### Live polling via `callServerTool` (BLOCKED — requires iframe isolation)
 
-The MCP Apps SDK (`@modelcontextprotocol/ext-apps` v1.3.2) provides `app.callServerTool()` — the widget can call MCP tools back through the host proxy. This enables live updates:
+The MCP Apps SDK (`@modelcontextprotocol/ext-apps` v1.3.2) provides `app.callServerTool()` — the widget can call MCP tools back through the host proxy. This would enable live updates by polling `get_cell` for in-progress cells.
 
-- When a cell's `status` is `"running"` or `"queued"`, the widget can poll `get_cell` with the cell's `cell_id` to fetch updated outputs and status.
-- When the cell reaches terminal status (`"done"` or `"error"`), polling stops.
-- This turns the widget from a static snapshot into a **live view** of execution progress.
+**Security constraint:** `callServerTool` MUST NOT be used until untrusted output rendering is sandboxed in iframes without `allow-same-origin`. Without isolation, malicious notebook output (JS in `text/html` or SVG) running in the widget's frame can reach the `App` instance and call `execute_cell` — achieving arbitrary code execution on the user's machine. This is the same threat model as the notebook app's iframe isolation (`contributing/iframe-isolation.md`).
 
-**Polling strategy:**
-- Only poll cells that aren't in terminal status
-- Poll interval: ~1-2s (avoid flooding the server)
+**Prerequisite:** Bring the isolated renderer (`isolated-frame.tsx`, CJS plugin loader, sandbox iframes) into the MCP App before enabling any `callServerTool` usage. This is a separate work item.
+
+**Until then:** The widget is a static snapshot. It renders structured content from the tool response and makes no server calls. This is safe because the widget currently has no privileged APIs that untrusted output JS could exploit.
+
+**Future polling design (for after iframe isolation):**
+- Poll `get_cell` for cells with non-terminal status
+- Include `execution_id` per cell in structured content for correct scoping
 - Stop polling when all cells reach terminal status
 - Update cell outputs in-place as they arrive
-
-**Schema addition:** Include `execution_id` per cell in structured content so the widget can track specific executions. Add to `CellData`:
-```ts
-execution_id?: string;
-```
-
-This is a stretch goal — the initial implementation can ship without polling and add it as a follow-up.
 
 ### Remove 0px collapse for cell content
 
