@@ -8897,8 +8897,8 @@ mod tests {
         let blob_store = test_blob_store(&tmp);
         let mut rooms = HashMap::new();
 
-        let room1 = get_or_create_room(&mut rooms, "nb1", tmp.path(), blob_store.clone());
-        let room2 = get_or_create_room(&mut rooms, "nb1", tmp.path(), blob_store);
+        let room1 = get_or_create_room(&mut rooms, "nb1", tmp.path(), blob_store.clone(), false);
+        let room2 = get_or_create_room(&mut rooms, "nb1", tmp.path(), blob_store, false);
 
         // Should be the same Arc (same room)
         assert!(Arc::ptr_eq(&room1, &room2));
@@ -8910,8 +8910,8 @@ mod tests {
         let blob_store = test_blob_store(&tmp);
         let mut rooms = HashMap::new();
 
-        let room1 = get_or_create_room(&mut rooms, "nb1", tmp.path(), blob_store.clone());
-        let room2 = get_or_create_room(&mut rooms, "nb2", tmp.path(), blob_store);
+        let room1 = get_or_create_room(&mut rooms, "nb1", tmp.path(), blob_store.clone(), false);
+        let room2 = get_or_create_room(&mut rooms, "nb2", tmp.path(), blob_store, false);
 
         // Should be different rooms
         assert!(!Arc::ptr_eq(&room1, &room2));
@@ -8941,7 +8941,7 @@ mod tests {
     async fn test_new_fresh_creates_empty_doc() {
         let tmp = tempfile::TempDir::new().unwrap();
         let blob_store = test_blob_store(&tmp);
-        let room = NotebookRoom::new_fresh("fresh-test", tmp.path(), blob_store);
+        let room = NotebookRoom::new_fresh("fresh-test", tmp.path(), blob_store, false);
 
         let doc = room.doc.try_read().unwrap();
         assert_eq!(doc.notebook_id(), Some("fresh-test".to_string()));
@@ -8969,7 +8969,7 @@ mod tests {
         assert!(persist_path.exists(), "Persisted file should exist");
 
         // Create fresh room - should delete persisted doc and start empty
-        let room = NotebookRoom::new_fresh("stale-test", tmp.path(), blob_store);
+        let room = NotebookRoom::new_fresh("stale-test", tmp.path(), blob_store, false);
 
         // Persisted file should be deleted
         assert!(
@@ -9006,7 +9006,7 @@ mod tests {
         assert!(persist_path.exists(), "Persisted file should exist");
 
         // Create fresh room for untitled notebook — should load persisted doc
-        let room = NotebookRoom::new_fresh(notebook_id, tmp.path(), blob_store);
+        let room = NotebookRoom::new_fresh(notebook_id, tmp.path(), blob_store, false);
 
         // Persisted file should still exist (not deleted)
         assert!(
@@ -9061,7 +9061,7 @@ mod tests {
 
         // Simulate daemon restart: create a fresh room with the same UUID.
         // new_fresh should load the persisted doc and read trust from it.
-        let room = NotebookRoom::new_fresh(notebook_id, tmp.path(), blob_store);
+        let room = NotebookRoom::new_fresh(notebook_id, tmp.path(), blob_store, false);
 
         let ts = room.trust_state.try_read().unwrap();
         assert_eq!(
@@ -9256,10 +9256,11 @@ mod tests {
             kernel_broadcast_tx,
             presence_tx,
             presence: Arc::new(RwLock::new(PresenceState::new())),
-            persist_tx,
+            persist_tx: Some(persist_tx),
             persist_path,
             active_peers: AtomicUsize::new(0),
             had_peers: AtomicBool::new(false),
+            is_ephemeral: AtomicBool::new(false),
             blob_store,
             trust_state: Arc::new(RwLock::new(TrustState {
                 status: runt_trust::TrustStatus::Untrusted,
@@ -10737,7 +10738,9 @@ mod tests {
 
         // 1. Create an ephemeral room with a UUID notebook_id
         let uuid_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
-        let room = Arc::new(NotebookRoom::new_fresh(uuid_id, &docs_dir, blob_store));
+        let room = Arc::new(NotebookRoom::new_fresh(
+            uuid_id, &docs_dir, blob_store, false,
+        ));
         assert!(is_untitled_notebook(uuid_id));
 
         // Add an initial cell so the first save has content
