@@ -517,6 +517,62 @@ impl<'de> serde::Deserialize<'de> for CellChangeset {
     }
 }
 
+/// Check whether any Automerge patch between two head sets touches the
+/// top-level `metadata` map.
+///
+/// This is a cheap pre-filter so the daemon can skip expensive metadata
+/// materialization for cell-only sync frames (e.g., keystroke edits).
+///
+/// Returns `false` for empty `before` (initial sync) or equal heads —
+/// the same convention as [`diff_cells`].
+pub fn diff_metadata_touched(
+    doc: &mut AutoCommit,
+    before: &[ChangeHash],
+    after: &[ChangeHash],
+) -> bool {
+    // Initial sync — caller should do full materialization separately.
+    if before.is_empty() {
+        return false;
+    }
+
+    // Nothing changed.
+    if before == after {
+        return false;
+    }
+
+    let patches = doc.diff(before, after);
+
+    for patch in &patches {
+        // Check the patch path for any segment that references "metadata" at the root level.
+        // The path structure for notebook metadata changes:
+        //   [(ROOT, "metadata"), ...] — the patch is inside the metadata map
+        //
+        // We specifically look for "metadata" as the first map key after ROOT,
+        // which means it's the top-level notebook metadata, not per-cell metadata
+        // (which would be at path [..., "cells", cell_id, "metadata", ...]).
+
+        // Check if the path starts with a "metadata" segment (i.e., patch is
+        // inside the metadata subtree).
+        if let Some((_, first_prop)) = patch.path.first() {
+            if matches!(first_prop, Prop::Map(k) if k == "metadata") {
+                return true;
+            }
+        }
+
+        // Check if the action targets "metadata" at root level (path is empty
+        // = action is on ROOT).
+        if patch.path.is_empty() {
+            match &patch.action {
+                PatchAction::PutMap { key, .. } if key == "metadata" => return true,
+                PatchAction::DeleteMap { key } if key == "metadata" => return true,
+                _ => {}
+            }
+        }
+    }
+
+    false
+}
+
 // ── Tests ────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -988,5 +1044,53 @@ mod tests {
 
         let actors = extract_change_actors(client.doc_mut(), &before);
         assert!(actors.iter().any(|a| a.contains("runtimed")));
+    }
+
+    // ── diff_metadata_touched tests ─────────────────────────────────
+
+    #[test]
+    fn test_diff_metadata_touched_returns_false_for_cell_source_edit() {
+        let mut doc = NotebookDoc::new("nb1");
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        let before = doc.doc_mut().get_heads();
+
+        doc.update_source("cell-1", "print('hello')").unwrap();
+        let after = doc.doc_mut().get_heads();
+
+        assert!(!diff_metadata_touched(doc.doc_mut(), &before, &after));
+    }
+
+    #[test]
+    fn test_diff_metadata_touched_returns_true_for_metadata_edit() {
+        let mut doc = NotebookDoc::new("nb1");
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        let before = doc.doc_mut().get_heads();
+
+        doc.set_metadata("runtime", "julia").unwrap();
+        let after = doc.doc_mut().get_heads();
+
+        assert!(diff_metadata_touched(doc.doc_mut(), &before, &after));
+    }
+
+    #[test]
+    fn test_diff_metadata_touched_empty_before_returns_false() {
+        let mut doc = NotebookDoc::new("nb1");
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        let after = doc.doc_mut().get_heads();
+
+        // Empty before = initial sync, should return false.
+        assert!(!diff_metadata_touched(doc.doc_mut(), &[], &after));
+    }
+
+    #[test]
+    fn test_diff_metadata_touched_returns_false_for_cell_metadata_edit() {
+        let mut doc = NotebookDoc::new("nb1");
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        let before = doc.doc_mut().get_heads();
+
+        doc.set_cell_source_hidden("cell-1", true).unwrap();
+        let after = doc.doc_mut().get_heads();
+
+        assert!(!diff_metadata_touched(doc.doc_mut(), &before, &after));
     }
 }
