@@ -220,10 +220,11 @@ pub fn format_cell_header(
     if let Some(st) = status {
         if !st.is_empty() {
             let icon = match st {
-                "idle" => "✓",
+                "idle" | "done" => "✓",
                 "error" => "✗",
                 "running" => "◐",
                 "queued" => "⧗",
+                "cancelled" => "⊘",
                 _ => "?",
             };
             parts.push(format!("{icon} {st}"));

@@ -101,6 +101,9 @@ pub async fn run_all_cells(
     // Fire-and-forget: queue cells and return immediately.
     if !wait {
         let result = execution::run_all_and_queue(&handle).await;
+        if result.status == "error" {
+            return tool_error("Failed to queue cells for execution");
+        }
         let n = result.cell_execution_ids.len();
         return tool_success(&format!("Queued {n} cells for execution"));
     }
