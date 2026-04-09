@@ -4,39 +4,31 @@ set -euo pipefail
 channel="${NTERACT_CHANNEL:-stable}"
 binary_name="mcpb-runt"
 
+if [[ "$channel" == "nightly" ]]; then
+  app_names=("nteract Nightly" "nteract-nightly" "nteract (Nightly)" "nteract")
+else
+  app_names=("nteract")
+fi
+
 candidate_paths=()
 
 case "$(uname -s)" in
   Darwin)
-    if [[ "$channel" == "nightly" ]]; then
-      app_names=("nteract Nightly" "nteract-nightly" "nteract (Nightly)")
-    else
-      app_names=("nteract")
-    fi
     for app_name in "${app_names[@]}"; do
       candidate_paths+=("/Applications/${app_name}.app/Contents/MacOS/${binary_name}")
       candidate_paths+=("${HOME}/Applications/${app_name}.app/Contents/MacOS/${binary_name}")
     done
     ;;
   Linux)
-    if [[ "$channel" == "nightly" ]]; then
-      app_names=("nteract-nightly" "nteract-nightly")
-    else
-      app_names=("nteract")
-    fi
     candidate_paths+=("${HOME}/.local/bin/${binary_name}")
     for app_name in "${app_names[@]}"; do
-      candidate_paths+=("/usr/share/${app_name}/${binary_name}")
-      candidate_paths+=("/opt/${app_name}/${binary_name}")
+      app_slug="$(printf '%s' "$app_name" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')"
+      candidate_paths+=("/usr/share/${app_slug}/${binary_name}")
+      candidate_paths+=("/opt/${app_slug}/${binary_name}")
     done
     ;;
   MINGW*|MSYS*|CYGWIN*)
     local_app_data="${LOCALAPPDATA:-${HOME}/AppData/Local}"
-    if [[ "$channel" == "nightly" ]]; then
-      app_names=("nteract Nightly" "nteract-nightly" "nteract (Nightly)")
-    else
-      app_names=("nteract")
-    fi
     binary_name="mcpb-runt.exe"
     for app_name in "${app_names[@]}"; do
       candidate_paths+=("${local_app_data}/${app_name}/${binary_name}")
