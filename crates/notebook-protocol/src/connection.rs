@@ -108,6 +108,10 @@ pub enum Handshake {
         /// a new notebook is created and this ID is used as the notebook_id/env_id.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         notebook_id: Option<String>,
+        /// When true, the notebook exists only in memory — no .automerge persisted to disk.
+        /// Defaults to false (backward compat). MCP agents use true for scratch compute.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ephemeral: Option<bool>,
     },
 }
 
@@ -232,6 +236,9 @@ pub struct NotebookConnectionInfo {
     /// Error message if the notebook could not be opened/created.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Whether this notebook is ephemeral (in-memory only, no persistence).
+    #[serde(default)]
+    pub ephemeral: bool,
 }
 
 /// Frame types for notebook sync connections.
