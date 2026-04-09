@@ -347,8 +347,17 @@ pub async fn connect_create(
     runtime: &str,
     working_dir: Option<PathBuf>,
     actor_label: &str,
+    ephemeral: bool,
 ) -> Result<CreateResult, SyncError> {
-    connect_create_inner(socket_path, runtime, working_dir, None, actor_label).await
+    connect_create_inner(
+        socket_path,
+        runtime,
+        working_dir,
+        None,
+        actor_label,
+        ephemeral,
+    )
+    .await
 }
 
 async fn connect_create_inner(
@@ -357,6 +366,7 @@ async fn connect_create_inner(
     working_dir: Option<PathBuf>,
     notebook_id: Option<String>,
     actor_label: &str,
+    ephemeral: bool,
 ) -> Result<CreateResult, SyncError> {
     let stream = connect_stream!(&socket_path);
     let (reader, writer) = tokio::io::split(stream);
@@ -373,7 +383,7 @@ async fn connect_create_inner(
             .as_ref()
             .map(|p| p.to_string_lossy().to_string()),
         notebook_id,
-        ephemeral: None,
+        ephemeral: if ephemeral { Some(true) } else { None },
     };
     connection::send_json_frame(&mut writer, &handshake)
         .await
@@ -586,6 +596,7 @@ pub async fn connect_create_relay(
     working_dir: Option<PathBuf>,
     notebook_id: Option<String>,
     frame_tx: mpsc::UnboundedSender<Vec<u8>>,
+    ephemeral: bool,
 ) -> Result<RelayCreateResult, SyncError> {
     let stream = connect_stream!(&socket_path);
     let (reader, writer) = tokio::io::split(stream);
@@ -602,7 +613,7 @@ pub async fn connect_create_relay(
             .as_ref()
             .map(|p| p.to_string_lossy().to_string()),
         notebook_id,
-        ephemeral: None,
+        ephemeral: if ephemeral { Some(true) } else { None },
     };
     connection::send_json_frame(&mut writer, &handshake)
         .await

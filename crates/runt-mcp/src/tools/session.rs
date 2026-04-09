@@ -381,6 +381,7 @@ pub async fn create_notebook(
         runtime,
         working_dir,
         &server.get_peer_label().await,
+        false,
     )
     .await
     {
