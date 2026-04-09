@@ -105,7 +105,11 @@ pub async fn run_all_cells(
             return tool_error("Failed to queue cells for execution");
         }
         let n = result.cell_execution_ids.len();
-        return tool_success(&format!("Queued {n} cells for execution"));
+        let mut lines = vec![format!("Queued {n} cells for execution")];
+        for (cell_id, exec_id) in &result.cell_execution_ids {
+            lines.push(format!("  {cell_id} → {exec_id}"));
+        }
+        return tool_success(&lines.join("\n"));
     }
 
     // Wait mode: run all cells and collect outputs.
@@ -227,10 +231,13 @@ pub async fn run_all_cells(
 
         // Structured content for MCP Apps: use manifests from the cell snapshot
         // (which include ContentRef entries needed for structured rendering).
+        // Extract the inner "cell" object — cell_structured_content_from_manifests
+        // returns {"cell": {...}, "blob_base_url": "..."} but the multi-cell
+        // wrapper expects CellData directly in the cells[] array.
         let cell_snapshot = handle.get_cell(&cell.id);
         if let Some(snap) = cell_snapshot {
             if !snap.outputs.is_empty() {
-                structured_cells.push(crate::structured::cell_structured_content_from_manifests(
+                let wrapped = crate::structured::cell_structured_content_from_manifests(
                     &snap.id,
                     &snap.cell_type,
                     &snap.source,
@@ -238,7 +245,10 @@ pub async fn run_all_cells(
                     exec.execution_count,
                     display_status,
                     &server.blob_base_url,
-                ));
+                );
+                if let Some(cell_data) = wrapped.get("cell").cloned() {
+                    structured_cells.push(cell_data);
+                }
             }
         }
     }
