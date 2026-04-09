@@ -623,17 +623,19 @@ function AppContent() {
     }
 
     // Trusted - proceed with sync/restart
-    // For UV inline deps with only additions, try hot-sync first
+    // For UV or Conda inline deps with only additions, try hot-sync first
     const isUvInline = envSource === "uv:inline";
+    const isCondaInline = envSource === "conda:inline";
     const hasOnlyAdditions =
       envSyncState?.diff?.added?.length && !envSyncState?.diff?.removed?.length;
 
-    if (isUvInline && hasOnlyAdditions) {
-      logger.debug("[App] Trying hot-sync for UV additions");
+    if ((isUvInline || isCondaInline) && hasOnlyAdditions) {
+      logger.debug("[App] Trying hot-sync for additions");
       const response = await syncEnvironment();
 
       if (response.result === "sync_environment_complete") {
         logger.debug("[App] Hot-sync succeeded:", response.synced_packages);
+        envProgress.reset();
         setJustSynced(true);
         return true;
       }
@@ -643,7 +645,12 @@ function AppContent() {
         !response.needs_restart
       ) {
         // Error but doesn't need restart (e.g., install failed)
-        logger.error("[App] Hot-sync failed:", response.error);
+        logger.error("[App] Hot-sync failed:", {
+          error: response.error,
+          envSource,
+          packages: envSyncState?.diff?.added,
+        });
+        envProgress.reset();
         return false;
       }
 
@@ -655,6 +662,7 @@ function AppContent() {
     await shutdownKernel();
     const started = await tryStartKernel();
     if (started) {
+      envProgress.reset();
       setJustSynced(true);
     }
     return started;
