@@ -6277,29 +6277,21 @@ async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResponse {
         };
     }
 
-    if env_type != "uv" && env_type != "conda" {
-        return NotebookResponse::SyncEnvironmentFailed {
-            error: "Hot-sync only supported for UV and Conda environments. Deno requires restart."
-                .to_string(),
-            needs_restart: true,
-        };
-    }
-
-    // Get conda channels if this is a conda environment
-    let channels = if env_type == "conda" {
-        Some(get_inline_conda_channels(&current_metadata))
+    // Build typed EnvKind — eliminates string-based branching
+    let env_kind = if env_type == "uv" {
+        notebook_protocol::protocol::EnvKind::Uv {
+            packages: packages_to_install.clone(),
+        }
     } else {
-        None
+        notebook_protocol::protocol::EnvKind::Conda {
+            packages: packages_to_install.clone(),
+            channels: get_inline_conda_channels(&current_metadata),
+        }
     };
-
-    // Store env_type for use in success handler
-    let sync_env_type = env_type;
 
     // Send SyncEnvironment to the runtime agent
-    let sync_request = notebook_protocol::protocol::RuntimeAgentRequest::SyncEnvironment {
-        packages: packages_to_install.clone(),
-        channels,
-    };
+    let sync_request =
+        notebook_protocol::protocol::RuntimeAgentRequest::SyncEnvironment(env_kind.clone());
 
     // Notify frontend that sync is starting
     let _ = room
@@ -6322,28 +6314,30 @@ async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResponse {
             {
                 let mut lc = room.runtime_agent_launched_config.write().await;
                 if let Some(ref mut config) = *lc {
-                    // Update the correct deps field based on environment type
-                    if sync_env_type == "uv" {
-                        // Promote prewarmed to uv:inline baseline if needed
-                        if config.uv_deps.is_none() {
-                            config.uv_deps = Some(vec![]);
-                        }
-                        if let Some(ref mut deps) = config.uv_deps {
-                            for pkg in &synced_packages {
-                                if !deps.contains(pkg) {
-                                    deps.push(pkg.clone());
+                    match &env_kind {
+                        notebook_protocol::protocol::EnvKind::Uv { .. } => {
+                            // Promote prewarmed to uv:inline baseline if needed
+                            if config.uv_deps.is_none() {
+                                config.uv_deps = Some(vec![]);
+                            }
+                            if let Some(ref mut deps) = config.uv_deps {
+                                for pkg in &synced_packages {
+                                    if !deps.contains(pkg) {
+                                        deps.push(pkg.clone());
+                                    }
                                 }
                             }
                         }
-                    } else if sync_env_type == "conda" {
-                        // Promote prewarmed to conda:inline baseline if needed
-                        if config.conda_deps.is_none() {
-                            config.conda_deps = Some(vec![]);
-                        }
-                        if let Some(ref mut deps) = config.conda_deps {
-                            for pkg in &synced_packages {
-                                if !deps.contains(pkg) {
-                                    deps.push(pkg.clone());
+                        notebook_protocol::protocol::EnvKind::Conda { .. } => {
+                            // Promote prewarmed to conda:inline baseline if needed
+                            if config.conda_deps.is_none() {
+                                config.conda_deps = Some(vec![]);
+                            }
+                            if let Some(ref mut deps) = config.conda_deps {
+                                for pkg in &synced_packages {
+                                    if !deps.contains(pkg) {
+                                        deps.push(pkg.clone());
+                                    }
                                 }
                             }
                         }

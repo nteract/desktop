@@ -95,6 +95,31 @@ pub struct QueueEntry {
     pub execution_id: String,
 }
 
+/// Typed environment kind for sync operations.
+///
+/// Replaces string-based env_type ("uv", "conda") with a discriminated union
+/// that carries environment-specific data. Makes illegal states unrepresentable.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "env_kind", rename_all = "snake_case")]
+pub enum EnvKind {
+    /// UV environment (inline or prewarmed).
+    Uv { packages: Vec<String> },
+    /// Conda environment (inline or prewarmed).
+    Conda {
+        packages: Vec<String>,
+        channels: Vec<String>,
+    },
+}
+
+impl EnvKind {
+    /// The packages to install, regardless of environment type.
+    pub fn packages(&self) -> &[String] {
+        match self {
+            EnvKind::Uv { packages } | EnvKind::Conda { packages, .. } => packages,
+        }
+    }
+}
+
 // ── Helper structs ──────────────────────────────────────────────────────────
 
 /// A single entry from kernel input history.
@@ -588,12 +613,7 @@ pub enum RuntimeAgentRequest {
 
     /// Hot-install packages into the running kernel's environment.
     /// Supported for UV and Conda inline dependencies (additions only).
-    /// The `channels` field is required for conda, ignored for UV/Deno.
-    SyncEnvironment {
-        packages: Vec<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        channels: Option<Vec<String>>,
-    },
+    SyncEnvironment(EnvKind),
 }
 
 /// Responses from runtime agent to coordinator (frame type 0x02).
