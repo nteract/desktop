@@ -648,3 +648,48 @@ pub enum RuntimeAgentResponse {
     /// Error response.
     Error { error: String },
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn env_kind_uv_round_trip() {
+        let kind = EnvKind::Uv {
+            packages: vec!["numpy".into(), "pandas".into()],
+        };
+        let json = serde_json::to_string(&kind).expect("failed to serialize EnvKind::Uv");
+        let parsed: EnvKind = serde_json::from_str(&json).expect("failed to parse EnvKind::Uv");
+        assert_eq!(kind, parsed);
+    }
+
+    #[test]
+    fn env_kind_conda_round_trip() {
+        let kind = EnvKind::Conda {
+            packages: vec!["scipy".into()],
+            channels: vec!["conda-forge".into()],
+        };
+        let json = serde_json::to_string(&kind).expect("failed to serialize EnvKind::Conda");
+        assert!(json.contains("\"env_kind\":\"conda\""));
+        let parsed: EnvKind = serde_json::from_str(&json).expect("failed to parse EnvKind::Conda");
+        assert_eq!(kind, parsed);
+    }
+
+    #[test]
+    fn sync_environment_request_round_trip() {
+        let req = RuntimeAgentRequest::SyncEnvironment(EnvKind::Conda {
+            packages: vec!["numpy".into()],
+            channels: vec!["conda-forge".into(), "bioconda".into()],
+        });
+        let json = serde_json::to_string(&req).expect("failed to serialize SyncEnvironment");
+        let parsed: RuntimeAgentRequest =
+            serde_json::from_str(&json).expect("failed to parse SyncEnvironment");
+        match &parsed {
+            RuntimeAgentRequest::SyncEnvironment(kind) => {
+                assert_eq!(kind.packages(), &["numpy".to_string()]);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+}
