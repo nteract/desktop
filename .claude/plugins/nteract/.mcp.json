@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "nteract": {
-      "command": "cargo",
-      "args": ["run", "-q", "-p", "mcpb-runt"],
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/nteract-mcpb-runt",
+      "args": [],
       "env": {
         "NTERACT_CHANNEL": "stable"
       }

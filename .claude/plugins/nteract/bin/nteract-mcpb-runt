@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(
+  cd "$(dirname "$0")"
+  pwd
+)"
+repo_root="$(
+  cd "$script_dir/../../../.."
+  pwd
+)"
+
+if [[ ! -f "$repo_root/Cargo.toml" || ! -f "$repo_root/crates/mcpb-runt/Cargo.toml" || ! -f "$repo_root/.claude/settings.json" ]]; then
+  cat >&2 <<'EOF'
+nteract Claude plugin error: expected to run from the nteract/desktop repository checkout.
+Keep this plugin in .claude/plugins/nteract inside the desktop repo.
+EOF
+  exit 1
+fi
+
+exec cargo run -q --manifest-path "$repo_root/Cargo.toml" -p mcpb-runt -- "$@"
