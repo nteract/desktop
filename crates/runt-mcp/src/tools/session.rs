@@ -184,6 +184,9 @@ pub struct CreateNotebookParams {
     /// Runtime type: "python" or "deno".
     #[serde(default)]
     pub runtime: Option<String>,
+    /// Alias for runtime (deprecated but supported for convenience).
+    #[serde(default)]
+    pub kernel: Option<String>,
     /// Working directory for the kernel.
     #[serde(default)]
     pub working_dir: Option<String>,
@@ -370,7 +373,12 @@ pub async fn create_notebook(
     server: &NteractMcp,
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
-    let runtime = arg_str(request, "runtime").unwrap_or("python");
+    // Support both 'runtime' and 'kernel' params (kernel is an alias for convenience)
+    let kernel_alias = arg_str(request, "kernel");
+    let runtime_arg = arg_str(request, "runtime");
+    let used_kernel_alias = kernel_alias.is_some() && runtime_arg.is_none();
+    let runtime = runtime_arg.or(kernel_alias).unwrap_or("python");
+
     let working_dir = arg_str(request, "working_dir").map(|s| PathBuf::from(resolve_path(s)));
     let working_dir_for_detection = working_dir.clone();
 
@@ -522,6 +530,10 @@ pub async fn create_notebook(
                 if *prev_id != notebook_id {
                     info["switched_from"] = serde_json::json!(prev_id);
                 }
+            }
+
+            if used_kernel_alias {
+                info["info"] = serde_json::json!("Used 'kernel' parameter (alias for 'runtime')");
             }
 
             Ok(CallToolResult::success(vec![Content::text(
