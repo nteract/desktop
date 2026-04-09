@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "dev": "vite",
     "build": "node build-main.js && node build-html.js",
     "build:plugins": "node build-plugins.js",
     "build:all": "npm run build && npm run build:plugins"
