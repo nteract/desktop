@@ -153,6 +153,8 @@ pub struct RoomInfo {
     /// Kernel status if running (e.g., "idle", "busy", "starting")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kernel_status: Option<String>,
+    #[serde(default)]
+    pub ephemeral: bool,
 }
 
 /// Blob channel request.
