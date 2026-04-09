@@ -133,7 +133,17 @@ export const singleCellText: CellData = {
 	],
 };
 
-/** Single cell: image output */
+const placeholderSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="600" height="300" viewBox="0 0 600 300">
+  <rect width="600" height="300" fill="#1e293b"/>
+  <text x="50" y="30" fill="#94a3b8" font-family="sans-serif" font-size="14" font-weight="600">Time Series — Polling Intervals</text>
+  <line x1="50" y1="250" x2="570" y2="250" stroke="#334155" stroke-width="1"/>
+  <line x1="50" y1="50" x2="50" y2="250" stroke="#334155" stroke-width="1"/>
+  <polyline points="50,200 100,180 150,160 200,190 250,120 300,140 350,100 400,130 450,80 500,110 550,90" fill="none" stroke="#3b82f6" stroke-width="2"/>
+  <polyline points="50,220 100,210 150,200 200,215 250,170 300,185 350,155 400,175 450,140 500,160 550,145" fill="none" stroke="#22c55e" stroke-width="2" stroke-dasharray="4"/>
+  <text x="280" y="285" fill="#64748b" font-family="sans-serif" font-size="11" text-anchor="middle">March 2026</text>
+</svg>`;
+
+/** Single cell: image output (SVG renders via HtmlOutput iframe) */
 export const singleCellImage: CellData = {
 	cell_id: "cell-img1",
 	cell_type: "code",
@@ -144,7 +154,7 @@ export const singleCellImage: CellData = {
 		{
 			output_type: "display_data",
 			data: {
-				"image/png": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPj/HwADBwIAMCbHYQAAAABJRU5ErkJggg==",
+				"image/svg+xml": placeholderSvg,
 				"text/plain": "<Figure size 1000x600>",
 			},
 		},

@@ -1,5 +1,6 @@
 import { createRoot } from "react-dom/client";
 import { useEffect, useState } from "react";
+import "./style.css";
 import {
 	App,
 	applyDocumentTheme,
@@ -91,6 +92,7 @@ function McpApp() {
 					blobBaseUrl={blobBaseUrl}
 					defaultExpanded={!isMultiCell || hasRichOutput(cell)}
 					forceExpanded={isMultiCell ? allExpanded : null}
+					hideSource={!isMultiCell}
 				/>
 			))}
 		</>

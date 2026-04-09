@@ -10,6 +10,8 @@ interface CellProps {
 	blobBaseUrl?: string;
 	defaultExpanded: boolean;
 	forceExpanded?: boolean | null;
+	/** Hide the source toggle (single-cell responses don't need it). */
+	hideSource?: boolean;
 }
 
 const STATUS_ICONS: Record<string, string> = {
@@ -20,7 +22,7 @@ const STATUS_ICONS: Record<string, string> = {
 	queued: "⧗",
 };
 
-export function Cell({ cell, blobBaseUrl, defaultExpanded, forceExpanded }: CellProps) {
+export function Cell({ cell, blobBaseUrl, defaultExpanded, forceExpanded, hideSource }: CellProps) {
 	const [manualExpanded, setManualExpanded] = useState<boolean | null>(null);
 
 	// Priority: forceExpanded (from expand-all) > manual toggle > default
@@ -43,7 +45,7 @@ export function Cell({ cell, blobBaseUrl, defaultExpanded, forceExpanded }: Cell
 			</div>
 			{expanded && (
 				<div className="cell-body">
-					{cell.source && (
+					{!hideSource && cell.source && (
 						<details className="source-details">
 							<summary className="source-summary">Source</summary>
 							<CodeBlock code={cell.source} language="python" />
