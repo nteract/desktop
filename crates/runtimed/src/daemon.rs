@@ -2371,6 +2371,46 @@ impl Daemon {
                 }
             }
 
+            // Clean up orphaned notebook-docs (emergency persist files, legacy untitled docs)
+            let notebook_docs_dir = self.config.notebook_docs_dir.clone();
+            if notebook_docs_dir.exists() {
+                let active_rooms = self.notebook_rooms.lock().await;
+                let active_hashes: std::collections::HashSet<String> = active_rooms
+                    .keys()
+                    .map(|id| notebook_doc::notebook_doc_filename(id))
+                    .collect();
+                drop(active_rooms);
+
+                let docs_max_age = std::time::Duration::from_secs(24 * 3600); // 24 hours
+                let mut docs_cleaned = 0;
+                if let Ok(mut entries) = tokio::fs::read_dir(&notebook_docs_dir).await {
+                    while let Ok(Some(entry)) = entries.next_entry().await {
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        if !name.ends_with(".automerge") {
+                            continue;
+                        }
+                        if active_hashes.contains(&name) {
+                            continue;
+                        }
+                        if let Ok(metadata) = entry.metadata().await {
+                            if let Ok(modified) = metadata.modified() {
+                                if modified.elapsed().unwrap_or_default() > docs_max_age {
+                                    if tokio::fs::remove_file(entry.path()).await.is_ok() {
+                                        docs_cleaned += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if docs_cleaned > 0 {
+                    info!(
+                        "[runtimed] GC: cleaned up {} orphaned notebook-doc files",
+                        docs_cleaned
+                    );
+                }
+            }
+
             // Run every 6 hours
             tokio::time::sleep(std::time::Duration::from_secs(6 * 3600)).await;
         }
