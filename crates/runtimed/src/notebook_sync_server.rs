@@ -626,7 +626,9 @@ async fn process_markdown_assets(room: &NotebookRoom) {
     };
 
     let _ = room.changed_tx.send(());
-    let _ = room.persist_tx.send(Some(persist_bytes));
+    if let Some(ref tx) = room.persist_tx {
+        let _ = tx.send(Some(persist_bytes));
+    }
 }
 
 /// Check if the current metadata differs from kernel's launched config and broadcast sync state.
@@ -978,13 +980,15 @@ pub struct NotebookRoom {
     pub presence: Arc<RwLock<PresenceState>>,
     /// Channel to send doc bytes to the debounced persistence task.
     /// Uses watch for "latest value" semantics - always keeps most recent state.
-    pub persist_tx: watch::Sender<Option<Vec<u8>>>,
+    pub persist_tx: Option<watch::Sender<Option<Vec<u8>>>>,
     /// Persistence path for this room's document.
     pub persist_path: PathBuf,
     /// Number of active peer connections in this room.
     pub active_peers: AtomicUsize,
     /// Whether at least one peer has ever connected to this room.
     pub had_peers: AtomicBool,
+    /// Whether this notebook is ephemeral (in-memory only, no persistence).
+    pub is_ephemeral: AtomicBool,
     /// Blob store for output manifests.
     pub blob_store: Arc<BlobStore>,
     /// Trust state for this notebook (for auto-launch decisions).
@@ -1137,6 +1141,13 @@ fn snapshot_before_delete(persist_path: &Path, docs_dir: &Path) -> bool {
 }
 
 impl NotebookRoom {
+    /// Persist the current doc state to disk (no-op for ephemeral rooms).
+    pub fn persist_doc(&self, doc: &mut NotebookDoc) {
+        if let Some(ref tx) = self.persist_tx {
+            let _ = tx.send(Some(doc.save()));
+        }
+    }
+
     /// Create a fresh room, ignoring any persisted state.
     ///
     /// The .ipynb file is the source of truth. When a room is created, we start
@@ -1149,7 +1160,12 @@ impl NotebookRoom {
     /// Note: Trust state is initialized from disk because the Automerge doc
     /// starts empty (first client hasn't synced yet). Once the doc is populated,
     /// `check_and_update_trust_state` keeps room.trust_state current.
-    pub fn new_fresh(notebook_id: &str, docs_dir: &Path, blob_store: Arc<BlobStore>) -> Self {
+    pub fn new_fresh(
+        notebook_id: &str,
+        docs_dir: &Path,
+        blob_store: Arc<BlobStore>,
+        ephemeral: bool,
+    ) -> Self {
         let filename = notebook_doc_filename(notebook_id);
         let persist_path = docs_dir.join(&filename);
 
@@ -1159,14 +1175,14 @@ impl NotebookRoom {
         // For saved notebooks (file paths), .ipynb is the source of truth, so
         // delete stale persisted docs and start fresh (daemon loads from disk).
         let runtimed_actor = "runtimed";
-        let mut doc = if is_untitled_notebook(notebook_id) && persist_path.exists() {
+        let mut doc = if !ephemeral && is_untitled_notebook(notebook_id) && persist_path.exists() {
             info!(
                 "[notebook-sync] Loading persisted doc for untitled notebook: {:?}",
                 persist_path
             );
             NotebookDoc::load_or_create_with_actor(&persist_path, notebook_id, runtimed_actor)
         } else {
-            if persist_path.exists() {
+            if !ephemeral && persist_path.exists() {
                 if snapshot_before_delete(&persist_path, docs_dir) {
                     let _ = std::fs::remove_file(&persist_path);
                 } else {
@@ -1182,8 +1198,14 @@ impl NotebookRoom {
         let (kernel_broadcast_tx, _) = broadcast::channel(KERNEL_BROADCAST_CAPACITY);
 
         // Spawn debounced persistence task (watch channel keeps latest value only)
-        let (persist_tx, persist_rx) = watch::channel::<Option<Vec<u8>>>(None);
-        spawn_persist_debouncer(persist_rx, persist_path.clone());
+        // Ephemeral rooms skip persistence entirely.
+        let persist_tx = if ephemeral {
+            None
+        } else {
+            let (persist_tx, persist_rx) = watch::channel::<Option<Vec<u8>>>(None);
+            spawn_persist_debouncer(persist_rx, persist_path.clone());
+            Some(persist_tx)
+        };
 
         let notebook_path = PathBuf::from(notebook_id);
         let trust_state = if is_untitled_notebook(notebook_id) {
@@ -1254,6 +1276,7 @@ impl NotebookRoom {
             persist_path,
             active_peers: AtomicUsize::new(0),
             had_peers: AtomicBool::new(false),
+            is_ephemeral: AtomicBool::new(ephemeral),
             blob_store,
             trust_state: Arc::new(RwLock::new(trust_state)),
             notebook_path: RwLock::new(notebook_path),
@@ -1338,10 +1361,11 @@ impl NotebookRoom {
             kernel_broadcast_tx,
             presence_tx,
             presence: Arc::new(RwLock::new(PresenceState::new())),
-            persist_tx,
+            persist_tx: Some(persist_tx),
             persist_path,
             active_peers: AtomicUsize::new(0),
             had_peers: AtomicBool::new(false),
+            is_ephemeral: AtomicBool::new(false),
             blob_store,
             trust_state: Arc::new(RwLock::new(trust_state)),
             notebook_path: RwLock::new(notebook_path),
@@ -1458,12 +1482,18 @@ pub fn get_or_create_room(
     notebook_id: &str,
     docs_dir: &Path,
     blob_store: Arc<BlobStore>,
+    ephemeral: bool,
 ) -> Arc<NotebookRoom> {
     rooms
         .entry(notebook_id.to_string())
         .or_insert_with(|| {
             info!("[notebook-sync] Creating room for {}", notebook_id);
-            let room = Arc::new(NotebookRoom::new_fresh(notebook_id, docs_dir, blob_store));
+            let room = Arc::new(NotebookRoom::new_fresh(
+                notebook_id,
+                docs_dir,
+                blob_store,
+                ephemeral,
+            ));
 
             // Spawn file watcher for .ipynb files (not for untitled notebooks with UUID IDs)
             if !is_untitled_notebook(notebook_id) {
@@ -2447,7 +2477,9 @@ where
                                 }
 
                                 // Send to debounced persistence task
-                                let _ = room.persist_tx.send(Some(persist_bytes));
+                                if let Some(ref tx) = room.persist_tx {
+                                    let _ = tx.send(Some(persist_bytes));
+                                }
 
                                 // Check if metadata changed and kernel is running - broadcast sync state
                                 if metadata_changed {
@@ -5468,7 +5500,9 @@ async fn handle_notebook_request(
             }
 
             // Send to debounced persistence task
-            let _ = room.persist_tx.send(Some(persist_bytes));
+            if let Some(ref tx) = room.persist_tx {
+                let _ = tx.send(Some(persist_bytes));
+            }
 
             // Broadcast for cross-window UI sync (fast path)
             let _ = room
@@ -5810,8 +5844,10 @@ async fn handle_notebook_request(
                     // Notify peers of the change
                     let _ = room.changed_tx.send(());
                     // Persist
-                    let bytes = doc.save();
-                    let _ = room.persist_tx.send(Some(bytes));
+                    if let Some(ref tx) = room.persist_tx {
+                        let bytes = doc.save();
+                        let _ = tx.send(Some(bytes));
+                    }
                     NotebookResponse::MetadataSet {}
                 }
                 Err(e) => NotebookResponse::Error {
@@ -5840,8 +5876,10 @@ async fn handle_notebook_request(
                                 // Notify peers of the change
                                 let _ = room.changed_tx.send(());
                                 // Persist
-                                let bytes = doc.save();
-                                let _ = room.persist_tx.send(Some(bytes));
+                                if let Some(ref tx) = room.persist_tx {
+                                    let bytes = doc.save();
+                                    let _ = tx.send(Some(bytes));
+                                }
                                 Ok(())
                             }
                             Err(e) => Err(format!("Failed to set metadata snapshot: {e}")),
