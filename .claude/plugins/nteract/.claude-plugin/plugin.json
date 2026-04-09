@@ -1,0 +1,5 @@
+{
+  "name": "nteract",
+  "description": "Create, edit, and run Jupyter notebooks through mcpb-runt",
+  "version": "0.1.0"
+}

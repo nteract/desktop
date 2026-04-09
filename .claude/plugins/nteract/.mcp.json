@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "nteract": {
+      "command": "cargo",
+      "args": ["run", "-q", "-p", "mcpb-runt"],
+      "env": {
+        "NTERACT_CHANNEL": "stable"
+      }
+    }
+  }
+}
