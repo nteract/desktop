@@ -793,3 +793,173 @@ fn diff_comm_state(
     }
     updates
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use crate::kernel_connection::{KernelConnection, KernelLaunchConfig, KernelSharedRefs};
+    use crate::protocol::CompletionItem;
+    use anyhow::Result;
+    use notebook_protocol::protocol::LaunchedEnvConfig;
+    use std::path::PathBuf;
+
+    /// Minimal mock kernel for testing queue/state logic without ZeroMQ.
+    struct MockKernel;
+
+    impl KernelConnection for MockKernel {
+        async fn launch(
+            _config: KernelLaunchConfig,
+            _shared: KernelSharedRefs,
+        ) -> Result<(Self, mpsc::Receiver<QueueCommand>)> {
+            unimplemented!()
+        }
+        async fn execute(&mut self, _: &str, _: &str, _: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn interrupt(&mut self) -> Result<()> {
+            Ok(())
+        }
+        async fn shutdown(&mut self) -> Result<()> {
+            Ok(())
+        }
+        async fn send_comm_message(&mut self, _: serde_json::Value) -> Result<()> {
+            Ok(())
+        }
+        async fn send_comm_update(&mut self, _: &str, _: serde_json::Value) -> Result<()> {
+            Ok(())
+        }
+        async fn complete(
+            &mut self,
+            _: &str,
+            _: usize,
+        ) -> Result<(Vec<CompletionItem>, usize, usize)> {
+            Ok((vec![], 0, 0))
+        }
+        async fn get_history(
+            &mut self,
+            _: Option<&str>,
+            _: i32,
+            _: bool,
+        ) -> Result<Vec<crate::protocol::HistoryEntry>> {
+            Ok(vec![])
+        }
+        fn kernel_type(&self) -> &str {
+            "python"
+        }
+        fn env_source(&self) -> &str {
+            "test"
+        }
+        fn launched_config(&self) -> &LaunchedEnvConfig {
+            Box::leak(Box::new(LaunchedEnvConfig::default()))
+        }
+        fn env_path(&self) -> Option<&PathBuf> {
+            None
+        }
+        fn is_connected(&self) -> bool {
+            true
+        }
+        fn update_launched_uv_deps(&mut self, _: Vec<String>) {}
+    }
+
+    /// Build test fixtures: RuntimeAgentContext + KernelState wired to the same doc.
+    fn test_fixtures() -> (
+        RuntimeAgentContext,
+        KernelState,
+        Arc<RwLock<RuntimeStateDoc>>,
+    ) {
+        let state_doc = Arc::new(RwLock::new(RuntimeStateDoc::new()));
+        let (state_changed_tx, _) = broadcast::channel(64);
+        let (broadcast_tx, _) = broadcast::channel(64);
+        let (presence_tx, _) = broadcast::channel(16);
+        let blob_store = Arc::new(BlobStore::new(std::env::temp_dir().join("test-blobs")));
+        let presence = Arc::new(RwLock::new(PresenceState::new()));
+
+        let ctx = RuntimeAgentContext {
+            state_doc: state_doc.clone(),
+            state_changed_tx: state_changed_tx.clone(),
+            blob_store,
+            broadcast_tx: broadcast_tx.clone(),
+            presence,
+            presence_tx,
+        };
+        let state = KernelState::new(state_doc.clone(), state_changed_tx, broadcast_tx);
+        (ctx, state, state_doc)
+    }
+
+    #[tokio::test]
+    async fn kernel_died_marks_inflight_executions_as_failed_in_state_doc() {
+        let (ctx, mut state, state_doc) = test_fixtures();
+        let mut mock = MockKernel;
+        state.set_idle();
+
+        // Queue two cells: c1 starts executing, c2 stays queued
+        state
+            .queue_cell("c1".into(), "e1".into(), "x=1".into(), &mut mock)
+            .await
+            .unwrap();
+        state
+            .queue_cell("c2".into(), "e2".into(), "x=2".into(), &mut mock)
+            .await
+            .unwrap();
+
+        // Verify initial state in doc
+        {
+            let sd = state_doc.read().await;
+            let e1 = sd.get_execution("e1").unwrap();
+            assert_eq!(e1.status, "running");
+            let e2 = sd.get_execution("e2").unwrap();
+            assert_eq!(e2.status, "queued");
+        }
+
+        // Simulate kernel death
+        handle_queue_command(
+            QueueCommand::KernelDied,
+            &ctx,
+            &mut None::<JupyterKernel>,
+            &mut state,
+        )
+        .await
+        .unwrap();
+
+        // Both executions should now be marked as error in RuntimeStateDoc
+        let sd = state_doc.read().await;
+        let e1 = sd.get_execution("e1").unwrap();
+        assert_eq!(e1.status, "error");
+        assert_eq!(e1.success, Some(false));
+
+        let e2 = sd.get_execution("e2").unwrap();
+        assert_eq!(e2.status, "error");
+        assert_eq!(e2.success, Some(false));
+
+        // Queue should be cleared
+        let queue = sd.read_state();
+        assert!(queue.queue.executing.is_none());
+        assert!(queue.queue.queued.is_empty());
+
+        // Kernel status should be error
+        assert_eq!(queue.kernel.status, "error");
+    }
+
+    #[tokio::test]
+    async fn kernel_died_with_no_inflight_executions_clears_state() {
+        let (ctx, mut state, state_doc) = test_fixtures();
+        state.set_idle();
+
+        // No cells queued — just fire KernelDied
+        handle_queue_command(
+            QueueCommand::KernelDied,
+            &ctx,
+            &mut None::<JupyterKernel>,
+            &mut state,
+        )
+        .await
+        .unwrap();
+
+        let sd = state_doc.read().await;
+        let rs = sd.read_state();
+        assert_eq!(rs.kernel.status, "error");
+        assert!(rs.queue.executing.is_none());
+        assert!(rs.queue.queued.is_empty());
+    }
+}

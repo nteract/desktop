@@ -403,3 +403,202 @@ impl KernelState {
         }
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use crate::kernel_connection::{KernelConnection, KernelLaunchConfig, KernelSharedRefs};
+    use crate::kernel_manager::QueueCommand;
+    use crate::protocol::CompletionItem;
+    use anyhow::Result;
+    use notebook_protocol::protocol::LaunchedEnvConfig;
+    use std::path::PathBuf;
+
+    /// Minimal mock that records execute calls and succeeds.
+    struct MockKernel {
+        executes: Vec<(String, String)>,
+    }
+
+    impl MockKernel {
+        fn new() -> Self {
+            Self {
+                executes: Vec::new(),
+            }
+        }
+    }
+
+    impl KernelConnection for MockKernel {
+        async fn launch(
+            _config: KernelLaunchConfig,
+            _shared: KernelSharedRefs,
+        ) -> Result<(Self, tokio::sync::mpsc::Receiver<QueueCommand>)> {
+            unimplemented!("tests create MockKernel directly")
+        }
+
+        async fn execute(
+            &mut self,
+            cell_id: &str,
+            execution_id: &str,
+            _source: &str,
+        ) -> Result<()> {
+            self.executes
+                .push((cell_id.to_string(), execution_id.to_string()));
+            Ok(())
+        }
+
+        async fn interrupt(&mut self) -> Result<()> {
+            Ok(())
+        }
+        async fn shutdown(&mut self) -> Result<()> {
+            Ok(())
+        }
+        async fn send_comm_message(&mut self, _: serde_json::Value) -> Result<()> {
+            Ok(())
+        }
+        async fn send_comm_update(&mut self, _: &str, _: serde_json::Value) -> Result<()> {
+            Ok(())
+        }
+        async fn complete(
+            &mut self,
+            _: &str,
+            _: usize,
+        ) -> Result<(Vec<CompletionItem>, usize, usize)> {
+            Ok((vec![], 0, 0))
+        }
+        async fn get_history(
+            &mut self,
+            _: Option<&str>,
+            _: i32,
+            _: bool,
+        ) -> Result<Vec<crate::protocol::HistoryEntry>> {
+            Ok(vec![])
+        }
+        fn kernel_type(&self) -> &str {
+            "python"
+        }
+        fn env_source(&self) -> &str {
+            "test"
+        }
+        fn launched_config(&self) -> &LaunchedEnvConfig {
+            // Leak a static default — fine for tests.
+            Box::leak(Box::new(LaunchedEnvConfig::default()))
+        }
+        fn env_path(&self) -> Option<&PathBuf> {
+            None
+        }
+        fn is_connected(&self) -> bool {
+            true
+        }
+        fn update_launched_uv_deps(&mut self, _: Vec<String>) {}
+    }
+
+    /// Build a `KernelState` wired to the given `RuntimeStateDoc`.
+    fn test_state(
+        state_doc: Arc<RwLock<RuntimeStateDoc>>,
+    ) -> (KernelState, broadcast::Receiver<NotebookBroadcast>) {
+        let (state_changed_tx, _) = broadcast::channel(64);
+        let (broadcast_tx, broadcast_rx) = broadcast::channel(64);
+        let state = KernelState::new(state_doc, state_changed_tx, broadcast_tx);
+        (state, broadcast_rx)
+    }
+
+    // ── kernel_died tests ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn kernel_died_returns_interrupted_execution_and_cleared_queue() {
+        let sd = Arc::new(RwLock::new(RuntimeStateDoc::new()));
+        let (mut state, _rx) = test_state(sd.clone());
+        let mut mock = MockKernel::new();
+        state.set_idle();
+
+        // Queue two cells — first starts executing, second stays queued
+        state
+            .queue_cell("c1".into(), "e1".into(), "x=1".into(), &mut mock)
+            .await
+            .unwrap();
+        state
+            .queue_cell("c2".into(), "e2".into(), "x=2".into(), &mut mock)
+            .await
+            .unwrap();
+
+        assert!(state.executing_cell().is_some());
+        assert_eq!(state.queued_entries().len(), 1);
+
+        let (interrupted, cleared) = state.kernel_died();
+
+        // Should return the executing cell
+        let (cid, eid) = interrupted.unwrap();
+        assert_eq!(cid, "c1");
+        assert_eq!(eid, "e1");
+
+        // Should return the cleared queued entry
+        assert_eq!(cleared.len(), 1);
+        assert_eq!(cleared[0].cell_id, "c2");
+        assert_eq!(cleared[0].execution_id, "e2");
+
+        // State should be cleared
+        assert!(state.executing_cell().is_none());
+        assert!(state.queued_entries().is_empty());
+    }
+
+    #[tokio::test]
+    async fn kernel_died_idempotent_when_already_dead() {
+        let sd = Arc::new(RwLock::new(RuntimeStateDoc::new()));
+        let (mut state, _rx) = test_state(sd.clone());
+        let mut mock = MockKernel::new();
+        state.set_idle();
+
+        state
+            .queue_cell("c1".into(), "e1".into(), "x=1".into(), &mut mock)
+            .await
+            .unwrap();
+
+        // First call returns data
+        let (interrupted, _) = state.kernel_died();
+        assert!(interrupted.is_some());
+
+        // Second call is a no-op
+        let (interrupted2, cleared2) = state.kernel_died();
+        assert!(interrupted2.is_none());
+        assert!(cleared2.is_empty());
+    }
+
+    #[tokio::test]
+    async fn kernel_died_with_empty_queue() {
+        let sd = Arc::new(RwLock::new(RuntimeStateDoc::new()));
+        let (mut state, _rx) = test_state(sd.clone());
+        state.set_idle();
+
+        let (interrupted, cleared) = state.kernel_died();
+        assert!(interrupted.is_none());
+        assert!(cleared.is_empty());
+    }
+
+    // ── reset tests ──────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn reset_clears_executing_and_queue() {
+        let sd = Arc::new(RwLock::new(RuntimeStateDoc::new()));
+        let (mut state, _rx) = test_state(sd.clone());
+        let mut mock = MockKernel::new();
+        state.set_idle();
+
+        state
+            .queue_cell("c1".into(), "e1".into(), "x=1".into(), &mut mock)
+            .await
+            .unwrap();
+        state
+            .queue_cell("c2".into(), "e2".into(), "x=2".into(), &mut mock)
+            .await
+            .unwrap();
+
+        assert!(state.executing_cell().is_some());
+        assert_eq!(state.queued_entries().len(), 1);
+
+        state.reset();
+
+        assert!(state.executing_cell().is_none());
+        assert!(state.queued_entries().is_empty());
+    }
+}
