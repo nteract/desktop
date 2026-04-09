@@ -1,10 +1,11 @@
 import { createRoot } from "react-dom/client";
-import { useState } from "react";
-import "../style.css";
-import { Cell } from "../components/cell";
-import { SummaryHeader } from "../components/summary-header";
-import { hasRichOutput } from "../lib/rich-output";
-import type { CellData } from "../types";
+import { useEffect, useRef, useState } from "react";
+import {
+	AppBridge,
+	PostMessageTransport,
+} from "@modelcontextprotocol/ext-apps/app-bridge";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { CellData, NteractContent } from "../types";
 import {
 	singleCellPlotly,
 	singleCellError,
@@ -13,41 +14,102 @@ import {
 	multiCellRun,
 } from "./fixtures";
 
-/** Simulates how a single tool call result looks in a chat. */
-function ToolResult({
-	toolName,
-	args,
-	cells,
-}: { toolName: string; args?: string; cells: CellData[] }) {
-	const isMultiCell = cells.length > 1;
-	const [allExpanded, setAllExpanded] = useState<boolean | null>(null);
+// Set dark theme for host page
+document.documentElement.setAttribute("data-theme", "dark");
 
+/** Build a CallToolResult with structured content, matching what runt-mcp produces. */
+function makeToolResult(cells: CellData | CellData[], blobBaseUrl?: string): CallToolResult {
+	const structured: NteractContent = Array.isArray(cells)
+		? { cells, blob_base_url: blobBaseUrl }
+		: { cell: cells, blob_base_url: blobBaseUrl };
+
+	return {
+		content: [{ type: "text", text: "Output rendered in widget" }],
+		structuredContent: structured as Record<string, unknown>,
+	};
+}
+
+/**
+ * An iframe that loads the real mcp-app entry point and communicates
+ * via the MCP Apps JSON-RPC protocol (AppBridge + PostMessageTransport).
+ */
+function AppFrame({ toolResult }: { toolResult: CallToolResult }) {
+	const iframeRef = useRef<HTMLIFrameElement>(null);
+	const bridgeRef = useRef<AppBridge | null>(null);
+	const [height, setHeight] = useState(40);
+
+	useEffect(() => {
+		const iframe = iframeRef.current;
+		if (!iframe) return;
+
+		let bridge: AppBridge | null = null;
+
+		const onLoad = async () => {
+			const win = iframe.contentWindow;
+			if (!win) return;
+
+			// Create AppBridge (no MCP client — manual mode)
+			bridge = new AppBridge(
+				null,
+				{ name: "nteract-dev-preview", version: "0.1.0" },
+				{},
+				{
+					hostContext: {
+						theme: "dark",
+					},
+				},
+			);
+			bridgeRef.current = bridge;
+
+			// Resize iframe to match content
+			bridge.onsizechange = ({ height: h }) => {
+				if (h != null) setHeight(h);
+			};
+
+			bridge.oninitialized = () => {
+				// Send empty tool input (required before tool result)
+				bridge!.sendToolInput({ arguments: {} });
+				// Send the actual tool result with structured content
+				bridge!.sendToolResult(toolResult);
+			};
+
+			const transport = new PostMessageTransport(win, win);
+			await bridge.connect(transport);
+		};
+
+		iframe.addEventListener("load", onLoad);
+		return () => {
+			iframe.removeEventListener("load", onLoad);
+			bridge?.close();
+		};
+	}, [toolResult]);
+
+	return (
+		<iframe
+			ref={iframeRef}
+			className="app-frame"
+			src="/dev/app.html"
+			style={{ height: `${height}px` }}
+			title="MCP App"
+		/>
+	);
+}
+
+function ToolCall({
+	name,
+	args,
+	result,
+}: { name: string; args?: string; result: CallToolResult }) {
 	return (
 		<div className="tool-call">
 			<div className="tool-call-header">
-				<span className="tool-icon">⚡</span>
+				<span className="tool-icon">N</span>
 				<span>
-					{toolName}
+					nteract {name}
 					{args ? ` ${args}` : ""}
 				</span>
 			</div>
-			<div className="tool-call-body">
-				{isMultiCell && (
-					<SummaryHeader
-						cells={cells}
-						allExpanded={allExpanded ?? false}
-						onToggleAll={() => setAllExpanded((prev) => !(prev ?? false))}
-					/>
-				)}
-				{cells.map((cell) => (
-					<Cell
-						key={cell.cell_id}
-						cell={cell}
-						defaultExpanded={!isMultiCell || hasRichOutput(cell)}
-						forceExpanded={isMultiCell ? allExpanded : null}
-					/>
-				))}
-			</div>
+			<AppFrame toolResult={result} />
 		</div>
 	);
 }
@@ -55,44 +117,53 @@ function ToolResult({
 function DevPreview() {
 	return (
 		<>
-			{/* ── Single cell: execute_cell with plotly ── */}
-			<div className="turn">
-				<div className="turn-label assistant">Claude</div>
-				<div className="message">
-					Let me run the scatter plot to visualize the gap distribution.
-				</div>
-			</div>
-			<ToolResult toolName="execute_cell" args='cell_id="cell-a1b2c3d4"' cells={[singleCellPlotly]} />
+			<h1>nteract MCP App — Dev Preview</h1>
 
-			{/* ── Single cell: error ── */}
 			<div className="turn">
-				<div className="turn-label assistant">Claude</div>
+				<div className="turn-label">Claude</div>
+				<div className="message">Let me run the scatter plot to visualize the gap distribution.</div>
+			</div>
+			<ToolCall
+				name="execute_cell"
+				args='cell_id="cell-a1b2c3d4"'
+				result={makeToolResult(singleCellPlotly)}
+			/>
+
+			<div className="turn">
+				<div className="turn-label">Claude</div>
 				<div className="message">Let me import the dependencies first.</div>
 			</div>
-			<ToolResult toolName="execute_cell" args='cell_id="cell-e5f6g7h8"' cells={[singleCellError]} />
+			<ToolCall
+				name="execute_cell"
+				args='cell_id="cell-e5f6g7h8"'
+				result={makeToolResult(singleCellError)}
+			/>
 
-			{/* ── Multi-cell: run_all_cells ── */}
 			<div className="turn">
-				<div className="turn-label assistant">Claude</div>
-				<div className="message">
-					Let me run all cells from the top to rebuild everything.
-				</div>
+				<div className="turn-label">Claude</div>
+				<div className="message">Let me run all cells from the top to rebuild everything.</div>
 			</div>
-			<ToolResult toolName="run_all_cells" cells={multiCellRun} />
+			<ToolCall name="run_all_cells" result={makeToolResult(multiCellRun)} />
 
-			{/* ── Single cell: text-only with HTML table ── */}
 			<div className="turn">
-				<div className="turn-label assistant">Claude</div>
+				<div className="turn-label">Claude</div>
 				<div className="message">Here are the summary statistics.</div>
 			</div>
-			<ToolResult toolName="execute_cell" args='cell_id="cell-t1"' cells={[singleCellText]} />
+			<ToolCall
+				name="execute_cell"
+				args='cell_id="cell-t1"'
+				result={makeToolResult(singleCellText)}
+			/>
 
-			{/* ── Single cell: image output ── */}
 			<div className="turn">
-				<div className="turn-label assistant">Claude</div>
-				<div className="message">And the line chart for the time series.</div>
+				<div className="turn-label">Claude</div>
+				<div className="message">And the line chart.</div>
 			</div>
-			<ToolResult toolName="execute_cell" args='cell_id="cell-img1"' cells={[singleCellImage]} />
+			<ToolCall
+				name="execute_cell"
+				args='cell_id="cell-img1"'
+				result={makeToolResult(singleCellImage)}
+			/>
 		</>
 	);
 }

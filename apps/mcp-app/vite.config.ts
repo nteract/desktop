@@ -1,10 +1,9 @@
 import { defineConfig } from "vite";
 
 export default defineConfig({
-	root: "src/dev",
-	resolve: {
-		alias: {
-			"@": new URL("./src", import.meta.url).pathname,
-		},
+	root: "src",
+	server: {
+		// Open the dev preview by default
+		open: "/dev/index.html",
 	},
 });
