@@ -595,7 +595,24 @@ async fn test_notebook_cell_delete_propagation() {
         .unwrap()
         .handle;
 
-    assert_eq!(client2.get_cells().len(), 3);
+    // Wait for sync convergence before asserting
+    let mut watcher = client2.subscribe();
+    let mut cells = client2.get_cells();
+    for _ in 0..10 {
+        if cells.len() == 3 {
+            break;
+        }
+        match tokio::time::timeout(Duration::from_millis(200), watcher.changed()).await {
+            Ok(Ok(())) => cells = client2.get_cells(),
+            _ => break,
+        }
+    }
+
+    assert_eq!(
+        cells.len(),
+        3,
+        "client2 should see 3 cells after sync convergence"
+    );
 
     // Client1 deletes the middle cell
     client1.delete_cell("to-delete").unwrap();
