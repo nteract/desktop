@@ -52,7 +52,7 @@ for candidate in "${candidate_paths[@]}"; do
 done
 
 cat >&2 <<EOF
-nteract Claude plugin error: could not find the app-bundled ${binary_name}.
+nteract Codex plugin error: could not find the app-bundled ${binary_name}.
 Install the nteract desktop app and try again.
 
 Expected locations for channel '${channel}':
