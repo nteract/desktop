@@ -299,6 +299,9 @@ jobs:
             cp target/release/mcpb-runt "crates/notebook/binaries/mcpb-runt-$TARGET"
           fi
 
+      - name: Check tool caches are up to date
+        run: cargo xtask sync-tool-cache --check
+
       - name: Clippy (notebook crate)
         run: cargo clippy -p notebook --all-targets -- -D warnings
 

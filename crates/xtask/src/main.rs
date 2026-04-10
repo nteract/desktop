@@ -85,6 +85,10 @@ fn main() {
                 .unwrap_or("stable");
             cmd_mcpb(output, variant);
         }
+        "sync-tool-cache" => {
+            let check = args.iter().any(|a| a == "--check");
+            cmd_sync_tool_cache(check);
+        }
         "--help" | "-h" | "help" => print_help(),
         cmd => {
             eprintln!("Unknown command: {cmd}");
@@ -141,6 +145,8 @@ Other:
   mcpb                       Package nteract as a Claude Desktop extension (.mcpb)
   mcpb --variant nightly     Build nightly variant (different name/icon)
   mcpb --output <path>       Write the .mcpb archive to a custom path
+  sync-tool-cache            Regenerate tool-cache.json + MCPB manifests from runt binary
+  sync-tool-cache --check    Check caches are up to date + description byte budget (for CI)
   help                       Show this help
 "
     );
@@ -2554,6 +2560,182 @@ fn read_package_version(package: &str) -> String {
         .and_then(|p| p["version"].as_str())
         .unwrap_or("0.0.0")
         .to_string()
+}
+
+const TOOL_DESC_BYTE_BUDGET: usize = 1500;
+
+#[allow(clippy::expect_used)]
+fn cmd_sync_tool_cache(check: bool) {
+    let tool_cache_path = Path::new("crates/runt-mcp-proxy/tool-cache.json");
+    let manifest_nightly = Path::new("mcpb/manifest.nightly.json");
+    let manifest_stable = Path::new("mcpb/manifest.stable.json");
+
+    eprintln!("Building runt-cli (release)...");
+    run_cmd("cargo", &["build", "--release", "-p", "runt-cli"]);
+
+    eprintln!("Dumping tool list from runt mcp...");
+    let runt_bin = Path::new("target/release/runt");
+    let tools_json = dump_mcp_tools(runt_bin);
+
+    // 3. Parse and compute description bytes
+    let tools: serde_json::Value = serde_json::from_str(&tools_json)
+        .unwrap_or_else(|e| panic!("Failed to parse tool list: {e}"));
+    let tools_arr = tools.as_array().expect("tools should be an array");
+
+    let total_desc_bytes: usize = tools_arr
+        .iter()
+        .filter_map(|t| t["description"].as_str())
+        .map(|d| d.len())
+        .sum();
+
+    eprintln!(
+        "  {} tools, {} description bytes (budget: {})",
+        tools_arr.len(),
+        total_desc_bytes,
+        TOOL_DESC_BYTE_BUDGET
+    );
+
+    if total_desc_bytes > TOOL_DESC_BYTE_BUDGET {
+        eprintln!(
+            "ERROR: Tool description bytes ({}) exceed budget ({})",
+            total_desc_bytes, TOOL_DESC_BYTE_BUDGET
+        );
+        if check {
+            exit(1);
+        } else {
+            eprintln!("  (continuing anyway since --check was not passed)");
+        }
+    }
+
+    // 4. Format the tool cache JSON
+    let formatted = serde_json::to_string_pretty(tools_arr).expect("Failed to format tool cache");
+
+    if check {
+        // Check mode: compare against existing files
+        let mut stale = false;
+
+        let existing_cache = fs::read_to_string(tool_cache_path).unwrap_or_default();
+        if existing_cache.trim() != formatted.trim() {
+            eprintln!("STALE: {}", tool_cache_path.display());
+            stale = true;
+        }
+
+        for manifest_path in [&manifest_nightly, &manifest_stable] {
+            let existing = fs::read_to_string(manifest_path).unwrap_or_default();
+            let updated = update_manifest_tools(&existing, tools_arr);
+            if existing.trim() != updated.trim() {
+                eprintln!("STALE: {}", manifest_path.display());
+                stale = true;
+            }
+        }
+
+        // Also check mcpb_install.rs descriptions match
+        let mcpb_install = Path::new("crates/notebook/src/mcpb_install.rs");
+        if mcpb_install.exists() {
+            let source = fs::read_to_string(mcpb_install).unwrap_or_default();
+            for tool in tools_arr {
+                let name = tool["name"].as_str().unwrap_or("");
+                let desc = tool["description"].as_str().unwrap_or("");
+                let needle = format!(r#""description": "{}""#, desc);
+                if !source.contains(&needle) && source.contains(&format!(r#""name": "{}""#, name)) {
+                    eprintln!(
+                        "STALE: {} (description mismatch for tool '{}')",
+                        mcpb_install.display(),
+                        name
+                    );
+                    stale = true;
+                    break;
+                }
+            }
+        }
+
+        if stale {
+            eprintln!();
+            eprintln!("Run `cargo xtask sync-tool-cache` to fix JSON caches.");
+            eprintln!("If mcpb_install.rs is stale, update it manually to match.");
+            exit(1);
+        }
+        eprintln!("All tool caches are up to date.");
+    } else {
+        // Write mode: update files
+        fs::write(tool_cache_path, &formatted)
+            .unwrap_or_else(|e| panic!("Failed to write {}: {e}", tool_cache_path.display()));
+        eprintln!("  Updated {}", tool_cache_path.display());
+
+        for manifest_path in [&manifest_nightly, &manifest_stable] {
+            let existing = fs::read_to_string(manifest_path).unwrap_or_default();
+            let updated = update_manifest_tools(&existing, tools_arr);
+            fs::write(manifest_path, &updated)
+                .unwrap_or_else(|e| panic!("Failed to write {}: {e}", manifest_path.display()));
+            eprintln!("  Updated {}", manifest_path.display());
+        }
+
+        eprintln!("Done. Review the changes and commit.");
+    }
+}
+
+#[allow(clippy::expect_used)]
+fn dump_mcp_tools(runt_bin: &Path) -> String {
+    use std::io::{Read, Write};
+
+    let mut child = Command::new(runt_bin)
+        .arg("mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("Failed to spawn runt mcp");
+
+    let stdin = child.stdin.as_mut().expect("stdin");
+    let init_msg = r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"xtask","version":"1.0"}}}"#;
+    writeln!(stdin, "{}", init_msg).ok();
+    thread::sleep(Duration::from_secs(1));
+
+    let list_msg = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
+    writeln!(stdin, "{}", list_msg).ok();
+    thread::sleep(Duration::from_secs(1));
+    drop(child.stdin.take());
+
+    let mut output = String::new();
+    child
+        .stdout
+        .as_mut()
+        .expect("stdout")
+        .read_to_string(&mut output)
+        .ok();
+    child.kill().ok();
+    child.wait().ok();
+
+    for line in output.lines() {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+            if let Some(tools) = v.get("result").and_then(|r| r.get("tools")) {
+                return serde_json::to_string(tools).expect("serialize tools");
+            }
+        }
+    }
+    panic!("Failed to get tools/list response from runt mcp");
+}
+
+#[allow(clippy::expect_used)]
+fn update_manifest_tools(manifest_json: &str, tools: &[serde_json::Value]) -> String {
+    let mut manifest: serde_json::Value =
+        serde_json::from_str(manifest_json).expect("parse manifest");
+
+    let tool_entries: Vec<serde_json::Value> = tools
+        .iter()
+        .map(|t| {
+            serde_json::json!({
+                "name": t["name"],
+                "description": t["description"]
+            })
+        })
+        .collect();
+
+    manifest["tools"] = serde_json::Value::Array(tool_entries);
+
+    let mut buf = serde_json::to_string_pretty(&manifest).expect("format manifest");
+    buf.push('\n');
+    buf
 }
 
 #[cfg(test)]
