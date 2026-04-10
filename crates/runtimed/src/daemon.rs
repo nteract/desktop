@@ -4262,4 +4262,184 @@ mod tests {
         collect_blob_hashes_recursive(&value, &mut hashes);
         assert!(hashes.is_empty());
     }
+
+    // ── Blob GC edge case tests ────────────────────────────────────
+
+    #[test]
+    fn test_collect_blob_hashes_empty_manifest() {
+        let manifest = serde_json::json!({});
+        let mut hashes = std::collections::HashSet::new();
+        collect_blob_hashes(&manifest, &mut hashes);
+        assert!(hashes.is_empty());
+    }
+
+    #[test]
+    fn test_collect_blob_hashes_inline_only_no_blobs() {
+        // Manifests with only inline content should yield no blob hashes
+        let manifest = serde_json::json!({
+            "output_type": "display_data",
+            "data": {
+                "text/plain": {"inline": "hello world"},
+                "text/html": {"inline": "<b>hello</b>"}
+            }
+        });
+        let mut hashes = std::collections::HashSet::new();
+        collect_blob_hashes(&manifest, &mut hashes);
+        assert!(hashes.is_empty());
+    }
+
+    #[test]
+    fn test_collect_blob_hashes_mixed_inline_and_blob() {
+        // Same output with both inline and blob MIME types
+        let manifest = serde_json::json!({
+            "output_type": "execute_result",
+            "data": {
+                "text/plain": {"inline": "Figure(...)"},
+                "image/png": {"blob": "png_hash", "size": 50000}
+            },
+            "execution_count": 5
+        });
+        let mut hashes = std::collections::HashSet::new();
+        collect_blob_hashes(&manifest, &mut hashes);
+        assert_eq!(hashes.len(), 1);
+        assert!(hashes.contains("png_hash"));
+    }
+
+    #[test]
+    fn test_collect_blob_hashes_null_and_missing_fields() {
+        // Manifest with null values and missing expected fields
+        let manifest = serde_json::json!({
+            "output_type": "display_data",
+            "data": null,
+            "text": null,
+            "traceback": null
+        });
+        let mut hashes = std::collections::HashSet::new();
+        collect_blob_hashes(&manifest, &mut hashes);
+        assert!(hashes.is_empty());
+    }
+
+    #[test]
+    fn test_collect_blob_hashes_stream_inline_text() {
+        // Stream with inline text (small output, no blob)
+        let manifest = serde_json::json!({
+            "output_type": "stream",
+            "name": "stdout",
+            "text": "just a string, not an object"
+        });
+        let mut hashes = std::collections::HashSet::new();
+        collect_blob_hashes(&manifest, &mut hashes);
+        assert!(hashes.is_empty()); // text is a string, not {blob: ...}
+    }
+
+    #[test]
+    fn test_collect_blob_hashes_multiple_outputs_dedup() {
+        // Same blob hash referenced by multiple MIME types
+        let manifest = serde_json::json!({
+            "output_type": "display_data",
+            "data": {
+                "image/png": {"blob": "same_hash", "size": 1000},
+                "image/jpeg": {"blob": "same_hash", "size": 1000}
+            }
+        });
+        let mut hashes = std::collections::HashSet::new();
+        collect_blob_hashes(&manifest, &mut hashes);
+        assert_eq!(hashes.len(), 1); // deduplicated by HashSet
+        assert!(hashes.contains("same_hash"));
+    }
+
+    #[test]
+    fn test_collect_blob_hashes_recursive_empty_state() {
+        let mut hashes = std::collections::HashSet::new();
+        collect_blob_hashes_recursive(&serde_json::json!({}), &mut hashes);
+        assert!(hashes.is_empty());
+
+        collect_blob_hashes_recursive(&serde_json::json!(null), &mut hashes);
+        assert!(hashes.is_empty());
+
+        collect_blob_hashes_recursive(&serde_json::json!([]), &mut hashes);
+        assert!(hashes.is_empty());
+
+        collect_blob_hashes_recursive(&serde_json::json!("just a string"), &mut hashes);
+        assert!(hashes.is_empty());
+    }
+
+    #[test]
+    fn test_collect_blob_hashes_recursive_array_of_blob_refs() {
+        // Widget buffer_paths can produce arrays containing blob refs
+        let value = serde_json::json!([
+            {"blob": "buf1", "size": 100, "media_type": "application/octet-stream"},
+            {"blob": "buf2", "size": 200, "media_type": "application/octet-stream"},
+            "not a blob ref"
+        ]);
+        let mut hashes = std::collections::HashSet::new();
+        collect_blob_hashes_recursive(&value, &mut hashes);
+        assert_eq!(hashes.len(), 2);
+        assert!(hashes.contains("buf1"));
+        assert!(hashes.contains("buf2"));
+    }
+
+    #[test]
+    fn test_collect_blob_hashes_recursive_deeply_nested() {
+        // 4 levels deep — store_widget_buffers can place refs at arbitrary depth
+        let value = serde_json::json!({
+            "level1": {
+                "level2": {
+                    "level3": {
+                        "data": {"blob": "deep_hash", "size": 999}
+                    }
+                }
+            }
+        });
+        let mut hashes = std::collections::HashSet::new();
+        collect_blob_hashes_recursive(&value, &mut hashes);
+        assert_eq!(hashes.len(), 1);
+        assert!(hashes.contains("deep_hash"));
+    }
+
+    #[test]
+    fn test_collect_blob_hashes_recursive_blob_key_with_size_zero() {
+        // size: 0 is technically valid (empty blob)
+        let value = serde_json::json!({
+            "empty_blob": {"blob": "empty_hash", "size": 0}
+        });
+        let mut hashes = std::collections::HashSet::new();
+        collect_blob_hashes_recursive(&value, &mut hashes);
+        assert!(hashes.contains("empty_hash"));
+    }
+
+    #[test]
+    fn test_collect_blob_hashes_recursive_non_string_blob_value() {
+        // blob value is a number (malformed) — should not be collected
+        let value = serde_json::json!({
+            "weird": {"blob": 12345, "size": 100}
+        });
+        let mut hashes = std::collections::HashSet::new();
+        collect_blob_hashes_recursive(&value, &mut hashes);
+        assert!(hashes.is_empty());
+    }
+
+    #[test]
+    fn test_collect_blob_hashes_recursive_mixed_blob_and_regular_objects() {
+        // State with a mix of blob refs and regular data that should not match
+        let value = serde_json::json!({
+            "_model_name": "PlotWidget",
+            "_esm": {"blob": "esm_hash", "size": 80000, "media_type": "text/javascript"},
+            "layout": {
+                "width": 800,
+                "height": 600,
+                "title": "My Plot"
+            },
+            "data": [
+                {"x": [1, 2, 3], "y": [4, 5, 6]},
+                {"blob": "data_blob", "size": 5000, "media_type": "application/json"}
+            ],
+            "config": {"responsive": true}
+        });
+        let mut hashes = std::collections::HashSet::new();
+        collect_blob_hashes_recursive(&value, &mut hashes);
+        assert_eq!(hashes.len(), 2);
+        assert!(hashes.contains("esm_hash"));
+        assert!(hashes.contains("data_blob"));
+    }
 }
