@@ -7,7 +7,7 @@ use serde::Deserialize;
 
 use crate::NteractMcp;
 
-use super::{arg_str, tool_error, tool_success};
+use super::{arg_bool, arg_str, tool_error, tool_success};
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -154,12 +154,7 @@ pub async fn set_cells_source_hidden(
         .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
         .unwrap_or_default();
 
-    let hidden = request
-        .arguments
-        .as_ref()
-        .and_then(|a| a.get("hidden"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let hidden = arg_bool(request, "hidden").unwrap_or(false);
 
     let mut not_found = Vec::new();
 
@@ -193,12 +188,7 @@ pub async fn set_cells_outputs_hidden(
         .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
         .unwrap_or_default();
 
-    let hidden = request
-        .arguments
-        .as_ref()
-        .and_then(|a| a.get("hidden"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let hidden = arg_bool(request, "hidden").unwrap_or(false);
 
     let mut not_found = Vec::new();
 

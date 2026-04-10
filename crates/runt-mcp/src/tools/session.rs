@@ -61,7 +61,7 @@ fn resolve_path(path: &str) -> String {
 
 use notebook_protocol::protocol::{NotebookRequest, NotebookResponse};
 
-use super::{arg_str, tool_error, tool_success};
+use super::{arg_bool, arg_str, tool_error, tool_success};
 
 /// Collect runtime info from RuntimeStateDoc, polling briefly for it to sync.
 /// Matches Python's `_collect_runtime_info()`.
@@ -385,12 +385,7 @@ pub async fn create_notebook(
 
     let working_dir = arg_str(request, "working_dir").map(|s| PathBuf::from(resolve_path(s)));
     let working_dir_for_detection = working_dir.clone();
-    let ephemeral = request
-        .arguments
-        .as_ref()
-        .and_then(|a| a.get("ephemeral"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(true);
+    let ephemeral = arg_bool(request, "ephemeral").unwrap_or(true);
 
     let prev = previous_notebook_id(server).await;
 

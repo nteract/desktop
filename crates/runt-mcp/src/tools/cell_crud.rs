@@ -12,7 +12,7 @@ use notebook_protocol::protocol::NotebookRequest;
 use crate::execution;
 use crate::NteractMcp;
 
-use super::{arg_str, tool_error, tool_success};
+use super::{arg_bool, arg_str, tool_error, tool_success};
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -89,12 +89,7 @@ pub async fn create_cell(
         .as_ref()
         .and_then(|a| a.get("index"))
         .and_then(|v| v.as_i64());
-    let and_run = request
-        .arguments
-        .as_ref()
-        .and_then(|a| a.get("and_run"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let and_run = arg_bool(request, "and_run").unwrap_or(false);
     let timeout_secs = request
         .arguments
         .as_ref()
@@ -167,12 +162,7 @@ pub async fn set_cell(
 
     let source = arg_str(request, "source");
     let cell_type = arg_str(request, "cell_type");
-    let and_run = request
-        .arguments
-        .as_ref()
-        .and_then(|a| a.get("and_run"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let and_run = arg_bool(request, "and_run").unwrap_or(false);
     let timeout_secs = request
         .arguments
         .as_ref()

@@ -367,13 +367,41 @@ pub async fn dispatch(
     }
 }
 
-/// Helper: extract a typed argument or return a default.
+/// Helper: extract a string argument.
 pub fn arg_str<'a>(request: &'a CallToolRequestParams, key: &str) -> Option<&'a str> {
     request
         .arguments
         .as_ref()
         .and_then(|args| args.get(key))
         .and_then(|v| v.as_str())
+}
+
+/// Helper: extract a boolean argument, tolerating string "true"/"false".
+///
+/// Claude Code's MCP client has a known bug where boolean params are sometimes
+/// serialized as strings (e.g., `"true"` instead of `true`). This affects
+/// tools with `required` fields inconsistently.
+/// See: https://github.com/anthropics/claude-code/issues/32524
+pub fn arg_bool(request: &CallToolRequestParams, key: &str) -> Option<bool> {
+    let val = request.arguments.as_ref()?.get(key)?;
+    if let Some(b) = val.as_bool() {
+        return Some(b);
+    }
+    match val.as_str() {
+        Some("true") => {
+            tracing::warn!(
+                "[mcp] Boolean param '{key}' arrived as string \"true\" (claude-code#32524)"
+            );
+            Some(true)
+        }
+        Some("false") => {
+            tracing::warn!(
+                "[mcp] Boolean param '{key}' arrived as string \"false\" (claude-code#32524)"
+            );
+            Some(false)
+        }
+        _ => None,
+    }
 }
 
 /// Helper: create a text error result.
@@ -435,4 +463,66 @@ pub async fn build_execution_result(
     let mut call_result = CallToolResult::success(items);
     call_result.structured_content = structured_content;
     Ok(call_result)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    fn make_request(args: serde_json::Value) -> CallToolRequestParams {
+        serde_json::from_value(serde_json::json!({
+            "name": "test",
+            "arguments": args,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn arg_bool_json_true() {
+        let req = make_request(serde_json::json!({"flag": true}));
+        assert_eq!(arg_bool(&req, "flag"), Some(true));
+    }
+
+    #[test]
+    fn arg_bool_json_false() {
+        let req = make_request(serde_json::json!({"flag": false}));
+        assert_eq!(arg_bool(&req, "flag"), Some(false));
+    }
+
+    #[test]
+    fn arg_bool_string_true() {
+        let req = make_request(serde_json::json!({"flag": "true"}));
+        assert_eq!(arg_bool(&req, "flag"), Some(true));
+    }
+
+    #[test]
+    fn arg_bool_string_false() {
+        let req = make_request(serde_json::json!({"flag": "false"}));
+        assert_eq!(arg_bool(&req, "flag"), Some(false));
+    }
+
+    #[test]
+    fn arg_bool_missing_key() {
+        let req = make_request(serde_json::json!({"other": 1}));
+        assert_eq!(arg_bool(&req, "flag"), None);
+    }
+
+    #[test]
+    fn arg_bool_invalid_string() {
+        let req = make_request(serde_json::json!({"flag": "yes"}));
+        assert_eq!(arg_bool(&req, "flag"), None);
+    }
+
+    #[test]
+    fn arg_bool_number() {
+        let req = make_request(serde_json::json!({"flag": 1}));
+        assert_eq!(arg_bool(&req, "flag"), None);
+    }
+
+    #[test]
+    fn arg_bool_null() {
+        let req = make_request(serde_json::json!({"flag": null}));
+        assert_eq!(arg_bool(&req, "flag"), None);
+    }
 }

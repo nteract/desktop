@@ -10,7 +10,7 @@ use runtimed_client::output_resolver;
 use crate::formatting;
 use crate::NteractMcp;
 
-use super::{arg_str, tool_error, tool_success};
+use super::{arg_bool, arg_str, tool_error, tool_success};
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -139,12 +139,7 @@ pub async fn get_all_cells(
         .and_then(|a| a.get("count"))
         .and_then(|v| v.as_i64())
         .map(|v| v as usize);
-    let include_outputs = request
-        .arguments
-        .as_ref()
-        .and_then(|a| a.get("include_outputs"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let include_outputs = arg_bool(request, "include_outputs").unwrap_or(false);
     let preview_chars = request
         .arguments
         .as_ref()
