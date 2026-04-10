@@ -10,7 +10,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-automerge = "0.7"
+automerge = "0.8"
 notebook-doc = { path = "../notebook-doc" }
 notebook-protocol = { path = "../notebook-protocol" }
 tokio = { workspace = true }

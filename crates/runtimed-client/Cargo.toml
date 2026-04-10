@@ -24,7 +24,7 @@ dirs = "6"
 base64 = { workspace = true }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
 uuid = { workspace = true }
-automerge = "0.7"
+automerge = "0.8"
 schemars = { workspace = true }
 ts-rs = { workspace = true }
 
