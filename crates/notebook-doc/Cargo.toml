@@ -7,7 +7,7 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
-automerge = "0.7"
+automerge = "0.8"
 ciborium = "0.2"
 loro_fractional_index = { workspace = true }
 serde = { version = "1", features = ["derive"] }
