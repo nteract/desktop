@@ -987,6 +987,48 @@ impl RuntimeStateDoc {
         true
     }
 
+    /// Mark all in-flight executions (status "running" or "queued") as failed.
+    /// Returns the number of executions marked. Used during kernel restart to
+    /// catch any entries that the local KernelState doesn't know about (e.g.,
+    /// entries created by CRDT sync that haven't been processed locally yet).
+    #[allow(clippy::expect_used)]
+    pub fn mark_inflight_executions_failed(&mut self) -> usize {
+        let Some(executions) = self.get_map("executions") else {
+            return 0;
+        };
+
+        let inflight: Vec<automerge::ObjId> =
+            self.doc
+                .map_range(&executions, ..)
+                .filter_map(|item| {
+                    if !matches!(item.value, automerge::ValueRef::Object(ObjType::Map)) {
+                        return None;
+                    }
+                    let status = self.doc.get(item.id(), "status").ok().flatten().and_then(
+                        |(v, _)| match v {
+                            Value::Scalar(s) => s.to_str().map(|s| s.to_string()),
+                            _ => None,
+                        },
+                    );
+                    match status.as_deref() {
+                        Some("running") | Some("queued") => Some(item.id()),
+                        _ => None,
+                    }
+                })
+                .collect();
+
+        let count = inflight.len();
+        for entry_id in inflight {
+            self.doc
+                .put(&entry_id, "status", "error")
+                .expect("put execution.status");
+            self.doc
+                .put(&entry_id, "success", false)
+                .expect("put execution.success");
+        }
+        count
+    }
+
     /// Read a single execution's state.
     pub fn get_execution(&self, execution_id: &str) -> Option<ExecutionState> {
         let executions = self.get_map("executions")?;
@@ -2343,6 +2385,51 @@ mod tests {
     fn test_get_execution_nonexistent() {
         let doc = RuntimeStateDoc::new();
         assert!(doc.get_execution("nope").is_none());
+    }
+
+    #[test]
+    fn test_mark_inflight_executions_failed() {
+        let mut doc = RuntimeStateDoc::new();
+        // One running, one queued, one already done
+        doc.create_execution("exec-running", "cell-1");
+        doc.set_execution_running("exec-running");
+
+        doc.create_execution("exec-queued", "cell-2");
+
+        doc.create_execution("exec-done", "cell-3");
+        doc.set_execution_running("exec-done");
+        doc.set_execution_done("exec-done", true);
+
+        assert_eq!(doc.get_execution("exec-running").unwrap().status, "running");
+        assert_eq!(doc.get_execution("exec-queued").unwrap().status, "queued");
+        assert_eq!(doc.get_execution("exec-done").unwrap().status, "done");
+
+        let marked = doc.mark_inflight_executions_failed();
+        assert_eq!(marked, 2);
+
+        assert_eq!(doc.get_execution("exec-running").unwrap().status, "error");
+        assert_eq!(
+            doc.get_execution("exec-running").unwrap().success,
+            Some(false)
+        );
+        assert_eq!(doc.get_execution("exec-queued").unwrap().status, "error");
+        assert_eq!(
+            doc.get_execution("exec-queued").unwrap().success,
+            Some(false)
+        );
+        // Done execution should be untouched
+        assert_eq!(doc.get_execution("exec-done").unwrap().status, "done");
+        assert_eq!(doc.get_execution("exec-done").unwrap().success, Some(true));
+    }
+
+    #[test]
+    fn test_mark_inflight_noop_when_all_done() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.create_execution("exec-1", "cell-1");
+        doc.set_execution_running("exec-1");
+        doc.set_execution_done("exec-1", true);
+
+        assert_eq!(doc.mark_inflight_executions_failed(), 0);
     }
 
     #[test]

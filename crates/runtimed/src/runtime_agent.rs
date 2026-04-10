@@ -482,6 +482,15 @@ async fn handle_runtime_agent_request(
                 for eid in &stale_queue {
                     sd.set_execution_done(eid, false);
                 }
+                // Defensive sweep: mark any execution entries stuck in
+                // "running" or "queued" that the local KernelState missed
+                // (e.g., entries from CRDT sync not yet processed locally).
+                let orphans = sd.mark_inflight_executions_failed();
+                if orphans > 0 {
+                    info!(
+                        "[runtime-agent] Marked {orphans} orphaned execution(s) as failed on restart"
+                    );
+                }
                 sd.set_queue(None, &[]);
                 let _ = ctx.state_changed_tx.send(());
             }
