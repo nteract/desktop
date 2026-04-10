@@ -2696,7 +2696,7 @@ impl Daemon {
                 break;
             }
 
-            {
+            let (deficit, should_retry, backoff_info) = {
                 let target = {
                     let settings = self.settings.read().await;
                     settings
@@ -2707,10 +2707,6 @@ impl Daemon {
                 };
                 let mut pool = self.uv_pool.lock().await;
                 pool.set_target(target);
-            }
-
-            let (deficit, should_retry, backoff_info) = {
-                let mut pool = self.uv_pool.lock().await;
                 let d = pool.deficit();
                 let retry = pool.should_retry();
                 let info = if pool.failure_state.consecutive_failures > 0 {
@@ -2781,7 +2777,7 @@ impl Daemon {
                 break;
             }
 
-            {
+            let (deficit, should_retry, backoff_info) = {
                 let target = {
                     let settings = self.settings.read().await;
                     settings
@@ -2792,10 +2788,6 @@ impl Daemon {
                 };
                 let mut pool = self.conda_pool.lock().await;
                 pool.set_target(target);
-            }
-
-            let (deficit, should_retry, backoff_info) = {
-                let mut pool = self.conda_pool.lock().await;
                 let d = pool.deficit();
                 let retry = pool.should_retry();
                 let info = if pool.failure_state.consecutive_failures > 0 {
@@ -2876,7 +2868,7 @@ impl Daemon {
                 break;
             }
 
-            {
+            let (deficit, should_retry, backoff_info) = {
                 let target = {
                     let settings = self.settings.read().await;
                     settings
@@ -2887,10 +2879,6 @@ impl Daemon {
                 };
                 let mut pool = self.pixi_pool.lock().await;
                 pool.set_target(target);
-            }
-
-            let (deficit, should_retry, backoff_info) = {
-                let mut pool = self.pixi_pool.lock().await;
                 let d = pool.deficit();
                 let retry = pool.should_retry();
                 let info = if pool.failure_state.consecutive_failures > 0 {
@@ -3258,14 +3246,15 @@ impl Daemon {
                     });
                 }
 
-                let pool = self.conda_pool.lock().await;
-                info!(
-                    "[runtimed] Conda environment ready: {:?} (pool: {}/{})",
-                    env_path,
-                    pool.stats().0,
-                    pool.target()
-                );
-
+                {
+                    let pool = self.conda_pool.lock().await;
+                    info!(
+                        "[runtimed] Conda environment ready: {:?} (pool: {}/{})",
+                        env_path,
+                        pool.stats().0,
+                        pool.target()
+                    );
+                }
                 self.update_pool_doc().await;
             }
             WarmupOutcome::Timeout => {

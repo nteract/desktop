@@ -44,4 +44,16 @@ keep_alive_secs: bigint,
  * Whether the user has completed the first-launch onboarding flow.
  * When false, the app shows the onboarding screen on startup.
  */
-onboarding_completed: boolean, };
+onboarding_completed: boolean, 
+/**
+ * Number of prewarmed UV environments to keep ready. 0 disables the pool.
+ */
+uv_pool_size: bigint, 
+/**
+ * Number of prewarmed Conda environments to keep ready. 0 disables the pool.
+ */
+conda_pool_size: bigint, 
+/**
+ * Number of prewarmed Pixi environments to keep ready. 0 disables the pool.
+ */
+pixi_pool_size: bigint, };
