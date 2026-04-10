@@ -834,6 +834,8 @@ impl Supervisor {
             state.project_root.clone()
         };
 
+        let skip_maturin = std::env::var("SKIP_MATURIN").unwrap_or_default() == "1";
+
         match kind {
             ChangeKind::RustMcpChanged => {
                 info!("Rust MCP files changed, building runt-cli...");
@@ -841,31 +843,37 @@ impl Supervisor {
                     error!("cargo build -p runt-cli failed, keeping current child");
                     return;
                 }
-                // Also run maturin develop in background for the dev workflow
-                // (keeps runtimed-py up to date for tests/notebooks)
-                let pr = project_root.clone();
-                tokio::task::spawn_blocking(move || {
-                    let _ = run_maturin_develop(&pr);
-                });
+                if !skip_maturin {
+                    let pr = project_root.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let _ = run_maturin_develop(&pr);
+                    });
+                }
             }
             ChangeKind::RustChanged => {
-                info!("Rust binding files changed, building runt-cli + maturin develop...");
-                // runtimed changes affect both runt-mcp (via runtimed-client) and Python bindings
+                info!(
+                    "Rust binding files changed, building runt-cli{}...",
+                    if skip_maturin {
+                        ""
+                    } else {
+                        " + maturin develop"
+                    }
+                );
                 if !build_runt_cli(&project_root) {
                     error!("cargo build -p runt-cli failed, keeping current child");
                     return;
                 }
-                if !run_maturin_develop(&project_root) {
+                if !skip_maturin && !run_maturin_develop(&project_root) {
                     warn!("maturin develop failed (runt mcp will still restart)");
                 }
             }
             ChangeKind::PythonOnly => {
-                // Python changes don't affect the Rust MCP server, but run maturin
-                // develop in background for the dev workflow
-                let pr = project_root.clone();
-                tokio::task::spawn_blocking(move || {
-                    let _ = run_maturin_develop(&pr);
-                });
+                if !skip_maturin {
+                    let pr = project_root.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let _ = run_maturin_develop(&pr);
+                    });
+                }
             }
         }
 
