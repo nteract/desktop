@@ -105,7 +105,8 @@ pub fn all_tools() -> Vec<Tool> {
             "Create a new notebook, making it your active session. Notebooks are ephemeral by default (in-memory only) — use save_notebook(path) to persist to disk. Set ephemeral=false for session-restorable persistence. Supports uv, conda, or pixi via package_manager param.",
             schema_for::<session::CreateNotebookParams>(),
         )
-        .annotate(ToolAnnotations::new().destructive(false).open_world(false)),
+        .annotate(ToolAnnotations::new().destructive(false).open_world(false))
+        .with_meta(always_load_meta()),
         Tool::new(
             "save_notebook",
             "Save notebook to disk. The daemon automatically re-keys ephemeral rooms to the saved file path.",
@@ -116,7 +117,8 @@ pub fn all_tools() -> Vec<Tool> {
                 .destructive(false)
                 .idempotent(true)
                 .open_world(true),
-        ),
+        )
+        .with_meta(always_load_meta()),
         Tool::new(
             "launch_app",
             "Launch the nteract desktop app for the user, showing the current notebook. The notebook must be running in the daemon.",
@@ -135,7 +137,8 @@ pub fn all_tools() -> Vec<Tool> {
             "Get all cells. Use summary (default) for discovery, get_cell() for details. Formats: 'summary', 'json', 'rich'.",
             schema_for::<cell_read::GetAllCellsParams>(),
         )
-        .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
+        .annotate(ToolAnnotations::new().read_only(true).open_world(false))
+        .with_meta(always_load_meta()),
         // -- Cell CRUD --
         Tool::new(
             "create_cell",
@@ -143,7 +146,7 @@ pub fn all_tools() -> Vec<Tool> {
             schema_for::<cell_crud::CreateCellParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(false).open_world(false))
-        .with_meta(app_tool_meta()),
+        .with_meta(always_load_meta()),
         Tool::new(
             "set_cell",
             "Update a cell's source and/or type. Use replace_match for targeted edits.",
@@ -231,7 +234,7 @@ pub fn all_tools() -> Vec<Tool> {
             schema_for::<execution::ExecuteCellParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(true).open_world(true))
-        .with_meta(app_tool_meta()),
+        .with_meta(always_load_meta()),
         Tool::new(
             "run_all_cells",
             "Execute all code cells in order. With wait=true (default), waits for completion and returns per-cell outputs with structured content. With wait=false, queues cells and returns immediately.",
