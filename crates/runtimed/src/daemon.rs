@@ -2415,11 +2415,185 @@ impl Daemon {
                 }
             }
 
+            // Clean up orphaned blobs — mark-and-sweep across all active rooms.
+            // Blobs are content-addressed, so the same hash may be referenced by
+            // multiple rooms. We must scan ALL rooms before deleting anything.
+            //
+            // Batched: collect refs from rooms in batches of 10, yield between
+            // batches to avoid starving other daemon tasks. Deletions are also
+            // batched with yields between chunks.
+            {
+                let blob_max_age = std::time::Duration::from_secs(3600); // 1 hour grace period
+                const ROOM_BATCH_SIZE: usize = 10;
+                const DELETE_BATCH_SIZE: usize = 50;
+
+                // Collect room Arcs under the rooms lock, then drop it before
+                // any async state_doc reads (deadlock prevention).
+                let room_arcs: Vec<_> = {
+                    let rooms = self.notebook_rooms.lock().await;
+                    rooms.values().cloned().collect()
+                };
+
+                // Mark phase: collect referenced hashes in batches of rooms.
+                // Scans three sources of blob refs per room:
+                //   1. Execution outputs (RuntimeStateDoc) — images, rich text, tracebacks
+                //   2. Comm state (RuntimeStateDoc) — externalized widget state (_esm, buffers)
+                //   3. Resolved assets (notebook doc) — markdown image refs
+                let mut referenced_hashes = std::collections::HashSet::new();
+                for batch in room_arcs.chunks(ROOM_BATCH_SIZE) {
+                    for room in batch {
+                        // 1 & 2: RuntimeStateDoc — execution outputs + comm state
+                        {
+                            let sd = room.state_doc.read().await;
+                            let state = sd.read_state();
+                            for exec in state.executions.values() {
+                                for output in &exec.outputs {
+                                    collect_blob_hashes(output, &mut referenced_hashes);
+                                }
+                            }
+                            for comm in state.comms.values() {
+                                for output in &comm.outputs {
+                                    collect_blob_hashes(output, &mut referenced_hashes);
+                                }
+                                // Comm state may contain externalized blob refs
+                                // (widget _esm, _css, binary buffers, large JSON values)
+                                collect_blob_hashes_recursive(&comm.state, &mut referenced_hashes);
+                            }
+                        }
+                        // 3: Notebook doc — markdown resolved_assets
+                        {
+                            let doc = room.doc.read().await;
+                            for cell in doc.get_cells() {
+                                for hash in cell.resolved_assets.values() {
+                                    referenced_hashes.insert(hash.clone());
+                                }
+                            }
+                        }
+                    }
+                    // Yield between room batches to avoid starving other tasks
+                    tokio::task::yield_now().await;
+                }
+
+                // Sweep phase: delete orphaned blobs in batches
+                match self.blob_store.list().await {
+                    Ok(all_blobs) => {
+                        let mut blobs_deleted = 0;
+                        let total_blobs = all_blobs.len();
+                        for chunk in all_blobs.chunks(DELETE_BATCH_SIZE) {
+                            for hash in chunk {
+                                if referenced_hashes.contains(hash) {
+                                    continue;
+                                }
+                                let is_stale = self
+                                    .blob_store
+                                    .get_meta(hash)
+                                    .await
+                                    .ok()
+                                    .flatten()
+                                    .is_some_and(|m| {
+                                        let age_secs = chrono::Utc::now()
+                                            .signed_duration_since(m.created_at)
+                                            .num_seconds();
+                                        // Guard against clock skew (negative age wraps to
+                                        // huge u64, causing incorrect deletion)
+                                        age_secs > 0 && age_secs as u64 > blob_max_age.as_secs()
+                                    });
+                                if is_stale && self.blob_store.delete(hash).await.unwrap_or(false) {
+                                    blobs_deleted += 1;
+                                }
+                            }
+                            // Yield between delete batches
+                            tokio::task::yield_now().await;
+                        }
+                        if blobs_deleted > 0 {
+                            info!(
+                                "[runtimed] GC: cleaned up {} orphaned blobs ({} total, {} referenced)",
+                                blobs_deleted,
+                                total_blobs,
+                                referenced_hashes.len()
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        warn!("[runtimed] GC: failed to list blobs: {}", e);
+                    }
+                }
+            }
+
             // Run every 6 hours
             tokio::time::sleep(std::time::Duration::from_secs(6 * 3600)).await;
         }
     }
+}
 
+/// Extract blob hashes from an output manifest JSON value.
+///
+/// Walks `data` (display_data/execute_result MIME entries), `text` (stream),
+/// and `traceback` (error) fields looking for `{"blob": "<hash>"}` refs.
+fn collect_blob_hashes(
+    manifest: &serde_json::Value,
+    hashes: &mut std::collections::HashSet<String>,
+) {
+    // display_data / execute_result: data.{mime_type}.blob
+    if let Some(data) = manifest.get("data").and_then(|d| d.as_object()) {
+        for mime_data in data.values() {
+            if let Some(hash) = mime_data.get("blob").and_then(|b| b.as_str()) {
+                hashes.insert(hash.to_string());
+            }
+        }
+    }
+    // stream: text.blob
+    if let Some(hash) = manifest
+        .get("text")
+        .and_then(|t| t.as_object())
+        .and_then(|t| t.get("blob"))
+        .and_then(|b| b.as_str())
+    {
+        hashes.insert(hash.to_string());
+    }
+    // error: traceback.blob
+    if let Some(hash) = manifest
+        .get("traceback")
+        .and_then(|t| t.as_object())
+        .and_then(|t| t.get("blob"))
+        .and_then(|b| b.as_str())
+    {
+        hashes.insert(hash.to_string());
+    }
+}
+
+/// Recursively walk a JSON value collecting blob hashes.
+///
+/// Handles comm state where `blob_store_large_state_values` and `store_widget_buffers`
+/// produce `{"blob": "<hash>", "size": N, ...}` refs at arbitrary nesting depths.
+fn collect_blob_hashes_recursive(
+    value: &serde_json::Value,
+    hashes: &mut std::collections::HashSet<String>,
+) {
+    match value {
+        serde_json::Value::Object(obj) => {
+            // Check if this object IS a blob ref (has "blob" + "size" keys)
+            if let Some(hash) = obj.get("blob").and_then(|b| b.as_str()) {
+                if obj.contains_key("size") {
+                    hashes.insert(hash.to_string());
+                    return;
+                }
+            }
+            // Otherwise recurse into values
+            for v in obj.values() {
+                collect_blob_hashes_recursive(v, hashes);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for v in arr {
+                collect_blob_hashes_recursive(v, hashes);
+            }
+        }
+        _ => {}
+    }
+}
+
+impl Daemon {
     /// Clean up worktree state directories where the original git worktree
     /// path no longer exists and the daemon.json is older than 7 days.
     async fn cleanup_stale_worktrees(worktrees_dir: &std::path::Path) -> anyhow::Result<usize> {
@@ -4013,5 +4187,259 @@ mod tests {
 
         let result = parse_uv_error(stderr);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_collect_blob_hashes_display_data() {
+        let manifest = serde_json::json!({
+            "output_type": "display_data",
+            "data": {
+                "text/plain": {"blob": "aaa", "size": 10},
+                "image/png": {"blob": "bbb", "size": 5000},
+                "text/html": {"inline": "<b>hello</b>"}
+            }
+        });
+        let mut hashes = std::collections::HashSet::new();
+        collect_blob_hashes(&manifest, &mut hashes);
+        assert!(hashes.contains("aaa"));
+        assert!(hashes.contains("bbb"));
+        assert_eq!(hashes.len(), 2); // inline entry not collected
+    }
+
+    #[test]
+    fn test_collect_blob_hashes_stream() {
+        let manifest = serde_json::json!({
+            "output_type": "stream",
+            "name": "stdout",
+            "text": {"blob": "ccc", "size": 2000}
+        });
+        let mut hashes = std::collections::HashSet::new();
+        collect_blob_hashes(&manifest, &mut hashes);
+        assert!(hashes.contains("ccc"));
+        assert_eq!(hashes.len(), 1);
+    }
+
+    #[test]
+    fn test_collect_blob_hashes_error() {
+        let manifest = serde_json::json!({
+            "output_type": "error",
+            "ename": "ValueError",
+            "evalue": "bad",
+            "traceback": {"blob": "ddd", "size": 500}
+        });
+        let mut hashes = std::collections::HashSet::new();
+        collect_blob_hashes(&manifest, &mut hashes);
+        assert!(hashes.contains("ddd"));
+    }
+
+    #[test]
+    fn test_collect_blob_hashes_recursive_comm_state() {
+        let state = serde_json::json!({
+            "_model_name": "VegaWidget",
+            "_esm": {"blob": "esm_hash", "size": 50000, "media_type": "text/javascript"},
+            "spec": {"blob": "spec_hash", "size": 10000, "media_type": "application/json"},
+            "small_value": 42,
+            "nested": {
+                "buffer": {"blob": "buf_hash", "size": 8000, "media_type": "application/octet-stream"}
+            }
+        });
+        let mut hashes = std::collections::HashSet::new();
+        collect_blob_hashes_recursive(&state, &mut hashes);
+        assert!(hashes.contains("esm_hash"));
+        assert!(hashes.contains("spec_hash"));
+        assert!(hashes.contains("buf_hash"));
+        assert_eq!(hashes.len(), 3);
+    }
+
+    #[test]
+    fn test_collect_blob_hashes_recursive_no_false_positives() {
+        // An object with a "blob" key but no "size" should NOT be collected
+        let value = serde_json::json!({
+            "blob": "not_a_ref",
+            "other_key": true
+        });
+        let mut hashes = std::collections::HashSet::new();
+        collect_blob_hashes_recursive(&value, &mut hashes);
+        assert!(hashes.is_empty());
+    }
+
+    // ── Blob GC edge case tests ────────────────────────────────────
+
+    #[test]
+    fn test_collect_blob_hashes_empty_manifest() {
+        let manifest = serde_json::json!({});
+        let mut hashes = std::collections::HashSet::new();
+        collect_blob_hashes(&manifest, &mut hashes);
+        assert!(hashes.is_empty());
+    }
+
+    #[test]
+    fn test_collect_blob_hashes_inline_only_no_blobs() {
+        // Manifests with only inline content should yield no blob hashes
+        let manifest = serde_json::json!({
+            "output_type": "display_data",
+            "data": {
+                "text/plain": {"inline": "hello world"},
+                "text/html": {"inline": "<b>hello</b>"}
+            }
+        });
+        let mut hashes = std::collections::HashSet::new();
+        collect_blob_hashes(&manifest, &mut hashes);
+        assert!(hashes.is_empty());
+    }
+
+    #[test]
+    fn test_collect_blob_hashes_mixed_inline_and_blob() {
+        // Same output with both inline and blob MIME types
+        let manifest = serde_json::json!({
+            "output_type": "execute_result",
+            "data": {
+                "text/plain": {"inline": "Figure(...)"},
+                "image/png": {"blob": "png_hash", "size": 50000}
+            },
+            "execution_count": 5
+        });
+        let mut hashes = std::collections::HashSet::new();
+        collect_blob_hashes(&manifest, &mut hashes);
+        assert_eq!(hashes.len(), 1);
+        assert!(hashes.contains("png_hash"));
+    }
+
+    #[test]
+    fn test_collect_blob_hashes_null_and_missing_fields() {
+        // Manifest with null values and missing expected fields
+        let manifest = serde_json::json!({
+            "output_type": "display_data",
+            "data": null,
+            "text": null,
+            "traceback": null
+        });
+        let mut hashes = std::collections::HashSet::new();
+        collect_blob_hashes(&manifest, &mut hashes);
+        assert!(hashes.is_empty());
+    }
+
+    #[test]
+    fn test_collect_blob_hashes_stream_inline_text() {
+        // Stream with inline text (small output, no blob)
+        let manifest = serde_json::json!({
+            "output_type": "stream",
+            "name": "stdout",
+            "text": "just a string, not an object"
+        });
+        let mut hashes = std::collections::HashSet::new();
+        collect_blob_hashes(&manifest, &mut hashes);
+        assert!(hashes.is_empty()); // text is a string, not {blob: ...}
+    }
+
+    #[test]
+    fn test_collect_blob_hashes_multiple_outputs_dedup() {
+        // Same blob hash referenced by multiple MIME types
+        let manifest = serde_json::json!({
+            "output_type": "display_data",
+            "data": {
+                "image/png": {"blob": "same_hash", "size": 1000},
+                "image/jpeg": {"blob": "same_hash", "size": 1000}
+            }
+        });
+        let mut hashes = std::collections::HashSet::new();
+        collect_blob_hashes(&manifest, &mut hashes);
+        assert_eq!(hashes.len(), 1); // deduplicated by HashSet
+        assert!(hashes.contains("same_hash"));
+    }
+
+    #[test]
+    fn test_collect_blob_hashes_recursive_empty_state() {
+        let mut hashes = std::collections::HashSet::new();
+        collect_blob_hashes_recursive(&serde_json::json!({}), &mut hashes);
+        assert!(hashes.is_empty());
+
+        collect_blob_hashes_recursive(&serde_json::json!(null), &mut hashes);
+        assert!(hashes.is_empty());
+
+        collect_blob_hashes_recursive(&serde_json::json!([]), &mut hashes);
+        assert!(hashes.is_empty());
+
+        collect_blob_hashes_recursive(&serde_json::json!("just a string"), &mut hashes);
+        assert!(hashes.is_empty());
+    }
+
+    #[test]
+    fn test_collect_blob_hashes_recursive_array_of_blob_refs() {
+        // Widget buffer_paths can produce arrays containing blob refs
+        let value = serde_json::json!([
+            {"blob": "buf1", "size": 100, "media_type": "application/octet-stream"},
+            {"blob": "buf2", "size": 200, "media_type": "application/octet-stream"},
+            "not a blob ref"
+        ]);
+        let mut hashes = std::collections::HashSet::new();
+        collect_blob_hashes_recursive(&value, &mut hashes);
+        assert_eq!(hashes.len(), 2);
+        assert!(hashes.contains("buf1"));
+        assert!(hashes.contains("buf2"));
+    }
+
+    #[test]
+    fn test_collect_blob_hashes_recursive_deeply_nested() {
+        // 4 levels deep — store_widget_buffers can place refs at arbitrary depth
+        let value = serde_json::json!({
+            "level1": {
+                "level2": {
+                    "level3": {
+                        "data": {"blob": "deep_hash", "size": 999}
+                    }
+                }
+            }
+        });
+        let mut hashes = std::collections::HashSet::new();
+        collect_blob_hashes_recursive(&value, &mut hashes);
+        assert_eq!(hashes.len(), 1);
+        assert!(hashes.contains("deep_hash"));
+    }
+
+    #[test]
+    fn test_collect_blob_hashes_recursive_blob_key_with_size_zero() {
+        // size: 0 is technically valid (empty blob)
+        let value = serde_json::json!({
+            "empty_blob": {"blob": "empty_hash", "size": 0}
+        });
+        let mut hashes = std::collections::HashSet::new();
+        collect_blob_hashes_recursive(&value, &mut hashes);
+        assert!(hashes.contains("empty_hash"));
+    }
+
+    #[test]
+    fn test_collect_blob_hashes_recursive_non_string_blob_value() {
+        // blob value is a number (malformed) — should not be collected
+        let value = serde_json::json!({
+            "weird": {"blob": 12345, "size": 100}
+        });
+        let mut hashes = std::collections::HashSet::new();
+        collect_blob_hashes_recursive(&value, &mut hashes);
+        assert!(hashes.is_empty());
+    }
+
+    #[test]
+    fn test_collect_blob_hashes_recursive_mixed_blob_and_regular_objects() {
+        // State with a mix of blob refs and regular data that should not match
+        let value = serde_json::json!({
+            "_model_name": "PlotWidget",
+            "_esm": {"blob": "esm_hash", "size": 80000, "media_type": "text/javascript"},
+            "layout": {
+                "width": 800,
+                "height": 600,
+                "title": "My Plot"
+            },
+            "data": [
+                {"x": [1, 2, 3], "y": [4, 5, 6]},
+                {"blob": "data_blob", "size": 5000, "media_type": "application/json"}
+            ],
+            "config": {"responsive": true}
+        });
+        let mut hashes = std::collections::HashSet::new();
+        collect_blob_hashes_recursive(&value, &mut hashes);
+        assert_eq!(hashes.len(), 2);
+        assert!(hashes.contains("esm_hash"));
+        assert!(hashes.contains("data_blob"));
     }
 }
