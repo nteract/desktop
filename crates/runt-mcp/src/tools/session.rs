@@ -61,7 +61,7 @@ fn resolve_path(path: &str) -> String {
 
 use notebook_protocol::protocol::{NotebookRequest, NotebookResponse};
 
-use super::{arg_bool, arg_str, tool_error, tool_success};
+use super::{arg_bool, arg_str, arg_string_array, tool_error, tool_success};
 
 /// Collect runtime info from RuntimeStateDoc, polling briefly for it to sync.
 /// Matches Python's `_collect_runtime_info()`.
@@ -406,12 +406,7 @@ pub async fn create_notebook(
             crate::presence::announce(&result.handle, &peer_label).await;
 
             // Add dependencies if specified
-            let deps: Vec<String> = request
-                .arguments
-                .as_ref()
-                .and_then(|a| a.get("dependencies"))
-                .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
-                .unwrap_or_default();
+            let deps: Vec<String> = arg_string_array(request, "dependencies").unwrap_or_default();
 
             let explicit_pkg_manager = arg_str(request, "package_manager");
 

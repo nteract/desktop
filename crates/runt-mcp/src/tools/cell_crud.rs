@@ -12,7 +12,7 @@ use notebook_protocol::protocol::NotebookRequest;
 use crate::execution;
 use crate::NteractMcp;
 
-use super::{arg_bool, arg_str, tool_error, tool_success};
+use super::{arg_bool, arg_str, arg_string_array, tool_error, tool_success};
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -276,15 +276,7 @@ pub async fn clear_outputs(
     server: &NteractMcp,
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
-    // Parse cell_ids; reject malformed values instead of falling back to clear-all.
-    let explicit_ids: Option<Vec<String>> =
-        match request.arguments.as_ref().and_then(|a| a.get("cell_ids")) {
-            Some(v) => Some(serde_json::from_value(v.clone()).map_err(|e| {
-                let msg = format!("cell_ids must be an array of strings: {e}");
-                McpError::invalid_params(msg, None)
-            })?),
-            None => None,
-        };
+    let explicit_ids: Option<Vec<String>> = arg_string_array(request, "cell_ids");
 
     let handle = require_handle!(server);
 

@@ -7,7 +7,7 @@ use serde::Deserialize;
 
 use crate::NteractMcp;
 
-use super::{arg_bool, arg_str, tool_error, tool_success};
+use super::{arg_bool, arg_str, arg_string_array, tool_error, tool_success};
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -72,12 +72,7 @@ pub async fn add_cell_tags(
         .unwrap_or_default();
 
     // Parse new tags from request
-    let new_tags: Vec<String> = request
-        .arguments
-        .as_ref()
-        .and_then(|a| a.get("tags"))
-        .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
-        .unwrap_or_default();
+    let new_tags: Vec<String> = arg_string_array(request, "tags").unwrap_or_default();
 
     // Merge: keep existing, add new ones that aren't already present
     let mut merged = existing_tags;
@@ -120,12 +115,7 @@ pub async fn remove_cell_tags(
         })
         .unwrap_or_default();
 
-    let tags_to_remove: Vec<String> = request
-        .arguments
-        .as_ref()
-        .and_then(|a| a.get("tags"))
-        .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
-        .unwrap_or_default();
+    let tags_to_remove: Vec<String> = arg_string_array(request, "tags").unwrap_or_default();
 
     let filtered: Vec<String> = existing_tags
         .into_iter()
@@ -147,12 +137,7 @@ pub async fn set_cells_source_hidden(
 ) -> Result<CallToolResult, McpError> {
     let handle = require_handle!(server);
 
-    let cell_ids: Vec<String> = request
-        .arguments
-        .as_ref()
-        .and_then(|a| a.get("cell_ids"))
-        .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
-        .unwrap_or_default();
+    let cell_ids: Vec<String> = arg_string_array(request, "cell_ids").unwrap_or_default();
 
     let hidden = arg_bool(request, "hidden").unwrap_or(false);
 
@@ -181,12 +166,7 @@ pub async fn set_cells_outputs_hidden(
 ) -> Result<CallToolResult, McpError> {
     let handle = require_handle!(server);
 
-    let cell_ids: Vec<String> = request
-        .arguments
-        .as_ref()
-        .and_then(|a| a.get("cell_ids"))
-        .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
-        .unwrap_or_default();
+    let cell_ids: Vec<String> = arg_string_array(request, "cell_ids").unwrap_or_default();
 
     let hidden = arg_bool(request, "hidden").unwrap_or(false);
 

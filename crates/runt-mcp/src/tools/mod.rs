@@ -404,6 +404,29 @@ pub fn arg_bool(request: &CallToolRequestParams, key: &str) -> Option<bool> {
     }
 }
 
+/// Helper: extract a string array argument, tolerating JSON-encoded strings.
+///
+/// Same upstream bug as `arg_bool` — Claude Code may serialize arrays as
+/// JSON-encoded strings (e.g., `"[\"numpy\"]"` instead of `["numpy"]`).
+/// See: https://github.com/anthropics/claude-code/issues/32524
+pub fn arg_string_array(request: &CallToolRequestParams, key: &str) -> Option<Vec<String>> {
+    let val = request.arguments.as_ref()?.get(key)?;
+    if let Some(arr) = val.as_array() {
+        return Some(
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect(),
+        );
+    }
+    if let Some(s) = val.as_str() {
+        if let Ok(parsed) = serde_json::from_str::<Vec<String>>(s) {
+            tracing::warn!("[mcp] Array param '{key}' arrived as JSON string (claude-code#32524)");
+            return Some(parsed);
+        }
+    }
+    None
+}
+
 /// Helper: create a text error result.
 pub fn tool_error(msg: &str) -> Result<CallToolResult, McpError> {
     Ok(CallToolResult::error(vec![Content::text(msg.to_string())]))
@@ -524,5 +547,41 @@ mod tests {
     fn arg_bool_null() {
         let req = make_request(serde_json::json!({"flag": null}));
         assert_eq!(arg_bool(&req, "flag"), None);
+    }
+
+    #[test]
+    fn arg_string_array_json_array() {
+        let req = make_request(serde_json::json!({"deps": ["numpy", "pandas"]}));
+        assert_eq!(
+            arg_string_array(&req, "deps"),
+            Some(vec!["numpy".to_string(), "pandas".to_string()])
+        );
+    }
+
+    #[test]
+    fn arg_string_array_string_coercion() {
+        let req = make_request(serde_json::json!({"deps": "[\"numpy\", \"pandas\"]"}));
+        assert_eq!(
+            arg_string_array(&req, "deps"),
+            Some(vec!["numpy".to_string(), "pandas".to_string()])
+        );
+    }
+
+    #[test]
+    fn arg_string_array_empty() {
+        let req = make_request(serde_json::json!({"deps": []}));
+        assert_eq!(arg_string_array(&req, "deps"), Some(vec![]));
+    }
+
+    #[test]
+    fn arg_string_array_missing() {
+        let req = make_request(serde_json::json!({"other": 1}));
+        assert_eq!(arg_string_array(&req, "deps"), None);
+    }
+
+    #[test]
+    fn arg_string_array_invalid_string() {
+        let req = make_request(serde_json::json!({"deps": "not-json"}));
+        assert_eq!(arg_string_array(&req, "deps"), None);
     }
 }
