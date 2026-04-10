@@ -394,6 +394,14 @@ impl Pool {
         self.target.saturating_sub(current)
     }
 
+    fn set_target(&mut self, target: usize) {
+        self.target = target;
+    }
+
+    fn target(&self) -> usize {
+        self.target
+    }
+
     /// Mark that we're starting to create N environments.
     fn mark_warming(&mut self, count: usize) {
         self.warming += count;
@@ -2688,6 +2696,18 @@ impl Daemon {
                 break;
             }
 
+            {
+                let target = {
+                    let settings = self.settings.read().await;
+                    settings
+                        .get_u64("uv_pool_size")
+                        .unwrap_or(runtimed_client::settings_doc::DEFAULT_UV_POOL_SIZE)
+                        as usize
+                };
+                let mut pool = self.uv_pool.lock().await;
+                pool.set_target(target);
+            }
+
             let (deficit, should_retry, backoff_info) = {
                 let mut pool = self.uv_pool.lock().await;
                 let d = pool.deficit();
@@ -2761,6 +2781,18 @@ impl Daemon {
             // Check shutdown
             if *self.shutdown.lock().await {
                 break;
+            }
+
+            {
+                let target = {
+                    let settings = self.settings.read().await;
+                    settings
+                        .get_u64("conda_pool_size")
+                        .unwrap_or(runtimed_client::settings_doc::DEFAULT_CONDA_POOL_SIZE)
+                        as usize
+                };
+                let mut pool = self.conda_pool.lock().await;
+                pool.set_target(target);
             }
 
             let (deficit, should_retry, backoff_info) = {
@@ -2845,6 +2877,18 @@ impl Daemon {
         loop {
             if *self.shutdown.lock().await {
                 break;
+            }
+
+            {
+                let target = {
+                    let settings = self.settings.read().await;
+                    settings
+                        .get_u64("pixi_pool_size")
+                        .unwrap_or(runtimed_client::settings_doc::DEFAULT_PIXI_POOL_SIZE)
+                        as usize
+                };
+                let mut pool = self.pixi_pool.lock().await;
+                pool.set_target(target);
             }
 
             let (deficit, should_retry, backoff_info) = {
@@ -3407,7 +3451,7 @@ impl Daemon {
             RuntimePoolState {
                 available: available as u64,
                 warming: warming as u64,
-                pool_size: self.config.uv_pool_size as u64,
+                pool_size: pool.target() as u64,
                 error: pool.failure_state.last_error.clone(),
                 failed_package: pool.failure_state.failed_package.clone(),
                 error_kind: pool.failure_state.error_kind.clone(),
@@ -3421,7 +3465,7 @@ impl Daemon {
             RuntimePoolState {
                 available: available as u64,
                 warming: warming as u64,
-                pool_size: self.config.conda_pool_size as u64,
+                pool_size: pool.target() as u64,
                 error: pool.failure_state.last_error.clone(),
                 failed_package: pool.failure_state.failed_package.clone(),
                 error_kind: pool.failure_state.error_kind.clone(),
@@ -3436,7 +3480,7 @@ impl Daemon {
             RuntimePoolState {
                 available: available as u64,
                 warming: warming as u64,
-                pool_size: self.config.pixi_pool_size as u64,
+                pool_size: pool.target() as u64,
                 error: pool.failure_state.last_error.clone(),
                 failed_package: pool.failure_state.failed_package.clone(),
                 error_kind: pool.failure_state.error_kind.clone(),

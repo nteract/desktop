@@ -86,6 +86,18 @@ pub fn load_settings() -> SyncedSettings {
             .get("onboarding_completed")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or(true),
+        uv_pool_size: json
+            .get("uv_pool_size")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or(defaults.uv_pool_size),
+        conda_pool_size: json
+            .get("conda_pool_size")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or(defaults.conda_pool_size),
+        pixi_pool_size: json
+            .get("pixi_pool_size")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or(defaults.pixi_pool_size),
     }
 }
 
@@ -117,6 +129,9 @@ mod tests {
             pixi: PixiDefaults::default(),
             keep_alive_secs: 30,
             onboarding_completed: false,
+            uv_pool_size: 3,
+            conda_pool_size: 3,
+            pixi_pool_size: 2,
         };
 
         let json = serde_json::to_string(&settings).unwrap();
@@ -264,6 +279,9 @@ mod tests {
                 .get("onboarding_completed")
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or(defaults.onboarding_completed),
+            uv_pool_size: defaults.uv_pool_size,
+            conda_pool_size: defaults.conda_pool_size,
+            pixi_pool_size: defaults.pixi_pool_size,
         };
         // Valid fields are preserved
         assert_eq!(settings.theme, ThemeMode::Dark);

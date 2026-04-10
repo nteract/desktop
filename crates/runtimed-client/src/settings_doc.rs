@@ -155,6 +155,11 @@ pub const MIN_KEEP_ALIVE_SECS: u64 = 5;
 /// Maximum keep-alive duration (7 days) for notebook rooms.
 pub const MAX_KEEP_ALIVE_SECS: u64 = 604800;
 
+pub const DEFAULT_UV_POOL_SIZE: u64 = 3;
+pub const DEFAULT_CONDA_POOL_SIZE: u64 = 3;
+pub const DEFAULT_PIXI_POOL_SIZE: u64 = 2;
+pub const MAX_POOL_SIZE: u64 = 20;
+
 /// Snapshot of all synced settings.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema, TS)]
 #[ts(export)]
@@ -193,6 +198,18 @@ pub struct SyncedSettings {
     /// When false, the app shows the onboarding screen on startup.
     #[serde(default)]
     pub onboarding_completed: bool,
+
+    /// Number of prewarmed UV environments to keep ready. 0 disables the pool.
+    #[serde(default = "default_uv_pool_size")]
+    pub uv_pool_size: u64,
+
+    /// Number of prewarmed Conda environments to keep ready. 0 disables the pool.
+    #[serde(default = "default_conda_pool_size")]
+    pub conda_pool_size: u64,
+
+    /// Number of prewarmed Pixi environments to keep ready. 0 disables the pool.
+    #[serde(default = "default_pixi_pool_size")]
+    pub pixi_pool_size: u64,
 }
 
 impl Default for SyncedSettings {
@@ -206,12 +223,24 @@ impl Default for SyncedSettings {
             pixi: PixiDefaults::default(),
             keep_alive_secs: DEFAULT_KEEP_ALIVE_SECS,
             onboarding_completed: false,
+            uv_pool_size: DEFAULT_UV_POOL_SIZE,
+            conda_pool_size: DEFAULT_CONDA_POOL_SIZE,
+            pixi_pool_size: DEFAULT_PIXI_POOL_SIZE,
         }
     }
 }
 
 fn default_keep_alive_secs() -> u64 {
     DEFAULT_KEEP_ALIVE_SECS
+}
+fn default_uv_pool_size() -> u64 {
+    DEFAULT_UV_POOL_SIZE
+}
+fn default_conda_pool_size() -> u64 {
+    DEFAULT_CONDA_POOL_SIZE
+}
+fn default_pixi_pool_size() -> u64 {
+    DEFAULT_PIXI_POOL_SIZE
 }
 
 /// Generate a JSON Schema string for the settings file.
@@ -264,6 +293,23 @@ impl SettingsDoc {
         );
         // Store onboarding_completed as boolean
         let _ = doc.put(automerge::ROOT, "onboarding_completed", false);
+
+        // Pool sizes
+        let _ = doc.put(
+            automerge::ROOT,
+            "uv_pool_size",
+            defaults.uv_pool_size as i64,
+        );
+        let _ = doc.put(
+            automerge::ROOT,
+            "conda_pool_size",
+            defaults.conda_pool_size as i64,
+        );
+        let _ = doc.put(
+            automerge::ROOT,
+            "pixi_pool_size",
+            defaults.pixi_pool_size as i64,
+        );
 
         // Nested uv map with empty package list
         if let Ok(uv_id) = doc.put_object(automerge::ROOT, "uv", ObjType::Map) {
@@ -732,6 +778,15 @@ impl SettingsDoc {
                 // Check if this is an existing user by looking for other settings
                 self.get("theme").is_some() || self.get("default_runtime").is_some()
             }),
+            uv_pool_size: self
+                .get_u64("uv_pool_size")
+                .unwrap_or(defaults.uv_pool_size),
+            conda_pool_size: self
+                .get_u64("conda_pool_size")
+                .unwrap_or(defaults.conda_pool_size),
+            pixi_pool_size: self
+                .get_u64("pixi_pool_size")
+                .unwrap_or(defaults.pixi_pool_size),
         }
     }
 
