@@ -2415,11 +2415,117 @@ impl Daemon {
                 }
             }
 
+            // Clean up orphaned blobs — mark-and-sweep across all active rooms.
+            // Blobs are content-addressed, so the same hash may be referenced by
+            // multiple rooms. We must scan ALL rooms before deleting anything.
+            {
+                let blob_max_age = std::time::Duration::from_secs(3600); // 1 hour grace period
+
+                // Collect room Arcs under the rooms lock, then drop it before
+                // any async state_doc reads (deadlock prevention).
+                let room_arcs: Vec<_> = {
+                    let rooms = self.notebook_rooms.lock().await;
+                    rooms.values().cloned().collect()
+                };
+
+                let mut referenced_hashes = std::collections::HashSet::new();
+                for room in &room_arcs {
+                    let sd = room.state_doc.read().await;
+                    let state = sd.read_state();
+                    for exec in state.executions.values() {
+                        for output in &exec.outputs {
+                            collect_blob_hashes(output, &mut referenced_hashes);
+                        }
+                    }
+                    for comm in state.comms.values() {
+                        for output in &comm.outputs {
+                            collect_blob_hashes(output, &mut referenced_hashes);
+                        }
+                    }
+                }
+
+                match self.blob_store.list().await {
+                    Ok(all_blobs) => {
+                        let mut blobs_deleted = 0;
+                        for hash in &all_blobs {
+                            if referenced_hashes.contains(hash) {
+                                continue;
+                            }
+                            // Only delete blobs older than the grace period
+                            let is_stale = self
+                                .blob_store
+                                .get_meta(hash)
+                                .await
+                                .ok()
+                                .flatten()
+                                .is_some_and(|m| {
+                                    chrono::Utc::now()
+                                        .signed_duration_since(m.created_at)
+                                        .num_seconds() as u64
+                                        > blob_max_age.as_secs()
+                                });
+                            if is_stale && self.blob_store.delete(hash).await.unwrap_or(false) {
+                                blobs_deleted += 1;
+                            }
+                        }
+                        if blobs_deleted > 0 {
+                            info!(
+                                "[runtimed] GC: cleaned up {} orphaned blobs ({} total, {} referenced)",
+                                blobs_deleted,
+                                all_blobs.len(),
+                                referenced_hashes.len()
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        warn!("[runtimed] GC: failed to list blobs: {}", e);
+                    }
+                }
+            }
+
             // Run every 6 hours
             tokio::time::sleep(std::time::Duration::from_secs(6 * 3600)).await;
         }
     }
+}
 
+/// Extract blob hashes from an output manifest JSON value.
+///
+/// Walks `data` (display_data/execute_result MIME entries), `text` (stream),
+/// and `traceback` (error) fields looking for `{"blob": "<hash>"}` refs.
+fn collect_blob_hashes(
+    manifest: &serde_json::Value,
+    hashes: &mut std::collections::HashSet<String>,
+) {
+    // display_data / execute_result: data.{mime_type}.blob
+    if let Some(data) = manifest.get("data").and_then(|d| d.as_object()) {
+        for mime_data in data.values() {
+            if let Some(hash) = mime_data.get("blob").and_then(|b| b.as_str()) {
+                hashes.insert(hash.to_string());
+            }
+        }
+    }
+    // stream: text.blob
+    if let Some(hash) = manifest
+        .get("text")
+        .and_then(|t| t.as_object())
+        .and_then(|t| t.get("blob"))
+        .and_then(|b| b.as_str())
+    {
+        hashes.insert(hash.to_string());
+    }
+    // error: traceback.blob
+    if let Some(hash) = manifest
+        .get("traceback")
+        .and_then(|t| t.as_object())
+        .and_then(|t| t.get("blob"))
+        .and_then(|b| b.as_str())
+    {
+        hashes.insert(hash.to_string());
+    }
+}
+
+impl Daemon {
     /// Clean up worktree state directories where the original git worktree
     /// path no longer exists and the daemon.json is older than 7 days.
     async fn cleanup_stale_worktrees(worktrees_dir: &std::path::Path) -> anyhow::Result<usize> {
