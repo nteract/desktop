@@ -102,7 +102,7 @@ pub fn all_tools() -> Vec<Tool> {
         .with_meta(always_load_meta()),
         Tool::new(
             "create_notebook",
-            "Create a new notebook. Ephemeral by default — use save_notebook(path) to persist.",
+            "Create a new notebook. Ephemeral by default; use save_notebook(path) to persist.",
             schema_for::<session::CreateNotebookParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(false).open_world(false)),

@@ -1,11 +1,11 @@
 [
   {
     "name": "list_active_notebooks",
-    "description": "List all notebook sessions running in the daemon. Returns notebooks opened by any user or agent. Use open_notebook(notebook) to connect to one as your active session.",
+    "description": "List running notebook sessions.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "Empty params for tools that take no arguments.",
       "title": "EmptyParams",
+      "description": "Empty params for tools that take no arguments.",
       "type": "object"
     },
     "annotations": {
@@ -18,9 +18,11 @@
   },
   {
     "name": "open_notebook",
-    "description": "Open a notebook by file path or connect to a running session by ID. Accepts a file path (e.g. '~/analysis.ipynb') or a notebook_id from list_active_notebooks. Makes it your active session.",
+    "description": "Open a notebook by path or session ID.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "OpenNotebookParams",
+      "type": "object",
       "properties": {
         "notebook": {
           "description": "A file path (e.g. \"~/analysis.ipynb\") or a notebook ID from\nlist_active_notebooks. Paths are opened from disk; IDs connect\nto a running session.",
@@ -29,9 +31,7 @@
       },
       "required": [
         "notebook"
-      ],
-      "title": "OpenNotebookParams",
-      "type": "object"
+      ]
     },
     "annotations": {
       "destructiveHint": false,
@@ -44,56 +44,64 @@
   },
   {
     "name": "create_notebook",
-    "description": "Create a new notebook, making it your active session. Notebooks are ephemeral by default (in-memory only) — use save_notebook(path) to persist to disk. Set ephemeral=false for session-restorable persistence. Supports uv, conda, or pixi via package_manager param.",
+    "description": "Create a new notebook. Ephemeral by default; use save_notebook(path) to persist.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "CreateNotebookParams",
+      "type": "object",
       "properties": {
-        "dependencies": {
-          "default": null,
-          "description": "Packages to pre-install.",
-          "items": {
-            "type": "string"
-          },
-          "type": [
-            "array",
-            "null"
-          ]
-        },
-        "package_manager": {
-          "default": null,
-          "description": "Package manager for dependencies: \"uv\", \"conda\", or \"pixi\".\nDefaults to the user's default_python_env setting.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "runtime": {
-          "default": null,
           "description": "Runtime type: \"python\" or \"deno\".",
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "default": null
+        },
+        "kernel": {
+          "description": "Alias for runtime (deprecated but supported for convenience).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
         },
         "working_dir": {
-          "default": null,
           "description": "Working directory for the kernel.",
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "default": null
+        },
+        "dependencies": {
+          "description": "Packages to pre-install.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "default": null
+        },
+        "package_manager": {
+          "description": "Package manager for dependencies: \"uv\", \"conda\", or \"pixi\".\nDefaults to the user's default_python_env setting.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
         },
         "ephemeral": {
-          "default": true,
-          "description": "When true (default), notebook exists only in memory. Use save_notebook(path) to persist.",
+          "description": "When true (default for MCP), notebook exists only in memory.\nUse save_notebook(path=...) to persist to disk.",
           "type": [
             "boolean",
             "null"
-          ]
+          ],
+          "default": null
         }
-      },
-      "title": "CreateNotebookParams",
-      "type": "object"
+      }
     },
     "annotations": {
       "destructiveHint": false,
@@ -102,21 +110,21 @@
   },
   {
     "name": "save_notebook",
-    "description": "Save notebook to disk. The daemon automatically re-keys ephemeral rooms to the saved file path.",
+    "description": "Save notebook to disk.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "SaveNotebookParams",
+      "type": "object",
       "properties": {
         "path": {
-          "default": null,
           "description": "Path to save the notebook to. If None, saves to original location.",
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "default": null
         }
-      },
-      "title": "SaveNotebookParams",
-      "type": "object"
+      }
     },
     "annotations": {
       "destructiveHint": false,
@@ -126,21 +134,21 @@
   },
   {
     "name": "launch_app",
-    "description": "Launch the nteract desktop app for the user, showing the current notebook. The notebook must be running in the daemon.",
+    "description": "Show the current notebook to the user.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "ShowNotebookParams",
+      "type": "object",
       "properties": {
         "notebook_id": {
-          "default": null,
           "description": "Notebook ID to show. Defaults to current session's notebook.",
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "default": null
         }
-      },
-      "title": "ShowNotebookParams",
-      "type": "object"
+      }
     },
     "annotations": {
       "readOnlyHint": true,
@@ -149,9 +157,11 @@
   },
   {
     "name": "get_cell",
-    "description": "Get a cell's source and outputs by ID.",
+    "description": "Get a cell by ID.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "GetCellParams",
+      "type": "object",
       "properties": {
         "cell_id": {
           "description": "The cell ID to retrieve.",
@@ -160,9 +170,7 @@
       },
       "required": [
         "cell_id"
-      ],
-      "title": "GetCellParams",
-      "type": "object"
+      ]
     },
     "annotations": {
       "readOnlyHint": true,
@@ -171,56 +179,56 @@
   },
   {
     "name": "get_all_cells",
-    "description": "Get all cells. Use summary (default) for discovery, get_cell() for details. Formats: 'summary', 'json', 'rich'.",
+    "description": "Get all cells as summary, json, or rich format.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "GetAllCellsParams",
+      "type": "object",
       "properties": {
-        "count": {
-          "default": null,
-          "description": "Number of cells to return (null = all).",
-          "format": "int64",
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
         "format": {
-          "default": "summary",
           "description": "Output format: \"summary\" (default), \"json\", or \"rich\".",
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "default": "summary"
+        },
+        "start": {
+          "description": "Starting cell index (0-based).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64",
+          "default": null
+        },
+        "count": {
+          "description": "Number of cells to return (null = all).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64",
+          "default": null
         },
         "include_outputs": {
-          "default": null,
           "description": "Include output previews in summary format.",
           "type": [
             "boolean",
             "null"
-          ]
+          ],
+          "default": null
         },
         "preview_chars": {
-          "default": null,
           "description": "Max chars for source preview in summary format.",
-          "format": "int64",
           "type": [
             "integer",
             "null"
-          ]
-        },
-        "start": {
-          "default": null,
-          "description": "Starting cell index (0-based).",
+          ],
           "format": "int64",
-          "type": [
-            "integer",
-            "null"
-          ]
+          "default": null
         }
-      },
-      "title": "GetAllCellsParams",
-      "type": "object"
+      }
     },
     "annotations": {
       "readOnlyHint": true,
@@ -232,52 +240,52 @@
     "description": "Create a cell, optionally executing it.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "CreateCellParams",
+      "type": "object",
       "properties": {
-        "and_run": {
-          "default": null,
-          "description": "Execute the cell immediately after creation.",
-          "type": [
-            "boolean",
-            "null"
-          ]
-        },
-        "cell_type": {
-          "default": null,
-          "description": "Cell type: \"code\", \"markdown\", or \"raw\".",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "index": {
-          "default": null,
-          "description": "Position to insert (0-based index). None appends at end.",
-          "format": "int64",
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
         "source": {
-          "default": null,
           "description": "Cell source code or markdown content.",
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "default": null
+        },
+        "cell_type": {
+          "description": "Cell type: \"code\", \"markdown\", or \"raw\".",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "index": {
+          "description": "Position to insert (0-based index). None appends at end.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64",
+          "default": null
+        },
+        "and_run": {
+          "description": "Execute the cell immediately after creation.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
         },
         "timeout_secs": {
-          "default": null,
           "description": "Max seconds to wait for execution.",
-          "format": "double",
           "type": [
             "number",
             "null"
-          ]
+          ],
+          "format": "double",
+          "default": null
         }
-      },
-      "title": "CreateCellParams",
-      "type": "object"
+      }
     },
     "annotations": {
       "destructiveHint": false,
@@ -291,53 +299,53 @@
   },
   {
     "name": "set_cell",
-    "description": "Update a cell's source and/or type. Use replace_match for targeted edits.",
+    "description": "Replace a cell's source or type.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "SetCellParams",
+      "type": "object",
       "properties": {
-        "and_run": {
-          "default": null,
-          "description": "Execute the cell after changes (code cells only).",
-          "type": [
-            "boolean",
-            "null"
-          ]
-        },
         "cell_id": {
           "description": "The cell ID to update.",
           "type": "string"
         },
-        "cell_type": {
-          "default": null,
-          "description": "New cell type (None to leave unchanged).",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "source": {
-          "default": null,
           "description": "New source code (None to leave unchanged).",
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "default": null
+        },
+        "cell_type": {
+          "description": "New cell type (None to leave unchanged).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "and_run": {
+          "description": "Execute the cell after changes (code cells only).",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
         },
         "timeout_secs": {
-          "default": null,
           "description": "Max seconds to wait for execution.",
-          "format": "double",
           "type": [
             "number",
             "null"
-          ]
+          ],
+          "format": "double",
+          "default": null
         }
       },
       "required": [
         "cell_id"
-      ],
-      "title": "SetCellParams",
-      "type": "object"
+      ]
     },
     "annotations": {
       "destructiveHint": false,
@@ -351,9 +359,11 @@
   },
   {
     "name": "delete_cell",
-    "description": "Delete a cell by ID.",
+    "description": "Delete a cell.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "DeleteCellParams",
+      "type": "object",
       "properties": {
         "cell_id": {
           "description": "The cell ID to delete.",
@@ -362,9 +372,7 @@
       },
       "required": [
         "cell_id"
-      ],
-      "title": "DeleteCellParams",
-      "type": "object"
+      ]
     },
     "annotations": {
       "destructiveHint": true,
@@ -376,25 +384,25 @@
     "description": "Move a cell to a new position.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "MoveCellParams",
+      "type": "object",
       "properties": {
+        "cell_id": {
+          "description": "The cell ID to move.",
+          "type": "string"
+        },
         "after_cell_id": {
-          "default": null,
           "description": "Move after this cell, or null for start.",
           "type": [
             "string",
             "null"
-          ]
-        },
-        "cell_id": {
-          "description": "The cell ID to move.",
-          "type": "string"
+          ],
+          "default": null
         }
       },
       "required": [
         "cell_id"
-      ],
-      "title": "MoveCellParams",
-      "type": "object"
+      ]
     },
     "annotations": {
       "destructiveHint": false,
@@ -404,23 +412,23 @@
   },
   {
     "name": "clear_outputs",
-    "description": "Clear cell outputs. Pass cell_ids to clear specific cells, or omit to clear ALL outputs (destructive).",
+    "description": "Clear cell outputs.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "ClearOutputsParams",
+      "type": "object",
       "properties": {
         "cell_ids": {
           "description": "Cell IDs to clear outputs for. If omitted or empty, clears outputs for ALL cells (destructive).",
-          "items": {
-            "type": "string"
-          },
           "type": [
             "array",
             "null"
-          ]
+          ],
+          "items": {
+            "type": "string"
+          }
         }
-      },
-      "title": "ClearOutputsParams",
-      "type": "object"
+      }
     },
     "annotations": {
       "destructiveHint": true,
@@ -430,9 +438,11 @@
   },
   {
     "name": "add_cell_tags",
-    "description": "Add tags to a cell's metadata. Existing tags are preserved.",
+    "description": "Add tags to a cell.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "AddCellTagsParams",
+      "type": "object",
       "properties": {
         "cell_id": {
           "description": "ID of the cell.",
@@ -440,18 +450,16 @@
         },
         "tags": {
           "description": "Tags to add.",
+          "type": "array",
           "items": {
             "type": "string"
-          },
-          "type": "array"
+          }
         }
       },
       "required": [
         "cell_id",
         "tags"
-      ],
-      "title": "AddCellTagsParams",
-      "type": "object"
+      ]
     },
     "annotations": {
       "destructiveHint": false,
@@ -461,9 +469,11 @@
   },
   {
     "name": "remove_cell_tags",
-    "description": "Remove tags from a cell's metadata.",
+    "description": "Remove tags from a cell.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "RemoveCellTagsParams",
+      "type": "object",
       "properties": {
         "cell_id": {
           "description": "ID of the cell.",
@@ -471,18 +481,16 @@
         },
         "tags": {
           "description": "Tags to remove.",
+          "type": "array",
           "items": {
             "type": "string"
-          },
-          "type": "array"
+          }
         }
       },
       "required": [
         "cell_id",
         "tags"
-      ],
-      "title": "RemoveCellTagsParams",
-      "type": "object"
+      ]
     },
     "annotations": {
       "destructiveHint": true,
@@ -492,16 +500,18 @@
   },
   {
     "name": "set_cells_source_hidden",
-    "description": "Hide or show the source (code input) of one or more cells.",
+    "description": "Hide or show cell source.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "SetCellsSourceHiddenParams",
+      "type": "object",
       "properties": {
         "cell_ids": {
           "description": "IDs of cells to update.",
+          "type": "array",
           "items": {
             "type": "string"
-          },
-          "type": "array"
+          }
         },
         "hidden": {
           "description": "True to hide source, False to show.",
@@ -511,9 +521,7 @@
       "required": [
         "cell_ids",
         "hidden"
-      ],
-      "title": "SetCellsSourceHiddenParams",
-      "type": "object"
+      ]
     },
     "annotations": {
       "destructiveHint": false,
@@ -523,16 +531,18 @@
   },
   {
     "name": "set_cells_outputs_hidden",
-    "description": "Hide or show the outputs of one or more cells.",
+    "description": "Hide or show cell outputs.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "SetCellsOutputsHiddenParams",
+      "type": "object",
       "properties": {
         "cell_ids": {
           "description": "IDs of cells to update.",
+          "type": "array",
           "items": {
             "type": "string"
-          },
-          "type": "array"
+          }
         },
         "hidden": {
           "description": "True to hide outputs, False to show.",
@@ -542,9 +552,7 @@
       "required": [
         "cell_ids",
         "hidden"
-      ],
-      "title": "SetCellsOutputsHiddenParams",
-      "type": "object"
+      ]
     },
     "annotations": {
       "destructiveHint": false,
@@ -554,29 +562,29 @@
   },
   {
     "name": "execute_cell",
-    "description": "Execute a cell. Returns partial results if timeout exceeded.",
+    "description": "Execute a code cell.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "ExecuteCellParams",
+      "type": "object",
       "properties": {
         "cell_id": {
           "description": "The cell ID to execute.",
           "type": "string"
         },
         "timeout_secs": {
-          "default": null,
           "description": "Max seconds to wait; returns partial results if exceeded.",
-          "format": "double",
           "type": [
             "number",
             "null"
-          ]
+          ],
+          "format": "double",
+          "default": null
         }
       },
       "required": [
         "cell_id"
-      ],
-      "title": "ExecuteCellParams",
-      "type": "object"
+      ]
     },
     "annotations": {
       "destructiveHint": true,
@@ -590,30 +598,30 @@
   },
   {
     "name": "run_all_cells",
-    "description": "Execute all code cells in order. With wait=true (default), waits for completion and returns per-cell outputs with structured content. With wait=false, queues cells and returns immediately.",
+    "description": "Execute all code cells in order.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "RunAllCellsParams",
+      "type": "object",
       "properties": {
         "timeout_secs": {
-          "default": null,
           "description": "Max seconds to wait for all cells to finish. Default: 300.",
-          "format": "double",
           "type": [
             "number",
             "null"
-          ]
+          ],
+          "format": "double",
+          "default": null
         },
         "wait": {
-          "default": null,
           "description": "If true (default), wait for all cells to finish and return outputs.\nIf false, queue cells and return immediately.",
           "type": [
             "boolean",
             "null"
-          ]
+          ],
+          "default": null
         }
-      },
-      "title": "RunAllCellsParams",
-      "type": "object"
+      }
     },
     "annotations": {
       "destructiveHint": true,
@@ -627,11 +635,11 @@
   },
   {
     "name": "interrupt_kernel",
-    "description": "Interrupt the currently executing cell.",
+    "description": "Interrupt execution.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "Empty params for tools that take no arguments.",
       "title": "EmptyParams",
+      "description": "Empty params for tools that take no arguments.",
       "type": "object"
     },
     "annotations": {
@@ -642,11 +650,11 @@
   },
   {
     "name": "restart_kernel",
-    "description": "Restart kernel, clearing all state. Use after dependency changes.",
+    "description": "Restart the kernel, clearing all state.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "Empty params for tools that take no arguments.",
       "title": "EmptyParams",
+      "description": "Empty params for tools that take no arguments.",
       "type": "object"
     },
     "annotations": {
@@ -656,28 +664,28 @@
   },
   {
     "name": "add_dependency",
-    "description": "Add a package dependency (e.g. 'pandas>=2.0'). When a project file (pixi.toml, pyproject.toml) exists, promotes the dependency to the project file via 'pixi add' or 'uv add'. Otherwise stores in notebook metadata. Use after='sync' or after='restart' to apply.",
+    "description": "Add a package. Use after='sync' or 'restart' to apply.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "AddDependencyParams",
+      "type": "object",
       "properties": {
+        "package": {
+          "description": "Package to add (e.g. \"pandas>=2.0\").",
+          "type": "string"
+        },
         "after": {
-          "default": null,
           "description": "Action after adding: \"none\" (just record, default), \"sync\" (hot-install, UV only),\nor \"restart\" (restart kernel with new deps).",
           "type": [
             "string",
             "null"
-          ]
-        },
-        "package": {
-          "description": "Package to add (e.g. \"pandas>=2.0\").",
-          "type": "string"
+          ],
+          "default": null
         }
       },
       "required": [
         "package"
-      ],
-      "title": "AddDependencyParams",
-      "type": "object"
+      ]
     },
     "annotations": {
       "destructiveHint": false,
@@ -687,9 +695,11 @@
   },
   {
     "name": "remove_dependency",
-    "description": "Remove a package dependency. When a project file exists, runs 'pixi remove' or 'uv remove'. Otherwise removes from notebook metadata. Requires restart_kernel() to take effect.",
+    "description": "Remove a package. Requires kernel restart to take effect.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "RemoveDependencyParams",
+      "type": "object",
       "properties": {
         "package": {
           "description": "Package to remove.",
@@ -698,9 +708,7 @@
       },
       "required": [
         "package"
-      ],
-      "title": "RemoveDependencyParams",
-      "type": "object"
+      ]
     },
     "annotations": {
       "destructiveHint": true,
@@ -710,7 +718,7 @@
   },
   {
     "name": "get_dependencies",
-    "description": "Get the notebook's declared dependencies and any pre-installed packages available in the environment.",
+    "description": "Get the notebook's declared dependencies.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "title": "GetDependenciesParams",
@@ -723,11 +731,11 @@
   },
   {
     "name": "sync_environment",
-    "description": "Hot-install new dependencies without restarting. Use restart_kernel() if this fails.",
+    "description": "Hot-install new dependencies. restart_kernel() if this fails.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "Empty params for tools that take no arguments.",
       "title": "EmptyParams",
+      "description": "Empty params for tools that take no arguments.",
       "type": "object"
     },
     "annotations": {
@@ -737,63 +745,63 @@
   },
   {
     "name": "replace_match",
-    "description": "Replace matched text in a cell. Prefer this for simple, targeted edits. Use context_before/context_after to disambiguate when match appears multiple times.",
+    "description": "Replace literal text in a cell. Use context_before/context_after to disambiguate repeated matches.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "ReplaceMatchParams",
+      "type": "object",
       "properties": {
-        "and_run": {
-          "default": null,
-          "description": "Execute the cell immediately after edit.",
-          "type": [
-            "boolean",
-            "null"
-          ]
-        },
         "cell_id": {
           "description": "The cell ID to edit.",
+          "type": "string"
+        },
+        "match": {
+          "description": "Literal text to find (must match exactly once).",
           "type": "string"
         },
         "content": {
           "description": "Literal replacement text.",
           "type": "string"
         },
-        "context_after": {
-          "default": null,
-          "description": "Text that must appear after the match.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "context_before": {
-          "default": null,
           "description": "Text that must appear before the match.",
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "default": null
         },
-        "match": {
-          "description": "Literal text to find (must match exactly once).",
-          "type": "string"
+        "context_after": {
+          "description": "Text that must appear after the match.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "and_run": {
+          "description": "Execute the cell immediately after edit.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
         },
         "timeout_secs": {
-          "default": null,
           "description": "Max seconds to wait for execution.",
-          "format": "double",
           "type": [
             "number",
             "null"
-          ]
+          ],
+          "format": "double",
+          "default": null
         }
       },
       "required": [
         "cell_id",
         "match",
         "content"
-      ],
-      "title": "ReplaceMatchParams",
-      "type": "object"
+      ]
     },
     "annotations": {
       "destructiveHint": false,
@@ -807,47 +815,47 @@
   },
   {
     "name": "replace_regex",
-    "description": "Replace a regex-matched span (fancy-regex engine, Rust). Use for anchors, lookarounds, or zero-width insertions. Fails if 0 or >1 matches. Replacement content is literal (no escape interpretation — use actual newline chars, not \\n).",
+    "description": "Replace a regex match in a cell (fancy-regex). Fails if 0 or >1 matches. Replacement is literal text.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "ReplaceRegexParams",
+      "type": "object",
       "properties": {
-        "and_run": {
-          "default": null,
-          "description": "Execute the cell immediately after edit.",
-          "type": [
-            "boolean",
-            "null"
-          ]
-        },
         "cell_id": {
           "description": "The cell ID to edit.",
           "type": "string"
         },
-        "content": {
-          "description": "Literal replacement text — not interpreted as a regex or escape sequence. To insert a newline, use an actual newline character in the JSON string.",
+        "pattern": {
+          "description": "Regex pattern (must match exactly once). MULTILINE ((?m)) enabled by default \u2014 ^/$ match line boundaries, use \\z for end-of-string. DOTALL is off \u2014 . does not match \\n unless you add (?s).",
           "type": "string"
         },
-        "pattern": {
-          "description": "Regex pattern (must match exactly once). MULTILINE ((?m)) enabled by default — ^/$ match line boundaries, use \\z for end-of-string. DOTALL is off — . does not match \\n unless you add (?s).",
+        "content": {
+          "description": "Literal replacement text \u2014 not interpreted as a regex or escape sequence. To insert a newline, use an actual newline character in the JSON string.",
           "type": "string"
+        },
+        "and_run": {
+          "description": "Execute the cell immediately after edit.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
         },
         "timeout_secs": {
-          "default": null,
           "description": "Max seconds to wait for execution.",
-          "format": "double",
           "type": [
             "number",
             "null"
-          ]
+          ],
+          "format": "double",
+          "default": null
         }
       },
       "required": [
         "cell_id",
         "pattern",
         "content"
-      ],
-      "title": "ReplaceRegexParams",
-      "type": "object"
+      ]
     },
     "annotations": {
       "destructiveHint": false,
