@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "nteract": {
+      "command": "./bin/nteract-mcpb-runt",
+      "args": [],
+      "env": {
+        "NTERACT_CHANNEL": "stable"
+      }
+    }
+  }
+}

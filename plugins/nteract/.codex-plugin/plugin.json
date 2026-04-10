@@ -1,0 +1,41 @@
+{
+  "name": "nteract",
+  "version": "0.1.0",
+  "description": "Open, run, and edit nteract notebooks from Codex",
+  "author": {
+    "name": "nteract contributors",
+    "url": "https://nteract.io"
+  },
+  "homepage": "https://nteract.io",
+  "repository": "https://github.com/nteract/desktop",
+  "license": "BSD-3-Clause",
+  "keywords": [
+    "jupyter",
+    "notebook",
+    "python",
+    "deno",
+    "data-science",
+    "visualization"
+  ],
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "nteract",
+    "shortDescription": "Open, run, and edit notebooks from Codex",
+    "longDescription": "Open notebooks, run cells, inspect outputs, manage dependencies, and launch the nteract desktop app while sharing notebook state with a human collaborator.",
+    "developerName": "nteract contributors",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://nteract.io",
+    "defaultPrompt": [
+      "Pair with me in this notebook: inspect cells, run code, edit cells, and manage dependencies"
+    ],
+    "brandColor": "#4F46E5",
+    "composerIcon": "./assets/icon.png",
+    "logo": "./assets/icon.png",
+    "screenshots": []
+  }
+}
