@@ -2702,6 +2702,7 @@ impl Daemon {
                     settings
                         .get_u64("uv_pool_size")
                         .unwrap_or(runtimed_client::settings_doc::DEFAULT_UV_POOL_SIZE)
+                        .min(runtimed_client::settings_doc::MAX_POOL_SIZE)
                         as usize
                 };
                 let mut pool = self.uv_pool.lock().await;
@@ -2753,11 +2754,14 @@ impl Daemon {
                 }
             }
 
-            // Log status
-            let (available, warming) = self.uv_pool.lock().await.stats();
+            let (available, warming, target) = {
+                let pool = self.uv_pool.lock().await;
+                let (a, w) = pool.stats();
+                (a, w, pool.target())
+            };
             debug!(
                 "[runtimed] UV pool: {}/{} available, {} warming",
-                available, self.config.uv_pool_size, warming
+                available, target, warming
             );
 
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
@@ -2789,6 +2793,7 @@ impl Daemon {
                     settings
                         .get_u64("conda_pool_size")
                         .unwrap_or(runtimed_client::settings_doc::DEFAULT_CONDA_POOL_SIZE)
+                        .min(runtimed_client::settings_doc::MAX_POOL_SIZE)
                         as usize
                 };
                 let mut pool = self.conda_pool.lock().await;
@@ -2850,11 +2855,14 @@ impl Daemon {
                 }
             }
 
-            // Log status
-            let (available, warming) = self.conda_pool.lock().await.stats();
+            let (available, warming, target) = {
+                let pool = self.conda_pool.lock().await;
+                let (a, w) = pool.stats();
+                (a, w, pool.target())
+            };
             debug!(
                 "[runtimed] Conda pool: {}/{} available, {} warming",
-                available, self.config.conda_pool_size, warming
+                available, target, warming
             );
 
             // Wait before checking again
@@ -2885,6 +2893,7 @@ impl Daemon {
                     settings
                         .get_u64("pixi_pool_size")
                         .unwrap_or(runtimed_client::settings_doc::DEFAULT_PIXI_POOL_SIZE)
+                        .min(runtimed_client::settings_doc::MAX_POOL_SIZE)
                         as usize
                 };
                 let mut pool = self.pixi_pool.lock().await;
@@ -2943,10 +2952,14 @@ impl Daemon {
                 }
             }
 
-            let (available, warming) = self.pixi_pool.lock().await.stats();
+            let (available, warming, target) = {
+                let pool = self.pixi_pool.lock().await;
+                let (a, w) = pool.stats();
+                (a, w, pool.target())
+            };
             debug!(
                 "[runtimed] Pixi pool: {}/{} available, {} warming",
-                available, self.config.pixi_pool_size, warming
+                available, target, warming
             );
 
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
