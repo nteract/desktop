@@ -1892,7 +1892,7 @@ impl Daemon {
                 return Some(e);
             }
 
-            if self.config.uv_pool_size == 0 {
+            if self.uv_pool.lock().await.target() == 0 {
                 return None;
             }
 
@@ -1967,7 +1967,7 @@ impl Daemon {
                 return Some(e);
             }
 
-            if self.config.conda_pool_size == 0 {
+            if self.conda_pool.lock().await.target() == 0 {
                 return None;
             }
 
@@ -2688,8 +2688,8 @@ impl Daemon {
         };
 
         info!("[runtimed] Starting UV warming loop");
-        // Store uv_path for use in create_uv_env - it's cached so get_uv_path() is instant
         let _ = uv_path;
+        let mut settings_rx = self.settings_changed.subscribe();
 
         loop {
             if *self.shutdown.lock().await {
@@ -2764,25 +2764,19 @@ impl Daemon {
                 available, target, warming
             );
 
-            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
+                _ = settings_rx.recv() => {}
+            }
         }
     }
 
     /// Conda warming loop - maintains the Conda pool using rattler.
     async fn conda_warming_loop(&self) {
-        // Check if we should even try (pool size > 0)
-        if self.config.conda_pool_size == 0 {
-            info!("[runtimed] Conda pool size is 0, skipping warming");
-            return;
-        }
-
-        info!(
-            "[runtimed] Starting conda warming loop (target: {})",
-            self.config.conda_pool_size
-        );
+        info!("[runtimed] Starting conda warming loop");
+        let mut settings_rx = self.settings_changed.subscribe();
 
         loop {
-            // Check shutdown
             if *self.shutdown.lock().await {
                 break;
             }
@@ -2865,22 +2859,17 @@ impl Daemon {
                 available, target, warming
             );
 
-            // Wait before checking again
-            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
+                _ = settings_rx.recv() => {}
+            }
         }
     }
 
     /// Background loop that keeps the pixi environment pool at its target size.
     async fn pixi_warming_loop(&self) {
-        if self.config.pixi_pool_size == 0 {
-            info!("[runtimed] Pixi pool size is 0, skipping warming");
-            return;
-        }
-
-        info!(
-            "[runtimed] Starting pixi warming loop (target: {})",
-            self.config.pixi_pool_size
-        );
+        info!("[runtimed] Starting pixi warming loop");
+        let mut settings_rx = self.settings_changed.subscribe();
 
         loop {
             if *self.shutdown.lock().await {
@@ -2962,7 +2951,10 @@ impl Daemon {
                 available, target, warming
             );
 
-            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
+                _ = settings_rx.recv() => {}
+            }
         }
     }
 
@@ -3266,11 +3258,12 @@ impl Daemon {
                     });
                 }
 
+                let pool = self.conda_pool.lock().await;
                 info!(
                     "[runtimed] Conda environment ready: {:?} (pool: {}/{})",
                     env_path,
-                    self.conda_pool.lock().await.stats().0,
-                    self.config.conda_pool_size
+                    pool.stats().0,
+                    pool.target()
                 );
 
                 self.update_pool_doc().await;
