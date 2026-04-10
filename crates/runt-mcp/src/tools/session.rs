@@ -568,8 +568,8 @@ pub async fn save_notebook(
         }
     };
 
-    // If no path and notebook is ephemeral (UUID-keyed), require a path
-    if path.is_none() && !notebook_id.contains('/') && !notebook_id.ends_with(".ipynb") {
+    // If no path and notebook is ephemeral (UUID-keyed, not a file path), require a path
+    if path.is_none() && !looks_like_path(&notebook_id) {
         return tool_error(
             "No path specified for ephemeral notebook. \
              Provide a path: save_notebook(path='/path/to/notebook.ipynb')",

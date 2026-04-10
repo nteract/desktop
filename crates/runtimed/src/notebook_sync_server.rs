@@ -6835,14 +6835,12 @@ async fn save_notebook_to_disk(
 
     // Ensure parent directory exists (agents often construct paths programmatically)
     if let Some(parent) = notebook_path.parent() {
-        if !parent.exists() {
-            tokio::fs::create_dir_all(parent).await.map_err(|e| {
-                SaveError::Unrecoverable(format!(
-                    "Failed to create directory '{}': {e}",
-                    parent.display()
-                ))
-            })?;
-        }
+        tokio::fs::create_dir_all(parent).await.map_err(|e| {
+            SaveError::Unrecoverable(format!(
+                "Failed to create directory '{}': {e}",
+                parent.display()
+            ))
+        })?;
     }
 
     // Write to disk (async to avoid blocking the runtime)
