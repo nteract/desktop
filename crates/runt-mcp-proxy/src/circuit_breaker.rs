@@ -208,4 +208,31 @@ mod tests {
         assert!(cb.tripped_at.is_none(), "reset should clear tripped_at");
         assert!(cb.record_crash(), "should allow after manual reset");
     }
+
+    #[test]
+    fn repeated_trip_cooldown_cycles() {
+        let mut cb = CircuitBreaker::new();
+
+        for cycle in 0..3 {
+            // Trip the breaker
+            for _ in 0..MAX_CRASHES {
+                cb.record_crash();
+            }
+            assert!(!cb.record_crash(), "cycle {cycle}: should be tripped");
+
+            // Simulate cooldown
+            cb.tripped_at = Some(Instant::now() - COOLDOWN - Duration::from_secs(1));
+
+            // Should allow again
+            assert!(
+                cb.record_crash(),
+                "cycle {cycle}: should allow after cooldown"
+            );
+            assert_eq!(
+                cb.recent_crashes.len(),
+                1,
+                "cycle {cycle}: should have fresh crash count"
+            );
+        }
+    }
 }
