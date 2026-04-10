@@ -464,3 +464,65 @@ pub async fn build_execution_result(
     call_result.structured_content = structured_content;
     Ok(call_result)
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    fn make_request(args: serde_json::Value) -> CallToolRequestParams {
+        serde_json::from_value(serde_json::json!({
+            "name": "test",
+            "arguments": args,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn arg_bool_json_true() {
+        let req = make_request(serde_json::json!({"flag": true}));
+        assert_eq!(arg_bool(&req, "flag"), Some(true));
+    }
+
+    #[test]
+    fn arg_bool_json_false() {
+        let req = make_request(serde_json::json!({"flag": false}));
+        assert_eq!(arg_bool(&req, "flag"), Some(false));
+    }
+
+    #[test]
+    fn arg_bool_string_true() {
+        let req = make_request(serde_json::json!({"flag": "true"}));
+        assert_eq!(arg_bool(&req, "flag"), Some(true));
+    }
+
+    #[test]
+    fn arg_bool_string_false() {
+        let req = make_request(serde_json::json!({"flag": "false"}));
+        assert_eq!(arg_bool(&req, "flag"), Some(false));
+    }
+
+    #[test]
+    fn arg_bool_missing_key() {
+        let req = make_request(serde_json::json!({"other": 1}));
+        assert_eq!(arg_bool(&req, "flag"), None);
+    }
+
+    #[test]
+    fn arg_bool_invalid_string() {
+        let req = make_request(serde_json::json!({"flag": "yes"}));
+        assert_eq!(arg_bool(&req, "flag"), None);
+    }
+
+    #[test]
+    fn arg_bool_number() {
+        let req = make_request(serde_json::json!({"flag": 1}));
+        assert_eq!(arg_bool(&req, "flag"), None);
+    }
+
+    #[test]
+    fn arg_bool_null() {
+        let req = make_request(serde_json::json!({"flag": null}));
+        assert_eq!(arg_bool(&req, "flag"), None);
+    }
+}
