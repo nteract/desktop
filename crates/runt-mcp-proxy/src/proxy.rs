@@ -1011,7 +1011,7 @@ mod tests {
         );
 
         let config = ProxyConfig {
-            resolve_child_command: Box::new(|| Ok(PathBuf::from("/usr/local/bin/runt"))),
+            resolve_child_command: Box::new(|| Ok(PathBuf::from("/nonexistent/runt"))),
             child_args: vec!["mcp".to_string()],
             child_env: env,
             server_name: "nteract".to_string(),
