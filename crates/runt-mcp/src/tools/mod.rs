@@ -367,13 +367,54 @@ pub async fn dispatch(
     }
 }
 
-/// Helper: extract a typed argument or return a default.
+/// Helper: extract a string argument.
 pub fn arg_str<'a>(request: &'a CallToolRequestParams, key: &str) -> Option<&'a str> {
     request
         .arguments
         .as_ref()
         .and_then(|args| args.get(key))
         .and_then(|v| v.as_str())
+}
+
+/// Helper: extract a boolean argument with type coercion.
+///
+/// MCP clients may send booleans as JSON booleans (`true`/`false`) or as
+/// strings (`"true"`/`"false"`). This handles both for robustness.
+pub fn arg_bool(request: &CallToolRequestParams, key: &str) -> Option<bool> {
+    let val = request.arguments.as_ref()?.get(key)?;
+    // Try JSON boolean first
+    if let Some(b) = val.as_bool() {
+        return Some(b);
+    }
+    // Fall back to string coercion
+    match val.as_str() {
+        Some("true") => Some(true),
+        Some("false") => Some(false),
+        _ => None,
+    }
+}
+
+/// Helper: extract a string array argument with type coercion.
+///
+/// MCP clients may send arrays as JSON arrays or as JSON-encoded strings.
+/// This handles both for robustness.
+pub fn arg_string_array(request: &CallToolRequestParams, key: &str) -> Option<Vec<String>> {
+    let val = request.arguments.as_ref()?.get(key)?;
+    // Try JSON array first
+    if let Some(arr) = val.as_array() {
+        return Some(
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect(),
+        );
+    }
+    // Fall back to parsing a JSON-encoded string
+    if let Some(s) = val.as_str() {
+        if let Ok(parsed) = serde_json::from_str::<Vec<String>>(s) {
+            return Some(parsed);
+        }
+    }
+    None
 }
 
 /// Helper: create a text error result.
@@ -435,4 +476,81 @@ pub async fn build_execution_result(
     let mut call_result = CallToolResult::success(items);
     call_result.structured_content = structured_content;
     Ok(call_result)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    fn make_request(args: serde_json::Value) -> CallToolRequestParams {
+        serde_json::from_value(serde_json::json!({
+            "name": "test",
+            "arguments": args,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn arg_bool_json_boolean() {
+        let req = make_request(serde_json::json!({"flag": true}));
+        assert_eq!(arg_bool(&req, "flag"), Some(true));
+
+        let req = make_request(serde_json::json!({"flag": false}));
+        assert_eq!(arg_bool(&req, "flag"), Some(false));
+    }
+
+    #[test]
+    fn arg_bool_string_coercion() {
+        let req = make_request(serde_json::json!({"flag": "true"}));
+        assert_eq!(arg_bool(&req, "flag"), Some(true));
+
+        let req = make_request(serde_json::json!({"flag": "false"}));
+        assert_eq!(arg_bool(&req, "flag"), Some(false));
+    }
+
+    #[test]
+    fn arg_bool_missing_and_invalid() {
+        let req = make_request(serde_json::json!({"other": 1}));
+        assert_eq!(arg_bool(&req, "flag"), None);
+
+        let req = make_request(serde_json::json!({"flag": "maybe"}));
+        assert_eq!(arg_bool(&req, "flag"), None);
+
+        let req = make_request(serde_json::json!({"flag": 42}));
+        assert_eq!(arg_bool(&req, "flag"), None);
+    }
+
+    #[test]
+    fn arg_string_array_json_array() {
+        let req = make_request(serde_json::json!({"deps": ["numpy", "pandas"]}));
+        assert_eq!(
+            arg_string_array(&req, "deps"),
+            Some(vec!["numpy".to_string(), "pandas".to_string()])
+        );
+    }
+
+    #[test]
+    fn arg_string_array_string_coercion() {
+        let req = make_request(serde_json::json!({"deps": "[\"numpy\", \"pandas\"]"}));
+        assert_eq!(
+            arg_string_array(&req, "deps"),
+            Some(vec!["numpy".to_string(), "pandas".to_string()])
+        );
+    }
+
+    #[test]
+    fn arg_string_array_empty() {
+        let req = make_request(serde_json::json!({"deps": []}));
+        assert_eq!(arg_string_array(&req, "deps"), Some(vec![]));
+    }
+
+    #[test]
+    fn arg_string_array_missing_and_invalid() {
+        let req = make_request(serde_json::json!({"other": 1}));
+        assert_eq!(arg_string_array(&req, "deps"), None);
+
+        let req = make_request(serde_json::json!({"deps": "not-json-array"}));
+        assert_eq!(arg_string_array(&req, "deps"), None);
+    }
 }
