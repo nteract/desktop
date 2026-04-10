@@ -117,12 +117,7 @@ pub fn all_tools() -> Vec<Tool> {
                 .idempotent(true)
                 .open_world(true),
         ),
-        Tool::new(
-            "launch_app",
-            "Launch the nteract desktop app for the user, showing the current notebook. The notebook must be running in the daemon.",
-            schema_for::<session::ShowNotebookParams>(),
-        )
-        .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
+        // launch_app removed from tool list (still dispatched for backward compat)
         // -- Cell read --
         Tool::new(
             "get_cell",
@@ -181,9 +176,9 @@ pub fn all_tools() -> Vec<Tool> {
         ),
         // -- Cell metadata --
         Tool::new(
-            "add_cell_tags",
-            "Add tags to a cell's metadata. Existing tags are preserved.",
-            schema_for::<cell_meta::AddCellTagsParams>(),
+            "set_cell_tags",
+            "Add and/or remove tags on a cell.",
+            schema_for::<cell_meta::SetCellTagsParams>(),
         )
         .annotate(
             ToolAnnotations::new()
@@ -192,31 +187,9 @@ pub fn all_tools() -> Vec<Tool> {
                 .open_world(false),
         ),
         Tool::new(
-            "remove_cell_tags",
-            "Remove tags from a cell's metadata.",
-            schema_for::<cell_meta::RemoveCellTagsParams>(),
-        )
-        .annotate(
-            ToolAnnotations::new()
-                .destructive(true)
-                .idempotent(true)
-                .open_world(false),
-        ),
-        Tool::new(
-            "set_cells_source_hidden",
-            "Hide or show the source (code input) of one or more cells.",
-            schema_for::<cell_meta::SetCellsSourceHiddenParams>(),
-        )
-        .annotate(
-            ToolAnnotations::new()
-                .destructive(false)
-                .idempotent(true)
-                .open_world(false),
-        ),
-        Tool::new(
-            "set_cells_outputs_hidden",
-            "Hide or show the outputs of one or more cells.",
-            schema_for::<cell_meta::SetCellsOutputsHiddenParams>(),
+            "set_cell_visibility",
+            "Hide or show source and/or outputs on cells.",
+            schema_for::<cell_meta::SetCellVisibilityParams>(),
         )
         .annotate(
             ToolAnnotations::new()
@@ -325,6 +298,9 @@ pub async fn dispatch(
         "move_cell" => cell_crud::move_cell(server, request).await,
         "clear_outputs" => cell_crud::clear_outputs(server, request).await,
         // Cell metadata
+        "set_cell_tags" => cell_meta::set_cell_tags(server, request).await,
+        "set_cell_visibility" => cell_meta::set_cell_visibility(server, request).await,
+        // Backward compat aliases
         "add_cell_tags" => cell_meta::add_cell_tags(server, request).await,
         "remove_cell_tags" => cell_meta::remove_cell_tags(server, request).await,
         "set_cells_source_hidden" => cell_meta::set_cells_source_hidden(server, request).await,

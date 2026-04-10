@@ -187,3 +187,129 @@ pub async fn set_cells_outputs_hidden(
     }
     tool_success(&msg)
 }
+
+// ── Consolidated cell metadata tools ────────────────────────────
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SetCellTagsParams {
+    /// ID of the cell.
+    pub cell_id: String,
+    /// Tags to add.
+    #[serde(default)]
+    pub add: Option<Vec<String>>,
+    /// Tags to remove.
+    #[serde(default)]
+    pub remove: Option<Vec<String>>,
+}
+
+/// Add and/or remove tags on a cell in one call.
+pub async fn set_cell_tags(
+    server: &NteractMcp,
+    request: &CallToolRequestParams,
+) -> Result<CallToolResult, McpError> {
+    let cell_id = arg_str(request, "cell_id")
+        .ok_or_else(|| McpError::invalid_params("Missing required parameter: cell_id", None))?;
+
+    let handle = require_handle!(server);
+
+    let metadata = match handle.get_cell_metadata(cell_id) {
+        Some(m) => m,
+        None => return tool_error(&format!("Cell {cell_id} not found")),
+    };
+
+    let mut tags: Vec<String> = metadata
+        .get("tags")
+        .and_then(|t| t.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let to_add: Vec<String> = arg_string_array(request, "add").unwrap_or_default();
+    let to_remove: Vec<String> = arg_string_array(request, "remove").unwrap_or_default();
+
+    // Remove first, then add (so you can replace tags atomically)
+    tags.retain(|t| !to_remove.contains(t));
+    for tag in &to_add {
+        if !tags.contains(tag) {
+            tags.push(tag.clone());
+        }
+    }
+
+    let tag_refs: Vec<&str> = tags.iter().map(|s| s.as_str()).collect();
+    handle
+        .set_cell_tags(cell_id, &tag_refs)
+        .map_err(|e| McpError::internal_error(format!("Failed to set tags: {e}"), None))?;
+
+    tool_success(&format!("Tags for {cell_id}: {tags:?}"))
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SetCellVisibilityParams {
+    /// IDs of cells to update.
+    pub cell_ids: Vec<String>,
+    /// Hide source code (input).
+    #[serde(default)]
+    pub source_hidden: Option<bool>,
+    /// Hide outputs.
+    #[serde(default)]
+    pub outputs_hidden: Option<bool>,
+}
+
+/// Set visibility of source and/or outputs on one or more cells.
+pub async fn set_cell_visibility(
+    server: &NteractMcp,
+    request: &CallToolRequestParams,
+) -> Result<CallToolResult, McpError> {
+    let handle = require_handle!(server);
+
+    let cell_ids: Vec<String> = arg_string_array(request, "cell_ids").unwrap_or_default();
+    let source_hidden = arg_bool(request, "source_hidden");
+    let outputs_hidden = arg_bool(request, "outputs_hidden");
+
+    if source_hidden.is_none() && outputs_hidden.is_none() {
+        return tool_error("Provide source_hidden and/or outputs_hidden.");
+    }
+
+    let mut not_found = Vec::new();
+    let mut updated = 0;
+
+    for cell_id in &cell_ids {
+        let mut found = false;
+        if let Some(hidden) = source_hidden {
+            match handle.set_cell_source_hidden(cell_id, hidden) {
+                Ok(true) => found = true,
+                Ok(false) => {}
+                Err(_) => {}
+            }
+        }
+        if let Some(hidden) = outputs_hidden {
+            match handle.set_cell_outputs_hidden(cell_id, hidden) {
+                Ok(true) => found = true,
+                Ok(false) => {}
+                Err(_) => {}
+            }
+        }
+        if found {
+            updated += 1;
+        } else {
+            not_found.push(cell_id.as_str());
+        }
+    }
+
+    let mut msg = format!("Updated visibility on {updated} cell(s)");
+    if let Some(h) = source_hidden {
+        msg.push_str(&format!(", source_hidden={h}"));
+    }
+    if let Some(h) = outputs_hidden {
+        msg.push_str(&format!(", outputs_hidden={h}"));
+    }
+    if !not_found.is_empty() {
+        msg.push_str(&format!("; not found: {not_found:?}"));
+    }
+    tool_success(&msg)
+}
