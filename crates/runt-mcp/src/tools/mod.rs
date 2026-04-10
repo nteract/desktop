@@ -260,7 +260,7 @@ pub fn all_tools() -> Vec<Tool> {
         // -- Dependencies --
         Tool::new(
             "add_dependency",
-            "Add a package. Use after='sync' to install.",
+            "Add a package. Use after='sync' or 'restart' to apply.",
             schema_for::<deps::AddDependencyParams>(),
         )
         .annotate(
@@ -271,7 +271,7 @@ pub fn all_tools() -> Vec<Tool> {
         ),
         Tool::new(
             "remove_dependency",
-            "Remove a package.",
+            "Remove a package. Requires kernel restart to take effect.",
             schema_for::<deps::RemoveDependencyParams>(),
         )
         .annotate(
@@ -288,7 +288,7 @@ pub fn all_tools() -> Vec<Tool> {
         .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
         Tool::new(
             "sync_environment",
-            "Hot-install new dependencies.",
+            "Hot-install new dependencies. restart_kernel() if this fails.",
             schema_for::<EmptyParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(false).open_world(true)),
