@@ -513,7 +513,13 @@ impl Daemon {
         // Load or create the settings document
         let automerge_path = crate::default_settings_doc_path();
         let json_path = crate::settings_json_path();
-        let settings = SettingsDoc::load_or_create(&automerge_path, Some(&json_path));
+        let mut settings = SettingsDoc::load_or_create(&automerge_path, Some(&json_path));
+
+        // Seed pool sizes from CLI config into settings doc so the warming
+        // loops use the daemon's configured sizes, not the schema defaults.
+        settings.put_u64("uv_pool_size", config.uv_pool_size as u64);
+        settings.put_u64("conda_pool_size", config.conda_pool_size as u64);
+        settings.put_u64("pixi_pool_size", config.pixi_pool_size as u64);
 
         // Write the settings JSON Schema for editor autocomplete
         if let Err(e) = crate::settings_doc::write_settings_schema() {
