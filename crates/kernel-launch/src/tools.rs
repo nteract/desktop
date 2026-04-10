@@ -707,8 +707,11 @@ async fn download_uv_from_github(version: &str) -> Result<BootstrappedTool> {
         ));
     }
     let checksum_text = checksum_response.text().await?;
-    // UV checksums are just the hash (no filename)
-    let expected_hash = checksum_text.trim().to_lowercase();
+    let expected_hash = checksum_text
+        .split_whitespace()
+        .next()
+        .ok_or_else(|| anyhow!("Invalid checksum format"))?
+        .to_lowercase();
 
     // Download archive
     info!("Downloading {}...", asset_name);
