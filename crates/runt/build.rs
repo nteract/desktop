@@ -11,6 +11,10 @@ fn main() {
 
     println!("cargo:rustc-env=GIT_COMMIT={}", commit);
 
+    let variant = std::env::var("RUNT_VARIANT").unwrap_or_default();
+    println!("cargo:rustc-env=RUNT_VARIANT={}", variant);
+    println!("cargo:rerun-if-env-changed=RUNT_VARIANT");
+
     // Use `git rev-parse --git-dir` to find the actual git metadata directory.
     // In a worktree, `.git` is a file pointing elsewhere (e.g.
     // `../../.git/worktrees/<name>`), so hard-coding `../../.git/HEAD` would

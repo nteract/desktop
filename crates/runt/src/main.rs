@@ -143,8 +143,22 @@ fn random_tagline() -> String {
     )
 }
 
+const fn runt_version_string() -> &'static str {
+    if env!("RUNT_VARIANT").is_empty() {
+        concat!(env!("CARGO_PKG_VERSION"), "+", env!("GIT_COMMIT"))
+    } else {
+        concat!(
+            env!("CARGO_PKG_VERSION"),
+            "+",
+            env!("GIT_COMMIT"),
+            "-",
+            env!("RUNT_VARIANT")
+        )
+    }
+}
+
 #[derive(Parser)]
-#[command(name = "runt", author, version, about = "CLI for Jupyter Runtimes", long_about = None)]
+#[command(name = "runt", author, version = runt_version_string(), about = "CLI for Jupyter Runtimes", long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -2486,7 +2500,7 @@ async fn doctor_command(
                 None
             };
             let bundled_ver = find_bundled_runtimed().and_then(|p| get_binary_version(&p));
-            let cli_ver = format!("{}+{}", env!("CARGO_PKG_VERSION"), env!("GIT_COMMIT"));
+            let cli_ver = runt_version_string();
 
             // Build detail string showing all available versions
             let mut parts = Vec::new();
@@ -3375,6 +3389,7 @@ fn collect_system_info() -> serde_json::Value {
         "os_version": os_version,
         "runt_version": env!("CARGO_PKG_VERSION"),
         "runt_commit": env!("GIT_COMMIT"),
+        "runt_variant": env!("RUNT_VARIANT"),
         "build_channel": format!("{:?}", runt_workspace::build_channel()),
         "dev_mode": runt_workspace::is_dev_mode(),
         "workspace_path": runt_workspace::get_workspace_path().map(|p| p.display().to_string()),
