@@ -7,28 +7,50 @@ use std::time::{Duration, Instant};
 
 const MAX_CRASHES: usize = 5;
 const WINDOW: Duration = Duration::from_secs(30);
+/// After the breaker trips, wait this long before auto-resetting.
+/// Gives the daemon time to fully restart after a binary upgrade.
+const COOLDOWN: Duration = Duration::from_secs(60);
 
 /// Tracks recent child crashes and decides whether to allow restart.
 pub struct CircuitBreaker {
     recent_crashes: Vec<Instant>,
+    /// When the breaker tripped — used for cooldown-then-retry.
+    tripped_at: Option<Instant>,
 }
 
 impl CircuitBreaker {
     pub fn new() -> Self {
         Self {
             recent_crashes: Vec::new(),
+            tripped_at: None,
         }
     }
 
     /// Record a crash and return whether restart is allowed.
     ///
     /// Returns `false` (tripped) if there have been >= `MAX_CRASHES` in the
-    /// last `WINDOW` seconds.
+    /// last `WINDOW` seconds. After a cooldown period, the breaker auto-resets
+    /// so the proxy can recover from daemon restarts without manual intervention.
     pub fn record_crash(&mut self) -> bool {
         let now = Instant::now();
+
+        // Auto-reset after cooldown: if the breaker tripped long enough ago,
+        // clear state and allow retry. This handles daemon restarts where the
+        // child crashes rapidly during the restart window but should recover
+        // once the new daemon is up.
+        if let Some(tripped) = self.tripped_at {
+            if now.duration_since(tripped) >= COOLDOWN {
+                self.recent_crashes.clear();
+                self.tripped_at = None;
+            }
+        }
+
         self.recent_crashes
             .retain(|t| now.duration_since(*t) < WINDOW);
         if self.recent_crashes.len() >= MAX_CRASHES {
+            if self.tripped_at.is_none() {
+                self.tripped_at = Some(now);
+            }
             return false;
         }
         self.recent_crashes.push(now);
@@ -38,6 +60,7 @@ impl CircuitBreaker {
     /// Reset the circuit breaker (e.g., after a manual restart or file change).
     pub fn reset(&mut self) {
         self.recent_crashes.clear();
+        self.tripped_at = None;
     }
 }
 
@@ -137,5 +160,52 @@ mod tests {
         assert!(cb.record_crash(), "crash at exactly the limit should work");
         // One more should fail
         assert!(!cb.record_crash(), "crash beyond limit should fail");
+    }
+
+    #[test]
+    fn auto_resets_after_cooldown() {
+        let mut cb = CircuitBreaker::new();
+        // Trip the breaker
+        for _ in 0..MAX_CRASHES {
+            cb.record_crash();
+        }
+        assert!(!cb.record_crash(), "should be tripped");
+        assert!(cb.tripped_at.is_some(), "tripped_at should be set");
+
+        // Simulate cooldown by backdating tripped_at
+        cb.tripped_at = Some(Instant::now() - COOLDOWN - Duration::from_secs(1));
+
+        // Next record_crash should auto-reset and allow
+        assert!(cb.record_crash(), "should allow after cooldown auto-reset");
+        assert!(cb.tripped_at.is_none(), "tripped_at should be cleared");
+        assert_eq!(cb.recent_crashes.len(), 1, "should have fresh crash count");
+    }
+
+    #[test]
+    fn stays_tripped_before_cooldown() {
+        let mut cb = CircuitBreaker::new();
+        // Trip the breaker
+        for _ in 0..MAX_CRASHES {
+            cb.record_crash();
+        }
+        assert!(!cb.record_crash());
+
+        // Without cooldown elapsed, should stay tripped
+        assert!(!cb.record_crash(), "should stay tripped before cooldown");
+        assert!(cb.tripped_at.is_some());
+    }
+
+    #[test]
+    fn manual_reset_clears_tripped_at() {
+        let mut cb = CircuitBreaker::new();
+        for _ in 0..MAX_CRASHES {
+            cb.record_crash();
+        }
+        assert!(!cb.record_crash());
+        assert!(cb.tripped_at.is_some());
+
+        cb.reset();
+        assert!(cb.tripped_at.is_none(), "reset should clear tripped_at");
+        assert!(cb.record_crash(), "should allow after manual reset");
     }
 }
