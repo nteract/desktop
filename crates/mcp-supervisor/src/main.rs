@@ -1974,9 +1974,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             state.tool_list_changed_tx.take()
         };
 
+        let project_root_for_resolve = project_root.clone();
         let proxy = McpProxy::new(
             ProxyConfig {
-                child_command: cargo_binary(&project_root, "runt"),
+                resolve_child_command: Box::new(move || {
+                    let path = cargo_binary(&project_root_for_resolve, "runt");
+                    if path.exists() {
+                        Ok(path)
+                    } else {
+                        Err(format!("runt binary not found at {}", path.display()))
+                    }
+                }),
                 child_args: vec!["mcp".to_string()],
                 child_env,
                 server_name: "nteract-dev".to_string(),

@@ -138,26 +138,21 @@ async fn main() -> ExitCode {
 
     info!("mcpb-runt starting (channel={channel})");
 
-    // Find the runt binary
-    let runt_path = match find_runt_binary(&channel) {
-        Some(path) => {
-            info!("Found runt binary: {}", path.display());
-            path
-        }
-        None => {
-            let binary_name = if channel == "nightly" {
-                "runt-nightly"
-            } else {
-                "runt"
-            };
-            eprintln!(
-                "Error: {binary_name} not found.\n\n\
-                 Install {app_name} from https://nteract.io to use this MCP server.\n\
-                 The app puts {binary_name} on your PATH during installation."
-            );
-            return ExitCode::FAILURE;
-        }
+    // Validate that the runt binary exists at startup (clear error for users)
+    let binary_name = if channel == "nightly" {
+        "runt-nightly"
+    } else {
+        "runt"
     };
+    if find_runt_binary(&channel).is_none() {
+        eprintln!(
+            "Error: {binary_name} not found.\n\n\
+             Install {app_name} from https://nteract.io to use this MCP server.\n\
+             The app puts {binary_name} on your PATH during installation."
+        );
+        return ExitCode::FAILURE;
+    }
+    info!("Validated {binary_name} is available");
 
     // Resolve daemon info path for version tracking
     let daemon_info_path = Some(runtimed_client::singleton::daemon_info_path());
@@ -166,8 +161,17 @@ async fn main() -> ExitCode {
     let mut child_env = HashMap::new();
     child_env.insert("NTERACT_CHANNEL".to_string(), channel.clone());
 
+    // Pass resolution as a closure so the proxy re-discovers the binary
+    // on every child restart. This is the core upgrade mechanism: the user
+    // upgrades the nteract app (new runt binary), and the proxy picks it up
+    // without needing to reinstall the MCPB extension.
+    let channel_for_resolve = channel.clone();
+    let binary_name_for_resolve = binary_name.to_string();
     let config = ProxyConfig {
-        child_command: runt_path,
+        resolve_child_command: Box::new(move || {
+            find_runt_binary(&channel_for_resolve)
+                .ok_or_else(|| format!("{binary_name_for_resolve} no longer found on PATH or in known install locations"))
+        }),
         child_args: vec!["mcp".to_string()],
         child_env,
         server_name: if channel == "nightly" {

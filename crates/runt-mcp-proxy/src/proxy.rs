@@ -27,8 +27,11 @@ use crate::version::{self, ReconnectionEvent};
 
 /// Configuration for the MCP proxy.
 pub struct ProxyConfig {
-    /// Command to spawn the child (path to `runt` or `runt-nightly`).
-    pub child_command: PathBuf,
+    /// Resolver that returns the path to the child binary.
+    /// Called on every spawn (init and restart) so it picks up binary upgrades on disk.
+    /// This is the core reason the proxy exists: the MCPB bundle is stable while
+    /// the user upgrades the nteract app, and the proxy transparently picks up the new binary.
+    pub resolve_child_command: Box<dyn Fn() -> Result<PathBuf, String> + Send + Sync>,
     /// Arguments to the child (e.g., `["mcp"]`).
     pub child_args: Vec<String>,
     /// Environment variables for the child process.
@@ -131,8 +134,11 @@ impl McpProxy {
             (state.upstream_name.clone(), state.upstream_title.clone())
         };
 
+        let child_command = (self.config.resolve_child_command)()
+            .map_err(|e| format!("Failed to resolve child binary: {e}"))?;
+
         let client = child::spawn_child(
-            &self.config.child_command,
+            &child_command,
             &self.config.child_args,
             &self.config.child_env,
             &upstream_name,
@@ -202,14 +208,29 @@ impl McpProxy {
             state.last_daemon_version.clone()
         };
 
-        // Phase 3: Spawn new child
+        // Phase 3: Resolve binary and spawn new child.
+        // Re-resolve on every restart so binary upgrades take effect.
+        let child_command = match (self.config.resolve_child_command)() {
+            Ok(path) => {
+                info!("Resolved child binary: {}", path.display());
+                path
+            }
+            Err(e) => {
+                let msg = format!("Failed to resolve child binary on restart: {e}");
+                error!("{msg}");
+                let mut state = self.state.write().await;
+                state.reconnection_message = Some(msg.clone());
+                return Err(msg);
+            }
+        };
+
         let (upstream_name, upstream_title) = {
             let state = self.state.read().await;
             (state.upstream_name.clone(), state.upstream_title.clone())
         };
 
         match child::spawn_child(
-            &self.config.child_command,
+            &child_command,
             &self.config.child_args,
             &self.config.child_env,
             &upstream_name,
@@ -614,7 +635,7 @@ mod tests {
 
     fn test_config() -> ProxyConfig {
         ProxyConfig {
-            child_command: PathBuf::from("/nonexistent/runt"),
+            resolve_child_command: Box::new(|| Ok(PathBuf::from("/nonexistent/runt"))),
             child_args: vec!["mcp".to_string()],
             child_env: HashMap::new(),
             server_name: "test-proxy".to_string(),
@@ -625,7 +646,7 @@ mod tests {
 
     fn test_config_with_cache(dir: &std::path::Path) -> ProxyConfig {
         ProxyConfig {
-            child_command: PathBuf::from("/nonexistent/runt"),
+            resolve_child_command: Box::new(|| Ok(PathBuf::from("/nonexistent/runt"))),
             child_args: vec!["mcp".to_string()],
             child_env: HashMap::new(),
             server_name: "test-proxy".to_string(),
@@ -990,7 +1011,7 @@ mod tests {
         );
 
         let config = ProxyConfig {
-            child_command: PathBuf::from("/usr/local/bin/runt"),
+            resolve_child_command: Box::new(|| Ok(PathBuf::from("/usr/local/bin/runt"))),
             child_args: vec!["mcp".to_string()],
             child_env: env,
             server_name: "nteract".to_string(),
@@ -1017,7 +1038,7 @@ mod tests {
         std::fs::write(&info_path, serde_json::to_string(&info).unwrap()).unwrap();
 
         let config = ProxyConfig {
-            child_command: PathBuf::from("/nonexistent/runt"),
+            resolve_child_command: Box::new(|| Ok(PathBuf::from("/nonexistent/runt"))),
             child_args: vec!["mcp".to_string()],
             child_env: HashMap::new(),
             server_name: "test".to_string(),
@@ -1040,7 +1061,7 @@ mod tests {
     #[tokio::test]
     async fn proxy_has_no_version_when_info_file_missing() {
         let config = ProxyConfig {
-            child_command: PathBuf::from("/nonexistent/runt"),
+            resolve_child_command: Box::new(|| Ok(PathBuf::from("/nonexistent/runt"))),
             child_args: vec!["mcp".to_string()],
             child_env: HashMap::new(),
             server_name: "test".to_string(),
