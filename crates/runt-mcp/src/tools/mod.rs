@@ -102,7 +102,7 @@ pub fn all_tools() -> Vec<Tool> {
         .with_meta(always_load_meta()),
         Tool::new(
             "create_notebook",
-            "Create a new notebook.",
+            "Create a new notebook. Ephemeral by default — use save_notebook(path) to persist.",
             schema_for::<session::CreateNotebookParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(false).open_world(false)),
@@ -295,14 +295,14 @@ pub fn all_tools() -> Vec<Tool> {
         // -- Editing --
         Tool::new(
             "replace_match",
-            "Replace literal text in a cell.",
+            "Replace literal text in a cell. Use context_before/context_after to disambiguate repeated matches.",
             schema_for::<editing::ReplaceMatchParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(false).open_world(false))
         .with_meta(app_tool_meta()),
         Tool::new(
             "replace_regex",
-            "Replace a regex match in a cell.",
+            "Replace a regex match in a cell (fancy-regex). Fails if 0 or >1 matches. Replacement is literal text.",
             schema_for::<editing::ReplaceRegexParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(false).open_world(false))
