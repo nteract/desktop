@@ -11,7 +11,7 @@ use crate::execution;
 use crate::formatting;
 use crate::NteractMcp;
 
-use super::{arg_str, tool_error, tool_success};
+use super::{arg_bool, arg_str, tool_error, tool_success};
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -84,12 +84,7 @@ pub async fn run_all_cells(
 ) -> Result<CallToolResult, McpError> {
     let handle = require_handle!(server);
 
-    let wait = request
-        .arguments
-        .as_ref()
-        .and_then(|a| a.get("wait"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(true);
+    let wait = arg_bool(request, "wait").unwrap_or(true);
 
     let timeout_secs = request
         .arguments

@@ -367,13 +367,41 @@ pub async fn dispatch(
     }
 }
 
-/// Helper: extract a typed argument or return a default.
+/// Helper: extract a string argument.
 pub fn arg_str<'a>(request: &'a CallToolRequestParams, key: &str) -> Option<&'a str> {
     request
         .arguments
         .as_ref()
         .and_then(|args| args.get(key))
         .and_then(|v| v.as_str())
+}
+
+/// Helper: extract a boolean argument, tolerating string "true"/"false".
+///
+/// Claude Code's MCP client has a known bug where boolean params are sometimes
+/// serialized as strings (e.g., `"true"` instead of `true`). This affects
+/// tools with `required` fields inconsistently.
+/// See: https://github.com/anthropics/claude-code/issues/32524
+pub fn arg_bool(request: &CallToolRequestParams, key: &str) -> Option<bool> {
+    let val = request.arguments.as_ref()?.get(key)?;
+    if let Some(b) = val.as_bool() {
+        return Some(b);
+    }
+    match val.as_str() {
+        Some("true") => {
+            tracing::warn!(
+                "[mcp] Boolean param '{key}' arrived as string \"true\" (claude-code#32524)"
+            );
+            Some(true)
+        }
+        Some("false") => {
+            tracing::warn!(
+                "[mcp] Boolean param '{key}' arrived as string \"false\" (claude-code#32524)"
+            );
+            Some(false)
+        }
+        _ => None,
+    }
 }
 
 /// Helper: create a text error result.

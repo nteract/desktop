@@ -11,7 +11,7 @@ use crate::editing;
 use crate::execution;
 use crate::NteractMcp;
 
-use super::{arg_str, tool_error};
+use super::{arg_bool, arg_str, tool_error};
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -69,12 +69,7 @@ pub async fn replace_match(
     let context_before = arg_str(request, "context_before").filter(|s| !s.is_empty());
     let context_after = arg_str(request, "context_after").filter(|s| !s.is_empty());
 
-    let and_run = request
-        .arguments
-        .as_ref()
-        .and_then(|a| a.get("and_run"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let and_run = arg_bool(request, "and_run").unwrap_or(false);
     let timeout_secs = request
         .arguments
         .as_ref()
@@ -146,12 +141,7 @@ pub async fn replace_regex(
     let content = arg_str(request, "content")
         .ok_or_else(|| McpError::invalid_params("Missing required parameter: content", None))?;
 
-    let and_run = request
-        .arguments
-        .as_ref()
-        .and_then(|a| a.get("and_run"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let and_run = arg_bool(request, "and_run").unwrap_or(false);
     let timeout_secs = request
         .arguments
         .as_ref()
