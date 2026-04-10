@@ -120,15 +120,9 @@ pub fn all_tools() -> Vec<Tool> {
         // launch_app removed from tool list (still dispatched for backward compat)
         // -- Cell read --
         Tool::new(
-            "get_cell",
-            "Get a cell by ID.",
-            schema_for::<cell_read::GetCellParams>(),
-        )
-        .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
-        Tool::new(
-            "get_all_cells",
-            "Get all cells as summary, json, or rich format.",
-            schema_for::<cell_read::GetAllCellsParams>(),
+            "get_cells",
+            "Get one cell by ID, or list all cells.",
+            schema_for::<cell_read::GetCellsParams>(),
         )
         .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
         // -- Cell CRUD --
@@ -214,20 +208,9 @@ pub fn all_tools() -> Vec<Tool> {
         .with_meta(app_tool_meta()),
         // -- Kernel --
         Tool::new(
-            "interrupt_kernel",
-            "Interrupt execution.",
-            schema_for::<EmptyParams>(),
-        )
-        .annotate(
-            ToolAnnotations::new()
-                .destructive(true)
-                .idempotent(true)
-                .open_world(false),
-        ),
-        Tool::new(
-            "restart_kernel",
-            "Restart the kernel, clearing all state.",
-            schema_for::<EmptyParams>(),
+            "kernel_control",
+            "Interrupt or restart the kernel.",
+            schema_for::<kernel::KernelControlParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(true).open_world(false)),
         // -- Dependencies --
@@ -250,16 +233,9 @@ pub fn all_tools() -> Vec<Tool> {
         .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
         // -- Editing --
         Tool::new(
-            "replace_match",
-            "Replace literal text in a cell.",
-            schema_for::<editing::ReplaceMatchParams>(),
-        )
-        .annotate(ToolAnnotations::new().destructive(false).open_world(false))
-        .with_meta(app_tool_meta()),
-        Tool::new(
-            "replace_regex",
-            "Replace a regex match in a cell.",
-            schema_for::<editing::ReplaceRegexParams>(),
+            "replace",
+            "Find and replace text in a cell (literal or regex).",
+            schema_for::<editing::ReplaceParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(false).open_world(false))
         .with_meta(app_tool_meta()),
@@ -289,6 +265,8 @@ pub async fn dispatch(
         "save_notebook" => session::save_notebook(server, request).await,
         "launch_app" => session::show_notebook(server, request).await,
         // Cell read
+        "get_cells" => cell_read::get_cells(server, request).await,
+        // Backward compat aliases
         "get_cell" => cell_read::get_cell(server, request).await,
         "get_all_cells" => cell_read::get_all_cells(server, request).await,
         // Cell CRUD
@@ -309,6 +287,8 @@ pub async fn dispatch(
         "execute_cell" => execution::execute_cell(server, request).await,
         "run_all_cells" => execution::run_all_cells(server, request).await,
         // Kernel
+        "kernel_control" => kernel::kernel_control(server, request).await,
+        // Backward compat aliases
         "interrupt_kernel" => kernel::interrupt_kernel(server, request).await,
         "restart_kernel" => kernel::restart_kernel(server, request).await,
         // Dependencies
@@ -319,6 +299,8 @@ pub async fn dispatch(
         "remove_dependency" => deps::remove_dependency(server, request).await,
         "sync_environment" => deps::sync_environment(server, request).await,
         // Editing
+        "replace" => editing::replace(server, request).await,
+        // Backward compat aliases
         "replace_match" => editing::replace_match(server, request).await,
         "replace_regex" => editing::replace_regex(server, request).await,
         _ => Err(McpError::invalid_params(

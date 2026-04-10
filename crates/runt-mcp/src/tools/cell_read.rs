@@ -1,4 +1,4 @@
-//! Read-only cell tools: get_cell, get_all_cells.
+//! Read-only cell tools: get_cells (consolidated get_cell + get_all_cells).
 
 use rmcp::model::{CallToolRequestParams, CallToolResult, Content};
 use rmcp::ErrorData as McpError;
@@ -14,33 +14,41 @@ use super::{arg_bool, arg_str, tool_error, tool_success};
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct GetCellParams {
-    /// The cell ID to retrieve.
-    pub cell_id: String,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct GetAllCellsParams {
-    /// Output format: "summary" (default), "json", or "rich".
+pub struct GetCellsParams {
+    /// Cell ID to retrieve. Omit to list all cells.
+    #[serde(default)]
+    pub cell_id: Option<String>,
+    /// Output format: "summary" (default), "json", or "rich". Ignored when cell_id is set.
     #[serde(default = "default_format")]
     pub format: Option<String>,
-    /// Starting cell index (0-based).
+    /// Starting cell index (0-based). Ignored when cell_id is set.
     #[serde(default)]
     pub start: Option<i64>,
-    /// Number of cells to return (null = all).
+    /// Number of cells to return (null = all). Ignored when cell_id is set.
     #[serde(default)]
     pub count: Option<i64>,
-    /// Include output previews in summary format.
+    /// Include output previews in summary format. Ignored when cell_id is set.
     #[serde(default)]
     pub include_outputs: Option<bool>,
-    /// Max chars for source preview in summary format.
+    /// Max chars for source preview in summary format. Ignored when cell_id is set.
     #[serde(default)]
     pub preview_chars: Option<i64>,
 }
 
 fn default_format() -> Option<String> {
     Some("summary".to_string())
+}
+
+/// Consolidated entry point: dispatches to single-cell or all-cells logic.
+pub async fn get_cells(
+    server: &NteractMcp,
+    request: &CallToolRequestParams,
+) -> Result<CallToolResult, McpError> {
+    if arg_str(request, "cell_id").is_some() {
+        get_cell(server, request).await
+    } else {
+        get_all_cells(server, request).await
+    }
 }
 
 /// Get a single cell by ID with source and outputs.

@@ -1,4 +1,4 @@
-//! Editing tools: replace_match, replace_regex.
+//! Editing tools: replace (consolidated replace_match + replace_regex).
 
 use std::time::Duration;
 
@@ -15,18 +15,21 @@ use super::{arg_bool, arg_str, tool_error};
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct ReplaceMatchParams {
+pub struct ReplaceParams {
     /// The cell ID to edit.
     pub cell_id: String,
-    /// Literal text to find (must match exactly once).
+    /// Mode: "literal" (default) or "regex".
+    #[serde(default = "default_mode")]
+    pub mode: Option<String>,
+    /// Literal text or regex pattern to find (must match exactly once). For regex: MULTILINE enabled, DOTALL off.
     #[serde(rename = "match")]
     pub match_text: String,
-    /// Literal replacement text.
+    /// Replacement text.
     pub content: String,
-    /// Text that must appear before the match.
+    /// Text before the match (literal mode only, for disambiguation).
     #[serde(default)]
     pub context_before: Option<String>,
-    /// Text that must appear after the match.
+    /// Text after the match (literal mode only, for disambiguation).
     #[serde(default)]
     pub context_after: Option<String>,
     /// Execute the cell immediately after edit.
@@ -37,21 +40,24 @@ pub struct ReplaceMatchParams {
     pub timeout_secs: Option<f64>,
 }
 
-#[allow(dead_code)]
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct ReplaceRegexParams {
-    /// The cell ID to edit.
-    pub cell_id: String,
-    /// Regex pattern (must match exactly once). MULTILINE ((?m)) enabled by default — ^/$ match line boundaries, use \z for end-of-string. DOTALL is off — . does not match \n unless you add (?s).
-    pub pattern: String,
-    /// Literal replacement text — not interpreted as a regex or escape sequence. To insert a newline, use an actual newline character in the JSON string.
-    pub content: String,
-    /// Execute the cell immediately after edit.
-    #[serde(default)]
-    pub and_run: Option<bool>,
-    /// Max seconds to wait for execution.
-    #[serde(default)]
-    pub timeout_secs: Option<f64>,
+fn default_mode() -> Option<String> {
+    Some("literal".to_string())
+}
+
+/// Consolidated replace: dispatches to literal or regex logic.
+pub async fn replace(
+    server: &NteractMcp,
+    request: &CallToolRequestParams,
+) -> Result<CallToolResult, McpError> {
+    let mode = arg_str(request, "mode").unwrap_or("literal");
+    match mode {
+        "literal" => replace_match(server, request).await,
+        "regex" => replace_regex(server, request).await,
+        _ => Err(McpError::invalid_params(
+            format!("Unknown replace mode: {mode}. Use \"literal\" or \"regex\"."),
+            None,
+        )),
+    }
 }
 
 /// Replace matched text in a cell.
@@ -136,8 +142,12 @@ pub async fn replace_regex(
 ) -> Result<CallToolResult, McpError> {
     let cell_id = arg_str(request, "cell_id")
         .ok_or_else(|| McpError::invalid_params("Missing required parameter: cell_id", None))?;
-    let pattern = arg_str(request, "pattern")
-        .ok_or_else(|| McpError::invalid_params("Missing required parameter: pattern", None))?;
+    // Accept "match" (consolidated schema) or "pattern" (legacy replace_regex)
+    let pattern = arg_str(request, "match")
+        .or_else(|| arg_str(request, "pattern"))
+        .ok_or_else(|| {
+            McpError::invalid_params("Missing required parameter: match (or pattern)", None)
+        })?;
     let content = arg_str(request, "content")
         .ok_or_else(|| McpError::invalid_params("Missing required parameter: content", None))?;
 

@@ -1,13 +1,39 @@
-//! Kernel management tools: interrupt_kernel, restart_kernel.
+//! Kernel management tools: kernel_control (consolidated interrupt + restart).
 
 use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::ErrorData as McpError;
+use schemars::JsonSchema;
+use serde::Deserialize;
 
 use notebook_protocol::protocol::{NotebookRequest, NotebookResponse};
 
 use crate::NteractMcp;
 
-use super::{tool_error, tool_success};
+use super::{arg_str, tool_error, tool_success};
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct KernelControlParams {
+    /// Action: "interrupt" or "restart".
+    pub action: String,
+}
+
+/// Consolidated kernel control: interrupt or restart.
+pub async fn kernel_control(
+    server: &NteractMcp,
+    request: &CallToolRequestParams,
+) -> Result<CallToolResult, McpError> {
+    let action = arg_str(request, "action")
+        .ok_or_else(|| McpError::invalid_params("Missing required parameter: action", None))?;
+    match action {
+        "interrupt" => interrupt_kernel(server, request).await,
+        "restart" => restart_kernel(server, request).await,
+        _ => Err(McpError::invalid_params(
+            format!("Unknown kernel_control action: {action}. Use \"interrupt\" or \"restart\"."),
+            None,
+        )),
+    }
+}
 
 /// Interrupt the currently executing cell.
 pub async fn interrupt_kernel(
