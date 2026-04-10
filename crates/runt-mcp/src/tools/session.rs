@@ -63,6 +63,13 @@ use notebook_protocol::protocol::{NotebookRequest, NotebookResponse};
 
 use super::{arg_bool, arg_str, arg_string_array, tool_error, tool_success};
 
+fn has_display() -> bool {
+    if cfg!(target_os = "macos") || cfg!(target_os = "windows") {
+        return true;
+    }
+    std::env::var("DISPLAY").is_ok() || std::env::var("WAYLAND_DISPLAY").is_ok()
+}
+
 /// Collect runtime info from RuntimeStateDoc, polling briefly for it to sync.
 /// Matches Python's `_collect_runtime_info()`.
 async fn collect_runtime_info(handle: &notebook_sync::handle::DocHandle) -> serde_json::Value {
@@ -669,6 +676,20 @@ pub async fn show_notebook(
         .find(|r| r.notebook_id == target)
         .map(|r| r.ephemeral)
         .unwrap_or(false);
+
+    if !has_display() {
+        let mut result = serde_json::json!({
+            "notebook_id": target,
+            "opened": false,
+            "reason": "No display available (headless environment). The notebook is running in the daemon and accessible via MCP tools."
+        });
+        if is_ephemeral {
+            result["note"] = serde_json::json!(
+                "This notebook is ephemeral. Use save_notebook(path) to persist."
+            );
+        }
+        return tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default());
+    }
 
     // Launch the app using the binary's build channel.
     // NOTE: If RUNTIMED_SOCKET_PATH points at a different channel's daemon,
