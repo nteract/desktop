@@ -12,7 +12,7 @@ use notebook_protocol::protocol::NotebookRequest;
 use crate::execution;
 use crate::NteractMcp;
 
-use super::{arg_str, tool_error, tool_success};
+use super::{arg_bool, arg_f64, arg_str, tool_error, tool_success};
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -89,18 +89,8 @@ pub async fn create_cell(
         .as_ref()
         .and_then(|a| a.get("index"))
         .and_then(|v| v.as_i64());
-    let and_run = request
-        .arguments
-        .as_ref()
-        .and_then(|a| a.get("and_run"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let timeout_secs = request
-        .arguments
-        .as_ref()
-        .and_then(|a| a.get("timeout_secs"))
-        .and_then(|v| v.as_f64())
-        .unwrap_or(30.0);
+    let and_run = arg_bool(request, "and_run").unwrap_or(false);
+    let timeout_secs = arg_f64(request, "timeout_secs").unwrap_or(30.0);
 
     // Clone handle, then drop the session lock so other tools
     // (interrupt_kernel, etc.) aren't blocked during execution.
@@ -167,18 +157,8 @@ pub async fn set_cell(
 
     let source = arg_str(request, "source");
     let cell_type = arg_str(request, "cell_type");
-    let and_run = request
-        .arguments
-        .as_ref()
-        .and_then(|a| a.get("and_run"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let timeout_secs = request
-        .arguments
-        .as_ref()
-        .and_then(|a| a.get("timeout_secs"))
-        .and_then(|v| v.as_f64())
-        .unwrap_or(30.0);
+    let and_run = arg_bool(request, "and_run").unwrap_or(false);
+    let timeout_secs = arg_f64(request, "timeout_secs").unwrap_or(30.0);
 
     let handle = require_handle!(server);
 

@@ -11,7 +11,7 @@ use crate::execution;
 use crate::formatting;
 use crate::NteractMcp;
 
-use super::{arg_str, tool_error, tool_success};
+use super::{arg_bool, arg_f64, arg_str, tool_error, tool_success};
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -45,12 +45,7 @@ pub async fn execute_cell(
 
     let handle = require_handle!(server);
 
-    let timeout_secs = request
-        .arguments
-        .as_ref()
-        .and_then(|a| a.get("timeout_secs"))
-        .and_then(|v| v.as_f64())
-        .unwrap_or(30.0);
+    let timeout_secs = arg_f64(request, "timeout_secs").unwrap_or(30.0);
 
     // Verify cell exists
     if handle.get_cell(cell_id).is_none() {
@@ -84,19 +79,8 @@ pub async fn run_all_cells(
 ) -> Result<CallToolResult, McpError> {
     let handle = require_handle!(server);
 
-    let wait = request
-        .arguments
-        .as_ref()
-        .and_then(|a| a.get("wait"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(true);
-
-    let timeout_secs = request
-        .arguments
-        .as_ref()
-        .and_then(|a| a.get("timeout_secs"))
-        .and_then(|v| v.as_f64())
-        .unwrap_or(300.0);
+    let wait = arg_bool(request, "wait").unwrap_or(true);
+    let timeout_secs = arg_f64(request, "timeout_secs").unwrap_or(300.0);
 
     // Fire-and-forget: queue cells and return immediately.
     if !wait {

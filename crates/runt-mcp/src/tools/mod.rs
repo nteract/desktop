@@ -417,6 +417,17 @@ pub fn arg_string_array(request: &CallToolRequestParams, key: &str) -> Option<Ve
     None
 }
 
+/// Helper: extract a float argument with type coercion.
+///
+/// MCP clients may send numbers as JSON numbers or as strings.
+pub fn arg_f64(request: &CallToolRequestParams, key: &str) -> Option<f64> {
+    let val = request.arguments.as_ref()?.get(key)?;
+    if let Some(n) = val.as_f64() {
+        return Some(n);
+    }
+    val.as_str().and_then(|s| s.parse::<f64>().ok())
+}
+
 /// Helper: create a text error result.
 pub fn tool_error(msg: &str) -> Result<CallToolResult, McpError> {
     Ok(CallToolResult::error(vec![Content::text(msg.to_string())]))
@@ -552,5 +563,26 @@ mod tests {
 
         let req = make_request(serde_json::json!({"deps": "not-json-array"}));
         assert_eq!(arg_string_array(&req, "deps"), None);
+    }
+
+    #[test]
+    fn arg_f64_json_number() {
+        let req = make_request(serde_json::json!({"timeout": 30.5}));
+        assert_eq!(arg_f64(&req, "timeout"), Some(30.5));
+    }
+
+    #[test]
+    fn arg_f64_string_coercion() {
+        let req = make_request(serde_json::json!({"timeout": "45.0"}));
+        assert_eq!(arg_f64(&req, "timeout"), Some(45.0));
+    }
+
+    #[test]
+    fn arg_f64_missing_and_invalid() {
+        let req = make_request(serde_json::json!({"other": 1}));
+        assert_eq!(arg_f64(&req, "timeout"), None);
+
+        let req = make_request(serde_json::json!({"timeout": "not-a-number"}));
+        assert_eq!(arg_f64(&req, "timeout"), None);
     }
 }
