@@ -453,6 +453,9 @@ const VALID_CONFIG_KEYS: &[&str] = &[
     "uv.default_packages",
     "conda.default_packages",
     "pixi.default_packages",
+    "uv_pool_size",
+    "conda_pool_size",
+    "pixi_pool_size",
 ];
 
 /// Daemon management commands (replaces Pool + runtimed service commands)
@@ -4076,6 +4079,10 @@ async fn config_command(command: Option<ConfigCommands>) -> Result<()> {
                         runtimed::settings_doc::MAX_KEEP_ALIVE_SECS,
                     ),
                     "onboarding_completed" => "Must be true or false".to_string(),
+                    k if k.ends_with("_pool_size") => format!(
+                        "Must be a number between 0 and {}",
+                        runtimed_client::settings_doc::MAX_POOL_SIZE,
+                    ),
                     k if k.ends_with("default_packages") => {
                         "Must be a JSON array '[\"pkg1\",\"pkg2\"]' or comma-separated 'pkg1,pkg2'"
                             .to_string()

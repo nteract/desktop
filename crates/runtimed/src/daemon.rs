@@ -394,6 +394,14 @@ impl Pool {
         self.target.saturating_sub(current)
     }
 
+    fn set_target(&mut self, target: usize) {
+        self.target = target;
+    }
+
+    fn target(&self) -> usize {
+        self.target
+    }
+
     /// Mark that we're starting to create N environments.
     fn mark_warming(&mut self, count: usize) {
         self.warming += count;
@@ -505,7 +513,13 @@ impl Daemon {
         // Load or create the settings document
         let automerge_path = crate::default_settings_doc_path();
         let json_path = crate::settings_json_path();
-        let settings = SettingsDoc::load_or_create(&automerge_path, Some(&json_path));
+        let mut settings = SettingsDoc::load_or_create(&automerge_path, Some(&json_path));
+
+        // Seed pool sizes from CLI config into settings doc so the warming
+        // loops use the daemon's configured sizes, not the schema defaults.
+        settings.put_u64("uv_pool_size", config.uv_pool_size as u64);
+        settings.put_u64("conda_pool_size", config.conda_pool_size as u64);
+        settings.put_u64("pixi_pool_size", config.pixi_pool_size as u64);
 
         // Write the settings JSON Schema for editor autocomplete
         if let Err(e) = crate::settings_doc::write_settings_schema() {
@@ -1884,7 +1898,7 @@ impl Daemon {
                 return Some(e);
             }
 
-            if self.config.uv_pool_size == 0 {
+            if self.uv_pool.lock().await.target() == 0 {
                 return None;
             }
 
@@ -1959,7 +1973,7 @@ impl Daemon {
                 return Some(e);
             }
 
-            if self.config.conda_pool_size == 0 {
+            if self.conda_pool.lock().await.target() == 0 {
                 return None;
             }
 
@@ -2680,8 +2694,8 @@ impl Daemon {
         };
 
         info!("[runtimed] Starting UV warming loop");
-        // Store uv_path for use in create_uv_env - it's cached so get_uv_path() is instant
         let _ = uv_path;
+        let mut settings_rx = self.settings_changed.subscribe();
 
         loop {
             if *self.shutdown.lock().await {
@@ -2689,7 +2703,16 @@ impl Daemon {
             }
 
             let (deficit, should_retry, backoff_info) = {
+                let target = {
+                    let settings = self.settings.read().await;
+                    settings
+                        .get_u64("uv_pool_size")
+                        .unwrap_or(runtimed_client::settings_doc::DEFAULT_UV_POOL_SIZE)
+                        .min(runtimed_client::settings_doc::MAX_POOL_SIZE)
+                        as usize
+                };
                 let mut pool = self.uv_pool.lock().await;
+                pool.set_target(target);
                 let d = pool.deficit();
                 let retry = pool.should_retry();
                 let info = if pool.failure_state.consecutive_failures > 0 {
@@ -2733,38 +2756,44 @@ impl Daemon {
                 }
             }
 
-            // Log status
-            let (available, warming) = self.uv_pool.lock().await.stats();
+            let (available, warming, target) = {
+                let pool = self.uv_pool.lock().await;
+                let (a, w) = pool.stats();
+                (a, w, pool.target())
+            };
             debug!(
                 "[runtimed] UV pool: {}/{} available, {} warming",
-                available, self.config.uv_pool_size, warming
+                available, target, warming
             );
 
-            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
+                _ = settings_rx.recv() => {}
+            }
         }
     }
 
     /// Conda warming loop - maintains the Conda pool using rattler.
     async fn conda_warming_loop(&self) {
-        // Check if we should even try (pool size > 0)
-        if self.config.conda_pool_size == 0 {
-            info!("[runtimed] Conda pool size is 0, skipping warming");
-            return;
-        }
-
-        info!(
-            "[runtimed] Starting conda warming loop (target: {})",
-            self.config.conda_pool_size
-        );
+        info!("[runtimed] Starting conda warming loop");
+        let mut settings_rx = self.settings_changed.subscribe();
 
         loop {
-            // Check shutdown
             if *self.shutdown.lock().await {
                 break;
             }
 
             let (deficit, should_retry, backoff_info) = {
+                let target = {
+                    let settings = self.settings.read().await;
+                    settings
+                        .get_u64("conda_pool_size")
+                        .unwrap_or(runtimed_client::settings_doc::DEFAULT_CONDA_POOL_SIZE)
+                        .min(runtimed_client::settings_doc::MAX_POOL_SIZE)
+                        as usize
+                };
                 let mut pool = self.conda_pool.lock().await;
+                pool.set_target(target);
                 let d = pool.deficit();
                 let retry = pool.should_retry();
                 let info = if pool.failure_state.consecutive_failures > 0 {
@@ -2818,29 +2847,27 @@ impl Daemon {
                 }
             }
 
-            // Log status
-            let (available, warming) = self.conda_pool.lock().await.stats();
+            let (available, warming, target) = {
+                let pool = self.conda_pool.lock().await;
+                let (a, w) = pool.stats();
+                (a, w, pool.target())
+            };
             debug!(
                 "[runtimed] Conda pool: {}/{} available, {} warming",
-                available, self.config.conda_pool_size, warming
+                available, target, warming
             );
 
-            // Wait before checking again
-            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
+                _ = settings_rx.recv() => {}
+            }
         }
     }
 
     /// Background loop that keeps the pixi environment pool at its target size.
     async fn pixi_warming_loop(&self) {
-        if self.config.pixi_pool_size == 0 {
-            info!("[runtimed] Pixi pool size is 0, skipping warming");
-            return;
-        }
-
-        info!(
-            "[runtimed] Starting pixi warming loop (target: {})",
-            self.config.pixi_pool_size
-        );
+        info!("[runtimed] Starting pixi warming loop");
+        let mut settings_rx = self.settings_changed.subscribe();
 
         loop {
             if *self.shutdown.lock().await {
@@ -2848,7 +2875,16 @@ impl Daemon {
             }
 
             let (deficit, should_retry, backoff_info) = {
+                let target = {
+                    let settings = self.settings.read().await;
+                    settings
+                        .get_u64("pixi_pool_size")
+                        .unwrap_or(runtimed_client::settings_doc::DEFAULT_PIXI_POOL_SIZE)
+                        .min(runtimed_client::settings_doc::MAX_POOL_SIZE)
+                        as usize
+                };
                 let mut pool = self.pixi_pool.lock().await;
+                pool.set_target(target);
                 let d = pool.deficit();
                 let retry = pool.should_retry();
                 let info = if pool.failure_state.consecutive_failures > 0 {
@@ -2899,13 +2935,20 @@ impl Daemon {
                 }
             }
 
-            let (available, warming) = self.pixi_pool.lock().await.stats();
+            let (available, warming, target) = {
+                let pool = self.pixi_pool.lock().await;
+                let (a, w) = pool.stats();
+                (a, w, pool.target())
+            };
             debug!(
                 "[runtimed] Pixi pool: {}/{} available, {} warming",
-                available, self.config.pixi_pool_size, warming
+                available, target, warming
             );
 
-            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
+                _ = settings_rx.recv() => {}
+            }
         }
     }
 
@@ -3209,13 +3252,15 @@ impl Daemon {
                     });
                 }
 
-                info!(
-                    "[runtimed] Conda environment ready: {:?} (pool: {}/{})",
-                    env_path,
-                    self.conda_pool.lock().await.stats().0,
-                    self.config.conda_pool_size
-                );
-
+                {
+                    let pool = self.conda_pool.lock().await;
+                    info!(
+                        "[runtimed] Conda environment ready: {:?} (pool: {}/{})",
+                        env_path,
+                        pool.stats().0,
+                        pool.target()
+                    );
+                }
                 self.update_pool_doc().await;
             }
             WarmupOutcome::Timeout => {
@@ -3407,7 +3452,7 @@ impl Daemon {
             RuntimePoolState {
                 available: available as u64,
                 warming: warming as u64,
-                pool_size: self.config.uv_pool_size as u64,
+                pool_size: pool.target() as u64,
                 error: pool.failure_state.last_error.clone(),
                 failed_package: pool.failure_state.failed_package.clone(),
                 error_kind: pool.failure_state.error_kind.clone(),
@@ -3421,7 +3466,7 @@ impl Daemon {
             RuntimePoolState {
                 available: available as u64,
                 warming: warming as u64,
-                pool_size: self.config.conda_pool_size as u64,
+                pool_size: pool.target() as u64,
                 error: pool.failure_state.last_error.clone(),
                 failed_package: pool.failure_state.failed_package.clone(),
                 error_kind: pool.failure_state.error_kind.clone(),
@@ -3436,7 +3481,7 @@ impl Daemon {
             RuntimePoolState {
                 available: available as u64,
                 warming: warming as u64,
-                pool_size: self.config.pixi_pool_size as u64,
+                pool_size: pool.target() as u64,
                 error: pool.failure_state.last_error.clone(),
                 failed_package: pool.failure_state.failed_package.clone(),
                 error_kind: pool.failure_state.error_kind.clone(),
