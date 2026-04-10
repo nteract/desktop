@@ -2418,8 +2418,14 @@ impl Daemon {
             // Clean up orphaned blobs — mark-and-sweep across all active rooms.
             // Blobs are content-addressed, so the same hash may be referenced by
             // multiple rooms. We must scan ALL rooms before deleting anything.
+            //
+            // Batched: collect refs from rooms in batches of 10, yield between
+            // batches to avoid starving other daemon tasks. Deletions are also
+            // batched with yields between chunks.
             {
                 let blob_max_age = std::time::Duration::from_secs(3600); // 1 hour grace period
+                const ROOM_BATCH_SIZE: usize = 10;
+                const DELETE_BATCH_SIZE: usize = 50;
 
                 // Collect room Arcs under the rooms lock, then drop it before
                 // any async state_doc reads (deadlock prevention).
@@ -2428,51 +2434,62 @@ impl Daemon {
                     rooms.values().cloned().collect()
                 };
 
+                // Mark phase: collect referenced hashes in batches of rooms
                 let mut referenced_hashes = std::collections::HashSet::new();
-                for room in &room_arcs {
-                    let sd = room.state_doc.read().await;
-                    let state = sd.read_state();
-                    for exec in state.executions.values() {
-                        for output in &exec.outputs {
-                            collect_blob_hashes(output, &mut referenced_hashes);
+                for batch in room_arcs.chunks(ROOM_BATCH_SIZE) {
+                    for room in batch {
+                        let sd = room.state_doc.read().await;
+                        let state = sd.read_state();
+                        for exec in state.executions.values() {
+                            for output in &exec.outputs {
+                                collect_blob_hashes(output, &mut referenced_hashes);
+                            }
+                        }
+                        for comm in state.comms.values() {
+                            for output in &comm.outputs {
+                                collect_blob_hashes(output, &mut referenced_hashes);
+                            }
                         }
                     }
-                    for comm in state.comms.values() {
-                        for output in &comm.outputs {
-                            collect_blob_hashes(output, &mut referenced_hashes);
-                        }
-                    }
+                    // Yield between room batches to avoid starving other tasks
+                    tokio::task::yield_now().await;
                 }
 
+                // Sweep phase: delete orphaned blobs in batches
                 match self.blob_store.list().await {
                     Ok(all_blobs) => {
                         let mut blobs_deleted = 0;
-                        for hash in &all_blobs {
-                            if referenced_hashes.contains(hash) {
-                                continue;
+                        let total_blobs = all_blobs.len();
+                        for chunk in all_blobs.chunks(DELETE_BATCH_SIZE) {
+                            for hash in chunk {
+                                if referenced_hashes.contains(hash) {
+                                    continue;
+                                }
+                                let is_stale = self
+                                    .blob_store
+                                    .get_meta(hash)
+                                    .await
+                                    .ok()
+                                    .flatten()
+                                    .is_some_and(|m| {
+                                        chrono::Utc::now()
+                                            .signed_duration_since(m.created_at)
+                                            .num_seconds()
+                                            as u64
+                                            > blob_max_age.as_secs()
+                                    });
+                                if is_stale && self.blob_store.delete(hash).await.unwrap_or(false) {
+                                    blobs_deleted += 1;
+                                }
                             }
-                            // Only delete blobs older than the grace period
-                            let is_stale = self
-                                .blob_store
-                                .get_meta(hash)
-                                .await
-                                .ok()
-                                .flatten()
-                                .is_some_and(|m| {
-                                    chrono::Utc::now()
-                                        .signed_duration_since(m.created_at)
-                                        .num_seconds() as u64
-                                        > blob_max_age.as_secs()
-                                });
-                            if is_stale && self.blob_store.delete(hash).await.unwrap_or(false) {
-                                blobs_deleted += 1;
-                            }
+                            // Yield between delete batches
+                            tokio::task::yield_now().await;
                         }
                         if blobs_deleted > 0 {
                             info!(
                                 "[runtimed] GC: cleaned up {} orphaned blobs ({} total, {} referenced)",
                                 blobs_deleted,
-                                all_blobs.len(),
+                                total_blobs,
                                 referenced_hashes.len()
                             );
                         }
