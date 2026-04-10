@@ -259,9 +259,9 @@ pub fn all_tools() -> Vec<Tool> {
         .annotate(ToolAnnotations::new().destructive(true).open_world(false)),
         // -- Dependencies --
         Tool::new(
-            "add_dependency",
-            "Add a package dependency (e.g. 'pandas>=2.0'). When a project file (pixi.toml, pyproject.toml) exists, promotes the dependency to the project file via 'pixi add' or 'uv add'. Otherwise stores in notebook metadata. Use after='sync' or after='restart' to apply.",
-            schema_for::<deps::AddDependencyParams>(),
+            "manage_dependencies",
+            "Add and/or remove packages. Use after='sync' to hot-install or after='restart' to restart kernel with new deps.",
+            schema_for::<deps::ManageDependenciesParams>(),
         )
         .annotate(
             ToolAnnotations::new()
@@ -270,28 +270,11 @@ pub fn all_tools() -> Vec<Tool> {
                 .open_world(false),
         ),
         Tool::new(
-            "remove_dependency",
-            "Remove a package dependency. When a project file exists, runs 'pixi remove' or 'uv remove'. Otherwise removes from notebook metadata. Requires restart_kernel() to take effect.",
-            schema_for::<deps::RemoveDependencyParams>(),
-        )
-        .annotate(
-            ToolAnnotations::new()
-                .destructive(true)
-                .idempotent(true)
-                .open_world(false),
-        ),
-        Tool::new(
             "get_dependencies",
-            "Get the notebook's declared dependencies and any pre-installed packages available in the environment.",
+            "Get the notebook's declared dependencies and package manager.",
             schema_for::<deps::GetDependenciesParams>(),
         )
         .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
-        Tool::new(
-            "sync_environment",
-            "Hot-install new dependencies without restarting. Use restart_kernel() if this fails.",
-            schema_for::<EmptyParams>(),
-        )
-        .annotate(ToolAnnotations::new().destructive(false).open_world(true)),
         // -- Editing --
         Tool::new(
             "replace_match",
@@ -353,9 +336,11 @@ pub async fn dispatch(
         "interrupt_kernel" => kernel::interrupt_kernel(server, request).await,
         "restart_kernel" => kernel::restart_kernel(server, request).await,
         // Dependencies
+        "manage_dependencies" => deps::manage_dependencies(server, request).await,
+        "get_dependencies" => deps::get_dependencies(server, request).await,
+        // Backward compat aliases
         "add_dependency" => deps::add_dependency(server, request).await,
         "remove_dependency" => deps::remove_dependency(server, request).await,
-        "get_dependencies" => deps::get_dependencies(server, request).await,
         "sync_environment" => deps::sync_environment(server, request).await,
         // Editing
         "replace_match" => editing::replace_match(server, request).await,
