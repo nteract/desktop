@@ -80,17 +80,17 @@ struct EmptyParams {}
 /// - `open_world` — tool interacts with external entities beyond the notebook
 pub fn all_tools() -> Vec<Tool> {
     vec![
-        // -- Session management --
+        // -- Session --
         Tool::new(
             "list_active_notebooks",
-            "List all notebook sessions running in the daemon. Returns notebooks opened by any user or agent. Use open_notebook(notebook) to connect to one as your active session.",
+            "List running notebook sessions.",
             schema_for::<EmptyParams>(),
         )
         .annotate(ToolAnnotations::new().read_only(true).open_world(false))
         .with_meta(always_load_meta()),
         Tool::new(
             "open_notebook",
-            "Open a notebook by file path or connect to a running session by ID. Accepts a file path (e.g. '~/analysis.ipynb') or a notebook_id from list_active_notebooks. Makes it your active session.",
+            "Open a notebook by path or session ID.",
             schema_for::<session::OpenNotebookParams>(),
         )
         .annotate(
@@ -102,13 +102,13 @@ pub fn all_tools() -> Vec<Tool> {
         .with_meta(always_load_meta()),
         Tool::new(
             "create_notebook",
-            "Create a new notebook, making it your active session. Notebooks are ephemeral by default (in-memory only) — use save_notebook(path) to persist to disk. Set ephemeral=false for session-restorable persistence. Supports uv, conda, or pixi via package_manager param.",
+            "Create a new notebook.",
             schema_for::<session::CreateNotebookParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(false).open_world(false)),
         Tool::new(
             "save_notebook",
-            "Save notebook to disk. The daemon automatically re-keys ephemeral rooms to the saved file path.",
+            "Save notebook to disk.",
             schema_for::<session::SaveNotebookParams>(),
         )
         .annotate(
@@ -117,26 +117,19 @@ pub fn all_tools() -> Vec<Tool> {
                 .idempotent(true)
                 .open_world(true),
         ),
-        Tool::new(
-            "launch_app",
-            "Launch the nteract desktop app for the user, showing the current notebook. The notebook must be running in the daemon.",
-            schema_for::<session::ShowNotebookParams>(),
-        )
-        .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
-        // -- Cell read --
+        // -- Cells --
         Tool::new(
             "get_cell",
-            "Get a cell's source and outputs by ID.",
+            "Get a cell by ID.",
             schema_for::<cell_read::GetCellParams>(),
         )
         .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
         Tool::new(
             "get_all_cells",
-            "Get all cells. Use summary (default) for discovery, get_cell() for details. Formats: 'summary', 'json', 'rich'.",
+            "Get all cells as summary, json, or rich format.",
             schema_for::<cell_read::GetAllCellsParams>(),
         )
         .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
-        // -- Cell CRUD --
         Tool::new(
             "create_cell",
             "Create a cell, optionally executing it.",
@@ -146,95 +139,22 @@ pub fn all_tools() -> Vec<Tool> {
         .with_meta(app_tool_meta()),
         Tool::new(
             "set_cell",
-            "Update a cell's source and/or type. Use replace_match for targeted edits.",
+            "Replace a cell's source or type.",
             schema_for::<cell_crud::SetCellParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(false).open_world(false))
         .with_meta(app_tool_meta()),
-        Tool::new(
-            "delete_cell",
-            "Delete a cell by ID.",
-            schema_for::<cell_crud::DeleteCellParams>(),
-        )
-        .annotate(ToolAnnotations::new().destructive(true).open_world(false)),
-        Tool::new(
-            "move_cell",
-            "Move a cell to a new position.",
-            schema_for::<cell_crud::MoveCellParams>(),
-        )
-        .annotate(
-            ToolAnnotations::new()
-                .destructive(false)
-                .idempotent(true)
-                .open_world(false),
-        ),
-        Tool::new(
-            "clear_outputs",
-            "Clear cell outputs. Pass cell_ids to clear specific cells, or omit to clear ALL outputs (destructive).",
-            schema_for::<cell_crud::ClearOutputsParams>(),
-        )
-        .annotate(
-            ToolAnnotations::new()
-                .destructive(true)
-                .idempotent(true)
-                .open_world(false),
-        ),
-        // -- Cell metadata --
-        Tool::new(
-            "add_cell_tags",
-            "Add tags to a cell's metadata. Existing tags are preserved.",
-            schema_for::<cell_meta::AddCellTagsParams>(),
-        )
-        .annotate(
-            ToolAnnotations::new()
-                .destructive(false)
-                .idempotent(true)
-                .open_world(false),
-        ),
-        Tool::new(
-            "remove_cell_tags",
-            "Remove tags from a cell's metadata.",
-            schema_for::<cell_meta::RemoveCellTagsParams>(),
-        )
-        .annotate(
-            ToolAnnotations::new()
-                .destructive(true)
-                .idempotent(true)
-                .open_world(false),
-        ),
-        Tool::new(
-            "set_cells_source_hidden",
-            "Hide or show the source (code input) of one or more cells.",
-            schema_for::<cell_meta::SetCellsSourceHiddenParams>(),
-        )
-        .annotate(
-            ToolAnnotations::new()
-                .destructive(false)
-                .idempotent(true)
-                .open_world(false),
-        ),
-        Tool::new(
-            "set_cells_outputs_hidden",
-            "Hide or show the outputs of one or more cells.",
-            schema_for::<cell_meta::SetCellsOutputsHiddenParams>(),
-        )
-        .annotate(
-            ToolAnnotations::new()
-                .destructive(false)
-                .idempotent(true)
-                .open_world(false),
-        ),
         // -- Execution --
         Tool::new(
             "execute_cell",
-            "Execute a cell. Returns partial results if timeout exceeded.",
+            "Execute a code cell.",
             schema_for::<execution::ExecuteCellParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(true).open_world(true))
         .with_meta(app_tool_meta()),
         Tool::new(
             "run_all_cells",
-            "Execute all code cells in order. With wait=true (default), waits for completion and returns per-cell outputs with structured content. With wait=false, queues cells and returns immediately.",
+            "Execute all code cells in order.",
             schema_for::<execution::RunAllCellsParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(true).open_world(true))
@@ -242,7 +162,7 @@ pub fn all_tools() -> Vec<Tool> {
         // -- Kernel --
         Tool::new(
             "interrupt_kernel",
-            "Interrupt the currently executing cell.",
+            "Interrupt execution.",
             schema_for::<EmptyParams>(),
         )
         .annotate(
@@ -253,15 +173,15 @@ pub fn all_tools() -> Vec<Tool> {
         ),
         Tool::new(
             "restart_kernel",
-            "Restart kernel, clearing all state. Use after dependency changes.",
+            "Restart the kernel, clearing all state.",
             schema_for::<EmptyParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(true).open_world(false)),
         // -- Dependencies --
         Tool::new(
-            "add_dependency",
-            "Add a package dependency (e.g. 'pandas>=2.0'). When a project file (pixi.toml, pyproject.toml) exists, promotes the dependency to the project file via 'pixi add' or 'uv add'. Otherwise stores in notebook metadata. Use after='sync' or after='restart' to apply.",
-            schema_for::<deps::AddDependencyParams>(),
+            "manage_dependencies",
+            "Add or remove packages, optionally syncing or restarting.",
+            schema_for::<deps::ManageDependenciesParams>(),
         )
         .annotate(
             ToolAnnotations::new()
@@ -270,39 +190,22 @@ pub fn all_tools() -> Vec<Tool> {
                 .open_world(false),
         ),
         Tool::new(
-            "remove_dependency",
-            "Remove a package dependency. When a project file exists, runs 'pixi remove' or 'uv remove'. Otherwise removes from notebook metadata. Requires restart_kernel() to take effect.",
-            schema_for::<deps::RemoveDependencyParams>(),
-        )
-        .annotate(
-            ToolAnnotations::new()
-                .destructive(true)
-                .idempotent(true)
-                .open_world(false),
-        ),
-        Tool::new(
             "get_dependencies",
-            "Get the notebook's declared dependencies and any pre-installed packages available in the environment.",
+            "Get the notebook's declared dependencies.",
             schema_for::<deps::GetDependenciesParams>(),
         )
         .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
-        Tool::new(
-            "sync_environment",
-            "Hot-install new dependencies without restarting. Use restart_kernel() if this fails.",
-            schema_for::<EmptyParams>(),
-        )
-        .annotate(ToolAnnotations::new().destructive(false).open_world(true)),
         // -- Editing --
         Tool::new(
             "replace_match",
-            "Replace matched text in a cell. Prefer this for simple, targeted edits. Use context_before/context_after to disambiguate when match appears multiple times.",
+            "Replace matched text in a cell. Prefer for simple edits. Use context_before/context_after to disambiguate multiple matches.",
             schema_for::<editing::ReplaceMatchParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(false).open_world(false))
         .with_meta(app_tool_meta()),
         Tool::new(
             "replace_regex",
-            "Replace a regex-matched span (fancy-regex engine, Rust). Use for anchors, lookarounds, or zero-width insertions. Fails if 0 or >1 matches. Replacement content is literal (no escape interpretation — use actual newline chars, not \\n).",
+            "Replace a regex match in a cell. Must match exactly once. Content is literal (use actual newlines, not \\n).",
             schema_for::<editing::ReplaceRegexParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(false).open_world(false))
@@ -353,6 +256,7 @@ pub async fn dispatch(
         "interrupt_kernel" => kernel::interrupt_kernel(server, request).await,
         "restart_kernel" => kernel::restart_kernel(server, request).await,
         // Dependencies
+        "manage_dependencies" => deps::manage_dependencies(server, request).await,
         "add_dependency" => deps::add_dependency(server, request).await,
         "remove_dependency" => deps::remove_dependency(server, request).await,
         "get_dependencies" => deps::get_dependencies(server, request).await,

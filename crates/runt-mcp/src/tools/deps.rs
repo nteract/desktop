@@ -9,7 +9,7 @@ use notebook_protocol::protocol::{NotebookRequest, NotebookResponse};
 
 use crate::NteractMcp;
 
-use super::{arg_str, tool_error, tool_success};
+use super::{arg_str, arg_string_array, tool_error, tool_success};
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -481,4 +481,189 @@ fn get_deps_for_manager(handle: &notebook_sync::handle::DocHandle, manager: &str
             _ => m.uv_dependencies().to_vec(),
         })
         .unwrap_or_default()
+}
+
+// ── Consolidated dependency tool ────────────────────────────────
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ManageDependenciesParams {
+    /// Packages to add (e.g. ["pandas>=2.0", "numpy"]).
+    #[serde(default)]
+    pub add: Option<Vec<String>>,
+    /// Packages to remove.
+    #[serde(default)]
+    pub remove: Option<Vec<String>>,
+    /// Action after changes: "none" (default), "sync" (hot-install), or "restart".
+    #[serde(default)]
+    pub after: Option<String>,
+}
+
+/// Add and/or remove dependencies in one call, with optional sync or restart.
+pub async fn manage_dependencies(
+    server: &NteractMcp,
+    request: &CallToolRequestParams,
+) -> Result<CallToolResult, McpError> {
+    let to_add: Vec<String> = arg_string_array(request, "add").unwrap_or_default();
+    let to_remove: Vec<String> = arg_string_array(request, "remove").unwrap_or_default();
+    let after = arg_str(request, "after").unwrap_or("none");
+
+    if to_add.is_empty() && to_remove.is_empty() {
+        return tool_error("Provide at least one package to add or remove.");
+    }
+
+    let (handle, notebook_id) = {
+        let guard = server.session.read().await;
+        match guard.as_ref() {
+            Some(s) => (s.handle.clone(), s.notebook_id.clone()),
+            None => {
+                return tool_error(
+                    "No active notebook session. Call open_notebook or create_notebook first.",
+                )
+            }
+        }
+    };
+
+    let manager = detect_package_manager(&handle);
+    let mut added = Vec::new();
+    let mut removed = Vec::new();
+    let mut errors = Vec::new();
+
+    for pkg in &to_add {
+        match add_dep_for_manager(&handle, pkg, &manager) {
+            Ok(()) => added.push(pkg.as_str()),
+            Err(e) => errors.push(format!("add {pkg}: {e}")),
+        }
+    }
+
+    for pkg in &to_remove {
+        match remove_dep_for_manager(&handle, pkg, &manager) {
+            Ok(true) => removed.push(pkg.as_str()),
+            Ok(false) => {} // wasn't present, not an error
+            Err(e) => errors.push(format!("remove {pkg}: {e}")),
+        }
+    }
+
+    if let Err(e) = handle.confirm_sync().await {
+        tracing::warn!("confirm_sync failed after manage_dependencies: {e}");
+    }
+
+    let deps = get_deps_for_manager(&handle, &manager);
+
+    let mut result = serde_json::json!({
+        "dependencies": deps,
+        "added": added,
+        "removed": removed,
+        "package_manager": manager,
+    });
+
+    if !errors.is_empty() {
+        result["errors"] = serde_json::json!(errors);
+    }
+
+    // Handle after action — reuse the same logic as add_dependency
+    match after {
+        "sync" => {
+            match handle
+                .send_request(NotebookRequest::SyncEnvironment {})
+                .await
+            {
+                Ok(NotebookResponse::SyncEnvironmentComplete {
+                    synced_packages, ..
+                }) => {
+                    result["sync"] = serde_json::json!({
+                        "success": true,
+                        "synced_packages": synced_packages,
+                    });
+                }
+                Ok(NotebookResponse::SyncEnvironmentStarted { packages }) => {
+                    result["sync"] = serde_json::json!({
+                        "success": true,
+                        "synced_packages": packages,
+                    });
+                }
+                Ok(NotebookResponse::SyncEnvironmentFailed {
+                    error,
+                    needs_restart,
+                }) => {
+                    result["sync"] = serde_json::json!({
+                        "success": false,
+                        "error": error,
+                        "needs_restart": needs_restart,
+                    });
+                }
+                Ok(NotebookResponse::Error { error }) => {
+                    result["sync"] = serde_json::json!({
+                        "success": false,
+                        "error": error,
+                        "needs_restart": true,
+                    });
+                }
+                Ok(_) => {
+                    result["sync"] = serde_json::json!({ "success": true });
+                }
+                Err(e) => {
+                    result["sync"] = serde_json::json!({
+                        "success": false,
+                        "error": format!("Failed to sync: {e}"),
+                        "needs_restart": true,
+                    });
+                }
+            }
+        }
+        "restart" => {
+            let restart_env_source = match handle
+                .get_runtime_state()
+                .ok()
+                .map(|s| s.kernel.env_source.clone())
+                .as_deref()
+            {
+                Some("uv:prewarmed") => "auto:uv".to_string(),
+                Some("conda:prewarmed") => "auto:conda".to_string(),
+                Some("pixi:prewarmed") => "auto:pixi".to_string(),
+                Some("") | None => "auto".to_string(),
+                Some(s) => s.to_string(),
+            };
+            let notebook_path = if notebook_id.contains('/') || notebook_id.contains('\\') {
+                Some(notebook_id.clone())
+            } else {
+                None
+            };
+            let _ = handle
+                .send_request(NotebookRequest::ShutdownKernel {})
+                .await;
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            match handle
+                .send_request(NotebookRequest::LaunchKernel {
+                    kernel_type: "python".to_string(),
+                    env_source: restart_env_source,
+                    notebook_path,
+                })
+                .await
+            {
+                Ok(NotebookResponse::KernelLaunched { env_source, .. }) => {
+                    result["restart"] = serde_json::json!({
+                        "success": true,
+                        "env_source": env_source,
+                    });
+                }
+                Ok(NotebookResponse::Error { error }) => {
+                    result["restart"] = serde_json::json!({
+                        "success": false,
+                        "error": error,
+                    });
+                }
+                Err(e) => {
+                    result["restart"] = serde_json::json!({
+                        "success": false,
+                        "error": format!("Failed to restart: {e}"),
+                    });
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+
+    tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
 }
