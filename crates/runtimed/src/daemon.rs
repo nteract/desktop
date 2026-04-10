@@ -740,9 +740,12 @@ impl Daemon {
                         "[runtimed] Shutting down runtime agent for notebook on exit: {}",
                         notebook_id
                     );
-                    let _ = crate::notebook_sync_server::send_runtime_agent_request(
-                        &room,
-                        notebook_protocol::protocol::RuntimeAgentRequest::ShutdownKernel,
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(10),
+                        crate::notebook_sync_server::send_runtime_agent_request(
+                            &room,
+                            notebook_protocol::protocol::RuntimeAgentRequest::ShutdownKernel,
+                        ),
                     )
                     .await;
                 }

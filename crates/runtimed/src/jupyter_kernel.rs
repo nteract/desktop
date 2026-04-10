@@ -1885,7 +1885,7 @@ impl KernelConnection for JupyterKernel {
     async fn shutdown(&mut self) -> Result<()> {
         info!("[jupyter-kernel] Shutting down kernel");
 
-        // Abort tasks
+        // Abort background tasks first so they stop reading from ZeroMQ
         if let Some(task) = self.iopub_task.take() {
             task.abort();
         }
@@ -1898,53 +1898,68 @@ impl KernelConnection for JupyterKernel {
         if let Some(task) = self.heartbeat_task.take() {
             task.abort();
         }
-        // Drop sender first so the coalescing task exits, then abort
         self.comm_coalesce_tx.take();
         if let Some(task) = self.comm_coalesce_task.take() {
             task.abort();
         }
 
-        // Try graceful shutdown via shell
+        // Graceful shutdown: send shutdown_request, then escalate signals.
+        // The kernel should exit on its own after receiving the request.
         if let Some(mut shell) = self.shell_writer.take() {
             let request: JupyterMessage = ShutdownRequest { restart: false }.into();
             let _ = shell.send(request).await;
         }
 
-        // Kill process group on Unix
         #[cfg(unix)]
         if let Some(pgid) = self.process_group_id.take() {
             use nix::sys::signal::{killpg, Signal};
             use nix::unistd::Pid;
-            if let Err(e) = killpg(Pid::from_raw(pgid), Signal::SIGKILL) {
-                match e {
-                    nix::errno::Errno::ESRCH => {}
-                    nix::errno::Errno::EPERM => {
-                        debug!(
-                            "[jupyter-kernel] Permission denied killing process group {}",
-                            pgid
-                        );
-                    }
-                    other => {
-                        error!(
-                            "[jupyter-kernel] Failed to kill process group {}: {}",
-                            pgid, other
-                        );
+
+            // Wait up to 2s for the kernel to exit after shutdown_request
+            if !wait_for_process_group_exit(pgid, std::time::Duration::from_secs(2)).await {
+                // SIGTERM: politely ask the process group to terminate
+                info!(
+                    "[jupyter-kernel] Kernel didn't exit after shutdown_request, sending SIGTERM to pgid {}",
+                    pgid
+                );
+                let _ = killpg(Pid::from_raw(pgid), Signal::SIGTERM);
+
+                // Wait up to 3s for SIGTERM
+                if !wait_for_process_group_exit(pgid, std::time::Duration::from_secs(3)).await {
+                    // SIGKILL: force kill as last resort
+                    info!(
+                        "[jupyter-kernel] Kernel didn't respond to SIGTERM, sending SIGKILL to pgid {}",
+                        pgid
+                    );
+                    if let Err(e) = killpg(Pid::from_raw(pgid), Signal::SIGKILL) {
+                        match e {
+                            nix::errno::Errno::ESRCH => {}
+                            other => {
+                                debug!(
+                                    "[jupyter-kernel] Failed to SIGKILL process group {}: {}",
+                                    pgid, other
+                                );
+                            }
+                        }
                     }
                 }
             }
         }
 
-        // Unregister from process registry
+        #[cfg(not(unix))]
+        {
+            // On non-Unix platforms, kill the child process directly
+            // (process groups aren't available)
+        }
+
         if let Some(kid) = self.kernel_id.take() {
             crate::kernel_pids::unregister_kernel(&kid);
         }
 
-        // Clean up connection file
         if let Some(ref path) = self.connection_file {
             let _ = std::fs::remove_file(path);
         }
 
-        // Clear state
         self.connection_info = None;
         self.connection_file = None;
         self.cell_id_map.lock().unwrap().clear();
@@ -2226,6 +2241,26 @@ impl Drop for JupyterKernel {
 }
 
 /// Prepend a directory to the PATH environment variable.
+#[cfg(unix)]
+async fn wait_for_process_group_exit(pgid: i32, timeout: std::time::Duration) -> bool {
+    use nix::sys::signal::killpg;
+    use nix::unistd::Pid;
+
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        match killpg(Pid::from_raw(pgid), None) {
+            Err(nix::errno::Errno::ESRCH) => return true,
+            Err(_) => return true,
+            Ok(()) => {
+                if tokio::time::Instant::now() >= deadline {
+                    return false;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
+    }
+}
+
 fn prepend_to_path(dir: &std::path::Path) -> String {
     let dir_str = dir.to_string_lossy();
     match std::env::var("PATH") {
