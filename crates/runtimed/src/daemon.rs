@@ -2434,20 +2434,39 @@ impl Daemon {
                     rooms.values().cloned().collect()
                 };
 
-                // Mark phase: collect referenced hashes in batches of rooms
+                // Mark phase: collect referenced hashes in batches of rooms.
+                // Scans three sources of blob refs per room:
+                //   1. Execution outputs (RuntimeStateDoc) — images, rich text, tracebacks
+                //   2. Comm state (RuntimeStateDoc) — externalized widget state (_esm, buffers)
+                //   3. Resolved assets (notebook doc) — markdown image refs
                 let mut referenced_hashes = std::collections::HashSet::new();
                 for batch in room_arcs.chunks(ROOM_BATCH_SIZE) {
                     for room in batch {
-                        let sd = room.state_doc.read().await;
-                        let state = sd.read_state();
-                        for exec in state.executions.values() {
-                            for output in &exec.outputs {
-                                collect_blob_hashes(output, &mut referenced_hashes);
+                        // 1 & 2: RuntimeStateDoc — execution outputs + comm state
+                        {
+                            let sd = room.state_doc.read().await;
+                            let state = sd.read_state();
+                            for exec in state.executions.values() {
+                                for output in &exec.outputs {
+                                    collect_blob_hashes(output, &mut referenced_hashes);
+                                }
+                            }
+                            for comm in state.comms.values() {
+                                for output in &comm.outputs {
+                                    collect_blob_hashes(output, &mut referenced_hashes);
+                                }
+                                // Comm state may contain externalized blob refs
+                                // (widget _esm, _css, binary buffers, large JSON values)
+                                collect_blob_hashes_recursive(&comm.state, &mut referenced_hashes);
                             }
                         }
-                        for comm in state.comms.values() {
-                            for output in &comm.outputs {
-                                collect_blob_hashes(output, &mut referenced_hashes);
+                        // 3: Notebook doc — markdown resolved_assets
+                        {
+                            let doc = room.doc.read().await;
+                            for cell in doc.get_cells() {
+                                for hash in cell.resolved_assets.values() {
+                                    referenced_hashes.insert(hash.clone());
+                                }
                             }
                         }
                     }
@@ -2472,11 +2491,12 @@ impl Daemon {
                                     .ok()
                                     .flatten()
                                     .is_some_and(|m| {
-                                        chrono::Utc::now()
+                                        let age_secs = chrono::Utc::now()
                                             .signed_duration_since(m.created_at)
-                                            .num_seconds()
-                                            as u64
-                                            > blob_max_age.as_secs()
+                                            .num_seconds();
+                                        // Guard against clock skew (negative age wraps to
+                                        // huge u64, causing incorrect deletion)
+                                        age_secs > 0 && age_secs as u64 > blob_max_age.as_secs()
                                     });
                                 if is_stale && self.blob_store.delete(hash).await.unwrap_or(false) {
                                     blobs_deleted += 1;
@@ -2539,6 +2559,37 @@ fn collect_blob_hashes(
         .and_then(|b| b.as_str())
     {
         hashes.insert(hash.to_string());
+    }
+}
+
+/// Recursively walk a JSON value collecting blob hashes.
+///
+/// Handles comm state where `blob_store_large_state_values` and `store_widget_buffers`
+/// produce `{"blob": "<hash>", "size": N, ...}` refs at arbitrary nesting depths.
+fn collect_blob_hashes_recursive(
+    value: &serde_json::Value,
+    hashes: &mut std::collections::HashSet<String>,
+) {
+    match value {
+        serde_json::Value::Object(obj) => {
+            // Check if this object IS a blob ref (has "blob" + "size" keys)
+            if let Some(hash) = obj.get("blob").and_then(|b| b.as_str()) {
+                if obj.contains_key("size") {
+                    hashes.insert(hash.to_string());
+                    return;
+                }
+            }
+            // Otherwise recurse into values
+            for v in obj.values() {
+                collect_blob_hashes_recursive(v, hashes);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for v in arr {
+                collect_blob_hashes_recursive(v, hashes);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -4136,5 +4187,79 @@ mod tests {
 
         let result = parse_uv_error(stderr);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_collect_blob_hashes_display_data() {
+        let manifest = serde_json::json!({
+            "output_type": "display_data",
+            "data": {
+                "text/plain": {"blob": "aaa", "size": 10},
+                "image/png": {"blob": "bbb", "size": 5000},
+                "text/html": {"inline": "<b>hello</b>"}
+            }
+        });
+        let mut hashes = std::collections::HashSet::new();
+        collect_blob_hashes(&manifest, &mut hashes);
+        assert!(hashes.contains("aaa"));
+        assert!(hashes.contains("bbb"));
+        assert_eq!(hashes.len(), 2); // inline entry not collected
+    }
+
+    #[test]
+    fn test_collect_blob_hashes_stream() {
+        let manifest = serde_json::json!({
+            "output_type": "stream",
+            "name": "stdout",
+            "text": {"blob": "ccc", "size": 2000}
+        });
+        let mut hashes = std::collections::HashSet::new();
+        collect_blob_hashes(&manifest, &mut hashes);
+        assert!(hashes.contains("ccc"));
+        assert_eq!(hashes.len(), 1);
+    }
+
+    #[test]
+    fn test_collect_blob_hashes_error() {
+        let manifest = serde_json::json!({
+            "output_type": "error",
+            "ename": "ValueError",
+            "evalue": "bad",
+            "traceback": {"blob": "ddd", "size": 500}
+        });
+        let mut hashes = std::collections::HashSet::new();
+        collect_blob_hashes(&manifest, &mut hashes);
+        assert!(hashes.contains("ddd"));
+    }
+
+    #[test]
+    fn test_collect_blob_hashes_recursive_comm_state() {
+        let state = serde_json::json!({
+            "_model_name": "VegaWidget",
+            "_esm": {"blob": "esm_hash", "size": 50000, "media_type": "text/javascript"},
+            "spec": {"blob": "spec_hash", "size": 10000, "media_type": "application/json"},
+            "small_value": 42,
+            "nested": {
+                "buffer": {"blob": "buf_hash", "size": 8000, "media_type": "application/octet-stream"}
+            }
+        });
+        let mut hashes = std::collections::HashSet::new();
+        collect_blob_hashes_recursive(&state, &mut hashes);
+        assert!(hashes.contains("esm_hash"));
+        assert!(hashes.contains("spec_hash"));
+        assert!(hashes.contains("buf_hash"));
+        assert_eq!(hashes.len(), 3);
+    }
+
+    #[test]
+    fn test_collect_blob_hashes_recursive_no_false_positives() {
+        // An object with a "blob" key but no "size" should NOT be collected
+        let value = serde_json::json!({
+            "blob": "not_a_ref",
+            "other_key": true
+        });
+        let mut hashes = std::collections::HashSet::new();
+        collect_blob_hashes_recursive(&value, &mut hashes);
+        assert!(hashes.is_empty());
     }
 }
