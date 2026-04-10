@@ -6833,6 +6833,16 @@ async fn save_notebook_to_disk(
         .map_err(|e| SaveError::Retryable(format!("Failed to serialize notebook: {e}")))?;
     let content_with_newline = format!("{content}\n");
 
+    // Ensure parent directory exists (agents often construct paths programmatically)
+    if let Some(parent) = notebook_path.parent() {
+        tokio::fs::create_dir_all(parent).await.map_err(|e| {
+            SaveError::Unrecoverable(format!(
+                "Failed to create directory '{}': {e}",
+                parent.display()
+            ))
+        })?;
+    }
+
     // Write to disk (async to avoid blocking the runtime)
     tokio::fs::write(&notebook_path, content_with_newline)
         .await

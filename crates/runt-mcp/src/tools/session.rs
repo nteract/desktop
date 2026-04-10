@@ -568,6 +568,14 @@ pub async fn save_notebook(
         }
     };
 
+    // If no path and notebook is ephemeral (UUID-keyed, not a file path), require a path
+    if path.is_none() && !looks_like_path(&notebook_id) {
+        return tool_error(
+            "No path specified for ephemeral notebook. \
+             Provide a path: save_notebook(path='/path/to/notebook.ipynb')",
+        );
+    }
+
     // Ensure daemon has latest
     if let Err(e) = handle.confirm_sync().await {
         tracing::warn!("confirm_sync failed before save: {e}");
