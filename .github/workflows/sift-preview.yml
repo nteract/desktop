@@ -66,6 +66,7 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           command: pages deploy packages/sift/dist --project-name=sift --branch=${{ github.head_ref || github.ref_name }}
+          packageManager: pnpm
 
       - name: Comment preview URL on PR
         if: github.event_name == 'pull_request'
