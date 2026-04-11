@@ -166,12 +166,14 @@ function updateWasmSummaries(
           count: number;
         }[];
         if (bins.length === 0) return null;
+        const first = bins[0];
+        const last = bins[bins.length - 1];
         const totalInBins = bins.reduce((s, b) => s + b.count, 0);
         const nullCount = numRows - totalInBins;
         return {
           kind: "timestamp" as const,
-          min: bins[0].x0,
-          max: bins[bins.length - 1].x1,
+          min: first.x0,
+          max: last.x1,
           bins,
           nullCount: nullCount > 0 ? nullCount : undefined,
         };
@@ -183,16 +185,20 @@ function updateWasmSummaries(
           count: number;
         }[];
         if (bins.length === 0) return null;
+        const nFirst = bins[0];
+        const nLast = bins[bins.length - 1];
         const totalInBins = bins.reduce((s, b) => s + b.count, 0);
         const nullCount = numRows - totalInBins;
         return {
           kind: "numeric" as const,
-          min: bins[0].x0,
-          max: bins[bins.length - 1].x1,
+          min: nFirst.x0,
+          max: nLast.x1,
           bins,
           nullCount: nullCount > 0 ? nullCount : undefined,
         };
       }
+      default:
+        return null;
     }
   });
 }
