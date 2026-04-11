@@ -8,7 +8,6 @@ import { rawLibPlugin } from "./vite-plugin-raw-lib";
 
 export default defineConfig(({ command }) => {
   const debugBundleSourceMapsEnabled = process.env.RUNT_NOTEBOOK_DEBUG_BUILD === "1";
-  const isolatedRendererSourceMapsEnabled = command === "serve" || debugBundleSourceMapsEnabled;
 
   return {
     plugins: [
@@ -17,7 +16,6 @@ export default defineConfig(({ command }) => {
       rawLibPlugin(path.resolve(__dirname, "../../node_modules")),
       isolatedRendererPlugin({
         minify: command !== "serve",
-        sourcemap: isolatedRendererSourceMapsEnabled ? "inline" : false,
       }),
       visualizer({
         filename: "dist/stats.html",
