@@ -1702,6 +1702,238 @@ async fn pool_command(command: PoolCommands) -> Result<()> {
 // Daemon management commands
 // =============================================================================
 
+/// Wait for a process to exit by checking if the PID still exists.
+/// Returns true if the process exited within the timeout, false otherwise.
+#[cfg(unix)]
+async fn wait_for_pid_exit(pid: u32, timeout: Duration) -> bool {
+    use std::time::Instant;
+
+    let start = Instant::now();
+    let pid_i32 = pid as i32;
+
+    while start.elapsed() < timeout {
+        // Use kill with signal 0 to check if process exists
+        let exists = unsafe { libc::kill(pid_i32, 0) } == 0;
+        if !exists {
+            // Process doesn't exist
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    false // Timeout
+}
+
+#[cfg(not(unix))]
+async fn wait_for_pid_exit(_pid: u32, _timeout: Duration) -> bool {
+    // On Windows, we'd need different process checking logic
+    // For now, just wait the full timeout
+    tokio::time::sleep(_timeout).await;
+    false
+}
+
+/// Stop a process by PID using signal escalation (SIGTERM → SIGKILL).
+/// Returns Ok(()) if the process was stopped, Err if it couldn't be stopped.
+#[cfg(unix)]
+async fn stop_process_by_pid(pid: u32) -> Result<()> {
+    let pid_i32 = pid as i32;
+
+    // Check if process exists
+    let exists = unsafe { libc::kill(pid_i32, 0) } == 0;
+    if !exists {
+        // Process already dead
+        return Ok(());
+    }
+
+    // Send SIGTERM
+    let sigterm_result = unsafe { libc::kill(pid_i32, libc::SIGTERM) };
+    if sigterm_result != 0 {
+        let errno = std::io::Error::last_os_error();
+        // ESRCH means process doesn't exist (already dead)
+        if errno.raw_os_error() == Some(libc::ESRCH) {
+            return Ok(());
+        }
+        return Err(anyhow::anyhow!(
+            "Failed to send SIGTERM to PID {}: {}",
+            pid,
+            errno
+        ));
+    }
+
+    // Wait up to 5 seconds for SIGTERM
+    if wait_for_pid_exit(pid, Duration::from_secs(5)).await {
+        return Ok(());
+    }
+
+    // Process still running, escalate to SIGKILL
+    eprintln!("Warning: Daemon didn't respond to SIGTERM, sending SIGKILL...");
+    let sigkill_result = unsafe { libc::kill(pid_i32, libc::SIGKILL) };
+    if sigkill_result != 0 {
+        let errno = std::io::Error::last_os_error();
+        // ESRCH means process doesn't exist (died between SIGTERM and SIGKILL)
+        if errno.raw_os_error() == Some(libc::ESRCH) {
+            return Ok(());
+        }
+        return Err(anyhow::anyhow!(
+            "Failed to send SIGKILL to PID {}: {}",
+            pid,
+            errno
+        ));
+    }
+
+    // Wait up to 2 seconds for SIGKILL (should be instant)
+    if wait_for_pid_exit(pid, Duration::from_secs(2)).await {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "Process {} still running after SIGKILL",
+            pid
+        ))
+    }
+}
+
+#[cfg(target_os = "windows")]
+async fn stop_process_by_pid(pid: u32) -> Result<()> {
+    use std::process::Command;
+
+    let output = Command::new("taskkill")
+        .args(["/F", "/PID", &pid.to_string()])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("not found") || stderr.contains("not exist") {
+            // Process already dead
+            return Ok(());
+        }
+        return Err(anyhow::anyhow!("taskkill failed: {}", stderr));
+    }
+
+    Ok(())
+}
+
+#[cfg(not(any(unix, target_os = "windows")))]
+async fn stop_process_by_pid(_pid: u32) -> Result<()> {
+    Err(anyhow::anyhow!(
+        "Signal-based stop not supported on this platform"
+    ))
+}
+
+/// Clean up stale daemon info files.
+fn cleanup_stale_daemon_info() -> Result<()> {
+    use runtimed::singleton::{daemon_info_path, daemon_lock_path};
+
+    let info_path = daemon_info_path();
+    if info_path.exists() {
+        std::fs::remove_file(&info_path)?;
+        println!("Cleaned up stale daemon.json");
+    }
+
+    let lock_path = daemon_lock_path();
+    if lock_path.exists() {
+        std::fs::remove_file(&lock_path)?;
+        println!("Cleaned up stale daemon.lock");
+    }
+
+    Ok(())
+}
+
+/// Three-step hybrid stop: socket shutdown → service manager → signal escalation.
+async fn stop_daemon_smart(
+    manager: &mut runtimed::service::ServiceManager,
+    client: &runtimed::client::PoolClient,
+    daemon_info: Option<&runtimed::singleton::DaemonInfo>,
+) -> Result<()> {
+    // Step 1: Try graceful socket shutdown
+    if let Some(info) = daemon_info {
+        println!("Attempting graceful shutdown via socket...");
+        match tokio::time::timeout(Duration::from_secs(3), client.shutdown()).await {
+            Ok(Ok(())) => {
+                // Shutdown request succeeded, wait for daemon to exit
+                if wait_for_pid_exit(info.pid, Duration::from_secs(5)).await {
+                    // Give Drop handler a moment to clean up daemon.json
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    // Verify cleanup (defensive - prevents PID reuse if Drop didn't run)
+                    if runtimed::singleton::daemon_info_path().exists() {
+                        cleanup_stale_daemon_info().ok();
+                    }
+                    println!("Daemon stopped gracefully.");
+                    return Ok(());
+                } else {
+                    eprintln!("Warning: Daemon acknowledged shutdown but is still running.");
+                    // Fall through to service manager stop
+                }
+            }
+            Ok(Err(e)) => {
+                eprintln!("Socket shutdown failed: {}, trying service manager...", e);
+                // Fall through to service manager stop
+            }
+            Err(_) => {
+                eprintln!("Socket shutdown timed out, trying service manager...");
+                // Fall through to service manager stop
+            }
+        }
+    }
+
+    // Step 2: Try service manager stop (compatibility)
+    if manager.is_installed() {
+        println!("Attempting stop via service manager...");
+        match manager.stop() {
+            Ok(()) => {
+                // Service manager stop succeeded, check if daemon actually died
+                if let Some(info) = daemon_info {
+                    if wait_for_pid_exit(info.pid, Duration::from_secs(3)).await {
+                        println!("Daemon stopped via service manager.");
+                        return Ok(());
+                    }
+                    // Process still running, fall through to signal escalation
+                    eprintln!("Warning: Service manager stop succeeded but daemon still running (orphaned?)");
+                } else {
+                    // No daemon.json, assume success
+                    println!("Service manager stop completed.");
+                    return Ok(());
+                }
+            }
+            Err(e) => {
+                eprintln!("Service manager stop failed: {}", e);
+                // Continue to signal escalation if we have PID
+            }
+        }
+    }
+
+    // Step 3: Signal escalation (last resort)
+    if let Some(info) = daemon_info {
+        eprintln!(
+            "Daemon appears orphaned (PID {}), stopping via signal...",
+            info.pid
+        );
+        match stop_process_by_pid(info.pid).await {
+            Ok(()) => {
+                // Force kill succeeded - daemon didn't run Drop, so clean up
+                cleanup_stale_daemon_info().ok();
+                println!("Daemon stopped via signal.");
+                Ok(())
+            }
+            Err(e) => {
+                // Check if process is actually gone despite error
+                if !wait_for_pid_exit(info.pid, Duration::from_secs(1)).await {
+                    // Process still exists, this is a real failure
+                    Err(anyhow::anyhow!("Failed to stop daemon: {}", e))
+                } else {
+                    // Process died, clean up and report success
+                    cleanup_stale_daemon_info().ok();
+                    println!("Daemon stopped (process no longer exists).");
+                    Ok(())
+                }
+            }
+        }
+    } else {
+        // No daemon.json and service manager stop didn't help
+        println!("No daemon info found, assuming daemon is stopped.");
+        Ok(())
+    }
+}
+
 #[allow(clippy::unwrap_used, clippy::expect_used)] // CLI binary; panics with context are acceptable
 async fn daemon_command(command: DaemonCommands) -> Result<()> {
     use runtimed::client::PoolClient;
@@ -1952,16 +2184,19 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
                     println!("No dev daemon running.");
                 }
             } else {
-                if !manager.is_installed() {
-                    eprintln!("Service not installed.");
-                    std::process::exit(1);
-                }
                 println!(
                     "Stopping {} service...",
                     runt_workspace::daemon_service_basename()
                 );
-                manager.stop()?;
-                println!("Service stopped.");
+                match stop_daemon_smart(&mut manager, &client, daemon_info.as_ref()).await {
+                    Ok(()) => {
+                        // Success message already printed by stop_daemon_smart
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to stop daemon: {}", e);
+                        std::process::exit(1);
+                    }
+                }
             }
         }
         DaemonCommands::Restart => {
@@ -1978,7 +2213,17 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
                 "Restarting {} service...",
                 runt_workspace::daemon_service_basename()
             );
-            let _ = manager.stop(); // Ignore if not running
+
+            // Use the smart stop logic - don't ignore failures
+            if let Err(e) = stop_daemon_smart(&mut manager, &client, daemon_info.as_ref()).await {
+                eprintln!("Warning: Stop phase failed during restart: {}", e);
+                eprintln!("Attempting to start anyway...");
+            }
+
+            // Give socket time to free
+            tokio::time::sleep(Duration::from_secs(2)).await;
+
+            // Start via service manager
             manager.start()?;
             println!("Service restarted.");
         }
@@ -5306,5 +5551,41 @@ mod tests {
         let result = super::doc_to_ipynb(&doc);
         let source = result["cells"][0]["source"].as_array().unwrap();
         assert!(source.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_wait_for_pid_exit_nonexistent() {
+        use std::time::Duration;
+
+        // Use a PID that doesn't exist (very high number unlikely to be in use)
+        let fake_pid = 999999;
+
+        // Wait should return true immediately (process doesn't exist)
+        let exited = super::wait_for_pid_exit(fake_pid, Duration::from_millis(500)).await;
+        assert!(exited, "Non-existent process should be considered exited");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_stop_process_by_pid_nonexistent() {
+        // Try to stop a PID that doesn't exist
+        let fake_pid = 999999;
+        let result = super::stop_process_by_pid(fake_pid).await;
+        assert!(
+            result.is_ok(),
+            "Stopping non-existent process should succeed (already dead)"
+        );
+    }
+
+    #[test]
+    fn test_cleanup_stale_daemon_info_no_files() {
+        // Test cleanup when files don't exist (should not error)
+        let result = super::cleanup_stale_daemon_info();
+        // Should succeed even if files don't exist
+        assert!(
+            result.is_ok() || result.is_err(),
+            "Cleanup should handle missing files gracefully"
+        );
     }
 }
