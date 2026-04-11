@@ -164,6 +164,8 @@ pub async fn prepare_environment_in(
                 {
                     Ok(()) => {
                         if python_path.exists() {
+                            // Re-persist lock so it survives future rebuilds
+                            crate::lock::try_write_lock(&env_path, &lock).await;
                             crate::gc::touch_last_used(&env_path).await;
                             handler.on_progress(
                                 "conda",
@@ -276,8 +278,9 @@ async fn install_conda_env(
         }
     }
 
-    // Capture spec strings for lock file before specs are moved into the solver
-    let spec_strings_for_lock: Vec<String> = specs.iter().map(|s| s.to_string()).collect();
+    // Capture spec strings for lock file using the same format as build_spec_strings()
+    // (raw input strings, not MatchSpec::to_string() which may normalize differently)
+    let spec_strings_for_lock = build_spec_strings(deps);
 
     // Rattler cache
     let rattler_cache_dir = default_cache_dir()

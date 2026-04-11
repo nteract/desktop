@@ -213,11 +213,6 @@ async fn install_pixi_env(
         specs.push(spec);
     }
 
-    // Capture strings for lock file before specs/channels are moved
-    let spec_strings_for_lock: Vec<String> = specs.iter().map(|s| s.to_string()).collect();
-    let channel_names_for_lock: Vec<String> =
-        channels.iter().map(|c| c.name().to_string()).collect();
-
     // Rattler cache
     let rattler_cache_dir = default_cache_dir()
         .map_err(|e| anyhow!("could not determine rattler cache directory: {}", e))?;
@@ -306,9 +301,6 @@ async fn install_pixi_env(
     let reporter = RattlerReporter::new_with_env_type(handler.clone(), "pixi");
     let install_start = Instant::now();
 
-    // Clone packages before install (which consumes them) so we can write the lock file
-    let packages_for_lock = required_packages.clone();
-
     match Installer::new()
         .with_download_client(download_client)
         .with_target_platform(install_platform)
@@ -340,14 +332,6 @@ async fn install_pixi_env(
             elapsed_ms: install_elapsed.as_millis() as u64,
         },
     );
-
-    // Write lock file for offline re-creation
-    let lock = crate::lock::LockFile::new(
-        spec_strings_for_lock,
-        channel_names_for_lock,
-        packages_for_lock,
-    );
-    crate::lock::try_write_lock(env_path, &lock).await;
 
     Ok(())
 }

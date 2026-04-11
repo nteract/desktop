@@ -50,7 +50,7 @@ impl LockFile {
     /// Write the lock file to `<env_path>/.lock.json`.
     pub async fn write_to(&self, env_path: &Path) -> Result<()> {
         let lock_path = env_path.join(LOCK_FILE_NAME);
-        let json = serde_json::to_string_pretty(self)?;
+        let json = serde_json::to_string(self)?;
         tokio::fs::write(&lock_path, json).await?;
         info!("Wrote lock file to {:?}", lock_path);
         Ok(())
