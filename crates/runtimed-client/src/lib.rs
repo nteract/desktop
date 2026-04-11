@@ -125,3 +125,14 @@ pub fn settings_schema_path() -> PathBuf {
 pub fn default_notebook_docs_dir() -> PathBuf {
     daemon_base_dir().join("notebook-docs")
 }
+
+/// Get the path for the persisted notebook registry cache.
+///
+/// The notebook registry maps file paths to stable UUIDs for MCP resource URIs.
+/// Stored per-channel:
+/// - Stable: `~/.cache/runt/notebook_registry.json`
+/// - Nightly: `~/.cache/runt-nightly/notebook_registry.json`
+/// - Dev: `~/.cache/runt-nightly/worktrees/{hash}/notebook_registry.json`
+pub fn notebook_registry_path() -> PathBuf {
+    daemon_base_dir().join("notebook_registry.json")
+}

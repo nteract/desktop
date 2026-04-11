@@ -275,9 +275,29 @@ pub async fn open_notebook(
 
     let prev = previous_notebook_id(server).await;
 
-    if looks_like_path(&notebook) {
+    // Check if the input is a stable UUID (looks like UUID, not a path)
+    let resolved_notebook =
+        if !looks_like_path(&notebook) && uuid::Uuid::parse_str(&notebook).is_ok() {
+            // Looks like a stable UUID — try to resolve it to a path via registry
+            // (Only the daemon has the registry, so we'll try to look up from list_rooms)
+            let client = PoolClient::new(server.socket_path.clone());
+            if let Ok(rooms) = client.list_rooms().await {
+                // Find room with matching stable_id and use its notebook_id (path or ephemeral UUID)
+                rooms
+                    .iter()
+                    .find(|r| r.stable_id.as_deref() == Some(notebook.as_str()))
+                    .map(|r| r.notebook_id.clone())
+                    .unwrap_or_else(|| notebook.clone())
+            } else {
+                notebook.clone()
+            }
+        } else {
+            notebook.clone()
+        };
+
+    if looks_like_path(&resolved_notebook) {
         // File path — resolve and open from disk via the daemon's OpenNotebook handshake.
-        let abs_path = PathBuf::from(resolve_path(&notebook));
+        let abs_path = PathBuf::from(resolve_path(&resolved_notebook));
 
         match notebook_sync::connect::connect_open(
             server.socket_path.clone(),
@@ -295,9 +315,11 @@ pub async fn open_notebook(
                 let runtime_info = collect_runtime_info(handle).await;
                 let deps = get_dependencies(handle);
                 let cells_summary = format_cell_summaries(handle);
+                let stable_id = handle.read_id();
 
                 let mut response = serde_json::json!({
                     "notebook_id": notebook_id,
+                    "stable_id": stable_id,
                     "path": abs_path.to_string_lossy(),
                     "runtime": runtime_info,
                     "dependencies": deps,
@@ -328,7 +350,7 @@ pub async fn open_notebook(
         }
     } else {
         // Session ID — connect to an existing daemon room.
-        let notebook_id = notebook;
+        let notebook_id = resolved_notebook;
 
         match notebook_sync::connect::connect(
             server.socket_path.clone(),
@@ -345,9 +367,11 @@ pub async fn open_notebook(
                 let runtime_info = collect_runtime_info(handle).await;
                 let deps = get_dependencies(handle);
                 let cells_summary = format_cell_summaries(handle);
+                let stable_id = handle.read_id();
 
                 let mut response = serde_json::json!({
                     "notebook_id": handle.notebook_id(),
+                    "stable_id": stable_id,
                     "connected": true,
                     "runtime": runtime_info,
                     "dependencies": deps,
@@ -471,6 +495,16 @@ pub async fn create_notebook(
             };
             *server.session.write().await = Some(session);
 
+            // Generate and write stable notebook ID to metadata
+            let stable_id = {
+                let session = server.session.read().await;
+                if let Some(s) = session.as_ref() {
+                    s.handle.ensure_id().ok()
+                } else {
+                    None
+                }
+            };
+
             // Restart kernel if deps were added or package manager metadata
             // was changed from the daemon's default (so the kernel picks up
             // the right env). Skip for deno — deno doesn't use Python
@@ -529,6 +563,7 @@ pub async fn create_notebook(
 
             let mut info = serde_json::json!({
                 "notebook_id": notebook_id,
+                "stable_id": stable_id,
                 "runtime": { "language": runtime },
                 "dependencies": deps,
                 "package_manager": pkg_manager,

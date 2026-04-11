@@ -505,6 +505,9 @@ pub struct Daemon {
     /// Redirect map: old ephemeral UUID -> new canonical path after rekey.
     /// Used so peers reconnecting with the old UUID find the re-keyed room.
     pub(crate) redirect_map: std::sync::Mutex<HashMap<String, RedirectEntry>>,
+    /// Notebook registry for stable ID management.
+    /// Loaded asynchronously in run(), so wrapped in Arc<RwLock<Option<...>>>.
+    pub(crate) notebook_registry: Arc<RwLock<Option<crate::notebook_registry::NotebookRegistry>>>,
 }
 
 /// Error returned when another daemon is already running.
@@ -590,6 +593,7 @@ impl Daemon {
             blob_port: Mutex::new(None),
             notebook_rooms: Arc::new(Mutex::new(HashMap::new())),
             redirect_map: std::sync::Mutex::new(HashMap::new()),
+            notebook_registry: Arc::new(RwLock::new(None)),
         }))
     }
 
@@ -707,6 +711,24 @@ impl Daemon {
             }
         }
 
+        // Load notebook registry from disk
+        {
+            let registry_path = crate::notebook_registry_path();
+            match crate::notebook_registry::NotebookRegistry::load(registry_path.clone()).await {
+                Ok(loaded_registry) => {
+                    *self.notebook_registry.write().await = Some(loaded_registry);
+                    info!(
+                        "[runtimed] Loaded notebook registry from {:?}",
+                        registry_path
+                    );
+                }
+                Err(e) => {
+                    warn!("[runtimed] Failed to load notebook registry: {}", e);
+                    // Continue without registry - MCP tools will handle missing registry
+                }
+            }
+        }
+
         // Find and reuse existing environments from previous runs
         self.find_existing_environments().await;
 
@@ -797,6 +819,18 @@ impl Daemon {
                     let mut tx = room.runtime_agent_request_tx.lock().await;
                     *tx = None;
                 }
+            }
+        }
+
+        // Persist notebook registry to disk
+        if let Some(registry) = self.notebook_registry.read().await.as_ref() {
+            if let Err(e) = registry.persist().await {
+                warn!(
+                    "[runtimed] Failed to persist notebook registry on shutdown: {}",
+                    e
+                );
+            } else {
+                info!("[runtimed] Persisted notebook registry on shutdown");
             }
         }
 
@@ -1640,6 +1674,52 @@ impl Daemon {
             }
         };
 
+        // Register stable_id in registry if this is a file-backed notebook
+        if !notebook_id.starts_with("untitled-") {
+            // Ensure stable_id exists (read or generate)
+            let stable_id = {
+                let mut doc = room.doc.write().await;
+                match doc.ensure_id() {
+                    Ok(id) => {
+                        debug!("[runtimed] Ensured stable_id {} for {}", id, notebook_id);
+                        id
+                    }
+                    Err(e) => {
+                        warn!(
+                            "[runtimed] Failed to ensure stable_id for {}: {}",
+                            notebook_id, e
+                        );
+                        // Continue without stable_id - not fatal
+                        String::new()
+                    }
+                }
+            };
+
+            // Register in registry with current mtime
+            if !stable_id.is_empty() {
+                if let Ok(uuid) = uuid::Uuid::parse_str(&stable_id) {
+                    if let Ok(metadata) = tokio::fs::metadata(&path_buf).await {
+                        let mtime = metadata
+                            .modified()
+                            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                        if let Some(registry) = self.notebook_registry.read().await.as_ref() {
+                            if let Err(e) = registry.register(&path_buf, uuid, mtime).await {
+                                warn!(
+                                    "[runtimed] Failed to register stable_id for {}: {}",
+                                    notebook_id, e
+                                );
+                            } else {
+                                debug!(
+                                    "[runtimed] Registered stable_id {} for {}",
+                                    stable_id, notebook_id
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Get trust state (already verified during room creation).
         // Scope the read guard so it's dropped before the .await on send_json_frame.
         let needs_trust_approval = {
@@ -2284,6 +2364,39 @@ impl Daemon {
                         .map(|(kt, es, st)| (Some(kt), Some(es), Some(st)))
                         .unwrap_or((None, None, None));
 
+                    // Read stable ID from notebook metadata
+                    let stable_id = {
+                        let doc = room.doc.read().await;
+                        doc.read_id()
+                    };
+
+                    // Update registry if this is a file-backed notebook with stable_id
+                    if let Some(ref id_str) = stable_id {
+                        if let Ok(uuid) = uuid::Uuid::parse_str(id_str) {
+                            // Only update registry for file-backed notebooks (not ephemeral UUIDs)
+                            let is_file_path = std::path::Path::new(&notebook_id).is_absolute();
+                            if is_file_path {
+                                if let Ok(metadata) = tokio::fs::metadata(&notebook_id).await {
+                                    let mtime = metadata
+                                        .modified()
+                                        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                                    // Update registry with current state
+                                    if let Some(registry) =
+                                        self.notebook_registry.read().await.as_ref()
+                                    {
+                                        let path = std::path::Path::new(&notebook_id);
+                                        if let Err(e) = registry.register(path, uuid, mtime).await {
+                                            warn!(
+                                                "[runtimed] Failed to update registry for {}: {}",
+                                                notebook_id, e
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     room_infos.push(crate::protocol::RoomInfo {
                         notebook_id: notebook_id.clone(),
                         active_peers: room.active_peers.load(std::sync::atomic::Ordering::Relaxed),
@@ -2293,6 +2406,7 @@ impl Daemon {
                         env_source,
                         kernel_status,
                         ephemeral: room.is_ephemeral.load(std::sync::atomic::Ordering::Relaxed),
+                        stable_id,
                     });
                 }
                 Response::RoomsList { rooms: room_infos }

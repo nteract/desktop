@@ -423,6 +423,64 @@ impl NotebookDoc {
         serde_json::to_string(&snapshot).ok()
     }
 
+    // ── Notebook ID methods ───────────────────────────────────────
+
+    /// Read the stable notebook ID from `metadata.runt.id`.
+    ///
+    /// Returns `None` if the metadata or ID field is missing.
+    pub fn read_id(&self) -> Option<String> {
+        let snapshot = self.get_metadata_snapshot()?;
+        snapshot.runt.id.clone()
+    }
+
+    /// Write a stable notebook ID to `metadata.runt.id`.
+    ///
+    /// Validates that the ID is a valid UUID v4 format. Returns an error
+    /// if the ID is malformed. Preserves all other metadata fields.
+    pub fn write_id(&mut self, id: &str) -> Result<(), AutomergeError> {
+        // Validate UUID format
+        if !Self::is_valid_uuid(id) {
+            return Err(AutomergeError::InvalidObjId(format!(
+                "Invalid UUID format: {}",
+                id
+            )));
+        }
+
+        let mut snapshot = self.get_metadata_snapshot().unwrap_or_default();
+        snapshot.runt.id = Some(id.to_string());
+        self.set_metadata_snapshot(&snapshot)
+    }
+
+    /// Generate a new UUID v4 and write it to `metadata.runt.id`.
+    ///
+    /// Returns the generated ID.
+    /// Generate a new UUID v4 and write it to `metadata.runt.id` ONLY if no ID exists.
+    ///
+    /// Returns the existing ID if present, or the newly generated ID if created.
+    /// This function is idempotent - calling it multiple times returns the same ID.
+    pub fn ensure_id(&mut self) -> Result<String, AutomergeError> {
+        if let Some(existing_id) = self.read_id() {
+            return Ok(existing_id);
+        }
+        let id = uuid::Uuid::new_v4().to_string();
+        self.write_id(&id)?;
+        Ok(id)
+    }
+
+    /// Deprecated: use `ensure_id()` instead. This method is not idempotent.
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use `ensure_id()` instead for idempotent behavior"
+    )]
+    pub fn generate_and_write_id(&mut self) -> Result<String, AutomergeError> {
+        self.ensure_id()
+    }
+
+    /// Validate that a string is a well-formed UUID (any version).
+    fn is_valid_uuid(s: &str) -> bool {
+        uuid::Uuid::parse_str(s).is_ok()
+    }
+
     // ── UV dependency convenience methods ─────────────────────────
 
     /// Add a UV dependency, deduplicating by package name (case-insensitive).
@@ -4597,5 +4655,76 @@ mod tests {
         let read_back = doc.get_metadata_snapshot().unwrap();
         assert_eq!(read_back.kernelspec.as_ref().unwrap().name, "deno");
         assert_eq!(read_back.language_info.as_ref().unwrap().name, "typescript");
+    }
+
+    #[test]
+    fn test_stable_id_generation_idempotent() {
+        let mut doc = NotebookDoc::new("test-notebook");
+
+        // No ID initially
+        assert!(doc.read_id().is_none());
+
+        // First call generates ID
+        let id1 = doc.ensure_id().unwrap();
+        assert!(!id1.is_empty());
+        assert!(uuid::Uuid::parse_str(&id1).is_ok());
+
+        // Second call returns SAME ID (idempotent)
+        let id2 = doc.ensure_id().unwrap();
+        assert_eq!(id1, id2);
+
+        // read_id returns same value
+        assert_eq!(doc.read_id(), Some(id1));
+    }
+
+    #[test]
+    fn test_stable_id_write_and_read() {
+        let mut doc = NotebookDoc::new("test-notebook");
+
+        // Write a specific UUID
+        let test_uuid = uuid::Uuid::new_v4().to_string();
+        doc.write_id(&test_uuid).unwrap();
+
+        // Read it back
+        assert_eq!(doc.read_id(), Some(test_uuid.clone()));
+
+        // ensure_id should return existing ID, not generate new one
+        let ensured = doc.ensure_id().unwrap();
+        assert_eq!(ensured, test_uuid);
+    }
+
+    #[test]
+    fn test_stable_id_invalid_uuid_rejected() {
+        let mut doc = NotebookDoc::new("test-notebook");
+
+        // Invalid UUID should be rejected
+        let result = doc.write_id("not-a-uuid");
+        assert!(result.is_err());
+
+        // Empty string should be rejected
+        let result = doc.write_id("");
+        assert!(result.is_err());
+
+        // Valid UUID should work
+        let valid_uuid = uuid::Uuid::new_v4().to_string();
+        let result = doc.write_id(&valid_uuid);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_stable_id_persistence_through_save_load() {
+        let mut doc = NotebookDoc::new("test-notebook");
+        let id = doc.ensure_id().unwrap();
+
+        // Save and reload
+        let bytes = doc.save();
+        let mut loaded = NotebookDoc::load(&bytes).unwrap();
+
+        // ID should persist
+        assert_eq!(loaded.read_id(), Some(id.clone()));
+
+        // ensure_id on loaded doc should return same ID
+        let ensured = loaded.ensure_id().unwrap();
+        assert_eq!(ensured, id);
     }
 }
