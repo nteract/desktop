@@ -145,6 +145,51 @@ pub async fn prepare_environment_in(
 
     tokio::fs::create_dir_all(cache_dir).await?;
 
+    // Try lock-based rebuild before full re-creation
+    if env_path.exists() && !python_path.exists() {
+        if let Some(lock) = crate::lock::LockFile::read_from(&env_path).await {
+            // Build expected specs to match against the lock
+            let expected_specs = build_spec_strings(deps);
+            let expected_channels = if deps.channels.is_empty() {
+                vec!["conda-forge".to_string()]
+            } else {
+                deps.channels.clone()
+            };
+            if lock.matches(&expected_specs, &expected_channels) {
+                info!("Rebuilding conda env from lock file at {:?}", env_path);
+                tokio::fs::remove_dir_all(&env_path).await?;
+                tokio::fs::create_dir_all(&env_path).await?;
+                match crate::lock::install_from_lock(&env_path, &lock, handler.clone(), "conda")
+                    .await
+                {
+                    Ok(()) => {
+                        if python_path.exists() {
+                            crate::gc::touch_last_used(&env_path).await;
+                            handler.on_progress(
+                                "conda",
+                                EnvProgressPhase::Ready {
+                                    env_path: env_path.to_string_lossy().to_string(),
+                                    python_path: python_path.to_string_lossy().to_string(),
+                                },
+                            );
+                            return Ok(CondaEnvironment {
+                                env_path,
+                                python_path,
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Lock-based rebuild failed: {}, falling back to full solve",
+                            e
+                        );
+                        tokio::fs::remove_dir_all(&env_path).await.ok();
+                    }
+                }
+            }
+        }
+    }
+
     // Remove partial environment
     if env_path.exists() {
         tokio::fs::remove_dir_all(&env_path).await?;
@@ -203,7 +248,7 @@ async fn install_conda_env(
     handler.on_progress(
         "conda",
         EnvProgressPhase::FetchingRepodata {
-            channels: channel_names,
+            channels: channel_names.clone(),
         },
     );
 
@@ -230,6 +275,9 @@ async fn install_conda_env(
             specs.push(MatchSpec::from_str(dep, match_spec_options)?);
         }
     }
+
+    // Capture spec strings for lock file before specs are moved into the solver
+    let spec_strings_for_lock: Vec<String> = specs.iter().map(|s| s.to_string()).collect();
 
     // Rattler cache
     let rattler_cache_dir = default_cache_dir()
@@ -319,6 +367,9 @@ async fn install_conda_env(
     let reporter = RattlerReporter::new(handler.clone());
     let install_start = Instant::now();
 
+    // Clone packages before install (which consumes them) so we can write the lock file
+    let packages_for_lock = required_packages.clone();
+
     match Installer::new()
         .with_download_client(download_client)
         .with_target_platform(install_platform)
@@ -350,6 +401,10 @@ async fn install_conda_env(
             elapsed_ms: install_elapsed.as_millis() as u64,
         },
     );
+
+    // Write lock file for offline re-creation
+    let lock = crate::lock::LockFile::new(spec_strings_for_lock, channel_names, packages_for_lock);
+    crate::lock::try_write_lock(env_path, &lock).await;
 
     Ok(())
 }
@@ -729,6 +784,31 @@ async fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Build the list of spec strings that `install_conda_env` would produce,
+/// for matching against a lock file.
+fn build_spec_strings(deps: &CondaDependencies) -> Vec<String> {
+    let mut specs = Vec::new();
+
+    if let Some(ref py) = deps.python {
+        specs.push(format!("python={}", py));
+    } else {
+        specs.push("python>=3.13".to_string());
+    }
+
+    specs.push("ipykernel".to_string());
+    specs.push("ipywidgets".to_string());
+    specs.push("anywidget".to_string());
+    specs.push("nbformat".to_string());
+
+    for dep in &deps.dependencies {
+        if dep != "ipykernel" && dep != "ipywidgets" && dep != "anywidget" && dep != "nbformat" {
+            specs.push(dep.clone());
+        }
+    }
+
+    specs
 }
 
 /// Find the site-packages directory inside a venv/env.
