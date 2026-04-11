@@ -190,6 +190,7 @@ async fn main() -> ExitCode {
             dir
         }),
         daemon_info_path,
+        monitor_poll_interval_ms: 500,
     };
 
     let proxy = McpProxy::new(config, None);

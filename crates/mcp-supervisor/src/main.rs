@@ -2012,6 +2012,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 server_name: "nteract-dev".to_string(),
                 cache_dir: Some(project_root.join(".context")),
                 daemon_info_path: None,
+                monitor_poll_interval_ms: 500,
             },
             tool_list_changed_tx,
         );

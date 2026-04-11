@@ -42,6 +42,9 @@ pub struct ProxyConfig {
     pub cache_dir: Option<PathBuf>,
     /// Path to daemon info file (optional, enables version tracking).
     pub daemon_info_path: Option<PathBuf>,
+    /// Child monitor polling interval in milliseconds (default: 500ms).
+    /// Lower values detect child exit faster but use more CPU.
+    pub monitor_poll_interval_ms: u64,
 }
 
 /// Shared mutable state for the proxy.
@@ -392,8 +395,12 @@ impl McpProxy {
 
     /// Spawn a background task to monitor the child process and auto-restart on exit.
     ///
-    /// The task polls `child_client.is_closed()` periodically and triggers restart when
-    /// the child exits. This is simpler than using `waiting()` which requires ownership.
+    /// Uses polling (every 500ms) instead of `waiting()` because `RunningService`
+    /// doesn't implement `Clone` and `waiting()` consumes `self`, making it incompatible
+    /// with the existing architecture where `child_client` is held in `Arc<RwLock<ProxyState>>`.
+    ///
+    /// When the child exits, the monitor triggers `restart_child()` which spawns a new
+    /// monitor, then this monitor exits (preventing task leak).
     fn spawn_child_monitor(&self) {
         let proxy = self.clone();
         tokio::spawn(async move {
@@ -409,8 +416,9 @@ impl McpProxy {
                     break;
                 }
 
-                // Poll every 500ms for child closure
-                tokio::time::sleep(Duration::from_millis(500)).await;
+                // Poll at configured interval for child closure
+                tokio::time::sleep(Duration::from_millis(proxy.config.monitor_poll_interval_ms))
+                    .await;
 
                 // Check if child is closed
                 let is_closed = {
@@ -444,8 +452,9 @@ impl McpProxy {
                 // Attempt to restart the child
                 match proxy.restart_child().await {
                     Ok(_) => {
-                        info!("Child monitor: restart successful, continuing to monitor new child");
-                        // Loop continues to monitor the new child
+                        info!("Child monitor: restart successful, exiting (new monitor spawned)");
+                        // Exit this monitor — restart_child() spawned a new one
+                        break;
                     }
                     Err(e) => {
                         error!(
@@ -787,6 +796,7 @@ mod tests {
             server_name: "test-proxy".to_string(),
             cache_dir: None,
             daemon_info_path: None,
+            monitor_poll_interval_ms: 500,
         }
     }
 
@@ -798,6 +808,7 @@ mod tests {
             server_name: "test-proxy".to_string(),
             cache_dir: Some(dir.to_path_buf()),
             daemon_info_path: None,
+            monitor_poll_interval_ms: 500,
         }
     }
 
@@ -1165,6 +1176,7 @@ mod tests {
             server_name: "nteract".to_string(),
             cache_dir: None,
             daemon_info_path: None,
+            monitor_poll_interval_ms: 500,
         };
 
         assert_eq!(config.child_env.len(), 2);
@@ -1192,6 +1204,7 @@ mod tests {
             server_name: "test".to_string(),
             cache_dir: None,
             daemon_info_path: Some(info_path),
+            monitor_poll_interval_ms: 500,
         };
 
         let proxy = McpProxy::new(config, None);
@@ -1215,6 +1228,7 @@ mod tests {
             server_name: "test".to_string(),
             cache_dir: None,
             daemon_info_path: Some(PathBuf::from("/nonexistent/daemon.json")),
+            monitor_poll_interval_ms: 500,
         };
 
         let proxy = McpProxy::new(config, None);
