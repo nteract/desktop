@@ -1,0 +1,79 @@
+name: Sift Preview
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - packages/sift/**
+      - crates/nteract-predicate/**
+  pull_request:
+    paths:
+      - packages/sift/**
+      - crates/nteract-predicate/**
+
+concurrency:
+  group: sift-preview-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Build & Deploy Sift Preview
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    permissions:
+      contents: read
+      pull-requests: write
+      deployments: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          lfs: true
+
+      - name: Install rust
+        uses: dsherret/rust-toolchain-file@v1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ubuntu-wasm
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build nteract-predicate WASM
+        run: wasm-pack build crates/nteract-predicate --target web --release --out-dir ../../packages/sift/public/wasm
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Generate demo data
+        working-directory: packages/sift
+        run: npx tsx src/generate-data.ts
+
+      - name: Build sift demo
+        working-directory: packages/sift
+        run: npx vite build
+
+      - name: Deploy to Cloudflare Pages
+        id: deploy
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy packages/sift/dist --project-name=sift --branch=${{ github.head_ref || github.ref_name }}
+
+      - name: Comment preview URL on PR
+        if: github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: sift-preview
+          message: |
+            ## Sift Preview
+
+            ${{ steps.deploy.outputs.deployment-url }}
