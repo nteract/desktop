@@ -304,7 +304,8 @@ function loadHuggingFaceWasm$(dataset: DatasetEntry, tableRoot: HTMLElement): Ob
       if (cancelled) return
       try {
         const localResp = await fetch(localUrl)
-        if (localResp.ok) resp = localResp
+        const ct = localResp.headers.get('content-type') ?? ''
+        if (localResp.ok && ct.includes('octet-stream')) resp = localResp
       } catch { /* local cache miss, fall back to HF */ }
 
       if (!resp) {
