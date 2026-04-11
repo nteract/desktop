@@ -32,6 +32,8 @@ pub mod gc;
 pub mod pixi;
 pub mod progress;
 #[cfg(feature = "runtime")]
+pub mod repodata;
+#[cfg(feature = "runtime")]
 pub mod uv;
 pub mod warmup;
 

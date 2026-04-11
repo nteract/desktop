@@ -15,11 +15,10 @@
 
 use anyhow::{anyhow, Result};
 use log::{debug, info, warn};
-use rattler::{default_cache_dir, install::Installer, package_cache::PackageCache};
+use rattler::{default_cache_dir, install::Installer};
 use rattler_conda_types::{
     Channel, ChannelConfig, GenericVirtualPackage, MatchSpec, ParseMatchSpecOptions, Platform,
 };
-use rattler_repodata_gateway::Gateway;
 use rattler_solve::{resolvo, SolverImpl, SolverTask};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -205,15 +204,6 @@ async fn install_pixi_env(
         .map(|c| Channel::from_str(c, &channel_config))
         .collect::<std::result::Result<Vec<_>, _>>()?;
 
-    let channel_names: Vec<String> = channels.iter().map(|c| c.name().to_string()).collect();
-
-    handler.on_progress(
-        "pixi",
-        EnvProgressPhase::FetchingRepodata {
-            channels: channel_names,
-        },
-    );
-
     // Build specs -- always include python
     let match_spec_options = ParseMatchSpecOptions::strict();
     let mut specs: Vec<MatchSpec> = vec![MatchSpec::from_str("python>=3.13", match_spec_options)?];
@@ -233,110 +223,20 @@ async fn install_pixi_env(
     let download_client = reqwest::Client::builder().build()?;
     let download_client = reqwest_middleware::ClientBuilder::new(download_client).build();
 
-    // Gateway
-    let gateway = Gateway::builder()
-        .with_cache_dir(rattler_cache_dir.join(rattler_cache::REPODATA_CACHE_DIR))
-        .with_package_cache(PackageCache::new(
-            rattler_cache_dir.join(rattler_cache::PACKAGE_CACHE_DIR),
-        ))
-        .with_client(download_client.clone())
-        .finish();
-
-    // Query repodata with retry
+    // Query repodata with offline-first strategy
     let install_platform = Platform::current();
     let platforms = vec![install_platform, Platform::NoArch];
 
-    let repodata_start = Instant::now();
-    const MAX_RETRIES: u32 = 3;
-    const INITIAL_DELAY_MS: u64 = 1000;
-
-    let mut last_error = None;
-    let mut repo_data = None;
-
-    for attempt in 0..MAX_RETRIES {
-        if attempt > 0 {
-            let delay_ms = INITIAL_DELAY_MS * (1 << (attempt - 1));
-            info!(
-                "[pixi] Retrying repodata fetch (attempt {}/{}) after {}ms...",
-                attempt + 1,
-                MAX_RETRIES,
-                delay_ms
-            );
-            tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
-        }
-
-        match gateway
-            .query(channels.clone(), platforms.clone(), specs.clone())
-            .recursive(true)
-            .await
-        {
-            Ok(data) => {
-                repo_data = Some(data);
-                break;
-            }
-            Err(e) => {
-                let error_str = e.to_string();
-                let is_retryable = error_str.contains("500")
-                    || error_str.contains("502")
-                    || error_str.contains("503")
-                    || error_str.contains("504")
-                    || error_str.contains("timeout")
-                    || error_str.contains("connection");
-
-                if is_retryable && attempt < MAX_RETRIES - 1 {
-                    info!(
-                        "[pixi] Transient error fetching repodata (attempt {}): {}",
-                        attempt + 1,
-                        error_str
-                    );
-                    last_error = Some(e);
-                    continue;
-                }
-                let error_msg = format!("Failed to fetch package metadata: {}", e);
-                handler.on_progress(
-                    "pixi",
-                    EnvProgressPhase::Error {
-                        message: error_msg.clone(),
-                    },
-                );
-                return Err(anyhow!(error_msg));
-            }
-        }
-    }
-
-    let repo_data = match repo_data {
-        Some(data) => data,
-        None => {
-            let error_msg = format!(
-                "Failed to fetch package metadata after {} retries: {}",
-                MAX_RETRIES,
-                last_error
-                    .map(|e| e.to_string())
-                    .unwrap_or_else(|| "unknown error".to_string())
-            );
-            handler.on_progress(
-                "pixi",
-                EnvProgressPhase::Error {
-                    message: error_msg.clone(),
-                },
-            );
-            return Err(anyhow!(error_msg));
-        }
-    };
-
-    let total_records: usize = repo_data.iter().map(|r| r.len()).sum();
-    let repodata_elapsed = repodata_start.elapsed();
-    info!(
-        "[pixi] Loaded {} package records in {:?}",
-        total_records, repodata_elapsed
-    );
-    handler.on_progress(
+    let repo_data = crate::repodata::query_repodata_offline_first(
+        channels,
+        platforms,
+        specs.clone(),
+        &rattler_cache_dir,
+        download_client.clone(),
+        handler.clone(),
         "pixi",
-        EnvProgressPhase::RepodataComplete {
-            record_count: total_records,
-            elapsed_ms: repodata_elapsed.as_millis() as u64,
-        },
-    );
+    )
+    .await?;
 
     // Virtual packages
     let virtual_packages = rattler_virtual_packages::VirtualPackage::detect(

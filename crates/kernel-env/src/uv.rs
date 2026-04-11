@@ -6,7 +6,7 @@
 //!   rattler if not found on PATH.
 
 use anyhow::{anyhow, Result};
-use log::info;
+use log::{debug, info};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -227,6 +227,44 @@ pub async fn prepare_environment_in(
 
     handler.on_progress("uv", EnvProgressPhase::InstallingPackages { packages });
 
+    // Try offline first: use local cache if available
+    let mut offline_args = install_args.clone();
+    offline_args.insert(2, "--offline".to_string());
+
+    let offline_output = tokio::process::Command::new(&uv_path)
+        .args(&offline_args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await?;
+
+    if offline_output.status.success() {
+        info!("Resolved dependencies from local cache (offline mode)");
+        handler.on_progress("uv", EnvProgressPhase::OfflineHit);
+
+        // Success path: environment is ready
+        info!("Environment ready at {:?}", venv_path);
+        crate::gc::touch_last_used(&venv_path).await;
+        handler.on_progress(
+            "uv",
+            EnvProgressPhase::Ready {
+                env_path: venv_path.to_string_lossy().to_string(),
+                python_path: python_path.to_string_lossy().to_string(),
+            },
+        );
+
+        return Ok(UvEnvironment {
+            venv_path,
+            python_path,
+        });
+    }
+
+    // Offline failed, fall back to network install
+    debug!(
+        "Offline install failed (expected if packages not cached): {}",
+        String::from_utf8_lossy(&offline_output.stderr)
+    );
+
     let install_output = tokio::process::Command::new(&uv_path)
         .args(&install_args)
         .stdout(Stdio::piped())
@@ -307,6 +345,26 @@ pub async fn sync_dependencies(env: &UvEnvironment, deps: &[String]) -> Result<(
     for dep in deps {
         install_args.push(dep.clone());
     }
+
+    // Try offline first
+    let mut offline_args = install_args.clone();
+    offline_args.insert(2, "--offline".to_string());
+
+    let offline_output = tokio::process::Command::new(&uv_path)
+        .args(&offline_args)
+        .output()
+        .await?;
+
+    if offline_output.status.success() {
+        info!("Synced dependencies from local cache (offline mode)");
+        return Ok(());
+    }
+
+    // Offline failed, fall back to network install
+    debug!(
+        "Offline sync failed (expected if packages not cached): {}",
+        String::from_utf8_lossy(&offline_output.stderr)
+    );
 
     let output = tokio::process::Command::new(&uv_path)
         .args(&install_args)
@@ -398,6 +456,47 @@ pub async fn create_prewarmed_environment_in(
         EnvProgressPhase::InstallingPackages {
             packages: install_args[6..].to_vec(),
         },
+    );
+
+    // Try offline first for prewarmed environments
+    let mut offline_args = install_args.clone();
+    offline_args.insert(2, "--offline".to_string());
+
+    let offline_output = tokio::process::Command::new(&uv_path)
+        .args(&offline_args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await?;
+
+    if offline_output.status.success() {
+        info!("[prewarm] Resolved dependencies from local cache (offline mode)");
+        handler.on_progress("uv", EnvProgressPhase::OfflineHit);
+
+        info!("[prewarm] Prewarmed environment ready at {:?}", venv_path);
+
+        let env = UvEnvironment {
+            venv_path,
+            python_path,
+        };
+
+        warmup_environment(&env).await?;
+
+        handler.on_progress(
+            "uv",
+            EnvProgressPhase::Ready {
+                env_path: env.venv_path.to_string_lossy().to_string(),
+                python_path: env.python_path.to_string_lossy().to_string(),
+            },
+        );
+
+        return Ok(env);
+    }
+
+    // Offline failed, fall back to network install
+    debug!(
+        "[prewarm] Offline install failed (expected if packages not cached): {}",
+        String::from_utf8_lossy(&offline_output.stderr)
     );
 
     let install_output = tokio::process::Command::new(&uv_path)

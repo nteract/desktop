@@ -2208,6 +2208,7 @@ fn env_progress_message(phase: &EnvProgressPhase) -> String {
     match phase {
         EnvProgressPhase::Starting { .. } => "Preparing environment...".to_string(),
         EnvProgressPhase::CacheHit { .. } => "Using cached environment".to_string(),
+        EnvProgressPhase::OfflineHit => "Using cached packages (offline)".to_string(),
         EnvProgressPhase::FetchingRepodata { channels } => {
             format!("Fetching package index ({})", channels.join(", "))
         }

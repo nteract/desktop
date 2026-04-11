@@ -34,6 +34,8 @@ pub enum EnvProgressPhase {
     Starting { env_hash: String },
     /// Using a cached environment (fast path).
     CacheHit { env_path: String },
+    /// Environment resolved from local package cache without network access.
+    OfflineHit,
     /// Fetching package metadata from channels.
     FetchingRepodata { channels: Vec<String> },
     /// Repodata fetch complete.
@@ -113,6 +115,9 @@ impl ProgressHandler for LogHandler {
             }
             EnvProgressPhase::CacheHit { env_path } => {
                 log::info!("[{env_type}] Cache hit: {env_path}");
+            }
+            EnvProgressPhase::OfflineHit => {
+                log::info!("[{env_type}] Resolved from local cache (offline mode)");
             }
             EnvProgressPhase::FetchingRepodata { channels } => {
                 log::info!("[{env_type}] Fetching repodata from: {channels:?}");
