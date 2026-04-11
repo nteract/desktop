@@ -42,3 +42,38 @@ env -i HOME=$HOME /usr/local/bin/runt daemon status
 ```
 
 For the dev daemon, use `./target/debug/runt` directly (no `env -i` needed — dev env vars are correct).
+
+## Verifying Daemon Isolation
+
+After setting up direnv, verify that the three MCP servers connect to the correct daemons:
+
+```bash
+# 1. Check nteract-dev supervisor status (should show worktrees/ socket)
+supervisor_status
+# Expected socket: ~/.cache/runt-nightly/worktrees/{hash}/runtimed.sock
+
+# 2. List active notebooks on nteract-nightly (should show user's notebooks)
+mcp__nteract-nightly__list_active_notebooks
+# Should list real notebooks like coordination.ipynb
+
+# 3. List active notebooks on nteract-dev (should be empty in fresh dev env)
+mcp__nteract-dev__list_active_notebooks
+# Should return []
+
+# 4. Verify nteract-nightly MCP processes have NO dev env vars
+ps aux | grep "runt.*mcp" | grep -v grep
+# For each nteract-nightly PID:
+cat /proc/{PID}/environ | tr '\0' '\n' | grep RUNTIMED
+# Should return nothing — no RUNTIMED_DEV or RUNTIMED_WORKSPACE_PATH
+
+# 5. Verify nteract-nightly daemon socket (should be system socket)
+env -i HOME=$HOME /usr/local/bin/runt-nightly daemon status --json | jq -r '.socket_path'
+# Expected: ~/.cache/runt-nightly/runtimed.sock (NOT worktrees/)
+```
+
+**Red flags:**
+- nteract-dev socket path doesn't contain `worktrees/` → direnv not active, using system daemon
+- nteract-nightly shows empty notebook list → connecting to dev daemon instead of system daemon
+- nteract-nightly MCP process has `RUNTIMED_DEV=1` in environment → env var stripping failed
+
+**Fix:** If direnv is not active, install it and run `direnv allow` in the repo root. See CLAUDE.md § Development Setup.

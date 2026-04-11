@@ -10,6 +10,76 @@ Codex-specific repo skills live in `.codex/skills/`. Prefer them when the task m
 - `nteract-notebook-sync` for Automerge ownership, output manifests, and sync-path changes
 - `nteract-testing` for choosing and running the right verification path
 
+## Development Setup Requirements
+
+### direnv (Required for Daemon Isolation)
+
+**direnv is required** to automatically set `RUNTIMED_DEV=1` and `RUNTIMED_WORKSPACE_PATH` when you enter the repo directory. Without it, the dev daemon and system nightly daemon will conflict, and nteract-dev MCP will connect to the wrong daemon.
+
+**Install and configure:**
+```bash
+# Install direnv
+sudo apt install direnv  # Ubuntu/Debian
+brew install direnv      # macOS
+
+# Add hook to shell (bash)
+echo 'eval "$(direnv hook bash)"' >> ~/.bashrc
+source ~/.bashrc
+
+# Allow the repo's .envrc
+cd /path/to/nteract/desktop
+direnv allow
+```
+
+The `.envrc` file sets:
+- `PATH_add bin` — adds `bin/runt` wrapper to PATH (shadows system `runt`)
+- `export RUNTIMED_DEV=1` — enables per-worktree daemon isolation
+- `export RUNTIMED_WORKSPACE_PATH="$(pwd)"` — pins daemon to this worktree
+
+**Verify it works:**
+```bash
+cd /path/to/nteract/desktop
+echo $RUNTIMED_DEV              # Should print "1"
+echo $RUNTIMED_WORKSPACE_PATH   # Should print the repo path
+which runt                      # Should be repo/bin/runt (not /usr/local/bin/runt)
+```
+
+### MCP Server Configuration
+
+**Three MCP servers** should be configured:
+
+1. **nteract-dev** (development, per-worktree daemon)
+   - Command: `cargo xtask run-mcp` or `/path/to/repo/target/debug/mcp-supervisor`
+   - Working directory: `/path/to/nteract/desktop`
+   - Env vars: Inherits from shell (direnv provides RUNTIMED_DEV, RUNTIMED_WORKSPACE_PATH)
+   - Socket: `~/.cache/runt-nightly/worktrees/{hash}/runtimed.sock`
+   - Tools: 27 nteract tools + 8 supervisor tools
+
+2. **nteract-nightly** (system nightly daemon, for testing releases)
+   - Command: `env -i HOME=$HOME /usr/local/bin/runt-nightly mcp`
+   - Working directory: Can be anywhere (no repo dependency)
+   - Env vars: **MUST use `env -i`** to strip RUNTIMED_DEV and RUNTIMED_WORKSPACE_PATH
+   - Socket: `~/.cache/runt-nightly/runtimed.sock` (system socket, NOT worktrees/)
+   - Tools: 27 nteract tools (no supervisor tools)
+
+3. **nteract** (system stable daemon, for testing stable releases)
+   - Command: `env -i HOME=$HOME /usr/local/bin/runt mcp`
+   - Working directory: Can be anywhere
+   - Env vars: **MUST use `env -i`** to strip dev env vars
+   - Socket: `~/.cache/runt/runtimed.sock`
+   - Tools: 27 nteract tools (no supervisor tools)
+
+**Critical:** The `env -i` wrapper on nteract-nightly and nteract is required to prevent direnv's env vars from leaking into these MCP servers. Without it, they will incorrectly connect to the dev daemon instead of the system daemon.
+
+**This system's nightly installation:**
+- Binaries: `~/.local/share/runt-nightly/bin/{runtimed-nightly,runt-nightly}`
+- Symlink: `/usr/local/bin/runt-nightly` → `~/.local/share/runt-nightly/bin/runt-nightly`
+- Daemon socket: `~/.cache/runt-nightly/runtimed.sock`
+- Install command: `cargo xtask build --release && cargo xtask install-daemon --channel nightly`
+- Version: Built from source, updated after each PR merge
+
+**Verification steps:** See `.claude/rules/mcp-servers.md` § Verifying Daemon Isolation.
+
 ## Quick Recipes (Common Dev Tasks)
 
 ### If you have `supervisor_*` tools — use them

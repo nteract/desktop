@@ -541,6 +541,20 @@ impl Supervisor {
     /// Build the supervisor_status result.
     async fn status(&self) -> SupervisorStatus {
         let mut state = self.state.write().await;
+
+        // Failsafe: warn if the socket path doesn't look like a dev daemon socket.
+        // Dev daemon sockets should be under worktrees/ to ensure isolation from
+        // the system nightly daemon.
+        if !state.socket_path.is_empty() && !state.socket_path.contains("worktrees/") {
+            warn!(
+                "⚠️  Socket path does not contain 'worktrees/': {}\n\
+                 This may indicate direnv is not active and the supervisor is \
+                 connecting to the system daemon instead of a per-worktree dev daemon.\n\
+                 Fix: run `direnv allow` in the repo root.",
+                state.socket_path
+            );
+        }
+
         // Check proxy's child status
         let (child_running, restart_count) = if let Some(ref proxy) = state.proxy {
             let ps = proxy.state.read().await;
