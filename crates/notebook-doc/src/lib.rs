@@ -423,6 +423,48 @@ impl NotebookDoc {
         serde_json::to_string(&snapshot).ok()
     }
 
+    // ── Notebook ID methods ───────────────────────────────────────
+
+    /// Read the stable notebook ID from `metadata.runt.id`.
+    ///
+    /// Returns `None` if the metadata or ID field is missing.
+    pub fn read_id(&self) -> Option<String> {
+        let snapshot = self.get_metadata_snapshot()?;
+        snapshot.runt.id.clone()
+    }
+
+    /// Write a stable notebook ID to `metadata.runt.id`.
+    ///
+    /// Validates that the ID is a valid UUID v4 format. Returns an error
+    /// if the ID is malformed. Preserves all other metadata fields.
+    pub fn write_id(&mut self, id: &str) -> Result<(), AutomergeError> {
+        // Validate UUID format
+        if !Self::is_valid_uuid(id) {
+            return Err(AutomergeError::InvalidObjId(format!(
+                "Invalid UUID format: {}",
+                id
+            )));
+        }
+
+        let mut snapshot = self.get_metadata_snapshot().unwrap_or_default();
+        snapshot.runt.id = Some(id.to_string());
+        self.set_metadata_snapshot(&snapshot)
+    }
+
+    /// Generate a new UUID v4 and write it to `metadata.runt.id`.
+    ///
+    /// Returns the generated ID.
+    pub fn generate_and_write_id(&mut self) -> Result<String, AutomergeError> {
+        let id = uuid::Uuid::new_v4().to_string();
+        self.write_id(&id)?;
+        Ok(id)
+    }
+
+    /// Validate that a string is a well-formed UUID (any version).
+    fn is_valid_uuid(s: &str) -> bool {
+        uuid::Uuid::parse_str(s).is_ok()
+    }
+
     // ── UV dependency convenience methods ─────────────────────────
 
     /// Add a UV dependency, deduplicating by package name (case-insensitive).
