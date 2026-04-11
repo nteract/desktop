@@ -505,6 +505,9 @@ pub struct Daemon {
     /// Redirect map: old ephemeral UUID -> new canonical path after rekey.
     /// Used so peers reconnecting with the old UUID find the re-keyed room.
     pub(crate) redirect_map: std::sync::Mutex<HashMap<String, RedirectEntry>>,
+    /// Notebook registry for stable ID management.
+    /// Loaded asynchronously in run(), so wrapped in Arc<RwLock<Option<...>>>.
+    pub(crate) notebook_registry: Arc<RwLock<Option<crate::notebook_registry::NotebookRegistry>>>,
 }
 
 /// Error returned when another daemon is already running.
@@ -590,6 +593,7 @@ impl Daemon {
             blob_port: Mutex::new(None),
             notebook_rooms: Arc::new(Mutex::new(HashMap::new())),
             redirect_map: std::sync::Mutex::new(HashMap::new()),
+            notebook_registry: Arc::new(RwLock::new(None)),
         }))
     }
 
@@ -707,6 +711,21 @@ impl Daemon {
             }
         }
 
+        // Load notebook registry from disk
+        {
+            let registry_path = crate::notebook_registry_path();
+            match crate::notebook_registry::NotebookRegistry::load(registry_path.clone()).await {
+                Ok(loaded_registry) => {
+                    *self.notebook_registry.write().await = Some(loaded_registry);
+                    info!("[runtimed] Loaded notebook registry from {:?}", registry_path);
+                }
+                Err(e) => {
+                    warn!("[runtimed] Failed to load notebook registry: {}", e);
+                    // Continue without registry - MCP tools will handle missing registry
+                }
+            }
+        }
+
         // Find and reuse existing environments from previous runs
         self.find_existing_environments().await;
 
@@ -797,6 +816,15 @@ impl Daemon {
                     let mut tx = room.runtime_agent_request_tx.lock().await;
                     *tx = None;
                 }
+            }
+        }
+
+        // Persist notebook registry to disk
+        if let Some(registry) = self.notebook_registry.read().await.as_ref() {
+            if let Err(e) = registry.persist().await {
+                warn!("[runtimed] Failed to persist notebook registry on shutdown: {}", e);
+            } else {
+                info!("[runtimed] Persisted notebook registry on shutdown");
             }
         }
 
