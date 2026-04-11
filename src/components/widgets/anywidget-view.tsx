@@ -183,7 +183,15 @@ export function createAFMModelProxy(
       if (key in pendingChanges) {
         return pendingChanges[key];
       }
-      return getCurrentState()[key];
+      const value = getCurrentState()[key];
+      // Deep clone objects/arrays so widget code can mutate them freely.
+      // State objects originating from WASM (serde_wasm_bindgen) can have
+      // readonly properties in WebKit, causing "Attempted to assign to
+      // readonly property" errors when widgets like Plotly mutate in-place.
+      if (value !== null && typeof value === "object") {
+        return structuredClone(value);
+      }
+      return value;
     },
 
     set(key: string, value: unknown): void {
