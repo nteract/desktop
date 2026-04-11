@@ -82,6 +82,7 @@ export interface JupyterMessage {
 export type EnvProgressPhase =
   | { phase: "starting"; env_hash: string }
   | { phase: "cache_hit"; env_path: string }
+  | { phase: "lock_file_hit" }
   | { phase: "fetching_repodata"; channels: string[] }
   | { phase: "repodata_complete"; record_count: number; elapsed_ms: number }
   | { phase: "solving"; spec_count: number }

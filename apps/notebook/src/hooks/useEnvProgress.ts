@@ -46,6 +46,8 @@ export function getStatusText(event: EnvProgressEvent): string {
       return "Preparing environment...";
     case "cache_hit":
       return "Using cached environment";
+    case "lock_file_hit":
+      return "Rebuilding from lock file";
     case "fetching_repodata": {
       const e = event as Extract<
         EnvProgressPhase,
