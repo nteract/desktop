@@ -67,40 +67,28 @@ function hasBroadcastEvent(payload: unknown): payload is { event: string } {
   );
 }
 
-export function isOutputBroadcast(
-  payload: unknown,
-): payload is OutputBroadcast {
+export function isOutputBroadcast(payload: unknown): payload is OutputBroadcast {
   return hasBroadcastEvent(payload) && payload.event === "output";
 }
 
-export function isDisplayUpdateBroadcast(
-  payload: unknown,
-): payload is DisplayUpdateBroadcast {
+export function isDisplayUpdateBroadcast(payload: unknown): payload is DisplayUpdateBroadcast {
   return hasBroadcastEvent(payload) && payload.event === "display_update";
 }
 
-export function isOutputsClearedBroadcast(
-  payload: unknown,
-): payload is OutputsClearedBroadcast {
+export function isOutputsClearedBroadcast(payload: unknown): payload is OutputsClearedBroadcast {
   return hasBroadcastEvent(payload) && payload.event === "outputs_cleared";
 }
 
-export function isCommBroadcast(
-  payload: unknown,
-): payload is CommBroadcast {
+export function isCommBroadcast(payload: unknown): payload is CommBroadcast {
   return hasBroadcastEvent(payload) && payload.event === "comm";
 }
 
-export function isKernelErrorBroadcast(
-  payload: unknown,
-): payload is KernelErrorBroadcast {
+export function isKernelErrorBroadcast(payload: unknown): payload is KernelErrorBroadcast {
   return hasBroadcastEvent(payload) && payload.event === "kernel_error";
 }
 
 export function isRuntimeStateSnapshotBroadcast(
   payload: unknown,
 ): payload is RuntimeStateSnapshotBroadcast {
-  return (
-    hasBroadcastEvent(payload) && payload.event === "runtime_state_snapshot"
-  );
+  return hasBroadcastEvent(payload) && payload.event === "runtime_state_snapshot";
 }

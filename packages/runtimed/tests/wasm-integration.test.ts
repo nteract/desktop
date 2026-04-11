@@ -18,7 +18,7 @@
  */
 
 import { firstValueFrom, timeout } from "rxjs";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import type { CellChangeset } from "../src/cell-changeset";
 import { type WasmHarness, createWasmHarness, initWasm } from "./wasm-harness";
 
@@ -88,9 +88,7 @@ describe("WASM integration: real frames through SyncEngine", { retry: 3 }, () =>
       h.serverUpdateSource("cell-1", "original");
       await h.startAndCompleteSync();
 
-      const changesetPromise = firstValueFrom(
-        h.engine.cellChanges$.pipe(timeout(3000)),
-      );
+      const changesetPromise = firstValueFrom(h.engine.cellChanges$.pipe(timeout(3000)));
 
       h.serverUpdateSource("cell-1", "modified");
       h.pushAndFlush();
@@ -113,9 +111,7 @@ describe("WASM integration: real frames through SyncEngine", { retry: 3 }, () =>
       h.serverAddCell("cell-1", "code");
       await h.startAndCompleteSync();
 
-      const changesetPromise = firstValueFrom(
-        h.engine.cellChanges$.pipe(timeout(3000)),
-      );
+      const changesetPromise = firstValueFrom(h.engine.cellChanges$.pipe(timeout(3000)));
 
       h.serverAddCell("cell-2", "markdown");
       h.pushAndFlush();
@@ -123,9 +119,7 @@ describe("WASM integration: real frames through SyncEngine", { retry: 3 }, () =>
       const cs = await changesetPromise;
       // Structural change: either null (full materialization) or has added[]
       if (cs !== null) {
-        expect(cs.added.length + (cs.order_changed ? 1 : 0)).toBeGreaterThan(
-          0,
-        );
+        expect(cs.added.length + (cs.order_changed ? 1 : 0)).toBeGreaterThan(0);
       }
       expect(h.client.cell_count()).toBe(2);
     });
@@ -135,9 +129,7 @@ describe("WASM integration: real frames through SyncEngine", { retry: 3 }, () =>
       h.serverAddCell("cell-2", "code");
       await h.startAndCompleteSync();
 
-      const changesetPromise = firstValueFrom(
-        h.engine.cellChanges$.pipe(timeout(3000)),
-      );
+      const changesetPromise = firstValueFrom(h.engine.cellChanges$.pipe(timeout(3000)));
 
       h.server.delete_cell("cell-2");
       h.pushAndFlush();
@@ -154,9 +146,7 @@ describe("WASM integration: real frames through SyncEngine", { retry: 3 }, () =>
       h.serverUpdateSource("cell-1", "original");
       await h.startAndCompleteSync();
 
-      const changesetPromise = firstValueFrom(
-        h.engine.cellChanges$.pipe(timeout(3000)),
-      );
+      const changesetPromise = firstValueFrom(h.engine.cellChanges$.pipe(timeout(3000)));
 
       h.serverUpdateSource("cell-1", "changed");
       h.pushAndFlush();
@@ -269,9 +259,7 @@ describe("WASM integration: real frames through SyncEngine", { retry: 3 }, () =>
 
       expect(emissions.length).toBe(1);
       if (emissions[0] !== null) {
-        const cell1Change = emissions[0].changed.find(
-          (c) => c.cell_id === "cell-1",
-        );
+        const cell1Change = emissions[0].changed.find((c) => c.cell_id === "cell-1");
         expect(cell1Change).toBeDefined();
         expect(cell1Change!.fields.source).toBe(true);
         // execution_count no longer written to NotebookDoc (#1405)
@@ -387,9 +375,7 @@ describe("WASM integration: real frames through SyncEngine", { retry: 3 }, () =>
     it("routes broadcast frames to broadcasts$ observable", async () => {
       h.engine.start();
 
-      const broadcastPromise = firstValueFrom(
-        h.engine.broadcasts$.pipe(timeout(3000)),
-      );
+      const broadcastPromise = firstValueFrom(h.engine.broadcasts$.pipe(timeout(3000)));
 
       h.transport.pushBroadcast({
         type: "kernel_status",
@@ -424,9 +410,7 @@ describe("WASM integration: real frames through SyncEngine", { retry: 3 }, () =>
       const broadcasts: unknown[] = [];
       const changesets: (CellChangeset | null)[] = [];
       const bSub = h.engine.broadcasts$.subscribe((p) => broadcasts.push(p));
-      const cSub = h.engine.cellChanges$.subscribe((cs) =>
-        changesets.push(cs),
-      );
+      const cSub = h.engine.cellChanges$.subscribe((cs) => changesets.push(cs));
 
       // Interleave: broadcast, sync, broadcast
       h.transport.pushBroadcast({ type: "execution_started" });
@@ -497,9 +481,7 @@ describe("WASM integration: real frames through SyncEngine", { retry: 3 }, () =>
       h.pushToClient();
 
       // The engine should have sent sync reply frames back
-      const syncReplies = h.transport.sentFrames.filter(
-        (f) => f.frameType === 0x00,
-      );
+      const syncReplies = h.transport.sentFrames.filter((f) => f.frameType === 0x00);
       expect(syncReplies.length).toBeGreaterThan(0);
     });
 
@@ -601,22 +583,18 @@ describe("WASM integration: real frames through SyncEngine", { retry: 3 }, () =>
   // ── Stress scenarios ──────────────────────────────────────────
 
   describe("stress scenarios", () => {
-    it(
-      "handles notebook with many cells",
-      async () => {
-        for (let i = 0; i < 50; i++) {
-          h.serverAddCell(`cell-${i}`, i % 3 === 0 ? "markdown" : "code");
-          h.serverUpdateSource(`cell-${i}`, `content of cell ${i}`);
-        }
+    it("handles notebook with many cells", async () => {
+      for (let i = 0; i < 50; i++) {
+        h.serverAddCell(`cell-${i}`, i % 3 === 0 ? "markdown" : "code");
+        h.serverUpdateSource(`cell-${i}`, `content of cell ${i}`);
+      }
 
-        await h.startAndCompleteSync();
+      await h.startAndCompleteSync();
 
-        expect(h.client.cell_count()).toBe(50);
-        expect(h.client.get_cell_source("cell-0")).toBe("content of cell 0");
-        expect(h.client.get_cell_source("cell-49")).toBe("content of cell 49");
-      },
-      15000,
-    );
+      expect(h.client.cell_count()).toBe(50);
+      expect(h.client.get_cell_source("cell-0")).toBe("content of cell 0");
+      expect(h.client.get_cell_source("cell-49")).toBe("content of cell 49");
+    }, 15000);
 
     it("rapid source edits all arrive correctly", async () => {
       h.serverAddCell("cell-1", "code");
@@ -654,12 +632,8 @@ describe("WASM integration: real frames through SyncEngine", { retry: 3 }, () =>
 
       // Verify all content is present
       for (let i = 0; i < 5; i++) {
-        expect(h.client.get_cell_source(`client-${i}`)).toBe(
-          `from client ${i}`,
-        );
-        expect(h.client.get_cell_source(`server-${i}`)).toBe(
-          `from server ${i}`,
-        );
+        expect(h.client.get_cell_source(`client-${i}`)).toBe(`from client ${i}`);
+        expect(h.client.get_cell_source(`server-${i}`)).toBe(`from server ${i}`);
       }
     });
   });

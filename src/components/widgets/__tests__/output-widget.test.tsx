@@ -1,5 +1,5 @@
 import { act, render, screen } from "@testing-library/react";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vite-plus/test";
 import { OutputWidget } from "@/components/widgets/controls/output-widget";
 import { createWidgetStore } from "@/components/widgets/widget-store";
 import { WidgetStoreContext } from "@/components/widgets/widget-store-context";

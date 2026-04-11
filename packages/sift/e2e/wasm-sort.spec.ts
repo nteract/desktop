@@ -12,11 +12,9 @@ test.describe("WASM Sort (Titanic)", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/?dataset=titanic");
     await page.waitForSelector(".pt-table-container", { timeout: 90_000 });
-    await expect(page.locator(".pt-stat-rows")).toHaveAttribute(
-      "data-value",
-      /891/,
-      { timeout: 30_000 },
-    );
+    await expect(page.locator(".pt-stat-rows")).toHaveAttribute("data-value", /891/, {
+      timeout: 30_000,
+    });
   });
 
   test("sort by Age ascending shows youngest first", async ({ page }) => {
@@ -94,9 +92,7 @@ test.describe("WASM Sort (Titanic)", () => {
     expect(fareValue).toBeLessThanOrEqual(1);
   });
 
-  test("sort + filter: sorted results respect active filter", async ({
-    page,
-  }) => {
+  test("sort + filter: sorted results respect active filter", async ({ page }) => {
     // First, apply a filter on Age histogram (brush to select a range)
     const ageTh = page.locator(".pt-th").filter({
       has: page.locator(".pt-th-label", { hasText: /^Age$/ }),
@@ -115,11 +111,9 @@ test.describe("WASM Sort (Titanic)", () => {
     await page.waitForTimeout(500);
 
     // Should show filtered count
-    await expect(page.locator(".pt-stat-rows")).toHaveAttribute(
-      "data-value",
-      /of/,
-      { timeout: 5000 },
-    );
+    await expect(page.locator(".pt-stat-rows")).toHaveAttribute("data-value", /of/, {
+      timeout: 5000,
+    });
 
     // Now sort by Fare
     const fareTh = page.locator(".pt-th").filter({
@@ -131,10 +125,7 @@ test.describe("WASM Sort (Titanic)", () => {
     });
 
     // Filtered count should still be shown (filter still active)
-    await expect(page.locator(".pt-stat-rows")).toHaveAttribute(
-      "data-value",
-      /of/,
-    );
+    await expect(page.locator(".pt-stat-rows")).toHaveAttribute("data-value", /of/);
     // Filter pill should still be visible
     await expect(page.locator(".pt-filter-pill")).toHaveCount(1);
   });

@@ -30,11 +30,9 @@ test.describe("Performance Benchmarks (100k rows)", () => {
     await page.goto("/?dataset=generated");
     await page.waitForSelector(".pt-table-container");
     // Wait for all 100k rows to stream in
-    await expect(page.locator(".pt-stat-rows")).toHaveAttribute(
-      "data-value",
-      /100,000/,
-      { timeout: 30_000 },
-    );
+    await expect(page.locator(".pt-stat-rows")).toHaveAttribute("data-value", /100,000/, {
+      timeout: 30_000,
+    });
   });
 
   test("mount and stream all batches", async ({ page }) => {
@@ -43,11 +41,9 @@ test.describe("Performance Benchmarks (100k rows)", () => {
     await page.waitForSelector(".pt-table-container");
     const firstBatch = Date.now() - start;
 
-    await expect(page.locator(".pt-stat-rows")).toHaveAttribute(
-      "data-value",
-      /100,000/,
-      { timeout: 30_000 },
-    );
+    await expect(page.locator(".pt-stat-rows")).toHaveAttribute("data-value", /100,000/, {
+      timeout: 30_000,
+    });
     const allBatches = Date.now() - start;
 
     console.log("\n📊 Mount & Stream (100k rows, 12 columns):");
@@ -95,9 +91,7 @@ test.describe("Performance Benchmarks (100k rows)", () => {
     const sortTime = await page.evaluate(() => {
       return new Promise<number>((resolve) => {
         // Click .pt-th-top (sort handler) not .pt-th (outer container)
-        const top = document.querySelector(
-          ".pt-th:nth-child(8) .pt-th-top",
-        ) as HTMLElement;
+        const top = document.querySelector(".pt-th:nth-child(8) .pt-th-top") as HTMLElement;
         const t0 = performance.now();
         top.click();
         requestAnimationFrame(() => {

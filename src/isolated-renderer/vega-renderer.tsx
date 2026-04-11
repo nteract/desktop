@@ -97,11 +97,7 @@ function VegaRenderer({ data }: RendererProps) {
       data-slot="vega-output"
       className={cn("not-prose py-2 max-w-full overflow-visible")}
     >
-      {error && (
-        <div className="text-sm text-destructive py-1">
-          Vega rendering error: {error}
-        </div>
-      )}
+      {error && <div className="text-sm text-destructive py-1">Vega rendering error: {error}</div>}
     </div>
   );
 }
@@ -109,10 +105,7 @@ function VegaRenderer({ data }: RendererProps) {
 // --- Plugin install ---
 
 export function install(ctx: {
-  register: (
-    mimeTypes: string[],
-    component: React.ComponentType<RendererProps>,
-  ) => void;
+  register: (mimeTypes: string[], component: React.ComponentType<RendererProps>) => void;
   registerPattern: (
     test: (mime: string) => boolean,
     component: React.ComponentType<RendererProps>,

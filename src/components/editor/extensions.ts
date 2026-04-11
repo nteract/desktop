@@ -1,8 +1,4 @@
-import {
-  closeBrackets,
-  closeBracketsKeymap,
-  completionKeymap,
-} from "@codemirror/autocomplete";
+import { closeBrackets, closeBracketsKeymap, completionKeymap } from "@codemirror/autocomplete";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import {
   bracketMatching,
@@ -46,7 +42,7 @@ export const notebookEditorTheme = EditorView.theme({
   // (CodeMirror's base theme adds "padding: 0 2px 0 6px" to .cm-line)
   ".cm-line": {
     paddingLeft: "0",
-    caretColor: "var(--foreground)",   // Ensure cursor is visible even when not focused
+    caretColor: "var(--foreground)", // Ensure cursor is visible even when not focused
   },
   // Mobile-friendly padding
   "@media (max-width: 640px)": {
@@ -105,12 +101,7 @@ export const minimalSetup: Extension = (() => [
   closeBrackets(),
   rectangularSelection(),
   crosshairCursor(),
-  keymap.of([
-    ...closeBracketsKeymap,
-    ...defaultKeymap,
-    ...historyKeymap,
-    ...lintKeymap,
-  ]),
+  keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...historyKeymap, ...lintKeymap]),
   notebookEditorTheme,
 ])();
 

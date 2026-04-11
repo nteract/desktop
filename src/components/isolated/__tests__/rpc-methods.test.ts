@@ -7,7 +7,7 @@
  * 3. Request vs notification method categorization
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   NTERACT_BRIDGE_READY,
   NTERACT_CLEAR_OUTPUTS,

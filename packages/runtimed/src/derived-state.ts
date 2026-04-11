@@ -31,9 +31,7 @@ export const KERNEL_STATUS = {
 
 export type KernelStatus = (typeof KERNEL_STATUS)[keyof typeof KERNEL_STATUS];
 
-const KERNEL_STATUS_SET: ReadonlySet<KernelStatus> = new Set(
-  Object.values(KERNEL_STATUS),
-);
+const KERNEL_STATUS_SET: ReadonlySet<KernelStatus> = new Set(Object.values(KERNEL_STATUS));
 
 export function isKernelStatus(value: string): value is KernelStatus {
   return KERNEL_STATUS_SET.has(value as KernelStatus);
@@ -87,9 +85,7 @@ export function deriveQueueState(state: RuntimeState): DaemonQueueState {
  * Returns null before kernel launch, on shutdown, or on error — indicating
  * "unknown" to consumers. Returns the sync state otherwise.
  */
-export function deriveEnvSyncState(
-  state: RuntimeState,
-): EnvSyncState | null {
+export function deriveEnvSyncState(state: RuntimeState): EnvSyncState | null {
   if (
     (state.kernel.status === "not_started" && !state.kernel.env_source) ||
     state.kernel.status === "shutdown" ||

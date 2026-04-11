@@ -6,7 +6,7 @@
  * - stableDomOrder: DOM ordering invariant that prevents iframe reloads
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { CodeCell, NotebookCell } from "../../types";
 
 // ── Extracted logic from NotebookView.tsx ───────────────────────────
@@ -53,9 +53,7 @@ function computeHiddenGroups(cells: NotebookCell[]) {
         const c = cells[i];
         groupCellIds.push(c.id);
         if (c.cell_type === "code") {
-          groupErrorCount += c.outputs.filter(
-            (o) => o.output_type === "error",
-          ).length;
+          groupErrorCount += c.outputs.filter((o) => o.output_type === "error").length;
         }
         i++;
       }
@@ -105,10 +103,8 @@ function makeCodeCell(
   } = {},
 ): CodeCell {
   const jupyter: Record<string, boolean> = {};
-  if (overrides.source_hidden !== undefined)
-    jupyter.source_hidden = overrides.source_hidden;
-  if (overrides.outputs_hidden !== undefined)
-    jupyter.outputs_hidden = overrides.outputs_hidden;
+  if (overrides.source_hidden !== undefined) jupyter.source_hidden = overrides.source_hidden;
+  if (overrides.outputs_hidden !== undefined) jupyter.outputs_hidden = overrides.outputs_hidden;
 
   return {
     cell_type: "code",

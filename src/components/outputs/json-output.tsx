@@ -1,15 +1,6 @@
 import { ChevronRightIcon } from "lucide-react";
-import {
-  createContext,
-  type HTMLAttributes,
-  useContext,
-  useState,
-} from "react";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
+import { createContext, type HTMLAttributes, useContext, useState } from "react";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 
 interface JsonViewerContextType {
@@ -73,8 +64,7 @@ export function JsonOutput({
     return collectPathsToDepth(data, "$", collapsed);
   };
 
-  const [expandedPaths, setExpandedPaths] =
-    useState<Set<string>>(getInitialExpanded);
+  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(getInitialExpanded);
 
   const togglePath = (path: string) => {
     const newExpanded = new Set(expandedPaths);
@@ -90,10 +80,7 @@ export function JsonOutput({
     return (
       <div
         data-slot="json-output"
-        className={cn(
-          "not-prose py-2 font-mono text-sm text-muted-foreground",
-          className,
-        )}
+        className={cn("not-prose py-2 font-mono text-sm text-muted-foreground", className)}
       >
         <JsonPrimitive value={data} displayDataTypes={displayDataTypes} />
       </div>
@@ -101,9 +88,7 @@ export function JsonOutput({
   }
 
   return (
-    <JsonViewerContext.Provider
-      value={{ expandedPaths, togglePath, displayDataTypes }}
-    >
+    <JsonViewerContext.Provider value={{ expandedPaths, togglePath, displayDataTypes }}>
       <div data-slot="json-output" className={cn("not-prose py-2", className)}>
         <div className="rounded-lg border bg-background p-3 font-mono text-sm">
           <JsonValue value={data} path="$" keyName={null} isLast />
@@ -153,12 +138,7 @@ function collectPathsToDepth(
       });
     } else {
       Object.entries(value).forEach(([key, val]) => {
-        const childPaths = collectPathsToDepth(
-          val,
-          `${path}.${key}`,
-          maxDepth,
-          currentDepth + 1,
-        );
+        const childPaths = collectPathsToDepth(val, `${path}.${key}`, maxDepth, currentDepth + 1);
         childPaths.forEach((p) => paths.add(p));
       });
     }
@@ -185,9 +165,7 @@ function JsonValue({ value, path, keyName, isLast }: JsonValueProps) {
   }
 
   if (Array.isArray(value)) {
-    return (
-      <JsonArray value={value} path={path} keyName={keyName} isLast={isLast} />
-    );
+    return <JsonArray value={value} path={path} keyName={keyName} isLast={isLast} />;
   }
 
   if (typeof value === "object") {
@@ -213,13 +191,7 @@ interface JsonEntryProps extends HTMLAttributes<HTMLDivElement> {
   isLast: boolean;
 }
 
-function JsonEntry({
-  keyName,
-  isLast,
-  children,
-  className,
-  ...props
-}: JsonEntryProps) {
+function JsonEntry({ keyName, isLast, children, className, ...props }: JsonEntryProps) {
   return (
     <div className={cn("flex items-baseline gap-1", className)} {...props}>
       {keyName !== null && (
@@ -242,8 +214,7 @@ interface JsonObjectProps {
 }
 
 function JsonObject({ value, path, keyName, isLast }: JsonObjectProps) {
-  const { expandedPaths, togglePath, displayDataTypes } =
-    useContext(JsonViewerContext);
+  const { expandedPaths, togglePath, displayDataTypes } = useContext(JsonViewerContext);
   const isExpanded = expandedPaths.has(path);
   const entries = Object.entries(value);
   const isEmpty = entries.length === 0;
@@ -322,8 +293,7 @@ interface JsonArrayProps {
 }
 
 function JsonArray({ value, path, keyName, isLast }: JsonArrayProps) {
-  const { expandedPaths, togglePath, displayDataTypes } =
-    useContext(JsonViewerContext);
+  const { expandedPaths, togglePath, displayDataTypes } = useContext(JsonViewerContext);
   const isExpanded = expandedPaths.has(path);
   const isEmpty = value.length === 0;
 
@@ -420,9 +390,7 @@ function JsonPrimitive({ value, displayDataTypes }: JsonPrimitiveProps) {
   if (typeof value === "string") {
     return (
       <span className="inline-flex items-baseline gap-1">
-        <span className="text-green-600 dark:text-green-400">
-          &quot;{value}&quot;
-        </span>
+        <span className="text-green-600 dark:text-green-400">&quot;{value}&quot;</span>
         {displayDataTypes && <JsonTypeLabel type="string" />}
       </span>
     );
@@ -440,9 +408,7 @@ function JsonPrimitive({ value, displayDataTypes }: JsonPrimitiveProps) {
   if (typeof value === "boolean") {
     return (
       <span className="inline-flex items-baseline gap-1">
-        <span className="text-purple-600 dark:text-purple-400">
-          {value ? "true" : "false"}
-        </span>
+        <span className="text-purple-600 dark:text-purple-400">{value ? "true" : "false"}</span>
         {displayDataTypes && <JsonTypeLabel type="boolean" />}
       </span>
     );

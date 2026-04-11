@@ -8,11 +8,7 @@ import {
   throttleTime,
 } from "rxjs";
 import { fitColumnWidths } from "./auto-width";
-import {
-  type ColumnAction,
-  mountColumnMenu,
-  unmountColumnMenu,
-} from "./column-menu";
+import { type ColumnAction, mountColumnMenu, unmountColumnMenu } from "./column-menu";
 import { renderColumnSummary, unmountColumnSummary } from "./sparkline";
 // --- Types ---
 
@@ -97,10 +93,7 @@ export type TableData = {
   /** Optional: return sorted row indices for a column (WASM sort optimization). */
   sortColumn?: (colIndex: number, ascending: boolean) => Uint32Array;
   /** Optional: recompute filtered summaries in WASM (crossfilter fast path). */
-  recomputeFilteredSummaries?: (
-    mask: Uint8Array,
-    filteredCount: number,
-  ) => void;
+  recomputeFilteredSummaries?: (mask: Uint8Array, filteredCount: number) => void;
   /** Optional: apply filters in WASM and return matching row indices. */
   filterRows?: (filters: (ColumnFilter | null)[]) => Uint32Array;
 };
@@ -183,9 +176,7 @@ export function createTable(
 
   function computeVisualOrder(): number[] {
     const pinned = [...pinnedColumns].sort((a, b) => a - b);
-    const unpinned = columns
-      .map((_, i) => i)
-      .filter((i) => !pinnedColumns.has(i));
+    const unpinned = columns.map((_, i) => i).filter((i) => !pinnedColumns.has(i));
     return [...pinned, ...unpinned];
   }
 
@@ -331,8 +322,7 @@ export function createTable(
       if (data.filterRows) {
         // WASM fast path: apply all filters in Rust, no per-cell FFI
         const wasmResult = data.filterRows(filters);
-        for (let i = 0; i < wasmResult.length; i++)
-          filtered.push(wasmResult[i]);
+        for (let i = 0; i < wasmResult.length; i++) filtered.push(wasmResult[i]);
       } else {
         for (let i = 0; i < rowCount; i++) {
           if (rowPassesFilters(i)) filtered.push(i);
@@ -372,10 +362,8 @@ export function createTable(
             const rawB = data.getCellRaw(b, col);
             const va = rawA == null ? NaN : Number(rawA);
             const vb = rawB == null ? NaN : Number(rawB);
-            const aOk =
-              Number.isFinite(va) || va === Infinity || va === -Infinity;
-            const bOk =
-              Number.isFinite(vb) || vb === Infinity || vb === -Infinity;
+            const aOk = Number.isFinite(va) || va === Infinity || va === -Infinity;
+            const bOk = Number.isFinite(vb) || vb === Infinity || vb === -Infinity;
             if (!aOk && !bOk) cmp = 0;
             else if (!aOk) return 1;
             else if (!bOk) return -1;
@@ -494,9 +482,7 @@ export function createTable(
     th.addEventListener("keydown", (e) => {
       if (e.key === "p" || e.key === "P") {
         e.preventDefault();
-        const action: ColumnAction = pinnedColumns.has(c)
-          ? { kind: "unpin" }
-          : { kind: "pin" };
+        const action: ColumnAction = pinnedColumns.has(c) ? { kind: "unpin" } : { kind: "pin" };
         handleColumnAction(c, action);
       } else if (e.key === "Enter" && columns[c].sortable) {
         e.preventDefault();
@@ -591,9 +577,7 @@ export function createTable(
   function renderSummary(c: number, visibleBins?: number[]) {
     const summary = data.columnSummaries[c];
     if (summary) {
-      const unfiltered = hasActiveFilters()
-        ? (unfilteredSummaries[c] ?? undefined)
-        : undefined;
+      const unfiltered = hasActiveFilters() ? (unfilteredSummaries[c] ?? undefined) : undefined;
       renderColumnSummary(
         summaryContainers[c],
         summary,
@@ -759,10 +743,7 @@ export function createTable(
             slot.pos = -1;
           }
           const target = parseInt(ch);
-          const prev =
-            slot.current >= "0" && slot.current <= "9"
-              ? parseInt(slot.current)
-              : -1;
+          const prev = slot.current >= "0" && slot.current <= "9" ? parseInt(slot.current) : -1;
 
           let targetPos: number;
           if (prev === -1 || slot.pos === -1) {
@@ -818,9 +799,7 @@ export function createTable(
 
   function updateRowCountDisplay() {
     if (hasActiveFilters()) {
-      rowsOdometer.update(
-        `${filteredCount.toLocaleString()} of ${rowCount.toLocaleString()} rows`,
-      );
+      rowsOdometer.update(`${filteredCount.toLocaleString()} of ${rowCount.toLocaleString()} rows`);
     } else {
       rowsOdometer.update(`${rowCount.toLocaleString()} rows`);
     }
@@ -946,9 +925,7 @@ export function createTable(
           break;
         }
         case "set":
-          text += [...f.values]
-            .map((v) => (v.length > 12 ? v.slice(0, 11) + "…" : v))
-            .join(", ");
+          text += [...f.values].map((v) => (v.length > 12 ? v.slice(0, 11) + "…" : v)).join(", ");
           break;
         case "boolean":
           text += f.value ? "Yes" : "No";
@@ -1015,11 +992,7 @@ export function createTable(
       fpsOdometer.update(text);
     });
 
-  function updateStat(
-    el: HTMLSpanElement,
-    value: string,
-    prev: string,
-  ): string {
+  function updateStat(el: HTMLSpanElement, value: string, prev: string): string {
     if (value !== prev) {
       el.textContent = value;
       el.classList.remove("pt-stat-flash");
@@ -1037,11 +1010,7 @@ export function createTable(
   function updateVisibleOverlays(visFirst: number, visLast: number) {
     for (let c = 0; c < columns.length; c++) {
       const summary = data.columnSummaries[c];
-      if (
-        !summary ||
-        (summary.kind !== "numeric" && summary.kind !== "timestamp")
-      )
-        continue;
+      if (!summary || (summary.kind !== "numeric" && summary.kind !== "timestamp")) continue;
 
       const bins = summary.bins;
       const visibleBins = new Array<number>(bins.length).fill(0);
@@ -1102,11 +1071,7 @@ export function createTable(
 
   // --- Cell rendering (type-aware) ---
 
-  function renderCell(
-    cellEl: HTMLDivElement,
-    dataRow: number,
-    colIndex: number,
-  ) {
+  function renderCell(cellEl: HTMLDivElement, dataRow: number, colIndex: number) {
     const col = columns[colIndex];
     const raw = data.getCellRaw(dataRow, colIndex);
     const str = data.getCell(dataRow, colIndex);
@@ -1127,9 +1092,7 @@ export function createTable(
     switch (col.columnType) {
       case "boolean": {
         const badge = document.createElement("span");
-        badge.className = raw
-          ? "pt-badge pt-badge-true"
-          : "pt-badge pt-badge-false";
+        badge.className = raw ? "pt-badge pt-badge-true" : "pt-badge pt-badge-false";
         badge.textContent = raw ? "Yes" : "No";
         cellEl.appendChild(badge);
         break;
@@ -1183,10 +1146,7 @@ export function createTable(
 
     // True visible range (no overscan) — used for header overlays
     const visFirst = rowAtOffset(scrollTop);
-    const visLast = Math.min(
-      rowAtOffset(scrollTop + viewportH),
-      filteredCount - 1,
-    );
+    const visLast = Math.min(rowAtOffset(scrollTop + viewportH), filteredCount - 1);
 
     // Scroll velocity: extra overscan in the direction of travel
     const scrollDelta = scrollTop - lastScrollTop;
@@ -1210,10 +1170,7 @@ export function createTable(
     }
 
     for (const pr of pool) {
-      if (
-        pr.assignedRow !== -1 &&
-        (pr.assignedRow < first || pr.assignedRow > last)
-      ) {
+      if (pr.assignedRow !== -1 && (pr.assignedRow < first || pr.assignedRow > last)) {
         pr.el.style.display = "none";
         pr.assignedRow = -1;
       }
@@ -1326,13 +1283,7 @@ export function createTable(
   let activeDetailSheet: HTMLDivElement | null = null;
 
   function typeIconChar(ct: ColumnType): string {
-    return ct === "numeric"
-      ? "#"
-      : ct === "boolean"
-        ? "◉"
-        : ct === "timestamp"
-          ? "◷"
-          : "Aa";
+    return ct === "numeric" ? "#" : ct === "boolean" ? "◉" : ct === "timestamp" ? "◷" : "Aa";
   }
 
   function dismissDetailSheet() {
@@ -1415,9 +1366,7 @@ export function createTable(
         valueEl.appendChild(badge);
       } else if (columns[c].columnType === "boolean") {
         const badge = document.createElement("span");
-        badge.className = raw
-          ? "pt-badge pt-badge-true"
-          : "pt-badge pt-badge-false";
+        badge.className = raw ? "pt-badge pt-badge-true" : "pt-badge pt-badge-false";
         badge.textContent = raw ? "Yes" : "No";
         valueEl.appendChild(badge);
       } else {
@@ -1464,12 +1413,7 @@ export function createTable(
     const duration = e.timeStamp - tapStartTime;
     const dx = Math.abs(e.clientX - tapStartX);
     const dy = Math.abs(e.clientY - tapStartY);
-    if (
-      duration > TAP_MAX_DURATION ||
-      dx > TAP_MAX_DISTANCE ||
-      dy > TAP_MAX_DISTANCE
-    )
-      return;
+    if (duration > TAP_MAX_DURATION || dx > TAP_MAX_DISTANCE || dy > TAP_MAX_DISTANCE) return;
 
     // Find which pool row was tapped
     const target = e.target as HTMLElement;
@@ -1545,10 +1489,7 @@ export function createTable(
       if (!arrow) continue;
       if (sortState && sortState.col === c) {
         arrow.textContent = sortState.dir === "asc" ? " ↑" : " ↓";
-        ths[c].setAttribute(
-          "aria-sort",
-          sortState.dir === "asc" ? "ascending" : "descending",
-        );
+        ths[c].setAttribute("aria-sort", sortState.dir === "asc" ? "ascending" : "descending");
       } else {
         arrow.textContent = "";
         ths[c].removeAttribute("aria-sort");
@@ -1586,11 +1527,7 @@ export function createTable(
     // correct visible bins, avoiding the all→windowed flicker.
     for (let c = 0; c < columns.length; c++) {
       const summary = data.columnSummaries[c];
-      if (
-        summary &&
-        summary.kind !== "numeric" &&
-        summary.kind !== "timestamp"
-      ) {
+      if (summary && summary.kind !== "numeric" && summary.kind !== "timestamp") {
         renderSummary(c);
       }
     }
@@ -1758,10 +1695,7 @@ export function createTable(
     if (!f) return "";
     switch (f.kind) {
       case "range": {
-        if (
-          colIndex !== undefined &&
-          columns[colIndex].columnType === "timestamp"
-        ) {
+        if (colIndex !== undefined && columns[colIndex].columnType === "timestamp") {
           const fmt = (v: number) =>
             new Date(v).toLocaleDateString(undefined, {
               month: "short",
@@ -1811,8 +1745,7 @@ export function createTable(
       (full.kind === "timestamp" && filtered.kind === "timestamp")
     ) {
       // Binary numeric columns show selection via the ratio bar — no need for "values hidden"
-      if (full.kind === "numeric" && (full as any).uniqueCount === 2)
-        return null;
+      if (full.kind === "numeric" && (full as any).uniqueCount === 2) return null;
       if (full.min !== filtered.min || full.max !== filtered.max) {
         return "values hidden";
       }
@@ -1856,9 +1789,7 @@ export function createTable(
           const activeFilters: string[] = [];
           for (let i = 0; i < columns.length; i++) {
             if (filters[i]) {
-              activeFilters.push(
-                `${columns[i].label}: ${filterLabel(filters[i], i)}`,
-              );
+              activeFilters.push(`${columns[i].label}: ${filterLabel(filters[i], i)}`);
             }
           }
           th.title = `Values filtered by ${activeFilters.join(", ")}`;
@@ -2061,8 +1992,7 @@ export function createTable(
           columns[colIndex].columnType = restoredType;
           columns[colIndex].numeric = restoredType === "numeric";
           // Update type icon
-          const thsUndo =
-            headerRowEl.children as HTMLCollectionOf<HTMLDivElement>;
+          const thsUndo = headerRowEl.children as HTMLCollectionOf<HTMLDivElement>;
           const iconUndo = thsUndo[colIndex].querySelector(".pt-type-icon");
           if (iconUndo) {
             iconUndo.textContent =
@@ -2158,17 +2088,13 @@ export function createTable(
     for (let vi = 0; vi < visualOrder.length; vi++) {
       const dataCol = visualOrder[vi];
       const th = ths[vi];
-      const handle = th.querySelector(
-        ".pt-resize-handle",
-      ) as HTMLElement | null;
+      const handle = th.querySelector(".pt-resize-handle") as HTMLElement | null;
       if (pinnedColumns.has(dataCol)) {
         th.style.position = "sticky";
         th.style.left = pinnedLeftOffsets[dataCol] + "px";
         th.style.zIndex = "6";
-        th.style.background =
-          "color-mix(in srgb, var(--panel) 90%, var(--page) 10%)";
-        th.style.boxShadow =
-          vi === lastPinnedVi ? "2px 0 4px var(--pin-shadow)" : "";
+        th.style.background = "color-mix(in srgb, var(--panel) 90%, var(--page) 10%)";
+        th.style.boxShadow = vi === lastPinnedVi ? "2px 0 4px var(--pin-shadow)" : "";
         // Hide resize bar on last pinned column (shadow provides the edge)
         if (handle) handle.style.opacity = vi === lastPinnedVi ? "0" : "";
       } else {

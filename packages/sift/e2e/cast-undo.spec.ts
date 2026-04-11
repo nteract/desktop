@@ -25,16 +25,12 @@ test.describe("Cast Column Undo (Titanic)", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/?dataset=titanic");
     await page.waitForSelector(".pt-table-container", { timeout: 90_000 });
-    await expect(page.locator(".pt-stat-rows")).toHaveAttribute(
-      "data-value",
-      /891/,
-      { timeout: 30_000 },
-    );
+    await expect(page.locator(".pt-stat-rows")).toHaveAttribute("data-value", /891/, {
+      timeout: 30_000,
+    });
   });
 
-  test("cast Name to Number then back to Text restores values", async ({
-    page,
-  }) => {
+  test("cast Name to Number then back to Text restores values", async ({ page }) => {
     // Get the original first row's Name value
     const labels = await page.locator(".pt-th-label").allTextContents();
     const nameIdx = labels.indexOf("Name");
@@ -70,9 +66,7 @@ test.describe("Cast Column Undo (Titanic)", () => {
     expect(restoredName).toBe(originalName);
   });
 
-  test("cast Fare to Text then back to Number preserves values", async ({
-    page,
-  }) => {
+  test("cast Fare to Text then back to Number preserves values", async ({ page }) => {
     const labels = await page.locator(".pt-th-label").allTextContents();
     const fareIdx = labels.indexOf("Fare");
     expect(fareIdx).toBeGreaterThan(-1);

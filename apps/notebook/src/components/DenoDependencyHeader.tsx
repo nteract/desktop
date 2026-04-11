@@ -1,11 +1,4 @@
-import {
-  Check,
-  ExternalLink,
-  FileText,
-  Info,
-  Package,
-  RefreshCw,
-} from "lucide-react";
+import { Check, ExternalLink, FileText, Info, Package, RefreshCw } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import type { DenoConfigInfo } from "../hooks/useDenoDependencies";
@@ -63,9 +56,7 @@ export function DenoDependencyHeader({
               disabled={syncing}
               className="flex items-center gap-1 rounded bg-amber-600 px-2 py-0.5 text-white text-xs font-medium hover:bg-amber-700 transition-colors disabled:opacity-50"
             >
-              <RefreshCw
-                className={`h-3 w-3 ${syncing ? "animate-spin" : ""}`}
-              />
+              <RefreshCw className={`h-3 w-3 ${syncing ? "animate-spin" : ""}`} />
               Restart
             </button>
           </div>
@@ -77,23 +68,16 @@ export function DenoDependencyHeader({
             <div className="flex items-center gap-2">
               <FileText className="h-3.5 w-3.5 shrink-0" />
               <span>
-                Using{" "}
-                <code className="rounded bg-muted px-1">
-                  {denoConfigInfo.relative_path}
-                </code>
+                Using <code className="rounded bg-muted px-1">{denoConfigInfo.relative_path}</code>
                 {denoConfigInfo.name && (
-                  <span className="text-muted-foreground ml-1">
-                    ({denoConfigInfo.name})
-                  </span>
+                  <span className="text-muted-foreground ml-1">({denoConfigInfo.name})</span>
                 )}
               </span>
             </div>
             {(denoConfigInfo.has_imports || denoConfigInfo.has_tasks) && (
               <div className="mt-1.5 flex gap-2 text-muted-foreground">
                 {denoConfigInfo.has_imports && (
-                  <span className="rounded bg-muted px-1.5 py-0.5">
-                    imports
-                  </span>
+                  <span className="rounded bg-muted px-1.5 py-0.5">imports</span>
                 )}
                 {denoConfigInfo.has_tasks && (
                   <span className="rounded bg-muted px-1.5 py-0.5">tasks</span>
@@ -108,8 +92,8 @@ export function DenoDependencyHeader({
           <div className="mb-3 flex items-start gap-2 rounded bg-muted/50 px-2 py-1.5 text-xs text-muted-foreground">
             <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
             <span>
-              No <code className="rounded bg-muted px-1">deno.json</code> found.
-              Deno can import modules directly without configuration.
+              No <code className="rounded bg-muted px-1">deno.json</code> found. Deno can import
+              modules directly without configuration.
             </span>
           </div>
         )}
@@ -119,21 +103,17 @@ export function DenoDependencyHeader({
           <Checkbox
             id="flexible-npm-imports"
             checked={flexibleNpmImports}
-            onCheckedChange={(checked) =>
-              onSetFlexibleNpmImports(checked === true)
-            }
+            onCheckedChange={(checked) => onSetFlexibleNpmImports(checked === true)}
             className="mt-0.5"
           />
           <Label
             htmlFor="flexible-npm-imports"
             className="flex-1 flex-col items-start gap-1 cursor-pointer"
           >
-            <span className="text-xs font-medium text-foreground">
-              Auto-install npm packages
-            </span>
+            <span className="text-xs font-medium text-foreground">Auto-install npm packages</span>
             <p className="text-xs text-muted-foreground font-normal">
-              Packages download automatically when you import them. Disable to
-              use your project&apos;s node_modules instead.
+              Packages download automatically when you import them. Disable to use your
+              project&apos;s node_modules instead.
             </p>
           </Label>
         </div>
@@ -176,8 +156,7 @@ export function DenoDependencyHeader({
               <span className="font-medium">URL imports</span>
             </div>
             <code className="text-xs text-emerald-600 dark:text-emerald-400 break-all">
-              import &#123; serve &#125; from
-              "https://deno.land/std/http/server.ts";
+              import &#123; serve &#125; from "https://deno.land/std/http/server.ts";
             </code>
           </div>
         </div>
@@ -187,8 +166,8 @@ export function DenoDependencyHeader({
           <div className="mt-3 text-xs text-muted-foreground">
             <span className="font-medium">Tip:</span> Create a{" "}
             <code className="rounded bg-muted px-1">deno.json</code> with an{" "}
-            <code className="rounded bg-muted px-1">"imports"</code> field to
-            use shorter import specifiers.
+            <code className="rounded bg-muted px-1">"imports"</code> field to use shorter import
+            specifiers.
           </div>
         )}
       </div>

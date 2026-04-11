@@ -24,10 +24,7 @@ export function HTMLWidget({ modelId, className }: WidgetComponentProps) {
       data-widget-type="HTML"
     >
       {description && <Label className="shrink-0 text-sm">{description}</Label>}
-      <div
-        className="widget-html-content"
-        dangerouslySetInnerHTML={{ __html: displayValue }}
-      />
+      <div className="widget-html-content" dangerouslySetInnerHTML={{ __html: displayValue }} />
     </div>
   );
 }

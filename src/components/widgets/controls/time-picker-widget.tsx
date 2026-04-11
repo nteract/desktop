@@ -9,10 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import type { WidgetComponentProps } from "../widget-registry";
-import {
-  useWidgetModelValue,
-  useWidgetStoreRequired,
-} from "../widget-store-context";
+import { useWidgetModelValue, useWidgetStoreRequired } from "../widget-store-context";
 
 // Convert time object or string to HH:MM format for input
 function toTimeString(
@@ -30,19 +27,14 @@ export function TimePickerWidget({ modelId, className }: WidgetComponentProps) {
 
   // Subscribe to individual state keys
   const value =
-    useWidgetModelValue<
-      { hours: number; minutes: number; seconds?: number } | string | null
-    >(modelId, "value") ?? null;
+    useWidgetModelValue<{ hours: number; minutes: number; seconds?: number } | string | null>(
+      modelId,
+      "value",
+    ) ?? null;
   const min =
-    useWidgetModelValue<{ hours: number; minutes: number } | string | null>(
-      modelId,
-      "min",
-    ) ?? null;
+    useWidgetModelValue<{ hours: number; minutes: number } | string | null>(modelId, "min") ?? null;
   const max =
-    useWidgetModelValue<{ hours: number; minutes: number } | string | null>(
-      modelId,
-      "max",
-    ) ?? null;
+    useWidgetModelValue<{ hours: number; minutes: number } | string | null>(modelId, "max") ?? null;
   const description = useWidgetModelValue<string>(modelId, "description");
   const disabled = useWidgetModelValue<boolean>(modelId, "disabled") ?? false;
 

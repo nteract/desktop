@@ -8,29 +8,20 @@ import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { cn } from "@/lib/utils";
 import type { WidgetComponentProps } from "../widget-registry";
-import {
-  useWidgetModelValue,
-  useWidgetStoreRequired,
-} from "../widget-store-context";
+import { useWidgetModelValue, useWidgetStoreRequired } from "../widget-store-context";
 
-export function SelectionRangeSliderWidget({
-  modelId,
-  className,
-}: WidgetComponentProps) {
+export function SelectionRangeSliderWidget({ modelId, className }: WidgetComponentProps) {
   const { sendUpdate } = useWidgetStoreRequired();
 
   // Subscribe to individual state keys
-  const options =
-    useWidgetModelValue<string[]>(modelId, "_options_labels") ?? [];
+  const options = useWidgetModelValue<string[]>(modelId, "_options_labels") ?? [];
   const index = useWidgetModelValue<number[]>(modelId, "index") ?? [0, 0];
   const description = useWidgetModelValue<string>(modelId, "description");
   const disabled = useWidgetModelValue<boolean>(modelId, "disabled") ?? false;
   const orientation =
-    useWidgetModelValue<"horizontal" | "vertical">(modelId, "orientation") ??
-    "horizontal";
+    useWidgetModelValue<"horizontal" | "vertical">(modelId, "orientation") ?? "horizontal";
   const readout = useWidgetModelValue<boolean>(modelId, "readout") ?? true;
-  const continuousUpdate =
-    useWidgetModelValue<boolean>(modelId, "continuous_update") ?? true;
+  const continuousUpdate = useWidgetModelValue<boolean>(modelId, "continuous_update") ?? true;
 
   const [lowIndex, highIndex] = index;
 
@@ -40,11 +31,7 @@ export function SelectionRangeSliderWidget({
     const clampedLow = Math.min(options.length - 1, Math.max(0, newLow));
     const clampedHigh = Math.min(options.length - 1, Math.max(0, newHigh));
 
-    if (
-      continuousUpdate ||
-      clampedLow !== lowIndex ||
-      clampedHigh !== highIndex
-    ) {
+    if (continuousUpdate || clampedLow !== lowIndex || clampedHigh !== highIndex) {
       sendUpdate(modelId, { index: [clampedLow, clampedHigh] });
     }
   };
@@ -55,11 +42,7 @@ export function SelectionRangeSliderWidget({
 
   return (
     <div
-      className={cn(
-        "flex gap-3",
-        isVertical ? "flex-col items-center" : "items-center",
-        className,
-      )}
+      className={cn("flex gap-3", isVertical ? "flex-col items-center" : "items-center", className)}
       data-widget-id={modelId}
       data-widget-type="SelectionRangeSlider"
     >

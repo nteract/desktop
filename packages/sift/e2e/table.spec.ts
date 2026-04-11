@@ -23,11 +23,9 @@ test.describe("Table Viewer", () => {
 
   test("renders header summaries", async ({ page }) => {
     // Wait for all batches so summaries are populated
-    await expect(page.locator(".pt-stat-rows")).toHaveAttribute(
-      "data-value",
-      /100,000/,
-      { timeout: 10_000 },
-    );
+    await expect(page.locator(".pt-stat-rows")).toHaveAttribute("data-value", /100,000/, {
+      timeout: 10_000,
+    });
     // At least some summary containers should have content
     const summaries = page.locator(".pt-th-summary");
     const count = await summaries.count();
@@ -91,11 +89,9 @@ test.describe("Table Viewer", () => {
 
   test("histogram brush creates filter pill", async ({ page }) => {
     // Wait for all data
-    await expect(page.locator(".pt-stat-rows")).toHaveAttribute(
-      "data-value",
-      /100,000/,
-      { timeout: 10_000 },
-    );
+    await expect(page.locator(".pt-stat-rows")).toHaveAttribute("data-value", /100,000/, {
+      timeout: 10_000,
+    });
 
     // Find the Score histogram (it has a brush layer SVG)
     const scoreTh = page.locator(".pt-th", { hasText: "SCORE" });
@@ -118,18 +114,13 @@ test.describe("Table Viewer", () => {
     await expect(page.locator(".pt-filter-pill")).toContainText("Score");
 
     // Stats should show filtered count
-    await expect(page.locator(".pt-stat-rows")).toHaveAttribute(
-      "data-value",
-      /of/,
-    );
+    await expect(page.locator(".pt-stat-rows")).toHaveAttribute("data-value", /of/);
   });
 
   test("filter pill X clears the filter", async ({ page }) => {
-    await expect(page.locator(".pt-stat-rows")).toHaveAttribute(
-      "data-value",
-      /100,000/,
-      { timeout: 10_000 },
-    );
+    await expect(page.locator(".pt-stat-rows")).toHaveAttribute("data-value", /100,000/, {
+      timeout: 10_000,
+    });
 
     // Brush the score histogram
     const scoreTh = page.locator(".pt-th", { hasText: "SCORE" });
@@ -153,10 +144,7 @@ test.describe("Table Viewer", () => {
 
     // Pill should be gone, all rows restored
     await expect(page.locator(".pt-filter-pill")).toHaveCount(0);
-    await expect(page.locator(".pt-stat-rows")).not.toHaveAttribute(
-      "data-value",
-      /of/,
-    );
+    await expect(page.locator(".pt-stat-rows")).not.toHaveAttribute("data-value", /of/);
   });
 
   test("boolean badge renders for verified column", async ({ page }) => {

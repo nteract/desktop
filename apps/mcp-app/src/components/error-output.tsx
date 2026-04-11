@@ -11,9 +11,7 @@ export function ErrorOutput({ output }: ErrorOutputProps) {
   const [tracebackLines, setTracebackLines] = useState<string[]>([]);
   const [fetchFailed, setFetchFailed] = useState(false);
 
-  const header = output.ename
-    ? `${output.ename}: ${output.evalue || ""}`
-    : "";
+  const header = output.ename ? `${output.ename}: ${output.evalue || ""}` : "";
 
   useEffect(() => {
     const tb = output.traceback;
@@ -32,9 +30,7 @@ export function ErrorOutput({ output }: ErrorOutputProps) {
   return (
     <div className="error-output">
       {header && <AnsiText text={header} />}
-      {tracebackLines.length > 0 && (
-        <AnsiText text={tracebackLines.join("\n")} />
-      )}
+      {tracebackLines.length > 0 && <AnsiText text={tracebackLines.join("\n")} />}
       {fetchFailed && tracebackLines.length === 0 && (
         <div style={{ opacity: 0.6, fontSize: "12px", marginTop: "4px" }}>
           (traceback could not be loaded)

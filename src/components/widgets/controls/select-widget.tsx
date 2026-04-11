@@ -7,17 +7,13 @@
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import type { WidgetComponentProps } from "../widget-registry";
-import {
-  useWidgetModelValue,
-  useWidgetStoreRequired,
-} from "../widget-store-context";
+import { useWidgetModelValue, useWidgetStoreRequired } from "../widget-store-context";
 
 export function SelectWidget({ modelId, className }: WidgetComponentProps) {
   const { sendUpdate } = useWidgetStoreRequired();
 
   // Subscribe to individual state keys
-  const options =
-    useWidgetModelValue<string[]>(modelId, "_options_labels") ?? [];
+  const options = useWidgetModelValue<string[]>(modelId, "_options_labels") ?? [];
   const selectedIndex = useWidgetModelValue<number | null>(modelId, "index");
   const description = useWidgetModelValue<string>(modelId, "description");
   const disabled = useWidgetModelValue<boolean>(modelId, "disabled") ?? false;
@@ -38,9 +34,7 @@ export function SelectWidget({ modelId, className }: WidgetComponentProps) {
       data-widget-id={modelId}
       data-widget-type="Select"
     >
-      {description && (
-        <Label className="shrink-0 pt-1 text-sm">{description}</Label>
-      )}
+      {description && <Label className="shrink-0 pt-1 text-sm">{description}</Label>}
       <div
         role="listbox"
         aria-disabled={disabled}

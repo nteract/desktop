@@ -2,15 +2,13 @@ import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import path from "path";
 import { visualizer } from "rollup-plugin-visualizer";
-import { defineConfig } from "vite";
+import { defineConfig } from "vite-plus";
 import { isolatedRendererPlugin } from "./vite-plugin-isolated-renderer";
 import { rawLibPlugin } from "./vite-plugin-raw-lib";
 
 export default defineConfig(({ command }) => {
-  const debugBundleSourceMapsEnabled =
-    process.env.RUNT_NOTEBOOK_DEBUG_BUILD === "1";
-  const isolatedRendererSourceMapsEnabled =
-    command === "serve" || debugBundleSourceMapsEnabled;
+  const debugBundleSourceMapsEnabled = process.env.RUNT_NOTEBOOK_DEBUG_BUILD === "1";
+  const isolatedRendererSourceMapsEnabled = command === "serve" || debugBundleSourceMapsEnabled;
 
   return {
     plugins: [
@@ -55,9 +53,7 @@ export default defineConfig(({ command }) => {
       },
     },
     server: {
-      port: parseInt(
-        process.env.RUNTIMED_VITE_PORT || process.env.CONDUCTOR_PORT || "5174",
-      ),
+      port: parseInt(process.env.RUNTIMED_VITE_PORT || process.env.CONDUCTOR_PORT || "5174"),
       strictPort: true,
     },
     base: "/",

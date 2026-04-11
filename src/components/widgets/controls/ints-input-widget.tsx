@@ -11,20 +11,15 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import type { WidgetComponentProps } from "../widget-registry";
-import {
-  useWidgetModelValue,
-  useWidgetStoreRequired,
-} from "../widget-store-context";
+import { useWidgetModelValue, useWidgetStoreRequired } from "../widget-store-context";
 
 export function IntsInputWidget({ modelId, className }: WidgetComponentProps) {
   const { sendUpdate } = useWidgetStoreRequired();
 
   // Subscribe to individual state keys
   const value = useWidgetModelValue<number[]>(modelId, "value") ?? [];
-  const allowDuplicates =
-    useWidgetModelValue<boolean>(modelId, "allow_duplicates") ?? true;
-  const placeholder =
-    useWidgetModelValue<string>(modelId, "placeholder") ?? "Add integer...";
+  const allowDuplicates = useWidgetModelValue<boolean>(modelId, "allow_duplicates") ?? true;
+  const placeholder = useWidgetModelValue<string>(modelId, "placeholder") ?? "Add integer...";
   const description = useWidgetModelValue<string>(modelId, "description");
   const disabled = useWidgetModelValue<boolean>(modelId, "disabled") ?? false;
   const min = useWidgetModelValue<number>(modelId, "min");
@@ -72,9 +67,7 @@ export function IntsInputWidget({ modelId, className }: WidgetComponentProps) {
       data-widget-id={modelId}
       data-widget-type="IntsInput"
     >
-      {description && (
-        <Label className="shrink-0 pt-2 text-sm">{description}</Label>
-      )}
+      {description && <Label className="shrink-0 pt-2 text-sm">{description}</Label>}
       <div
         className={cn(
           "flex min-h-10 flex-wrap items-center gap-1.5 rounded-md border border-input bg-background px-3 py-2",
@@ -82,11 +75,7 @@ export function IntsInputWidget({ modelId, className }: WidgetComponentProps) {
         )}
       >
         {value.map((num, idx) => (
-          <Badge
-            key={`${num}-${idx}`}
-            variant="secondary"
-            className="gap-1 pr-1"
-          >
+          <Badge key={`${num}-${idx}`} variant="secondary" className="gap-1 pr-1">
             {num}
             {!disabled && (
               <button

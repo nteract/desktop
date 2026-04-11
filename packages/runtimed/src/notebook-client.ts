@@ -10,11 +10,7 @@
 
 import type { SyncEngineLogger } from "./sync-engine";
 import type { NotebookTransport } from "./transport";
-import type {
-  CommRequestMessage,
-  NotebookRequest,
-  NotebookResponse,
-} from "./request-types";
+import type { CommRequestMessage, NotebookRequest, NotebookResponse } from "./request-types";
 
 const nullLogger: SyncEngineLogger = {
   debug() {},
@@ -114,10 +110,7 @@ export class NotebookClient {
     try {
       const response = await this.sendRequest({ type: "sync_environment" });
       if ((response as { result: string }).result === "error") {
-        this.log.error(
-          "[notebook-client] Sync env failed:",
-          (response as { error: string }).error,
-        );
+        this.log.error("[notebook-client] Sync env failed:", (response as { error: string }).error);
       }
       return response;
     } catch (e) {
@@ -174,9 +167,7 @@ export class NotebookClient {
           (response as { error: string }).error,
         );
       } else if ((response as { result: string }).result === "no_kernel") {
-        this.log.error(
-          "[notebook-client] Send comm failed: no kernel running",
-        );
+        this.log.error("[notebook-client] Send comm failed: no kernel running");
       }
       return response;
     } catch (e) {

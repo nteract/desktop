@@ -15,10 +15,7 @@ export interface DatasetEntry {
   /** Approximate row count for display */
   rows?: string;
   /** Column type overrides keyed by column name */
-  typeOverrides?: Record<
-    string,
-    "numeric" | "categorical" | "timestamp" | "boolean"
-  >;
+  typeOverrides?: Record<string, "numeric" | "categorical" | "timestamp" | "boolean">;
 }
 
 export const DATASETS: DatasetEntry[] = [
@@ -70,8 +67,7 @@ export const DATASETS: DatasetEntry[] = [
   {
     id: "gsm8k",
     label: "GSM8K (long text)",
-    description:
-      "8.8k math word problems with multi-line solutions — stress-tests row height calc",
+    description: "8.8k math word problems with multi-line solutions — stress-tests row height calc",
     source: "huggingface",
     path: "openai/gsm8k",
     config: "main",
@@ -80,8 +76,7 @@ export const DATASETS: DatasetEntry[] = [
   {
     id: "heart-failure",
     label: "Heart Failure (tiny)",
-    description:
-      "299 rows, 13 cols — 5 boolean columns + mixed numeric, quick load",
+    description: "299 rows, 13 cols — 5 boolean columns + mixed numeric, quick load",
     source: "huggingface",
     path: "mstz/heart_failure",
     rows: "299",

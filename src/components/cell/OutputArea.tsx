@@ -6,19 +6,10 @@ import {
   IsolatedFrame,
   type IsolatedFrameHandle,
 } from "@/components/isolated";
-import {
-  injectPluginsForMimes,
-  needsPlugin,
-} from "@/components/isolated/iframe-libraries";
-import {
-  AnsiErrorOutput,
-  AnsiStreamOutput,
-} from "@/components/outputs/ansi-output";
+import { injectPluginsForMimes, needsPlugin } from "@/components/isolated/iframe-libraries";
+import { AnsiErrorOutput, AnsiStreamOutput } from "@/components/outputs/ansi-output";
 import { isSafeForMainDom } from "@/components/outputs/safe-mime-types";
-import {
-  DEFAULT_PRIORITY,
-  MediaRouter,
-} from "@/components/outputs/media-router";
+import { DEFAULT_PRIORITY, MediaRouter } from "@/components/outputs/media-router";
 import { useWidgetStore } from "@/components/widgets/widget-store-context";
 import { useDarkMode } from "@/lib/dark-mode";
 import { ErrorBoundary } from "@/lib/error-boundary";
@@ -145,10 +136,7 @@ function outputNeedsIsolation(
   output: JupyterOutput,
   priority: readonly string[] = DEFAULT_PRIORITY,
 ): boolean {
-  if (
-    output.output_type === "execute_result" ||
-    output.output_type === "display_data"
-  ) {
+  if (output.output_type === "execute_result" || output.output_type === "display_data") {
     const mimeType = selectMimeType(output.data, priority);
     return mimeType ? !isSafeForMainDom(mimeType) : false;
   }
@@ -175,10 +163,7 @@ function hasWidgetOutputs(
   priority: readonly string[] = DEFAULT_PRIORITY,
 ): boolean {
   return outputs.some((output) => {
-    if (
-      output.output_type === "execute_result" ||
-      output.output_type === "display_data"
-    ) {
+    if (output.output_type === "execute_result" || output.output_type === "display_data") {
       const mimeType = selectMimeType(output.data, priority);
       return mimeType === "application/vnd.jupyter.widget-view+json";
     }
@@ -204,12 +189,7 @@ function renderOutput(
         <MediaRouter
           key={key}
           data={output.data}
-          metadata={
-            output.metadata as Record<
-              string,
-              Record<string, unknown> | undefined
-            >
-          }
+          metadata={output.metadata as Record<string, Record<string, unknown> | undefined>}
           renderers={renderers}
           priority={priority}
         />
@@ -217,11 +197,7 @@ function renderOutput(
 
     case "stream":
       return (
-        <AnsiStreamOutput
-          key={key}
-          text={normalizeText(output.text)}
-          streamName={output.name}
-        />
+        <AnsiStreamOutput key={key} text={normalizeText(output.text)} streamName={output.name} />
       );
 
     case "error":
@@ -292,8 +268,7 @@ export function OutputArea({
   // Determine if we should use isolation (when we have outputs)
   const shouldIsolate =
     outputs.length > 0 &&
-    (isolated === true ||
-      (isolated === "auto" && anyOutputNeedsIsolation(outputs, priority)));
+    (isolated === true || (isolated === "auto" && anyOutputNeedsIsolation(outputs, priority)));
 
   // When preloading, we render the iframe even with no outputs (hidden)
   // This allows it to bootstrap ahead of time for instant rendering
@@ -357,10 +332,7 @@ export function OutputArea({
     // Collect MIME types that need renderer plugins from the cell's outputs
     const pluginMimes = new Set<string>();
     for (const output of outputs) {
-      if (
-        output.output_type === "execute_result" ||
-        output.output_type === "display_data"
-      ) {
+      if (output.output_type === "execute_result" || output.output_type === "display_data") {
         for (const mime of Object.keys(output.data)) {
           if (needsPlugin(mime)) pluginMimes.add(mime);
         }
@@ -373,13 +345,12 @@ export function OutputArea({
     if (widgetContext?.store) {
       for (const output of outputs) {
         if (
-          (output.output_type === "execute_result" ||
-            output.output_type === "display_data") &&
+          (output.output_type === "execute_result" || output.output_type === "display_data") &&
           output.data?.["application/vnd.jupyter.widget-view+json"]
         ) {
-          const widgetData = output.data[
-            "application/vnd.jupyter.widget-view+json"
-          ] as { model_id?: string };
+          const widgetData = output.data["application/vnd.jupyter.widget-view+json"] as {
+            model_id?: string;
+          };
           if (widgetData?.model_id) {
             const model = widgetContext.store.getModel(widgetData.model_id);
             if (model?.modelName === "OutputModel" && model.state.outputs) {
@@ -399,11 +370,7 @@ export function OutputArea({
     }
 
     if (pluginMimes.size > 0) {
-      await injectPluginsForMimes(
-        frameRef.current,
-        pluginMimes,
-        injectedLibsRef.current,
-      );
+      await injectPluginsForMimes(frameRef.current, pluginMimes, injectedLibsRef.current);
       // Stale check: if outputs changed while we were loading the plugin,
       // bail — a newer handleFrameReady call is already in flight.
       if (gen !== renderGenRef.current) return;
@@ -412,22 +379,16 @@ export function OutputArea({
     // Build batch of render payloads and send atomically.
     // This avoids the clear+re-render cycle that causes DOM thrashing
     // (visible as flickering when interactive widgets update rapidly).
-    const batch: import("@/components/isolated/frame-bridge").RenderPayload[] =
-      [];
+    const batch: import("@/components/isolated/frame-bridge").RenderPayload[] = [];
 
     outputs.forEach((output, index) => {
-      if (
-        output.output_type === "execute_result" ||
-        output.output_type === "display_data"
-      ) {
+      if (output.output_type === "execute_result" || output.output_type === "display_data") {
         const mimeType = selectMimeType(output.data, priority);
         if (mimeType) {
           batch.push({
             mimeType,
             data: output.data[mimeType],
-            metadata: output.metadata?.[mimeType] as
-              | Record<string, unknown>
-              | undefined,
+            metadata: output.metadata?.[mimeType] as Record<string, unknown> | undefined,
             cellId,
             outputIndex: index,
           });
@@ -498,8 +459,7 @@ export function OutputArea({
       return;
     }
     const cleanup = highlightTextInDom(inDomOutputRef.current, searchQuery);
-    const count =
-      inDomOutputRef.current.querySelectorAll(".global-find-match").length;
+    const count = inDomOutputRef.current.querySelectorAll(".global-find-match").length;
     onSearchMatchCount?.(count);
     return cleanup;
   }, [searchQuery, shouldIsolate, outputs, onSearchMatchCount]);
@@ -521,11 +481,7 @@ export function OutputArea({
   return (
     <div
       data-slot="output-area"
-      className={cn(
-        "output-area pl-6 pr-9",
-        isPreloadOnly && "hidden",
-        className,
-      )}
+      className={cn("output-area pl-6 pr-9", isPreloadOnly && "hidden", className)}
     >
       {/* Collapse toggle */}
       {hasCollapseControl && (
@@ -536,11 +492,7 @@ export function OutputArea({
           aria-expanded={!collapsed}
           aria-controls={id}
         >
-          {collapsed ? (
-            <ChevronRight className="h-3 w-3" />
-          ) : (
-            <ChevronDown className="h-3 w-3" />
-          )}
+          {collapsed ? <ChevronRight className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
           <span>
             {collapsed
               ? `Show ${outputs.length} output${outputs.length > 1 ? "s" : ""}`
@@ -578,19 +530,11 @@ export function OutputArea({
           {!shouldIsolate && (
             <div ref={inDomOutputRef}>
               {outputs.map((output, index) => (
-                <div
-                  key={`output-${index}`}
-                  data-slot="output-item"
-                  data-output-index={index}
-                >
+                <div key={`output-${index}`} data-slot="output-item" data-output-index={index}>
                   <ErrorBoundary
                     resetKeys={[JSON.stringify(output)]}
                     fallback={(error, reset) => (
-                      <OutputErrorFallback
-                        error={error}
-                        outputIndex={index}
-                        onRetry={reset}
-                      />
+                      <OutputErrorFallback error={error} outputIndex={index} onRetry={reset} />
                     )}
                     onError={(error, errorInfo) => {
                       console.error(

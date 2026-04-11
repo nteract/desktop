@@ -8,10 +8,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import type { WidgetComponentProps } from "../widget-registry";
-import {
-  useWidgetModelValue,
-  useWidgetStoreRequired,
-} from "../widget-store-context";
+import { useWidgetModelValue, useWidgetStoreRequired } from "../widget-store-context";
 
 export function CheckboxWidget({ modelId, className }: WidgetComponentProps) {
   const { sendUpdate } = useWidgetStoreRequired();

@@ -165,11 +165,7 @@ class IPythonHighlighter {
         if (lineNum === 1) {
           const cellMagicMatch = trimmedText.match(CELL_MAGIC_PATTERN);
           if (cellMagicMatch) {
-            builder.add(
-              lineStart,
-              lineStart + cellMagicMatch[1].length,
-              cellMagicMark,
-            );
+            builder.add(lineStart, lineStart + cellMagicMatch[1].length, cellMagicMark);
             continue;
           }
         }
@@ -183,11 +179,7 @@ class IPythonHighlighter {
         // Line magic (%magic)
         const lineMagicMatch = trimmedText.match(LINE_MAGIC_PATTERN);
         if (lineMagicMatch) {
-          builder.add(
-            lineStart,
-            lineStart + lineMagicMatch[1].length,
-            magicMark,
-          );
+          builder.add(lineStart, lineStart + lineMagicMatch[1].length, magicMark);
           continue;
         }
 

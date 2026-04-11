@@ -36,34 +36,20 @@ type DatetimeValue =
  * The returned Date stores the time internally as UTC, so local getters will
  * automatically convert to the user's timezone.
  */
-function utcComponentsToDate(
-  value: Exclude<DatetimeValue, string | null>,
-): Date {
+function utcComponentsToDate(value: Exclude<DatetimeValue, string | null>): Date {
   const date = new Date();
   date.setUTCFullYear(value.year, value.month, value.date);
-  date.setUTCHours(
-    value.hours,
-    value.minutes,
-    value.seconds,
-    value.milliseconds ?? 0,
-  );
+  date.setUTCHours(value.hours, value.minutes, value.seconds, value.milliseconds ?? 0);
   return date;
 }
 
 /**
  * Create a Date from local components (for NaiveDatetimeModel).
  */
-function localComponentsToDate(
-  value: Exclude<DatetimeValue, string | null>,
-): Date {
+function localComponentsToDate(value: Exclude<DatetimeValue, string | null>): Date {
   const date = new Date();
   date.setFullYear(value.year, value.month, value.date);
-  date.setHours(
-    value.hours,
-    value.minutes,
-    value.seconds,
-    value.milliseconds ?? 0,
-  );
+  date.setHours(value.hours, value.minutes, value.seconds, value.milliseconds ?? 0);
   return date;
 }
 
@@ -95,9 +81,7 @@ function toDatetimeLocalString(value: DatetimeValue, isUtc: boolean): string {
   }
 
   // Convert components to Date, then format for display
-  const date = isUtc
-    ? utcComponentsToDate(value)
-    : localComponentsToDate(value);
+  const date = isUtc ? utcComponentsToDate(value) : localComponentsToDate(value);
   return formatDateForInput(date);
 }
 
@@ -152,9 +136,7 @@ export function DatetimeWidget({ modelId, className }: WidgetComponentProps) {
         // datetime-local input gives us a local time string
         const d = new Date(newValue);
         // Convert to appropriate format based on model type
-        const components = isUtc
-          ? dateToUtcComponents(d)
-          : dateToLocalComponents(d);
+        const components = isUtc ? dateToUtcComponents(d) : dateToLocalComponents(d);
         sendUpdate(modelId, { value: components });
       } else {
         sendUpdate(modelId, { value: null });

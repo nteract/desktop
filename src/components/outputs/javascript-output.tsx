@@ -30,10 +30,7 @@ function isInIframe(): boolean {
  * this check prevents execution if the component is somehow rendered
  * in the main DOM.
  */
-export function JavaScriptOutput({
-  code,
-  className = "",
-}: JavaScriptOutputProps) {
+export function JavaScriptOutput({ code, className = "" }: JavaScriptOutputProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -63,11 +60,5 @@ export function JavaScriptOutput({
     );
   }
 
-  return (
-    <div
-      data-slot="javascript-output"
-      className={className}
-      ref={containerRef}
-    />
-  );
+  return <div data-slot="javascript-output" className={className} ref={containerRef} />;
 }

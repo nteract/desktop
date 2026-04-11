@@ -21,10 +21,7 @@ export function VideoWidget({ modelId, className }: WidgetComponentProps) {
   const controls = useWidgetModelValue<boolean>(modelId, "controls") ?? true;
   const description = useWidgetModelValue<string>(modelId, "description");
 
-  const src = useMemo(
-    () => buildMediaSrc(value, "video", format),
-    [value, format],
-  );
+  const src = useMemo(() => buildMediaSrc(value, "video", format), [value, format]);
 
   if (!value) {
     return null;
@@ -40,9 +37,7 @@ export function VideoWidget({ modelId, className }: WidgetComponentProps) {
       data-widget-id={modelId}
       data-widget-type="Video"
     >
-      {description && (
-        <Label className="shrink-0 pt-1 text-sm">{description}</Label>
-      )}
+      {description && <Label className="shrink-0 pt-1 text-sm">{description}</Label>}
       {/* biome-ignore lint/a11y/useMediaCaption: ipywidgets video does not provide captions */}
       <video
         src={src}

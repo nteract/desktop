@@ -22,10 +22,7 @@ export const CellHeader: React.FC<CellHeaderProps> = ({
   return (
     <div
       data-slot="cell-header"
-      className={cn(
-        "cell-header flex items-center justify-between px-1 py-2 sm:pr-4",
-        className,
-      )}
+      className={cn("cell-header flex items-center justify-between px-1 py-2 sm:pr-4", className)}
       onKeyDown={onKeyDown}
       draggable={draggable}
       onDragStart={onDragStart}

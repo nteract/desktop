@@ -117,7 +117,8 @@ export interface SyncEngineOptions {
 // ── SyncEngine ───────────────────────────────────────────────────────
 
 export class SyncEngine {
-  private readonly opts: Required<Pick<SyncEngineOptions, "getHandle" | "transport" | "logger">> & Pick<SyncEngineOptions, "scheduler">;
+  private readonly opts: Required<Pick<SyncEngineOptions, "getHandle" | "transport" | "logger">> &
+    Pick<SyncEngineOptions, "scheduler">;
   private subscription: Subscription | null = null;
   private awaitingInitialSync = true;
   private prevExecutions: Record<string, ExecutionState> = {};
@@ -209,9 +210,7 @@ export class SyncEngine {
   private readonly _presence$ = new Subject<unknown>();
   private readonly _runtimeState$ = new Subject<RuntimeState>();
   private readonly _poolState$ = new Subject<PoolState>();
-  private readonly _executionTransitions$ = new Subject<
-    ExecutionTransition[]
-  >();
+  private readonly _executionTransitions$ = new Subject<ExecutionTransition[]>();
   private readonly _initialSyncComplete$ = new Subject<void>();
   private readonly _commChanges$ = new Subject<CommChanges>();
 
@@ -331,10 +330,7 @@ export class SyncEngine {
             // Send inline sync reply
             if (e.reply) {
               this.opts.transport
-                .sendFrame(
-                  FrameType.AUTOMERGE_SYNC,
-                  new Uint8Array(e.reply),
-                )
+                .sendFrame(FrameType.AUTOMERGE_SYNC, new Uint8Array(e.reply))
                 .catch((err: unknown) => {
                   const handle = this.opts.getHandle();
                   if (handle) {
@@ -456,95 +452,70 @@ export class SyncEngine {
     // client has kernel status before the Automerge sync handshake completes.
 
     sub.add(
-      this.broadcasts$
-        .pipe(filter(isRuntimeStateSnapshotBroadcast))
-        .subscribe((snapshot) => {
-          this._runtimeState$.next(snapshot.state);
-          this.projectComms(snapshot.state);
-        }),
+      this.broadcasts$.pipe(filter(isRuntimeStateSnapshotBroadcast)).subscribe((snapshot) => {
+        this._runtimeState$.next(snapshot.state);
+        this.projectComms(snapshot.state);
+      }),
     );
 
     // ── Sub-pipeline: sync error recovery ──────────────────────────
 
     // Notebook doc sync error: send recovery reply + trigger materialization
     sub.add(
-      frameEvents$
-        .pipe(filter((e) => e.type === "sync_error"))
-        .subscribe((e) => {
-          log.warn(
-            "[sync-engine] sync_error: doc rebuilt, sync state normalized",
-          );
-          if (e.reply) {
-            this.opts.transport
-              .sendFrame(
-                FrameType.AUTOMERGE_SYNC,
-                new Uint8Array(e.reply),
-              )
-              .catch((err: unknown) => {
-                const handle = this.opts.getHandle();
-                if (handle) handle.cancel_last_flush();
-                log.warn(
-                  "[sync-engine] recovery reply send failed:",
-                  err,
-                );
-              });
+      frameEvents$.pipe(filter((e) => e.type === "sync_error")).subscribe((e) => {
+        log.warn("[sync-engine] sync_error: doc rebuilt, sync state normalized");
+        if (e.reply) {
+          this.opts.transport
+            .sendFrame(FrameType.AUTOMERGE_SYNC, new Uint8Array(e.reply))
+            .catch((err: unknown) => {
+              const handle = this.opts.getHandle();
+              if (handle) handle.cancel_last_flush();
+              log.warn("[sync-engine] recovery reply send failed:", err);
+            });
+        }
+        // If the doc advanced before the error (partial apply),
+        // trigger a full materialization so the UI reflects the
+        // recovered state. Also complete initial sync if pending.
+        if (e.changed) {
+          if (this.awaitingInitialSync) {
+            this.awaitingInitialSync = false;
+            log.info("[sync-engine] Initial sync completed via error recovery");
+            this._initialSyncComplete$.next();
           }
-          // If the doc advanced before the error (partial apply),
-          // trigger a full materialization so the UI reflects the
-          // recovered state. Also complete initial sync if pending.
-          if (e.changed) {
-            if (this.awaitingInitialSync) {
-              this.awaitingInitialSync = false;
-              log.info(
-                "[sync-engine] Initial sync completed via error recovery",
-              );
-              this._initialSyncComplete$.next();
-            }
-            // null changeset = full materialization needed
-            materialize$.next(null);
-          }
-        }),
+          // null changeset = full materialization needed
+          materialize$.next(null);
+        }
+      }),
     );
 
     // Runtime state sync error: send recovery reply + publish state
     sub.add(
-      frameEvents$
-        .pipe(filter((e) => e.type === "runtime_state_sync_error"))
-        .subscribe((e) => {
-          log.warn(
-            "[sync-engine] runtime_state_sync_error: state doc rebuilt, sync state normalized",
-          );
-          if (e.reply) {
-            this.opts.transport
-              .sendFrame(
-                FrameType.RUNTIME_STATE_SYNC,
-                new Uint8Array(e.reply),
-              )
-              .catch((err: unknown) => {
-                const handle = this.opts.getHandle();
-                if (handle) handle.cancel_last_runtime_state_flush();
-                log.warn(
-                  "[sync-engine] state recovery reply send failed:",
-                  err,
-                );
-              });
+      frameEvents$.pipe(filter((e) => e.type === "runtime_state_sync_error")).subscribe((e) => {
+        log.warn(
+          "[sync-engine] runtime_state_sync_error: state doc rebuilt, sync state normalized",
+        );
+        if (e.reply) {
+          this.opts.transport
+            .sendFrame(FrameType.RUNTIME_STATE_SYNC, new Uint8Array(e.reply))
+            .catch((err: unknown) => {
+              const handle = this.opts.getHandle();
+              if (handle) handle.cancel_last_runtime_state_flush();
+              log.warn("[sync-engine] state recovery reply send failed:", err);
+            });
+        }
+        // If the state doc advanced, publish the recovered snapshot
+        // so kernel status / queue / execution UI stays current.
+        if (e.changed && e.state) {
+          const state = e.state as RuntimeState;
+          const transitions = diffExecutions(this.prevExecutions, state.executions);
+          this.prevExecutions = state.executions;
+          this._runtimeState$.next(state);
+          if (transitions.length > 0) {
+            this._executionTransitions$.next(transitions);
           }
-          // If the state doc advanced, publish the recovered snapshot
-          // so kernel status / queue / execution UI stays current.
-          if (e.changed && e.state) {
-            const state = e.state as RuntimeState;
-            const transitions = diffExecutions(
-              this.prevExecutions,
-              state.executions,
-            );
-            this.prevExecutions = state.executions;
-            this._runtimeState$.next(state);
-            if (transitions.length > 0) {
-              this._executionTransitions$.next(transitions);
-            }
-            this.projectComms(state);
-          }
-        }),
+          this.projectComms(state);
+        }
+      }),
     );
 
     // ── Sub-pipeline: runtime state sync ──────────────────────────
@@ -558,10 +529,7 @@ export class SyncEngine {
               const state = e.state as RuntimeState;
 
               // Diff executions for lifecycle transitions
-              const transitions = diffExecutions(
-                this.prevExecutions,
-                state.executions,
-              );
+              const transitions = diffExecutions(this.prevExecutions, state.executions);
               this.prevExecutions = state.executions;
 
               log.debug(
@@ -640,18 +608,12 @@ export class SyncEngine {
                     this.opts.transport
                       .sendFrame(FrameType.RUNTIME_STATE_SYNC, reply)
                       .catch((err: unknown) =>
-                        log.warn(
-                          "[sync-engine] runtime state sync reply failed:",
-                          err,
-                        ),
+                        log.warn("[sync-engine] runtime state sync reply failed:", err),
                       ),
                   );
                 }
               } catch (err) {
-                log.warn(
-                  "[sync-engine] generate_runtime_state_sync_reply failed:",
-                  err,
-                );
+                log.warn("[sync-engine] generate_runtime_state_sync_reply failed:", err);
               }
             }
             return EMPTY;
@@ -682,18 +644,12 @@ export class SyncEngine {
                     this.opts.transport
                       .sendFrame(FrameType.POOL_STATE_SYNC, reply)
                       .catch((err: unknown) =>
-                        log.warn(
-                          "[sync-engine] pool state sync reply failed:",
-                          err,
-                        ),
+                        log.warn("[sync-engine] pool state sync reply failed:", err),
                       ),
                   );
                 }
               } catch (err) {
-                log.warn(
-                  "[sync-engine] generate_pool_state_sync_reply failed:",
-                  err,
-                );
+                log.warn("[sync-engine] generate_pool_state_sync_reply failed:", err);
               }
             }
             return EMPTY;
@@ -704,39 +660,31 @@ export class SyncEngine {
 
     // Pool state sync error: send recovery reply + publish state
     sub.add(
-      frameEvents$
-        .pipe(filter((e) => e.type === "pool_state_sync_error"))
-        .subscribe((e) => {
-          log.warn(
-            "[sync-engine] pool_state_sync_error: pool doc rebuilt, sync state normalized",
-          );
-          if (e.reply) {
-            this.opts.transport
-              .sendFrame(
-                FrameType.POOL_STATE_SYNC,
-                new Uint8Array(e.reply),
-              )
-              .catch((err: unknown) => {
-                const handle = this.opts.getHandle();
-                if (handle) handle.cancel_last_pool_state_flush();
-                log.warn(
-                  "[sync-engine] pool state recovery reply send failed:",
-                  err,
-                );
-              });
-          }
-          if (e.changed && e.state) {
-            this._poolState$.next(e.state as PoolState);
-          }
-        }),
+      frameEvents$.pipe(filter((e) => e.type === "pool_state_sync_error")).subscribe((e) => {
+        log.warn("[sync-engine] pool_state_sync_error: pool doc rebuilt, sync state normalized");
+        if (e.reply) {
+          this.opts.transport
+            .sendFrame(FrameType.POOL_STATE_SYNC, new Uint8Array(e.reply))
+            .catch((err: unknown) => {
+              const handle = this.opts.getHandle();
+              if (handle) handle.cancel_last_pool_state_flush();
+              log.warn("[sync-engine] pool state recovery reply send failed:", err);
+            });
+        }
+        if (e.changed && e.state) {
+          this._poolState$.next(e.state as PoolState);
+        }
+      }),
     );
 
     // ── Debounced outbound flush ──────────────────────────────────
 
     sub.add(
-      this.flushRequest$.pipe(debounceTime(FLUSH_DEBOUNCE_MS, this.opts.scheduler)).subscribe(() => {
-        this.flush();
-      }),
+      this.flushRequest$
+        .pipe(debounceTime(FLUSH_DEBOUNCE_MS, this.opts.scheduler))
+        .subscribe(() => {
+          this.flush();
+        }),
     );
   }
 
@@ -783,11 +731,7 @@ export class SyncEngine {
     const comms = state.comms ?? {};
     const { result, next } = diffComms(this.commDiffState, comms);
 
-    if (
-      result.opened.length === 0 &&
-      result.updated.length === 0 &&
-      result.closed.length === 0
-    ) {
+    if (result.opened.length === 0 && result.updated.length === 0 && result.closed.length === 0) {
       this.commDiffState = next;
       return;
     }
@@ -821,8 +765,7 @@ export class SyncEngine {
         },
         bufferPaths: resolved.buffer_paths,
         unresolvedOutputs:
-          detectUnresolvedOutputs(entry.state as Record<string, unknown>)
-            ?.outputs ?? null,
+          detectUnresolvedOutputs(entry.state as Record<string, unknown>)?.outputs ?? null,
       });
     }
 
@@ -838,8 +781,7 @@ export class SyncEngine {
         state: resolved.state,
         bufferPaths: resolved.buffer_paths,
         unresolvedOutputs:
-          detectUnresolvedOutputs(entry.state as Record<string, unknown>)
-            ?.outputs ?? null,
+          detectUnresolvedOutputs(entry.state as Record<string, unknown>)?.outputs ?? null,
       });
     }
 
@@ -872,17 +814,12 @@ export class SyncEngine {
 
     const msg = handle.flush_local_changes();
     if (msg) {
-      this.opts.logger.debug(
-        `[sync-engine] flushing sync message (${msg.byteLength}B)`,
-      );
+      this.opts.logger.debug(`[sync-engine] flushing sync message (${msg.byteLength}B)`);
       const done = this.opts.transport
         .sendFrame(FrameType.AUTOMERGE_SYNC, msg)
         .catch((e: unknown) => {
           handle.cancel_last_flush();
-          this.opts.logger.warn(
-            "[sync-engine] sync to relay failed:",
-            e,
-          );
+          this.opts.logger.warn("[sync-engine] sync to relay failed:", e);
         });
       // Track the in-flight flush so flushAndWait() can await it.
       this.inflightFlush = done;
@@ -894,29 +831,19 @@ export class SyncEngine {
     // stuck on "not_started" (#runtime-state-race).
     const stateMsg = handle.flush_runtime_state_sync();
     if (stateMsg) {
-      this.opts.transport
-        .sendFrame(FrameType.RUNTIME_STATE_SYNC, stateMsg)
-        .catch((e: unknown) => {
-          handle.cancel_last_runtime_state_flush();
-          this.opts.logger.warn(
-            "[sync-engine] runtime state sync to relay failed:",
-            e,
-          );
-        });
+      this.opts.transport.sendFrame(FrameType.RUNTIME_STATE_SYNC, stateMsg).catch((e: unknown) => {
+        handle.cancel_last_runtime_state_flush();
+        this.opts.logger.warn("[sync-engine] runtime state sync to relay failed:", e);
+      });
     }
 
     // Also flush PoolDoc sync so the daemon sends pool state.
     const poolMsg = handle.flush_pool_state_sync();
     if (poolMsg) {
-      this.opts.transport
-        .sendFrame(FrameType.POOL_STATE_SYNC, poolMsg)
-        .catch((e: unknown) => {
-          handle.cancel_last_pool_state_flush();
-          this.opts.logger.warn(
-            "[sync-engine] pool state sync to relay failed:",
-            e,
-          );
-        });
+      this.opts.transport.sendFrame(FrameType.POOL_STATE_SYNC, poolMsg).catch((e: unknown) => {
+        handle.cancel_last_pool_state_flush();
+        this.opts.logger.warn("[sync-engine] pool state sync to relay failed:", e);
+      });
     }
   }
 
@@ -949,9 +876,7 @@ export class SyncEngine {
     // Flush any remaining notebook doc changes (may be none if debounce got them).
     const msg = handle.flush_local_changes();
     if (msg) {
-      this.opts.logger.debug(
-        `[sync-engine] flushAndWait: sending ${msg.byteLength}B sync message`,
-      );
+      this.opts.logger.debug(`[sync-engine] flushAndWait: sending ${msg.byteLength}B sync message`);
       try {
         await this.opts.transport.sendFrame(FrameType.AUTOMERGE_SYNC, msg);
       } catch (e) {

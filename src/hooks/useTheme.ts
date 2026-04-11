@@ -18,9 +18,7 @@ function getStoredTheme(storageKey: string): ThemeMode {
 
 function resolveTheme(theme: ThemeMode): "light" | "dark" {
   if (theme === "system") {
-    return window.matchMedia("(prefers-color-scheme: dark)").matches
-      ? "dark"
-      : "light";
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
   }
   return theme;
 }
@@ -51,9 +49,7 @@ async function syncNativeWindowTheme(theme: ThemeMode): Promise<void> {
 }
 
 export function useTheme(storageKey = "theme") {
-  const [theme, setThemeState] = useState<ThemeMode>(() =>
-    getStoredTheme(storageKey),
-  );
+  const [theme, setThemeState] = useState<ThemeMode>(() => getStoredTheme(storageKey));
   const [resolvedTheme, setResolvedTheme] = useState<"light" | "dark">(() =>
     resolveTheme(getStoredTheme(storageKey)),
   );

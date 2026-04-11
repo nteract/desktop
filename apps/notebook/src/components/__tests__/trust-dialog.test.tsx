@@ -8,7 +8,7 @@
 
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import type { TrustInfo, TyposquatWarning } from "../../hooks/useTrust";
 import { TrustDialog } from "../TrustDialog";
 
@@ -40,9 +40,7 @@ describe("TrustDialog", () => {
           trustInfo={makeTrustInfo({
             uv_dependencies: ["Requests"],
           })}
-          typosquatWarnings={[
-            { package: "requests", similar_to: "requests2", distance: 1 },
-          ]}
+          typosquatWarnings={[{ package: "requests", similar_to: "requests2", distance: 1 }]}
         />,
       );
       expect(screen.getByText(/Similar to "requests2"/)).toBeInTheDocument();
@@ -55,9 +53,7 @@ describe("TrustDialog", () => {
           trustInfo={makeTrustInfo({
             uv_dependencies: ["reqeusts>=2.0"],
           })}
-          typosquatWarnings={[
-            { package: "reqeusts", similar_to: "requests", distance: 1 },
-          ]}
+          typosquatWarnings={[{ package: "reqeusts", similar_to: "requests", distance: 1 }]}
         />,
       );
       expect(screen.getByText(/Similar to "requests"/)).toBeInTheDocument();
@@ -70,9 +66,7 @@ describe("TrustDialog", () => {
           trustInfo={makeTrustInfo({
             uv_dependencies: ["reqeusts[security]>=2.0"],
           })}
-          typosquatWarnings={[
-            { package: "reqeusts", similar_to: "requests", distance: 1 },
-          ]}
+          typosquatWarnings={[{ package: "reqeusts", similar_to: "requests", distance: 1 }]}
         />,
       );
       expect(screen.getByText(/Similar to "requests"/)).toBeInTheDocument();
@@ -85,9 +79,7 @@ describe("TrustDialog", () => {
           trustInfo={makeTrustInfo({
             uv_dependencies: ["reqeusts@2.28.0"],
           })}
-          typosquatWarnings={[
-            { package: "reqeusts", similar_to: "requests", distance: 1 },
-          ]}
+          typosquatWarnings={[{ package: "reqeusts", similar_to: "requests", distance: 1 }]}
         />,
       );
       expect(screen.getByText(/Similar to "requests"/)).toBeInTheDocument();
@@ -100,9 +92,7 @@ describe("TrustDialog", () => {
           trustInfo={makeTrustInfo({
             uv_dependencies: ['reqeusts; python_version>="3.8"'],
           })}
-          typosquatWarnings={[
-            { package: "reqeusts", similar_to: "requests", distance: 1 },
-          ]}
+          typosquatWarnings={[{ package: "reqeusts", similar_to: "requests", distance: 1 }]}
         />,
       );
       expect(screen.getByText(/Similar to "requests"/)).toBeInTheDocument();
@@ -115,9 +105,7 @@ describe("TrustDialog", () => {
           trustInfo={makeTrustInfo({
             uv_dependencies: ["numpy", "pandas"],
           })}
-          typosquatWarnings={[
-            { package: "reqeusts", similar_to: "requests", distance: 1 },
-          ]}
+          typosquatWarnings={[{ package: "reqeusts", similar_to: "requests", distance: 1 }]}
         />,
       );
       expect(screen.queryByText(/Similar to/)).not.toBeInTheDocument();
@@ -130,21 +118,15 @@ describe("TrustDialog", () => {
           trustInfo={makeTrustInfo({
             uv_dependencies: ["reqeusts"],
           })}
-          typosquatWarnings={[
-            { package: "reqeusts", similar_to: "requests", distance: 1 },
-          ]}
+          typosquatWarnings={[{ package: "reqeusts", similar_to: "requests", distance: 1 }]}
         />,
       );
-      expect(
-        screen.getByText("Potential typosquatting detected"),
-      ).toBeInTheDocument();
+      expect(screen.getByText("Potential typosquatting detected")).toBeInTheDocument();
     });
 
     it("hides typosquat alert banner when no warnings", () => {
       render(<TrustDialog {...defaultProps} typosquatWarnings={[]} />);
-      expect(
-        screen.queryByText("Potential typosquatting detected"),
-      ).not.toBeInTheDocument();
+      expect(screen.queryByText("Potential typosquatting detected")).not.toBeInTheDocument();
     });
   });
 
@@ -169,16 +151,12 @@ describe("TrustDialog", () => {
 
     it("shows daemon-mode description mentioning auto-launch", () => {
       render(<TrustDialog {...defaultProps} daemonMode />);
-      expect(
-        screen.getByText(/the kernel will start automatically/),
-      ).toBeInTheDocument();
+      expect(screen.getByText(/the kernel will start automatically/)).toBeInTheDocument();
     });
 
     it("shows default description for non-daemon mode", () => {
       render(<TrustDialog {...defaultProps} daemonMode={false} />);
-      expect(
-        screen.getByText(/Review them before running code/),
-      ).toBeInTheDocument();
+      expect(screen.getByText(/Review them before running code/)).toBeInTheDocument();
     });
 
     it("shows signature_invalid description when status is signature_invalid", () => {
@@ -191,32 +169,24 @@ describe("TrustDialog", () => {
           })}
         />,
       );
-      expect(
-        screen.getByText(/dependencies have been modified/),
-      ).toBeInTheDocument();
+      expect(screen.getByText(/dependencies have been modified/)).toBeInTheDocument();
     });
   });
 
   describe("button labels", () => {
     it("shows 'Trust & Start' in daemon mode", () => {
       render(<TrustDialog {...defaultProps} daemonMode />);
-      expect(screen.getByTestId("trust-approve-button")).toHaveTextContent(
-        "Trust & Start",
-      );
+      expect(screen.getByTestId("trust-approve-button")).toHaveTextContent("Trust & Start");
     });
 
     it("shows 'Trust & Install' in non-daemon mode", () => {
       render(<TrustDialog {...defaultProps} daemonMode={false} />);
-      expect(screen.getByTestId("trust-approve-button")).toHaveTextContent(
-        "Trust & Install",
-      );
+      expect(screen.getByTestId("trust-approve-button")).toHaveTextContent("Trust & Install");
     });
 
     it("shows 'Approving...' when loading", () => {
       render(<TrustDialog {...defaultProps} loading />);
-      expect(screen.getByTestId("trust-approve-button")).toHaveTextContent(
-        "Approving...",
-      );
+      expect(screen.getByTestId("trust-approve-button")).toHaveTextContent("Approving...");
     });
 
     it("disables both buttons when loading", () => {
@@ -230,13 +200,7 @@ describe("TrustDialog", () => {
     it("closes dialog when onApprove resolves with true", async () => {
       const onOpenChange = vi.fn();
       const onApprove = vi.fn().mockResolvedValue(true);
-      render(
-        <TrustDialog
-          {...defaultProps}
-          onOpenChange={onOpenChange}
-          onApprove={onApprove}
-        />,
-      );
+      render(<TrustDialog {...defaultProps} onOpenChange={onOpenChange} onApprove={onApprove} />);
 
       await userEvent.click(screen.getByTestId("trust-approve-button"));
       await waitFor(() => {
@@ -247,13 +211,7 @@ describe("TrustDialog", () => {
     it("does NOT close dialog when onApprove resolves with false", async () => {
       const onOpenChange = vi.fn();
       const onApprove = vi.fn().mockResolvedValue(false);
-      render(
-        <TrustDialog
-          {...defaultProps}
-          onOpenChange={onOpenChange}
-          onApprove={onApprove}
-        />,
-      );
+      render(<TrustDialog {...defaultProps} onOpenChange={onOpenChange} onApprove={onApprove} />);
 
       await userEvent.click(screen.getByTestId("trust-approve-button"));
       await waitFor(() => {
@@ -266,13 +224,7 @@ describe("TrustDialog", () => {
     it("calls onDecline and closes on decline button click", async () => {
       const onDecline = vi.fn();
       const onOpenChange = vi.fn();
-      render(
-        <TrustDialog
-          {...defaultProps}
-          onDecline={onDecline}
-          onOpenChange={onOpenChange}
-        />,
-      );
+      render(<TrustDialog {...defaultProps} onDecline={onDecline} onOpenChange={onOpenChange} />);
 
       await userEvent.click(screen.getByTestId("trust-decline-button"));
       expect(onDecline).toHaveBeenCalled();

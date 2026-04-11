@@ -1,17 +1,7 @@
 import type { EditorView, KeyBinding } from "@codemirror/view";
-import {
-  memo,
-  type ReactNode,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-} from "react";
+import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef } from "react";
 import { CellContainer } from "@/components/cell/CellContainer";
-import {
-  CodeMirrorEditor,
-  type CodeMirrorEditorRef,
-} from "@/components/editor/codemirror-editor";
+import { CodeMirrorEditor, type CodeMirrorEditorRef } from "@/components/editor/codemirror-editor";
 import { remoteCursorsExtension } from "@/components/editor/remote-cursors";
 import { searchHighlight } from "@/components/editor/search-highlight";
 import { textAttributionExtension } from "@/components/editor/text-attribution";
@@ -24,15 +14,9 @@ import {
   useIsPreviousCellFromFocused,
   useSearchQuery,
 } from "../lib/cell-ui-state";
-import {
-  onEditorRegistered,
-  onEditorUnregistered,
-} from "../lib/cursor-registry";
+import { onEditorRegistered, onEditorUnregistered } from "../lib/cursor-registry";
 import { detectRawFormat } from "../lib/detect-raw-format";
-import {
-  registerCellEditor,
-  unregisterCellEditor,
-} from "../lib/editor-registry";
+import { registerCellEditor, unregisterCellEditor } from "../lib/editor-registry";
 import { presenceSenderExtension } from "../lib/presence-sender";
 import type { RawCell as RawCellType } from "../types";
 import { CellPresenceIndicators } from "./cell/CellPresenceIndicators";
@@ -185,10 +169,7 @@ export const RawCell = memo(function RawCell({
   });
 
   // Use navigation key bindings directly (Shift+Enter already handled by useCellKeyboardNavigation)
-  const keyMap: KeyBinding[] = useMemo(
-    () => navigationKeyMap,
-    [navigationKeyMap],
-  );
+  const keyMap: KeyBinding[] = useMemo(() => navigationKeyMap, [navigationKeyMap]);
 
   // Focus editor when cell becomes focused
   useEffect(() => {

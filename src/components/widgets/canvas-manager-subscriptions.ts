@@ -72,10 +72,7 @@ const COMMANDS = [
  * Inlined here to avoid depending on ipycanvas-commands.ts,
  * keeping the router self-contained within the widget-store package.
  */
-function getTypedArray(
-  dataview: DataView,
-  metadata: { dtype: string },
-): ArrayBufferView {
+function getTypedArray(dataview: DataView, metadata: { dtype: string }): ArrayBufferView {
   const buffer = dataview.buffer;
   switch (metadata.dtype) {
     case "int8":
@@ -131,10 +128,7 @@ function collectSwitchCanvasTargets(
  * Set up message routing for a single CanvasManagerModel.
  * Returns a cleanup function to tear down the subscription.
  */
-function setupManagerRouting(
-  store: WidgetStore,
-  managerId: string,
-): () => void {
+function setupManagerRouting(store: WidgetStore, managerId: string): () => void {
   let currentTarget: string | null = null;
 
   return store.subscribeToCustomMessage(managerId, (content, buffers) => {
@@ -194,9 +188,7 @@ export function createCanvasManagerRouter(store: WidgetStore): () => void {
       if (!managerRef) return;
 
       // Extract manager ID from "IPY_MODEL_xxx" reference
-      const managerId = managerRef.startsWith("IPY_MODEL_")
-        ? managerRef.slice(10)
-        : managerRef;
+      const managerId = managerRef.startsWith("IPY_MODEL_") ? managerRef.slice(10) : managerRef;
 
       if (activeRoutes.has(managerId)) return;
 
@@ -209,9 +201,7 @@ export function createCanvasManagerRouter(store: WidgetStore): () => void {
       if (model.modelName === "CanvasModel") {
         const managerRef = model.state?._canvas_manager as string | undefined;
         if (managerRef) {
-          const managerId = managerRef.startsWith("IPY_MODEL_")
-            ? managerRef.slice(10)
-            : managerRef;
+          const managerId = managerRef.startsWith("IPY_MODEL_") ? managerRef.slice(10) : managerRef;
           referencedManagers.add(managerId);
         }
       }

@@ -28,11 +28,7 @@ interface DaemonStatusBannerProps {
  * - Amber/warning: Failed state with retry button
  * - Hidden: Ready state or null
  */
-export function DaemonStatusBanner({
-  status,
-  onDismiss,
-  onRetry,
-}: DaemonStatusBannerProps) {
+export function DaemonStatusBanner({ status, onDismiss, onRetry }: DaemonStatusBannerProps) {
   // Don't show banner for ready or null state
   if (!status || status.status === "ready") {
     return null;
@@ -45,9 +41,7 @@ export function DaemonStatusBanner({
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 min-w-0">
             <AlertTriangle className="h-3 w-3 flex-shrink-0" />
-            <span className="font-medium flex-shrink-0">
-              Runtime unavailable
-            </span>
+            <span className="font-medium flex-shrink-0">Runtime unavailable</span>
             <span className="text-amber-200 flex-shrink-0">—</span>
             <span className="text-amber-100 truncate">{status.error}</span>
           </div>
@@ -74,9 +68,7 @@ export function DaemonStatusBanner({
             )}
           </div>
         </div>
-        {status.guidance && (
-          <div className="text-amber-100 pl-5">{status.guidance}</div>
-        )}
+        {status.guidance && <div className="text-amber-100 pl-5">{status.guidance}</div>}
       </div>
     );
   }
@@ -93,10 +85,7 @@ export function DaemonStatusBanner({
 }
 
 function getProgressMessage(
-  status: Exclude<
-    DaemonStatus,
-    null | { status: "ready" } | { status: "failed" }
-  >,
+  status: Exclude<DaemonStatus, null | { status: "ready" } | { status: "failed" }>,
 ): string {
   switch (status.status) {
     case "checking":

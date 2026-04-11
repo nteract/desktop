@@ -7,9 +7,7 @@ import { expect, test } from "@playwright/test";
  */
 
 test.describe("Header Overlap", () => {
-  test("first row is visible below header on generated dataset", async ({
-    page,
-  }) => {
+  test("first row is visible below header on generated dataset", async ({ page }) => {
     await page.goto("/?dataset=generated");
     await page.waitForSelector(".pt-table-container");
     await page.waitForSelector(".pt-row");
@@ -27,20 +25,16 @@ test.describe("Header Overlap", () => {
     expect(rowBox).not.toBeNull();
 
     // First row's top edge should be at or below the header's bottom edge
-    expect(rowBox!.y).toBeGreaterThanOrEqual(
-      headerBox!.y + headerBox!.height - 1,
-    );
+    expect(rowBox!.y).toBeGreaterThanOrEqual(headerBox!.y + headerBox!.height - 1);
   });
 
   test("first row is visible below header on HF dataset", async ({ page }) => {
     test.setTimeout(120_000);
     await page.goto("/?dataset=titanic");
     await page.waitForSelector(".pt-table-container", { timeout: 90_000 });
-    await expect(page.locator(".pt-stat-rows")).toHaveAttribute(
-      "data-value",
-      /891/,
-      { timeout: 30_000 },
-    );
+    await expect(page.locator(".pt-stat-rows")).toHaveAttribute("data-value", /891/, {
+      timeout: 30_000,
+    });
 
     // Wait for summaries to render
     await page.waitForTimeout(1000);
@@ -55,8 +49,6 @@ test.describe("Header Overlap", () => {
     expect(rowBox).not.toBeNull();
 
     // First row's top edge should be at or below the header's bottom edge
-    expect(rowBox!.y).toBeGreaterThanOrEqual(
-      headerBox!.y + headerBox!.height - 1,
-    );
+    expect(rowBox!.y).toBeGreaterThanOrEqual(headerBox!.y + headerBox!.height - 1);
   });
 });

@@ -7,15 +7,9 @@
 import { Toggle } from "@/components/ui/toggle";
 import { cn } from "@/lib/utils";
 import type { WidgetComponentProps } from "../widget-registry";
-import {
-  useWidgetModelValue,
-  useWidgetStoreRequired,
-} from "../widget-store-context";
+import { useWidgetModelValue, useWidgetStoreRequired } from "../widget-store-context";
 
-export function ToggleButtonWidget({
-  modelId,
-  className,
-}: WidgetComponentProps) {
+export function ToggleButtonWidget({ modelId, className }: WidgetComponentProps) {
   const { sendUpdate } = useWidgetStoreRequired();
 
   // Subscribe to individual state keys
@@ -23,8 +17,7 @@ export function ToggleButtonWidget({
   const description = useWidgetModelValue<string>(modelId, "description") ?? "";
   const disabled = useWidgetModelValue<boolean>(modelId, "disabled") ?? false;
   const icon = useWidgetModelValue<string>(modelId, "icon");
-  const buttonStyle =
-    useWidgetModelValue<string>(modelId, "button_style") ?? "";
+  const buttonStyle = useWidgetModelValue<string>(modelId, "button_style") ?? "";
 
   const handlePressedChange = (pressed: boolean) => {
     sendUpdate(modelId, { value: pressed });

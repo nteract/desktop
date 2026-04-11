@@ -3,4 +3,4 @@
 /**
  * Default packages for pixi environments.
  */
-export type PixiDefaults = { default_packages: Array<string>, };
+export type PixiDefaults = { default_packages: Array<string> };

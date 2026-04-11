@@ -1,4 +1,4 @@
-/// <reference types="vite/client" />
+/// <reference types="vite-plus/client" />
 
 // KaTeX CSS type declaration for side-effect imports
 declare module "katex/dist/katex.min.css";

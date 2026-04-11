@@ -9,7 +9,7 @@
  * not the React component itself.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 // ── Extracted formatting logic from MarkdownCell.tsx ─────────────
 
@@ -56,10 +56,7 @@ function applyInlineFormatting(
  * With selected text: [selectedText](https://)
  * Without: [link text](https://)
  */
-function applyLinkFormatting(
-  docText: string,
-  selection: MockSelection,
-): FormatResult {
+function applyLinkFormatting(docText: string, selection: MockSelection): FormatResult {
   const selectedText = docText.slice(selection.from, selection.to);
   const linkText = selectedText || "link text";
   const formattedText = `[${linkText}](https://)`;
@@ -82,10 +79,7 @@ function applyLinkFormatting(
  * Mirrors applyQuoteFormatting from MarkdownCell.tsx.
  * Prefixes each line with "> " and selects the result.
  */
-function applyQuoteFormatting(
-  docText: string,
-  selection: MockSelection,
-): FormatResult {
+function applyQuoteFormatting(docText: string, selection: MockSelection): FormatResult {
   const selectedText = docText.slice(selection.from, selection.to);
   const text = selectedText || "quote";
   const quotedText = text
@@ -131,12 +125,7 @@ describe("applyInlineFormatting", () => {
 
   it("handles asymmetric markers (e.g. <u>...</u>)", () => {
     const doc = "hello world";
-    const result = applyInlineFormatting(
-      doc,
-      { from: 0, to: 5 },
-      "<u>",
-      "</u>",
-    );
+    const result = applyInlineFormatting(doc, { from: 0, to: 5 }, "<u>", "</u>");
     expect(result.insert).toBe("<u>hello</u>");
     // Selection covers "hello" between <u> and </u>
     expect(result.selectionAnchor).toBe(3); // after "<u>"

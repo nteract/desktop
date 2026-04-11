@@ -5,13 +5,7 @@
  * wrapping the usePresence hook to avoid prop drilling.
  */
 
-import {
-  createContext,
-  type ReactNode,
-  useCallback,
-  useContext,
-  useMemo,
-} from "react";
+import { createContext, type ReactNode, useCallback, useContext, useMemo } from "react";
 import { usePresence } from "../hooks/usePresence";
 
 export interface PresenceContextValue {
@@ -56,13 +50,7 @@ export function PresenceProvider({
   );
 
   const setSelection = useCallback(
-    (
-      cellId: string,
-      anchorLine: number,
-      anchorCol: number,
-      headLine: number,
-      headCol: number,
-    ) => {
+    (cellId: string, anchorLine: number, anchorCol: number, headLine: number, headCol: number) => {
       presence.setSelection(cellId, anchorLine, anchorCol, headLine, headCol);
     },
     [presence],
@@ -85,11 +73,7 @@ export function PresenceProvider({
     [setCursor, setSelection, setFocus, peerId],
   );
 
-  return (
-    <PresenceContext.Provider value={value}>
-      {children}
-    </PresenceContext.Provider>
-  );
+  return <PresenceContext.Provider value={value}>{children}</PresenceContext.Provider>;
 }
 
 /**
@@ -107,9 +91,7 @@ export function usePresenceContext(): PresenceContextValue | null {
 export function usePresenceContextRequired(): PresenceContextValue {
   const ctx = useContext(PresenceContext);
   if (!ctx) {
-    throw new Error(
-      "usePresenceContextRequired must be used within a PresenceProvider",
-    );
+    throw new Error("usePresenceContextRequired must be used within a PresenceProvider");
   }
   return ctx;
 }

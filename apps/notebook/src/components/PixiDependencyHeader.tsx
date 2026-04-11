@@ -1,20 +1,7 @@
-import {
-  Check,
-  FileText,
-  Info,
-  Package,
-  Plus,
-  RefreshCw,
-  Terminal,
-  X,
-} from "lucide-react";
+import { Check, FileText, Info, Package, Plus, RefreshCw, Terminal, X } from "lucide-react";
 import { type KeyboardEvent, useCallback, useState } from "react";
 import type { EnvSyncState } from "../hooks/useDependencies";
-import {
-  addPixiDependency,
-  removePixiDependency,
-  usePixiDeps,
-} from "../lib/notebook-metadata";
+import { addPixiDependency, removePixiDependency, usePixiDeps } from "../lib/notebook-metadata";
 import type { PixiInfo } from "../types";
 import { PixiIcon } from "./icons";
 
@@ -34,8 +21,7 @@ export function PixiDependencyHeader({
   justSynced,
 }: PixiDependencyHeaderProps) {
   const pixiDeps = usePixiDeps();
-  const isInlineMode =
-    envSource === "pixi:inline" || envSource === "pixi:prewarmed";
+  const isInlineMode = envSource === "pixi:inline" || envSource === "pixi:prewarmed";
   const [newDep, setNewDep] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -99,10 +85,8 @@ export function PixiDependencyHeader({
               <Info className="h-3.5 w-3.5 shrink-0" />
               <span>
                 Dependencies changed
-                {syncState.added.length > 0 &&
-                  ` — ${syncState.added.length} added`}
-                {syncState.removed.length > 0 &&
-                  ` — ${syncState.removed.length} removed`}
+                {syncState.added.length > 0 && ` — ${syncState.added.length} added`}
+                {syncState.removed.length > 0 && ` — ${syncState.removed.length} removed`}
               </span>
             </div>
             <button
@@ -111,9 +95,7 @@ export function PixiDependencyHeader({
               disabled={loading}
               className="flex items-center gap-1 rounded bg-amber-600 px-2 py-0.5 text-white text-xs font-medium hover:bg-amber-700 transition-colors disabled:opacity-50"
             >
-              <RefreshCw
-                className={`h-3 w-3 ${loading ? "animate-spin" : ""}`}
-              />
+              <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
               Restart
             </button>
           </div>
@@ -125,14 +107,9 @@ export function PixiDependencyHeader({
             <div className="flex items-center gap-2">
               <FileText className="h-3.5 w-3.5 shrink-0" />
               <span>
-                Using{" "}
-                <code className="rounded bg-muted px-1">
-                  {pixiInfo.relative_path}
-                </code>
+                Using <code className="rounded bg-muted px-1">{pixiInfo.relative_path}</code>
                 {pixiInfo.workspace_name && (
-                  <span className="text-muted-foreground ml-1">
-                    ({pixiInfo.workspace_name})
-                  </span>
+                  <span className="text-muted-foreground ml-1">({pixiInfo.workspace_name})</span>
                 )}
               </span>
             </div>
@@ -196,9 +173,7 @@ export function PixiDependencyHeader({
             )}
 
             {pixiInfo.python && (
-              <div className="mt-1.5 text-muted-foreground">
-                Python: {pixiInfo.python}
-              </div>
+              <div className="mt-1.5 text-muted-foreground">Python: {pixiInfo.python}</div>
             )}
           </div>
         )}
@@ -256,10 +231,8 @@ export function PixiDependencyHeader({
           <div className="mb-3 flex items-start gap-2 rounded bg-muted/50 px-2 py-1.5 text-xs text-muted-foreground">
             <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
             <span>
-              No <code className="rounded bg-muted px-1">pixi.toml</code> found.
-              Add packages above or run{" "}
-              <code className="rounded bg-muted px-1">pixi init</code> in your
-              terminal.
+              No <code className="rounded bg-muted px-1">pixi.toml</code> found. Add packages above
+              or run <code className="rounded bg-muted px-1">pixi init</code> in your terminal.
             </span>
           </div>
         )}
@@ -270,10 +243,8 @@ export function PixiDependencyHeader({
             <Terminal className="h-3.5 w-3.5 mt-0.5 shrink-0" />
             <span>
               Manage dependencies with{" "}
-              <code className="rounded bg-muted px-1">
-                pixi add &lt;package&gt;
-              </code>{" "}
-              in your terminal.
+              <code className="rounded bg-muted px-1">pixi add &lt;package&gt;</code> in your
+              terminal.
             </span>
           </div>
         )}

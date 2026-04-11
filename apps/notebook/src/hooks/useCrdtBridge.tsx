@@ -16,19 +16,8 @@
  */
 
 import type { Extension } from "@codemirror/state";
-import {
-  createContext,
-  type ReactNode,
-  useContext,
-  useEffect,
-  useMemo,
-  useRef,
-} from "react";
-import {
-  type CrdtBridge,
-  createCrdtBridge,
-  type RemoteChange,
-} from "../lib/crdt-editor-bridge";
+import { createContext, type ReactNode, useContext, useEffect, useMemo, useRef } from "react";
+import { type CrdtBridge, createCrdtBridge, type RemoteChange } from "../lib/crdt-editor-bridge";
 import { logger } from "../lib/logger";
 import { updateCellById } from "../lib/notebook-cells";
 import { subscribeBroadcast } from "../lib/notebook-frame-bus";
@@ -81,11 +70,7 @@ export function CrdtBridgeProvider({
   // The context value object itself is stable (same ref every render).
   const value = valueRef.current;
 
-  return (
-    <CrdtBridgeContext.Provider value={value}>
-      {children}
-    </CrdtBridgeContext.Provider>
-  );
+  return <CrdtBridgeContext.Provider value={value}>{children}</CrdtBridgeContext.Provider>;
 }
 
 // ── Hook ─────────────────────────────────────────────────────────────

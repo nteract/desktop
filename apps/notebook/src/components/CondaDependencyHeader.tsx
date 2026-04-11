@@ -1,12 +1,4 @@
-import {
-  AlertCircle,
-  Check,
-  FileText,
-  Info,
-  Plus,
-  RefreshCw,
-  X,
-} from "lucide-react";
+import { AlertCircle, Check, FileText, Info, Plus, RefreshCw, X } from "lucide-react";
 import { type KeyboardEvent, useCallback, useState } from "react";
 import { Progress } from "@/components/ui/progress";
 import type {
@@ -216,13 +208,9 @@ export function CondaDependencyHeader({
               <FileText className="h-3.5 w-3.5 shrink-0" />
               <span>
                 Using deps from{" "}
-                <code className="rounded bg-muted px-1">
-                  {environmentYmlInfo.relative_path}
-                </code>
+                <code className="rounded bg-muted px-1">{environmentYmlInfo.relative_path}</code>
                 {environmentYmlInfo.name && (
-                  <span className="text-muted-foreground ml-1">
-                    ({environmentYmlInfo.name})
-                  </span>
+                  <span className="text-muted-foreground ml-1">({environmentYmlInfo.name})</span>
                 )}
               </span>
             </div>
@@ -233,10 +221,7 @@ export function CondaDependencyHeader({
                   {environmentYmlDeps.dependencies.length > 0 && (
                     <div className="flex flex-wrap gap-1 mb-1">
                       {environmentYmlDeps.dependencies.map((dep) => (
-                        <span
-                          key={dep}
-                          className="rounded bg-muted px-1.5 py-0.5 font-mono"
-                        >
+                        <span key={dep} className="rounded bg-muted px-1.5 py-0.5 font-mono">
                           {dep}
                         </span>
                       ))}
@@ -246,10 +231,7 @@ export function CondaDependencyHeader({
                     <div className="flex flex-wrap gap-1">
                       <span className="text-muted-foreground">pip:</span>
                       {environmentYmlDeps.pip_dependencies.map((dep) => (
-                        <span
-                          key={dep}
-                          className="rounded bg-muted px-1.5 py-0.5 font-mono"
-                        >
+                        <span key={dep} className="rounded bg-muted px-1.5 py-0.5 font-mono">
                           {dep}
                         </span>
                       ))}
@@ -265,9 +247,7 @@ export function CondaDependencyHeader({
           <div className="mb-3 flex items-center justify-between rounded bg-amber-500/10 px-2 py-1.5 text-xs text-amber-700 dark:text-amber-400">
             <div className="flex items-center gap-2">
               <Info className="h-3.5 w-3.5 shrink-0" />
-              <span>
-                Dependencies changed — re-initialize environment to apply
-              </span>
+              <span>Dependencies changed — re-initialize environment to apply</span>
             </div>
             <button
               type="button"
@@ -276,9 +256,7 @@ export function CondaDependencyHeader({
               data-testid="deps-restart-button"
               className="flex items-center gap-1 rounded bg-amber-600 px-2 py-0.5 text-white text-xs font-medium hover:bg-amber-700 transition-colors disabled:opacity-50"
             >
-              <RefreshCw
-                className={`h-3 w-3 ${loading ? "animate-spin" : ""}`}
-              />
+              <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
               Re-initialize
             </button>
           </div>
@@ -295,9 +273,7 @@ export function CondaDependencyHeader({
               >
                 <span className="font-mono">{channel}</span>
                 {isUsingDefault && (
-                  <span className="text-[10px] text-muted-foreground ml-0.5">
-                    (default)
-                  </span>
+                  <span className="text-[10px] text-muted-foreground ml-0.5">(default)</span>
                 )}
                 {channels.length > 0 && (
                   <button
@@ -395,8 +371,7 @@ export function CondaDependencyHeader({
           </div>
         ) : (
           <div className="mb-3 text-xs text-muted-foreground">
-            No dependencies. Add conda packages to create an isolated
-            environment.
+            No dependencies. Add conda packages to create an isolated environment.
           </div>
         )}
 

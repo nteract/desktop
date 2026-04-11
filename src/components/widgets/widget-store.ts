@@ -15,10 +15,7 @@ type Listener = () => void;
 type KeyListener = (value: unknown) => void;
 // Anywidgets expect DataView[] so they can access .buffer for the underlying ArrayBuffer
 // This matches JupyterLab services which deserializes buffers as DataView[]
-type CustomMessageCallback = (
-  content: Record<string, unknown>,
-  buffers?: DataView[],
-) => void;
+type CustomMessageCallback = (content: Record<string, unknown>, buffers?: DataView[]) => void;
 
 export interface WidgetStore {
   /** Subscribe to all model changes (for useSyncExternalStore) */
@@ -28,11 +25,7 @@ export interface WidgetStore {
   /** Get a single model by ID */
   getModel: (modelId: string) => WidgetModel | undefined;
   /** Create a new model (on comm_open) */
-  createModel: (
-    commId: string,
-    state: Record<string, unknown>,
-    buffers?: ArrayBuffer[],
-  ) => void;
+  createModel: (commId: string, state: Record<string, unknown>, buffers?: ArrayBuffer[]) => void;
   /** Update a model's state (on comm_msg with method: "update") */
   updateModel: (
     commId: string,
@@ -44,11 +37,7 @@ export interface WidgetStore {
   /** Check if a model was explicitly closed (vs never existed) */
   wasModelClosed: (modelId: string) => boolean;
   /** Subscribe to a specific key on a specific model */
-  subscribeToKey: (
-    modelId: string,
-    key: string,
-    callback: KeyListener,
-  ) => () => void;
+  subscribeToKey: (modelId: string, key: string, callback: KeyListener) => () => void;
   /** Emit a custom message to listeners for a model */
   emitCustomMessage: (
     commId: string,
@@ -56,10 +45,7 @@ export interface WidgetStore {
     buffers?: ArrayBuffer[],
   ) => void;
   /** Subscribe to custom messages for a model */
-  subscribeToCustomMessage: (
-    commId: string,
-    callback: CustomMessageCallback,
-  ) => () => void;
+  subscribeToCustomMessage: (commId: string, callback: CustomMessageCallback) => () => void;
 }
 
 // === IPY_MODEL_ Reference Resolution ===
@@ -166,11 +152,7 @@ export function createWidgetStore(): WidgetStore {
       return models.get(modelId);
     },
 
-    createModel(
-      commId: string,
-      state: Record<string, unknown>,
-      buffers: ArrayBuffer[] = [],
-    ): void {
+    createModel(commId: string, state: Record<string, unknown>, buffers: ArrayBuffer[] = []): void {
       // Handle re-open: remove from closed set if re-opening
       closedModels.delete(commId);
 
@@ -237,11 +219,7 @@ export function createWidgetStore(): WidgetStore {
       emitChange();
     },
 
-    subscribeToKey(
-      modelId: string,
-      key: string,
-      callback: KeyListener,
-    ): () => void {
+    subscribeToKey(modelId: string, key: string, callback: KeyListener): () => void {
       // Ensure model entry exists
       if (!keyListeners.has(modelId)) {
         keyListeners.set(modelId, new Map());
@@ -275,9 +253,7 @@ export function createWidgetStore(): WidgetStore {
     ): void {
       // Convert ArrayBuffer[] to DataView[] for anywidget compatibility
       // Anywidgets access the underlying buffer via .buffer property
-      const dataViewBuffers = buffers?.map((b) =>
-        b instanceof DataView ? b : new DataView(b),
-      );
+      const dataViewBuffers = buffers?.map((b) => (b instanceof DataView ? b : new DataView(b)));
 
       // Always buffer so future subscribers get the history (e.g. a second
       // CanvasWidget subscribing to the same CanvasManagerModel after the
@@ -299,10 +275,7 @@ export function createWidgetStore(): WidgetStore {
       }
     },
 
-    subscribeToCustomMessage(
-      commId: string,
-      callback: CustomMessageCallback,
-    ): () => void {
+    subscribeToCustomMessage(commId: string, callback: CustomMessageCallback): () => void {
       // Ensure entry exists
       if (!customListeners.has(commId)) {
         customListeners.set(commId, new Set());

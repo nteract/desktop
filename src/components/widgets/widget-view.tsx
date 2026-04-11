@@ -53,9 +53,7 @@ function UnsupportedWidget({ model, className }: UnsupportedWidgetProps) {
       data-widget-id={model.id}
       data-widget-unsupported="true"
     >
-      <div className="font-medium text-muted-foreground">
-        Unsupported widget: {model.modelName}
-      </div>
+      <div className="font-medium text-muted-foreground">Unsupported widget: {model.modelName}</div>
       <div className="text-xs text-muted-foreground/70 mt-1">
         Module: {model.modelModule || "unknown"}
       </div>
@@ -101,18 +99,10 @@ export function WidgetView({ modelId, className }: WidgetViewProps) {
     // Check for built-in widget component
     const WidgetComponent = getWidgetComponent(model.modelName);
     if (WidgetComponent) {
-      renderedWidget = (
-        <WidgetComponent modelId={modelId} className={className} />
-      );
+      renderedWidget = <WidgetComponent modelId={modelId} className={className} />;
     } else {
       // No handler found
-      renderedWidget = (
-        <UnsupportedWidget
-          modelId={modelId}
-          model={model}
-          className={className}
-        />
-      );
+      renderedWidget = <UnsupportedWidget modelId={modelId} model={model} className={className} />;
     }
   }
 

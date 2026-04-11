@@ -7,7 +7,7 @@
  * Time-dependent tests use RxJS VirtualTimeScheduler instead of vi.useFakeTimers.
  */
 
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vite-plus/test";
 import { VirtualTimeScheduler, VirtualAction } from "rxjs";
 import { SyncEngine } from "../src/sync-engine";
 import { DirectTransport } from "../src/direct-transport";
@@ -45,12 +45,14 @@ function createMockServerHandle() {
   };
 }
 
-function syncAppliedEvent(opts: {
-  changed?: boolean;
-  changeset?: CellChangeset;
-  reply?: number[];
-  attributions?: FrameEvent["attributions"];
-} = {}): FrameEvent {
+function syncAppliedEvent(
+  opts: {
+    changed?: boolean;
+    changeset?: CellChangeset;
+    reply?: number[];
+    attributions?: FrameEvent["attributions"];
+  } = {},
+): FrameEvent {
   return {
     type: "sync_applied",
     changed: opts.changed ?? false,
@@ -293,9 +295,7 @@ describe("SyncEngine", () => {
     });
 
     it("emits text_attribution as broadcast", () => {
-      const attributions = [
-        { cell_id: "c1", index: 0, text: "hi", deleted: 0, actors: ["a"] },
-      ];
+      const attributions = [{ cell_id: "c1", index: 0, text: "hi", deleted: 0, actors: ["a"] }];
       (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
         syncAppliedEvent({ changed: true, attributions }),
       ]);
@@ -417,9 +417,24 @@ describe("SyncEngine", () => {
     it("merges multiple frames within the 32ms coalescing window", () => {
       let callCount = 0;
       const changesets: CellChangeset[] = [
-        { changed: [{ cell_id: "c1", fields: { source: true } }], added: [], removed: [], order_changed: false },
-        { changed: [{ cell_id: "c2", fields: { outputs: true } }], added: [], removed: [], order_changed: false },
-        { changed: [{ cell_id: "c1", fields: { metadata: true } }], added: [], removed: [], order_changed: false },
+        {
+          changed: [{ cell_id: "c1", fields: { source: true } }],
+          added: [],
+          removed: [],
+          order_changed: false,
+        },
+        {
+          changed: [{ cell_id: "c2", fields: { outputs: true } }],
+          added: [],
+          removed: [],
+          order_changed: false,
+        },
+        {
+          changed: [{ cell_id: "c1", fields: { metadata: true } }],
+          added: [],
+          removed: [],
+          order_changed: false,
+        },
       ];
 
       (handle.receive_frame as ReturnType<typeof vi.fn>).mockImplementation(() => {
@@ -1015,27 +1030,25 @@ describe("SyncEngine", () => {
      */
     function setupWithInitialSync(): SyncEngine {
       let callCount = 0;
-      (handle.receive_frame as ReturnType<typeof vi.fn>).mockImplementation(
-        (bytes: Uint8Array) => {
-          // Route based on frame type byte
-          const frameType = bytes[0];
+      (handle.receive_frame as ReturnType<typeof vi.fn>).mockImplementation((bytes: Uint8Array) => {
+        // Route based on frame type byte
+        const frameType = bytes[0];
 
-          if (frameType === 0x05) {
-            // Runtime state sync frame — look up from registry
-            const key = Array.from(bytes).join(",");
-            const events = runtimeStateFrameRegistry.get(key);
-            if (events) return events;
-            return [];
-          }
+        if (frameType === 0x05) {
+          // Runtime state sync frame — look up from registry
+          const key = Array.from(bytes).join(",");
+          const events = runtimeStateFrameRegistry.get(key);
+          if (events) return events;
+          return [];
+        }
 
-          // Automerge sync frame
-          callCount++;
-          if (callCount === 1) {
-            return [syncAppliedEvent({ changed: true })];
-          }
+        // Automerge sync frame
+        callCount++;
+        if (callCount === 1) {
           return [syncAppliedEvent({ changed: true })];
-        },
-      );
+        }
+        return [syncAppliedEvent({ changed: true })];
+      });
 
       const engine = createEngine();
       engine.start();
@@ -1205,21 +1218,19 @@ describe("SyncEngine", () => {
 
     it("runtime state transitions flow through even before initial sync completes", () => {
       // Set up handle that does NOT complete initial sync on automerge frames
-      (handle.receive_frame as ReturnType<typeof vi.fn>).mockImplementation(
-        (bytes: Uint8Array) => {
-          const frameType = bytes[0];
+      (handle.receive_frame as ReturnType<typeof vi.fn>).mockImplementation((bytes: Uint8Array) => {
+        const frameType = bytes[0];
 
-          if (frameType === 0x05) {
-            const key = Array.from(bytes).join(",");
-            const events = runtimeStateFrameRegistry.get(key);
-            if (events) return events;
-            return [];
-          }
+        if (frameType === 0x05) {
+          const key = Array.from(bytes).join(",");
+          const events = runtimeStateFrameRegistry.get(key);
+          if (events) return events;
+          return [];
+        }
 
-          // Automerge sync — always changed:false (never completes initial sync)
-          return [syncAppliedEvent({ changed: false })];
-        },
-      );
+        // Automerge sync — always changed:false (never completes initial sync)
+        return [syncAppliedEvent({ changed: false })];
+      });
 
       const engine = createEngine();
       engine.start();
@@ -1264,10 +1275,7 @@ describe("SyncEngine", () => {
       transport.deliver([0x00, 0x99]);
       advanceBy(scheduler, 1);
 
-      expect(sendSpy).toHaveBeenCalledWith(
-        FrameType.AUTOMERGE_SYNC,
-        new Uint8Array(replyBytes),
-      );
+      expect(sendSpy).toHaveBeenCalledWith(FrameType.AUTOMERGE_SYNC, new Uint8Array(replyBytes));
       engine.stop();
     });
 
@@ -1295,9 +1303,7 @@ describe("SyncEngine", () => {
 
     it("completes initial sync on sync_error with changed=true", () => {
       handle = createMockHandle({
-        receive_frame: vi.fn(() => [
-          { type: "sync_error", changed: true } as FrameEvent,
-        ]),
+        receive_frame: vi.fn(() => [{ type: "sync_error", changed: true } as FrameEvent]),
       });
       const engine = createEngine();
       engine.start();
@@ -1337,7 +1343,7 @@ describe("SyncEngine", () => {
 
     it("publishes runtime state on runtime_state_sync_error with changed=true", () => {
       const state = makeRuntimeState({
-        "e1": { cell_id: "c1", status: "running", execution_count: 1, success: null },
+        e1: { cell_id: "c1", status: "running", execution_count: 1, success: null },
       });
       handle = createMockHandle({
         receive_frame: vi.fn(() => [
@@ -1400,9 +1406,7 @@ describe("SyncEngine", () => {
 
     it("handles sync_error with no reply and changed=false gracefully", () => {
       handle = createMockHandle({
-        receive_frame: vi.fn(() => [
-          { type: "sync_error", changed: false } as FrameEvent,
-        ]),
+        receive_frame: vi.fn(() => [{ type: "sync_error", changed: false } as FrameEvent]),
       });
       const sendSpy = vi.spyOn(transport, "sendFrame");
       const engine = createEngine();
@@ -1509,7 +1513,6 @@ describe("DirectTransport", () => {
 // ── mergeChangesets (moved from app, verify re-export) ────────────
 
 describe("mergeChangesets", () => {
-
   it("merges two empty changesets", () => {
     const empty: CellChangeset = {
       changed: [],
@@ -1563,11 +1566,10 @@ describe("mergeChangesets", () => {
 // ── diffExecutions (moved from app, verify re-export) ────────────
 
 describe("diffExecutions", () => {
-
   it("detects started transition", () => {
     const prev = {};
     const curr = {
-      "e1": { cell_id: "c1", status: "running" as const, execution_count: 1, success: null },
+      e1: { cell_id: "c1", status: "running" as const, execution_count: 1, success: null },
     };
     const transitions = diffExecutions(prev, curr);
     expect(transitions).toHaveLength(1);
@@ -1576,10 +1578,10 @@ describe("diffExecutions", () => {
 
   it("detects done transition", () => {
     const prev = {
-      "e1": { cell_id: "c1", status: "running" as const, execution_count: 1, success: null },
+      e1: { cell_id: "c1", status: "running" as const, execution_count: 1, success: null },
     };
     const curr = {
-      "e1": { cell_id: "c1", status: "done" as const, execution_count: 1, success: true },
+      e1: { cell_id: "c1", status: "done" as const, execution_count: 1, success: true },
     };
     const transitions = diffExecutions(prev, curr);
     expect(transitions).toHaveLength(1);
@@ -1588,10 +1590,10 @@ describe("diffExecutions", () => {
 
   it("detects error transition", () => {
     const prev = {
-      "e1": { cell_id: "c1", status: "queued" as const, execution_count: null, success: null },
+      e1: { cell_id: "c1", status: "queued" as const, execution_count: null, success: null },
     };
     const curr = {
-      "e1": { cell_id: "c1", status: "error" as const, execution_count: null, success: false },
+      e1: { cell_id: "c1", status: "error" as const, execution_count: null, success: false },
     };
     const transitions = diffExecutions(prev, curr);
     expect(transitions).toHaveLength(1);
@@ -1600,7 +1602,7 @@ describe("diffExecutions", () => {
 
   it("returns empty for no change", () => {
     const state = {
-      "e1": { cell_id: "c1", status: "running" as const, execution_count: 1, success: null },
+      e1: { cell_id: "c1", status: "running" as const, execution_count: 1, success: null },
     };
     const transitions = diffExecutions(state, state);
     expect(transitions).toHaveLength(0);
@@ -1608,10 +1610,10 @@ describe("diffExecutions", () => {
 
   it("detects execution_count arriving while still running", () => {
     const prev = {
-      "e1": { cell_id: "c1", status: "running" as const, execution_count: null, success: null },
+      e1: { cell_id: "c1", status: "running" as const, execution_count: null, success: null },
     };
     const curr = {
-      "e1": { cell_id: "c1", status: "running" as const, execution_count: 5, success: null },
+      e1: { cell_id: "c1", status: "running" as const, execution_count: 5, success: null },
     };
     const transitions = diffExecutions(prev, curr);
     expect(transitions).toHaveLength(1);
@@ -1621,10 +1623,10 @@ describe("diffExecutions", () => {
 
   it("ignores execution_count change when not running", () => {
     const prev = {
-      "e1": { cell_id: "c1", status: "done" as const, execution_count: null, success: true },
+      e1: { cell_id: "c1", status: "done" as const, execution_count: null, success: true },
     };
     const curr = {
-      "e1": { cell_id: "c1", status: "done" as const, execution_count: 5, success: true },
+      e1: { cell_id: "c1", status: "done" as const, execution_count: 5, success: true },
     };
     const transitions = diffExecutions(prev, curr);
     expect(transitions).toHaveLength(0);
@@ -1637,7 +1639,14 @@ describe("getExecutionCountForCell", () => {
   const baseState = {
     kernel: { status: "idle", starting_phase: "", name: "", language: "", env_source: "" },
     queue: { executing: null, queued: [] },
-    env: { in_sync: true, added: [], removed: [], channels_changed: false, deno_changed: false, prewarmed_packages: [] },
+    env: {
+      in_sync: true,
+      added: [],
+      removed: [],
+      channels_changed: false,
+      deno_changed: false,
+      prewarmed_packages: [],
+    },
     trust: { status: "trusted", needs_approval: false },
     last_saved: null,
     comms: {},
@@ -1652,7 +1661,7 @@ describe("getExecutionCountForCell", () => {
     const state = {
       ...baseState,
       executions: {
-        "e1": { cell_id: "c1", status: "done" as const, execution_count: 3, success: true },
+        e1: { cell_id: "c1", status: "done" as const, execution_count: 3, success: true },
       },
     };
     expect(getExecutionCountForCell(state, "c1")).toBe(3);
@@ -1662,9 +1671,9 @@ describe("getExecutionCountForCell", () => {
     const state = {
       ...baseState,
       executions: {
-        "e1": { cell_id: "c1", status: "done" as const, execution_count: 2, success: true },
-        "e2": { cell_id: "c1", status: "done" as const, execution_count: 5, success: true },
-        "e3": { cell_id: "c1", status: "running" as const, execution_count: null, success: null },
+        e1: { cell_id: "c1", status: "done" as const, execution_count: 2, success: true },
+        e2: { cell_id: "c1", status: "done" as const, execution_count: 5, success: true },
+        e3: { cell_id: "c1", status: "running" as const, execution_count: null, success: null },
       },
     };
     expect(getExecutionCountForCell(state, "c1")).toBe(5);
@@ -1674,7 +1683,7 @@ describe("getExecutionCountForCell", () => {
     const state = {
       ...baseState,
       executions: {
-        "e1": { cell_id: "c2", status: "done" as const, execution_count: 10, success: true },
+        e1: { cell_id: "c2", status: "done" as const, execution_count: 10, success: true },
       },
     };
     expect(getExecutionCountForCell(state, "c1")).toBeNull();

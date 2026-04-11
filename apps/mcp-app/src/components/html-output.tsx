@@ -14,13 +14,16 @@ export function HtmlOutput({ html }: HtmlOutputProps) {
       try {
         const h = frame.contentDocument?.documentElement?.scrollHeight;
         if (h) frame.style.height = `${h + 2}px`;
-      } catch { /* cross-origin */ }
+      } catch {
+        /* cross-origin */
+      }
     };
     frame.addEventListener("load", handleLoad);
     return () => frame.removeEventListener("load", handleLoad);
   }, []);
 
-  const styles = typeof document !== "undefined" ? getComputedStyle(document.documentElement) : null;
+  const styles =
+    typeof document !== "undefined" ? getComputedStyle(document.documentElement) : null;
   const bg = styles?.getPropertyValue("--code-bg").trim() || "#1e1e1e";
   const fg = styles?.getPropertyValue("--fg").trim() || "#e5e5e5";
   const border = styles?.getPropertyValue("--border").trim() || "#374151";

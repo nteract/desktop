@@ -5,13 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
-import {
-  CondaIcon,
-  DenoIcon,
-  PixiIcon,
-  PythonIcon,
-  UvIcon,
-} from "../src/components/icons";
+import { CondaIcon, DenoIcon, PixiIcon, PythonIcon, UvIcon } from "../src/components/icons";
 import type { DaemonStatus } from "./types";
 
 type Runtime = "python" | "deno";
@@ -81,12 +75,7 @@ function SelectionCard({
         />
       </div>
       <div className="text-center space-y-1">
-        <h3
-          className={cn(
-            "text-lg font-semibold",
-            selected ? colorClass.text : "text-foreground",
-          )}
-        >
+        <h3 className={cn("text-lg font-semibold", selected ? colorClass.text : "text-foreground")}>
           {title}
         </h3>
         {subtitle && (
@@ -102,12 +91,7 @@ function SelectionCard({
         <p className="text-xs text-muted-foreground">{description}</p>
       </div>
       {selected && (
-        <div
-          className={cn(
-            "absolute top-3 right-3 rounded-full p-1",
-            colorClass.iconBg,
-          )}
-        >
+        <div className={cn("absolute top-3 right-3 rounded-full p-1", colorClass.iconBg)}>
           <Check className={cn("h-4 w-4", colorClass.text)} />
         </div>
       )}
@@ -195,18 +179,14 @@ export default function App() {
         setDaemonReady(true);
         setDaemonFailed(false);
         setSteps((prev) =>
-          prev.map((s) =>
-            s.id === "daemon" ? { ...s, status: "completed" } : s,
-          ),
+          prev.map((s) => (s.id === "daemon" ? { ...s, status: "completed" } : s)),
         );
         setErrorMessage(null);
       } else if (status.status === "failed") {
         setDaemonFailed(true);
         setSteps((prev) =>
           prev.map((s) =>
-            s.id === "daemon"
-              ? { ...s, status: "failed", error: status.error }
-              : s,
+            s.id === "daemon" ? { ...s, status: "failed", error: status.error } : s,
           ),
         );
         setErrorMessage(status.guidance || status.error);
@@ -217,9 +197,7 @@ export default function App() {
         status.status === "waiting_for_ready"
       ) {
         setSteps((prev) =>
-          prev.map((s) =>
-            s.id === "daemon" ? { ...s, status: "in_progress" } : s,
-          ),
+          prev.map((s) => (s.id === "daemon" ? { ...s, status: "in_progress" } : s)),
         );
       }
     };
@@ -244,9 +222,7 @@ export default function App() {
   useEffect(() => {
     if (!daemonReady || poolReady) return;
 
-    setSteps((prev) =>
-      prev.map((s) => (s.id === "tools" ? { ...s, status: "in_progress" } : s)),
-    );
+    setSteps((prev) => prev.map((s) => (s.id === "tools" ? { ...s, status: "in_progress" } : s)));
 
     let cancelled = false;
     const pollPool = async () => {
@@ -260,9 +236,7 @@ export default function App() {
           if (state.uv.available > 0 || state.conda.available > 0) {
             setPoolReady(true);
             setSteps((prev) =>
-              prev.map((s) =>
-                s.id === "tools" ? { ...s, status: "completed" } : s,
-              ),
+              prev.map((s) => (s.id === "tools" ? { ...s, status: "completed" } : s)),
             );
             return;
           }
@@ -365,14 +339,9 @@ export default function App() {
     !setupComplete;
 
   // Page titles based on selections
-  const page2Title =
-    runtime === "deno"
-      ? "Ok but if you did use Python..."
-      : "Python Environment";
+  const page2Title = runtime === "deno" ? "Ok but if you did use Python..." : "Python Environment";
   const page2Subtitle =
-    runtime === "deno"
-      ? "Which package manager would you use?"
-      : "Choose your package manager";
+    runtime === "deno" ? "Which package manager would you use?" : "Choose your package manager";
 
   return (
     <div className="flex min-h-screen flex-col items-center justify-center bg-background p-8">
@@ -381,12 +350,8 @@ export default function App() {
         {page === 1 && (
           <>
             <div className="text-center space-y-2">
-              <h1 className="text-3xl font-semibold tracking-tight">
-                Welcome to nteract!
-              </h1>
-              <p className="text-muted-foreground">
-                Choose your preferred notebook runtime
-              </p>
+              <h1 className="text-3xl font-semibold tracking-tight">Welcome to nteract!</h1>
+              <p className="text-muted-foreground">Choose your preferred notebook runtime</p>
             </div>
 
             <div className="flex items-center justify-center gap-6">
@@ -413,12 +378,7 @@ export default function App() {
             </div>
 
             {/* Next button */}
-            <Button
-              onClick={handleNext}
-              disabled={runtime === null}
-              className="w-full"
-              size="lg"
-            >
+            <Button onClick={handleNext} disabled={runtime === null} className="w-full" size="lg">
               {runtime === null ? "Select a runtime" : "Next"}
             </Button>
           </>
@@ -428,9 +388,7 @@ export default function App() {
         {page === 2 && (
           <>
             <div className="text-center space-y-2">
-              <h1 className="text-3xl font-semibold tracking-tight">
-                {page2Title}
-              </h1>
+              <h1 className="text-3xl font-semibold tracking-tight">{page2Title}</h1>
               <p className="text-muted-foreground">{page2Subtitle}</p>
             </div>
 
@@ -462,12 +420,7 @@ export default function App() {
             </div>
 
             <div className="flex items-center justify-between">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={handleBack}
-                className="gap-1"
-              >
+              <Button variant="ghost" size="sm" onClick={handleBack} className="gap-1">
                 <ArrowLeft className="h-4 w-4" />
                 Back
               </Button>
@@ -476,12 +429,7 @@ export default function App() {
             </div>
 
             {/* Get Started button */}
-            <Button
-              onClick={handleGetStarted}
-              disabled={!canProceed}
-              className="w-full"
-              size="lg"
-            >
+            <Button onClick={handleGetStarted} disabled={!canProceed} className="w-full" size="lg">
               {setupComplete
                 ? "All set!"
                 : canProceed
@@ -493,12 +441,7 @@ export default function App() {
 
             {/* Continue anyway button when daemon fails */}
             {daemonFailed && !setupComplete && (
-              <Button
-                onClick={handleSkip}
-                variant="ghost"
-                className="w-full"
-                size="sm"
-              >
+              <Button onClick={handleSkip} variant="ghost" className="w-full" size="sm">
                 Continue anyway
               </Button>
             )}
@@ -509,9 +452,7 @@ export default function App() {
         {errorMessage && (
           <div className="flex items-start gap-2 p-3 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800">
             <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
-            <p className="text-sm text-amber-800 dark:text-amber-200">
-              {errorMessage}
-            </p>
+            <p className="text-sm text-amber-800 dark:text-amber-200">{errorMessage}</p>
           </div>
         )}
 
@@ -521,18 +462,12 @@ export default function App() {
           <div className="flex items-center justify-center gap-4 text-xs text-muted-foreground">
             {steps.map((step) => (
               <div key={step.id} className="flex items-center gap-1.5">
-                {step.status === "completed" && (
-                  <Check className="h-3 w-3 text-green-600" />
-                )}
-                {step.status === "in_progress" && (
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                )}
+                {step.status === "completed" && <Check className="h-3 w-3 text-green-600" />}
+                {step.status === "in_progress" && <Loader2 className="h-3 w-3 animate-spin" />}
                 {step.status === "pending" && (
                   <div className="h-3 w-3 rounded-full border border-muted-foreground/30" />
                 )}
-                {step.status === "failed" && (
-                  <AlertTriangle className="h-3 w-3 text-amber-600" />
-                )}
+                {step.status === "failed" && <AlertTriangle className="h-3 w-3 text-amber-600" />}
                 <span
                   className={cn(
                     step.status === "failed" && "text-amber-600",

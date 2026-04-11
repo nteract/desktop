@@ -168,17 +168,11 @@ export function ControllerWidget({ modelId, className }: WidgetComponentProps) {
       {/* Header */}
       <div className="flex items-center gap-2">
         <GamepadIcon
-          className={cn(
-            "size-5",
-            connected ? "text-green-500" : "text-muted-foreground",
-          )}
+          className={cn("size-5", connected ? "text-green-500" : "text-muted-foreground")}
         />
         <Label className="font-medium">{name || `Controller ${index}`}</Label>
         <span
-          className={cn(
-            "ml-auto text-xs",
-            connected ? "text-green-500" : "text-muted-foreground",
-          )}
+          className={cn("ml-auto text-xs", connected ? "text-green-500" : "text-muted-foreground")}
         >
           {connected ? "Connected" : "Disconnected"}
         </span>
@@ -217,9 +211,7 @@ export function ControllerWidget({ modelId, className }: WidgetComponentProps) {
                   const axisId = parseModelRef(axisRef);
                   return axisId ? (
                     <div key={axisId} className="flex items-center gap-2">
-                      <span className="w-8 text-xs text-muted-foreground">
-                        {i}:
-                      </span>
+                      <span className="w-8 text-xs text-muted-foreground">{i}:</span>
                       <WidgetView modelId={axisId} />
                     </div>
                   ) : null;
@@ -229,11 +221,7 @@ export function ControllerWidget({ modelId, className }: WidgetComponentProps) {
           )}
 
           {/* Mapping info */}
-          {mapping && (
-            <div className="text-xs text-muted-foreground">
-              Mapping: {mapping}
-            </div>
-          )}
+          {mapping && <div className="text-xs text-muted-foreground">Mapping: {mapping}</div>}
         </>
       )}
 

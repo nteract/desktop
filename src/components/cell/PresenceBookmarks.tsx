@@ -1,10 +1,6 @@
 import type * as React from "react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import {
-  HoverCard,
-  HoverCardContent,
-  HoverCardTrigger,
-} from "@/components/ui/hover-card";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { cn } from "@/lib/utils";
 
 export interface User {
@@ -58,10 +54,7 @@ export function PresenceBookmarks({
   const overflowCount = users.length - limit;
 
   return (
-    <div
-      className={cn("flex items-center", className)}
-      data-slot="presence-bookmarks"
-    >
+    <div className={cn("flex items-center", className)} data-slot="presence-bookmarks">
       {visibleUsers.map((user, index) => (
         <HoverCard key={user.id} openDelay={200} closeDelay={100}>
           <HoverCardTrigger asChild>
@@ -79,21 +72,14 @@ export function PresenceBookmarks({
                   : undefined
               }
             >
-              <Avatar
-                size="sm"
-                className={!user.color ? "ring-2 ring-border" : undefined}
-              >
+              <Avatar size="sm" className={!user.color ? "ring-2 ring-border" : undefined}>
                 <AvatarImage src={user.picture} alt={user.name} />
                 <AvatarFallback>{getInitials(user.name)}</AvatarFallback>
               </Avatar>
             </button>
           </HoverCardTrigger>
           <HoverCardContent className="w-auto">
-            {renderUserContent ? (
-              renderUserContent(user)
-            ) : (
-              <DefaultUserContent user={user} />
-            )}
+            {renderUserContent ? renderUserContent(user) : <DefaultUserContent user={user} />}
           </HoverCardContent>
         </HoverCard>
       ))}

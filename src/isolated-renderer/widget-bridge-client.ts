@@ -26,10 +26,7 @@ import {
   NTERACT_WIDGET_COMM_MSG,
   NTERACT_WIDGET_READY,
 } from "@/components/isolated/rpc-methods";
-import {
-  createWidgetStore,
-  type WidgetStore,
-} from "@/components/widgets/widget-store";
+import { createWidgetStore, type WidgetStore } from "@/components/widgets/widget-store";
 
 /** Blob URL pattern: http://127.0.0.1:{port}/blob/{hash} */
 const BLOB_URL_RE = /^https?:\/\/127\.0\.0\.1:\d+\/blob\/[a-f0-9]+$/;
@@ -97,21 +94,13 @@ export interface WidgetBridgeClient {
    * Send a state update to the parent (to be forwarded to kernel).
    * Called when a widget's state changes due to user interaction.
    */
-  sendUpdate: (
-    commId: string,
-    state: Record<string, unknown>,
-    buffers?: ArrayBuffer[],
-  ) => void;
+  sendUpdate: (commId: string, state: Record<string, unknown>, buffers?: ArrayBuffer[]) => void;
 
   /**
    * Send a custom message to the parent (to be forwarded to kernel).
    * Used for widget-specific protocols (e.g., ipycanvas draw commands).
    */
-  sendCustom: (
-    commId: string,
-    content: Record<string, unknown>,
-    buffers?: ArrayBuffer[],
-  ) => void;
+  sendCustom: (commId: string, content: Record<string, unknown>, buffers?: ArrayBuffer[]) => void;
 
   /**
    * Request to close a comm (to be forwarded to kernel).
@@ -133,9 +122,7 @@ export interface WidgetBridgeClient {
  *
  * @param transport - The shared JsonRpcTransport (created in index.tsx init())
  */
-export function createWidgetBridgeClient(
-  transport: JsonRpcTransport,
-): WidgetBridgeClient {
+export function createWidgetBridgeClient(transport: JsonRpcTransport): WidgetBridgeClient {
   const store = createWidgetStore();
 
   function sendWidgetReady() {
@@ -156,11 +143,7 @@ export function createWidgetBridgeClient(
     };
     // Resolve blob URLs at buffer_paths positions to ArrayBuffers.
     const resolvedBuffers = await resolveBlobUrls(state, bufferPaths);
-    store.createModel(
-      commId,
-      state,
-      resolvedBuffers.length > 0 ? resolvedBuffers : buffers,
-    );
+    store.createModel(commId, state, resolvedBuffers.length > 0 ? resolvedBuffers : buffers);
   });
 
   transport.onNotification(NTERACT_COMM_MSG, async (params) => {
@@ -173,11 +156,7 @@ export function createWidgetBridgeClient(
     };
     if (method === "update") {
       const resolvedBuffers = await resolveBlobUrls(data, bufferPaths);
-      store.updateModel(
-        commId,
-        data,
-        resolvedBuffers.length > 0 ? resolvedBuffers : buffers,
-      );
+      store.updateModel(commId, data, resolvedBuffers.length > 0 ? resolvedBuffers : buffers);
     } else if (method === "custom") {
       store.emitCustomMessage(commId, data, buffers);
     }
@@ -209,11 +188,7 @@ export function createWidgetBridgeClient(
   return {
     store,
 
-    sendUpdate(
-      commId: string,
-      state: Record<string, unknown>,
-      buffers?: ArrayBuffer[],
-    ) {
+    sendUpdate(commId: string, state: Record<string, unknown>, buffers?: ArrayBuffer[]) {
       // Update local store immediately for responsive UI (optimistic update)
       store.updateModel(commId, state, buffers);
       transport.notify(NTERACT_WIDGET_COMM_MSG, {
@@ -224,11 +199,7 @@ export function createWidgetBridgeClient(
       });
     },
 
-    sendCustom(
-      commId: string,
-      content: Record<string, unknown>,
-      buffers?: ArrayBuffer[],
-    ) {
+    sendCustom(commId: string, content: Record<string, unknown>, buffers?: ArrayBuffer[]) {
       transport.notify(NTERACT_WIDGET_COMM_MSG, {
         commId,
         method: "custom",

@@ -14,18 +14,9 @@ const themeOptions: { value: ThemeMode; icon: typeof Sun; label: string }[] = [
   { value: "system", icon: Monitor, label: "System theme" },
 ];
 
-export function ThemeToggle({
-  theme,
-  onThemeChange,
-  className,
-}: ThemeToggleProps) {
+export function ThemeToggle({ theme, onThemeChange, className }: ThemeToggleProps) {
   return (
-    <div
-      className={cn(
-        "flex items-center gap-0.5 rounded-md border bg-muted/50 p-0.5",
-        className,
-      )}
-    >
+    <div className={cn("flex items-center gap-0.5 rounded-md border bg-muted/50 p-0.5", className)}>
       {themeOptions.map((option) => {
         const Icon = option.icon;
         const isActive = theme === option.value;

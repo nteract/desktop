@@ -7,10 +7,7 @@
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import type { WidgetComponentProps } from "../widget-registry";
-import {
-  useWidgetModelValue,
-  useWidgetStoreRequired,
-} from "../widget-store-context";
+import { useWidgetModelValue, useWidgetStoreRequired } from "../widget-store-context";
 
 export function ColorPicker({ modelId, className }: WidgetComponentProps) {
   const { sendUpdate } = useWidgetStoreRequired();
@@ -41,9 +38,7 @@ export function ColorPicker({ modelId, className }: WidgetComponentProps) {
           "disabled:cursor-not-allowed disabled:opacity-50",
         )}
       />
-      {!concise && (
-        <span className="text-sm text-muted-foreground font-mono">{value}</span>
-      )}
+      {!concise && <span className="text-sm text-muted-foreground font-mono">{value}</span>}
     </div>
   );
 }

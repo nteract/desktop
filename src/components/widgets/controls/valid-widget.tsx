@@ -27,9 +27,7 @@ export function ValidWidget({ modelId, className }: WidgetComponentProps) {
       ) : (
         <XIcon className="size-4 text-red-500" />
       )}
-      {!value && readout && (
-        <span className="text-sm text-muted-foreground">{readout}</span>
-      )}
+      {!value && readout && <span className="text-sm text-muted-foreground">{readout}</span>}
     </div>
   );
 }

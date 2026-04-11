@@ -21,12 +21,7 @@
  * Call `setRemoteCursors(view, cursors)` to push new positions into an EditorView.
  */
 
-import {
-  type Extension,
-  RangeSetBuilder,
-  StateEffect,
-  StateField,
-} from "@codemirror/state";
+import { type Extension, RangeSetBuilder, StateEffect, StateField } from "@codemirror/state";
 import {
   Decoration,
   type DecorationSet,
@@ -216,22 +211,13 @@ const remoteCursorLayer = layer({
       const height = coords.bottom - coords.top;
 
       markers.push(
-        new CursorMarker(
-          left,
-          top,
-          height,
-          cursor.color,
-          cursor.peerLabel,
-          cursor.peerId,
-        ),
+        new CursorMarker(left, top, height, cursor.color, cursor.peerLabel, cursor.peerId),
       );
     }
 
     // Stable ordering by peerId so CM6 matches old↔new markers by index,
     // enabling in-place repositioning via update() instead of full recreate.
-    markers.sort((a, b) =>
-      a.peerId < b.peerId ? -1 : a.peerId > b.peerId ? 1 : 0,
-    );
+    markers.sort((a, b) => (a.peerId < b.peerId ? -1 : a.peerId > b.peerId ? 1 : 0));
 
     return markers;
   },
@@ -376,10 +362,7 @@ export function remoteCursorsExtension(): Extension[] {
  * Dispatches a StateEffect that triggers the cursor layer to remeasure
  * marker positions. Safe to call at high frequency (50+ updates/sec).
  */
-export function setRemoteCursors(
-  view: EditorView,
-  cursors: RemoteCursorState[],
-): void {
+export function setRemoteCursors(view: EditorView, cursors: RemoteCursorState[]): void {
   view.dispatch({ effects: setCursorsEffect.of(cursors) });
   // Force layer remeasure when clearing cursors - CM6 layer may not redraw
   // with an empty markers() return without an explicit measure request
@@ -391,9 +374,6 @@ export function setRemoteCursors(
 /**
  * Push new remote selection ranges into an EditorView.
  */
-export function setRemoteSelections(
-  view: EditorView,
-  selections: RemoteSelectionState[],
-): void {
+export function setRemoteSelections(view: EditorView, selections: RemoteSelectionState[]): void {
   view.dispatch({ effects: setSelectionsEffect.of(selections) });
 }

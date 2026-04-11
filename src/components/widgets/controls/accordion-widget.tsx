@@ -25,10 +25,7 @@ export function AccordionWidget({ modelId, className }: WidgetComponentProps) {
   // Subscribe to individual state keys
   const children = useWidgetModelValue<string[]>(modelId, "children");
   const titles = useWidgetModelValue<string[]>(modelId, "_titles") ?? [];
-  const selectedIndex = useWidgetModelValue<number | null>(
-    modelId,
-    "selected_index",
-  );
+  const selectedIndex = useWidgetModelValue<number | null>(modelId, "selected_index");
 
   const handleValueChange = (value: string) => {
     // Convert string value back to index (or null if collapsed)
@@ -52,9 +49,7 @@ export function AccordionWidget({ modelId, className }: WidgetComponentProps) {
 
         return (
           <AccordionItem key={childId} value={String(index)}>
-            <AccordionTrigger>
-              {titles[index] ?? `Panel ${index + 1}`}
-            </AccordionTrigger>
+            <AccordionTrigger>{titles[index] ?? `Panel ${index + 1}`}</AccordionTrigger>
             <AccordionContent>
               <WidgetView modelId={childId} />
             </AccordionContent>

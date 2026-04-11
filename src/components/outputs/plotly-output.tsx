@@ -6,9 +6,7 @@ const LIGHT_TEXT = "rgba(68, 68, 68, 1)";
 
 function darkLayoutOverrides(isDark: boolean): Record<string, unknown> {
   const textColor = isDark ? DARK_TEXT : LIGHT_TEXT;
-  const gridColor = isDark
-    ? "rgba(255, 255, 255, 0.1)"
-    : "rgba(0, 0, 0, 0.1)";
+  const gridColor = isDark ? "rgba(255, 255, 255, 0.1)" : "rgba(0, 0, 0, 0.1)";
 
   return {
     paper_bgcolor: "transparent",
@@ -19,8 +17,16 @@ function darkLayoutOverrides(isDark: boolean): Record<string, unknown> {
     legend: { font: { color: textColor } },
     colorway: isDark
       ? [
-          "#636efa", "#ef553b", "#00cc96", "#ab63fa", "#ffa15a",
-          "#19d3f3", "#ff6692", "#b6e880", "#ff97ff", "#fecb52",
+          "#636efa",
+          "#ef553b",
+          "#00cc96",
+          "#ab63fa",
+          "#ffa15a",
+          "#19d3f3",
+          "#ff6692",
+          "#b6e880",
+          "#ff97ff",
+          "#fecb52",
         ]
       : undefined,
   };

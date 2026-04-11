@@ -6,11 +6,7 @@
  */
 
 import { useEffect, useState } from "react";
-import {
-  getPeersForCell,
-  type PeerCursorInfo,
-  subscribeToCell,
-} from "../../lib/cursor-registry";
+import { getPeersForCell, type PeerCursorInfo, subscribeToCell } from "../../lib/cursor-registry";
 
 interface CellPresenceIndicatorsProps {
   cellId: string;
@@ -19,9 +15,7 @@ interface CellPresenceIndicatorsProps {
 /** Maximum visible indicators before showing overflow count */
 const MAX_VISIBLE = 3;
 
-export function CellPresenceIndicators({
-  cellId,
-}: CellPresenceIndicatorsProps) {
+export function CellPresenceIndicators({ cellId }: CellPresenceIndicatorsProps) {
   const [peers, setPeers] = useState<PeerCursorInfo[]>([]);
 
   // Subscribe to presence changes for this cell
@@ -45,10 +39,7 @@ export function CellPresenceIndicators({
   const overflowCount = peers.length - MAX_VISIBLE;
 
   return (
-    <div
-      className="flex flex-col items-center gap-0.5"
-      title={formatTooltip(peers)}
-    >
+    <div className="flex flex-col items-center gap-0.5" title={formatTooltip(peers)}>
       {visiblePeers.map((peer) => (
         <PresenceDot key={peer.peerId} peer={peer} />
       ))}

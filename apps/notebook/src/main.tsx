@@ -17,9 +17,7 @@ import("@/components/outputs/json-output");
 
 // Loader for isolated renderer bundle (uses existing Vite virtual module)
 const loadRendererBundle = async () => {
-  const { rendererCode, rendererCss } = await import(
-    "virtual:isolated-renderer"
-  );
+  const { rendererCode, rendererCss } = await import("virtual:isolated-renderer");
   return { rendererCode, rendererCss };
 };
 

@@ -8,20 +8,13 @@ import { CheckIcon } from "lucide-react";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import type { WidgetComponentProps } from "../widget-registry";
-import {
-  useWidgetModelValue,
-  useWidgetStoreRequired,
-} from "../widget-store-context";
+import { useWidgetModelValue, useWidgetStoreRequired } from "../widget-store-context";
 
-export function SelectMultipleWidget({
-  modelId,
-  className,
-}: WidgetComponentProps) {
+export function SelectMultipleWidget({ modelId, className }: WidgetComponentProps) {
   const { sendUpdate } = useWidgetStoreRequired();
 
   // Subscribe to individual state keys
-  const options =
-    useWidgetModelValue<string[]>(modelId, "_options_labels") ?? [];
+  const options = useWidgetModelValue<string[]>(modelId, "_options_labels") ?? [];
   const selectedIndices = useWidgetModelValue<number[]>(modelId, "index") ?? [];
   const description = useWidgetModelValue<string>(modelId, "description");
   const disabled = useWidgetModelValue<boolean>(modelId, "disabled") ?? false;
@@ -47,9 +40,7 @@ export function SelectMultipleWidget({
       data-widget-id={modelId}
       data-widget-type="SelectMultiple"
     >
-      {description && (
-        <Label className="shrink-0 text-sm pt-1">{description}</Label>
-      )}
+      {description && <Label className="shrink-0 text-sm pt-1">{description}</Label>}
       <div
         role="listbox"
         aria-multiselectable="true"

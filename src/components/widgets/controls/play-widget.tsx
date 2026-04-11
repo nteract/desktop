@@ -4,21 +4,13 @@
  * Maps to ipywidgets PlayModel.
  */
 
-import {
-  PauseIcon,
-  PlayIcon,
-  SkipBackIcon,
-  SkipForwardIcon,
-} from "lucide-react";
+import { PauseIcon, PlayIcon, SkipBackIcon, SkipForwardIcon } from "lucide-react";
 import { useCallback, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import type { WidgetComponentProps } from "../widget-registry";
-import {
-  useWidgetModelValue,
-  useWidgetStoreRequired,
-} from "../widget-store-context";
+import { useWidgetModelValue, useWidgetStoreRequired } from "../widget-store-context";
 
 export function PlayWidget({ modelId, className }: WidgetComponentProps) {
   // sendUpdate is now stable (useCommRouter uses refs internally)
@@ -50,8 +42,7 @@ export function PlayWidget({ modelId, className }: WidgetComponentProps) {
     if (playing && !disabled) {
       intervalRef.current = setInterval(() => {
         const { value, min, max, step, repeat } = valuesRef.current;
-        const nextValue =
-          value + step > max ? (repeat ? min : max) : value + step;
+        const nextValue = value + step > max ? (repeat ? min : max) : value + step;
         const shouldStop = value + step > max && !repeat;
         sendUpdate(modelId, {
           value: nextValue,
@@ -112,11 +103,7 @@ export function PlayWidget({ modelId, className }: WidgetComponentProps) {
           onClick={handlePlayPause}
           disabled={disabled}
         >
-          {playing ? (
-            <PauseIcon className="size-4" />
-          ) : (
-            <PlayIcon className="size-4" />
-          )}
+          {playing ? <PauseIcon className="size-4" /> : <PlayIcon className="size-4" />}
         </Button>
         <Button
           variant="outline"
@@ -128,9 +115,7 @@ export function PlayWidget({ modelId, className }: WidgetComponentProps) {
           <SkipForwardIcon className="size-4" />
         </Button>
       </div>
-      <span className="w-12 text-right text-sm tabular-nums text-muted-foreground">
-        {value}
-      </span>
+      <span className="w-12 text-right text-sm tabular-nums text-muted-foreground">{value}</span>
     </div>
   );
 }

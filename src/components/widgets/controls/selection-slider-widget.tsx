@@ -8,29 +8,20 @@ import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { cn } from "@/lib/utils";
 import type { WidgetComponentProps } from "../widget-registry";
-import {
-  useWidgetModelValue,
-  useWidgetStoreRequired,
-} from "../widget-store-context";
+import { useWidgetModelValue, useWidgetStoreRequired } from "../widget-store-context";
 
-export function SelectionSliderWidget({
-  modelId,
-  className,
-}: WidgetComponentProps) {
+export function SelectionSliderWidget({ modelId, className }: WidgetComponentProps) {
   const { sendUpdate } = useWidgetStoreRequired();
 
   // Subscribe to individual state keys
-  const options =
-    useWidgetModelValue<string[]>(modelId, "_options_labels") ?? [];
+  const options = useWidgetModelValue<string[]>(modelId, "_options_labels") ?? [];
   const index = useWidgetModelValue<number>(modelId, "index") ?? 0;
   const description = useWidgetModelValue<string>(modelId, "description");
   const disabled = useWidgetModelValue<boolean>(modelId, "disabled") ?? false;
   const orientation =
-    useWidgetModelValue<"horizontal" | "vertical">(modelId, "orientation") ??
-    "horizontal";
+    useWidgetModelValue<"horizontal" | "vertical">(modelId, "orientation") ?? "horizontal";
   const readout = useWidgetModelValue<boolean>(modelId, "readout") ?? true;
-  const continuousUpdate =
-    useWidgetModelValue<boolean>(modelId, "continuous_update") ?? true;
+  const continuousUpdate = useWidgetModelValue<boolean>(modelId, "continuous_update") ?? true;
 
   const handleChange = (newValue: number[]) => {
     const newIndex = Math.round(newValue[0]);
@@ -45,11 +36,7 @@ export function SelectionSliderWidget({
 
   return (
     <div
-      className={cn(
-        "flex gap-3",
-        isVertical ? "flex-col items-center" : "items-center",
-        className,
-      )}
+      className={cn("flex gap-3", isVertical ? "flex-col items-center" : "items-center", className)}
       data-widget-id={modelId}
       data-widget-type="SelectionSlider"
     >
@@ -64,11 +51,7 @@ export function SelectionSliderWidget({
         onValueChange={handleChange}
         className={isVertical ? "h-32" : "min-w-24 flex-1"}
       />
-      {readout && (
-        <span className="min-w-16 text-sm text-muted-foreground">
-          {currentLabel}
-        </span>
-      )}
+      {readout && <span className="min-w-16 text-sm text-muted-foreground">{currentLabel}</span>}
     </div>
   );
 }

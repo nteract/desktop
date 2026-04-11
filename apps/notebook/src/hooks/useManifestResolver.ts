@@ -1,9 +1,5 @@
 import { logger } from "../lib/logger";
-import {
-  isOutputManifest,
-  type OutputManifest,
-  resolveManifest,
-} from "../lib/manifest-resolution";
+import { isOutputManifest, type OutputManifest, resolveManifest } from "../lib/manifest-resolution";
 import type { JupyterOutput } from "../types";
 
 /**
@@ -34,11 +30,7 @@ export async function resolveOutputValue(
   }
 
   // Object with output_type but no ContentRefs — already a raw JupyterOutput
-  if (
-    typeof output === "object" &&
-    output !== null &&
-    "output_type" in output
-  ) {
+  if (typeof output === "object" && output !== null && "output_type" in output) {
     return output as JupyterOutput;
   }
 
@@ -50,10 +42,7 @@ export async function resolveOutputValue(
         try {
           return await resolveManifest(parsed as OutputManifest, blobPort);
         } catch (e) {
-          logger.warn(
-            "[manifest-resolver] Failed to resolve parsed manifest:",
-            e,
-          );
+          logger.warn("[manifest-resolver] Failed to resolve parsed manifest:", e);
           return null;
         }
       }

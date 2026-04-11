@@ -88,20 +88,11 @@ export function useDaemonKernel({
   // ── State from RuntimeStateDoc (daemon-authoritative) ─────────────
   const runtimeState = useRuntimeState();
 
-  const kernelInfo = useMemo(
-    () => deriveKernelInfo(runtimeState),
-    [runtimeState],
-  );
+  const kernelInfo = useMemo(() => deriveKernelInfo(runtimeState), [runtimeState]);
 
-  const queueState = useMemo(
-    () => deriveQueueState(runtimeState),
-    [runtimeState],
-  );
+  const queueState = useMemo(() => deriveQueueState(runtimeState), [runtimeState]);
 
-  const envSyncState = useMemo(
-    () => deriveEnvSyncState(runtimeState),
-    [runtimeState],
-  );
+  const envSyncState = useMemo(() => deriveEnvSyncState(runtimeState), [runtimeState]);
 
   // ── Busy throttle ────────────────────────────────────────────────
   const rawStatus = runtimeState.kernel.status;
@@ -186,8 +177,7 @@ export function useDaemonKernel({
   useEffect(() => {
     const prev = prevQueueRef.current;
     prevQueueRef.current = queueState;
-    const executingChanged =
-      prev.executing?.cell_id !== queueState.executing?.cell_id;
+    const executingChanged = prev.executing?.cell_id !== queueState.executing?.cell_id;
     let queuedChanged = prev.queued.length !== queueState.queued.length;
     if (!queuedChanged) {
       for (let i = 0; i < prev.queued.length; i++) {
@@ -251,9 +241,7 @@ export function useDaemonKernel({
               port = await refreshBlobPort();
             }
             if (!port) {
-              logger.error(
-                "[daemon-kernel] Blob port unavailable, cannot resolve output",
-              );
+              logger.error("[daemon-kernel] Blob port unavailable, cannot resolve output");
               return;
             }
             // Parse the broadcast JSON string into a manifest/output object
@@ -261,9 +249,7 @@ export function useDaemonKernel({
             try {
               parsedOutput = JSON.parse(outputJson);
             } catch {
-              logger.warn(
-                "[daemon-kernel] Failed to parse output_json from broadcast",
-              );
+              logger.warn("[daemon-kernel] Failed to parse output_json from broadcast");
               return;
             }
             const output = await resolveOutputValue(parsedOutput, port);
@@ -271,16 +257,11 @@ export function useDaemonKernel({
             if (output) {
               callbacksRef.current.onOutput?.(cellId, output);
             } else if (!retried) {
-              logger.debug(
-                "[daemon-kernel] Output resolution failed, refreshing port",
-              );
+              logger.debug("[daemon-kernel] Output resolution failed, refreshing port");
               resetBlobPort();
               await resolveWithRetry(true);
             } else {
-              logger.error(
-                "[daemon-kernel] Failed to resolve output for cell:",
-                cellId,
-              );
+              logger.error("[daemon-kernel] Failed to resolve output for cell:", cellId);
             }
           };
 
@@ -330,22 +311,19 @@ export function useDaemonKernel({
     });
 
     // Listen for daemon disconnection
-    const unlistenDisconnect = webview.listen(
-      "daemon:disconnected",
-      async () => {
-        if (cancelled) return;
-        logger.warn("[daemon-kernel] Daemon disconnected, resetting state");
-        resetRuntimeState();
-        resetBlobPort();
-        try {
-          await invoke("reconnect_to_daemon");
-          logger.debug("[daemon-kernel] Reconnected to daemon");
-          refreshBlobPort();
-        } catch (e) {
-          logger.error("[daemon-kernel] Failed to reconnect:", e);
-        }
-      },
-    );
+    const unlistenDisconnect = webview.listen("daemon:disconnected", async () => {
+      if (cancelled) return;
+      logger.warn("[daemon-kernel] Daemon disconnected, resetting state");
+      resetRuntimeState();
+      resetBlobPort();
+      try {
+        await invoke("reconnect_to_daemon");
+        logger.debug("[daemon-kernel] Reconnected to daemon");
+        refreshBlobPort();
+      } catch (e) {
+        logger.error("[daemon-kernel] Failed to reconnect:", e);
+      }
+    });
 
     const unlistenReady = webview.listen("daemon:ready", () => {
       if (cancelled) return;
@@ -372,11 +350,7 @@ export function useDaemonKernel({
 
   const launchKernel = useCallback(
     (kernelType: string, envSource: string, notebookPath?: string) =>
-      client.launchKernel(
-        kernelType,
-        envSource,
-        notebookPath,
-      ) as Promise<NotebookResponse>,
+      client.launchKernel(kernelType, envSource, notebookPath) as Promise<NotebookResponse>,
     [client],
   );
 
@@ -386,8 +360,7 @@ export function useDaemonKernel({
   );
 
   const clearOutputs = useCallback(
-    (cellId: string) =>
-      client.clearOutputs(cellId) as Promise<NotebookResponse>,
+    (cellId: string) => client.clearOutputs(cellId) as Promise<NotebookResponse>,
     [client],
   );
 
@@ -437,8 +410,7 @@ export function useDaemonKernel({
     syncEnvironment,
     runAllCells,
     sendCommMessage,
-    isCellExecuting: (cellId: string) =>
-      queueState.executing?.cell_id === cellId,
+    isCellExecuting: (cellId: string) => queueState.executing?.cell_id === cellId,
     isCellQueued: (cellId: string) =>
       queueState.executing?.cell_id === cellId ||
       queueState.queued.some((entry) => entry.cell_id === cellId),

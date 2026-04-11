@@ -1,4 +1,4 @@
-import { defineConfig, type Plugin } from "vitest/config";
+import { defineConfig, type Plugin } from "vite-plus";
 import path from "path";
 import { rawLibPlugin } from "./apps/notebook/vite-plugin-raw-lib";
 
@@ -19,10 +19,7 @@ function rendererPluginStub(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [
-    rawLibPlugin(path.resolve(__dirname, "./node_modules")),
-    rendererPluginStub(),
-  ],
+  plugins: [rawLibPlugin(path.resolve(__dirname, "./node_modules")), rendererPluginStub()],
   test: {
     environment: "jsdom",
     include: [

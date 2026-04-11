@@ -61,12 +61,8 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
     ref,
   ) => {
     const colors = getGutterColors(cellType, customGutterColors);
-    const ribbonColor = isFocused
-      ? colors.ribbon.focused
-      : colors.ribbon.default;
-    const outputRibbonColor = isFocused
-      ? colors.outputRibbon.focused
-      : colors.outputRibbon.default;
+    const ribbonColor = isFocused ? colors.ribbon.focused : colors.ribbon.default;
+    const outputRibbonColor = isFocused ? colors.outputRibbon.focused : colors.outputRibbon.default;
     const bgColor = isFocused ? colors.background.focused : undefined;
 
     // Use segmented ribbon when codeContent is provided
@@ -105,8 +101,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
                 className={cn(
                   "w-1 transition-colors duration-150",
                   ribbonColor,
-                  dragHandleProps &&
-                    "cursor-grab hover:brightness-125 touch-none",
+                  dragHandleProps && "cursor-grab hover:brightness-125 touch-none",
                   isDragging && "cursor-grabbing",
                 )}
               />
@@ -116,7 +111,8 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
                 className={cn(
                   "flex w-10 flex-shrink-0 flex-col items-center gap-1 pt-1 select-none",
                   rightGutterContent && "opacity-100 transition-opacity duration-150",
-                  rightGutterContent && "sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100",
+                  rightGutterContent &&
+                    "sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100",
                   rightGutterContent && isFocused && "sm:opacity-100",
                 )}
               >
@@ -127,16 +123,14 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
                 onMouseDown sets visual focus (ribbon/bg) without stealing editor focus */}
             {hasOutput && (
               <div className={cn("flex", hideOutput && "hidden")} onMouseDown={onFocus}>
-                <div
-                  className={cn(
-                    "w-1 transition-colors duration-150",
-                    outputRibbonColor,
-                  )}
-                />
+                <div className={cn("w-1 transition-colors duration-150", outputRibbonColor)} />
                 <div
                   className={cn(
                     "min-w-0 flex-1 py-2 transition-opacity duration-150",
-                    !isFocused && !isPreviousCellFromFocused && !isNextCellFromFocused && "opacity-70",
+                    !isFocused &&
+                      !isPreviousCellFromFocused &&
+                      !isNextCellFromFocused &&
+                      "opacity-70",
                   )}
                 >
                   {outputContent}
@@ -146,7 +140,8 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
                   className={cn(
                     "flex w-10 flex-shrink-0 flex-col items-center gap-1 pt-1 select-none",
                     outputRightGutterContent && "opacity-100 transition-opacity duration-150",
-                    outputRightGutterContent && "sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100",
+                    outputRightGutterContent &&
+                      "sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100",
                     outputRightGutterContent && isFocused && "sm:opacity-100",
                   )}
                 >
@@ -164,8 +159,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
                 className={cn(
                   "w-1 self-stretch transition-colors duration-150",
                   ribbonColor,
-                  dragHandleProps &&
-                    "cursor-grab hover:brightness-125 touch-none",
+                  dragHandleProps && "cursor-grab hover:brightness-125 touch-none",
                   isDragging && "cursor-grabbing",
                 )}
               />
@@ -176,7 +170,8 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
               className={cn(
                 "flex w-10 flex-shrink-0 flex-col items-center gap-1 pt-3 select-none",
                 rightGutterContent && "opacity-100 transition-opacity duration-150",
-                rightGutterContent && "sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100",
+                rightGutterContent &&
+                  "sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100",
                 rightGutterContent && isFocused && "sm:opacity-100",
               )}
             >

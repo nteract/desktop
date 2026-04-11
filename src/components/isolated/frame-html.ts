@@ -26,11 +26,7 @@ export interface FrameHtmlOptions {
  * @returns HTML string to be used with a blob URL
  */
 export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
-  const {
-    darkMode = true,
-    additionalCss = "",
-    additionalScript = "",
-  } = options;
+  const { darkMode = true, additionalCss = "", additionalScript = "" } = options;
 
   // Start with transparent backgrounds to prevent flash while theme loads
   // Parent will send theme message immediately after iframe is ready

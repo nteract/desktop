@@ -64,30 +64,78 @@
   }
 
   /* ANSI foreground color classes */
-  .ansi-black-fg { color: var(--ansi-black); }
-  .ansi-red-fg { color: var(--ansi-red); }
-  .ansi-green-fg { color: var(--ansi-green); }
-  .ansi-yellow-fg { color: var(--ansi-yellow); }
-  .ansi-blue-fg { color: var(--ansi-blue); }
-  .ansi-magenta-fg { color: var(--ansi-magenta); }
-  .ansi-cyan-fg { color: var(--ansi-cyan); }
-  .ansi-white-fg { color: var(--ansi-white); }
-  .ansi-bright-black-fg { color: var(--ansi-bright-black); }
-  .ansi-bright-red-fg { color: var(--ansi-bright-red); }
-  .ansi-bright-green-fg { color: var(--ansi-bright-green); }
-  .ansi-bright-yellow-fg { color: var(--ansi-bright-yellow); }
-  .ansi-bright-blue-fg { color: var(--ansi-bright-blue); }
-  .ansi-bright-magenta-fg { color: var(--ansi-bright-magenta); }
-  .ansi-bright-cyan-fg { color: var(--ansi-bright-cyan); }
-  .ansi-bright-white-fg { color: var(--ansi-bright-white); }
+  .ansi-black-fg {
+    color: var(--ansi-black);
+  }
+  .ansi-red-fg {
+    color: var(--ansi-red);
+  }
+  .ansi-green-fg {
+    color: var(--ansi-green);
+  }
+  .ansi-yellow-fg {
+    color: var(--ansi-yellow);
+  }
+  .ansi-blue-fg {
+    color: var(--ansi-blue);
+  }
+  .ansi-magenta-fg {
+    color: var(--ansi-magenta);
+  }
+  .ansi-cyan-fg {
+    color: var(--ansi-cyan);
+  }
+  .ansi-white-fg {
+    color: var(--ansi-white);
+  }
+  .ansi-bright-black-fg {
+    color: var(--ansi-bright-black);
+  }
+  .ansi-bright-red-fg {
+    color: var(--ansi-bright-red);
+  }
+  .ansi-bright-green-fg {
+    color: var(--ansi-bright-green);
+  }
+  .ansi-bright-yellow-fg {
+    color: var(--ansi-bright-yellow);
+  }
+  .ansi-bright-blue-fg {
+    color: var(--ansi-bright-blue);
+  }
+  .ansi-bright-magenta-fg {
+    color: var(--ansi-bright-magenta);
+  }
+  .ansi-bright-cyan-fg {
+    color: var(--ansi-bright-cyan);
+  }
+  .ansi-bright-white-fg {
+    color: var(--ansi-bright-white);
+  }
 
   /* ANSI background color classes */
-  .ansi-black-bg { background-color: var(--ansi-black-bg); }
-  .ansi-red-bg { background-color: var(--ansi-red-bg); }
-  .ansi-green-bg { background-color: var(--ansi-green-bg); }
-  .ansi-yellow-bg { background-color: var(--ansi-yellow-bg); }
-  .ansi-blue-bg { background-color: var(--ansi-blue-bg); }
-  .ansi-magenta-bg { background-color: var(--ansi-magenta-bg); }
-  .ansi-cyan-bg { background-color: var(--ansi-cyan-bg); }
-  .ansi-white-bg { background-color: var(--ansi-white-bg); }
+  .ansi-black-bg {
+    background-color: var(--ansi-black-bg);
+  }
+  .ansi-red-bg {
+    background-color: var(--ansi-red-bg);
+  }
+  .ansi-green-bg {
+    background-color: var(--ansi-green-bg);
+  }
+  .ansi-yellow-bg {
+    background-color: var(--ansi-yellow-bg);
+  }
+  .ansi-blue-bg {
+    background-color: var(--ansi-blue-bg);
+  }
+  .ansi-magenta-bg {
+    background-color: var(--ansi-magenta-bg);
+  }
+  .ansi-cyan-bg {
+    background-color: var(--ansi-cyan-bg);
+  }
+  .ansi-white-bg {
+    background-color: var(--ansi-white-bg);
+  }
 }

@@ -5,16 +5,12 @@ test.describe("Column Profiling", () => {
     await page.goto("/?dataset=generated");
     await page.waitForSelector(".pt-table-container");
     // Wait for all data to load
-    await expect(page.locator(".pt-stat-rows")).toHaveAttribute(
-      "data-value",
-      /100,000/,
-      { timeout: 10_000 },
-    );
+    await expect(page.locator(".pt-stat-rows")).toHaveAttribute("data-value", /100,000/, {
+      timeout: 10_000,
+    });
   });
 
-  test("shows null% and distinct count for low-cardinality numeric columns", async ({
-    page,
-  }) => {
+  test("shows null% and distinct count for low-cardinality numeric columns", async ({ page }) => {
     // The Chaos column has NaN, Infinity, null values — should show profiling stats
     const profileEls = page.locator(".pt-th-profile");
     // At least one profile element should be visible
@@ -22,9 +18,7 @@ test.describe("Column Profiling", () => {
 
     // Check that at least one shows "null" or "distinct"
     const texts = await profileEls.allTextContents();
-    const hasProfileInfo = texts.some(
-      (t) => t.includes("null") || t.includes("distinct"),
-    );
+    const hasProfileInfo = texts.some((t) => t.includes("null") || t.includes("distinct"));
     expect(hasProfileInfo).toBe(true);
   });
 
@@ -57,11 +51,9 @@ test.describe("Debug Toggle", () => {
   test("gear button toggles debug stats", async ({ page }) => {
     await page.goto("/?dataset=generated");
     await page.waitForSelector(".pt-table-container");
-    await expect(page.locator(".pt-stat-rows")).toHaveAttribute(
-      "data-value",
-      /100,000/,
-      { timeout: 10_000 },
-    );
+    await expect(page.locator(".pt-stat-rows")).toHaveAttribute("data-value", /100,000/, {
+      timeout: 10_000,
+    });
 
     // Debug group should be hidden by default
     const debugGroup = page.locator(".pt-debug-group");
@@ -90,9 +82,7 @@ test.describe("Dark Mode", () => {
     await page.locator("#theme-toggle").click();
 
     // Should have dark theme attribute
-    const theme = await page.evaluate(() =>
-      document.documentElement.getAttribute("data-theme"),
-    );
+    const theme = await page.evaluate(() => document.documentElement.getAttribute("data-theme"));
     expect(theme).toBe("dark");
 
     // Toggle back

@@ -19,11 +19,7 @@ interface AudioOutputProps {
  * Renders an audio player for notebook outputs.
  * Handles blob URLs from the blob store, data URLs, and base64-encoded audio.
  */
-export function AudioOutput({
-  data,
-  mediaType = "audio/wav",
-  className = "",
-}: AudioOutputProps) {
+export function AudioOutput({ data, mediaType = "audio/wav", className = "" }: AudioOutputProps) {
   if (!data) return null;
 
   const src =

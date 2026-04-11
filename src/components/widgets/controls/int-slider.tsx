@@ -8,10 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { cn } from "@/lib/utils";
 import type { WidgetComponentProps } from "../widget-registry";
-import {
-  useWidgetModelValue,
-  useWidgetStoreRequired,
-} from "../widget-store-context";
+import { useWidgetModelValue, useWidgetStoreRequired } from "../widget-store-context";
 
 export function IntSlider({ modelId, className }: WidgetComponentProps) {
   const { sendUpdate } = useWidgetStoreRequired();
@@ -24,8 +21,7 @@ export function IntSlider({ modelId, className }: WidgetComponentProps) {
   const description = useWidgetModelValue<string>(modelId, "description");
   const disabled = useWidgetModelValue<boolean>(modelId, "disabled") ?? false;
   const orientation =
-    useWidgetModelValue<"horizontal" | "vertical">(modelId, "orientation") ??
-    "horizontal";
+    useWidgetModelValue<"horizontal" | "vertical">(modelId, "orientation") ?? "horizontal";
   const readout = useWidgetModelValue<boolean>(modelId, "readout") ?? true;
 
   const handleChange = (newValue: number[]) => {
@@ -39,11 +35,7 @@ export function IntSlider({ modelId, className }: WidgetComponentProps) {
 
   return (
     <div
-      className={cn(
-        "flex gap-3",
-        isVertical ? "flex-col items-center" : "items-center",
-        className,
-      )}
+      className={cn("flex gap-3", isVertical ? "flex-col items-center" : "items-center", className)}
       data-widget-id={modelId}
       data-widget-type="IntSlider"
     >
@@ -59,9 +51,7 @@ export function IntSlider({ modelId, className }: WidgetComponentProps) {
         className={isVertical ? "h-32" : "flex-1 min-w-24"}
       />
       {readout && (
-        <span className="w-12 text-right tabular-nums text-sm text-muted-foreground">
-          {value}
-        </span>
+        <span className="w-12 text-right tabular-nums text-sm text-muted-foreground">{value}</span>
       )}
     </div>
   );

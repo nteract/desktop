@@ -5,19 +5,13 @@ interface ExecutionStatusProps {
   executionState: string;
 }
 
-export const ExecutionStatus: React.FC<ExecutionStatusProps> = ({
-  executionState,
-}) => {
+export const ExecutionStatus: React.FC<ExecutionStatusProps> = ({ executionState }) => {
   switch (executionState) {
     case "idle":
       return null;
     case "queued":
       return (
-        <Badge
-          data-slot="execution-status"
-          variant="secondary"
-          className="h-5 text-xs"
-        >
+        <Badge data-slot="execution-status" variant="secondary" className="h-5 text-xs">
           Queued
         </Badge>
       );

@@ -103,10 +103,7 @@ type TypedArray =
 /**
  * Convert a DataView to the appropriate TypedArray based on dtype metadata.
  */
-export function getTypedArray(
-  dataview: DataView,
-  metadata: { dtype: string },
-): TypedArray {
+export function getTypedArray(dataview: DataView, metadata: { dtype: string }): TypedArray {
   const buffer = dataview.buffer;
   switch (metadata.dtype) {
     case "int8":
@@ -245,13 +242,7 @@ function drawArcs(
   const startAngle = getArg(args[3], buffers);
   const endAngle = getArg(args[4], buffers);
   const anticlockwise = getArg(args[5], buffers);
-  const count = Math.min(
-    x.length,
-    y.length,
-    radius.length,
-    startAngle.length,
-    endAngle.length,
-  );
+  const count = Math.min(x.length, y.length, radius.length, startAngle.length, endAngle.length);
 
   for (let i = 0; i < count; i++) {
     callback(
@@ -276,10 +267,7 @@ function fillArc(
 ) {
   ctx.beginPath();
   ctx.moveTo(x, y);
-  ctx.lineTo(
-    x + radius * Math.cos(startAngle),
-    y + radius * Math.sin(startAngle),
-  );
+  ctx.lineTo(x + radius * Math.cos(startAngle), y + radius * Math.sin(startAngle));
   ctx.arc(x, y, radius, startAngle, endAngle, anticlockwise);
   ctx.lineTo(x, y);
   ctx.fill();
@@ -301,35 +289,21 @@ function strokeArc(
   ctx.closePath();
 }
 
-function fillCircle(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  radius: number,
-) {
+function fillCircle(ctx: CanvasRenderingContext2D, x: number, y: number, radius: number) {
   ctx.beginPath();
   ctx.arc(x, y, radius, 0, 2 * Math.PI);
   ctx.fill();
   ctx.closePath();
 }
 
-function strokeCircle(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  radius: number,
-) {
+function strokeCircle(ctx: CanvasRenderingContext2D, x: number, y: number, radius: number) {
   ctx.beginPath();
   ctx.arc(x, y, radius, 0, 2 * Math.PI);
   ctx.stroke();
   ctx.closePath();
 }
 
-function drawPolygonPoints(
-  ctx: CanvasRenderingContext2D,
-  args: unknown[],
-  buffers: DataView[],
-) {
+function drawPolygonPoints(ctx: CanvasRenderingContext2D, args: unknown[], buffers: DataView[]) {
   const points = getArg(args[0], buffers);
   ctx.beginPath();
   ctx.moveTo(points.getItem(0), points.getItem(1));
@@ -393,19 +367,9 @@ function drawStyledRects(
     const color = `rgba(${colors.getItem(ci)}, ${colors.getItem(ci + 1)}, ${colors.getItem(ci + 2)}, ${alpha.getItem(i)})`;
     setStyle(ctx, color, fill);
     if (fill) {
-      ctx.fillRect(
-        x.getItem(i),
-        y.getItem(i),
-        width.getItem(i),
-        height.getItem(i),
-      );
+      ctx.fillRect(x.getItem(i), y.getItem(i), width.getItem(i), height.getItem(i));
     } else {
-      ctx.strokeRect(
-        x.getItem(i),
-        y.getItem(i),
-        width.getItem(i),
-        height.getItem(i),
-      );
+      ctx.strokeRect(x.getItem(i), y.getItem(i), width.getItem(i), height.getItem(i));
     }
   }
   ctx.restore();
@@ -452,13 +416,7 @@ function drawStyledArcs(
   const anticlockwise = getArg(args[5], buffers);
   const colors = getArg(args[6], buffers);
   const alpha = getArg(args[7], buffers);
-  const count = Math.min(
-    x.length,
-    y.length,
-    radius.length,
-    startAngle.length,
-    endAngle.length,
-  );
+  const count = Math.min(x.length, y.length, radius.length, startAngle.length, endAngle.length);
 
   ctx.save();
   for (let i = 0; i < count; i++) {
@@ -556,11 +514,7 @@ export async function processCommands(
   const result: ProcessCommandsResult = { sleepMs: null, switchedTo: null };
 
   // Handle nested command arrays (batched via hold_canvas)
-  if (
-    Array.isArray(command) &&
-    command.length > 0 &&
-    Array.isArray(command[0])
-  ) {
+  if (Array.isArray(command) && command.length > 0 && Array.isArray(command[0])) {
     let remainingBuffers = buffers;
     let active = isActive;
 
@@ -571,14 +525,7 @@ export async function processCommands(
         subbuffers = remainingBuffers.slice(0, nBuffers);
         remainingBuffers = remainingBuffers.slice(nBuffers);
       }
-      const sub = await processCommands(
-        ctx,
-        subcommand,
-        subbuffers,
-        canvasEl,
-        myModelId,
-        active,
-      );
+      const sub = await processCommands(ctx, subcommand, subbuffers, canvasEl, myModelId, active);
       if (sub.switchedTo !== null) {
         active = sub.switchedTo === myModelId;
         result.switchedTo = sub.switchedTo;
@@ -615,39 +562,19 @@ export async function processCommands(
   switch (name) {
     // --- Simple drawing ---
     case "fillRect":
-      ctx.fillRect(
-        args[0] as number,
-        args[1] as number,
-        args[2] as number,
-        args[3] as number,
-      );
+      ctx.fillRect(args[0] as number, args[1] as number, args[2] as number, args[3] as number);
       break;
     case "strokeRect":
-      ctx.strokeRect(
-        args[0] as number,
-        args[1] as number,
-        args[2] as number,
-        args[3] as number,
-      );
+      ctx.strokeRect(args[0] as number, args[1] as number, args[2] as number, args[3] as number);
       break;
     case "clearRect":
-      ctx.clearRect(
-        args[0] as number,
-        args[1] as number,
-        args[2] as number,
-        args[3] as number,
-      );
+      ctx.clearRect(args[0] as number, args[1] as number, args[2] as number, args[3] as number);
       break;
     case "fillCircle":
       fillCircle(ctx, args[0] as number, args[1] as number, args[2] as number);
       break;
     case "strokeCircle":
-      strokeCircle(
-        ctx,
-        args[0] as number,
-        args[1] as number,
-        args[2] as number,
-      );
+      strokeCircle(ctx, args[0] as number, args[1] as number, args[2] as number);
       break;
     case "fillArc":
       fillArc(
@@ -694,14 +621,10 @@ export async function processCommands(
       drawCircles(ctx, args, buffers, (x, y, r) => strokeCircle(ctx, x, y, r));
       break;
     case "fillArcs":
-      drawArcs(ctx, args, buffers, (x, y, r, sa, ea, ac) =>
-        fillArc(ctx, x, y, r, sa, ea, ac),
-      );
+      drawArcs(ctx, args, buffers, (x, y, r, sa, ea, ac) => fillArc(ctx, x, y, r, sa, ea, ac));
       break;
     case "strokeArcs":
-      drawArcs(ctx, args, buffers, (x, y, r, sa, ea, ac) =>
-        strokeArc(ctx, x, y, r, sa, ea, ac),
-      );
+      drawArcs(ctx, args, buffers, (x, y, r, sa, ea, ac) => strokeArc(ctx, x, y, r, sa, ea, ac));
       break;
     case "strokeLines": {
       const points = getArg(args[0], buffers);
@@ -785,12 +708,7 @@ export async function processCommands(
       ctx.lineTo(args[0] as number, args[1] as number);
       break;
     case "rect":
-      ctx.rect(
-        args[0] as number,
-        args[1] as number,
-        args[2] as number,
-        args[3] as number,
-      );
+      ctx.rect(args[0] as number, args[1] as number, args[2] as number, args[3] as number);
       break;
     case "arc":
       ctx.arc(
@@ -926,13 +844,8 @@ export async function processCommands(
 
     default:
       // Fallback: try to call the method directly on the context
-      if (
-        name &&
-        typeof (ctx as unknown as Record<string, unknown>)[name] === "function"
-      ) {
-        (ctx as unknown as Record<string, (...a: unknown[]) => void>)[name](
-          ...args,
-        );
+      if (name && typeof (ctx as unknown as Record<string, unknown>)[name] === "function") {
+        (ctx as unknown as Record<string, (...a: unknown[]) => void>)[name](...args);
       }
       break;
   }

@@ -26,10 +26,7 @@ function LatexRenderer({ data }: RendererProps) {
 }
 
 export function install(ctx: {
-  register: (
-    mimeTypes: string[],
-    component: React.ComponentType<RendererProps>,
-  ) => void;
+  register: (mimeTypes: string[], component: React.ComponentType<RendererProps>) => void;
 }) {
   ctx.register(["text/markdown"], MarkdownRenderer);
   ctx.register(["text/latex"], LatexRenderer);

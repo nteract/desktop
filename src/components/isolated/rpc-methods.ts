@@ -159,4 +159,3 @@ export interface NteractWidgetUpdateParams {
   state: Record<string, unknown>;
   buffers?: string[];
 }
-

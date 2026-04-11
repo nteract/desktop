@@ -23,10 +23,7 @@ function parseLinkTarget(tuple: unknown): [string, string] | null {
  * Set up a one-way property subscription (source → target).
  * Returns a cleanup function to tear down the subscription.
  */
-function setupDirectionalLink(
-  store: WidgetStore,
-  linkModelId: string,
-): () => void {
+function setupDirectionalLink(store: WidgetStore, linkModelId: string): () => void {
   let keyUnsub: (() => void) | undefined;
   let globalUnsub: (() => void) | undefined;
   let isSetUp = false;
@@ -93,10 +90,7 @@ function setupDirectionalLink(
  * subscriptions fire synchronously during updateModel.
  * Returns a cleanup function to tear down the subscriptions.
  */
-function setupBidirectionalLink(
-  store: WidgetStore,
-  linkModelId: string,
-): () => void {
+function setupBidirectionalLink(store: WidgetStore, linkModelId: string): () => void {
   const keyUnsubs: (() => void)[] = [];
   let globalUnsub: (() => void) | undefined;
   let isSetUp = false;
@@ -187,9 +181,7 @@ function setupBidirectionalLink(
  *
  * @param store - The widget store instance
  */
-export function createLinkManager(
-  store: WidgetStore,
-): () => void {
+export function createLinkManager(store: WidgetStore): () => void {
   const activeLinks = new Map<string, () => void>();
   let lastSize = -1;
 

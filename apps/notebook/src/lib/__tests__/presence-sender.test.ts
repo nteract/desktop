@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { presenceSenderExtension } from "../presence-sender";
 
 describe("presenceSenderExtension", () => {

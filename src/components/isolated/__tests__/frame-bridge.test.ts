@@ -6,12 +6,8 @@
  * 2. The message type whitelist is complete
  */
 
-import { describe, expect, it } from "vitest";
-import {
-  type IframeToParentMessage,
-  isIframeMessage,
-  isMessageType,
-} from "../frame-bridge";
+import { describe, expect, it } from "vite-plus/test";
+import { type IframeToParentMessage, isIframeMessage, isMessageType } from "../frame-bridge";
 
 describe("isIframeMessage", () => {
   // Valid message types that should pass
@@ -30,9 +26,7 @@ describe("isIframeMessage", () => {
     "widget_comm_close",
   ] as const;
 
-  it.each(
-    validMessageTypes,
-  )('returns true for valid message type "%s"', (type) => {
+  it.each(validMessageTypes)('returns true for valid message type "%s"', (type) => {
     expect(isIframeMessage({ type })).toBe(true);
   });
 
@@ -81,9 +75,7 @@ describe("isIframeMessage", () => {
     "widget_snapshot",
   ];
 
-  it.each(
-    parentMessageTypes,
-  )('returns false for parent message type "%s"', (type) => {
+  it.each(parentMessageTypes)('returns false for parent message type "%s"', (type) => {
     expect(isIframeMessage({ type })).toBe(false);
   });
 });
@@ -133,10 +125,7 @@ describe("message type whitelist completeness", () => {
     ];
 
     for (const type of allIframeMessageTypes) {
-      expect(
-        isIframeMessage({ type }),
-        `Message type "${type}" should be in whitelist`,
-      ).toBe(true);
+      expect(isIframeMessage({ type }), `Message type "${type}" should be in whitelist`).toBe(true);
     }
   });
 });

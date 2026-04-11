@@ -13,19 +13,14 @@ test.describe("Heart Failure (numeric-heavy)", () => {
   const waitForData = async (page: import("@playwright/test").Page) => {
     await page.goto("/?dataset=heart-failure");
     await page.waitForSelector(".pt-table-container", { timeout: 90_000 });
-    await page.waitForFunction(
-      () => document.body.innerText.includes("299 rows"),
-      null,
-      { timeout: 30_000 },
-    );
+    await page.waitForFunction(() => document.body.innerText.includes("299 rows"), null, {
+      timeout: 30_000,
+    });
   };
 
   test("row count shows 299 rows", async ({ page }) => {
     await waitForData(page);
-    await expect(page.locator(".pt-stat-rows")).toHaveAttribute(
-      "data-value",
-      /299/,
-    );
+    await expect(page.locator(".pt-stat-rows")).toHaveAttribute("data-value", /299/);
   });
 
   test("all numeric columns get histograms (SVG charts)", async ({ page }) => {
@@ -41,9 +36,7 @@ test.describe("Heart Failure (numeric-heavy)", () => {
     expect(count).toBeGreaterThanOrEqual(5);
   });
 
-  test("numeric sort ascending — first value ≤ last value", async ({
-    page,
-  }) => {
+  test("numeric sort ascending — first value ≤ last value", async ({ page }) => {
     await waitForData(page);
 
     // Click the "age" column header to sort ascending
@@ -71,9 +64,7 @@ test.describe("Heart Failure (numeric-heavy)", () => {
     expect(firstVal).toBeLessThanOrEqual(lastVal);
   });
 
-  test("numeric sort descending — first value ≥ last value", async ({
-    page,
-  }) => {
+  test("numeric sort descending — first value ≥ last value", async ({ page }) => {
     await waitForData(page);
 
     // Click "age" column header twice: first click = asc, second = desc

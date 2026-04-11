@@ -17,9 +17,7 @@ const LIGHT_TEXT = "rgba(68, 68, 68, 1)";
 
 function darkLayoutOverrides(isDark: boolean): Record<string, unknown> {
   const textColor = isDark ? DARK_TEXT : LIGHT_TEXT;
-  const gridColor = isDark
-    ? "rgba(255, 255, 255, 0.1)"
-    : "rgba(0, 0, 0, 0.1)";
+  const gridColor = isDark ? "rgba(255, 255, 255, 0.1)" : "rgba(0, 0, 0, 0.1)";
 
   return {
     paper_bgcolor: "transparent",
@@ -74,9 +72,7 @@ function PlotlyRenderer({ data: rawData }: RendererProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   const data =
-    typeof rawData === "string"
-      ? (JSON.parse(rawData) as PlotlyData)
-      : (rawData as PlotlyData);
+    typeof rawData === "string" ? (JSON.parse(rawData) as PlotlyData) : (rawData as PlotlyData);
 
   useEffect(() => {
     if (!containerRef.current || !data?.data) return;
@@ -140,10 +136,7 @@ function PlotlyRenderer({ data: rawData }: RendererProps) {
 // --- Plugin install ---
 
 export function install(ctx: {
-  register: (
-    mimeTypes: string[],
-    component: React.ComponentType<RendererProps>,
-  ) => void;
+  register: (mimeTypes: string[], component: React.ComponentType<RendererProps>) => void;
 }) {
   ctx.register(["application/vnd.plotly.v1+json"], PlotlyRenderer);
 }

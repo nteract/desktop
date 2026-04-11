@@ -1,7 +1,11 @@
-* { box-sizing: border-box; margin: 0; padding: 0; }
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   background: #1a1a1a;
   color: #e5e5e5;
   padding: 24px;
@@ -60,7 +64,9 @@ h1 {
   gap: 6px;
 }
 
-.tool-call-header .tool-icon { color: #d4956a; }
+.tool-call-header .tool-icon {
+  color: #d4956a;
+}
 
 .app-frame {
   width: 100%;

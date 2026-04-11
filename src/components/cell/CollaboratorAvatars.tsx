@@ -6,11 +6,7 @@ import {
   AvatarGroupCount,
   AvatarImage,
 } from "@/components/ui/avatar";
-import {
-  HoverCard,
-  HoverCardContent,
-  HoverCardTrigger,
-} from "@/components/ui/hover-card";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 
 export interface CollaboratorUser {
   id: string;
@@ -45,9 +41,7 @@ export function CollaboratorAvatars({
 }: CollaboratorAvatarsProps) {
   // Filter out current user from display
   const displayUsers = React.useMemo(() => {
-    return currentUserId
-      ? users.filter((user) => user.id !== currentUserId)
-      : users;
+    return currentUserId ? users.filter((user) => user.id !== currentUserId) : users;
   }, [users, currentUserId]);
 
   if (displayUsers.length === 0) {
@@ -66,21 +60,11 @@ export function CollaboratorAvatars({
             <Avatar
               size={size}
               className="cursor-pointer transition-transform hover:scale-110 hover:z-10"
-              style={
-                user.color
-                  ? { boxShadow: `0 0 0 2px ${user.color}` }
-                  : undefined
-              }
+              style={user.color ? { boxShadow: `0 0 0 2px ${user.color}` } : undefined}
             >
-              {user.picture ? (
-                <AvatarImage src={user.picture} alt={user.name} />
-              ) : null}
+              {user.picture ? <AvatarImage src={user.picture} alt={user.name} /> : null}
               <AvatarFallback
-                style={
-                  user.color
-                    ? { backgroundColor: user.color, color: "white" }
-                    : undefined
-                }
+                style={user.color ? { backgroundColor: user.color, color: "white" } : undefined}
               >
                 {getInitials(user.name)}
               </AvatarFallback>
@@ -89,15 +73,9 @@ export function CollaboratorAvatars({
           <HoverCardContent className="w-auto min-w-[120px] p-3">
             <div className="flex items-center gap-2">
               <Avatar size="default">
-                {user.picture ? (
-                  <AvatarImage src={user.picture} alt={user.name} />
-                ) : null}
+                {user.picture ? <AvatarImage src={user.picture} alt={user.name} /> : null}
                 <AvatarFallback
-                  style={
-                    user.color
-                      ? { backgroundColor: user.color, color: "white" }
-                      : undefined
-                  }
+                  style={user.color ? { backgroundColor: user.color, color: "white" } : undefined}
                 >
                   {getInitials(user.name)}
                 </AvatarFallback>
@@ -119,14 +97,10 @@ export function CollaboratorAvatars({
               {overflowUsers.map((user) => (
                 <div key={user.id} className="flex items-center gap-2">
                   <Avatar size="sm">
-                    {user.picture ? (
-                      <AvatarImage src={user.picture} alt={user.name} />
-                    ) : null}
+                    {user.picture ? <AvatarImage src={user.picture} alt={user.name} /> : null}
                     <AvatarFallback
                       style={
-                        user.color
-                          ? { backgroundColor: user.color, color: "white" }
-                          : undefined
+                        user.color ? { backgroundColor: user.color, color: "white" } : undefined
                       }
                     >
                       {getInitials(user.name)}

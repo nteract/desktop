@@ -25,8 +25,7 @@ export const defaultGutterColors: Record<string, GutterColorConfig> = {
     outputRibbon: {
       default:
         "bg-gradient-to-b from-gray-200/60 to-gray-200 dark:from-gray-700/60 dark:to-gray-700",
-      focused:
-        "bg-gradient-to-b from-sky-400/60 to-sky-400 dark:from-sky-600/60 dark:to-sky-600",
+      focused: "bg-gradient-to-b from-sky-400/60 to-sky-400 dark:from-sky-600/60 dark:to-sky-600",
     },
     background: {
       focused: "bg-sky-50/20 dark:bg-sky-900/10",
@@ -104,10 +103,8 @@ export const fallbackGutterColors: GutterColorConfig = {
     focused: "bg-gray-400 dark:bg-gray-500",
   },
   outputRibbon: {
-    default:
-      "bg-gradient-to-b from-gray-200/60 to-gray-200 dark:from-gray-700/60 dark:to-gray-700",
-    focused:
-      "bg-gradient-to-b from-gray-400/60 to-gray-400 dark:from-gray-500/60 dark:to-gray-500",
+    default: "bg-gradient-to-b from-gray-200/60 to-gray-200 dark:from-gray-700/60 dark:to-gray-700",
+    focused: "bg-gradient-to-b from-gray-400/60 to-gray-400 dark:from-gray-500/60 dark:to-gray-500",
   },
   background: {
     focused: "bg-gray-50/50 dark:bg-gray-900/30",

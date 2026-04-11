@@ -1971,26 +1971,14 @@ fn cmd_lint(fix: bool) {
     }
     println!();
 
-    // JavaScript/TypeScript with Biome
-    println!("=== JavaScript/TypeScript (Biome) ===");
-    let biome_ok = if fix {
-        run_cmd_ok(
-            "npx",
-            &[
-                "@biomejs/biome",
-                "check",
-                "--fix",
-                "apps/notebook/src/",
-                "e2e/",
-            ],
-        )
+    // JavaScript/TypeScript with Vite Plus
+    println!("=== JavaScript/TypeScript (vp check) ===");
+    let vp_ok = if fix {
+        run_cmd_ok("vp", &["check", "--fix"])
     } else {
-        run_cmd_ok(
-            "npx",
-            &["@biomejs/biome", "check", "apps/notebook/src/", "e2e/"],
-        )
+        run_cmd_ok("vp", &["check"])
     };
-    if !biome_ok {
+    if !vp_ok {
         failed = true;
     }
     println!();

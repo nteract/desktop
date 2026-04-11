@@ -31,11 +31,7 @@ import {
 } from "@/components/isolated/rpc-methods";
 // Import output components directly (not through MediaRouter's lazy loading)
 // This ensures all components are bundled inline for the isolated iframe
-import {
-  AnsiErrorOutput,
-  AnsiOutput,
-  AnsiStreamOutput,
-} from "@/components/outputs/ansi-output";
+import { AnsiErrorOutput, AnsiOutput, AnsiStreamOutput } from "@/components/outputs/ansi-output";
 import { AudioOutput } from "@/components/outputs/audio-output";
 import { HtmlOutput } from "@/components/outputs/html-output";
 import { ImageOutput } from "@/components/outputs/image-output";
@@ -85,18 +81,11 @@ function installRendererPlugin(code: string, css?: string) {
   };
 
   // eslint-disable-next-line no-new-func -- CJS loader pattern
-  new Function("module", "exports", "require", code)(
-    mod,
-    mod.exports,
-    customRequire,
-  );
+  new Function("module", "exports", "require", code)(mod, mod.exports, customRequire);
 
   const install = mod.exports.install as
     | ((ctx: {
-        register: (
-          mimeTypes: string[],
-          component: ComponentType<RendererProps>,
-        ) => void;
+        register: (mimeTypes: string[], component: ComponentType<RendererProps>) => void;
         registerPattern: (
           test: (mime: string) => boolean,
           component: ComponentType<RendererProps>,
@@ -105,9 +94,7 @@ function installRendererPlugin(code: string, css?: string) {
     | undefined;
 
   if (typeof install !== "function") {
-    console.error(
-      "[renderer-plugin] Plugin does not export an install() function",
-    );
+    console.error("[renderer-plugin] Plugin does not export an install() function");
     return;
   }
 
@@ -288,12 +275,10 @@ function IsolatedRendererApp() {
 
       case "renderBatch": {
         const batchPayload = payload as { outputs: RenderPayload[] };
-        const entries: OutputEntry[] = (batchPayload.outputs ?? []).map(
-          (p, i) => ({
-            id: p.cellId ? `${p.cellId}-${p.outputIndex ?? i}` : `output-${i}`,
-            payload: p,
-          }),
-        );
+        const entries: OutputEntry[] = (batchPayload.outputs ?? []).map((p, i) => ({
+          id: p.cellId ? `${p.cellId}-${p.outputIndex ?? i}` : `output-${i}`,
+          payload: p,
+        }));
         setState((prev) => ({ ...prev, outputs: entries }));
 
         requestAnimationFrame(() => {
@@ -346,10 +331,7 @@ function IsolatedRendererApp() {
   }, [handleMessage]);
 
   return (
-    <div
-      className="isolated-renderer"
-      data-theme={state.isDark ? "dark" : "light"}
-    >
+    <div className="isolated-renderer" data-theme={state.isDark ? "dark" : "light"}>
       {state.outputs.map((entry) => (
         <OutputRenderer key={entry.id} payload={entry.payload} />
       ))}
@@ -382,9 +364,7 @@ function OutputRenderer({ payload }: { payload: RenderPayload }) {
         ename={String(metadata.ename || "Error")}
         evalue={String(metadata.evalue || "")}
         traceback={
-          Array.isArray(metadata.traceback)
-            ? metadata.traceback.map(String)
-            : [String(data)]
+          Array.isArray(metadata.traceback) ? metadata.traceback.map(String) : [String(data)]
         }
       />
     );
@@ -396,9 +376,7 @@ function OutputRenderer({ payload }: { payload: RenderPayload }) {
   // Check renderer plugin registry first (exact match, then pattern matchers)
   const RegisteredRenderer = getRenderer(mimeType);
   if (RegisteredRenderer) {
-    return (
-      <RegisteredRenderer data={data} metadata={metadata} mimeType={mimeType} />
-    );
+    return <RegisteredRenderer data={data} metadata={metadata} mimeType={mimeType} />;
   }
 
   // Widget view - render interactive Jupyter widget
@@ -458,8 +436,7 @@ function OutputRenderer({ payload }: { payload: RenderPayload }) {
 
   // JSON
   if (mimeType === "application/json") {
-    const jsonData =
-      typeof content === "string" ? JSON.parse(content) : content;
+    const jsonData = typeof content === "string" ? JSON.parse(content) : content;
     return <JsonOutput data={jsonData} />;
   }
 

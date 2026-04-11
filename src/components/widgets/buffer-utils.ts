@@ -63,11 +63,7 @@ export function extractBuffers(
 
     for (let j = 0; j < path.length - 1; j++) {
       const key = path[j];
-      if (
-        current[key] === undefined ||
-        current[key] === null ||
-        typeof current[key] !== "object"
-      ) {
+      if (current[key] === undefined || current[key] === null || typeof current[key] !== "object") {
         found = false;
         break;
       }
@@ -82,17 +78,9 @@ export function extractBuffers(
         buffers.push(value);
         // Replace with null in the data (per protocol spec)
         current[finalKey] = null;
-      } else if (
-        ArrayBuffer.isView(value) &&
-        value.buffer instanceof ArrayBuffer
-      ) {
+      } else if (ArrayBuffer.isView(value) && value.buffer instanceof ArrayBuffer) {
         // Handle typed arrays (Uint8Array, etc.) with ArrayBuffer backing
-        buffers.push(
-          value.buffer.slice(
-            value.byteOffset,
-            value.byteOffset + value.byteLength,
-          ),
-        );
+        buffers.push(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
         current[finalKey] = null;
       } else {
         // Path exists but value is not a buffer
@@ -164,10 +152,7 @@ export function buildMediaSrc(
  * @param prefix - Current path prefix (for recursion)
  * @returns Array of paths to ArrayBuffer values
  */
-export function findBufferPaths(
-  data: Record<string, unknown>,
-  prefix: string[] = [],
-): string[][] {
+export function findBufferPaths(data: Record<string, unknown>, prefix: string[] = []): string[][] {
   const paths: string[][] = [];
 
   for (const [key, value] of Object.entries(data)) {
@@ -175,15 +160,9 @@ export function findBufferPaths(
 
     if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
       paths.push(currentPath);
-    } else if (
-      value !== null &&
-      typeof value === "object" &&
-      !Array.isArray(value)
-    ) {
+    } else if (value !== null && typeof value === "object" && !Array.isArray(value)) {
       // Recurse into nested objects
-      paths.push(
-        ...findBufferPaths(value as Record<string, unknown>, currentPath),
-      );
+      paths.push(...findBufferPaths(value as Record<string, unknown>, currentPath));
     }
   }
 

@@ -2,7 +2,7 @@
  * Tests for JsonRpcTransport — lightweight JSON-RPC 2.0 over postMessage.
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { JsonRpcTransport } from "../jsonrpc-transport";
 
 function createMockWindow(): {
@@ -20,11 +20,9 @@ function createMockWindow(): {
   }> = [];
 
   const mockWindow = {
-    postMessage: vi.fn(
-      (message: unknown, origin: string, transfer?: Transferable[]) => {
-        postMessageCalls.push({ message, origin, transfer });
-      },
-    ),
+    postMessage: vi.fn((message: unknown, origin: string, transfer?: Transferable[]) => {
+      postMessageCalls.push({ message, origin, transfer });
+    }),
   } as unknown as Window;
 
   return { window: mockWindow, postMessageCalls };
@@ -43,10 +41,7 @@ describe("JsonRpcTransport", () => {
 
   describe("notify", () => {
     it("sends JSON-RPC 2.0 notification", () => {
-      const transport = new JsonRpcTransport(
-        mockTarget.window,
-        mockTarget.window,
-      );
+      const transport = new JsonRpcTransport(mockTarget.window, mockTarget.window);
 
       transport.notify("nteract/renderOutput", {
         mimeType: "text/plain",
@@ -62,10 +57,7 @@ describe("JsonRpcTransport", () => {
     });
 
     it("extracts ArrayBuffers as transferables", () => {
-      const transport = new JsonRpcTransport(
-        mockTarget.window,
-        mockTarget.window,
-      );
+      const transport = new JsonRpcTransport(mockTarget.window, mockTarget.window);
 
       const buffer = new ArrayBuffer(16);
       transport.notify("nteract/commMsg", {
@@ -77,10 +69,7 @@ describe("JsonRpcTransport", () => {
     });
 
     it("deduplicates ArrayBuffer transferables", () => {
-      const transport = new JsonRpcTransport(
-        mockTarget.window,
-        mockTarget.window,
-      );
+      const transport = new JsonRpcTransport(mockTarget.window, mockTarget.window);
 
       const buffer = new ArrayBuffer(8);
       transport.notify("test", { a: buffer, b: buffer });
@@ -89,10 +78,7 @@ describe("JsonRpcTransport", () => {
     });
 
     it("sends without transfer list when no buffers", () => {
-      const transport = new JsonRpcTransport(
-        mockTarget.window,
-        mockTarget.window,
-      );
+      const transport = new JsonRpcTransport(mockTarget.window, mockTarget.window);
 
       transport.notify("nteract/clearOutputs");
 
@@ -102,10 +88,7 @@ describe("JsonRpcTransport", () => {
 
   describe("request", () => {
     it("sends JSON-RPC 2.0 request with id", () => {
-      const transport = new JsonRpcTransport(
-        mockTarget.window,
-        mockTarget.window,
-      );
+      const transport = new JsonRpcTransport(mockTarget.window, mockTarget.window);
 
       // Don't await — just check it was sent
       transport.request("nteract/search", { query: "test" });
@@ -123,10 +106,7 @@ describe("JsonRpcTransport", () => {
     });
 
     it("increments request ids", () => {
-      const transport = new JsonRpcTransport(
-        mockTarget.window,
-        mockTarget.window,
-      );
+      const transport = new JsonRpcTransport(mockTarget.window, mockTarget.window);
 
       transport.request("a");
       transport.request("b");
@@ -140,15 +120,10 @@ describe("JsonRpcTransport", () => {
 
   describe("receiving", () => {
     it("dispatches notifications to handlers", () => {
-      const transport = new JsonRpcTransport(
-        mockTarget.window,
-        mockTarget.window,
-      );
+      const transport = new JsonRpcTransport(mockTarget.window, mockTarget.window);
 
       const received: unknown[] = [];
-      transport.onNotification("test/method", (params) =>
-        received.push(params),
-      );
+      transport.onNotification("test/method", (params) => received.push(params));
       transport.start();
 
       window.dispatchEvent(
@@ -163,17 +138,13 @@ describe("JsonRpcTransport", () => {
     });
 
     it("resolves request promises on response", async () => {
-      const transport = new JsonRpcTransport(
-        mockTarget.window,
-        mockTarget.window,
-      );
+      const transport = new JsonRpcTransport(mockTarget.window, mockTarget.window);
       transport.start();
 
       const promise = transport.request("test/search", { query: "foo" });
 
       // Simulate response
-      const sentId = (mockTarget.postMessageCalls[0].message as { id: number })
-        .id;
+      const sentId = (mockTarget.postMessageCalls[0].message as { id: number }).id;
       window.dispatchEvent(
         new MessageEvent("message", {
           data: { jsonrpc: "2.0", id: sentId, result: { count: 5 } },
@@ -186,16 +157,12 @@ describe("JsonRpcTransport", () => {
     });
 
     it("rejects request promises on error response", async () => {
-      const transport = new JsonRpcTransport(
-        mockTarget.window,
-        mockTarget.window,
-      );
+      const transport = new JsonRpcTransport(mockTarget.window, mockTarget.window);
       transport.start();
 
       const promise = transport.request("test/fail");
 
-      const sentId = (mockTarget.postMessageCalls[0].message as { id: number })
-        .id;
+      const sentId = (mockTarget.postMessageCalls[0].message as { id: number }).id;
       window.dispatchEvent(
         new MessageEvent("message", {
           data: {
@@ -212,10 +179,7 @@ describe("JsonRpcTransport", () => {
 
     it("ignores messages from wrong source", () => {
       const otherWindow = {} as Window;
-      const transport = new JsonRpcTransport(
-        mockTarget.window,
-        mockTarget.window,
-      );
+      const transport = new JsonRpcTransport(mockTarget.window, mockTarget.window);
 
       const received: unknown[] = [];
       transport.onNotification("test", (p) => received.push(p));
@@ -232,10 +196,7 @@ describe("JsonRpcTransport", () => {
     });
 
     it("silently ignores non-JSON-RPC messages", () => {
-      const transport = new JsonRpcTransport(
-        mockTarget.window,
-        mockTarget.window,
-      );
+      const transport = new JsonRpcTransport(mockTarget.window, mockTarget.window);
 
       const received: unknown[] = [];
       transport.onNotification("ready", (p) => received.push(p));
@@ -253,10 +214,7 @@ describe("JsonRpcTransport", () => {
     });
 
     it("handles incoming requests and sends responses", async () => {
-      const transport = new JsonRpcTransport(
-        mockTarget.window,
-        mockTarget.window,
-      );
+      const transport = new JsonRpcTransport(mockTarget.window, mockTarget.window);
 
       transport.onRequest("test/eval", (params) => {
         return { success: true, result: String(params) };
@@ -291,10 +249,7 @@ describe("JsonRpcTransport", () => {
     });
 
     it("sends error response when request handler throws synchronously", async () => {
-      const transport = new JsonRpcTransport(
-        mockTarget.window,
-        mockTarget.window,
-      );
+      const transport = new JsonRpcTransport(mockTarget.window, mockTarget.window);
 
       transport.onRequest("test/throws", () => {
         throw new Error("sync kaboom");
@@ -323,10 +278,7 @@ describe("JsonRpcTransport", () => {
     });
 
     it("handles cyclic objects in collectArrayBuffers without stack overflow", () => {
-      const transport = new JsonRpcTransport(
-        mockTarget.window,
-        mockTarget.window,
-      );
+      const transport = new JsonRpcTransport(mockTarget.window, mockTarget.window);
 
       // Create a cyclic object
       const obj: Record<string, unknown> = { a: 1 };
@@ -341,10 +293,7 @@ describe("JsonRpcTransport", () => {
 
   describe("stop", () => {
     it("stops receiving messages", () => {
-      const transport = new JsonRpcTransport(
-        mockTarget.window,
-        mockTarget.window,
-      );
+      const transport = new JsonRpcTransport(mockTarget.window, mockTarget.window);
 
       const received: unknown[] = [];
       transport.onNotification("test", (p) => received.push(p));
@@ -362,10 +311,7 @@ describe("JsonRpcTransport", () => {
     });
 
     it("rejects pending requests", async () => {
-      const transport = new JsonRpcTransport(
-        mockTarget.window,
-        mockTarget.window,
-      );
+      const transport = new JsonRpcTransport(mockTarget.window, mockTarget.window);
 
       const promise = transport.request("test");
       transport.stop();

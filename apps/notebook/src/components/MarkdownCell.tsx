@@ -1,19 +1,8 @@
 import type { EditorView, KeyBinding } from "@codemirror/view";
 import { Pencil } from "lucide-react";
-import {
-  memo,
-  type ReactNode,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CellContainer } from "@/components/cell/CellContainer";
-import {
-  CodeMirrorEditor,
-  type CodeMirrorEditorRef,
-} from "@/components/editor/codemirror-editor";
+import { CodeMirrorEditor, type CodeMirrorEditorRef } from "@/components/editor/codemirror-editor";
 import { remoteCursorsExtension } from "@/components/editor/remote-cursors";
 import { searchHighlight } from "@/components/editor/search-highlight";
 import { textAttributionExtension } from "@/components/editor/text-attribution";
@@ -31,14 +20,8 @@ import {
   useIsPreviousCellFromFocused,
   useSearchQuery,
 } from "../lib/cell-ui-state";
-import {
-  onEditorRegistered,
-  onEditorUnregistered,
-} from "../lib/cursor-registry";
-import {
-  registerCellEditor,
-  unregisterCellEditor,
-} from "../lib/editor-registry";
+import { onEditorRegistered, onEditorUnregistered } from "../lib/cursor-registry";
+import { registerCellEditor, unregisterCellEditor } from "../lib/editor-registry";
 import { logger } from "../lib/logger";
 import { rewriteMarkdownAssetRefs } from "../lib/markdown-assets";
 import { openUrl } from "../lib/open-url";
@@ -85,10 +68,7 @@ export const MarkdownCell = memo(function MarkdownCell({
     (prefix: string, suffix = prefix) =>
       (view: EditorView) => {
         const selection = view.state.selection.main;
-        const selectedText = view.state.doc.sliceString(
-          selection.from,
-          selection.to,
-        );
+        const selectedText = view.state.doc.sliceString(selection.from, selection.to);
         const wrappedText = `${prefix}${selectedText}${suffix}`;
 
         view.dispatch({
@@ -109,10 +89,7 @@ export const MarkdownCell = memo(function MarkdownCell({
 
   const applyLinkFormatting = useCallback((view: EditorView) => {
     const selection = view.state.selection.main;
-    const selectedText = view.state.doc.sliceString(
-      selection.from,
-      selection.to,
-    );
+    const selectedText = view.state.doc.sliceString(selection.from, selection.to);
     const linkText = selectedText || "link text";
     const formattedText = `[${linkText}](https://)`;
 
@@ -137,10 +114,7 @@ export const MarkdownCell = memo(function MarkdownCell({
 
   const applyQuoteFormatting = useCallback((view: EditorView) => {
     const selection = view.state.selection.main;
-    const selectedText = view.state.doc.sliceString(
-      selection.from,
-      selection.to,
-    );
+    const selectedText = view.state.doc.sliceString(selection.from, selection.to);
     const text = selectedText || "quote";
     const quotedText = text
       .split("\n")
@@ -240,16 +214,8 @@ export const MarkdownCell = memo(function MarkdownCell({
     // Clear injected set — a reloaded iframe has a fresh renderer registry
     injectedLibsRef.current.clear();
     // Inject markdown renderer plugin before rendering (idempotent, cached after first load)
-    await injectPluginsForMimes(
-      frameRef.current,
-      ["text/markdown"],
-      injectedLibsRef.current,
-    );
-    const processedSource = rewriteMarkdownAssetRefs(
-      cell.source,
-      cell.resolvedAssets,
-      blobPort,
-    );
+    await injectPluginsForMimes(frameRef.current, ["text/markdown"], injectedLibsRef.current);
+    const processedSource = rewriteMarkdownAssetRefs(cell.source, cell.resolvedAssets, blobPort);
     frameRef.current.render({
       mimeType: "text/markdown",
       data: processedSource,
@@ -263,11 +229,7 @@ export const MarkdownCell = memo(function MarkdownCell({
     if (frameRef.current?.isReady && cell.source) {
       const frame = frameRef.current;
       // Inject markdown renderer plugin (idempotent) then render
-      injectPluginsForMimes(
-        frame,
-        ["text/markdown"],
-        injectedLibsRef.current,
-      ).then(() => {
+      injectPluginsForMimes(frame, ["text/markdown"], injectedLibsRef.current).then(() => {
         const processedSource = rewriteMarkdownAssetRefs(
           cell.source,
           cell.resolvedAssets,
@@ -474,9 +436,7 @@ export const MarkdownCell = memo(function MarkdownCell({
           {/* Editor section - hidden when not editing */}
           <div className={editing ? "block" : "hidden"}>
             <div className="flex items-center gap-1 py-1">
-              <span className="text-xs text-muted-foreground font-mono">
-                md
-              </span>
+              <span className="text-xs text-muted-foreground font-mono">md</span>
             </div>
             <div>
               <CodeMirrorEditor
@@ -521,11 +481,7 @@ export const MarkdownCell = memo(function MarkdownCell({
                 className="w-full"
               />
             </div>
-            {!cell.source && (
-              <p className="text-muted-foreground italic">
-                Double-click to edit
-              </p>
-            )}
+            {!cell.source && <p className="text-muted-foreground italic">Double-click to edit</p>}
           </div>
         </>
       }

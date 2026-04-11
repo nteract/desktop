@@ -49,10 +49,7 @@ export function GeoJsonOutput({ data, className }: GeoJsonOutputProps) {
         fillOpacity: 0.25,
         fillColor: featureColor,
       },
-      pointToLayer: (
-        _feature: unknown,
-        latlng: { lat: number; lng: number },
-      ) => {
+      pointToLayer: (_feature: unknown, latlng: { lat: number; lng: number }) => {
         return L.circleMarker(latlng, {
           radius: 6,
           color: featureColor,

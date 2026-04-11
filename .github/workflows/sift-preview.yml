@@ -52,13 +52,16 @@ jobs:
       - name: Install dependencies
         run: pnpm install
 
+      - name: Install Vite Plus
+        run: curl -fsSL https://vite.plus | bash
+
       - name: Generate demo data
         working-directory: packages/sift
         run: npx tsx src/generate-data.ts
 
       - name: Build sift demo
         working-directory: packages/sift
-        run: npx vite build
+        run: vp build
 
       - name: Deploy to Cloudflare Pages
         id: deploy

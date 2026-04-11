@@ -74,8 +74,7 @@ export class DirectTransport implements NotebookTransport {
    * Handler for `sendRequest` calls. Set this to provide test responses.
    * Defaults to returning `{ result: "ok" }` for all requests.
    */
-  requestHandler: (request: unknown) => Promise<unknown> = () =>
-    Promise.resolve({ result: "ok" });
+  requestHandler: (request: unknown) => Promise<unknown> = () => Promise.resolve({ result: "ok" });
 
   constructor(server: ServerHandle) {
     this.server = server;

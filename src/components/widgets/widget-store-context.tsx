@@ -21,11 +21,7 @@ import {
 } from "react";
 import { createCanvasManagerRouter } from "./canvas-manager-subscriptions";
 import { createLinkManager } from "./link-subscriptions";
-import {
-  type JupyterCommMessage,
-  type SendMessage,
-  useCommRouter,
-} from "./use-comm-router";
+import { type JupyterCommMessage, type SendMessage, useCommRouter } from "./use-comm-router";
 import {
   createWidgetStore,
   resolveModelRef,
@@ -42,17 +38,9 @@ interface WidgetStoreContextValue {
   /** Raw send function (prefer sendUpdate/sendCustom for specific cases) */
   sendMessage: SendMessage;
   /** Send a state update to the kernel */
-  sendUpdate: (
-    commId: string,
-    state: Record<string, unknown>,
-    buffers?: ArrayBuffer[],
-  ) => void;
+  sendUpdate: (commId: string, state: Record<string, unknown>, buffers?: ArrayBuffer[]) => void;
   /** Send a custom message to the kernel */
-  sendCustom: (
-    commId: string,
-    content: Record<string, unknown>,
-    buffers?: ArrayBuffer[],
-  ) => void;
+  sendCustom: (commId: string, content: Record<string, unknown>, buffers?: ArrayBuffer[]) => void;
   /** Close a comm channel */
   closeComm: (commId: string) => void;
 }
@@ -60,9 +48,7 @@ interface WidgetStoreContextValue {
 // === Context ===
 
 // Export context for use in isolated iframe widget provider
-export const WidgetStoreContext = createContext<WidgetStoreContextValue | null>(
-  null,
-);
+export const WidgetStoreContext = createContext<WidgetStoreContextValue | null>(null);
 
 // === Provider ===
 
@@ -118,11 +104,7 @@ export function WidgetStoreProvider({
     [store, handleMessage, sendMessage, sendUpdate, sendCustom, closeComm],
   );
 
-  return (
-    <WidgetStoreContext.Provider value={value}>
-      {children}
-    </WidgetStoreContext.Provider>
-  );
+  return <WidgetStoreContext.Provider value={value}>{children}</WidgetStoreContext.Provider>;
 }
 
 // === Hooks ===
@@ -142,9 +124,7 @@ export function useWidgetStore(): WidgetStoreContextValue | null {
 export function useWidgetStoreRequired(): WidgetStoreContextValue {
   const ctx = useContext(WidgetStoreContext);
   if (!ctx) {
-    throw new Error(
-      "useWidgetStoreRequired must be used within WidgetStoreProvider",
-    );
+    throw new Error("useWidgetStoreRequired must be used within WidgetStoreProvider");
   }
   return ctx;
 }
@@ -170,15 +150,9 @@ export function useWidgetModels(): Map<string, WidgetModel> {
 export function useWidgetModel(modelId: string): WidgetModel | undefined {
   const { store } = useWidgetStoreRequired();
 
-  const subscribe = useCallback(
-    (callback: () => void) => store.subscribe(callback),
-    [store],
-  );
+  const subscribe = useCallback((callback: () => void) => store.subscribe(callback), [store]);
 
-  const getSnapshot = useCallback(
-    () => store.getModel(modelId),
-    [store, modelId],
-  );
+  const getSnapshot = useCallback(() => store.getModel(modelId), [store, modelId]);
 
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
@@ -191,10 +165,7 @@ export function useWidgetModel(modelId: string): WidgetModel | undefined {
  * const value = useWidgetModelValue<number>(modelId, 'value');
  * const description = useWidgetModelValue<string>(modelId, 'description');
  */
-export function useWidgetModelValue<T = unknown>(
-  modelId: string,
-  key: string,
-): T | undefined {
+export function useWidgetModelValue<T = unknown>(modelId: string, key: string): T | undefined {
   const { store } = useWidgetStoreRequired();
 
   const subscribe = useCallback(
@@ -246,11 +217,7 @@ export function useWasWidgetClosed(modelId: string): boolean {
 // Re-export store-level managers for non-React integrations (e.g. iframe isolation)
 export { createCanvasManagerRouter } from "./canvas-manager-subscriptions";
 export { createLinkManager } from "./link-subscriptions";
-export type {
-  JupyterCommMessage,
-  JupyterMessageHeader,
-  SendMessage,
-} from "./use-comm-router";
+export type { JupyterCommMessage, JupyterMessageHeader, SendMessage } from "./use-comm-router";
 // Re-export types from use-comm-router
 export { useCommRouter } from "./use-comm-router";
 export type { WidgetModel, WidgetStore } from "./widget-store";

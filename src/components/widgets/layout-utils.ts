@@ -140,9 +140,7 @@ export function layoutStateToCSS(
  * Extract container grid CSS properties from a Layout model state.
  * These properties should be applied to grid container elements.
  */
-export function extractContainerGridStyles(
-  state: Record<string, unknown>,
-): CSSProperties {
+export function extractContainerGridStyles(state: Record<string, unknown>): CSSProperties {
   return layoutStateToCSS(state, CONTAINER_GRID_PROPERTIES);
 }
 
@@ -150,9 +148,7 @@ export function extractContainerGridStyles(
  * Extract child placement CSS properties from a Layout model state.
  * These properties should be applied to grid children for positioning.
  */
-export function extractChildGridStyles(
-  state: Record<string, unknown>,
-): CSSProperties {
+export function extractChildGridStyles(state: Record<string, unknown>): CSSProperties {
   return layoutStateToCSS(state, CHILD_GRID_PROPERTIES);
 }
 
@@ -160,18 +156,14 @@ export function extractChildGridStyles(
  * Extract general layout CSS properties from a Layout model state.
  * These can be applied to any element (width, height, margin, etc.).
  */
-export function extractGeneralStyles(
-  state: Record<string, unknown>,
-): CSSProperties {
+export function extractGeneralStyles(state: Record<string, unknown>): CSSProperties {
   return layoutStateToCSS(state, GENERAL_PROPERTIES);
 }
 
 /**
  * Check if a Layout model state has any grid container properties.
  */
-export function hasContainerGridStyles(
-  state: Record<string, unknown>,
-): boolean {
+export function hasContainerGridStyles(state: Record<string, unknown>): boolean {
   for (const key of CONTAINER_GRID_PROPERTIES) {
     const value = state[key];
     if (value !== null && value !== undefined && value !== "") {

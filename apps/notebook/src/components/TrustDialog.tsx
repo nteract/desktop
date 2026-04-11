@@ -24,13 +24,7 @@ interface TrustDialogProps {
 }
 
 /** Package list item with optional typosquat warning */
-function PackageItem({
-  pkg,
-  warning,
-}: {
-  pkg: string;
-  warning?: TyposquatWarning;
-}) {
+function PackageItem({ pkg, warning }: { pkg: string; warning?: TyposquatWarning }) {
   return (
     <div className="flex items-center gap-2 py-1.5 px-2">
       <PackageIcon className="size-4 shrink-0 text-muted-foreground" />
@@ -86,17 +80,11 @@ export function TrustDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent
-        className="max-w-lg"
-        showCloseButton={false}
-        data-testid="trust-dialog"
-      >
+      <DialogContent className="max-w-lg" showCloseButton={false} data-testid="trust-dialog">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <ShieldAlertIcon className="size-5 text-amber-500" />
-            {isSignatureInvalid
-              ? "Dependencies Modified"
-              : "Review Dependencies"}
+            {isSignatureInvalid ? "Dependencies Modified" : "Review Dependencies"}
           </DialogTitle>
           <DialogDescription>
             {isSignatureInvalid
@@ -111,9 +99,7 @@ export function TrustDialog({
           {/* UV (PyPI) Dependencies */}
           {trustInfo && trustInfo.uv_dependencies.length > 0 && (
             <div>
-              <h4 className="text-sm font-medium text-muted-foreground mb-2">
-                PyPI Packages
-              </h4>
+              <h4 className="text-sm font-medium text-muted-foreground mb-2">PyPI Packages</h4>
               <div className="border rounded-md divide-y">
                 {trustInfo.uv_dependencies.map((pkg) => (
                   <PackageItem key={pkg} pkg={pkg} warning={getWarning(pkg)} />
@@ -150,8 +136,8 @@ export function TrustDialog({
                   Potential typosquatting detected
                 </p>
                 <p className="text-amber-700 dark:text-amber-300 mt-1">
-                  Some package names are similar to popular packages. Verify
-                  these are intentional before approving.
+                  Some package names are similar to popular packages. Verify these are intentional
+                  before approving.
                 </p>
               </div>
             </div>
@@ -167,16 +153,8 @@ export function TrustDialog({
           >
             Don't Install
           </Button>
-          <Button
-            onClick={handleApprove}
-            disabled={loading}
-            data-testid="trust-approve-button"
-          >
-            {loading
-              ? "Approving..."
-              : daemonMode
-                ? "Trust & Start"
-                : "Trust & Install"}
+          <Button onClick={handleApprove} disabled={loading} data-testid="trust-approve-button">
+            {loading ? "Approving..." : daemonMode ? "Trust & Start" : "Trust & Install"}
           </Button>
         </DialogFooter>
       </DialogContent>

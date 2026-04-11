@@ -14,10 +14,7 @@ import {
 import { CellContainer } from "@/components/cell/CellContainer";
 import { CompactExecutionButton } from "@/components/cell/CompactExecutionButton";
 import { OutputArea } from "@/components/cell/OutputArea";
-import {
-  CodeMirrorEditor,
-  type CodeMirrorEditorRef,
-} from "@/components/editor/codemirror-editor";
+import { CodeMirrorEditor, type CodeMirrorEditorRef } from "@/components/editor/codemirror-editor";
 import type { SupportedLanguage } from "@/components/editor/languages";
 import { remoteCursorsExtension } from "@/components/editor/remote-cursors";
 import { searchHighlight } from "@/components/editor/search-highlight";
@@ -36,14 +33,8 @@ import {
   useSearchActiveOffset,
   useSearchQuery,
 } from "../lib/cell-ui-state";
-import {
-  onEditorRegistered,
-  onEditorUnregistered,
-} from "../lib/cursor-registry";
-import {
-  registerCellEditor,
-  unregisterCellEditor,
-} from "../lib/editor-registry";
+import { onEditorRegistered, onEditorUnregistered } from "../lib/cursor-registry";
+import { registerCellEditor, unregisterCellEditor } from "../lib/editor-registry";
 import { kernelCompletionExtension } from "../lib/kernel-completion";
 import { openUrl } from "../lib/open-url";
 import { presenceSenderExtension } from "../lib/presence-sender";
@@ -129,16 +120,13 @@ export const CodeCell = memo(function CodeCell({
 
   // Check cell metadata for visibility (JupyterLab convention)
   const isSourceHidden =
-    (cell.metadata?.jupyter as { source_hidden?: boolean })?.source_hidden ===
-    true;
+    (cell.metadata?.jupyter as { source_hidden?: boolean })?.source_hidden === true;
   const isOutputsHidden =
-    (cell.metadata?.jupyter as { outputs_hidden?: boolean })?.outputs_hidden ===
-    true;
+    (cell.metadata?.jupyter as { outputs_hidden?: boolean })?.outputs_hidden === true;
 
   // Fully collapsed when source is hidden AND there's nothing else to show
   // (outputs explicitly hidden, or no outputs at all).
-  const bothHidden =
-    isSourceHidden && (isOutputsHidden || cell.outputs.length === 0);
+  const bothHidden = isSourceHidden && (isOutputsHidden || cell.outputs.length === 0);
 
   // Register EditorView with the cursor registry for remote cursor rendering.
   // We use a ref + polling approach because the EditorView is created async
@@ -333,9 +321,7 @@ export const CodeCell = memo(function CodeCell({
                   </span>
                   {hiddenGroupErrorCount ? (
                     <span className="text-destructive font-medium">
-                      {hiddenGroupErrorCount === 1
-                        ? "1 error"
-                        : `${hiddenGroupErrorCount} errors`}
+                      {hiddenGroupErrorCount === 1 ? "1 error" : `${hiddenGroupErrorCount} errors`}
                     </span>
                   ) : null}
                   <ChevronRight className="h-3 w-3" />
@@ -398,9 +384,7 @@ export const CodeCell = memo(function CodeCell({
           )
         }
         outputRightGutterContent={
-          onToggleOutputsHidden &&
-          cell.outputs.length > 0 &&
-          !isOutputsHidden ? (
+          onToggleOutputsHidden && cell.outputs.length > 0 && !isOutputsHidden ? (
             <button
               type="button"
               tabIndex={-1}

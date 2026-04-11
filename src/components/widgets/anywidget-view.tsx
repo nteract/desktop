@@ -275,16 +275,13 @@ export function createAFMModelProxy(
 
       // Handle msg:custom event by subscribing to store custom messages
       if (event === "msg:custom" && !customMessageUnsubscriber) {
-        customMessageUnsubscriber = store.subscribeToCustomMessage(
-          model.id,
-          (content, buffers) => {
-            // Notify all msg:custom listeners
-            const msgListeners = listeners.get("msg:custom");
-            if (msgListeners) {
-              msgListeners.forEach((cb) => cb(content, buffers));
-            }
-          },
-        );
+        customMessageUnsubscriber = store.subscribeToCustomMessage(model.id, (content, buffers) => {
+          // Notify all msg:custom listeners
+          const msgListeners = listeners.get("msg:custom");
+          if (msgListeners) {
+            msgListeners.forEach((cb) => cb(content, buffers));
+          }
+        });
       }
     },
 
@@ -315,10 +312,7 @@ export function createAFMModelProxy(
 
       // Clean up custom message subscription if no listeners remain
       if (event === "msg:custom") {
-        if (
-          !listeners.has("msg:custom") ||
-          listeners.get("msg:custom")?.size === 0
-        ) {
+        if (!listeners.has("msg:custom") || listeners.get("msg:custom")?.size === 0) {
           if (customMessageUnsubscriber) {
             customMessageUnsubscriber();
             customMessageUnsubscriber = null;
@@ -548,33 +542,21 @@ export function AnyWidgetView({ modelId, className }: AnyWidgetViewProps) {
 
   if (error) {
     return (
-      <div
-        className={className}
-        data-widget-id={modelId}
-        data-widget-error="true"
-      >
-        <div style={{ color: "red", padding: "8px" }}>
-          Widget error: {error.message}
-        </div>
+      <div className={className} data-widget-id={modelId} data-widget-error="true">
+        <div style={{ color: "red", padding: "8px" }}>Widget error: {error.message}</div>
       </div>
     );
   }
 
   if (!modelExists) {
     return (
-      <div
-        className={className}
-        data-widget-id={modelId}
-        data-widget-loading="true"
-      >
+      <div className={className} data-widget-id={modelId} data-widget-loading="true">
         Loading widget...
       </div>
     );
   }
 
-  return (
-    <div ref={containerRef} className={className} data-widget-id={modelId} />
-  );
+  return <div ref={containerRef} className={className} data-widget-id={modelId} />;
 }
 
 // === Utility Hook ===
@@ -583,7 +565,5 @@ export function AnyWidgetView({ modelId, className }: AnyWidgetViewProps) {
  * Check if a model is an anywidget (has _esm field).
  */
 export function isAnyWidget(model: WidgetModel): boolean {
-  return (
-    typeof model.state._esm === "string" || model.modelModule === "anywidget"
-  );
+  return typeof model.state._esm === "string" || model.modelModule === "anywidget";
 }

@@ -9,10 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import type { WidgetComponentProps } from "../widget-registry";
-import {
-  useWidgetModelValue,
-  useWidgetStoreRequired,
-} from "../widget-store-context";
+import { useWidgetModelValue, useWidgetStoreRequired } from "../widget-store-context";
 
 export function PasswordWidget({ modelId, className }: WidgetComponentProps) {
   const { sendUpdate, sendCustom } = useWidgetStoreRequired();
@@ -22,8 +19,7 @@ export function PasswordWidget({ modelId, className }: WidgetComponentProps) {
   const description = useWidgetModelValue<string>(modelId, "description");
   const placeholder = useWidgetModelValue<string>(modelId, "placeholder") ?? "";
   const disabled = useWidgetModelValue<boolean>(modelId, "disabled") ?? false;
-  const continuousUpdate =
-    useWidgetModelValue<boolean>(modelId, "continuous_update") ?? true;
+  const continuousUpdate = useWidgetModelValue<boolean>(modelId, "continuous_update") ?? true;
 
   // Local state for non-continuous updates
   const [localValue, setLocalValue] = useState(value);

@@ -9,10 +9,7 @@ import { cn } from "@/lib/utils";
 import type { WidgetComponentProps } from "../widget-registry";
 import { useWidgetModelValue } from "../widget-store-context";
 
-export function ControllerAxisWidget({
-  modelId,
-  className,
-}: WidgetComponentProps) {
+export function ControllerAxisWidget({ modelId, className }: WidgetComponentProps) {
   // Axis value ranges from -1 to 1
   const value = useWidgetModelValue<number>(modelId, "value") ?? 0;
 

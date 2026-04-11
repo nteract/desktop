@@ -1,10 +1,6 @@
 import { AlertCircle, ChevronDown, Monitor, Moon, Sun, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -15,13 +11,7 @@ import {
   useSyncedTheme,
 } from "@/hooks/useSyncedSettings";
 import { cn } from "@/lib/utils";
-import {
-  CondaIcon,
-  DenoIcon,
-  PixiIcon,
-  PythonIcon,
-  UvIcon,
-} from "../src/components/icons";
+import { CondaIcon, DenoIcon, PixiIcon, PythonIcon, UvIcon } from "../src/components/icons";
 
 /** Format seconds into human-readable duration */
 function formatDuration(secs: number): string {
@@ -87,9 +77,7 @@ function KeepAliveSlider({
       </div>
       <div className="space-y-1">
         <div className="flex items-center justify-between">
-          <span className="text-xs font-medium text-muted-foreground">
-            Keep Alive
-          </span>
+          <span className="text-xs font-medium text-muted-foreground">Keep Alive</span>
           <span className="text-xs font-medium text-foreground tabular-nums">
             {formatDuration(localValue)}
           </span>
@@ -180,11 +168,7 @@ function PackageBadgeInput({
           if (e.key === "Enter") {
             e.preventDefault();
             addPackage(inputValue);
-          } else if (
-            e.key === "Backspace" &&
-            inputValue === "" &&
-            packages.length > 0
-          ) {
+          } else if (e.key === "Backspace" && inputValue === "" && packages.length > 0) {
             removePackage(packages.length - 1);
           }
         }}
@@ -284,9 +268,7 @@ export default function App() {
           </span>
           <div className="space-y-1">
             <div className="flex items-center gap-3">
-              <span className="text-sm text-muted-foreground">
-                Default Runtime
-              </span>
+              <span className="text-sm text-muted-foreground">Default Runtime</span>
               <div className="flex items-center gap-1 rounded-md border bg-muted/50 p-0.5">
                 <button
                   type="button"
@@ -320,15 +302,9 @@ export default function App() {
               <div className="flex items-start gap-2 text-xs text-amber-700 dark:text-amber-400 mt-1">
                 <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
                 <span>
-                  <span className="font-medium">
-                    &ldquo;{defaultRuntime}&rdquo;
-                  </span>{" "}
-                  is not a recognized runtime. Click Python or Deno above, or
-                  edit{" "}
-                  <code className="rounded bg-amber-500/20 px-1">
-                    settings.json
-                  </code>
-                  .
+                  <span className="font-medium">&ldquo;{defaultRuntime}&rdquo;</span> is not a
+                  recognized runtime. Click Python or Deno above, or edit{" "}
+                  <code className="rounded bg-amber-500/20 px-1">settings.json</code>.
                 </span>
               </div>
             )}
@@ -345,10 +321,7 @@ export default function App() {
               Applied to new notebooks without project-based dependencies
             </p>
           </div>
-          <div
-            className="grid gap-3"
-            style={{ gridTemplateColumns: "auto 1fr" }}
-          >
+          <div className="grid gap-3" style={{ gridTemplateColumns: "auto 1fr" }}>
             {/* Default Python Env */}
             <span className="text-sm text-muted-foreground whitespace-nowrap self-center text-right">
               Environment
@@ -398,15 +371,9 @@ export default function App() {
               <div className="flex items-start gap-2 text-xs text-amber-700 dark:text-amber-400 col-span-2 mt-1">
                 <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
                 <span>
-                  <span className="font-medium">
-                    &ldquo;{defaultPythonEnv}&rdquo;
-                  </span>{" "}
-                  is not a recognized environment. Click uv, Conda, or Pixi above, or
-                  edit{" "}
-                  <code className="rounded bg-amber-500/20 px-1">
-                    settings.json
-                  </code>
-                  .
+                  <span className="font-medium">&ldquo;{defaultPythonEnv}&rdquo;</span> is not a
+                  recognized environment. Click uv, Conda, or Pixi above, or edit{" "}
+                  <code className="rounded bg-amber-500/20 px-1">settings.json</code>.
                 </span>
               </div>
             )}
@@ -465,22 +432,12 @@ export default function App() {
             </CollapsibleTrigger>
             <CollapsibleContent className="space-y-3">
               {FEATURE_FLAGS.map((flag) => (
-                <div
-                  key={flag.id}
-                  className="flex items-center justify-between pl-5"
-                >
+                <div key={flag.id} className="flex items-center justify-between pl-5">
                   <div className="space-y-0.5">
-                    <span className="text-sm text-foreground">
-                      {flag.label}
-                    </span>
-                    <p className="text-[10px] text-muted-foreground/70">
-                      {flag.description}
-                    </p>
+                    <span className="text-sm text-foreground">{flag.label}</span>
+                    <p className="text-[10px] text-muted-foreground/70">{flag.description}</p>
                   </div>
-                  <Switch
-                    checked={false}
-                    onCheckedChange={() => {}}
-                  />
+                  <Switch checked={false} onCheckedChange={() => {}} />
                 </div>
               ))}
             </CollapsibleContent>

@@ -111,17 +111,9 @@ export interface UseCommRouterReturn {
   /** Handle incoming Jupyter comm messages */
   handleMessage: (msg: JupyterCommMessage) => void;
   /** Send a state update to the kernel */
-  sendUpdate: (
-    commId: string,
-    state: Record<string, unknown>,
-    buffers?: ArrayBuffer[],
-  ) => void;
+  sendUpdate: (commId: string, state: Record<string, unknown>, buffers?: ArrayBuffer[]) => void;
   /** Send a custom message to the kernel */
-  sendCustom: (
-    commId: string,
-    content: Record<string, unknown>,
-    buffers?: ArrayBuffer[],
-  ) => void;
+  sendCustom: (commId: string, content: Record<string, unknown>, buffers?: ArrayBuffer[]) => void;
   /** Close a comm channel */
   closeComm: (commId: string) => void;
 }
@@ -135,10 +127,7 @@ const SESSION_ID = crypto.randomUUID();
  * Create a complete Jupyter message header with all fields.
  * All fields are required for compatibility with strongly-typed backends.
  */
-function createHeader(
-  msgType: string,
-  username: string,
-): FullJupyterMessageHeader {
+function createHeader(msgType: string, username: string): FullJupyterMessageHeader {
   return {
     msg_id: crypto.randomUUID(),
     msg_type: msgType,
@@ -207,10 +196,7 @@ function createCustomMessage(
  * Create a comm_close message.
  * Includes all required fields for Jupyter protocol compliance.
  */
-function createCloseMessage(
-  commId: string,
-  username: string,
-): OutgoingJupyterCommMessage {
+function createCloseMessage(commId: string, username: string): OutgoingJupyterCommMessage {
   return {
     header: createHeader("comm_close", username),
     parent_header: null,
@@ -326,11 +312,7 @@ export function useCommRouter({
    * Also applies optimistic update to local store for immediate UI response.
    */
   const sendUpdate = useCallback(
-    (
-      commId: string,
-      state: Record<string, unknown>,
-      buffers?: ArrayBuffer[],
-    ) => {
+    (commId: string, state: Record<string, unknown>, buffers?: ArrayBuffer[]) => {
       // When a manager is available, delegate to it for debounced CRDT
       // writes + echo suppression. Otherwise fall back to direct write
       // (used in iframe context where no manager exists).
@@ -345,9 +327,7 @@ export function useCommRouter({
       if (writer && !buffers?.length) {
         writer(commId, state);
       } else {
-        sendMessageRef.current(
-          createUpdateMessage(commId, state, buffers, usernameRef.current),
-        );
+        sendMessageRef.current(createUpdateMessage(commId, state, buffers, usernameRef.current));
       }
     },
     [],
@@ -357,14 +337,8 @@ export function useCommRouter({
    * Send a custom message to the kernel.
    */
   const sendCustom = useCallback(
-    (
-      commId: string,
-      content: Record<string, unknown>,
-      buffers?: ArrayBuffer[],
-    ) => {
-      sendMessageRef.current(
-        createCustomMessage(commId, content, buffers, usernameRef.current),
-      );
+    (commId: string, content: Record<string, unknown>, buffers?: ArrayBuffer[]) => {
+      sendMessageRef.current(createCustomMessage(commId, content, buffers, usernameRef.current));
     },
     [],
   );

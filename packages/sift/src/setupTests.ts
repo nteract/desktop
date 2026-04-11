@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { vi } from "vitest";
+import { vi } from "vite-plus/test";
 
 // --- Canvas 2D context stubs (jsdom doesn't implement canvas) ---
 

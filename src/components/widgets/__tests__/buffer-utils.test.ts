@@ -5,7 +5,7 @@
  * which is critical for widgets that work with images, audio, and other binary data.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   applyBufferPaths,
   arrayBufferToBase64,
@@ -45,11 +45,7 @@ describe("applyBufferPaths", () => {
   it("applies buffer at nested path", () => {
     const data = { nested: { deep: { value: null } } };
     const buffer = new ArrayBuffer(8);
-    const result = applyBufferPaths(
-      data,
-      [["nested", "deep", "value"]],
-      [buffer],
-    );
+    const result = applyBufferPaths(data, [["nested", "deep", "value"]], [buffer]);
     expect((result.nested as Record<string, unknown>).deep).toEqual({
       value: buffer,
     });
@@ -61,20 +57,14 @@ describe("applyBufferPaths", () => {
     const result = applyBufferPaths(data, [["a", "b", "c"]], [buffer]);
     expect(result.a).toBeDefined();
     expect((result.a as Record<string, unknown>).b).toBeDefined();
-    expect(
-      ((result.a as Record<string, unknown>).b as Record<string, unknown>).c,
-    ).toBe(buffer);
+    expect(((result.a as Record<string, unknown>).b as Record<string, unknown>).c).toBe(buffer);
   });
 
   it("applies multiple buffers to multiple paths", () => {
     const data = { first: null, second: null };
     const buffer1 = new ArrayBuffer(4);
     const buffer2 = new ArrayBuffer(8);
-    const result = applyBufferPaths(
-      data,
-      [["first"], ["second"]],
-      [buffer1, buffer2],
-    );
+    const result = applyBufferPaths(data, [["first"], ["second"]], [buffer1, buffer2]);
     expect(result.first).toBe(buffer1);
     expect(result.second).toBe(buffer2);
   });
@@ -415,9 +405,7 @@ describe("roundtrip: applyBufferPaths and extractBuffers", () => {
     expect(restored.nested).toEqual({ data: extractedBuffers[0] });
 
     // Verify buffer contents preserved
-    const restoredView = new Uint8Array(
-      (restored.nested as Record<string, ArrayBuffer>).data,
-    );
+    const restoredView = new Uint8Array((restored.nested as Record<string, ArrayBuffer>).data);
     expect(Array.from(restoredView)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
   });
 

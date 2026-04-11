@@ -124,7 +124,5 @@ export interface SyncableHandle {
    */
   resolve_comm_state?(
     comm_id: string,
-  ):
-    | { state: Record<string, unknown>; buffer_paths: string[][] }
-    | undefined;
+  ): { state: Record<string, unknown>; buffer_paths: string[][] } | undefined;
 }

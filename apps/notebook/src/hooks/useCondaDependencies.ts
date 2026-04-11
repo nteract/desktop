@@ -51,10 +51,8 @@ export function useCondaDependencies() {
   const [loading, setLoading] = useState(false);
 
   // environment.yml detection state
-  const [environmentYmlInfo, setEnvironmentYmlInfo] =
-    useState<EnvironmentYmlInfo | null>(null);
-  const [environmentYmlDeps, setEnvironmentYmlDeps] =
-    useState<EnvironmentYmlDeps | null>(null);
+  const [environmentYmlInfo, setEnvironmentYmlInfo] = useState<EnvironmentYmlInfo | null>(null);
+  const [environmentYmlDeps, setEnvironmentYmlDeps] = useState<EnvironmentYmlDeps | null>(null);
 
   // Reactive read from the WASM Automerge doc via useSyncExternalStore.
   // Re-renders automatically when the doc changes (bootstrap, sync, writes).
@@ -70,9 +68,7 @@ export function useCondaDependencies() {
   // Load full environment.yml dependencies
   const loadEnvironmentYmlDeps = useCallback(async () => {
     try {
-      const deps = await invoke<EnvironmentYmlDeps | null>(
-        "get_environment_yml_dependencies",
-      );
+      const deps = await invoke<EnvironmentYmlDeps | null>("get_environment_yml_dependencies");
       setEnvironmentYmlDeps(deps);
     } catch (e) {
       logger.error("Failed to load environment.yml dependencies:", e);
@@ -81,9 +77,7 @@ export function useCondaDependencies() {
 
   // Detect environment.yml on mount
   useEffect(() => {
-    invoke<EnvironmentYmlInfo | null>("detect_environment_yml").then(
-      setEnvironmentYmlInfo,
-    );
+    invoke<EnvironmentYmlInfo | null>("detect_environment_yml").then(setEnvironmentYmlInfo);
   }, []);
 
   // Load environment.yml deps when we detect one
@@ -177,8 +171,7 @@ export function useCondaDependencies() {
     [resignTrust],
   );
 
-  const hasDependencies =
-    dependencies !== null && dependencies.dependencies.length > 0;
+  const hasDependencies = dependencies !== null && dependencies.dependencies.length > 0;
 
   // True if conda metadata exists (even with empty deps)
   const isCondaConfigured = dependencies !== null;

@@ -3,10 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { SyncableHandle } from "runtimed";
 import { DEFAULT_MIME_PRIORITY, SyncEngine } from "runtimed";
 import { concatMap, from, switchMap } from "rxjs";
-import {
-  needsPlugin,
-  preWarmForMimes,
-} from "@/components/isolated/iframe-libraries";
+import { needsPlugin, preWarmForMimes } from "@/components/isolated/iframe-libraries";
 import { getBlobPort, refreshBlobPort } from "../lib/blob-port";
 import { materializeChangeset } from "../lib/frame-pipeline";
 import { logger } from "../lib/logger";
@@ -23,30 +20,11 @@ import {
   updateNotebookCells,
   useCellIds,
 } from "../lib/notebook-cells";
-import {
-  cloneNotebookFile,
-  openNotebookFile,
-  saveNotebook,
-} from "../lib/notebook-file-ops";
-import {
-  emitBroadcast,
-  emitPresence,
-  subscribeBroadcast,
-} from "../lib/notebook-frame-bus";
-import {
-  notifyMetadataChanged,
-  setNotebookHandle,
-} from "../lib/notebook-metadata";
-import {
-  type PoolState,
-  resetPoolState,
-  setPoolState,
-} from "../lib/pool-state";
-import {
-  type RuntimeState,
-  resetRuntimeState,
-  setRuntimeState,
-} from "../lib/runtime-state";
+import { cloneNotebookFile, openNotebookFile, saveNotebook } from "../lib/notebook-file-ops";
+import { emitBroadcast, emitPresence, subscribeBroadcast } from "../lib/notebook-frame-bus";
+import { notifyMetadataChanged, setNotebookHandle } from "../lib/notebook-metadata";
+import { type PoolState, resetPoolState, setPoolState } from "../lib/pool-state";
+import { type RuntimeState, resetRuntimeState, setRuntimeState } from "../lib/runtime-state";
 import { fromTauriEvent } from "../lib/tauri-rx";
 import { TauriTransport } from "../lib/tauri-transport";
 import type { DaemonBroadcast, JupyterOutput } from "../types";
@@ -125,10 +103,7 @@ export function useAutomergeNotebook() {
     for (const c of newCells) {
       if (c.cell_type === "code") {
         for (const output of c.outputs) {
-          if (
-            output.output_type === "execute_result" ||
-            output.output_type === "display_data"
-          ) {
+          if (output.output_type === "execute_result" || output.output_type === "display_data") {
             for (const mime of Object.keys(output.data)) {
               if (needsPlugin(mime)) pluginMimes.push(mime);
             }
@@ -164,9 +139,7 @@ export function useAutomergeNotebook() {
       const handle = handleRef.current;
       const engine = engineRef.current;
       if (!handle || !engine) {
-        logger.debug(
-          "[automerge-notebook] commitMutation skipped: no handle/engine",
-        );
+        logger.debug("[automerge-notebook] commitMutation skipped: no handle/engine");
         return false;
       }
       if (!mutate(handle)) return false;
@@ -183,9 +156,7 @@ export function useAutomergeNotebook() {
   const bootstrap = useCallback(async () => {
     await wasmReady;
 
-    const handle = NotebookHandle.create_empty_with_actor(
-      `human:${sessionIdRef.current}`,
-    );
+    const handle = NotebookHandle.create_empty_with_actor(`human:${sessionIdRef.current}`);
 
     handleRef.current?.free();
     handleRef.current = handle;
@@ -249,10 +220,7 @@ export function useAutomergeNotebook() {
             logger.info("[automerge-notebook] Initial materialization done");
           })
           .catch((err: unknown) => {
-            logger.warn(
-              "[automerge-notebook] initial materialize failed:",
-              err,
-            );
+            logger.warn("[automerge-notebook] initial materialize failed:", err);
             setIsLoading(false);
           });
       } else {
@@ -272,10 +240,7 @@ export function useAutomergeNotebook() {
               materializeCells,
               outputCache: outputCacheRef.current,
             }).catch((err: unknown) =>
-              logger.warn(
-                "[automerge-notebook] materialize changeset failed:",
-                err,
-              ),
+              logger.warn("[automerge-notebook] materialize changeset failed:", err),
             ),
           ),
         ),
@@ -283,14 +248,10 @@ export function useAutomergeNotebook() {
       .subscribe();
 
     // Broadcasts → frame bus.
-    const broadcastsSub = engine.broadcasts$.subscribe((payload) =>
-      emitBroadcast(payload),
-    );
+    const broadcastsSub = engine.broadcasts$.subscribe((payload) => emitBroadcast(payload));
 
     // Presence → frame bus.
-    const presenceSub = engine.presence$.subscribe((payload) =>
-      emitPresence(payload),
-    );
+    const presenceSub = engine.presence$.subscribe((payload) => emitPresence(payload));
 
     // Runtime state → store.
     const runtimeStateSub = engine.runtimeState$.subscribe((state) =>
@@ -298,9 +259,7 @@ export function useAutomergeNotebook() {
     );
 
     // Pool state → store.
-    const poolStateSub = engine.poolState$.subscribe((state) =>
-      setPoolState(state as PoolState),
-    );
+    const poolStateSub = engine.poolState$.subscribe((state) => setPoolState(state as PoolState));
 
     // ── Bootstrap ─────────────────────────────────────────────────
 
@@ -326,10 +285,7 @@ export function useAutomergeNotebook() {
           setIsLoading(true);
           return from(
             bootstrap().catch((err: unknown) => {
-              logger.error(
-                "[automerge-notebook] lifecycle bootstrap failed:",
-                err,
-              );
+              logger.error("[automerge-notebook] lifecycle bootstrap failed:", err);
             }),
           );
         }),
@@ -338,18 +294,18 @@ export function useAutomergeNotebook() {
 
     // ── Bulk output clearing ──────────────────────────────────────
 
-    const clearOutputsSub = fromTauriEvent<string[]>(
-      "cells:outputs_cleared",
-    ).subscribe((payload) => {
-      const clearedIds = new Set(payload);
-      updateNotebookCells((prev) =>
-        prev.map((c) =>
-          clearedIds.has(c.id) && c.cell_type === "code"
-            ? { ...c, outputs: [], execution_count: null }
-            : c,
-        ),
-      );
-    });
+    const clearOutputsSub = fromTauriEvent<string[]>("cells:outputs_cleared").subscribe(
+      (payload) => {
+        const clearedIds = new Set(payload);
+        updateNotebookCells((prev) =>
+          prev.map((c) =>
+            clearedIds.has(c.id) && c.cell_type === "code"
+              ? { ...c, outputs: [], execution_count: null }
+              : c,
+          ),
+        );
+      },
+    );
 
     return () => {
       cancelled = true;
@@ -450,9 +406,7 @@ export function useAutomergeNotebook() {
           cell_type: cellType,
           id: cellId,
           source: "",
-          ...(cellType === "code"
-            ? { outputs: [], execution_count: null }
-            : {}),
+          ...(cellType === "code" ? { outputs: [], execution_count: null } : {}),
           metadata: {},
         }
       );
@@ -542,8 +496,7 @@ export function useAutomergeNotebook() {
           let changed = false;
           const updatedOutputs = c.outputs.map((output) => {
             if (
-              (output.output_type === "display_data" ||
-                output.output_type === "execute_result") &&
+              (output.output_type === "display_data" || output.output_type === "execute_result") &&
               output.display_id === displayId
             ) {
               changed = true;
@@ -558,14 +511,9 @@ export function useAutomergeNotebook() {
     [],
   );
 
-  const applyExecutionCountFromDaemon = useCallback(
-    (cellId: string, count: number) => {
-      updateCellById(cellId, (c) =>
-        c.cell_type === "code" ? { ...c, execution_count: count } : c,
-      );
-    },
-    [],
-  );
+  const applyExecutionCountFromDaemon = useCallback((cellId: string, count: number) => {
+    updateCellById(cellId, (c) => (c.cell_type === "code" ? { ...c, execution_count: count } : c));
+  }, []);
 
   // ── Public interface ───────────────────────────────────────────────
 

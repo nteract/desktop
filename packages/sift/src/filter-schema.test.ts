@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   columnFiltersToPredicates,
   type ExplorerState,
@@ -13,33 +13,27 @@ import type { TableEngineState } from "./table";
 
 describe("predicateToSQL", () => {
   it("between", () => {
-    expect(
-      predicateToSQL({ column: "score", op: "between", value: [50, 80] }),
-    ).toBe('"score" BETWEEN 50 AND 80');
+    expect(predicateToSQL({ column: "score", op: "between", value: [50, 80] })).toBe(
+      '"score" BETWEEN 50 AND 80',
+    );
   });
 
   it("eq string", () => {
-    expect(predicateToSQL({ column: "name", op: "eq", value: "Alice" })).toBe(
-      `"name" = 'Alice'`,
-    );
+    expect(predicateToSQL({ column: "name", op: "eq", value: "Alice" })).toBe(`"name" = 'Alice'`);
   });
 
   it("eq null → IS NULL", () => {
-    expect(predicateToSQL({ column: "x", op: "eq", value: null })).toBe(
-      '"x" IS NULL',
-    );
+    expect(predicateToSQL({ column: "x", op: "eq", value: null })).toBe('"x" IS NULL');
   });
 
   it("neq null → IS NOT NULL", () => {
-    expect(predicateToSQL({ column: "x", op: "neq", value: null })).toBe(
-      '"x" IS NOT NULL',
-    );
+    expect(predicateToSQL({ column: "x", op: "neq", value: null })).toBe('"x" IS NOT NULL');
   });
 
   it("in", () => {
-    expect(
-      predicateToSQL({ column: "dept", op: "in", value: ["A", "B"] }),
-    ).toBe(`"dept" IN ('A', 'B')`);
+    expect(predicateToSQL({ column: "dept", op: "in", value: ["A", "B"] })).toBe(
+      `"dept" IN ('A', 'B')`,
+    );
   });
 
   it("not_in", () => {
@@ -50,26 +44,20 @@ describe("predicateToSQL", () => {
 
   it("gt / gte / lt / lte", () => {
     expect(predicateToSQL({ column: "x", op: "gt", value: 5 })).toBe('"x" > 5');
-    expect(predicateToSQL({ column: "x", op: "gte", value: 5 })).toBe(
-      '"x" >= 5',
-    );
+    expect(predicateToSQL({ column: "x", op: "gte", value: 5 })).toBe('"x" >= 5');
     expect(predicateToSQL({ column: "x", op: "lt", value: 5 })).toBe('"x" < 5');
-    expect(predicateToSQL({ column: "x", op: "lte", value: 5 })).toBe(
-      '"x" <= 5',
-    );
+    expect(predicateToSQL({ column: "x", op: "lte", value: 5 })).toBe('"x" <= 5');
   });
 
   it("is_null / is_not_null", () => {
     expect(predicateToSQL({ column: "x", op: "is_null" })).toBe('"x" IS NULL');
-    expect(predicateToSQL({ column: "x", op: "is_not_null" })).toBe(
-      '"x" IS NOT NULL',
-    );
+    expect(predicateToSQL({ column: "x", op: "is_not_null" })).toBe('"x" IS NOT NULL');
   });
 
   it("contains", () => {
-    expect(
-      predicateToSQL({ column: "name", op: "contains", value: "test" }),
-    ).toBe(`"name" LIKE '%test%'`);
+    expect(predicateToSQL({ column: "name", op: "contains", value: "test" })).toBe(
+      `"name" LIKE '%test%'`,
+    );
   });
 
   it("escapes single quotes in string values", () => {
@@ -79,9 +67,7 @@ describe("predicateToSQL", () => {
   });
 
   it("escapes double quotes in column names", () => {
-    expect(predicateToSQL({ column: 'col"name', op: "eq", value: 1 })).toBe(
-      `"col""name" = 1`,
-    );
+    expect(predicateToSQL({ column: 'col"name', op: "eq", value: 1 })).toBe(`"col""name" = 1`);
   });
 
   it("compound and", () => {
@@ -107,9 +93,9 @@ describe("predicateToSQL", () => {
   });
 
   it("not", () => {
-    expect(
-      predicateToSQL({ op: "not", arg: { column: "x", op: "eq", value: 1 } }),
-    ).toBe('NOT ("x" = 1)');
+    expect(predicateToSQL({ op: "not", arg: { column: "x", op: "eq", value: 1 } })).toBe(
+      'NOT ("x" = 1)',
+    );
   });
 
   it("nested compound", () => {
@@ -129,27 +115,23 @@ describe("predicateToSQL", () => {
 
 describe("predicateToPandas", () => {
   it("between", () => {
-    expect(
-      predicateToPandas({ column: "score", op: "between", value: [50, 80] }),
-    ).toBe('df["score"].between(50, 80)');
+    expect(predicateToPandas({ column: "score", op: "between", value: [50, 80] })).toBe(
+      'df["score"].between(50, 80)',
+    );
   });
 
   it("eq null → isna()", () => {
-    expect(predicateToPandas({ column: "x", op: "eq", value: null })).toBe(
-      'df["x"].isna()',
-    );
+    expect(predicateToPandas({ column: "x", op: "eq", value: null })).toBe('df["x"].isna()');
   });
 
   it("eq boolean → Python True/False", () => {
-    expect(predicateToPandas({ column: "v", op: "eq", value: true })).toBe(
-      '(df["v"] == True)',
-    );
+    expect(predicateToPandas({ column: "v", op: "eq", value: true })).toBe('(df["v"] == True)');
   });
 
   it("in", () => {
-    expect(
-      predicateToPandas({ column: "d", op: "in", value: ["A", "B"] }),
-    ).toBe('df["d"].isin(["A", "B"])');
+    expect(predicateToPandas({ column: "d", op: "in", value: ["A", "B"] })).toBe(
+      'df["d"].isin(["A", "B"])',
+    );
   });
 
   it("not_in", () => {
@@ -159,15 +141,15 @@ describe("predicateToPandas", () => {
   });
 
   it("contains", () => {
-    expect(
-      predicateToPandas({ column: "n", op: "contains", value: "test" }),
-    ).toBe('df["n"].str.contains("test")');
+    expect(predicateToPandas({ column: "n", op: "contains", value: "test" })).toBe(
+      'df["n"].str.contains("test")',
+    );
   });
 
   it("custom dfName", () => {
-    expect(
-      predicateToPandas({ column: "x", op: "gt", value: 5 }, "my_df"),
-    ).toBe('(my_df["x"] > 5)');
+    expect(predicateToPandas({ column: "x", op: "gt", value: 5 }, "my_df")).toBe(
+      '(my_df["x"] > 5)',
+    );
   });
 
   it("compound and", () => {
@@ -182,35 +164,33 @@ describe("predicateToPandas", () => {
   });
 
   it("not", () => {
-    expect(
-      predicateToPandas({ op: "not", arg: { column: "x", op: "is_null" } }),
-    ).toBe('~(df["x"].isna())');
+    expect(predicateToPandas({ op: "not", arg: { column: "x", op: "is_null" } })).toBe(
+      '~(df["x"].isna())',
+    );
   });
 });
 
 describe("predicateToEnglish", () => {
   it("between", () => {
-    expect(
-      predicateToEnglish({ column: "score", op: "between", value: [50, 80] }),
-    ).toBe("score is between 50 and 80");
-  });
-
-  it("eq null", () => {
-    expect(predicateToEnglish({ column: "x", op: "eq", value: null })).toBe(
-      "x is null",
+    expect(predicateToEnglish({ column: "score", op: "between", value: [50, 80] })).toBe(
+      "score is between 50 and 80",
     );
   });
 
+  it("eq null", () => {
+    expect(predicateToEnglish({ column: "x", op: "eq", value: null })).toBe("x is null");
+  });
+
   it("in", () => {
-    expect(
-      predicateToEnglish({ column: "dept", op: "in", value: ["A", "B"] }),
-    ).toBe("dept is one of A, B");
+    expect(predicateToEnglish({ column: "dept", op: "in", value: ["A", "B"] })).toBe(
+      "dept is one of A, B",
+    );
   });
 
   it("contains", () => {
-    expect(
-      predicateToEnglish({ column: "name", op: "contains", value: "test" }),
-    ).toBe('name contains "test"');
+    expect(predicateToEnglish({ column: "name", op: "contains", value: "test" })).toBe(
+      'name contains "test"',
+    );
   });
 
   it("compound and", () => {
@@ -234,9 +214,7 @@ describe("columnFiltersToPredicates", () => {
       null,
       null,
     ]);
-    expect(result).toEqual([
-      { column: "score", op: "between", value: [10, 50] },
-    ]);
+    expect(result).toEqual([{ column: "score", op: "between", value: [10, 50] }]);
   });
 
   it("set → in", () => {
@@ -249,11 +227,7 @@ describe("columnFiltersToPredicates", () => {
   });
 
   it("boolean → eq", () => {
-    const result = columnFiltersToPredicates(cols, [
-      null,
-      null,
-      { kind: "boolean", value: true },
-    ]);
+    const result = columnFiltersToPredicates(cols, [null, null, { kind: "boolean", value: true }]);
     expect(result).toEqual([{ column: "verified", op: "eq", value: true }]);
   });
 
@@ -317,16 +291,12 @@ describe("engineStateToExplorerState", () => {
   it("converts range filter to between predicate", () => {
     const state: TableEngineState = {
       sort: null,
-      filters: [
-        { column: "score", filter: { kind: "range", min: 10, max: 50 } },
-      ],
+      filters: [{ column: "score", filter: { kind: "range", min: 10, max: 50 } }],
       filteredCount: 30,
       totalCount: 100,
     };
     const result = engineStateToExplorerState(state);
-    expect(result.filters).toEqual([
-      { column: "score", op: "between", value: [10, 50] },
-    ]);
+    expect(result.filters).toEqual([{ column: "score", op: "between", value: [10, 50] }]);
   });
 
   it("converts set filter to in predicate", () => {
@@ -356,9 +326,7 @@ describe("engineStateToExplorerState", () => {
       totalCount: 100,
     };
     const result = engineStateToExplorerState(state);
-    expect(result.filters).toEqual([
-      { column: "active", op: "eq", value: true },
-    ]);
+    expect(result.filters).toEqual([{ column: "active", op: "eq", value: true }]);
   });
 
   it("round-trips to SQL", () => {
@@ -380,9 +348,7 @@ describe("engineStateToExplorerState", () => {
   it("round-trips to JSON", () => {
     const state: TableEngineState = {
       sort: { column: "id", direction: "asc" },
-      filters: [
-        { column: "dept", filter: { kind: "set", values: new Set(["Eng"]) } },
-      ],
+      filters: [{ column: "dept", filter: { kind: "set", values: new Set(["Eng"]) } }],
       filteredCount: 10,
       totalCount: 50,
     };

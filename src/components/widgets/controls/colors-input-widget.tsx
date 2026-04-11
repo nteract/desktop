@@ -10,23 +10,16 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import type { WidgetComponentProps } from "../widget-registry";
-import {
-  useWidgetModelValue,
-  useWidgetStoreRequired,
-} from "../widget-store-context";
+import { useWidgetModelValue, useWidgetStoreRequired } from "../widget-store-context";
 
-export function ColorsInputWidget({
-  modelId,
-  className,
-}: WidgetComponentProps) {
+export function ColorsInputWidget({ modelId, className }: WidgetComponentProps) {
   const { sendUpdate } = useWidgetStoreRequired();
   const colorInputRef = useRef<HTMLInputElement>(null);
 
   // Subscribe to individual state keys
   const value = useWidgetModelValue<string[]>(modelId, "value") ?? [];
   const allowedTags = useWidgetModelValue<string[]>(modelId, "allowed_tags");
-  const allowDuplicates =
-    useWidgetModelValue<boolean>(modelId, "allow_duplicates") ?? true;
+  const allowDuplicates = useWidgetModelValue<boolean>(modelId, "allow_duplicates") ?? true;
   const description = useWidgetModelValue<string>(modelId, "description");
   const disabled = useWidgetModelValue<boolean>(modelId, "disabled") ?? false;
 
@@ -41,11 +34,7 @@ export function ColorsInputWidget({
       const newColor = e.target.value;
 
       // Check if color is allowed
-      if (
-        allowedTags &&
-        allowedTags.length > 0 &&
-        !allowedTags.includes(newColor)
-      ) {
+      if (allowedTags && allowedTags.length > 0 && !allowedTags.includes(newColor)) {
         return;
       }
 
@@ -91,9 +80,7 @@ export function ColorsInputWidget({
       data-widget-id={modelId}
       data-widget-type="ColorsInput"
     >
-      {description && (
-        <Label className="shrink-0 pt-2 text-sm">{description}</Label>
-      )}
+      {description && <Label className="shrink-0 pt-2 text-sm">{description}</Label>}
       <div
         className={cn(
           "flex flex-wrap items-center gap-2",
@@ -101,10 +88,7 @@ export function ColorsInputWidget({
         )}
       >
         {value.map((color, idx) => (
-          <div
-            key={`${color}-${idx}`}
-            className="group relative flex items-center"
-          >
+          <div key={`${color}-${idx}`} className="group relative flex items-center">
             <button
               type="button"
               onClick={() => handleEditColor(idx)}

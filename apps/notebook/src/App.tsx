@@ -2,21 +2,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { NotebookClient } from "runtimed";
 import { IsolationTest } from "@/components/isolated";
 import { MediaProvider } from "@/components/outputs/media-provider";
-import {
-  getCrdtCommWriter,
-  setCrdtCommWriter,
-} from "@/components/widgets/crdt-comm-writer";
+import { getCrdtCommWriter, setCrdtCommWriter } from "@/components/widgets/crdt-comm-writer";
 import {
   useWidgetStoreRequired,
   WidgetStoreProvider,
@@ -26,10 +16,7 @@ import { WidgetView } from "@/components/widgets/widget-view";
 import { useSyncedTheme } from "@/hooks/useSyncedSettings";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { CondaDependencyHeader } from "./components/CondaDependencyHeader";
-import {
-  type DaemonStatus,
-  DaemonStatusBanner,
-} from "./components/DaemonStatusBanner";
+import { type DaemonStatus, DaemonStatusBanner } from "./components/DaemonStatusBanner";
 import { DebugBanner } from "./components/DebugBanner";
 import { DenoDependencyHeader } from "./components/DenoDependencyHeader";
 import { DependencyHeader } from "./components/DependencyHeader";
@@ -87,9 +74,7 @@ let daemonCommSender: ((message: unknown) => Promise<void>) | null = null;
  * Update the daemon comm sender reference.
  * Called by AppContent when daemon kernel is initialized.
  */
-export function setDaemonCommSender(
-  sender: ((message: unknown) => Promise<void>) | null,
-): void {
+export function setDaemonCommSender(sender: ((message: unknown) => Promise<void>) | null): void {
   daemonCommSender = sender;
 }
 
@@ -132,14 +117,10 @@ function resolveCommOutputs(
   _outputResolveGen.set(commId, gen);
 
   void (async () => {
-    const resolved = await Promise.all(
-      outputs.map((o) => resolveOutputValue(o, port)),
-    );
+    const resolved = await Promise.all(outputs.map((o) => resolveOutputValue(o, port)));
     if (_outputResolveGen.get(commId) !== gen) return;
 
-    const resolvedOutputs = resolved.filter(
-      (o): o is JupyterOutput => o !== null,
-    );
+    const resolvedOutputs = resolved.filter((o): o is JupyterOutput => o !== null);
     if (resolvedOutputs.length > 0) {
       store.updateModel(commId, { outputs: resolvedOutputs });
     }
@@ -157,8 +138,7 @@ function AppContent() {
   const peerIdRef = useRef(crypto.randomUUID());
 
   // OS username for presence labels (injected by Tauri initialization_script)
-  const peerLabel =
-    (window as unknown as Record<string, string>).__NTERACT_USERNAME__ ?? "";
+  const peerLabel = (window as unknown as Record<string, string>).__NTERACT_USERNAME__ ?? "";
 
   // Start dispatching presence events to CodeMirror EditorViews
   useEffect(() => {
@@ -292,8 +272,7 @@ function AppContent() {
   const { pixiInfo } = usePixiDependencies();
 
   // Deno config detection and settings
-  const { denoConfigInfo, flexibleNpmImports, setFlexibleNpmImports } =
-    useDenoDependencies();
+  const { denoConfigInfo, flexibleNpmImports, setFlexibleNpmImports } = useDenoDependencies();
 
   // Get widget store for CRDT → WidgetStore projection.
   // Set the module-level ref so the updateManager can access it.
@@ -313,10 +292,7 @@ function AppContent() {
   }, []);
 
   // NotebookClient for sending kernel commands via transport
-  const notebookClient = useMemo(
-    () => new NotebookClient({ transport: new TauriTransport() }),
-    [],
-  );
+  const notebookClient = useMemo(() => new NotebookClient({ transport: new TauriTransport() }), []);
 
   // Daemon-owned kernel execution
   const {
@@ -392,10 +368,7 @@ function AppContent() {
       for (const comm of changes.updated) {
         // Suppress CRDT echoes for keys with pending optimistic values
         // (e.g. slider being dragged — don't clobber with stale echo).
-        const filtered = updateManager.shouldSuppressEcho(
-          comm.commId,
-          comm.state,
-        );
+        const filtered = updateManager.shouldSuppressEcho(comm.commId, comm.state);
         if (filtered) {
           widgetStore.updateModel(comm.commId, filtered);
         }
@@ -418,9 +391,7 @@ function AppContent() {
         const commId = content?.comm_id as string;
         const inner = (data?.content as Record<string, unknown>) ?? {};
         const buffers = (broadcast as { buffers?: number[][] }).buffers;
-        const arrayBuffers = buffers?.map(
-          (arr: number[]) => new Uint8Array(arr).buffer,
-        );
+        const arrayBuffers = buffers?.map((arr: number[]) => new Uint8Array(arr).buffer);
         widgetStore.emitCustomMessage(commId, inner, arrayBuffers);
       }
     });
@@ -451,9 +422,7 @@ function AppContent() {
   }, [blobPort, getEngine]);
 
   // Split queue state into executing (currently running) and queued (waiting).
-  const executingCellIds = new Set(
-    queueState.executing ? [queueState.executing.cell_id] : [],
-  );
+  const executingCellIds = new Set(queueState.executing ? [queueState.executing.cell_id] : []);
   const queuedCellIds = new Set(queueState.queued.map((e) => e.cell_id));
 
   // ── Sync transient UI state into the cell-ui-state store ────────────
@@ -527,12 +496,10 @@ function AppContent() {
   // Also shows for prewarmed kernels when user adds inline deps (prewarmed->inline drift)
   const uvDerivedSyncState: EnvSyncState | null = useMemo(() => {
     // Show for uv:inline or uv:prewarmed (when user adds deps to prewarmed kernel)
-    const isUvEnv =
-      envSource === "uv:inline" || envSource === "uv:prewarmed" || !envSource;
+    const isUvEnv = envSource === "uv:inline" || envSource === "uv:prewarmed" || !envSource;
     if (!isUvEnv || !envSyncState) return null;
     // Only show dirty state for prewarmed if there's actually a diff with UV deps
-    if (envSource === "uv:prewarmed" && !envSyncState.diff?.added?.length)
-      return null;
+    if (envSource === "uv:prewarmed" && !envSyncState.diff?.added?.length) return null;
     if (envSyncState.inSync) return { status: "synced" };
     return {
       status: "dirty",
@@ -543,12 +510,10 @@ function AppContent() {
 
   const condaDerivedSyncState: EnvSyncState | null = useMemo(() => {
     // Show for conda:inline or conda:prewarmed (when user adds deps to prewarmed kernel)
-    const isCondaEnv =
-      envSource === "conda:inline" || envSource === "conda:prewarmed";
+    const isCondaEnv = envSource === "conda:inline" || envSource === "conda:prewarmed";
     if (!isCondaEnv || !envSyncState) return null;
     // Only show dirty state for prewarmed if there's actually a diff with conda deps
-    if (envSource === "conda:prewarmed" && !envSyncState.diff?.added?.length)
-      return null;
+    if (envSource === "conda:prewarmed" && !envSyncState.diff?.added?.length) return null;
     if (envSyncState.inSync) return { status: "synced" };
     return {
       status: "dirty",
@@ -560,8 +525,7 @@ function AppContent() {
   const pixiDerivedSyncState: EnvSyncState | null = useMemo(() => {
     const isPixiEnv = envSource?.startsWith("pixi:");
     if (!isPixiEnv || !envSyncState) return null;
-    if (envSource === "pixi:prewarmed" && !envSyncState.diff?.added?.length)
-      return null;
+    if (envSource === "pixi:prewarmed" && !envSyncState.diff?.added?.length) return null;
     if (envSyncState.inSync) return { status: "synced" };
     return {
       status: "dirty",
@@ -640,10 +604,7 @@ function AppContent() {
         return true;
       }
 
-      if (
-        response.result === "sync_environment_failed" &&
-        !response.needs_restart
-      ) {
+      if (response.result === "sync_environment_failed" && !response.needs_restart) {
         // Error but doesn't need restart (e.g., install failed)
         logger.error("[App] Hot-sync failed:", {
           error: response.error,
@@ -733,10 +694,7 @@ function AppContent() {
   const handleStartKernelWithPyproject = useCallback(async () => {
     const response = await launchKernel("python", "uv:pyproject");
     if (response.result === "error") {
-      logger.error(
-        "[App] handleStartKernelWithPyproject: daemon error",
-        response.error,
-      );
+      logger.error("[App] handleStartKernelWithPyproject: daemon error", response.error);
     }
   }, [launchKernel]);
 
@@ -783,14 +741,9 @@ function AppContent() {
           if (restarted) {
             const retry = await executeCell(cellId);
             if (retry.result === "error") {
-              logger.error(
-                "[App] handleExecuteCell: daemon error after restart",
-                retry.error,
-              );
+              logger.error("[App] handleExecuteCell: daemon error after restart", retry.error);
             } else if (retry.result === "no_kernel") {
-              logger.error(
-                "[App] handleExecuteCell: still no kernel after restart",
-              );
+              logger.error("[App] handleExecuteCell: still no kernel after restart");
             }
           }
         }
@@ -964,17 +917,12 @@ function AppContent() {
   useEffect(() => {
     const webview = getCurrentWebview();
     const validCellTypes = ["code", "markdown", "raw"] as const;
-    const unlistenPromise = webview.listen<string>(
-      "menu:insert-cell",
-      (event) => {
-        const payload = event.payload;
-        if (
-          validCellTypes.includes(payload as (typeof validCellTypes)[number])
-        ) {
-          handleAddCell(payload as "code" | "markdown" | "raw", focusedCellId);
-        }
-      },
-    );
+    const unlistenPromise = webview.listen<string>("menu:insert-cell", (event) => {
+      const payload = event.payload;
+      if (validCellTypes.includes(payload as (typeof validCellTypes)[number])) {
+        handleAddCell(payload as "code" | "markdown" | "raw", focusedCellId);
+      }
+    });
     return () => {
       unlistenPromise.then((unlisten) => unlisten()).catch(() => {});
     };
@@ -985,9 +933,7 @@ function AppContent() {
     const webview = getCurrentWebview();
     const unlistenPromise = webview.listen("menu:clear-outputs", async () => {
       if (!focusedCellId) return;
-      const cell = getNotebookCellsSnapshot().find(
-        (c) => c.id === focusedCellId,
-      );
+      const cell = getNotebookCellsSnapshot().find((c) => c.id === focusedCellId);
       if (!cell || cell.cell_type !== "code") return;
       await clearOutputs(focusedCellId);
     });
@@ -999,16 +945,11 @@ function AppContent() {
   // Cell menu: Clear All Outputs
   useEffect(() => {
     const webview = getCurrentWebview();
-    const unlistenPromise = webview.listen(
-      "menu:clear-all-outputs",
-      async () => {
-        // Tell daemon to clear kernel output tracking for each cell
-        const codeCells = getNotebookCellsSnapshot().filter(
-          (c) => c.cell_type === "code",
-        );
-        await Promise.all(codeCells.map((cell) => clearOutputs(cell.id)));
-      },
-    );
+    const unlistenPromise = webview.listen("menu:clear-all-outputs", async () => {
+      // Tell daemon to clear kernel output tracking for each cell
+      const codeCells = getNotebookCellsSnapshot().filter((c) => c.cell_type === "code");
+      await Promise.all(codeCells.map((cell) => clearOutputs(cell.id)));
+    });
     return () => {
       unlistenPromise.then((unlisten) => unlisten()).catch(() => {});
     };
@@ -1089,25 +1030,22 @@ function AppContent() {
       }
     };
 
-    const unlistenProgress = listen<DaemonStatus>(
-      "daemon:progress",
-      (event) => {
-        const status = event.payload;
+    const unlistenProgress = listen<DaemonStatus>("daemon:progress", (event) => {
+      const status = event.payload;
 
-        // Cancel any pending ready timeout before setting new status
-        cancelReadyTimeout();
-        setDaemonStatus(status);
+      // Cancel any pending ready timeout before setting new status
+      cancelReadyTimeout();
+      setDaemonStatus(status);
 
-        // Clear status after a short delay when daemon is ready
-        if (status?.status === "ready") {
-          readyTimeoutRef.current = setTimeout(() => {
-            // Only clear if still in ready state (use functional update)
-            setDaemonStatus((prev) => (prev?.status === "ready" ? null : prev));
-            readyTimeoutRef.current = null;
-          }, 1000);
-        }
-      },
-    );
+      // Clear status after a short delay when daemon is ready
+      if (status?.status === "ready") {
+        readyTimeoutRef.current = setTimeout(() => {
+          // Only clear if still in ready state (use functional update)
+          setDaemonStatus((prev) => (prev?.status === "ready" ? null : prev));
+          readyTimeoutRef.current = null;
+        }, 1000);
+      }
+    });
 
     // Listen for daemon disconnection (mid-session)
     const unlistenDisconnect = webview.listen("daemon:disconnected", () => {
@@ -1132,18 +1070,15 @@ function AppContent() {
     });
 
     // Listen for daemon ready (reconnection success)
-    const unlistenReady = webview.listen<{ runtime?: string }>(
-      "daemon:ready",
-      (event) => {
-        // Clear any status banner when daemon reconnects (failed, checking, etc.)
-        cancelReadyTimeout();
-        setDaemonStatus(null);
-        // Set or clear the runtime hint — clearing prevents stale hints
-        // when a window is reused to open a different notebook (Open path
-        // sends runtime: null).
-        setRuntimeHint(event.payload?.runtime ?? null);
-      },
-    );
+    const unlistenReady = webview.listen<{ runtime?: string }>("daemon:ready", (event) => {
+      // Clear any status banner when daemon reconnects (failed, checking, etc.)
+      cancelReadyTimeout();
+      setDaemonStatus(null);
+      // Set or clear the runtime hint — clearing prevents stale hints
+      // when a window is reused to open a different notebook (Open path
+      // sends runtime: null).
+      setRuntimeHint(event.payload?.runtime ?? null);
+    });
 
     // Check daemon status on mount (in case events fired before React was ready)
     // Small delay to let initial events settle
@@ -1187,11 +1122,7 @@ function AppContent() {
   }, []);
 
   return (
-    <PresenceProvider
-      peerId={peerIdRef.current}
-      peerLabel={peerLabel}
-      actorLabel={localActor}
-    >
+    <PresenceProvider peerId={peerIdRef.current} peerLabel={peerLabel} actorLabel={localActor}>
       <div className="flex h-full flex-col bg-background overflow-hidden">
         {gitInfo && (
           <DebugBanner
@@ -1240,9 +1171,7 @@ function AppContent() {
           startingPhase={startingPhase}
           envSource={envSource}
           envTypeHint={envTypeHint}
-          envProgress={
-            envProgress.isActive || envProgress.error ? envProgress : null
-          }
+          envProgress={envProgress.isActive || envProgress.error ? envProgress : null}
           runtime={runtime}
           onStartKernel={handleStartKernel}
           onInterruptKernel={interruptKernel}
@@ -1284,10 +1213,7 @@ function AppContent() {
                     className="px-2 py-0.5 text-xs font-medium rounded bg-fuchsia-100 dark:bg-fuchsia-900/40 hover:bg-fuchsia-200 dark:hover:bg-fuchsia-800/50 text-fuchsia-800 dark:text-fuchsia-300 border border-fuchsia-300 dark:border-fuchsia-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     Use uv ({dependencies?.dependencies?.length ?? 0}{" "}
-                    {(dependencies?.dependencies?.length ?? 0) === 1
-                      ? "package"
-                      : "packages"}
-                    )
+                    {(dependencies?.dependencies?.length ?? 0) === 1 ? "package" : "packages"})
                   </button>
                   <button
                     disabled={clearingDeps}
@@ -1302,10 +1228,7 @@ function AppContent() {
                     className="px-2 py-0.5 text-xs font-medium rounded bg-emerald-100 dark:bg-emerald-900/40 hover:bg-emerald-200 dark:hover:bg-emerald-800/50 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     Use conda ({condaDependencies?.dependencies?.length ?? 0}{" "}
-                    {(condaDependencies?.dependencies?.length ?? 0) === 1
-                      ? "package"
-                      : "packages"}
-                    )
+                    {(condaDependencies?.dependencies?.length ?? 0) === 1 ? "package" : "packages"})
                   </button>
                 </div>
               </div>
@@ -1322,28 +1245,26 @@ function AppContent() {
             justSynced={justSynced}
           />
         )}
-        {dependencyHeaderOpen &&
-          runtime === "python" &&
-          envType === "conda" && (
-            <CondaDependencyHeader
-              dependencies={condaDependencies?.dependencies ?? []}
-              channels={condaDependencies?.channels ?? []}
-              python={condaDependencies?.python ?? null}
-              loading={condaDepsLoading}
-              syncState={condaDerivedSyncState}
-              onAdd={addCondaDependency}
-              onRemove={removeCondaDependency}
-              onSetChannels={setCondaChannels}
-              onSetPython={setCondaPython}
-              onSyncNow={handleSyncDeps}
-              onRetryLaunch={tryStartKernel}
-              envProgress={envProgress.envType === "conda" ? envProgress : null}
-              onResetProgress={envProgress.reset}
-              environmentYmlInfo={environmentYmlInfo}
-              environmentYmlDeps={environmentYmlDeps}
-              justSynced={justSynced}
-            />
-          )}
+        {dependencyHeaderOpen && runtime === "python" && envType === "conda" && (
+          <CondaDependencyHeader
+            dependencies={condaDependencies?.dependencies ?? []}
+            channels={condaDependencies?.channels ?? []}
+            python={condaDependencies?.python ?? null}
+            loading={condaDepsLoading}
+            syncState={condaDerivedSyncState}
+            onAdd={addCondaDependency}
+            onRemove={removeCondaDependency}
+            onSetChannels={setCondaChannels}
+            onSetPython={setCondaPython}
+            onSyncNow={handleSyncDeps}
+            onRetryLaunch={tryStartKernel}
+            envProgress={envProgress.envType === "conda" ? envProgress : null}
+            onResetProgress={envProgress.reset}
+            environmentYmlInfo={environmentYmlInfo}
+            environmentYmlDeps={environmentYmlDeps}
+            justSynced={justSynced}
+          />
+        )}
         {dependencyHeaderOpen && runtime === "python" && envType === "pixi" && (
           <PixiDependencyHeader
             pixiInfo={pixiInfo}
@@ -1425,9 +1346,7 @@ function AppErrorFallback(_error: Error, resetErrorBoundary: () => void) {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-4 bg-background p-8">
       <div className="text-center">
-        <h1 className="text-lg font-semibold text-foreground">
-          Something went wrong
-        </h1>
+        <h1 className="text-lg font-semibold text-foreground">Something went wrong</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           The notebook encountered an unexpected error.
         </p>
@@ -1454,9 +1373,7 @@ function AppErrorFallback(_error: Error, resetErrorBoundary: () => void) {
 
 // Module-level ref for the widget store (set by AppContent, read by updateManager).
 // This avoids a chicken-and-egg: the manager is created before the store exists.
-let _widgetStoreRef:
-  | import("@/components/widgets/widget-store").WidgetStore
-  | null = null;
+let _widgetStoreRef: import("@/components/widgets/widget-store").WidgetStore | null = null;
 
 const updateManager = new WidgetUpdateManager({
   getStore: () => _widgetStoreRef,
@@ -1466,10 +1383,7 @@ const updateManager = new WidgetUpdateManager({
 export default function App() {
   return (
     <ErrorBoundary fallback={AppErrorFallback}>
-      <WidgetStoreProvider
-        sendMessage={sendMessage}
-        updateManager={updateManager}
-      >
+      <WidgetStoreProvider sendMessage={sendMessage} updateManager={updateManager}>
         <MediaProvider
           renderers={{
             "application/vnd.jupyter.widget-view+json": ({ data }) => {

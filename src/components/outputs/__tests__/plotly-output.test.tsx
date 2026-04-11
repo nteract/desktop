@@ -1,5 +1,5 @@
 import { cleanup, render } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { PlotlyOutput } from "../plotly-output";
 
 // Polyfill ResizeObserver for jsdom
@@ -51,9 +51,7 @@ describe("PlotlyOutput", () => {
   });
 
   it("renders nothing when data is empty", () => {
-    const { container } = render(
-      <PlotlyOutput data={{ data: [] }} />,
-    );
+    const { container } = render(<PlotlyOutput data={{ data: [] }} />);
     // Component renders the container div but Plotly.newPlot is not called
     // because useEffect sees data.data is empty array (truthy), but newPlot
     // should still be called for an empty array — plotly handles it.

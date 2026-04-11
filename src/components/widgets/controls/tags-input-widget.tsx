@@ -11,10 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import type { WidgetComponentProps } from "../widget-registry";
-import {
-  useWidgetModelValue,
-  useWidgetStoreRequired,
-} from "../widget-store-context";
+import { useWidgetModelValue, useWidgetStoreRequired } from "../widget-store-context";
 
 export function TagsInputWidget({ modelId, className }: WidgetComponentProps) {
   const { sendUpdate } = useWidgetStoreRequired();
@@ -22,10 +19,8 @@ export function TagsInputWidget({ modelId, className }: WidgetComponentProps) {
   // Subscribe to individual state keys
   const value = useWidgetModelValue<string[]>(modelId, "value") ?? [];
   const allowedTags = useWidgetModelValue<string[]>(modelId, "allowed_tags");
-  const allowDuplicates =
-    useWidgetModelValue<boolean>(modelId, "allow_duplicates") ?? true;
-  const placeholder =
-    useWidgetModelValue<string>(modelId, "placeholder") ?? "Add tag...";
+  const allowDuplicates = useWidgetModelValue<boolean>(modelId, "allow_duplicates") ?? true;
+  const placeholder = useWidgetModelValue<string>(modelId, "placeholder") ?? "Add tag...";
   const description = useWidgetModelValue<string>(modelId, "description");
   const disabled = useWidgetModelValue<boolean>(modelId, "disabled") ?? false;
 
@@ -38,11 +33,7 @@ export function TagsInputWidget({ modelId, className }: WidgetComponentProps) {
         const newTag = inputValue.trim();
 
         // Check if tag is allowed
-        if (
-          allowedTags &&
-          allowedTags.length > 0 &&
-          !allowedTags.includes(newTag)
-        ) {
+        if (allowedTags && allowedTags.length > 0 && !allowedTags.includes(newTag)) {
           return;
         }
 
@@ -76,9 +67,7 @@ export function TagsInputWidget({ modelId, className }: WidgetComponentProps) {
       data-widget-id={modelId}
       data-widget-type="TagsInput"
     >
-      {description && (
-        <Label className="shrink-0 pt-2 text-sm">{description}</Label>
-      )}
+      {description && <Label className="shrink-0 pt-2 text-sm">{description}</Label>}
       <div
         className={cn(
           "flex min-h-10 flex-wrap items-center gap-1.5 rounded-md border border-input bg-background px-3 py-2",
@@ -86,11 +75,7 @@ export function TagsInputWidget({ modelId, className }: WidgetComponentProps) {
         )}
       >
         {value.map((tag, idx) => (
-          <Badge
-            key={`${tag}-${idx}`}
-            variant="secondary"
-            className="gap-1 pr-1"
-          >
+          <Badge key={`${tag}-${idx}`} variant="secondary" className="gap-1 pr-1">
             {tag}
             {!disabled && (
               <button

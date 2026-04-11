@@ -16,9 +16,7 @@ export interface DenoConfigInfo {
 }
 
 export function useDenoDependencies() {
-  const [denoConfigInfo, setDenoConfigInfo] = useState<DenoConfigInfo | null>(
-    null,
-  );
+  const [denoConfigInfo, setDenoConfigInfo] = useState<DenoConfigInfo | null>(null);
   // Reactive read from the WASM Automerge doc via useSyncExternalStore.
   // Re-renders automatically when the doc changes (bootstrap, sync, writes).
   const flexibleNpmImportsFromDoc = useDenoFlexibleNpmImports();

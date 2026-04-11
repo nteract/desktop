@@ -35,9 +35,7 @@ interface JsonRpcResponse {
 type JsonRpcMessage = JsonRpcNotification | JsonRpcRequest | JsonRpcResponse;
 
 type NotificationHandler = (params: unknown) => void;
-type RequestHandler = (
-  params: unknown,
-) => unknown | Promise<unknown>;
+type RequestHandler = (params: unknown) => unknown | Promise<unknown>;
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -74,9 +72,7 @@ function collectArrayBuffers(
 
 function isJsonRpcMessage(data: unknown): data is JsonRpcMessage {
   return (
-    typeof data === "object" &&
-    data !== null &&
-    (data as { jsonrpc?: unknown }).jsonrpc === "2.0"
+    typeof data === "object" && data !== null && (data as { jsonrpc?: unknown }).jsonrpc === "2.0"
   );
 }
 
@@ -187,8 +183,7 @@ export class JsonRpcTransport {
               id: data.id,
               error: {
                 code: -32000,
-                message:
-                  err instanceof Error ? err.message : String(err),
+                message: err instanceof Error ? err.message : String(err),
               },
             };
             this.target.postMessage(response, "*");
@@ -209,8 +204,7 @@ export class JsonRpcTransport {
                 id: data.id,
                 error: {
                   code: -32000,
-                  message:
-                    err instanceof Error ? err.message : String(err),
+                  message: err instanceof Error ? err.message : String(err),
                 },
               };
               this.target.postMessage(response, "*");

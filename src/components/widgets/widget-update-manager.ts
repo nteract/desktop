@@ -49,11 +49,7 @@ export class WidgetUpdateManager {
    *
    * Binary buffers bypass debouncing and flush immediately.
    */
-  updateAndPersist(
-    commId: string,
-    patch: Record<string, unknown>,
-    buffers?: ArrayBuffer[],
-  ): void {
+  updateAndPersist(commId: string, patch: Record<string, unknown>, buffers?: ArrayBuffer[]): void {
     // 1. Instant store update — UI reflects change immediately
     this.getStore()?.updateModel(commId, patch, buffers);
 
@@ -69,10 +65,7 @@ export class WidgetUpdateManager {
 
     // 3. Accumulate patch
     const existing = this.pendingState.get(commId);
-    this.pendingState.set(
-      commId,
-      existing ? { ...existing, ...patch } : { ...patch },
-    );
+    this.pendingState.set(commId, existing ? { ...existing, ...patch } : { ...patch });
 
     // 4. Binary buffers — flush immediately (can't merge ArrayBuffers)
     if (buffers?.length) {

@@ -14,10 +14,7 @@
  */
 
 import type { JupyterOutput } from "@/components/cell/jupyter-output";
-import {
-  AnsiErrorOutput,
-  AnsiStreamOutput,
-} from "@/components/outputs/ansi-output";
+import { AnsiErrorOutput, AnsiStreamOutput } from "@/components/outputs/ansi-output";
 import { MediaRouter } from "@/components/outputs/media-router";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { OutputErrorFallback } from "@/lib/output-error-fallback";
@@ -37,30 +34,19 @@ function renderWidgetOutput(output: JupyterOutput) {
       return (
         <MediaRouter
           data={output.data}
-          metadata={
-            output.metadata as Record<
-              string,
-              Record<string, unknown> | undefined
-            >
-          }
+          metadata={output.metadata as Record<string, Record<string, unknown> | undefined>}
         />
       );
     case "stream":
       return (
         <AnsiStreamOutput
-          text={
-            Array.isArray(output.text) ? output.text.join("") : output.text
-          }
+          text={Array.isArray(output.text) ? output.text.join("") : output.text}
           streamName={output.name}
         />
       );
     case "error":
       return (
-        <AnsiErrorOutput
-          ename={output.ename}
-          evalue={output.evalue}
-          traceback={output.traceback}
-        />
+        <AnsiErrorOutput ename={output.ename} evalue={output.evalue} traceback={output.traceback} />
       );
     default:
       return null;
@@ -68,8 +54,7 @@ function renderWidgetOutput(output: JupyterOutput) {
 }
 
 export function OutputWidget({ modelId, className }: WidgetComponentProps) {
-  const outputs =
-    useWidgetModelValue<JupyterOutput[]>(modelId, "outputs") ?? [];
+  const outputs = useWidgetModelValue<JupyterOutput[]>(modelId, "outputs") ?? [];
 
   if (outputs.length === 0) {
     return null;
@@ -86,11 +71,7 @@ export function OutputWidget({ modelId, className }: WidgetComponentProps) {
           key={`output-${index}`}
           resetKeys={[JSON.stringify(output)]}
           fallback={(error, reset) => (
-            <OutputErrorFallback
-              error={error}
-              outputIndex={index}
-              onRetry={reset}
-            />
+            <OutputErrorFallback error={error} outputIndex={index} onRetry={reset} />
           )}
           onError={(error, errorInfo) => {
             console.error(

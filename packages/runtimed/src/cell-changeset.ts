@@ -43,10 +43,7 @@ export interface CellChangeset {
  * the merged result marks it as changed. Added/removed lists are deduplicated.
  * `order_changed` is true if either input is true.
  */
-export function mergeChangesets(
-  a: CellChangeset,
-  b: CellChangeset,
-): CellChangeset {
+export function mergeChangesets(a: CellChangeset, b: CellChangeset): CellChangeset {
   const changedMap = new Map<string, ChangedFields>();
   for (const c of [...a.changed, ...b.changed]) {
     const existing = changedMap.get(c.cell_id);

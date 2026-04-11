@@ -50,7 +50,12 @@ export default function App() {
     // Truncate body if URL would exceed limit
     const suffix = "\n\n[truncated]";
     const encodedSuffix = encodeURIComponent(suffix);
-    const overhead = GITHUB_ISSUES_URL.length + "?title=".length + title.length + "&body=".length + "&labels=feedback".length;
+    const overhead =
+      GITHUB_ISSUES_URL.length +
+      "?title=".length +
+      title.length +
+      "&body=".length +
+      "&labels=feedback".length;
     const bodyBudget = MAX_URL_LENGTH - overhead;
     const encodedBody = encodeURIComponent(fullBody);
     const body =

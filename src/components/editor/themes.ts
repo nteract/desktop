@@ -1,12 +1,7 @@
 import type { Extension } from "@codemirror/state";
 import { githubDark, githubLight } from "@uiw/codemirror-theme-github";
 
-import {
-  documentHasDarkMode,
-  isDarkMode,
-  prefersDarkMode,
-  useDarkMode,
-} from "@/lib/dark-mode";
+import { documentHasDarkMode, isDarkMode, prefersDarkMode, useDarkMode } from "@/lib/dark-mode";
 
 // Re-export theme detection utilities from canonical location
 export { documentHasDarkMode, isDarkMode, prefersDarkMode, useDarkMode };
@@ -38,9 +33,7 @@ export function getTheme(mode: ThemeMode): Extension {
   }
   // System mode - detect from media query
   if (typeof window !== "undefined") {
-    const prefersDark = window.matchMedia(
-      "(prefers-color-scheme: dark)",
-    ).matches;
+    const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
     return prefersDark ? darkTheme : lightTheme;
   }
   // SSR fallback

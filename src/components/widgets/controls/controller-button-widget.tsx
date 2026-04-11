@@ -8,10 +8,7 @@ import { cn } from "@/lib/utils";
 import type { WidgetComponentProps } from "../widget-registry";
 import { useWidgetModelValue } from "../widget-store-context";
 
-export function ControllerButtonWidget({
-  modelId,
-  className,
-}: WidgetComponentProps) {
+export function ControllerButtonWidget({ modelId, className }: WidgetComponentProps) {
   const pressed = useWidgetModelValue<boolean>(modelId, "pressed") ?? false;
   const value = useWidgetModelValue<number>(modelId, "value") ?? 0;
 

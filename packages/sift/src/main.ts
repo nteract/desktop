@@ -14,12 +14,7 @@ import { autoWidth } from "./auto-width";
 import { DATASETS, type DatasetEntry } from "./datasets";
 import { resolveHuggingFaceParquetUrl } from "./parquet-loader";
 import { getModuleSync, isAvailable, loadIpc } from "./predicate";
-import {
-  type Column,
-  createTable,
-  type TableData,
-  type TableEngine,
-} from "./table";
+import { type Column, createTable, type TableData, type TableEngine } from "./table";
 import { createWasmTableData } from "./wasm-table-data";
 import "./style.css";
 
@@ -102,8 +97,7 @@ function boot() {
 }
 
 function renderShell(app: HTMLElement) {
-  const dataset =
-    DATASETS.find((d) => d.id === currentDatasetId) ?? DATASETS[0];
+  const dataset = DATASETS.find((d) => d.id === currentDatasetId) ?? DATASETS[0];
 
   app.innerHTML = `
     <div class="pt-page">
@@ -175,19 +169,14 @@ function renderShell(app: HTMLElement) {
  * Load a local Arrow file as an observable stream.
  * First emission mounts the table, subsequent emissions append batches.
  */
-function loadLocalArrow$(
-  dataset: DatasetEntry,
-  tableRoot: HTMLElement,
-): Observable<void> {
+function loadLocalArrow$(dataset: DatasetEntry, tableRoot: HTMLElement): Observable<void> {
   return defer(
     () =>
       new Observable<void>((subscriber) => {
         let cancelled = false;
 
         (async () => {
-          const response = await fetch(
-            `${import.meta.env.BASE_URL}${dataset.path}`,
-          );
+          const response = await fetch(`${import.meta.env.BASE_URL}${dataset.path}`);
           if (!response.ok) {
             tableRoot.innerHTML =
               '<div class="pt-loading">Missing data.arrow — run <code>npm run generate</code> first.</div>';
@@ -207,12 +196,7 @@ function loadLocalArrow$(
 
           if (!wasmOk) {
             // WASM unavailable — fall back to JS path
-            await loadLocalArrowJs$(
-              dataset,
-              tableRoot,
-              subscriber,
-              () => cancelled,
-            );
+            await loadLocalArrowJs$(dataset, tableRoot, subscriber, () => cancelled);
             return;
           }
 
@@ -225,8 +209,7 @@ function loadLocalArrow$(
           );
           tableData.prefetchViewport = prefetchViewport;
           const mod = getModuleSync();
-          tableData.recomputeSummaries = () =>
-            updateWasmSummaries(mod, handle, tableData, columns);
+          tableData.recomputeSummaries = () => updateWasmSummaries(mod, handle, tableData, columns);
 
           // Compute initial summaries
           updateWasmSummaries(mod, handle, tableData, columns);
@@ -261,8 +244,11 @@ async function loadLocalArrowJs$(
   const reader = await RecordBatchReader.from(response);
   await reader.open();
 
-  const { columns, fieldNames, stringCols, rawCols, accumulators, tableData } =
-    buildTableState(reader.schema, dataset, generatedColumnOverrides);
+  const { columns, fieldNames, stringCols, rawCols, accumulators, tableData } = buildTableState(
+    reader.schema,
+    dataset,
+    generatedColumnOverrides,
+  );
 
   let totalRows = 0;
 
@@ -286,8 +272,7 @@ async function loadLocalArrowJs$(
   const firstResult = await reader.next();
   if (isCancelled()) return;
   if (firstResult.done) {
-    tableRoot.innerHTML =
-      '<div class="pt-loading">No data in Arrow file.</div>';
+    tableRoot.innerHTML = '<div class="pt-loading">No data in Arrow file.</div>';
     subscriber.complete();
     return;
   }
@@ -312,10 +297,7 @@ async function loadLocalArrowJs$(
  * Load a HuggingFace Parquet dataset as an observable stream.
  * Emits once per row group. First emission mounts the table, the rest append.
  */
-function loadHuggingFaceWasm$(
-  dataset: DatasetEntry,
-  tableRoot: HTMLElement,
-): Observable<void> {
+function loadHuggingFaceWasm$(dataset: DatasetEntry, tableRoot: HTMLElement): Observable<void> {
   // Outer defer ensures fresh execution per subscription (important for switchMap re-subscribe)
   return defer(
     () =>
@@ -344,10 +326,7 @@ function loadHuggingFaceWasm$(
           if (!resp) {
             if (cancelled) return;
             renderLoadingSkeleton(tableRoot, "Resolving dataset…");
-            const url = await resolveHuggingFaceParquetUrl(
-              dataset.path,
-              dataset.config,
-            );
+            const url = await resolveHuggingFaceParquetUrl(dataset.path, dataset.config);
             if (cancelled) return;
             renderLoadingSkeleton(tableRoot, "Downloading Parquet…");
             resp = await fetch(url);
@@ -358,9 +337,7 @@ function loadHuggingFaceWasm$(
             throw new Error("Failed to load nteract-predicate WASM module");
           }
           if (!resp.ok) {
-            throw new Error(
-              `Failed to fetch Parquet: ${resp.status} ${resp.statusText}`,
-            );
+            throw new Error(`Failed to fetch Parquet: ${resp.status} ${resp.statusText}`);
           }
           const parquetBytes = new Uint8Array(await resp.arrayBuffer());
 
@@ -376,9 +353,7 @@ function loadHuggingFaceWasm$(
           // Read schema metadata for pandas index_columns and HuggingFace feature types
           let schemaMetadata: Record<string, string> = {};
           try {
-            schemaMetadata = mod.parquet_schema_metadata(
-              parquetBytes,
-            ) as Record<string, string>;
+            schemaMetadata = mod.parquet_schema_metadata(parquetBytes) as Record<string, string>;
           } catch {
             /* metadata extraction is best-effort */
           }
@@ -398,10 +373,7 @@ function loadHuggingFaceWasm$(
           }
 
           // Parse HuggingFace feature metadata
-          const hfFeatures: Record<
-            string,
-            { _type: string; names?: string[] }
-          > = {};
+          const hfFeatures: Record<string, { _type: string; names?: string[] }> = {};
           if (schemaMetadata.huggingface) {
             try {
               const hf = JSON.parse(schemaMetadata.huggingface);
@@ -414,23 +386,14 @@ function loadHuggingFaceWasm$(
           // Load first row group → mount table immediately
           const handle = mod.load_parquet_row_group(parquetBytes, 0, 0);
 
-          const { tableData, columns, prefetchViewport } =
-            createWasmTableData(handle);
+          const { tableData, columns, prefetchViewport } = createWasmTableData(handle);
           tableData.prefetchViewport = prefetchViewport;
           tableData.recomputeSummaries = () =>
-            updateWasmSummaries(
-              mod,
-              handle,
-              tableData,
-              columns,
-              pandasIndexCols,
-            );
+            updateWasmSummaries(mod, handle, tableData, columns, pandasIndexCols);
 
           // Apply metadata: mark pandas index columns, narrow index columns
           const isIndexName = (name: string) =>
-            /^(unnamed[: _]*\d*|index|_?id|rowid|row_?id|row_?num)$/i.test(
-              name,
-            );
+            /^(unnamed[: _]*\d*|index|_?id|rowid|row_?id|row_?num)$/i.test(name);
           for (const col of columns) {
             if (pandasIndexCols.has(col.key) || isIndexName(col.key)) {
               // Size to fit the max row number — estimate from digit count
@@ -438,14 +401,10 @@ function loadHuggingFaceWasm$(
               col.width = Math.max(60, digits * 9 + 24); // ~9px per char + cell padding
               col.sortable = false;
               // Hide labels for pandas artifacts — not real column names users would query
-              if (/^(unnamed[: _]*\d*|__index_level_\d+__)$/i.test(col.key))
-                col.label = "";
+              if (/^(unnamed[: _]*\d*|__index_level_\d+__)$/i.test(col.key)) col.label = "";
             }
             const hfFeature = hfFeatures[col.key];
-            if (
-              hfFeature?._type === "ClassLabel" &&
-              col.columnType !== "categorical"
-            ) {
+            if (hfFeature?._type === "ClassLabel" && col.columnType !== "categorical") {
               // HF says this is a classification label — treat as categorical
               col.columnType = "categorical";
               col.numeric = false;
@@ -468,13 +427,7 @@ function loadHuggingFaceWasm$(
             if (cancelled) return;
             mod.load_parquet_row_group(parquetBytes, g, handle);
             tableData.rowCount = mod.num_rows(handle);
-            updateWasmSummaries(
-              mod,
-              handle,
-              tableData,
-              columns,
-              pandasIndexCols,
-            );
+            updateWasmSummaries(mod, handle, tableData, columns, pandasIndexCols);
             currentEngine!.onBatchAppended();
             subscriber.next();
           }
@@ -520,11 +473,8 @@ function updateWasmSummaries(
         const othersCount = counts.slice(3).reduce((s, e) => s + e.count, 0);
         const othersPct = Math.round((othersCount / numRows) * 1000) / 10;
         // Compute median text length across unique values
-        const lengths = counts
-          .map(({ label }) => label.length)
-          .sort((a, b) => a - b);
-        const medianTextLength =
-          lengths.length > 0 ? lengths[Math.floor(lengths.length / 2)] : 0;
+        const lengths = counts.map(({ label }) => label.length).sort((a, b) => a - b);
+        const medianTextLength = lengths.length > 0 ? lengths[Math.floor(lengths.length / 2)] : 0;
 
         return {
           kind: "categorical" as const,
@@ -537,10 +487,7 @@ function updateWasmSummaries(
         };
       }
       case "boolean": {
-        const [trueCount, falseCount, nullCount] = mod.store_bool_counts(
-          handle,
-          c,
-        );
+        const [trueCount, falseCount, nullCount] = mod.store_bool_counts(handle, c);
         return {
           kind: "boolean" as const,
           trueCount,
@@ -597,10 +544,7 @@ function updateWasmSummaries(
         }
         // Detect index/ID columns: pandas metadata or name pattern.
         const isPandasIndex = pandasIndexCols?.has(col.key) ?? false;
-        const isIndexName =
-          /^(unnamed[: _]*\d*|index|_?id|rowid|row_?id|row_?num)$/i.test(
-            col.key,
-          );
+        const isIndexName = /^(unnamed[: _]*\d*|index|_?id|rowid|row_?id|row_?num)$/i.test(col.key);
         if (isPandasIndex || isIndexName) {
           (summary as any).isIndex = true;
         }

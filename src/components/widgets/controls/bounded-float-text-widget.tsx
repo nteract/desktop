@@ -10,15 +10,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import type { WidgetComponentProps } from "../widget-registry";
-import {
-  useWidgetModelValue,
-  useWidgetStoreRequired,
-} from "../widget-store-context";
+import { useWidgetModelValue, useWidgetStoreRequired } from "../widget-store-context";
 
-export function BoundedFloatTextWidget({
-  modelId,
-  className,
-}: WidgetComponentProps) {
+export function BoundedFloatTextWidget({ modelId, className }: WidgetComponentProps) {
   const { sendUpdate } = useWidgetStoreRequired();
 
   // Subscribe to individual state keys
@@ -28,8 +22,7 @@ export function BoundedFloatTextWidget({
   const step = useWidgetModelValue<number>(modelId, "step") ?? 0.1;
   const description = useWidgetModelValue<string>(modelId, "description");
   const disabled = useWidgetModelValue<boolean>(modelId, "disabled") ?? false;
-  const continuousUpdate =
-    useWidgetModelValue<boolean>(modelId, "continuous_update") ?? false;
+  const continuousUpdate = useWidgetModelValue<boolean>(modelId, "continuous_update") ?? false;
 
   // Local state for the input value (as string for editing)
   const [localValue, setLocalValue] = useState(String(value));

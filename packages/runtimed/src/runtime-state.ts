@@ -167,11 +167,7 @@ export function diffExecutions(
         kind: "error",
         execution_count: entry.execution_count,
       });
-    } else if (
-      currStatus === "running" &&
-      prevStatus !== "done" &&
-      prevStatus !== "error"
-    ) {
+    } else if (currStatus === "running" && prevStatus !== "done" && prevStatus !== "error") {
       // Started (queued→running or new→running)
       transitions.push({
         execution_id: eid,
@@ -193,10 +189,7 @@ export function diffExecutions(
  * This mirrors runt-mcp's get_cell_execution_count_from_runtime: find
  * the most recent execution for the cell that has a count set.
  */
-export function getExecutionCountForCell(
-  state: RuntimeState,
-  cellId: string,
-): number | null {
+export function getExecutionCountForCell(state: RuntimeState, cellId: string): number | null {
   let best: number | null = null;
   for (const exec of Object.values(state.executions)) {
     if (exec.cell_id === cellId && exec.execution_count != null) {

@@ -44,12 +44,7 @@ interface CodeBlockProps {
   isDark?: boolean;
 }
 
-function CodeBlock({
-  children,
-  language = "",
-  enableCopy = true,
-  isDark = false,
-}: CodeBlockProps) {
+function CodeBlock({ children, language = "", enableCopy = true, isDark = false }: CodeBlockProps) {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = async () => {
@@ -86,11 +81,7 @@ function CodeBlock({
           title={copied ? "Copied!" : "Copy code"}
           type="button"
         >
-          {copied ? (
-            <Check className="h-3 w-3" />
-          ) : (
-            <Copy className="h-3 w-3" />
-          )}
+          {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
         </button>
       )}
     </div>
@@ -133,10 +124,7 @@ export function MarkdownOutput({
   const rehypePlugins = [rehypeKatex, rehypeRaw];
 
   return (
-    <div
-      data-slot="markdown-output"
-      className={cn("not-prose py-2", className)}
-    >
+    <div data-slot="markdown-output" className={cn("not-prose py-2", className)}>
       <ReactMarkdown
         remarkPlugins={remarkPlugins}
         rehypePlugins={rehypePlugins}
@@ -152,11 +140,7 @@ export function MarkdownOutput({
 
             if (isBlockCode) {
               return (
-                <CodeBlock
-                  language={language}
-                  enableCopy={enableCopyCode}
-                  isDark={isDark}
-                >
+                <CodeBlock language={language} enableCopy={enableCopyCode} isDark={isDark}>
                   {codeContent}
                 </CodeBlock>
               );
@@ -210,20 +194,14 @@ export function MarkdownOutput({
           },
           tbody({ children, ...props }) {
             return (
-              <tbody
-                className="divide-y divide-gray-200 dark:divide-gray-700"
-                {...props}
-              >
+              <tbody className="divide-y divide-gray-200 dark:divide-gray-700" {...props}>
                 {children}
               </tbody>
             );
           },
           tr({ children, ...props }) {
             return (
-              <tr
-                className="hover:bg-gray-50 dark:hover:bg-gray-800"
-                {...props}
-              >
+              <tr className="hover:bg-gray-50 dark:hover:bg-gray-800" {...props}>
                 {children}
               </tr>
             );
@@ -339,25 +317,13 @@ export function MarkdownOutput({
 
           // Horizontal rule
           hr({ ...props }) {
-            return (
-              <hr
-                className="my-6 border-t border-gray-300 dark:border-gray-600"
-                {...props}
-              />
-            );
+            return <hr className="my-6 border-t border-gray-300 dark:border-gray-600" {...props} />;
           },
 
           // Images
           img({ src, alt, ...props }) {
             if (!src) return null;
-            return (
-              <img
-                src={src}
-                alt={alt || ""}
-                className="my-4 max-w-full h-auto"
-                {...props}
-              />
-            );
+            return <img src={src} alt={alt || ""} className="my-4 max-w-full h-auto" {...props} />;
           },
         }}
       >

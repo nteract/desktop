@@ -7,8 +7,7 @@
 import { prepareWithSegments } from "@chenglou/pretext";
 import type { ColumnType, TableData } from "./table";
 
-const LABEL_FONT =
-  '600 11px Inter, "Helvetica Neue", Helvetica, Arial, sans-serif';
+const LABEL_FONT = '600 11px Inter, "Helvetica Neue", Helvetica, Arial, sans-serif';
 const CELL_FONT = '14px Inter, "Helvetica Neue", Helvetica, Arial, sans-serif';
 const HEADER_CHROME = 60; // cell padding + type icon + sort arrow
 const CELL_PAD = 24; // 12px each side — matches CELL_PAD_H in table.ts
@@ -62,11 +61,7 @@ export function autoWidth(name: string, colType: ColumnType): number {
  * Only widens columns, never shrinks below the header-based width.
  * Narrows index columns to save space.
  */
-export function fitColumnWidths(
-  data: TableData,
-  colWidths: number[],
-  maxWidth = 300,
-): void {
+export function fitColumnWidths(data: TableData, colWidths: number[], maxWidth = 300): void {
   const sampleSize = Math.min(30, data.rowCount);
   if (sampleSize === 0) return;
 
@@ -75,8 +70,7 @@ export function fitColumnWidths(
     const summary = data.columnSummaries[c];
     if (summary && (summary as any).isIndex === true) {
       const maxVal = (summary as any).max as number;
-      const formatted =
-        maxVal != null ? Math.round(maxVal).toLocaleString() : "";
+      const formatted = maxVal != null ? Math.round(maxVal).toLocaleString() : "";
       const indexW = Math.ceil(measureCellText(formatted)) + CELL_PAD;
       // Only widen — main.ts may have set a larger width from totalRows
       if (indexW > colWidths[c]) colWidths[c] = indexW;

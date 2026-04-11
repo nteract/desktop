@@ -46,7 +46,7 @@ jobs:
               - "package-lock.json"
               - "pnpm-lock.yaml"
               - "pnpm-workspace.yaml"
-              - "biome.json"
+              - "vite.config.ts"
               - "components.json"
               - "tailwind.config.js"
               - "tsconfig.json"
@@ -77,8 +77,11 @@ jobs:
       - name: Install JS dependencies
         run: pnpm install
 
-      - name: Check Biome (format + lint + imports)
-        run: npx @biomejs/biome check apps/notebook/src/ e2e/ packages/sift/src/
+      - name: Install Vite Plus
+        run: curl -fsSL https://vite.plus | bash
+
+      - name: Check (format + lint)
+        run: vp check
 
       - name: Check MCP App renderer plugins are up to date
         run: |
@@ -245,8 +248,11 @@ jobs:
       - name: Run sift tests
         run: pnpm --filter @nteract/sift test
 
+      - name: Install Vite Plus
+        run: curl -fsSL https://vite.plus | bash
+
       - name: Run JS benchmarks
-        run: pnpm vitest bench --run apps/notebook/src/lib/__tests__/
+        run: vp test bench --run apps/notebook/src/lib/__tests__/
 
   build-linux:
     name: Linux (release artifacts)

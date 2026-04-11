@@ -1,10 +1,4 @@
-import {
-  createContext,
-  type ReactNode,
-  useContext,
-  useEffect,
-  useState,
-} from "react";
+import { createContext, type ReactNode, useContext, useEffect, useState } from "react";
 
 interface IsolatedRendererBundle {
   rendererCode: string;
@@ -18,8 +12,7 @@ interface IsolatedRendererContextValue {
   error: Error | null;
 }
 
-const IsolatedRendererContext =
-  createContext<IsolatedRendererContextValue | null>(null);
+const IsolatedRendererContext = createContext<IsolatedRendererContextValue | null>(null);
 
 interface IsolatedRendererProviderProps {
   children: ReactNode;
@@ -86,13 +79,11 @@ export function IsolatedRendererProvider({
         // Fetch from URL
         loadingPromise = Promise.all([
           fetch(`${basePath}/isolated-renderer.js`).then((r) => {
-            if (!r.ok)
-              throw new Error(`Failed to fetch renderer JS: ${r.status}`);
+            if (!r.ok) throw new Error(`Failed to fetch renderer JS: ${r.status}`);
             return r.text();
           }),
           fetch(`${basePath}/isolated-renderer.css`).then((r) => {
-            if (!r.ok)
-              throw new Error(`Failed to fetch renderer CSS: ${r.status}`);
+            if (!r.ok) throw new Error(`Failed to fetch renderer CSS: ${r.status}`);
             return r.text();
           }),
         ]).then(([js, css]) => ({ rendererCode: js, rendererCss: css }));
@@ -132,9 +123,7 @@ export function IsolatedRendererProvider({
   }, [basePath, loader, state.isLoading]);
 
   return (
-    <IsolatedRendererContext.Provider value={state}>
-      {children}
-    </IsolatedRendererContext.Provider>
+    <IsolatedRendererContext.Provider value={state}>{children}</IsolatedRendererContext.Provider>
   );
 }
 
@@ -158,10 +147,7 @@ export function useIsolatedRenderer(): IsolatedRendererContextValue {
   if (!context) {
     // During SSR or when provider is missing, return a "not ready" state
     // This allows components to render without crashing
-    if (
-      process.env.NODE_ENV === "development" &&
-      typeof window !== "undefined"
-    ) {
+    if (process.env.NODE_ENV === "development" && typeof window !== "undefined") {
       console.warn(
         "useIsolatedRenderer: No IsolatedRendererProvider found. " +
           "Wrap your app with <IsolatedRendererProvider>. " +

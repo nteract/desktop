@@ -185,14 +185,9 @@ export function createWasmTableData(
               pct: Math.round((count / filteredRowCount) * 1000) / 10,
             }));
             const topCategories = allCategories.slice(0, 3);
-            const othersCount = counts
-              .slice(3)
-              .reduce((s, e) => s + e.count, 0);
-            const othersPct =
-              Math.round((othersCount / filteredRowCount) * 1000) / 10;
-            const lengths = counts
-              .map(({ label }) => label.length)
-              .sort((a, b) => a - b);
+            const othersCount = counts.slice(3).reduce((s, e) => s + e.count, 0);
+            const othersPct = Math.round((othersCount / filteredRowCount) * 1000) / 10;
+            const lengths = counts.map(({ label }) => label.length).sort((a, b) => a - b);
             const medianTextLength =
               lengths.length > 0 ? lengths[Math.floor(lengths.length / 2)] : 0;
             tableData.columnSummaries[c] = {
@@ -207,8 +202,11 @@ export function createWasmTableData(
             break;
           }
           case "boolean": {
-            const [trueCount, falseCount, nullCount] =
-              mod.store_filtered_bool_counts(handle, c, mask);
+            const [trueCount, falseCount, nullCount] = mod.store_filtered_bool_counts(
+              handle,
+              c,
+              mask,
+            );
             tableData.columnSummaries[c] = {
               kind: "boolean" as const,
               trueCount,
@@ -220,12 +218,11 @@ export function createWasmTableData(
           }
           case "numeric":
           case "timestamp": {
-            const bins = mod.store_filtered_histogram(
-              handle,
-              c,
-              mask,
-              BIN_COUNT,
-            ) as { x0: number; x1: number; count: number }[];
+            const bins = mod.store_filtered_histogram(handle, c, mask, BIN_COUNT) as {
+              x0: number;
+              x1: number;
+              count: number;
+            }[];
             if (bins.length === 0) {
               tableData.columnSummaries[c] = null;
             } else {
@@ -241,9 +238,7 @@ export function createWasmTableData(
         }
       }
     },
-    filterRows(
-      filters: (import("./table").ColumnFilter | null)[],
-    ): Uint32Array {
+    filterRows(filters: (import("./table").ColumnFilter | null)[]): Uint32Array {
       const specs: FilterSpecJson[] = [];
       for (let c = 0; c < filters.length; c++) {
         const f = filters[c];

@@ -6,7 +6,7 @@
  * If these tests fail, DO NOT PROCEED - the security model is broken.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 /**
  * The sandbox attributes string from isolated-frame.tsx.
@@ -54,9 +54,7 @@ describe("iframe sandbox security", () => {
   });
 
   it("sandbox does NOT include allow-top-navigation-by-user-activation", () => {
-    expect(EXPECTED_SANDBOX_ATTRS).not.toContain(
-      "allow-top-navigation-by-user-activation",
-    );
+    expect(EXPECTED_SANDBOX_ATTRS).not.toContain("allow-top-navigation-by-user-activation");
   });
 });
 

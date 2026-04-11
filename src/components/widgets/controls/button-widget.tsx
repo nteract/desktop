@@ -7,10 +7,7 @@
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { WidgetComponentProps } from "../widget-registry";
-import {
-  useWidgetModelValue,
-  useWidgetStoreRequired,
-} from "../widget-store-context";
+import { useWidgetModelValue, useWidgetStoreRequired } from "../widget-store-context";
 import { getButtonStyle } from "./button-style-utils";
 
 export function ButtonWidget({ modelId, className }: WidgetComponentProps) {
@@ -19,8 +16,7 @@ export function ButtonWidget({ modelId, className }: WidgetComponentProps) {
   // Subscribe to individual state keys
   const description = useWidgetModelValue<string>(modelId, "description") ?? "";
   const disabled = useWidgetModelValue<boolean>(modelId, "disabled") ?? false;
-  const buttonStyle =
-    useWidgetModelValue<string>(modelId, "button_style") ?? "";
+  const buttonStyle = useWidgetModelValue<string>(modelId, "button_style") ?? "";
   const icon = useWidgetModelValue<string>(modelId, "icon");
   const tooltip = useWidgetModelValue<string>(modelId, "tooltip");
 

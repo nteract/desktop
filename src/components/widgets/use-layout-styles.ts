@@ -27,9 +27,7 @@ export function useLayoutStyles(modelId: string): {
   hasGridLayout: boolean;
 } {
   // Resolve the layout model reference (IPY_MODEL_xxx -> LayoutModel)
-  const layoutModel = useResolvedModelValue(modelId, "layout") as
-    | WidgetModel
-    | undefined;
+  const layoutModel = useResolvedModelValue(modelId, "layout") as WidgetModel | undefined;
 
   return useMemo(() => {
     if (!layoutModel?.state) {

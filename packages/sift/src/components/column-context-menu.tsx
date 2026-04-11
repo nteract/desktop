@@ -56,17 +56,7 @@ export function ColumnContextMenu({ state, onAction, onClose }: Props) {
 
   if (!state) return null;
 
-  const {
-    colIndex,
-    colName,
-    colType,
-    isPinned,
-    isCast,
-    isStreaming,
-    sortDirection,
-    x,
-    y,
-  } = state;
+  const { colIndex, colName, colType, isPinned, isCast, isStreaming, sortDirection, x, y } = state;
 
   function act(action: ColumnAction) {
     onAction(colIndex, action);
@@ -108,24 +98,16 @@ export function ColumnContextMenu({ state, onAction, onClose }: Props) {
       ) : (
         <>
           <div className="px-2 py-1 text-xs text-[var(--muted)]">Treat as…</div>
-          <MenuItem
-            onClick={() => act({ kind: "cast", targetType: "categorical" })}
-          >
+          <MenuItem onClick={() => act({ kind: "cast", targetType: "categorical" })}>
             Text {colType === "categorical" && <Check />}
           </MenuItem>
-          <MenuItem
-            onClick={() => act({ kind: "cast", targetType: "numeric" })}
-          >
+          <MenuItem onClick={() => act({ kind: "cast", targetType: "numeric" })}>
             Number {colType === "numeric" && <Check />}
           </MenuItem>
-          <MenuItem
-            onClick={() => act({ kind: "cast", targetType: "timestamp" })}
-          >
+          <MenuItem onClick={() => act({ kind: "cast", targetType: "timestamp" })}>
             Date {colType === "timestamp" && <Check />}
           </MenuItem>
-          <MenuItem
-            onClick={() => act({ kind: "cast", targetType: "boolean" })}
-          >
+          <MenuItem onClick={() => act({ kind: "cast", targetType: "boolean" })}>
             Boolean {colType === "boolean" && <Check />}
           </MenuItem>
 
@@ -143,13 +125,7 @@ export function ColumnContextMenu({ state, onAction, onClose }: Props) {
   );
 }
 
-function MenuItem({
-  children,
-  onClick,
-}: {
-  children: React.ReactNode;
-  onClick: () => void;
-}) {
+function MenuItem({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
   return (
     <button
       className="flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm text-[var(--ink)] hover:bg-[color-mix(in_srgb,var(--accent)_8%,transparent)] cursor-default outline-none"

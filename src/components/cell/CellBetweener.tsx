@@ -25,10 +25,7 @@ export function CellBetweener({
   const colors = getGutterColors(cellType, customGutterColors);
 
   return (
-    <div
-      data-slot="cell-betweener"
-      className={cn("flex h-4 w-full items-center", className)}
-    >
+    <div data-slot="cell-betweener" className={cn("flex h-4 w-full items-center", className)}>
       {/* Gutter spacer - matches cell gutter structure */}
       <div className="flex h-full flex-shrink-0">
         {/* Action area spacer - matches CellContainer w-10 */}

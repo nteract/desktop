@@ -63,12 +63,7 @@ export function ImageOutput({
 
   return (
     <div data-slot="image-output" className={cn("not-prose py-2", className)}>
-      <PreloadedImage
-        src={targetSrc}
-        alt={alt}
-        width={width}
-        height={height}
-      />
+      <PreloadedImage src={targetSrc} alt={alt} width={width} height={height} />
     </div>
   );
 }

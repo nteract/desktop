@@ -19,12 +19,7 @@ export const TOP_CATEGORIES = 3;
 export function detectColumnType(field: Field): ColumnType {
   const t = field.type.typeId;
   if (t === Type.Bool) return "boolean";
-  if (
-    t === Type.Timestamp ||
-    t === Type.Date ||
-    t === Type.DateMillisecond ||
-    t === Type.DateDay
-  )
+  if (t === Type.Timestamp || t === Type.Date || t === Type.DateMillisecond || t === Type.DateDay)
     return "timestamp";
   if (
     t === Type.Int ||
@@ -60,8 +55,7 @@ const NULL_SENTINELS = new Set([
 ]);
 
 // ISO-like date patterns: YYYY-MM-DD, YYYY/MM/DD, MM/DD/YYYY, DD-Mon-YYYY, etc.
-const DATE_PATTERN =
-  /^\d{4}[-/]\d{1,2}[-/]\d{1,2}$|^\d{1,2}[-/]\d{1,2}[-/]\d{4}$/;
+const DATE_PATTERN = /^\d{4}[-/]\d{1,2}[-/]\d{1,2}$|^\d{1,2}[-/]\d{1,2}[-/]\d{4}$/;
 
 /**
  * Check if a string value is a common null sentinel.
@@ -180,8 +174,7 @@ export class NumericAccumulator implements SummaryAccumulator {
       this.finiteValues.push(v);
       if (this.uniqueValues !== null) {
         this.uniqueValues.add(v);
-        if (this.uniqueValues.size > UNIQUE_TRACK_LIMIT)
-          this.uniqueValues = null;
+        if (this.uniqueValues.size > UNIQUE_TRACK_LIMIT) this.uniqueValues = null;
       }
       if (v < this.min) this.min = v;
       if (v > this.max) this.max = v;
@@ -203,12 +196,9 @@ export class NumericAccumulator implements SummaryAccumulator {
       this.negInfCount === 0 &&
       this.nullCount === 0;
     const isHighUniqueness =
-      uniqueCount !== undefined &&
-      totalRows !== undefined &&
-      uniqueCount >= totalRows * 0.9;
+      uniqueCount !== undefined && totalRows !== undefined && uniqueCount >= totalRows * 0.9;
     const isIndex =
-      (isMonotonicClean && isHighUniqueness) ||
-      (isMonotonicClean && uniqueCount === undefined);
+      (isMonotonicClean && isHighUniqueness) || (isMonotonicClean && uniqueCount === undefined);
 
     const binWidth = (this.max - this.min) / BIN_COUNT || 1;
     const bins: NumericColumnSummary["bins"] = [];
@@ -311,15 +301,12 @@ export class CategoricalAccumulator implements SummaryAccumulator {
       pct: Math.round((count / totalRows) * 1000) / 10,
     }));
     const topCategories = allCategories.slice(0, TOP_CATEGORIES);
-    const othersCount = sorted
-      .slice(TOP_CATEGORIES)
-      .reduce((s, e) => s + e[1], 0);
+    const othersCount = sorted.slice(TOP_CATEGORIES).reduce((s, e) => s + e[1], 0);
     const othersPct = Math.round((othersCount / totalRows) * 1000) / 10;
 
     // Compute median text length across unique values
     const lengths = sorted.map(([label]) => label.length).sort((a, b) => a - b);
-    const medianTextLength =
-      lengths.length > 0 ? lengths[Math.floor(lengths.length / 2)] : 0;
+    const medianTextLength = lengths.length > 0 ? lengths[Math.floor(lengths.length / 2)] : 0;
 
     return {
       kind: "categorical",

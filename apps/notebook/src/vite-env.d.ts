@@ -1,4 +1,4 @@
-/// <reference types="vite/client" />
+/// <reference types="vite-plus/client" />
 
 declare module "virtual:isolated-renderer" {
   export const rendererCode: string;

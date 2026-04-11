@@ -9,10 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import type { WidgetComponentProps } from "../widget-registry";
-import {
-  useWidgetModelValue,
-  useWidgetStoreRequired,
-} from "../widget-store-context";
+import { useWidgetModelValue, useWidgetStoreRequired } from "../widget-store-context";
 
 export function IntTextWidget({ modelId, className }: WidgetComponentProps) {
   const { sendUpdate } = useWidgetStoreRequired();
@@ -24,8 +21,7 @@ export function IntTextWidget({ modelId, className }: WidgetComponentProps) {
   const step = useWidgetModelValue<number>(modelId, "step") ?? 1;
   const description = useWidgetModelValue<string>(modelId, "description");
   const disabled = useWidgetModelValue<boolean>(modelId, "disabled") ?? false;
-  const continuousUpdate =
-    useWidgetModelValue<boolean>(modelId, "continuous_update") ?? false;
+  const continuousUpdate = useWidgetModelValue<boolean>(modelId, "continuous_update") ?? false;
 
   // Local state for the input value (as string for editing)
   const [localValue, setLocalValue] = useState(String(value));

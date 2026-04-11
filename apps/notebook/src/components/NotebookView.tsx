@@ -23,17 +23,10 @@ import type { Runtime } from "@/hooks/useSyncedSettings";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { cn } from "@/lib/utils";
 import { usePresenceContext } from "../contexts/PresenceContext";
-import {
-  EditorRegistryProvider,
-  useEditorRegistry,
-} from "../hooks/useEditorRegistry";
+import { EditorRegistryProvider, useEditorRegistry } from "../hooks/useEditorRegistry";
 import { useFocusedCellId, useSearchCurrentMatch } from "../lib/cell-ui-state";
 import { logger } from "../lib/logger";
-import {
-  getNotebookCellsSnapshot,
-  useCell,
-  useMaterializeVersion,
-} from "../lib/notebook-cells";
+import { getNotebookCellsSnapshot, useCell, useMaterializeVersion } from "../lib/notebook-cells";
 import type { CodeCell as CodeCellType, NotebookCell } from "../types";
 import { CellSkeleton } from "./CellSkeleton";
 import { CodeCell } from "./CodeCell";
@@ -139,12 +132,8 @@ function CellErrorFallback({
     <div className="mx-4 my-2 rounded-md border border-destructive/50 bg-destructive/5 p-3">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <p className="text-sm font-medium text-destructive">
-            This cell encountered an error
-          </p>
-          <p className="mt-1 truncate text-xs text-muted-foreground">
-            {error.message}
-          </p>
+          <p className="text-sm font-medium text-destructive">This cell encountered an error</p>
+          <p className="mt-1 truncate text-xs text-muted-foreground">{error.message}</p>
         </div>
         <div className="flex shrink-0 items-center gap-1">
           <Button
@@ -181,8 +170,7 @@ function CellDragPreview({ cellId }: { cellId: string }) {
   // Get first 3 lines of source, truncated
   const sourceLines = cell.source.split("\n").slice(0, 3);
   const hasMoreLines = cell.source.split("\n").length > 3;
-  const hasOutputs =
-    cell.cell_type === "code" && (cell as CodeCellType).outputs.length > 0;
+  const hasOutputs = cell.cell_type === "code" && (cell as CodeCellType).outputs.length > 0;
 
   // Ribbon color based on cell type
   const ribbonColor =
@@ -291,14 +279,9 @@ function SortableCell({
 }) {
   const cell = useCell(cellId);
   const nextCell = useCell(nextCellId ?? "");
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({ id: cellId });
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: cellId,
+  });
 
   const style: React.CSSProperties = {
     transform: DndCSS.Transform.toString(transform),
@@ -323,9 +306,7 @@ function SortableCell({
 
   return (
     <div ref={setNodeRef} style={style}>
-      {index === 0 && (
-        <CellAdder afterCellId={null} onAdd={onAddCell} cellType={cellType} />
-      )}
+      {index === 0 && <CellAdder afterCellId={null} onAdd={onAddCell} cellType={cellType} />}
       <ErrorBoundary
         fallback={(error, resetErrorBoundary) => (
           <CellErrorFallback
@@ -343,11 +324,7 @@ function SortableCell({
           isDragging={isDragging}
         />
       </ErrorBoundary>
-      <CellAdder
-        afterCellId={cellId}
-        onAdd={onAddCell}
-        cellType={nextCellType}
-      />
+      <CellAdder afterCellId={cellId} onAdd={onAddCell} cellType={nextCellType} />
     </div>
   );
 }
@@ -472,9 +449,7 @@ function NotebookViewContent({
           const c = cells[i];
           groupCellIds.push(c.id);
           if (c.cell_type === "code") {
-            groupErrorCount += c.outputs.filter(
-              (o) => o.output_type === "error",
-            ).length;
+            groupErrorCount += c.outputs.filter((o) => o.output_type === "error").length;
           }
           i++;
         }
@@ -507,8 +482,7 @@ function NotebookViewContent({
     };
 
     container.addEventListener("scroll", preventHorizontalScroll);
-    return () =>
-      container.removeEventListener("scroll", preventHorizontalScroll);
+    return () => container.removeEventListener("scroll", preventHorizontalScroll);
   }, []);
 
   // Scroll the current search match cell into view
@@ -559,17 +533,12 @@ function NotebookViewContent({
           `[cell-nav] onFocusPrevious called: cell=${cell.id.slice(0, 8)} index=${index} cellIds=${cellIdsRef.current.map((id) => id.slice(0, 8)).join(",")}`,
         );
         let prevIndex = index - 1;
-        while (
-          prevIndex >= 0 &&
-          !isVisibleCell(cellIdsRef.current[prevIndex])
-        ) {
+        while (prevIndex >= 0 && !isVisibleCell(cellIdsRef.current[prevIndex])) {
           prevIndex--;
         }
         if (prevIndex >= 0) {
           const prevCellId = cellIdsRef.current[prevIndex];
-          logger.debug(
-            `[cell-nav] Focusing previous: ${prevCellId.slice(0, 8)}`,
-          );
+          logger.debug(`[cell-nav] Focusing previous: ${prevCellId.slice(0, 8)}`);
           onFocusCell(prevCellId);
           presence?.setFocus(prevCellId);
           focusCell(prevCellId, cursorPosition);
@@ -617,11 +586,9 @@ function NotebookViewContent({
       let rightGutterContent: React.ReactNode;
       if (cell.cell_type === "code") {
         const isSourceHidden =
-          (cell.metadata?.jupyter as { source_hidden?: boolean })
-            ?.source_hidden === true;
+          (cell.metadata?.jupyter as { source_hidden?: boolean })?.source_hidden === true;
         const isOutputsHidden =
-          (cell.metadata?.jupyter as { outputs_hidden?: boolean })
-            ?.outputs_hidden === true;
+          (cell.metadata?.jupyter as { outputs_hidden?: boolean })?.outputs_hidden === true;
         const bothHidden = isSourceHidden && isOutputsHidden;
 
         rightGutterContent = (
@@ -633,9 +600,7 @@ function NotebookViewContent({
                 onClick={() => onSetCellSourceHidden(cell.id, !isSourceHidden)}
                 className={cn(
                   "flex items-center justify-center rounded p-1 transition-colors hover:text-foreground",
-                  isSourceHidden
-                    ? "text-muted-foreground/70"
-                    : "text-muted-foreground/40",
+                  isSourceHidden ? "text-muted-foreground/70" : "text-muted-foreground/40",
                 )}
                 title={isSourceHidden ? "Show source" : "Hide source"}
               >
@@ -646,9 +611,7 @@ function NotebookViewContent({
           </div>
         );
       } else {
-        rightGutterContent = (
-          <div className="flex flex-col gap-0.5">{deleteButton}</div>
-        );
+        rightGutterContent = <div className="flex flex-col gap-0.5">{deleteButton}</div>;
       }
 
       if (cell.cell_type === "code") {
@@ -689,12 +652,8 @@ function NotebookViewContent({
                 : undefined
             }
             hiddenGroupCount={hiddenGroupsRef.current.get(cell.id)?.count}
-            hiddenGroupErrorCount={
-              hiddenGroupsRef.current.get(cell.id)?.errorCount
-            }
-            hiddenGroupCellIds={
-              hiddenGroupsRef.current.get(cell.id)?.groupCellIds
-            }
+            hiddenGroupErrorCount={hiddenGroupsRef.current.get(cell.id)?.errorCount}
+            hiddenGroupCellIds={hiddenGroupsRef.current.get(cell.id)?.groupCellIds}
             onExpandHiddenGroup={
               hiddenGroupsRef.current.has(cell.id) &&
               onSetCellSourceHidden &&
@@ -815,10 +774,7 @@ function NotebookViewContent({
           onDragEnd={handleDragEnd}
           onDragCancel={() => setActiveId(null)}
         >
-          <SortableContext
-            items={cellIds}
-            strategy={verticalListSortingStrategy}
-          >
+          <SortableContext items={cellIds} strategy={verticalListSortingStrategy}>
             <div style={{ display: "flex", flexDirection: "column" }}>
               {stableDomOrder.map((cellId) => {
                 const index = cellIdToIndex.get(cellId) ?? 0;
@@ -838,9 +794,7 @@ function NotebookViewContent({
               })}
             </div>
           </SortableContext>
-          <DragOverlay>
-            {activeId && <CellDragPreview cellId={activeId} />}
-          </DragOverlay>
+          <DragOverlay>{activeId && <CellDragPreview cellId={activeId} />}</DragOverlay>
         </DndContext>
       )}
     </div>

@@ -7,22 +7,20 @@
     <title>notebook</title>
     <script>
       // Apply theme immediately to prevent flash of wrong color on boot
-      (function() {
-        var STORAGE_KEY = 'notebook-theme';
+      (function () {
+        var STORAGE_KEY = "notebook-theme";
         var theme;
         try {
           theme = localStorage.getItem(STORAGE_KEY);
         } catch (e) {}
 
-        if (theme !== 'light' && theme !== 'dark' && theme !== 'system') {
-          theme = 'system';
+        if (theme !== "light" && theme !== "dark" && theme !== "system") {
+          theme = "system";
         }
 
         var resolved = theme;
-        if (theme === 'system') {
-          resolved = window.matchMedia('(prefers-color-scheme: dark)').matches
-            ? 'dark'
-            : 'light';
+        if (theme === "system") {
+          resolved = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
         }
 
         document.documentElement.classList.add(resolved);

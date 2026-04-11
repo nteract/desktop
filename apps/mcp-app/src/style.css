@@ -262,7 +262,9 @@ body {
   gap: 4px;
   border-radius: 4px;
   opacity: 0.6;
-  transition: opacity 0.15s, background 0.15s;
+  transition:
+    opacity 0.15s,
+    background 0.15s;
 }
 
 .source-summary::-webkit-details-marker {
@@ -363,27 +365,63 @@ body {
   color: var(--fg);
 }
 
-.markdown-output h1 { font-size: 1.5em; font-weight: 700; margin: 0.8em 0 0.4em; }
-.markdown-output h2 { font-size: 1.3em; font-weight: 700; margin: 0.7em 0 0.3em; }
-.markdown-output h3 { font-size: 1.1em; font-weight: 600; margin: 0.6em 0 0.3em; }
+.markdown-output h1 {
+  font-size: 1.5em;
+  font-weight: 700;
+  margin: 0.8em 0 0.4em;
+}
+.markdown-output h2 {
+  font-size: 1.3em;
+  font-weight: 700;
+  margin: 0.7em 0 0.3em;
+}
+.markdown-output h3 {
+  font-size: 1.1em;
+  font-weight: 600;
+  margin: 0.6em 0 0.3em;
+}
 .markdown-output h4,
 .markdown-output h5,
-.markdown-output h6 { font-size: 1em; font-weight: 600; margin: 0.5em 0 0.2em; }
+.markdown-output h6 {
+  font-size: 1em;
+  font-weight: 600;
+  margin: 0.5em 0 0.2em;
+}
 
-.markdown-output p { margin: 0.4em 0; }
+.markdown-output p {
+  margin: 0.4em 0;
+}
 .markdown-output ul,
-.markdown-output ol { margin: 0.4em 0; padding-left: 1.5em; }
-.markdown-output li { margin: 0.2em 0; }
+.markdown-output ol {
+  margin: 0.4em 0;
+  padding-left: 1.5em;
+}
+.markdown-output li {
+  margin: 0.2em 0;
+}
 .markdown-output blockquote {
   border-left: 3px solid var(--border);
   padding-left: 12px;
   margin: 0.5em 0;
   color: var(--fg-muted);
 }
-.markdown-output hr { border: none; border-top: 1px solid var(--border); margin: 1em 0; }
-.markdown-output a { color: #3b82f6; text-decoration: none; }
-.markdown-output a:hover { text-decoration: underline; }
-.markdown-output img { max-width: 100%; border-radius: 4px; margin: 0.5em 0; }
+.markdown-output hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 1em 0;
+}
+.markdown-output a {
+  color: #3b82f6;
+  text-decoration: none;
+}
+.markdown-output a:hover {
+  text-decoration: underline;
+}
+.markdown-output img {
+  max-width: 100%;
+  border-radius: 4px;
+  margin: 0.5em 0;
+}
 
 .markdown-output table {
   border-collapse: collapse;

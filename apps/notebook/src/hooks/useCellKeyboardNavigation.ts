@@ -55,9 +55,7 @@ export function useCellKeyboardNavigation({
         run: (view) => {
           const { from } = view.state.selection.main;
           if (from === 0) {
-            logger.debug(
-              `[cell-nav] ArrowUp at top of cell ${cellIdRef.current?.slice(0, 8)}`,
-            );
+            logger.debug(`[cell-nav] ArrowUp at top of cell ${cellIdRef.current?.slice(0, 8)}`);
             onFocusPreviousRef.current("end");
             return true;
           }

@@ -1,10 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  type Column,
-  createTable,
-  type TableData,
-  type TableEngine,
-} from "./table";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { type Column, createTable, type TableData, type TableEngine } from "./table";
 
 // --- Test helpers ---
 
@@ -59,12 +54,7 @@ function makeTableData(rows: unknown[][]): TableData {
 function makeRows(count: number): unknown[][] {
   const rows: unknown[][] = [];
   for (let i = 0; i < count; i++) {
-    rows.push([
-      i + 1,
-      `Person ${i}`,
-      Math.round(Math.random() * 100),
-      i % 3 !== 0,
-    ]);
+    rows.push([i + 1, `Person ${i}`, Math.round(Math.random() * 100), i % 3 !== 0]);
   }
   return rows;
 }
@@ -304,12 +294,7 @@ describe("createTable", () => {
       await flushRAF();
       // Add 10 more rows
       for (let i = 50; i < 60; i++) {
-        rows.push([
-          i + 1,
-          `Person ${i}`,
-          Math.round(Math.random() * 100),
-          i % 3 !== 0,
-        ]);
+        rows.push([i + 1, `Person ${i}`, Math.round(Math.random() * 100), i % 3 !== 0]);
       }
       data.rowCount = 60;
       engine.onBatchAppended();
@@ -329,9 +314,7 @@ describe("createTable", () => {
       // Engine mounts: header + stats bar + viewport exist
       expect(singleContainer.querySelector(".pt-header")).not.toBeNull();
       expect(singleContainer.querySelector(".pt-viewport")).not.toBeNull();
-      const stats = singleContainer.querySelector(
-        ".pt-stat-rows",
-      ) as HTMLElement;
+      const stats = singleContainer.querySelector(".pt-stat-rows") as HTMLElement;
       expect(stats?.dataset.value).toContain("1");
       singleEngine.destroy();
     });

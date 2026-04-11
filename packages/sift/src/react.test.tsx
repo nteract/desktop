@@ -1,5 +1,5 @@
 import { cleanup, render } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { SiftTable } from "./react";
 import type { Column, TableData } from "./table";
 
@@ -84,11 +84,7 @@ describe("SiftTable", () => {
   });
 
   it("shows row count in stats bar", async () => {
-    const rows = Array.from({ length: 25 }, (_, i) => [
-      i,
-      `Person ${i}`,
-      i * 10,
-    ]);
+    const rows = Array.from({ length: 25 }, (_, i) => [i, `Person ${i}`, i * 10]);
     const data = makeTableData(rows);
 
     const { container } = render(<SiftTable data={data} />);
@@ -100,11 +96,7 @@ describe("SiftTable", () => {
 
   it("calls onChange when filter is applied via engine", async () => {
     const onChange = vi.fn();
-    const rows = Array.from({ length: 10 }, (_, i) => [
-      i,
-      `Person ${i}`,
-      i * 10,
-    ]);
+    const rows = Array.from({ length: 10 }, (_, i) => [i, `Person ${i}`, i * 10]);
     const data = makeTableData(rows);
 
     const { container } = render(<SiftTable data={data} onChange={onChange} />);
@@ -166,11 +158,7 @@ describe("SiftTable", () => {
     const data = makeTableData(rows);
 
     const { container } = render(
-      <SiftTable
-        data={data}
-        className="my-table"
-        style={{ border: "1px solid red" }}
-      />,
+      <SiftTable data={data} className="my-table" style={{ border: "1px solid red" }} />,
     );
     await vi.advanceTimersByTimeAsync(0);
 

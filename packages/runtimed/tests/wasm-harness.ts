@@ -142,9 +142,7 @@ export interface WasmHarness {
   dispose(): void;
 }
 
-export async function createWasmHarness(
-  notebookId = "test-notebook",
-): Promise<WasmHarness> {
+export async function createWasmHarness(notebookId = "test-notebook"): Promise<WasmHarness> {
   const Handle = await initWasm();
 
   // Server = daemon side (creates the doc, adds cells)
@@ -179,11 +177,7 @@ export async function createWasmHarness(
     scheduler,
 
     serverAddCell(cellId: string, cellType: string, afterIndex?: number) {
-      serverHandle.add_cell(
-        afterIndex ?? serverHandle.cell_count(),
-        cellId,
-        cellType,
-      );
+      serverHandle.add_cell(afterIndex ?? serverHandle.cell_count(), cellId, cellType);
     },
 
     serverUpdateSource(cellId: string, source: string) {

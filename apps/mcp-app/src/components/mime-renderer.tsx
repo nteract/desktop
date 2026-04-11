@@ -23,7 +23,9 @@ export function MimeRenderer({ data, blobBaseUrl }: MimeRendererProps) {
 
   // Images: use blob URL directly as <img src>, no fetch needed
   if (mime.startsWith("image/") && mime !== "image/svg+xml") {
-    return <ImageOutput data={String(raw)} mediaType={mime} alt={data["text/plain"] || undefined} />;
+    return (
+      <ImageOutput data={String(raw)} mediaType={mime} alt={data["text/plain"] || undefined} />
+    );
   }
 
   // text/plain fallback for when blob fetch or plugin load fails
@@ -70,7 +72,11 @@ function PluginRenderer({
     const pluginPromise = loadPluginForMime(mime, blobBaseUrl) ?? Promise.resolve();
     // Parse data: try JSON (for plotly/vega specs), fall back to raw string (for markdown/latex)
     const parseData = (text: string) => {
-      try { return JSON.parse(text); } catch { return text; }
+      try {
+        return JSON.parse(text);
+      } catch {
+        return text;
+      }
     };
     const dataPromise = isBlobUrl(raw)
       ? fetchBlobText(raw).then(parseData)
@@ -86,7 +92,9 @@ function PluginRenderer({
         if (!cancelled) setFailed(true);
       });
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [mime, raw, blobBaseUrl]);
 
   if (failed) {
@@ -105,10 +113,16 @@ function PluginRenderer({
   return <RendererComponent data={data} mimeType={mime} />;
 }
 
-function FetchAndRender({ mime, raw, plainFallback }: { mime: string; raw: string; plainFallback?: string }) {
-  const [content, setContent] = useState<string | null>(
-    isBlobUrl(raw) ? null : raw,
-  );
+function FetchAndRender({
+  mime,
+  raw,
+  plainFallback,
+}: {
+  mime: string;
+  raw: string;
+  plainFallback?: string;
+}) {
+  const [content, setContent] = useState<string | null>(isBlobUrl(raw) ? null : raw);
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
@@ -146,7 +160,9 @@ export function StreamOutput({ output }: { output: CellOutput }) {
   useEffect(() => {
     const raw = output.text || "";
     if (isBlobUrl(raw)) {
-      fetchBlobText(raw).then(setText).catch(() => setText(raw));
+      fetchBlobText(raw)
+        .then(setText)
+        .catch(() => setText(raw));
     } else {
       setText(raw);
     }

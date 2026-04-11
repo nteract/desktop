@@ -2,7 +2,7 @@
  * Tests for createAFMModelProxy — the AFM-compatible model proxy for anywidgets.
  */
 
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { createAFMModelProxy } from "../anywidget-view";
 import { createWidgetStore } from "../widget-store";
 
@@ -12,8 +12,11 @@ function makeProxy(state: Record<string, unknown>) {
   store.createModel(commId, state);
   const sendMessage = vi.fn();
   const model = store.getModel(commId)!;
-  const proxy = createAFMModelProxy(model, store, sendMessage, () =>
-    store.getModel(commId)?.state ?? {},
+  const proxy = createAFMModelProxy(
+    model,
+    store,
+    sendMessage,
+    () => store.getModel(commId)?.state ?? {},
   );
   return { proxy, store, sendMessage };
 }

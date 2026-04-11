@@ -137,10 +137,7 @@ function GeoJsonRenderer({ data: rawData }: RendererProps) {
 // --- Plugin install ---
 
 export function install(ctx: {
-  register: (
-    mimeTypes: string[],
-    component: React.ComponentType<RendererProps>,
-  ) => void;
+  register: (mimeTypes: string[], component: React.ComponentType<RendererProps>) => void;
 }) {
   ctx.register(["application/geo+json"], GeoJsonRenderer);
 }

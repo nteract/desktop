@@ -1,17 +1,5 @@
-import {
-  memo,
-  useCallback,
-  useDeferredValue,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
-import {
-  oneDark,
-  oneLight,
-  SyntaxHighlighter,
-} from "@/components/outputs/syntax-highlighter";
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { oneDark, oneLight, SyntaxHighlighter } from "@/components/outputs/syntax-highlighter";
 import {
   Command,
   CommandEmpty,
@@ -49,9 +37,7 @@ const CodePreview = memo(function CodePreview({
   // Truncate to maxLines
   const lines = code.split("\n");
   const truncated = lines.length > maxLines;
-  const displayCode = truncated
-    ? `${lines.slice(0, maxLines).join("\n")}\n...`
-    : code;
+  const displayCode = truncated ? `${lines.slice(0, maxLines).join("\n")}\n...` : code;
 
   return (
     <SyntaxHighlighter
@@ -76,13 +62,8 @@ const CodePreview = memo(function CodePreview({
   );
 });
 
-export function HistorySearchDialog({
-  open,
-  onOpenChange,
-  onSelect,
-}: HistorySearchDialogProps) {
-  const { entries, isLoading, error, searchHistory, clearEntries } =
-    useHistorySearch();
+export function HistorySearchDialog({ open, onOpenChange, onSelect }: HistorySearchDialogProps) {
+  const { entries, isLoading, error, searchHistory, clearEntries } = useHistorySearch();
   const [searchValue, setSearchValue] = useState("");
   // Defer the search value for filtering to keep input responsive
   const deferredSearchValue = useDeferredValue(searchValue);
@@ -129,9 +110,7 @@ export function HistorySearchDialog({
       return entries;
     }
     const search = deferredSearchValue.toLowerCase();
-    return entries.filter((entry) =>
-      entry.source.toLowerCase().includes(search),
-    );
+    return entries.filter((entry) => entry.source.toLowerCase().includes(search));
   }, [entries, deferredSearchValue]);
 
   const handleSelect = useCallback(
@@ -168,14 +147,9 @@ export function HistorySearchDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogHeader className="sr-only">
         <DialogTitle>History Search</DialogTitle>
-        <DialogDescription>
-          Search through your IPython command history (Ctrl+R)
-        </DialogDescription>
+        <DialogDescription>Search through your IPython command history (Ctrl+R)</DialogDescription>
       </DialogHeader>
-      <DialogContent
-        className="overflow-hidden p-0 max-w-2xl"
-        showCloseButton={false}
-      >
+      <DialogContent className="overflow-hidden p-0 max-w-2xl" showCloseButton={false}>
         <Command
           shouldFilter={false}
           className="[&_[cmdk-group-heading]]:text-muted-foreground **:data-[slot=command-input-wrapper]:h-12 [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group]]:px-2 [&_[cmdk-group]:not([hidden])_~[cmdk-group]]:pt-0 [&_[cmdk-input-wrapper]_svg]:h-5 [&_[cmdk-input-wrapper]_svg]:w-5 [&_[cmdk-input]]:h-12 [&_[cmdk-item]]:px-2 [&_[cmdk-item]]:py-1 [&_[cmdk-item]_svg]:h-5 [&_[cmdk-item]_svg]:w-5"
@@ -189,9 +163,7 @@ export function HistorySearchDialog({
             {emptyMessage ? (
               <CommandEmpty>{emptyMessage}</CommandEmpty>
             ) : (
-              <CommandGroup
-                heading={`History${isLoading ? " (searching...)" : ""}`}
-              >
+              <CommandGroup heading={`History${isLoading ? " (searching...)" : ""}`}>
                 {filteredEntries.map((entry, index) => (
                   <CommandItem
                     key={`${entry.session}-${entry.line}-${index}`}

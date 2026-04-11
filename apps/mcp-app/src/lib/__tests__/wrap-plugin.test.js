@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vite-plus/test";
 import { wrapForMcpApp } from "../wrap-plugin.js";
 
 /** Minimal mock of window.__nteract for testing */

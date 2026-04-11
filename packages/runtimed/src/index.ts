@@ -41,11 +41,7 @@ export {
 } from "./runtime-state";
 
 // Pool state
-export {
-  type PoolState,
-  type RuntimePoolState,
-  DEFAULT_POOL_STATE,
-} from "./pool-state";
+export { type PoolState, type RuntimePoolState, DEFAULT_POOL_STATE } from "./pool-state";
 
 // Broadcast types
 export {
@@ -96,11 +92,7 @@ export {
 
 // Notebook client
 export { NotebookClient, type NotebookClientOptions } from "./notebook-client";
-export type {
-  CommRequestMessage,
-  NotebookRequest,
-  NotebookResponse,
-} from "./request-types";
+export type { CommRequestMessage, NotebookRequest, NotebookResponse } from "./request-types";
 
 // MIME priority
 export { DEFAULT_MIME_PRIORITY } from "./mime-priority";

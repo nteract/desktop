@@ -10,14 +10,12 @@
 
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import type { EnvProgressState } from "../../hooks/useEnvProgress";
 import { KERNEL_STATUS, type KernelStatus } from "../../lib/kernel-status";
 import { NotebookToolbar } from "../NotebookToolbar";
 
-function makeEnvProgress(
-  overrides: Partial<EnvProgressState>,
-): EnvProgressState {
+function makeEnvProgress(overrides: Partial<EnvProgressState>): EnvProgressState {
   return {
     isActive: false,
     phase: null,
@@ -48,81 +46,45 @@ const baseProps = {
 describe("NotebookToolbar", () => {
   describe("start button visibility", () => {
     it("hides start button when kernel is idle", () => {
-      render(
-        <NotebookToolbar {...baseProps} kernelStatus={KERNEL_STATUS.IDLE} />,
-      );
-      expect(
-        screen.queryByTestId("start-kernel-button"),
-      ).not.toBeInTheDocument();
+      render(<NotebookToolbar {...baseProps} kernelStatus={KERNEL_STATUS.IDLE} />);
+      expect(screen.queryByTestId("start-kernel-button")).not.toBeInTheDocument();
     });
 
     it("hides start button when kernel is busy", () => {
-      render(
-        <NotebookToolbar {...baseProps} kernelStatus={KERNEL_STATUS.BUSY} />,
-      );
-      expect(
-        screen.queryByTestId("start-kernel-button"),
-      ).not.toBeInTheDocument();
+      render(<NotebookToolbar {...baseProps} kernelStatus={KERNEL_STATUS.BUSY} />);
+      expect(screen.queryByTestId("start-kernel-button")).not.toBeInTheDocument();
     });
 
     it("hides start button when kernel is starting", () => {
-      render(
-        <NotebookToolbar
-          {...baseProps}
-          kernelStatus={KERNEL_STATUS.STARTING}
-        />,
-      );
-      expect(
-        screen.queryByTestId("start-kernel-button"),
-      ).not.toBeInTheDocument();
+      render(<NotebookToolbar {...baseProps} kernelStatus={KERNEL_STATUS.STARTING} />);
+      expect(screen.queryByTestId("start-kernel-button")).not.toBeInTheDocument();
     });
 
     it("shows start button when kernel is not started", () => {
-      render(
-        <NotebookToolbar
-          {...baseProps}
-          kernelStatus={KERNEL_STATUS.NOT_STARTED}
-        />,
-      );
+      render(<NotebookToolbar {...baseProps} kernelStatus={KERNEL_STATUS.NOT_STARTED} />);
       expect(screen.getByTestId("start-kernel-button")).toBeInTheDocument();
     });
 
     it("shows start button when kernel is shut down", () => {
-      render(
-        <NotebookToolbar
-          {...baseProps}
-          kernelStatus={KERNEL_STATUS.SHUTDOWN}
-        />,
-      );
+      render(<NotebookToolbar {...baseProps} kernelStatus={KERNEL_STATUS.SHUTDOWN} />);
       expect(screen.getByTestId("start-kernel-button")).toBeInTheDocument();
     });
 
     it("shows start button when kernel has errored", () => {
-      render(
-        <NotebookToolbar {...baseProps} kernelStatus={KERNEL_STATUS.ERROR} />,
-      );
+      render(<NotebookToolbar {...baseProps} kernelStatus={KERNEL_STATUS.ERROR} />);
       expect(screen.getByTestId("start-kernel-button")).toBeInTheDocument();
     });
   });
 
   describe("interrupt button visibility", () => {
     it("shows interrupt button when kernel is running", () => {
-      render(
-        <NotebookToolbar {...baseProps} kernelStatus={KERNEL_STATUS.IDLE} />,
-      );
+      render(<NotebookToolbar {...baseProps} kernelStatus={KERNEL_STATUS.IDLE} />);
       expect(screen.getByTestId("interrupt-kernel-button")).toBeInTheDocument();
     });
 
     it("hides interrupt button when kernel is not running", () => {
-      render(
-        <NotebookToolbar
-          {...baseProps}
-          kernelStatus={KERNEL_STATUS.NOT_STARTED}
-        />,
-      );
-      expect(
-        screen.queryByTestId("interrupt-kernel-button"),
-      ).not.toBeInTheDocument();
+      render(<NotebookToolbar {...baseProps} kernelStatus={KERNEL_STATUS.NOT_STARTED} />);
+      expect(screen.queryByTestId("interrupt-kernel-button")).not.toBeInTheDocument();
     });
   });
 
@@ -259,9 +221,7 @@ describe("NotebookToolbar", () => {
 
   describe("kernel status display", () => {
     it("shows kernel status text", () => {
-      render(
-        <NotebookToolbar {...baseProps} kernelStatus={KERNEL_STATUS.IDLE} />,
-      );
+      render(<NotebookToolbar {...baseProps} kernelStatus={KERNEL_STATUS.IDLE} />);
       const status = screen.getByTestId("kernel-status");
       expect(status.dataset.kernelStatus).toBe("idle");
     });
@@ -357,9 +317,7 @@ describe("NotebookToolbar", () => {
           startingPhase="missing_ipykernel"
         />,
       );
-      expect(
-        screen.getByText(/ipykernel not found in pixi.toml/),
-      ).toBeInTheDocument();
+      expect(screen.getByText(/ipykernel not found in pixi.toml/)).toBeInTheDocument();
     });
 
     it("does not show pixi prompt for generic pixi error (no missing_ipykernel phase)", () => {
@@ -371,9 +329,7 @@ describe("NotebookToolbar", () => {
           envSource="pixi:toml"
         />,
       );
-      expect(
-        screen.queryByText(/ipykernel not found in pixi.toml/),
-      ).not.toBeInTheDocument();
+      expect(screen.queryByText(/ipykernel not found in pixi.toml/)).not.toBeInTheDocument();
     });
 
     it("does not show pixi prompt when runtime is deno", () => {
@@ -386,9 +342,7 @@ describe("NotebookToolbar", () => {
           startingPhase="missing_ipykernel"
         />,
       );
-      expect(
-        screen.queryByText(/ipykernel not found in pixi.toml/),
-      ).not.toBeInTheDocument();
+      expect(screen.queryByText(/ipykernel not found in pixi.toml/)).not.toBeInTheDocument();
     });
 
     it("does not show pixi prompt when kernel is not in error", () => {
@@ -401,9 +355,7 @@ describe("NotebookToolbar", () => {
           startingPhase="missing_ipykernel"
         />,
       );
-      expect(
-        screen.queryByText(/ipykernel not found in pixi.toml/),
-      ).not.toBeInTheDocument();
+      expect(screen.queryByText(/ipykernel not found in pixi.toml/)).not.toBeInTheDocument();
     });
 
     it("does not show pixi prompt when envSource is not pixi", () => {
@@ -416,9 +368,7 @@ describe("NotebookToolbar", () => {
           startingPhase="missing_ipykernel"
         />,
       );
-      expect(
-        screen.queryByText(/ipykernel not found in pixi.toml/),
-      ).not.toBeInTheDocument();
+      expect(screen.queryByText(/ipykernel not found in pixi.toml/)).not.toBeInTheDocument();
     });
   });
 });

@@ -4,34 +4,18 @@ import { isSafeForMainDom } from "./safe-mime-types";
 import { useMediaContext } from "./media-provider";
 
 // Lazy load built-in output components for better bundle splitting
-const AnsiOutput = lazy(() =>
-  import("./ansi-output").then((m) => ({ default: m.AnsiOutput })),
-);
+const AnsiOutput = lazy(() => import("./ansi-output").then((m) => ({ default: m.AnsiOutput })));
 const MarkdownOutput = lazy(() =>
   import("./markdown-output").then((m) => ({ default: m.MarkdownOutput })),
 );
-const HtmlOutput = lazy(() =>
-  import("./html-output").then((m) => ({ default: m.HtmlOutput })),
-);
-const ImageOutput = lazy(() =>
-  import("./image-output").then((m) => ({ default: m.ImageOutput })),
-);
-const SvgOutput = lazy(() =>
-  import("./svg-output").then((m) => ({ default: m.SvgOutput })),
-);
-const JsonOutput = lazy(() =>
-  import("./json-output").then((m) => ({ default: m.JsonOutput })),
-);
+const HtmlOutput = lazy(() => import("./html-output").then((m) => ({ default: m.HtmlOutput })));
+const ImageOutput = lazy(() => import("./image-output").then((m) => ({ default: m.ImageOutput })));
+const SvgOutput = lazy(() => import("./svg-output").then((m) => ({ default: m.SvgOutput })));
+const JsonOutput = lazy(() => import("./json-output").then((m) => ({ default: m.JsonOutput })));
 
-const AudioOutput = lazy(() =>
-  import("./audio-output").then((m) => ({ default: m.AudioOutput })),
-);
-const VideoOutput = lazy(() =>
-  import("./video-output").then((m) => ({ default: m.VideoOutput })),
-);
-const PdfOutput = lazy(() =>
-  import("./pdf-output").then((m) => ({ default: m.PdfOutput })),
-);
+const AudioOutput = lazy(() => import("./audio-output").then((m) => ({ default: m.AudioOutput })));
+const VideoOutput = lazy(() => import("./video-output").then((m) => ({ default: m.VideoOutput })));
+const PdfOutput = lazy(() => import("./pdf-output").then((m) => ({ default: m.PdfOutput })));
 const JavaScriptOutput = lazy(() =>
   import("./javascript-output").then((m) => ({
     default: m.JavaScriptOutput,
@@ -185,10 +169,7 @@ interface MediaRouterProps {
 /**
  * Select the best MIME type from available data based on priority.
  */
-function selectMimeType(
-  data: MediaData,
-  priority: readonly string[],
-): MimeType | null {
+function selectMimeType(data: MediaData, priority: readonly string[]): MimeType | null {
   const availableTypes = Object.keys(data);
 
   // Check priority list first
@@ -284,9 +265,7 @@ export function MediaRouter({
         {fallback ? (
           fallback
         ) : (
-          <div className="py-2 text-sm text-gray-500">
-            No displayable output
-          </div>
+          <div className="py-2 text-sm text-gray-500">No displayable output</div>
         )}
       </div>
     );
@@ -333,13 +312,7 @@ export function MediaRouter({
     // render rich MIME types using any plugin already installed in the iframe.
     const PluginRenderer = getRenderer(mimeType);
     if (PluginRenderer) {
-      return (
-        <PluginRenderer
-          data={content}
-          metadata={mimeMetadata}
-          mimeType={mimeType}
-        />
-      );
+      return <PluginRenderer data={content} metadata={mimeMetadata} mimeType={mimeType} />;
     }
 
     // Text/Markdown (only renders when in iframe)
@@ -372,13 +345,7 @@ export function MediaRouter({
 
     // Audio
     if (mimeType.startsWith("audio/")) {
-      return (
-        <AudioOutput
-          data={String(content)}
-          mediaType={mimeType}
-          className={className}
-        />
-      );
+      return <AudioOutput data={String(content)} mediaType={mimeType} className={className} />;
     }
 
     // Video

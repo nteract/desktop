@@ -6,7 +6,7 @@
  * verify the JSON-RPC routing path works correctly.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { generateFrameHtml } from "../frame-html";
 
 describe("bootstrap HTML JSON-RPC support", () => {

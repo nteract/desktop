@@ -1,10 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "./components/ui/popover";
+import { Popover, PopoverContent, PopoverTrigger } from "./components/ui/popover";
 import type {
   BooleanColumnSummary,
   CategoricalColumnSummary,
@@ -108,14 +104,7 @@ function BrushLayer({
     const x = Math.min(brushState.startX, brushState.currentX);
     const w = Math.abs(brushState.currentX - brushState.startX);
     brushRect = (
-      <rect
-        x={x}
-        y={0}
-        width={w}
-        height={CHART_HEIGHT}
-        fill="var(--accent)"
-        opacity={0.2}
-      />
+      <rect x={x} y={0} width={w} height={CHART_HEIGHT} fill="var(--accent)" opacity={0.2} />
     );
   } else if (activeFilter) {
     const x = valueToX(activeFilter.min);
@@ -177,8 +166,7 @@ function BinaryNumericRatioBar({
   const lowPct = Math.round((lowBin.count / total) * 1000) / 10;
   const highPct = Math.round((highBin.count / total) * 1000) / 10;
 
-  const isIntegerColumn =
-    Number.isInteger(summary.min) && Number.isInteger(summary.max);
+  const isIntegerColumn = Number.isInteger(summary.min) && Number.isInteger(summary.max);
   const lowLabel = isIntegerColumn
     ? String(Math.round((lowBin.x0 + lowBin.x1) / 2))
     : formatNum((lowBin.x0 + lowBin.x1) / 2);
@@ -187,12 +175,9 @@ function BinaryNumericRatioBar({
     : formatNum((highBin.x0 + highBin.x1) / 2);
 
   // Determine which segment is "active" based on range filter
-  const lowActive =
-    !activeFilter ||
-    (lowBin.x1 > activeFilter.min && lowBin.x0 < activeFilter.max);
+  const lowActive = !activeFilter || (lowBin.x1 > activeFilter.min && lowBin.x0 < activeFilter.max);
   const highActive =
-    !activeFilter ||
-    (highBin.x1 > activeFilter.min && highBin.x0 < activeFilter.max);
+    !activeFilter || (highBin.x1 > activeFilter.min && highBin.x0 < activeFilter.max);
 
   return (
     <div className="pt-bool-summary">
@@ -204,11 +189,7 @@ function BinaryNumericRatioBar({
             opacity: activeFilter && !lowActive ? 0.3 : 1,
           }}
           onClick={() => {
-            if (
-              activeFilter &&
-              activeFilter.min === lowBin.x0 &&
-              activeFilter.max === lowBin.x1
-            ) {
+            if (activeFilter && activeFilter.min === lowBin.x0 && activeFilter.max === lowBin.x1) {
               onFilter(null);
             } else {
               onFilter({ kind: "range", min: lowBin.x0, max: lowBin.x1 });
@@ -239,8 +220,7 @@ function BinaryNumericRatioBar({
           <strong>{lowLabel}</strong> <span className="pt-pct">{lowPct}%</span>
         </span>
         <span>
-          <strong>{highLabel}</strong>{" "}
-          <span className="pt-pct">{highPct}%</span>
+          <strong>{highLabel}</strong> <span className="pt-pct">{highPct}%</span>
         </span>
       </div>
     </div>
@@ -250,16 +230,10 @@ function BinaryNumericRatioBar({
 // --- High-cardinality unique count display ---
 
 /** Renders a simple unique count for high-cardinality columns with long text. */
-function HighCardinalityText({
-  summary,
-}: {
-  summary: CategoricalColumnSummary;
-}) {
+function HighCardinalityText({ summary }: { summary: CategoricalColumnSummary }) {
   return (
     <div className="pt-cat-summary">
-      <span className="pt-th-range">
-        {summary.uniqueCount.toLocaleString()} unique values
-      </span>
+      <span className="pt-th-range">{summary.uniqueCount.toLocaleString()} unique values</span>
     </div>
   );
 }
@@ -277,8 +251,7 @@ function LowCardinalityNumericBars({
   onFilter: FilterCallback;
 }) {
   // Check if this looks like an integer column
-  const isIntegerColumn =
-    Number.isInteger(summary.min) && Number.isInteger(summary.max);
+  const isIntegerColumn = Number.isInteger(summary.min) && Number.isInteger(summary.max);
 
   const entries = summary.bins
     .filter((b) => b.count > 0)
@@ -299,19 +272,14 @@ function LowCardinalityNumericBars({
       {items.map((item) => {
         // Highlight bar if its range overlaps the active range filter
         const isActive =
-          !activeFilter ||
-          (item.x1 > activeFilter.min && item.x0 < activeFilter.max);
+          !activeFilter || (item.x1 > activeFilter.min && item.x0 < activeFilter.max);
         return (
           <div
             key={item.label}
             className="pt-cat-row pt-cat-clickable"
             style={{ opacity: activeFilter && !isActive ? 0.3 : 1 }}
             onClick={() => {
-              if (
-                activeFilter &&
-                activeFilter.min === item.x0 &&
-                activeFilter.max === item.x1
-              ) {
+              if (activeFilter && activeFilter.min === item.x0 && activeFilter.max === item.x1) {
                 onFilter(null);
               } else {
                 onFilter({ kind: "range", min: item.x0, max: item.x1 });
@@ -319,10 +287,7 @@ function LowCardinalityNumericBars({
             }}
           >
             <div className="pt-cat-bar-track">
-              <div
-                className="pt-cat-bar-fill"
-                style={{ width: `${item.pct}%` }}
-              />
+              <div className="pt-cat-bar-fill" style={{ width: `${item.pct}%` }} />
             </div>
             <span className="pt-cat-label">{item.label}</span>
             <span className="pt-cat-pct">{item.pct}%</span>
@@ -364,10 +329,7 @@ function NumericHistogram({
   // Binary numeric (exactly 2 unique values like 0/1): show as ratio bar
   // Use unfiltered summary so the bar always shows both values, even when one is filtered out
   const sourceSummary = unfilteredSummary ?? summary;
-  if (
-    sourceSummary.uniqueCount !== undefined &&
-    sourceSummary.uniqueCount === 2
-  ) {
+  if (sourceSummary.uniqueCount !== undefined && sourceSummary.uniqueCount === 2) {
     return (
       <>
         <BinaryNumericRatioBar
@@ -400,9 +362,7 @@ function NumericHistogram({
   const numBins = summary.bins.length;
   const gap = 1;
   const barW = Math.max(1, (width - (numBins - 1) * gap) / numBins);
-  const baseFill = hasOverlay
-    ? "rgba(149, 95, 59, 0.2)"
-    : "rgba(149, 95, 59, 0.7)";
+  const baseFill = hasOverlay ? "rgba(149, 95, 59, 0.2)" : "rgba(149, 95, 59, 0.7)";
   const dimFill = "rgba(149, 95, 59, 0.12)";
   const activeFill = "rgba(149, 95, 59, 0.7)";
 
@@ -423,8 +383,7 @@ function NumericHistogram({
               // Per-bin highlight: bins overlapping the filter range are bright, others dimmed
               let fill = baseFill;
               if (isFiltered) {
-                const binOverlaps =
-                  bin.x1 > activeFilter.min && bin.x0 < activeFilter.max;
+                const binOverlaps = bin.x1 > activeFilter.min && bin.x0 < activeFilter.max;
                 fill = binOverlaps ? activeFill : dimFill;
               }
               return (
@@ -436,19 +395,14 @@ function NumericHistogram({
                   height={h}
                   fill={fill}
                   style={{
-                    transition:
-                      "y 200ms ease-out, height 200ms ease-out, fill 150ms ease-out",
+                    transition: "y 200ms ease-out, height 200ms ease-out, fill 150ms ease-out",
                   }}
                 />
               );
             })}
         </svg>
         {hasOverlay && (
-          <VisibleOverlay
-            bins={summary.bins}
-            visibleBins={visibleBins}
-            width={width}
-          />
+          <VisibleOverlay bins={summary.bins} visibleBins={visibleBins} width={width} />
         )}
         <BrushLayer
           width={width}
@@ -669,9 +623,7 @@ function CategoryPopoverContent({
           })}
         </div>
       </div>
-      {filtered.length === 0 && (
-        <div className="pt-cat-popover-empty">No matches</div>
-      )}
+      {filtered.length === 0 && <div className="pt-cat-popover-empty">No matches</div>}
     </div>
   );
 }
@@ -729,9 +681,7 @@ function CategoricalBars({
                       if (activeSet?.has(item.label)) {
                         const next = new Set(activeSet);
                         next.delete(item.label);
-                        onFilter(
-                          next.size > 0 ? { kind: "set", values: next } : null,
-                        );
+                        onFilter(next.size > 0 ? { kind: "set", values: next } : null);
                       } else {
                         const next = new Set(activeSet ?? []);
                         next.add(item.label);
@@ -741,10 +691,7 @@ function CategoricalBars({
               }
             >
               <div className="pt-cat-bar-track">
-                <div
-                  className="pt-cat-bar-fill"
-                  style={{ width: `${item.pct}%` }}
-                />
+                <div className="pt-cat-bar-fill" style={{ width: `${item.pct}%` }} />
               </div>
               <span className="pt-cat-label">
                 {item.isOthers ? item.label + " ▾" : truncate(item.label, 16)}
@@ -785,14 +732,10 @@ function BooleanRatioBar({
   onFilter: FilterCallback;
 }) {
   const nonNull = summary.trueCount + summary.falseCount;
-  const truePct =
-    summary.total > 0 ? (summary.trueCount / summary.total) * 100 : 0;
-  const falsePct =
-    summary.total > 0 ? (summary.falseCount / summary.total) * 100 : 0;
-  const nullPct =
-    summary.total > 0 ? (summary.nullCount / summary.total) * 100 : 0;
-  const activeValue =
-    activeFilter?.kind === "boolean" ? activeFilter.value : null;
+  const truePct = summary.total > 0 ? (summary.trueCount / summary.total) * 100 : 0;
+  const falsePct = summary.total > 0 ? (summary.falseCount / summary.total) * 100 : 0;
+  const nullPct = summary.total > 0 ? (summary.nullCount / summary.total) * 100 : 0;
+  const activeValue = activeFilter?.kind === "boolean" ? activeFilter.value : null;
   const hasNulls = summary.nullCount > 0;
 
   return (
@@ -804,11 +747,7 @@ function BooleanRatioBar({
             width: `${truePct}%`,
             opacity: activeValue === false ? 0.3 : 1,
           }}
-          onClick={() =>
-            onFilter(
-              activeValue === true ? null : { kind: "boolean", value: true },
-            )
-          }
+          onClick={() => onFilter(activeValue === true ? null : { kind: "boolean", value: true })}
         />
         <div
           className="pt-bool-false pt-bool-clickable"
@@ -816,11 +755,7 @@ function BooleanRatioBar({
             width: `${falsePct}%`,
             opacity: activeValue === true ? 0.3 : 1,
           }}
-          onClick={() =>
-            onFilter(
-              activeValue === false ? null : { kind: "boolean", value: false },
-            )
-          }
+          onClick={() => onFilter(activeValue === false ? null : { kind: "boolean", value: false })}
         />
         {hasNulls && (
           <div
@@ -832,9 +767,7 @@ function BooleanRatioBar({
       </div>
       <div className="pt-bool-labels">
         <span>Yes {nonNull > 0 ? truePct.toFixed(0) : 0}%</span>
-        {hasNulls && (
-          <span className="pt-bool-null-label">{nullPct.toFixed(0)}% null</span>
-        )}
+        {hasNulls && <span className="pt-bool-null-label">{nullPct.toFixed(0)}% null</span>}
         <span>No {nonNull > 0 ? falsePct.toFixed(0) : 0}%</span>
       </div>
     </div>
@@ -903,9 +836,7 @@ function TimestampHistogram({
   const maxCount = Math.max(...summary.bins.map((b) => b.count));
   const numBins = summary.bins.length;
   const barW = width / numBins;
-  const baseFill = hasOverlay
-    ? "rgba(149, 95, 59, 0.18)"
-    : "rgba(149, 95, 59, 0.55)";
+  const baseFill = hasOverlay ? "rgba(149, 95, 59, 0.18)" : "rgba(149, 95, 59, 0.55)";
   const dimFill = "rgba(149, 95, 59, 0.1)";
   const activeFill = "rgba(149, 95, 59, 0.55)";
 
@@ -931,8 +862,7 @@ function TimestampHistogram({
               if (isFiltered) {
                 const binStart = summary.min + i * binSpan;
                 const binEnd = binStart + binSpan;
-                const binOverlaps =
-                  binEnd > activeFilter.min && binStart < activeFilter.max;
+                const binOverlaps = binEnd > activeFilter.min && binStart < activeFilter.max;
                 fill = binOverlaps ? activeFill : dimFill;
               }
               return (
@@ -944,19 +874,14 @@ function TimestampHistogram({
                   height={h}
                   fill={fill}
                   style={{
-                    transition:
-                      "y 200ms ease-out, height 200ms ease-out, fill 150ms ease-out",
+                    transition: "y 200ms ease-out, height 200ms ease-out, fill 150ms ease-out",
                   }}
                 />
               );
             })}
         </svg>
         {hasOverlay && (
-          <VisibleOverlay
-            bins={summary.bins}
-            visibleBins={visibleBins}
-            width={width}
-          />
+          <VisibleOverlay bins={summary.bins} visibleBins={visibleBins} width={width} />
         )}
         <BrushLayer
           width={width}
@@ -1016,22 +941,14 @@ function ColumnSummaryChart({
         />
       );
     case "boolean":
-      return (
-        <BooleanRatioBar
-          summary={summary}
-          activeFilter={activeFilter}
-          onFilter={onFilter}
-        />
-      );
+      return <BooleanRatioBar summary={summary} activeFilter={activeFilter} onFilter={onFilter} />;
     case "categorical": {
       // High-cardinality with long text (e.g. track_id, URLs): just show unique count
       if (summary.uniqueCount > 1000 && summary.medianTextLength > 30) {
         return <HighCardinalityText summary={summary} />;
       }
       const unfilteredCategorical =
-        unfilteredSummary?.kind === "categorical"
-          ? unfilteredSummary
-          : undefined;
+        unfilteredSummary?.kind === "categorical" ? unfilteredSummary : undefined;
       return (
         <CategoricalBars
           summary={summary}

@@ -1,7 +1,4 @@
-export {
-  CommBridgeManager,
-  createCommBridgeManager,
-} from "./comm-bridge-manager";
+export { CommBridgeManager, createCommBridgeManager } from "./comm-bridge-manager";
 // Message protocol types
 export type {
   ClearMessage,
@@ -36,7 +33,4 @@ export { IsolationTest } from "./IsolationTest";
 export type { IsolatedFrameHandle, IsolatedFrameProps } from "./isolated-frame";
 export { IsolatedFrame } from "./isolated-frame";
 // Provider and hook for renderer bundle
-export {
-  IsolatedRendererProvider,
-  useIsolatedRenderer,
-} from "./isolated-renderer-context";
+export { IsolatedRendererProvider, useIsolatedRenderer } from "./isolated-renderer-context";

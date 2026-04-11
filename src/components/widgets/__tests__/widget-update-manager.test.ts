@@ -2,7 +2,7 @@
  * Tests for WidgetUpdateManager — debounced CRDT persistence + echo suppression.
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { createWidgetStore, type WidgetStore } from "../widget-store";
 import { WidgetUpdateManager } from "../widget-update-manager";
 
@@ -10,8 +10,7 @@ import { WidgetUpdateManager } from "../widget-update-manager";
 
 function setup(opts?: { writerAvailable?: boolean }) {
   const store = createWidgetStore();
-  const writerCalls: Array<{ commId: string; patch: Record<string, unknown> }> =
-    [];
+  const writerCalls: Array<{ commId: string; patch: Record<string, unknown> }> = [];
   const writer = (commId: string, patch: Record<string, unknown>) => {
     writerCalls.push({ commId, patch });
   };
@@ -205,9 +204,9 @@ describe("WidgetUpdateManager", () => {
       expect(manager.shouldSuppressEcho("comm-1", { value: 5 })).toBeNull();
 
       // Non-value keys still pass through
-      expect(
-        manager.shouldSuppressEcho("comm-1", { value: 5, _view_name: "x" }),
-      ).toEqual({ _view_name: "x" });
+      expect(manager.shouldSuppressEcho("comm-1", { value: 5, _view_name: "x" })).toEqual({
+        _view_name: "x",
+      });
     });
   });
 

@@ -9,19 +9,11 @@ import {
   Square,
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import {
-  HoverCard,
-  HoverCardContent,
-  HoverCardTrigger,
-} from "@/components/ui/hover-card";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { cn } from "@/lib/utils";
 import type { EnvProgressState } from "../hooks/useEnvProgress";
 import type { UpdateStatus } from "../hooks/useUpdater";
-import {
-  getKernelStatusLabel,
-  KERNEL_STATUS,
-  type KernelStatus,
-} from "../lib/kernel-status";
+import { getKernelStatusLabel, KERNEL_STATUS, type KernelStatus } from "../lib/kernel-status";
 import type { KernelspecInfo } from "../types";
 import { CondaIcon, DenoIcon, PixiIcon, PythonIcon, UvIcon } from "./icons";
 
@@ -93,9 +85,7 @@ export function NotebookToolbar({
       return;
     }
     // Default to python3 or first available
-    const python = kernelspecs.find(
-      (k) => k.name === "python3" || k.name === "python",
-    );
+    const python = kernelspecs.find((k) => k.name === "python3" || k.name === "python");
     const spec = python ?? kernelspecs[0];
     if (spec) {
       onStartKernel(spec.name);
@@ -125,9 +115,7 @@ export function NotebookToolbar({
   // Derive env manager label for the runtime pill (e.g. "uv", "conda", "pixi")
   const envManager: EnvBadgeVariant | null =
     runtime === "python"
-      ? envSource &&
-        (kernelStatus === KERNEL_STATUS.IDLE ||
-          kernelStatus === KERNEL_STATUS.BUSY)
+      ? envSource && (kernelStatus === KERNEL_STATUS.IDLE || kernelStatus === KERNEL_STATUS.BUSY)
         ? envSource.startsWith("pixi:")
           ? "pixi"
           : envSource.startsWith("conda")
@@ -240,9 +228,7 @@ export function NotebookToolbar({
           >
             <Square
               className="h-3 w-3"
-              fill={
-                kernelStatus === KERNEL_STATUS.BUSY ? "currentColor" : "none"
-              }
+              fill={kernelStatus === KERNEL_STATUS.BUSY ? "currentColor" : "none"}
             />
             <span className="hidden @[40rem]:inline">Interrupt</span>
           </button>
@@ -282,9 +268,7 @@ export function NotebookToolbar({
             title={(() => {
               const lang = runtime === "deno" ? "Deno/TypeScript" : "Python";
               const mgr = envManager ? ` · ${envManager}` : "";
-              const action = isDepsOpen
-                ? "close environment panel"
-                : "open environment panel";
+              const action = isDepsOpen ? "close environment panel" : "open environment panel";
               return `${lang}${mgr} — ${action}`;
             })()}
           >
@@ -330,14 +314,10 @@ export function NotebookToolbar({
               "h-2 w-2 shrink-0 rounded-full",
               kernelStatus === KERNEL_STATUS.IDLE && "bg-green-500",
               kernelStatus === KERNEL_STATUS.BUSY && "bg-amber-500",
-              kernelStatus === KERNEL_STATUS.STARTING &&
-                "bg-blue-500 animate-pulse",
-              kernelStatus === KERNEL_STATUS.NOT_STARTED &&
-                "bg-blue-500 animate-pulse",
-              kernelStatus === KERNEL_STATUS.SHUTDOWN &&
-                "bg-gray-400 dark:bg-gray-500",
-              (kernelStatus === KERNEL_STATUS.ERROR || envErrorMessage) &&
-                "bg-red-500",
+              kernelStatus === KERNEL_STATUS.STARTING && "bg-blue-500 animate-pulse",
+              kernelStatus === KERNEL_STATUS.NOT_STARTED && "bg-blue-500 animate-pulse",
+              kernelStatus === KERNEL_STATUS.SHUTDOWN && "bg-gray-400 dark:bg-gray-500",
+              (kernelStatus === KERNEL_STATUS.ERROR || envErrorMessage) && "bg-red-500",
             )}
           />
           <span className="text-xs text-muted-foreground whitespace-nowrap">
@@ -350,10 +330,7 @@ export function NotebookToolbar({
                     {envStatusText}
                   </span>
                 </HoverCardTrigger>
-                <HoverCardContent
-                  align="end"
-                  className="w-80 max-w-[calc(100vw-2rem)] p-3"
-                >
+                <HoverCardContent align="end" className="w-80 max-w-[calc(100vw-2rem)] p-3">
                   <div className="space-y-1">
                     <p className="text-xs font-medium text-red-600 dark:text-red-400">
                       Environment error
@@ -368,8 +345,7 @@ export function NotebookToolbar({
               <span
                 className={cn(
                   "capitalize",
-                  kernelStatus === KERNEL_STATUS.ERROR &&
-                    "text-red-600 dark:text-red-400",
+                  kernelStatus === KERNEL_STATUS.ERROR && "text-red-600 dark:text-red-400",
                 )}
               >
                 {kernelStatusText}
@@ -380,23 +356,21 @@ export function NotebookToolbar({
       </div>
 
       {/* Deno install prompt */}
-      {runtime === "deno" &&
-        kernelStatus === KERNEL_STATUS.ERROR &&
-        kernelErrorMessage && (
-          <div className="border-t px-3 py-2">
-            <div className="flex items-start gap-2 text-xs text-amber-700 dark:text-amber-400">
-              <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-              <span>
-                <span className="font-medium">Deno not available.</span>{" "}
-                Auto-install failed. Install manually with{" "}
-                <code className="rounded bg-amber-500/20 px-1">
-                  curl -fsSL https://deno.land/install.sh | sh
-                </code>{" "}
-                and restart.
-              </span>
-            </div>
+      {runtime === "deno" && kernelStatus === KERNEL_STATUS.ERROR && kernelErrorMessage && (
+        <div className="border-t px-3 py-2">
+          <div className="flex items-start gap-2 text-xs text-amber-700 dark:text-amber-400">
+            <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+            <span>
+              <span className="font-medium">Deno not available.</span> Auto-install failed. Install
+              manually with{" "}
+              <code className="rounded bg-amber-500/20 px-1">
+                curl -fsSL https://deno.land/install.sh | sh
+              </code>{" "}
+              and restart.
+            </span>
           </div>
-        )}
+        </div>
+      )}
       {/* Pixi ipykernel install prompt — only when daemon signals missing_ipykernel */}
       {runtime === "python" &&
         kernelStatus === KERNEL_STATUS.ERROR &&
@@ -406,14 +380,9 @@ export function NotebookToolbar({
             <div className="flex items-start gap-2 text-xs text-amber-700 dark:text-amber-400">
               <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
               <span>
-                <span className="font-medium">
-                  ipykernel not found in pixi.toml.
-                </span>{" "}
-                Run{" "}
-                <code className="rounded bg-amber-500/20 px-1">
-                  pixi add ipykernel
-                </code>{" "}
-                in your project directory and restart.
+                <span className="font-medium">ipykernel not found in pixi.toml.</span> Run{" "}
+                <code className="rounded bg-amber-500/20 px-1">pixi add ipykernel</code> in your
+                project directory and restart.
               </span>
             </div>
           </div>

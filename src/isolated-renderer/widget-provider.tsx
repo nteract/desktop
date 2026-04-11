@@ -29,35 +29,23 @@ import {
 } from "@/components/widgets/widget-store";
 import { WidgetStoreContext } from "@/components/widgets/widget-store-context";
 import { getTransport } from "./index";
-import {
-  createWidgetBridgeClient,
-  type WidgetBridgeClient,
-} from "./widget-bridge-client";
+import { createWidgetBridgeClient, type WidgetBridgeClient } from "./widget-bridge-client";
 
 // === Context Types ===
 
 interface IframeWidgetStoreContextValue {
   store: WidgetStore;
   /** Send a state update to the parent (which forwards to kernel) */
-  sendUpdate: (
-    commId: string,
-    state: Record<string, unknown>,
-    buffers?: ArrayBuffer[],
-  ) => void;
+  sendUpdate: (commId: string, state: Record<string, unknown>, buffers?: ArrayBuffer[]) => void;
   /** Send a custom message to the parent (which forwards to kernel) */
-  sendCustom: (
-    commId: string,
-    content: Record<string, unknown>,
-    buffers?: ArrayBuffer[],
-  ) => void;
+  sendCustom: (commId: string, content: Record<string, unknown>, buffers?: ArrayBuffer[]) => void;
   /** Close a comm channel via parent */
   closeComm: (commId: string) => void;
 }
 
 // === Context ===
 
-const IframeWidgetStoreContext =
-  createContext<IframeWidgetStoreContextValue | null>(null);
+const IframeWidgetStoreContext = createContext<IframeWidgetStoreContextValue | null>(null);
 
 // === Provider ===
 
@@ -75,9 +63,7 @@ interface IframeWidgetStoreProviderProps {
  *
  * Also provides to WidgetStoreContext so existing widget components work unchanged.
  */
-export function IframeWidgetStoreProvider({
-  children,
-}: IframeWidgetStoreProviderProps) {
+export function IframeWidgetStoreProvider({ children }: IframeWidgetStoreProviderProps) {
   // Create bridge client once
   const clientRef = useRef<WidgetBridgeClient | null>(null);
   if (!clientRef.current) {
@@ -183,9 +169,7 @@ export function useIframeWidgetStore(): IframeWidgetStoreContextValue | null {
 export function useIframeWidgetStoreRequired(): IframeWidgetStoreContextValue {
   const ctx = useContext(IframeWidgetStoreContext);
   if (!ctx) {
-    throw new Error(
-      "useIframeWidgetStoreRequired must be used within IframeWidgetStoreProvider",
-    );
+    throw new Error("useIframeWidgetStoreRequired must be used within IframeWidgetStoreProvider");
   }
   return ctx;
 }
@@ -196,11 +180,7 @@ export function useIframeWidgetStoreRequired(): IframeWidgetStoreContextValue {
 export function useIframeWidgetModels(): Map<string, WidgetModel> {
   const { store } = useIframeWidgetStoreRequired();
 
-  return useSyncExternalStore(
-    store.subscribe,
-    store.getSnapshot,
-    store.getSnapshot,
-  );
+  return useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
 }
 
 /**
@@ -209,15 +189,9 @@ export function useIframeWidgetModels(): Map<string, WidgetModel> {
 export function useIframeWidgetModel(modelId: string): WidgetModel | undefined {
   const { store } = useIframeWidgetStoreRequired();
 
-  const subscribe = useCallback(
-    (callback: () => void) => store.subscribe(callback),
-    [store],
-  );
+  const subscribe = useCallback((callback: () => void) => store.subscribe(callback), [store]);
 
-  const getSnapshot = useCallback(
-    () => store.getModel(modelId),
-    [store, modelId],
-  );
+  const getSnapshot = useCallback(() => store.getModel(modelId), [store, modelId]);
 
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }

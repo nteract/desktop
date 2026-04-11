@@ -28,9 +28,7 @@ export function mountColumnMenu(
   }
 
   function onClose() {
-    root?.render(
-      createElement(ColumnContextMenu, { state: null, onAction, onClose }),
-    );
+    root?.render(createElement(ColumnContextMenu, { state: null, onAction, onClose }));
   }
 
   root!.render(createElement(ColumnContextMenu, { state, onAction, onClose }));

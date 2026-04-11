@@ -10,7 +10,7 @@
 
 import path from "node:path";
 import tailwindcss from "@tailwindcss/vite";
-import { build, type Plugin } from "vite";
+import { build, type Plugin } from "vite-plus";
 
 const VIRTUAL_MODULE_ID = "virtual:isolated-renderer";
 const RESOLVED_VIRTUAL_MODULE_ID = `\0${VIRTUAL_MODULE_ID}`;
@@ -39,9 +39,7 @@ interface IsolatedRendererPluginOptions {
   sourcemap?: false | "inline";
 }
 
-export function isolatedRendererPlugin(
-  options: IsolatedRendererPluginOptions = {},
-): Plugin {
+export function isolatedRendererPlugin(options: IsolatedRendererPluginOptions = {}): Plugin {
   const {
     entry = path.resolve(__dirname, "../../src/isolated-renderer/index.tsx"),
     minify = false,
@@ -52,18 +50,9 @@ export function isolatedRendererPlugin(
     __dirname,
     "../../src/isolated-renderer/markdown-renderer.tsx",
   );
-  const vegaEntry = path.resolve(
-    __dirname,
-    "../../src/isolated-renderer/vega-renderer.tsx",
-  );
-  const plotlyEntry = path.resolve(
-    __dirname,
-    "../../src/isolated-renderer/plotly-renderer.tsx",
-  );
-  const leafletEntry = path.resolve(
-    __dirname,
-    "../../src/isolated-renderer/leaflet-renderer.tsx",
-  );
+  const vegaEntry = path.resolve(__dirname, "../../src/isolated-renderer/vega-renderer.tsx");
+  const plotlyEntry = path.resolve(__dirname, "../../src/isolated-renderer/plotly-renderer.tsx");
+  const leafletEntry = path.resolve(__dirname, "../../src/isolated-renderer/leaflet-renderer.tsx");
 
   let rendererCode = "";
   let rendererCss = "";
@@ -78,10 +67,7 @@ export function isolatedRendererPlugin(
   let buildPromise: Promise<void> | null = null;
 
   // Directories to watch for changes that should trigger rebuild
-  const isolatedRendererDir = path.resolve(
-    __dirname,
-    "../../src/isolated-renderer",
-  );
+  const isolatedRendererDir = path.resolve(__dirname, "../../src/isolated-renderer");
   const componentsDir = path.resolve(__dirname, "../../src/components");
 
   function invalidateCache() {
@@ -162,10 +148,7 @@ export function isolatedRendererPlugin(
         for (const chunk of output.output) {
           if (chunk.type === "chunk" && chunk.fileName.endsWith(".js")) {
             code = chunk.code;
-          } else if (
-            chunk.type === "asset" &&
-            chunk.fileName.endsWith(".css")
-          ) {
+          } else if (chunk.type === "asset" && chunk.fileName.endsWith(".css")) {
             css =
               typeof chunk.source === "string"
                 ? chunk.source
@@ -176,9 +159,7 @@ export function isolatedRendererPlugin(
     }
 
     if (!code) {
-      throw new Error(
-        `Failed to build ${pluginName} renderer plugin: no JS output produced`,
-      );
+      throw new Error(`Failed to build ${pluginName} renderer plugin: no JS output produced`);
     }
 
     return { code, css };
@@ -203,22 +184,10 @@ export function isolatedRendererPlugin(
             const nodeModules = path.resolve(__dirname, "../../node_modules");
             const mapping: Record<string, string> = {
               "vega-raw": path.join(nodeModules, "vega/build/vega.min.js"),
-              "vega-lite-raw": path.join(
-                nodeModules,
-                "vega-lite/build/vega-lite.min.js",
-              ),
-              "vega-embed-raw": path.join(
-                nodeModules,
-                "vega-embed/build/vega-embed.min.js",
-              ),
-              "leaflet-js-raw": path.join(
-                nodeModules,
-                "leaflet/dist/leaflet.js",
-              ),
-              "leaflet-css-raw": path.join(
-                nodeModules,
-                "leaflet/dist/leaflet.css",
-              ),
+              "vega-lite-raw": path.join(nodeModules, "vega-lite/build/vega-lite.min.js"),
+              "vega-embed-raw": path.join(nodeModules, "vega-embed/build/vega-embed.min.js"),
+              "leaflet-js-raw": path.join(nodeModules, "leaflet/dist/leaflet.js"),
+              "leaflet-css-raw": path.join(nodeModules, "leaflet/dist/leaflet.css"),
             };
             const filePath = mapping[source];
             if (filePath) return `${filePath}?raw`;
@@ -287,10 +256,7 @@ export function isolatedRendererPlugin(
         for (const chunk of output.output) {
           if (chunk.type === "chunk" && chunk.fileName.endsWith(".js")) {
             rendererCode = chunk.code;
-          } else if (
-            chunk.type === "asset" &&
-            chunk.fileName.endsWith(".css")
-          ) {
+          } else if (chunk.type === "asset" && chunk.fileName.endsWith(".css")) {
             rendererCss =
               typeof chunk.source === "string"
                 ? chunk.source
@@ -301,19 +267,16 @@ export function isolatedRendererPlugin(
     }
 
     if (!rendererCode) {
-      throw new Error(
-        "Failed to build isolated renderer: no JS output produced",
-      );
+      throw new Error("Failed to build isolated renderer: no JS output produced");
     }
 
     // --- Build renderer plugins (CJS, React externalized) ---
-    const [markdownPlugin, vegaPlugin, plotlyPlugin, leafletPlugin] =
-      await Promise.all([
-        buildRendererPlugin(markdownEntry, "markdown-renderer", srcDir),
-        buildRendererPlugin(vegaEntry, "vega-renderer", srcDir),
-        buildRendererPlugin(plotlyEntry, "plotly-renderer", srcDir),
-        buildRendererPlugin(leafletEntry, "leaflet-renderer", srcDir),
-      ]);
+    const [markdownPlugin, vegaPlugin, plotlyPlugin, leafletPlugin] = await Promise.all([
+      buildRendererPlugin(markdownEntry, "markdown-renderer", srcDir),
+      buildRendererPlugin(vegaEntry, "vega-renderer", srcDir),
+      buildRendererPlugin(plotlyEntry, "plotly-renderer", srcDir),
+      buildRendererPlugin(leafletEntry, "leaflet-renderer", srcDir),
+    ]);
     markdownRendererCode = markdownPlugin.code;
     markdownRendererCss = markdownPlugin.css;
     vegaRendererCode = vegaPlugin.code;
@@ -346,10 +309,7 @@ export function isolatedRendererPlugin(
     },
 
     async load(id) {
-      if (
-        id === RESOLVED_VIRTUAL_MODULE_ID ||
-        id.startsWith(RESOLVED_PLUGIN_PREFIX)
-      ) {
+      if (id === RESOLVED_VIRTUAL_MODULE_ID || id.startsWith(RESOLVED_PLUGIN_PREFIX)) {
         // Ensure build is complete before returning module content
         if (buildPromise) {
           await buildPromise;
@@ -428,18 +388,14 @@ export const css = ${JSON.stringify(leafletRendererCss)};
         // Invalidate the core virtual module and all plugin virtual modules.
         // Without this, Vite's module graph retains stale load() results for
         // plugin modules and serves old plugin code after a full-reload.
-        const mod = devServer.moduleGraph.getModuleById(
-          RESOLVED_VIRTUAL_MODULE_ID,
-        );
+        const mod = devServer.moduleGraph.getModuleById(RESOLVED_VIRTUAL_MODULE_ID);
         if (mod) {
           devServer.moduleGraph.invalidateModule(mod);
         }
 
         const pluginNames = ["markdown", "vega", "plotly", "leaflet"];
         for (const name of pluginNames) {
-          const pluginMod = devServer.moduleGraph.getModuleById(
-            `${RESOLVED_PLUGIN_PREFIX}${name}`,
-          );
+          const pluginMod = devServer.moduleGraph.getModuleById(`${RESOLVED_PLUGIN_PREFIX}${name}`);
           if (pluginMod) {
             devServer.moduleGraph.invalidateModule(pluginMod);
           }

@@ -9,11 +9,7 @@ import type {
 import type { IsolatedFrameHandle } from "./isolated-frame";
 
 // Type for sending messages to kernel
-type SendUpdate = (
-  commId: string,
-  state: Record<string, unknown>,
-  buffers?: ArrayBuffer[],
-) => void;
+type SendUpdate = (commId: string, state: Record<string, unknown>, buffers?: ArrayBuffer[]) => void;
 
 type SendCustom = (
   commId: string,
@@ -53,9 +49,7 @@ export class CommBridgeManager {
   private closeCommWithKernel: CloseComm;
 
   private isWidgetReady = false;
-  private messageBuffer: Array<
-    CommOpenMessage | CommMsgMessage | CommCloseMessage
-  > = [];
+  private messageBuffer: Array<CommOpenMessage | CommMsgMessage | CommCloseMessage> = [];
   private storeUnsubscribe: (() => void) | null = null;
 
   // Track which models have been sent to avoid duplicate sends
@@ -135,10 +129,7 @@ export class CommBridgeManager {
         this.frame.send(msg);
         this.sentModels.add(commId);
       } catch (e) {
-        console.warn(
-          `[CommBridge] Skipping non-cloneable comm_open for ${commId}:`,
-          e,
-        );
+        console.warn(`[CommBridge] Skipping non-cloneable comm_open for ${commId}:`, e);
       }
     } else {
       this.messageBuffer.push(msg);
@@ -292,10 +283,7 @@ export class CommBridgeManager {
         this.store.updateModel(commId, data, buffers);
         // Update our tracked state
         const current = this.previousState.get(commId) ?? {};
-        this.previousState.set(
-          commId,
-          this.cloneStateSnapshot({ ...current, ...data }),
-        );
+        this.previousState.set(commId, this.cloneStateSnapshot({ ...current, ...data }));
         // Then forward to kernel
         this.sendUpdateToKernel(commId, data, buffers);
       } finally {
@@ -352,10 +340,7 @@ export class CommBridgeManager {
             // Forward state update to iframe
             this.sendCommMsg(commId, "update", delta, model.buffers);
             // Update tracked state
-            this.previousState.set(
-              commId,
-              this.cloneStateSnapshot(model.state),
-            );
+            this.previousState.set(commId, this.cloneStateSnapshot(model.state));
           }
         }
       }
@@ -380,15 +365,12 @@ export class CommBridgeManager {
     // Don't double-subscribe
     if (this.customMessageUnsubscribers.has(commId)) return;
 
-    const unsubscribe = this.store.subscribeToCustomMessage(
-      commId,
-      (content, buffers) => {
-        // Convert DataView[] to ArrayBuffer[] for postMessage
-        const arrayBuffers = buffers?.map((dv) => dv.buffer as ArrayBuffer);
-        // Forward custom message to iframe
-        this.sendCommMsg(commId, "custom", content, arrayBuffers);
-      },
-    );
+    const unsubscribe = this.store.subscribeToCustomMessage(commId, (content, buffers) => {
+      // Convert DataView[] to ArrayBuffer[] for postMessage
+      const arrayBuffers = buffers?.map((dv) => dv.buffer as ArrayBuffer);
+      // Forward custom message to iframe
+      this.sendCommMsg(commId, "custom", content, arrayBuffers);
+    });
 
     this.customMessageUnsubscribers.set(commId, unsubscribe);
   }
@@ -413,10 +395,7 @@ export class CommBridgeManager {
     current: Record<string, unknown>,
   ): string[] {
     const changed: string[] = [];
-    const allKeys = new Set([
-      ...Object.keys(previous),
-      ...Object.keys(current),
-    ]);
+    const allKeys = new Set([...Object.keys(previous), ...Object.keys(current)]);
     for (const key of allKeys) {
       if (this.valuesAreDifferent(previous[key], current[key])) {
         changed.push(key);
@@ -428,9 +407,7 @@ export class CommBridgeManager {
   /**
    * Create a deep snapshot of model state so future in-place mutations are detectable.
    */
-  private cloneStateSnapshot(
-    state: Record<string, unknown>,
-  ): Record<string, unknown> {
+  private cloneStateSnapshot(state: Record<string, unknown>): Record<string, unknown> {
     try {
       return structuredClone(state);
     } catch {
@@ -465,8 +442,6 @@ export class CommBridgeManager {
 /**
  * Create a comm bridge manager for an isolated frame.
  */
-export function createCommBridgeManager(
-  options: CommBridgeManagerOptions,
-): CommBridgeManager {
+export function createCommBridgeManager(options: CommBridgeManagerOptions): CommBridgeManager {
   return new CommBridgeManager(options);
 }

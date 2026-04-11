@@ -30,9 +30,7 @@ test.describe("Column Pinning", () => {
     expect(position).toBe("sticky");
   });
 
-  test("pinned column header stays sticky when scrolling horizontally", async ({
-    page,
-  }) => {
+  test("pinned column header stays sticky when scrolling horizontally", async ({ page }) => {
     const viewport = page.locator(".pt-viewport");
     const firstTh = page.locator(".pt-th").first();
 
@@ -87,21 +85,13 @@ test.describe("Column Pinning", () => {
     expect(shadow).toContain("pin-shadow");
   });
 
-  test("pinned cells in rows also have sticky positioning", async ({
-    page,
-  }) => {
-    const firstCell = page
-      .locator(".pt-row")
-      .first()
-      .locator(".pt-cell")
-      .first();
+  test("pinned cells in rows also have sticky positioning", async ({ page }) => {
+    const firstCell = page.locator(".pt-row").first().locator(".pt-cell").first();
     const position = await firstCell.evaluate((el) => el.style.position);
     expect(position).toBe("sticky");
   });
 
-  test("multiple pinned columns have correct left offsets", async ({
-    page,
-  }) => {
+  test("multiple pinned columns have correct left offsets", async ({ page }) => {
     // Pin the Name column (in addition to ID which is already pinned)
     await openColumnMenu(page, "Name");
     await clickMenuItem(page, "Pin column");
@@ -145,9 +135,7 @@ test.describe("Column Pinning", () => {
     expect(scoreIndexAfter).toBeLessThan(scoreIndexBefore);
   });
 
-  test('keyboard shortcut "p" toggles pin on focused column', async ({
-    page,
-  }) => {
+  test('keyboard shortcut "p" toggles pin on focused column', async ({ page }) => {
     // Focus the Name column header and press 'p' to pin
     const nameTh = page.locator(".pt-th").filter({ hasText: "Name" });
     await nameTh.focus();

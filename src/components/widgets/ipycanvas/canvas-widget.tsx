@@ -11,10 +11,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import { cn } from "@/lib/utils";
 import type { WidgetComponentProps } from "../widget-registry";
-import {
-  useWidgetModelValue,
-  useWidgetStoreRequired,
-} from "../widget-store-context";
+import { useWidgetModelValue, useWidgetStoreRequired } from "../widget-store-context";
 import { getTypedArray, processCommands } from "./ipycanvas-commands";
 
 // === CanvasWidget ===
@@ -29,12 +26,8 @@ export function CanvasWidget({ modelId, className }: WidgetComponentProps) {
 
   const width = useWidgetModelValue<number>(modelId, "width") ?? 200;
   const height = useWidgetModelValue<number>(modelId, "height") ?? 200;
-  const sendClientReady =
-    useWidgetModelValue<boolean>(modelId, "_send_client_ready_event") ?? true;
-  const imageData = useWidgetModelValue<Uint8ClampedArray | null>(
-    modelId,
-    "image_data",
-  );
+  const sendClientReady = useWidgetModelValue<boolean>(modelId, "_send_client_ready_event") ?? true;
+  const imageData = useWidgetModelValue<Uint8ClampedArray | null>(modelId, "image_data");
 
   // Initialize 2D context
   useEffect(() => {
@@ -61,39 +54,29 @@ export function CanvasWidget({ modelId, className }: WidgetComponentProps) {
   // client_ready. Routing is handled by createCanvasManagerRouter at the
   // store level — this widget just processes what it receives.
   useEffect(() => {
-    const unsubscribe = store.subscribeToCustomMessage(
-      modelId,
-      (content, buffers) => {
-        const canvas = canvasRef.current;
-        const ctx = ctxRef.current;
-        if (!canvas || !ctx || !buffers || buffers.length === 0) return;
+    const unsubscribe = store.subscribeToCustomMessage(modelId, (content, buffers) => {
+      const canvas = canvasRef.current;
+      const ctx = ctxRef.current;
+      if (!canvas || !ctx || !buffers || buffers.length === 0) return;
 
-        // Chain command processing to maintain order
-        processingRef.current = processingRef.current.then(async () => {
-          try {
-            // First buffer is the JSON-encoded commands
-            const metadata = content as { dtype: string };
-            const typedArray = getTypedArray(buffers[0], metadata);
-            const jsonStr = new TextDecoder("utf-8").decode(typedArray);
-            const commands = JSON.parse(jsonStr);
+      // Chain command processing to maintain order
+      processingRef.current = processingRef.current.then(async () => {
+        try {
+          // First buffer is the JSON-encoded commands
+          const metadata = content as { dtype: string };
+          const typedArray = getTypedArray(buffers[0], metadata);
+          const jsonStr = new TextDecoder("utf-8").decode(typedArray);
+          const commands = JSON.parse(jsonStr);
 
-            // Remaining buffers are binary data for batch operations
-            const dataBuffers = buffers.slice(1);
+          // Remaining buffers are binary data for batch operations
+          const dataBuffers = buffers.slice(1);
 
-            await processCommands(
-              ctx,
-              commands,
-              dataBuffers,
-              canvas,
-              modelId,
-              true,
-            );
-          } catch (err) {
-            console.warn("[ipycanvas] Error processing commands:", err);
-          }
-        });
-      },
-    );
+          await processCommands(ctx, commands, dataBuffers, canvas, modelId, true);
+        } catch (err) {
+          console.warn("[ipycanvas] Error processing commands:", err);
+        }
+      });
+    });
 
     if (sendClientReady) {
       sendCustom(modelId, { event: "client_ready" });
@@ -103,18 +86,15 @@ export function CanvasWidget({ modelId, className }: WidgetComponentProps) {
   }, [store, modelId, sendClientReady, sendCustom]);
 
   // Mouse event helpers
-  const getCoordinates = useCallback(
-    (event: React.MouseEvent<HTMLCanvasElement>) => {
-      const canvas = canvasRef.current;
-      if (!canvas) return { x: 0, y: 0 };
-      const rect = canvas.getBoundingClientRect();
-      return {
-        x: (canvas.width * (event.clientX - rect.left)) / rect.width,
-        y: (canvas.height * (event.clientY - rect.top)) / rect.height,
-      };
-    },
-    [],
-  );
+  const getCoordinates = useCallback((event: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return { x: 0, y: 0 };
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: (canvas.width * (event.clientX - rect.left)) / rect.width,
+      y: (canvas.height * (event.clientY - rect.top)) / rect.height,
+    };
+  }, []);
 
   const onMouseMove = useCallback(
     (event: React.MouseEvent<HTMLCanvasElement>) => {

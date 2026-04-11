@@ -1,8 +1,5 @@
 import { Bot, ChevronDown, Code, Database, FileText } from "lucide-react";
-import {
-  type CellType,
-  cellTypeStyles,
-} from "@/components/cell/CellTypeButton";
+import { type CellType, cellTypeStyles } from "@/components/cell/CellTypeButton";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -48,9 +45,7 @@ export function CellTypeSelector({
   enabledTypes = allCellTypes,
 }: CellTypeSelectorProps) {
   const Icon = cellTypeIcons[currentType];
-  const availableTypes = allCellTypes.filter((type) =>
-    enabledTypes.includes(type),
-  );
+  const availableTypes = allCellTypes.filter((type) => enabledTypes.includes(type));
 
   return (
     <DropdownMenu>
@@ -59,10 +54,7 @@ export function CellTypeSelector({
           data-slot="cell-type-selector"
           variant="outline"
           size="sm"
-          className={cn(
-            cellTypeStyles[currentType],
-            "flex items-center gap-1.5",
-          )}
+          className={cn(cellTypeStyles[currentType], "flex items-center gap-1.5")}
         >
           <Icon className="h-3 w-3" />
           {cellTypeLabels[currentType]}

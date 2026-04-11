@@ -20,8 +20,7 @@ export function TabWidget({ modelId, className }: WidgetComponentProps) {
   // Subscribe to individual state keys
   const children = useWidgetModelValue<string[]>(modelId, "children");
   const titles = useWidgetModelValue<string[]>(modelId, "_titles") ?? [];
-  const selectedIndex =
-    useWidgetModelValue<number>(modelId, "selected_index") ?? 0;
+  const selectedIndex = useWidgetModelValue<number>(modelId, "selected_index") ?? 0;
 
   const handleValueChange = (value: string) => {
     sendUpdate(modelId, { selected_index: parseInt(value, 10) });

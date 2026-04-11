@@ -55,11 +55,7 @@ const MediaContext = createContext<MediaProviderValue | null>(null);
  *
  * Without a provider, MediaRouter uses its built-in defaults.
  */
-export function MediaProvider({
-  children,
-  renderers = {},
-  priority,
-}: MediaProviderProps) {
+export function MediaProvider({ children, renderers = {}, priority }: MediaProviderProps) {
   const parent = useContext(MediaContext);
 
   const value: MediaProviderValue = {
@@ -69,9 +65,7 @@ export function MediaProvider({
     priority: priority ?? parent?.priority ?? DEFAULT_PRIORITY,
   };
 
-  return (
-    <MediaContext.Provider value={value}>{children}</MediaContext.Provider>
-  );
+  return <MediaContext.Provider value={value}>{children}</MediaContext.Provider>;
 }
 
 /**

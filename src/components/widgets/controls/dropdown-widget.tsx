@@ -11,24 +11,19 @@
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import type { WidgetComponentProps } from "../widget-registry";
-import {
-  useWidgetModelValue,
-  useWidgetStoreRequired,
-} from "../widget-store-context";
+import { useWidgetModelValue, useWidgetStoreRequired } from "../widget-store-context";
 
 export function DropdownWidget({ modelId, className }: WidgetComponentProps) {
   const { sendUpdate } = useWidgetStoreRequired();
 
   // Subscribe to individual state keys
-  const options =
-    useWidgetModelValue<string[]>(modelId, "_options_labels") ?? [];
+  const options = useWidgetModelValue<string[]>(modelId, "_options_labels") ?? [];
   const index = useWidgetModelValue<number | null>(modelId, "index");
   const description = useWidgetModelValue<string>(modelId, "description");
   const disabled = useWidgetModelValue<boolean>(modelId, "disabled") ?? false;
 
   // Convert index to string value for select
-  const value =
-    index !== null && index !== undefined && index >= 0 ? String(index) : "";
+  const value = index !== null && index !== undefined && index >= 0 ? String(index) : "";
 
   const handleChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
     const newIndex = parseInt(event.target.value, 10);

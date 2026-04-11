@@ -58,13 +58,7 @@ export function getLanguageExtension(language: SupportedLanguage): Extension {
     case "python":
       return [python(), pythonIndent];
     case "ipython":
-      return [
-        python(),
-        pythonIndent,
-        ipythonHighlighting(),
-        ipythonStyles,
-        ipythonStylesDark,
-      ];
+      return [python(), pythonIndent, ipythonHighlighting(), ipythonStyles, ipythonStylesDark];
     case "markdown":
       return markdown();
     case "sql":
@@ -114,20 +108,13 @@ export function getIPythonExtension(content: string): {
 
   if (magic) {
     const langId = getCellMagicLanguage(magic);
-    const language = (
-      langId in languageDisplayNames ? langId : "plain"
-    ) as SupportedLanguage;
+    const language = (langId in languageDisplayNames ? langId : "plain") as SupportedLanguage;
 
     // For cell magics, use the target language but add IPython decoration
     // for the first line (the %%magic declaration)
     const baseExtension = getLanguageExtension(language);
     return {
-      extension: [
-        baseExtension,
-        ipythonHighlighting(),
-        ipythonStyles,
-        ipythonStylesDark,
-      ],
+      extension: [baseExtension, ipythonHighlighting(), ipythonStyles, ipythonStylesDark],
       cellMagic: magic,
       language,
     };

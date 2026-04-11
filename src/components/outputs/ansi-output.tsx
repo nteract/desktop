@@ -122,15 +122,11 @@ function resolveAnsiStyle(entry: Anser.AnserJsonEntry): {
         break;
       case "strikethrough":
         style.textDecoration =
-          style.textDecoration === "underline"
-            ? "underline line-through"
-            : "line-through";
+          style.textDecoration === "underline" ? "underline line-through" : "line-through";
         break;
       case "underline":
         style.textDecoration =
-          style.textDecoration === "line-through"
-            ? "underline line-through"
-            : "underline";
+          style.textDecoration === "line-through" ? "underline line-through" : "underline";
         break;
     }
   }
@@ -205,11 +201,7 @@ interface AnsiOutputProps {
  * Standard 16 colors use CSS variables (theme-aware, adapts to light/dark).
  * 256-color and 24-bit truecolor use inline rgb() styles for full fidelity.
  */
-export function AnsiOutput({
-  children,
-  className = "",
-  isError = false,
-}: AnsiOutputProps) {
+export function AnsiOutput({ children, className = "", isError = false }: AnsiOutputProps) {
   if (!children || typeof children !== "string") {
     return null;
   }
@@ -239,21 +231,14 @@ interface AnsiStreamOutputProps {
 /**
  * AnsiStreamOutput component specifically for stdout/stderr rendering.
  */
-export function AnsiStreamOutput({
-  text,
-  streamName,
-  className = "",
-}: AnsiStreamOutputProps) {
+export function AnsiStreamOutput({ text, streamName, className = "" }: AnsiStreamOutputProps) {
   const isStderr = streamName === "stderr";
   const streamClasses = isStderr
     ? "text-red-600 dark:text-red-400"
     : "text-gray-700 dark:text-gray-300";
 
   return (
-    <div
-      data-slot="ansi-stream-output"
-      className={cn("not-prose py-2", streamClasses, className)}
-    >
+    <div data-slot="ansi-stream-output" className={cn("not-prose py-2", streamClasses, className)}>
       <AnsiOutput isError={isStderr}>{text}</AnsiOutput>
     </div>
   );
@@ -276,13 +261,7 @@ export function AnsiErrorOutput({
   className = "",
 }: AnsiErrorOutputProps) {
   return (
-    <div
-      data-slot="ansi-error-output"
-      className={cn(
-        "not-prose py-3",
-        className,
-      )}
-    >
+    <div data-slot="ansi-error-output" className={cn("not-prose py-3", className)}>
       {ename && evalue && (
         <div className="mb-1 font-semibold text-red-700 dark:text-red-400">
           <AnsiOutput isError>{`${ename}: ${evalue}`}</AnsiOutput>

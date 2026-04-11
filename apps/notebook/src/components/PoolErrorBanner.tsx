@@ -8,10 +8,7 @@ interface PoolErrorItemProps {
   onDismiss: () => void;
 }
 
-function errorSubtitle(
-  error: PoolErrorWithTimestamp,
-  envType: "UV" | "Conda",
-): string {
+function errorSubtitle(error: PoolErrorWithTimestamp, envType: "UV" | "Conda"): string {
   switch (error.error_kind) {
     case "timeout":
       return "Retrying automatically";
@@ -110,15 +107,9 @@ export function PoolErrorBanner({
 
   return (
     <div className="flex flex-col">
-      {uvError && (
-        <PoolErrorItem envType="UV" error={uvError} onDismiss={onDismissUv} />
-      )}
+      {uvError && <PoolErrorItem envType="UV" error={uvError} onDismiss={onDismissUv} />}
       {condaError && (
-        <PoolErrorItem
-          envType="Conda"
-          error={condaError}
-          onDismiss={onDismissConda}
-        />
+        <PoolErrorItem envType="Conda" error={condaError} onDismiss={onDismissConda} />
       )}
     </div>
   );

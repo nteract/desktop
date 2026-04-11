@@ -6,8 +6,8 @@
     "build": "pnpm --dir apps/notebook build",
     "notebook:build": "pnpm --dir apps/notebook build",
     "notebook:dev": "pnpm --dir apps/notebook dev",
-    "test": "vitest",
-    "test:run": "vitest run",
+    "test": "vp test",
+    "test:run": "vp test run",
     "test:e2e": "wdio run e2e/wdio.conf.js",
     "test:e2e:native": "wdio run e2e/wdio.conf.js"
   },
@@ -74,6 +74,7 @@
     "vega-lite": "^6.4.2"
   },
   "devDependencies": {
+    "@mcpjam/inspector": "^2.1.0",
     "@tailwindcss/vite": "^4.1.8",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
@@ -82,26 +83,21 @@
     "@types/react": "^19.1.6",
     "@types/react-dom": "^19.1.5",
     "@types/react-syntax-highlighter": "^15.5.13",
-    "@vitejs/plugin-react": "^4.5.2",
+    "@vitejs/plugin-react": "^6.0.1",
     "@wdio/cli": "^8.40.0",
     "@wdio/globals": "^8.40.0",
     "@wdio/local-runner": "^8.40.0",
     "@wdio/mocha-framework": "^8.40.0",
     "@wdio/spec-reporter": "^8.40.0",
     "@wdio/types": "^8.40.0",
-    "@mcpjam/inspector": "^2.1.0",
     "jsdom": "^26.0.0",
     "rollup-plugin-visualizer": "^5.14.0",
     "tailwindcss": "^4.1.8",
     "ts-node": "^10.9.2",
     "typescript": "~5.8.3",
-    "vite": "^6.3.5",
-    "vitest": "^3.1.4",
-    "webdriverio": "^8.40.0"
-  },
-  "pnpm": {
-    "overrides": {
-      "@codemirror/language": "6.12.2"
-    }
+    "vite": "catalog:",
+    "vitest": "catalog:",
+    "webdriverio": "^8.40.0",
+    "vite-plus": "catalog:"
   }
 }

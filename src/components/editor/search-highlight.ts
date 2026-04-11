@@ -31,11 +31,7 @@ const searchHighlightTheme = EditorView.theme({
  * @param query - Search query (case-insensitive)
  * @param activeOffset - Character offset of the active match (-1 for none)
  */
-function buildDecorations(
-  doc: string,
-  query: string,
-  activeOffset: number,
-): DecorationSet {
+function buildDecorations(doc: string, query: string, activeOffset: number): DecorationSet {
   if (!query) return Decoration.none;
 
   const builder = new RangeSetBuilder<Decoration>();
@@ -45,11 +41,7 @@ function buildDecorations(
 
   while (pos !== -1) {
     const isActive = pos === activeOffset;
-    builder.add(
-      pos,
-      pos + query.length,
-      isActive ? activeMatchMark : searchMatchMark,
-    );
+    builder.add(pos, pos + query.length, isActive ? activeMatchMark : searchMatchMark);
     pos = lowerDoc.indexOf(lowerQuery, pos + query.length);
   }
 
@@ -67,18 +59,10 @@ function buildDecorations(
 function createSearchHighlightPlugin(query: string, activeOffset: number) {
   return ViewPlugin.define(
     (view) => ({
-      decorations: buildDecorations(
-        view.state.doc.toString(),
-        query,
-        activeOffset,
-      ),
+      decorations: buildDecorations(view.state.doc.toString(), query, activeOffset),
       update(update: ViewUpdate) {
         if (update.docChanged) {
-          this.decorations = buildDecorations(
-            update.state.doc.toString(),
-            query,
-            activeOffset,
-          );
+          this.decorations = buildDecorations(update.state.doc.toString(), query, activeOffset);
         }
       },
     }),
@@ -108,8 +92,5 @@ function createSearchHighlightPlugin(query: string, activeOffset: number) {
  */
 export function searchHighlight(query: string, activeOffset = -1): Extension[] {
   if (!query) return [];
-  return [
-    searchHighlightTheme,
-    createSearchHighlightPlugin(query, activeOffset),
-  ];
+  return [searchHighlightTheme, createSearchHighlightPlugin(query, activeOffset)];
 }

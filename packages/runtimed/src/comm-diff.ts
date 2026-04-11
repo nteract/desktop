@@ -94,9 +94,7 @@ function isManifestObject(value: unknown): boolean {
  * (64-char hex SHA-256) or inline manifest objects (with `output_type`).
  * Returns null if not an OutputModel, outputs are empty, or already resolved.
  */
-export function detectUnresolvedOutputs(
-  state: Record<string, unknown>,
-): UnresolvedOutputs | null {
+export function detectUnresolvedOutputs(state: Record<string, unknown>): UnresolvedOutputs | null {
   if (state._model_name !== "OutputModel") return null;
 
   const outputs = state.outputs;
@@ -122,9 +120,7 @@ export function detectOutputManifestHashes(
   const outputs = state.outputs;
   if (!Array.isArray(outputs) || outputs.length === 0) return null;
 
-  const allHashes = outputs.every(
-    (o) => typeof o === "string" && isManifestHash(o),
-  );
+  const allHashes = outputs.every((o) => typeof o === "string" && isManifestHash(o));
   if (!allHashes) return null;
 
   return { hashes: outputs as string[] };

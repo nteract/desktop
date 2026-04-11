@@ -104,10 +104,7 @@ export type NotPredicate = {
   arg: FilterPredicate;
 };
 
-export type FilterPredicate =
-  | ColumnPredicate
-  | CompoundPredicate
-  | NotPredicate;
+export type FilterPredicate = ColumnPredicate | CompoundPredicate | NotPredicate;
 
 // --- Explorer state (the full picture for AI / Automerge) ---
 
@@ -132,13 +129,9 @@ export function predicateToSQL(p: FilterPredicate): string {
       case "between":
         return `${col} BETWEEN ${literal(p.value[0])} AND ${literal(p.value[1])}`;
       case "eq":
-        return p.value === null
-          ? `${col} IS NULL`
-          : `${col} = ${literal(p.value)}`;
+        return p.value === null ? `${col} IS NULL` : `${col} = ${literal(p.value)}`;
       case "neq":
-        return p.value === null
-          ? `${col} IS NOT NULL`
-          : `${col} != ${literal(p.value)}`;
+        return p.value === null ? `${col} IS NOT NULL` : `${col} != ${literal(p.value)}`;
       case "in":
         return `${col} IN (${p.value.map(literal).join(", ")})`;
       case "not_in":
@@ -170,13 +163,9 @@ export function predicateToPandas(p: FilterPredicate, dfName = "df"): string {
       case "between":
         return `${col}.between(${p.value[0]}, ${p.value[1]})`;
       case "eq":
-        return p.value === null
-          ? `${col}.isna()`
-          : `(${col} == ${pyLiteral(p.value)})`;
+        return p.value === null ? `${col}.isna()` : `(${col} == ${pyLiteral(p.value)})`;
       case "neq":
-        return p.value === null
-          ? `${col}.notna()`
-          : `(${col} != ${pyLiteral(p.value)})`;
+        return p.value === null ? `${col}.notna()` : `(${col} != ${pyLiteral(p.value)})`;
       case "in":
         return `${col}.isin(${pyList(p.value)})`;
       case "not_in":
@@ -211,9 +200,7 @@ export function predicateToEnglish(p: FilterPredicate): string {
       case "eq":
         return p.value === null ? `${col} is null` : `${col} is ${p.value}`;
       case "neq":
-        return p.value === null
-          ? `${col} is not null`
-          : `${col} is not ${p.value}`;
+        return p.value === null ? `${col} is not null` : `${col} is not ${p.value}`;
       case "in":
         return `${col} is one of ${(p.value as (string | number)[]).join(", ")}`;
       case "not_in":
@@ -271,9 +258,7 @@ export function columnFiltersToPredicates(
  * Convert a TableEngineState (from the engine API) to a portable ExplorerState
  * suitable for Automerge persistence, AI consumption, or cross-system compilation.
  */
-export function engineStateToExplorerState(
-  state: TableEngineState,
-): ExplorerState {
+export function engineStateToExplorerState(state: TableEngineState): ExplorerState {
   const filters: FilterPredicate[] = [];
   for (const { column, filter } of state.filters) {
     if (!filter) continue;

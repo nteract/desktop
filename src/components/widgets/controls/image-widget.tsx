@@ -34,9 +34,7 @@ export function ImageWidget({ modelId, className }: WidgetComponentProps) {
       data-widget-id={modelId}
       data-widget-type="Image"
     >
-      {description && (
-        <Label className="shrink-0 pt-1 text-sm">{description}</Label>
-      )}
+      {description && <Label className="shrink-0 pt-1 text-sm">{description}</Label>}
       <img
         src={src}
         alt={description || "Widget image"}

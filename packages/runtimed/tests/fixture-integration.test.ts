@@ -21,7 +21,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { VirtualAction, VirtualTimeScheduler } from "rxjs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { NotebookHandle } from "../../../apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm";
 import { DirectTransport, type ServerHandle } from "../src/direct-transport";
 import type { SyncableHandle } from "../src/handle";
@@ -66,10 +66,7 @@ function loadBroadcastFrames(scenario: string): Uint8Array[] {
 }
 
 /** Resolve a manifest hash to its parsed JSON from the fixture's blobs/ dir. */
-function resolveOutputManifest(
-  scenario: string,
-  hash: string,
-): Record<string, unknown> {
+function resolveOutputManifest(scenario: string, hash: string): Record<string, unknown> {
   const blobPath = resolve(FIXTURES_DIR, scenario, "blobs", hash);
   if (!existsSync(blobPath)) {
     throw new Error(`Manifest blob not found: ${blobPath}`);
@@ -81,9 +78,7 @@ function resolveOutputManifest(
 function resolveInline(contentRef: unknown): string {
   const r = contentRef as Record<string, unknown>;
   if ("inline" in r) return r.inline as string;
-  throw new Error(
-    `Expected inline ContentRef, got: ${JSON.stringify(contentRef)}`,
-  );
+  throw new Error(`Expected inline ContentRef, got: ${JSON.stringify(contentRef)}`);
 }
 
 // ── WASM server handle adapter ──────────────────────────────────────
@@ -186,9 +181,7 @@ describe("fixture-based integration: daemon-authored docs through WASM sync", ()
       await h.startAndCompleteSync();
 
       expect(h.client.cell_count()).toBe(1);
-      expect(h.client.get_cell_source("cell-1")).toBe(
-        manifest.expected!.source as string,
-      );
+      expect(h.client.get_cell_source("cell-1")).toBe(manifest.expected!.source as string);
       expect(h.client.get_cell_execution_count("cell-1")).toBe(
         manifest.expected!.execution_count as string,
       );
@@ -255,10 +248,7 @@ describe("fixture-based integration: daemon-authored docs through WASM sync", ()
       expect(outputs[0]).toMatch(MANIFEST_HASH_RE);
 
       // Resolve and verify error content
-      const resolved = resolveOutputManifest(
-        "execution_with_error",
-        outputs[0],
-      );
+      const resolved = resolveOutputManifest("execution_with_error", outputs[0]);
       expect(resolved.output_type).toBe("error");
       expect(resolved.ename).toBe("ZeroDivisionError");
       expect(resolved.evalue).toBe("division by zero");
@@ -311,9 +301,7 @@ describe("fixture-based integration: daemon-authored docs through WASM sync", ()
       // cell-1: code, executed, no outputs
       expect(h.client.get_cell_type("cell-1")).toBe("code");
       expect(h.client.get_cell_execution_count("cell-1")).toBe("1");
-      const cell1Outputs = h.client.get_cell_outputs("cell-1") as
-        | string[]
-        | undefined;
+      const cell1Outputs = h.client.get_cell_outputs("cell-1") as string[] | undefined;
       expect(cell1Outputs ?? []).toHaveLength(0);
 
       // cell-2: code, executed, one output (manifest hash)
@@ -324,10 +312,7 @@ describe("fixture-based integration: daemon-authored docs through WASM sync", ()
       expect(cell2Outputs[0]).toMatch(MANIFEST_HASH_RE);
 
       // Resolve and verify stream content
-      const resolved = resolveOutputManifest(
-        "multi_cell_execution",
-        cell2Outputs[0],
-      );
+      const resolved = resolveOutputManifest("multi_cell_execution", cell2Outputs[0]);
       expect(resolved.output_type).toBe("stream");
       expect(resolveInline(resolved.text)).toBe("42\n");
 
@@ -352,16 +337,11 @@ describe("fixture-based integration: daemon-authored docs through WASM sync", ()
       expect(outputs[0]).toMatch(MANIFEST_HASH_RE);
 
       // Resolve manifest — has inlined text/plain and blob-ref image/png
-      const resolved = resolveOutputManifest(
-        "display_data_output",
-        outputs[0],
-      );
+      const resolved = resolveOutputManifest("display_data_output", outputs[0]);
       expect(resolved.output_type).toBe("display_data");
 
       const data = resolved.data as Record<string, unknown>;
-      expect(resolveInline(data["text/plain"])).toBe(
-        "<Figure size 640x480>",
-      );
+      expect(resolveInline(data["text/plain"])).toBe("<Figure size 640x480>");
 
       // image/png is a blob ref (not inline)
       const imageRef = data["image/png"] as Record<string, unknown>;
@@ -380,9 +360,7 @@ describe("fixture-based integration: daemon-authored docs through WASM sync", ()
       const server = Handle.load(docBytes);
       const serverAdapter = new WasmServerHandle(server);
 
-      const client = Handle.create_bootstrap(
-        `fixture-changeset-${Date.now()}`,
-      );
+      const client = Handle.create_bootstrap(`fixture-changeset-${Date.now()}`);
       const scheduler = new VirtualTimeScheduler(VirtualAction, Infinity);
       const transport = new DirectTransport(serverAdapter);
       const engine = new SyncEngine({

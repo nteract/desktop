@@ -13,8 +13,7 @@ import { WidgetView } from "../widget-view";
 export function StackWidget({ modelId, className }: WidgetComponentProps) {
   // Subscribe to individual state keys
   const children = useWidgetModelValue<string[]>(modelId, "children");
-  const selectedIndex =
-    useWidgetModelValue<number>(modelId, "selected_index") ?? 0;
+  const selectedIndex = useWidgetModelValue<number>(modelId, "selected_index") ?? 0;
 
   if (!children || children.length === 0) return null;
 
@@ -25,11 +24,7 @@ export function StackWidget({ modelId, className }: WidgetComponentProps) {
   if (!childId) return null;
 
   return (
-    <div
-      className={cn("w-full", className)}
-      data-widget-id={modelId}
-      data-widget-type="Stack"
-    >
+    <div className={cn("w-full", className)} data-widget-id={modelId} data-widget-type="Stack">
       <WidgetView modelId={childId} />
     </div>
   );

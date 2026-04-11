@@ -74,9 +74,7 @@ export const CellControls: React.FC<CellControlsProps> = ({
       data-slot="cell-controls"
       className={cn(
         "cell-controls flex items-center gap-0.5 transition-opacity",
-        forceVisible
-          ? "opacity-100"
-          : "opacity-100 sm:opacity-0 sm:group-hover:opacity-100",
+        forceVisible ? "opacity-100" : "opacity-100 sm:opacity-0 sm:group-hover:opacity-100",
         className,
       )}
     >
@@ -111,9 +109,7 @@ export const CellControls: React.FC<CellControlsProps> = ({
             "hover:bg-muted/80 h-8 w-8 p-0 sm:h-7 sm:w-7",
             aiContextVisible ? "text-purple-600" : "text-gray-500",
           )}
-          title={
-            aiContextVisible ? "Hide from AI context" : "Show in AI context"
-          }
+          title={aiContextVisible ? "Hide from AI context" : "Show in AI context"}
         >
           {aiContextVisible ? (
             <Eye className="h-4 w-4 sm:h-3 sm:w-3" />
@@ -158,17 +154,12 @@ export const CellControls: React.FC<CellControlsProps> = ({
               </DropdownMenuItem>
             )}
             {onMoveToBottom && (
-              <DropdownMenuItem
-                onClick={onMoveToBottom}
-                disabled={!canMoveDown}
-              >
+              <DropdownMenuItem onClick={onMoveToBottom} disabled={!canMoveDown}>
                 <ArrowDownToLine className="mr-2 h-4 w-4" />
                 <span>Move to bottom</span>
               </DropdownMenuItem>
             )}
-            {(onMoveUp || onMoveDown || onMoveToTop || onMoveToBottom) && (
-              <DropdownMenuSeparator />
-            )}
+            {(onMoveUp || onMoveDown || onMoveToTop || onMoveToBottom) && <DropdownMenuSeparator />}
             <DropdownMenuItem onClick={onClearOutputs} disabled={!hasOutputs}>
               <Eraser className="mr-2 h-4 w-4" />
               <span>Clear outputs</span>
@@ -178,10 +169,7 @@ export const CellControls: React.FC<CellControlsProps> = ({
               <span>Delete cell</span>
             </DropdownMenuItem>
             {onDeleteAllBelow && hasCellsBelow && (
-              <DropdownMenuItem
-                onClick={onDeleteAllBelow}
-                variant="destructive"
-              >
+              <DropdownMenuItem onClick={onDeleteAllBelow} variant="destructive">
                 <X className="mr-2 h-4 w-4" />
                 <span>Delete all cells below</span>
                 <ArrowDownToLine className="ml-2 h-4 w-4" />

@@ -51,13 +51,7 @@ export function CompactExecutionButton({
         isQueued ? "cursor-default" : "cursor-pointer",
         className,
       )}
-      title={
-        isExecuting
-          ? "Stop execution"
-          : isQueued
-            ? "Queued for execution"
-            : "Run cell"
-      }
+      title={isExecuting ? "Stop execution" : isQueued ? "Queued for execution" : "Run cell"}
       aria-disabled={isQueued || undefined}
       data-testid="execute-button"
     >
@@ -75,9 +69,7 @@ export function CompactExecutionButton({
         ) : count !== null ? (
           // Has count: show count, play on hover
           <>
-            <span className="group-hover/exec:opacity-0 transition-opacity">
-              {count}
-            </span>
+            <span className="group-hover/exec:opacity-0 transition-opacity">{count}</span>
             <span className="absolute inset-0 flex items-center justify-center opacity-0 group-hover/exec:opacity-100 transition-opacity">
               ▶
             </span>

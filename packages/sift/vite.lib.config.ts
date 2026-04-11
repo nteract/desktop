@@ -1,8 +1,8 @@
-import { defineConfig } from 'vite'
-import { resolve } from 'node:path'
-import tailwindcss from '@tailwindcss/vite'
+import { defineConfig } from "vite-plus";
+import { resolve } from "node:path";
+import tailwindcss from "@tailwindcss/vite";
 
-const wasmPkg = resolve(__dirname, '../../crates/nteract-predicate/pkg')
+const wasmPkg = resolve(__dirname, "../../crates/nteract-predicate/pkg");
 
 /**
  * Library build config — produces ESM bundle + compiled CSS for npm consumers.
@@ -14,27 +14,27 @@ export default defineConfig({
   plugins: [tailwindcss()],
   resolve: {
     alias: {
-      'nteract-predicate': wasmPkg,
+      "nteract-predicate": wasmPkg,
     },
   },
   build: {
     lib: {
-      entry: resolve(__dirname, 'src/index.ts'),
-      formats: ['es'],
-      fileName: 'index',
+      entry: resolve(__dirname, "src/index.ts"),
+      formats: ["es"],
+      fileName: "index",
     },
-    outDir: 'lib',
+    outDir: "lib",
     rollupOptions: {
       // Don't bundle peer dependencies
       external: [
-        'react',
-        'react-dom',
-        'react-dom/client',
-        'react/jsx-runtime',
-        'apache-arrow',
-        '@chenglou/pretext',
+        "react",
+        "react-dom",
+        "react-dom/client",
+        "react/jsx-runtime",
+        "apache-arrow",
+        "@chenglou/pretext",
         /^@radix-ui\//,
       ],
     },
   },
-})
+});

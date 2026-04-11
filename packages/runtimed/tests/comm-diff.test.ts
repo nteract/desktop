@@ -9,7 +9,7 @@
  * - Deprecated detectOutputManifestHashes still works
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   detectOutputManifestHashes,
   detectUnresolvedOutputs,
@@ -20,17 +20,14 @@ import {
 
 describe("isManifestHash", () => {
   it("accepts a 64-char lowercase hex string", () => {
-    const hash =
-      "a".repeat(64);
+    const hash = "a".repeat(64);
     expect(isManifestHash(hash)).toBe(true);
   });
 
   it("accepts a realistic SHA-256 hex digest", () => {
-    expect(
-      isManifestHash(
-        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      ),
-    ).toBe(true);
+    expect(isManifestHash("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")).toBe(
+      true,
+    );
   });
 
   it("rejects strings shorter than 64 chars", () => {
@@ -53,10 +50,8 @@ describe("isManifestHash", () => {
 // ── detectUnresolvedOutputs ─────────────────────────────────────────
 
 describe("detectUnresolvedOutputs", () => {
-  const hash1 =
-    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-  const hash2 =
-    "a" .repeat(64);
+  const hash1 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+  const hash2 = "a".repeat(64);
 
   const manifestObj = {
     output_type: "display_data",
@@ -193,8 +188,7 @@ describe("detectUnresolvedOutputs", () => {
 // ── detectOutputManifestHashes (deprecated, backward compat) ────────
 
 describe("detectOutputManifestHashes (deprecated)", () => {
-  const hash =
-    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+  const hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
   it("still detects hash strings", () => {
     const result = detectOutputManifestHashes({

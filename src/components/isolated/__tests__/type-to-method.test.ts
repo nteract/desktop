@@ -6,7 +6,7 @@
  * values match the constants in rpc-methods.ts.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   NTERACT_BRIDGE_READY,
   NTERACT_CLEAR_OUTPUTS,
@@ -64,18 +64,13 @@ describe("TYPE_TO_METHOD mapping", () => {
     ];
 
     for (const type of requiredTypes) {
-      expect(
-        TYPE_TO_METHOD[type],
-        `Missing mapping for legacy type "${type}"`,
-      ).toBeDefined();
+      expect(TYPE_TO_METHOD[type], `Missing mapping for legacy type "${type}"`).toBeDefined();
     }
   });
 
   it("all mapped methods have nteract/ prefix", () => {
     for (const [type, method] of Object.entries(TYPE_TO_METHOD)) {
-      expect(method, `Method for "${type}" should have nteract/ prefix`).toMatch(
-        /^nteract\//,
-      );
+      expect(method, `Method for "${type}" should have nteract/ prefix`).toMatch(/^nteract\//);
     }
   });
 

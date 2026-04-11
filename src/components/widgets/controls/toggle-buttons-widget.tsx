@@ -8,20 +8,13 @@ import { Label } from "@/components/ui/label";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { cn } from "@/lib/utils";
 import type { WidgetComponentProps } from "../widget-registry";
-import {
-  useWidgetModelValue,
-  useWidgetStoreRequired,
-} from "../widget-store-context";
+import { useWidgetModelValue, useWidgetStoreRequired } from "../widget-store-context";
 
-export function ToggleButtonsWidget({
-  modelId,
-  className,
-}: WidgetComponentProps) {
+export function ToggleButtonsWidget({ modelId, className }: WidgetComponentProps) {
   const { sendUpdate } = useWidgetStoreRequired();
 
   // Subscribe to individual state keys
-  const options =
-    useWidgetModelValue<string[]>(modelId, "_options_labels") ?? [];
+  const options = useWidgetModelValue<string[]>(modelId, "_options_labels") ?? [];
   const index = useWidgetModelValue<number | null>(modelId, "index");
   const description = useWidgetModelValue<string>(modelId, "description");
   const disabled = useWidgetModelValue<boolean>(modelId, "disabled") ?? false;
@@ -29,10 +22,7 @@ export function ToggleButtonsWidget({
   const tooltips = useWidgetModelValue<string[]>(modelId, "tooltips") ?? [];
 
   // Convert index to string value for ToggleGroup
-  const value =
-    index !== null && index !== undefined && index >= 0
-      ? String(index)
-      : undefined;
+  const value = index !== null && index !== undefined && index >= 0 ? String(index) : undefined;
 
   const handleValueChange = (newValue: string) => {
     if (newValue === "") {

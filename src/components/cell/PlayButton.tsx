@@ -66,9 +66,7 @@ export const PlayButton: React.FC<PlayButtonProps> = ({
       title={title}
     >
       {isAutoLaunching ? (
-        <Loader2
-          className={cn(gutterMode ? "size-3.5" : "size-4", "animate-spin")}
-        />
+        <Loader2 className={cn(gutterMode ? "size-3.5" : "size-4", "animate-spin")} />
       ) : isRunning ? (
         <Square
           fill={gutterMode ? "currentColor" : "none"}

@@ -5,11 +5,7 @@ import { logger } from "../lib/logger";
 import { useRuntimeState } from "../lib/runtime-state";
 
 /** Trust status from the backend */
-export type TrustStatusType =
-  | "trusted"
-  | "untrusted"
-  | "signature_invalid"
-  | "no_dependencies";
+export type TrustStatusType = "trusted" | "untrusted" | "signature_invalid" | "no_dependencies";
 
 export interface TrustInfo {
   status: TrustStatusType;
@@ -29,9 +25,7 @@ export function useTrust() {
   const runtimeTrustNeedsApproval = runtimeState.trust.needs_approval;
 
   const [trustInfo, setTrustInfo] = useState<TrustInfo | null>(null);
-  const [typosquatWarnings, setTyposquatWarnings] = useState<
-    TyposquatWarning[]
-  >([]);
+  const [typosquatWarnings, setTyposquatWarnings] = useState<TyposquatWarning[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -106,8 +100,7 @@ export function useTrust() {
   }, [checkTrust]);
 
   // Computed properties
-  const isTrusted =
-    trustInfo?.status === "trusted" || trustInfo?.status === "no_dependencies";
+  const isTrusted = trustInfo?.status === "trusted" || trustInfo?.status === "no_dependencies";
   const needsApproval =
     trustInfo?.status === "untrusted" ||
     trustInfo?.status === "signature_invalid" ||
@@ -116,8 +109,7 @@ export function useTrust() {
 
   // Total dependency count
   const totalDependencies =
-    (trustInfo?.uv_dependencies.length ?? 0) +
-    (trustInfo?.conda_dependencies.length ?? 0);
+    (trustInfo?.uv_dependencies.length ?? 0) + (trustInfo?.conda_dependencies.length ?? 0);
 
   return {
     trustInfo,

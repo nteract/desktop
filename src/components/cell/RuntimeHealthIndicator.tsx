@@ -63,16 +63,12 @@ export const RuntimeHealthIndicator: React.FC<RuntimeHealthIndicatorProps> = ({
       {kernelName && (
         <>
           <Terminal className="h-3 w-3 sm:h-4 sm:w-4" />
-          <span className="hidden text-xs sm:block sm:text-sm">
-            {kernelName}
-          </span>
+          <span className="hidden text-xs sm:block sm:text-sm">{kernelName}</span>
         </>
       )}
       <Circle className={cn("size-2 fill-current", getStatusColor(status))} />
       {showStatus && (
-        <span className={cn("text-xs", getStatusTextColor(status))}>
-          {getStatusText(status)}
-        </span>
+        <span className={cn("text-xs", getStatusTextColor(status))}>{getStatusText(status)}</span>
       )}
     </>
   );

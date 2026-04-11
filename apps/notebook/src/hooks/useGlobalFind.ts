@@ -1,8 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
-import {
-  getNotebookCellsSnapshot,
-  useSourceVersion,
-} from "../lib/notebook-cells";
+import { getNotebookCellsSnapshot, useSourceVersion } from "../lib/notebook-cells";
 
 /** A single search match location. */
 export interface FindMatch {
@@ -50,10 +47,7 @@ export interface GlobalFindState {
 /**
  * Find all occurrences of a query in text (case-insensitive).
  */
-function findInText(
-  text: string,
-  query: string,
-): { offset: number; length: number }[] {
+function findInText(text: string, query: string): { offset: number; length: number }[] {
   if (!query || !text) return [];
   const matches: { offset: number; length: number }[] = [];
   const lowerText = text.toLowerCase();
@@ -78,28 +72,23 @@ export function useGlobalFind(cellIds: string[]): GlobalFindState {
   const [isOpen, setIsOpen] = useState(false);
   const [query, setQueryState] = useState("");
   const [currentMatchIndex, setCurrentMatchIndex] = useState(0);
-  const [outputMatchCounts, setOutputMatchCounts] = useState<
-    Map<string, number>
-  >(new Map());
+  const [outputMatchCounts, setOutputMatchCounts] = useState<Map<string, number>>(new Map());
 
-  const reportOutputMatchCount = useCallback(
-    (cellId: string, count: number) => {
-      setOutputMatchCounts((prev) => {
-        // Bail out when count is 0 and cellId isn't tracked — avoids creating
-        // a new Map on every output change when find is inactive (#1)
-        if (count === 0 && !prev.has(cellId)) return prev;
-        if (prev.get(cellId) === count) return prev;
-        const next = new Map(prev);
-        if (count === 0) {
-          next.delete(cellId);
-        } else {
-          next.set(cellId, count);
-        }
-        return next;
-      });
-    },
-    [],
-  );
+  const reportOutputMatchCount = useCallback((cellId: string, count: number) => {
+    setOutputMatchCounts((prev) => {
+      // Bail out when count is 0 and cellId isn't tracked — avoids creating
+      // a new Map on every output change when find is inactive (#1)
+      if (count === 0 && !prev.has(cellId)) return prev;
+      if (prev.get(cellId) === count) return prev;
+      const next = new Map(prev);
+      if (count === 0) {
+        next.delete(cellId);
+      } else {
+        next.set(cellId, count);
+      }
+      return next;
+    });
+  }, []);
 
   // Compute all matches: source matches directly, output matches from reported counts.
   // Reads cells imperatively — recomputes on query change and structural changes
@@ -174,17 +163,14 @@ export function useGlobalFind(cellIds: string[]): GlobalFindState {
 
   const prevMatch = useCallback(() => {
     if (matches.length === 0) return;
-    setCurrentMatchIndex(
-      (prev) => (prev - 1 + matches.length) % matches.length,
-    );
+    setCurrentMatchIndex((prev) => (prev - 1 + matches.length) % matches.length);
   }, [matches.length]);
 
   return {
     isOpen,
     query,
     matches,
-    currentMatchIndex:
-      matches.length > 0 ? currentMatchIndex % matches.length : -1,
+    currentMatchIndex: matches.length > 0 ? currentMatchIndex % matches.length : -1,
     currentMatch,
     open,
     close,

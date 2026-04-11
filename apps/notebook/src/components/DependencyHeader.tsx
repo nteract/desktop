@@ -1,18 +1,6 @@
-import {
-  Check,
-  Download,
-  FileText,
-  Info,
-  Plus,
-  RefreshCw,
-  X,
-} from "lucide-react";
+import { Check, Download, FileText, Info, Plus, RefreshCw, X } from "lucide-react";
 import { type KeyboardEvent, useCallback, useState } from "react";
-import type {
-  EnvSyncState,
-  PyProjectDeps,
-  PyProjectInfo,
-} from "../hooks/useDependencies";
+import type { EnvSyncState, PyProjectDeps, PyProjectInfo } from "../hooks/useDependencies";
 
 interface DependencyHeaderProps {
   dependencies: string[];
@@ -71,16 +59,11 @@ export function DependencyHeader({
   );
 
   return (
-    <div
-      className="border-b bg-uv/[0.02] dark:bg-uv/[0.04]"
-      data-testid="deps-panel"
-    >
+    <div className="border-b bg-uv/[0.02] dark:bg-uv/[0.04]" data-testid="deps-panel">
       <div className="px-3 py-3">
         {/* uv badge */}
         <div className="mb-2 flex items-center gap-2">
-          <span className="rounded bg-uv/20 px-1.5 py-0.5 text-xs font-medium text-uv">
-            uv
-          </span>
+          <span className="rounded bg-uv/20 px-1.5 py-0.5 text-xs font-medium text-uv">uv</span>
         </div>
 
         {/* Success feedback after sync completed */}
@@ -104,9 +87,7 @@ export function DependencyHeader({
                     {syncState.added.length > 1 ? "s" : ""}
                   </span>
                 )}
-                {syncState.added.length > 0 &&
-                  syncState.removed.length > 0 &&
-                  " and remove "}
+                {syncState.added.length > 0 && syncState.removed.length > 0 && " and remove "}
                 {syncState.removed.length > 0 && (
                   <span>
                     {syncState.removed.length} package
@@ -122,9 +103,7 @@ export function DependencyHeader({
               data-testid="deps-restart-button"
               className="flex items-center gap-1 rounded bg-amber-600 px-2 py-0.5 text-white text-xs font-medium hover:bg-amber-700 transition-colors disabled:opacity-50"
             >
-              <RefreshCw
-                className={`h-3 w-3 ${loading ? "animate-spin" : ""}`}
-              />
+              <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
               Re-initialize
             </button>
           </div>
@@ -137,9 +116,7 @@ export function DependencyHeader({
               <div className="flex items-center gap-2">
                 <FileText className="h-3.5 w-3.5 shrink-0" />
                 <span>
-                  <code className="rounded bg-muted px-1">
-                    {pyprojectInfo.relative_path}
-                  </code>
+                  <code className="rounded bg-muted px-1">{pyprojectInfo.relative_path}</code>
                   {pyprojectInfo.project_name && (
                     <span className="text-muted-foreground ml-1">
                       ({pyprojectInfo.project_name})
@@ -185,10 +162,7 @@ export function DependencyHeader({
                   {pyprojectDeps.dependencies.length > 0 && (
                     <div className="flex flex-wrap gap-1 mb-1">
                       {pyprojectDeps.dependencies.map((dep) => (
-                        <span
-                          key={dep}
-                          className="rounded bg-muted px-1.5 py-0.5 font-mono"
-                        >
+                        <span key={dep} className="rounded bg-muted px-1.5 py-0.5 font-mono">
                           {dep}
                         </span>
                       ))}
@@ -198,10 +172,7 @@ export function DependencyHeader({
                     <div className="flex flex-wrap gap-1">
                       <span className="text-muted-foreground">dev:</span>
                       {pyprojectDeps.dev_dependencies.map((dep) => (
-                        <span
-                          key={dep}
-                          className="rounded bg-muted px-1.5 py-0.5 font-mono"
-                        >
+                        <span key={dep} className="rounded bg-muted px-1.5 py-0.5 font-mono">
                           {dep}
                         </span>
                       ))}
@@ -257,8 +228,7 @@ export function DependencyHeader({
             </div>
           ) : (
             <div className="mb-3 text-xs text-muted-foreground">
-              No inline dependencies. Add packages to create an isolated
-              environment.
+              No inline dependencies. Add packages to create an isolated environment.
             </div>
           ))}
 

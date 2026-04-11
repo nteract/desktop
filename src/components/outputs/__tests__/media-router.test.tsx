@@ -7,13 +7,9 @@
  */
 
 import { render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { MediaProvider } from "../media-provider";
-import {
-  DEFAULT_PRIORITY,
-  getSelectedMimeType,
-  MediaRouter,
-} from "../media-router";
+import { DEFAULT_PRIORITY, getSelectedMimeType, MediaRouter } from "../media-router";
 
 describe("getSelectedMimeType", () => {
   describe("priority-based selection", () => {
@@ -32,9 +28,7 @@ describe("getSelectedMimeType", () => {
         "text/html": "<div>widget</div>",
         "application/vnd.jupyter.widget-view+json": { model_id: "abc" },
       };
-      expect(getSelectedMimeType(data)).toBe(
-        "application/vnd.jupyter.widget-view+json",
-      );
+      expect(getSelectedMimeType(data)).toBe("application/vnd.jupyter.widget-view+json");
     });
 
     it("returns image/png over text/plain", () => {
@@ -165,9 +159,7 @@ describe("getSelectedMimeType", () => {
         "application/vnd.vegalite.v4+json": { $schema: "v4" },
         "application/vnd.vegalite.v5+json": { $schema: "v5" },
       };
-      expect(getSelectedMimeType(data)).toBe(
-        "application/vnd.vegalite.v5+json",
-      );
+      expect(getSelectedMimeType(data)).toBe("application/vnd.vegalite.v5+json");
     });
 
     it("handles GeoJSON", () => {
@@ -205,9 +197,7 @@ describe("getSelectedMimeType", () => {
 
   describe("DEFAULT_PRIORITY constant", () => {
     it("has widget as highest priority", () => {
-      expect(DEFAULT_PRIORITY[0]).toBe(
-        "application/vnd.jupyter.widget-view+json",
-      );
+      expect(DEFAULT_PRIORITY[0]).toBe("application/vnd.jupyter.widget-view+json");
     });
 
     it("has text/plain as lowest priority", () => {

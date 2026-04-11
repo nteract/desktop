@@ -128,8 +128,7 @@ function hexToRgb(hex: string): string {
   const r = Number.parseInt(h.slice(0, 2), 16);
   const g = Number.parseInt(h.slice(2, 4), 16);
   const b = Number.parseInt(h.slice(4, 6), 16);
-  if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b))
-    return DEFAULT_COLOR;
+  if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b)) return DEFAULT_COLOR;
   return `${r}, ${g}, ${b}`;
 }
 
@@ -243,9 +242,7 @@ function buildDecorations(marks: TimedMark[]): DecorationSet {
 
     // ── Text opacity fade-in ──
     const opacityStyle =
-      ENABLE_FADEIN && textOpacity < 0.995
-        ? `opacity: ${textOpacity.toFixed(3)};`
-        : "";
+      ENABLE_FADEIN && textOpacity < 0.995 ? `opacity: ${textOpacity.toFixed(3)};` : "";
 
     // ── Underline sweep (left-to-right via CSS animation) ──
     //
@@ -294,8 +291,7 @@ const decorationsField = StateField.define<DecorationSet>({
   create: () => Decoration.none,
   update(decos, tr) {
     const needsRebuild =
-      tr.docChanged ||
-      tr.effects.some((e) => e.is(addAttributionsEffect) || e.is(tickEffect));
+      tr.docChanged || tr.effects.some((e) => e.is(addAttributionsEffect) || e.is(tickEffect));
 
     if (!needsRebuild) return decos;
 
@@ -374,12 +370,7 @@ const attributionTheme = EditorView.theme({
 export function textAttributionExtension(): Extension[] {
   injectKeyframes();
 
-  return [
-    marksField,
-    decorationsField,
-    attributionTickPlugin,
-    attributionTheme,
-  ];
+  return [marksField, decorationsField, attributionTickPlugin, attributionTheme];
 }
 
 /**
@@ -391,10 +382,7 @@ export function textAttributionExtension(): Extension[] {
  *
  * Safe to call at high frequency — marks are additive and independently timed.
  */
-export function addTextAttributions(
-  view: EditorView,
-  marks: AttributionMark[],
-): void {
+export function addTextAttributions(view: EditorView, marks: AttributionMark[]): void {
   if (marks.length === 0) return;
   view.dispatch({ effects: addAttributionsEffect.of(marks) });
 }

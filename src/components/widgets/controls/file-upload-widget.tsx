@@ -10,10 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import type { WidgetComponentProps } from "../widget-registry";
-import {
-  useWidgetModelValue,
-  useWidgetStoreRequired,
-} from "../widget-store-context";
+import { useWidgetModelValue, useWidgetStoreRequired } from "../widget-store-context";
 import { getButtonStyle } from "./button-style-utils";
 
 interface FileData {
@@ -32,11 +29,9 @@ export function FileUploadWidget({ modelId, className }: WidgetComponentProps) {
   const value = useWidgetModelValue<FileData[]>(modelId, "value") ?? [];
   const accept = useWidgetModelValue<string>(modelId, "accept") ?? "";
   const multiple = useWidgetModelValue<boolean>(modelId, "multiple") ?? false;
-  const description =
-    useWidgetModelValue<string>(modelId, "description") ?? "Upload";
+  const description = useWidgetModelValue<string>(modelId, "description") ?? "Upload";
   const disabled = useWidgetModelValue<boolean>(modelId, "disabled") ?? false;
-  const buttonStyle =
-    useWidgetModelValue<string>(modelId, "button_style") ?? "";
+  const buttonStyle = useWidgetModelValue<string>(modelId, "button_style") ?? "";
   const icon = useWidgetModelValue<string>(modelId, "icon") ?? "upload";
 
   const { variant, className: styleClassName } = getButtonStyle(buttonStyle);
@@ -87,9 +82,7 @@ export function FileUploadWidget({ modelId, className }: WidgetComponentProps) {
 
   const fileCount = value.length;
   const buttonText =
-    fileCount > 0
-      ? `${fileCount} file${fileCount > 1 ? "s" : ""} selected`
-      : description;
+    fileCount > 0 ? `${fileCount} file${fileCount > 1 ? "s" : ""} selected` : description;
 
   return (
     <div

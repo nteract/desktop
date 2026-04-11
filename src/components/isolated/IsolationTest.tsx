@@ -311,9 +311,7 @@ interface CommTestState {
 export function IsolationTest() {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
-  const [testResult, setTestResult] = useState<IsolationTestResult | null>(
-    null,
-  );
+  const [testResult, setTestResult] = useState<IsolationTestResult | null>(null);
   const [parentHasTauri, setParentHasTauri] = useState<boolean>(false);
   const [commState, setCommState] = useState<CommTestState>({
     iframeReady: false,
@@ -326,8 +324,7 @@ export function IsolationTest() {
   // Check if parent has Tauri (for comparison)
   useEffect(() => {
     setParentHasTauri(
-      typeof (window as unknown as { __TAURI__?: unknown }).__TAURI__ !==
-        "undefined",
+      typeof (window as unknown as { __TAURI__?: unknown }).__TAURI__ !== "undefined",
     );
   }, []);
 
@@ -414,10 +411,7 @@ export function IsolationTest() {
     !testResult.canFetchParentOrigin;
 
   return (
-    <div
-      data-testid="isolation-test"
-      className="bg-background text-foreground space-y-4 p-4"
-    >
+    <div data-testid="isolation-test" className="bg-background text-foreground space-y-4 p-4">
       <h2 className="text-lg font-semibold">Blob URL Iframe Isolation Test</h2>
 
       {/* Parent context info */}
@@ -425,9 +419,7 @@ export function IsolationTest() {
         <h3 className="mb-2 font-medium">Parent Window Context:</h3>
         <p className="text-sm">
           window.__TAURI__ exists:{" "}
-          <span
-            className={parentHasTauri ? "text-yellow-500" : "text-green-500"}
-          >
+          <span className={parentHasTauri ? "text-yellow-500" : "text-green-500"}>
             {parentHasTauri ? "Yes (expected in Tauri app)" : "No"}
           </span>
         </p>
@@ -440,9 +432,7 @@ export function IsolationTest() {
       {testResult && (
         <div
           className={`rounded p-3 ${
-            isIsolated
-              ? "border border-green-700 bg-green-950"
-              : "border border-red-700 bg-red-950"
+            isIsolated ? "border border-green-700 bg-green-950" : "border border-red-700 bg-red-950"
           }`}
         >
           <h3 className="mb-2 font-medium">
@@ -451,32 +441,20 @@ export function IsolationTest() {
           <ul className="space-y-1 text-sm">
             <li>
               Tauri API blocked:{" "}
-              <span
-                className={
-                  !testResult.hasTauri ? "text-green-500" : "text-red-500"
-                }
-              >
+              <span className={!testResult.hasTauri ? "text-green-500" : "text-red-500"}>
                 {!testResult.hasTauri ? "Yes" : "No"}
               </span>
             </li>
             <li>
               invoke() blocked:{" "}
-              <span
-                className={
-                  !testResult.hasInvoke ? "text-green-500" : "text-red-500"
-                }
-              >
+              <span className={!testResult.hasInvoke ? "text-green-500" : "text-red-500"}>
                 {!testResult.hasInvoke ? "Yes" : "No"}
               </span>
             </li>
             <li>
               Parent document blocked:{" "}
               <span
-                className={
-                  !testResult.canAccessParentDocument
-                    ? "text-green-500"
-                    : "text-red-500"
-                }
+                className={!testResult.canAccessParentDocument ? "text-green-500" : "text-red-500"}
               >
                 {!testResult.canAccessParentDocument ? "Yes" : "No"}
               </span>
@@ -485,9 +463,7 @@ export function IsolationTest() {
               Parent localStorage blocked:{" "}
               <span
                 className={
-                  !testResult.canAccessParentLocalStorage
-                    ? "text-green-500"
-                    : "text-red-500"
+                  !testResult.canAccessParentLocalStorage ? "text-green-500" : "text-red-500"
                 }
               >
                 {!testResult.canAccessParentLocalStorage ? "Yes" : "No"}
@@ -496,54 +472,33 @@ export function IsolationTest() {
             <li>
               Own localStorage blocked (opaque origin):{" "}
               <span
-                className={
-                  !testResult.canUseOwnLocalStorage
-                    ? "text-green-500"
-                    : "text-red-500"
-                }
+                className={!testResult.canUseOwnLocalStorage ? "text-green-500" : "text-red-500"}
               >
                 {!testResult.canUseOwnLocalStorage ? "Yes" : "No"}
               </span>
             </li>
             <li>
               Cookies blocked (opaque origin):{" "}
-              <span
-                className={
-                  !testResult.canUseOwnCookies
-                    ? "text-green-500"
-                    : "text-red-500"
-                }
-              >
+              <span className={!testResult.canUseOwnCookies ? "text-green-500" : "text-red-500"}>
                 {!testResult.canUseOwnCookies ? "Yes" : "No"}
               </span>
             </li>
             <li>
               IndexedDB blocked (opaque origin):{" "}
-              <span
-                className={
-                  !testResult.canUseIndexedDB
-                    ? "text-green-500"
-                    : "text-red-500"
-                }
-              >
+              <span className={!testResult.canUseIndexedDB ? "text-green-500" : "text-red-500"}>
                 {!testResult.canUseIndexedDB ? "Yes" : "No"}
               </span>
             </li>
             <li>
               Parent origin fetch blocked:{" "}
               <span
-                className={
-                  !testResult.canFetchParentOrigin
-                    ? "text-green-500"
-                    : "text-red-500"
-                }
+                className={!testResult.canFetchParentOrigin ? "text-green-500" : "text-red-500"}
               >
                 {!testResult.canFetchParentOrigin ? "Yes" : "No"}
               </span>
             </li>
             <li>
-              Iframe origin:{" "}
-              <code className="text-xs">{testResult.windowOrigin}</code>
+              Iframe origin: <code className="text-xs">{testResult.windowOrigin}</code>
             </li>
           </ul>
         </div>
@@ -555,11 +510,7 @@ export function IsolationTest() {
         <div className="flex items-center gap-2 text-sm">
           <span>
             Iframe ready:{" "}
-            <span
-              className={
-                commState.iframeReady ? "text-green-500" : "text-yellow-500"
-              }
-            >
+            <span className={commState.iframeReady ? "text-green-500" : "text-yellow-500"}>
               {commState.iframeReady ? "Yes" : "Waiting..."}
             </span>
           </span>
@@ -612,12 +563,11 @@ export function IsolationTest() {
       {/* Sandbox attribute explanation */}
       <div className="text-muted-foreground space-y-2 text-xs">
         <p>
-          <strong>Sandbox attributes:</strong> allow-scripts (no
-          allow-same-origin)
+          <strong>Sandbox attributes:</strong> allow-scripts (no allow-same-origin)
         </p>
         <p>
-          Without <code>allow-same-origin</code>, the iframe gets an{" "}
-          <strong>opaque origin</strong> which:
+          Without <code>allow-same-origin</code>, the iframe gets an <strong>opaque origin</strong>{" "}
+          which:
         </p>
         <ul className="ml-4 list-disc space-y-1">
           <li>Cannot access parent document, localStorage, or cookies</li>
@@ -625,12 +575,11 @@ export function IsolationTest() {
           <li>Blocks Tauri IPC injection (Tauri only injects at app origin)</li>
         </ul>
         <p className="border-l-2 border-yellow-600 bg-yellow-950/30 p-2">
-          <strong>⚠️ Web Security Note:</strong> On the web, blob URLs inherit
-          the creator&apos;s origin. The sandbox attribute creates isolation,
-          but for maximum security in production web apps, serve untrusted
-          content from a <strong>separate domain</strong> (e.g.,{" "}
-          <code>runtusercontent.com</code>) rather than a subdomain, as
-          subdomains can share cookies in some configurations.
+          <strong>⚠️ Web Security Note:</strong> On the web, blob URLs inherit the creator&apos;s
+          origin. The sandbox attribute creates isolation, but for maximum security in production
+          web apps, serve untrusted content from a <strong>separate domain</strong> (e.g.,{" "}
+          <code>runtusercontent.com</code>) rather than a subdomain, as subdomains can share cookies
+          in some configurations.
         </p>
       </div>
 

@@ -12,10 +12,7 @@ import { useCallback, useEffect, useId, useState } from "react";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import type { WidgetComponentProps } from "../widget-registry";
-import {
-  useWidgetModelValue,
-  useWidgetStoreRequired,
-} from "../widget-store-context";
+import { useWidgetModelValue, useWidgetStoreRequired } from "../widget-store-context";
 
 export function ComboboxWidget({ modelId, className }: WidgetComponentProps) {
   const { sendUpdate, sendCustom } = useWidgetStoreRequired();
@@ -24,14 +21,11 @@ export function ComboboxWidget({ modelId, className }: WidgetComponentProps) {
   // Subscribe to individual state keys
   const value = useWidgetModelValue<string>(modelId, "value") ?? "";
   const options = useWidgetModelValue<string[]>(modelId, "options") ?? [];
-  const placeholder =
-    useWidgetModelValue<string>(modelId, "placeholder") ?? "Select or type...";
+  const placeholder = useWidgetModelValue<string>(modelId, "placeholder") ?? "Select or type...";
   const description = useWidgetModelValue<string>(modelId, "description");
   const disabled = useWidgetModelValue<boolean>(modelId, "disabled") ?? false;
-  const ensureOption =
-    useWidgetModelValue<boolean>(modelId, "ensure_option") ?? false;
-  const continuousUpdate =
-    useWidgetModelValue<boolean>(modelId, "continuous_update") ?? true;
+  const ensureOption = useWidgetModelValue<boolean>(modelId, "ensure_option") ?? false;
+  const continuousUpdate = useWidgetModelValue<boolean>(modelId, "continuous_update") ?? true;
 
   const [inputValue, setInputValue] = useState(value);
 
@@ -64,16 +58,7 @@ export function ComboboxWidget({ modelId, className }: WidgetComponentProps) {
       }
     }
     sendCustom(modelId, { event: "submit" });
-  }, [
-    modelId,
-    continuousUpdate,
-    ensureOption,
-    options,
-    inputValue,
-    value,
-    sendUpdate,
-    sendCustom,
-  ]);
+  }, [modelId, continuousUpdate, ensureOption, options, inputValue, value, sendUpdate, sendCustom]);
 
   return (
     <div

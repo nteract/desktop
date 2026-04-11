@@ -3,21 +3,14 @@ import { listen } from "@tauri-apps/api/event";
 import type { Theme } from "@tauri-apps/api/window";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useEffect, useState } from "react";
-import type {
-  PythonEnvType,
-  Runtime,
-  SyncedSettings,
-  ThemeMode,
-} from "@/bindings";
+import type { PythonEnvType, Runtime, SyncedSettings, ThemeMode } from "@/bindings";
 
 // Re-export generated types so consumers can import from this module.
 export type { ThemeMode, Runtime, PythonEnvType };
 
 function resolveTheme(theme: ThemeMode): "light" | "dark" {
   if (theme === "system") {
-    return window.matchMedia("(prefers-color-scheme: dark)").matches
-      ? "dark"
-      : "light";
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
   }
   return theme;
 }
@@ -52,9 +45,7 @@ export function isKnownRuntime(value: string): value is "python" | "deno" {
 }
 
 /** Known env type values for UI buttons; unknown values are preserved. */
-export function isKnownPythonEnv(
-  value: string,
-): value is "uv" | "conda" | "pixi" {
+export function isKnownPythonEnv(value: string): value is "uv" | "conda" | "pixi" {
   return value === "uv" || value === "conda" || value === "pixi";
 }
 
@@ -101,12 +92,8 @@ export function useSyncedSettings() {
   const [defaultRuntime, setDefaultRuntimeState] = useState<string>("python");
   const [defaultPythonEnv, setDefaultPythonEnvState] = useState<string>("uv");
   const [defaultUvPackages, setDefaultUvPackagesState] = useState<string[]>([]);
-  const [defaultCondaPackages, setDefaultCondaPackagesState] = useState<
-    string[]
-  >([]);
-  const [defaultPixiPackages, setDefaultPixiPackagesState] = useState<
-    string[]
-  >([]);
+  const [defaultCondaPackages, setDefaultCondaPackagesState] = useState<string[]>([]);
+  const [defaultPixiPackages, setDefaultPixiPackagesState] = useState<string[]>([]);
   // Keep-alive duration in seconds (5s to 7 days)
   const [keepAliveSecs, setKeepAliveSecsState] = useState<number>(30);
 
@@ -206,9 +193,7 @@ export function useSyncedSettings() {
     invoke("set_synced_setting", {
       key: "default_python_env",
       value: newEnv,
-    }).catch((e) =>
-      console.warn("[settings] Failed to persist python env:", e),
-    );
+    }).catch((e) => console.warn("[settings] Failed to persist python env:", e));
   }, []);
 
   const setDefaultUvPackages = useCallback((packages: string[]) => {
@@ -216,9 +201,7 @@ export function useSyncedSettings() {
     invoke("set_synced_setting", {
       key: "uv.default_packages",
       value: packages,
-    }).catch((e) =>
-      console.warn("[settings] Failed to persist uv packages:", e),
-    );
+    }).catch((e) => console.warn("[settings] Failed to persist uv packages:", e));
   }, []);
 
   const setDefaultCondaPackages = useCallback((packages: string[]) => {
@@ -226,9 +209,7 @@ export function useSyncedSettings() {
     invoke("set_synced_setting", {
       key: "conda.default_packages",
       value: packages,
-    }).catch((e) =>
-      console.warn("[settings] Failed to persist conda packages:", e),
-    );
+    }).catch((e) => console.warn("[settings] Failed to persist conda packages:", e));
   }, []);
 
   const setDefaultPixiPackages = useCallback((packages: string[]) => {
@@ -236,9 +217,7 @@ export function useSyncedSettings() {
     invoke("set_synced_setting", {
       key: "pixi.default_packages",
       value: packages,
-    }).catch((e) =>
-      console.warn("[settings] Failed to persist pixi packages:", e),
-    );
+    }).catch((e) => console.warn("[settings] Failed to persist pixi packages:", e));
   }, []);
 
   const setKeepAliveSecs = useCallback((secs: number) => {
@@ -246,9 +225,7 @@ export function useSyncedSettings() {
     invoke("set_synced_setting", {
       key: "keep_alive_secs",
       value: secs,
-    }).catch((e) =>
-      console.warn("[settings] Failed to persist keep_alive_secs:", e),
-    );
+    }).catch((e) => console.warn("[settings] Failed to persist keep_alive_secs:", e));
   }, []);
 
   return {
@@ -278,9 +255,7 @@ export function useSyncedSettings() {
 export function useSyncedTheme() {
   const { theme, setTheme } = useSyncedSettings();
 
-  const [resolvedTheme, setResolvedTheme] = useState<"light" | "dark">(() =>
-    resolveTheme(theme),
-  );
+  const [resolvedTheme, setResolvedTheme] = useState<"light" | "dark">(() => resolveTheme(theme));
 
   // Apply theme to DOM and native window
   useEffect(() => {

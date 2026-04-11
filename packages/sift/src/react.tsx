@@ -117,9 +117,7 @@ export function SiftTable({
 }: SiftTableProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<TableEngine | null>(null);
-  const [status, setStatus] = useState<"idle" | "loading" | "ready" | "error">(
-    "idle",
-  );
+  const [status, setStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
 
   // Stable callback ref to avoid re-mounting engine when onChange identity changes
@@ -171,9 +169,7 @@ export function SiftTable({
       try {
         const response = await fetch(url!);
         if (!response.ok) {
-          throw new Error(
-            `Failed to fetch: ${response.status} ${response.statusText}`,
-          );
+          throw new Error(`Failed to fetch: ${response.status} ${response.statusText}`);
         }
 
         const reader = await RecordBatchReader.from(response);
@@ -181,14 +177,8 @@ export function SiftTable({
 
         if (cancelled) return;
 
-        const {
-          columns,
-          fieldNames,
-          stringCols,
-          rawCols,
-          accumulators,
-          tableData,
-        } = buildTableState(reader.schema, typeOverrides, columnOverrides);
+        const { columns, fieldNames, stringCols, rawCols, accumulators, tableData } =
+          buildTableState(reader.schema, typeOverrides, columnOverrides);
 
         let totalRows = 0;
 
@@ -206,9 +196,7 @@ export function SiftTable({
           }
           totalRows += batchRows;
           tableData.rowCount = totalRows;
-          tableData.columnSummaries = accumulators.map((a) =>
-            a.snapshot(totalRows),
-          );
+          tableData.columnSummaries = accumulators.map((a) => a.snapshot(totalRows));
         }
 
         const firstResult = await reader.next();
@@ -261,14 +249,8 @@ export function SiftTable({
   }, [url, typeOverrides, columnOverrides, stableOnChange]);
 
   return (
-    <div
-      ref={containerRef}
-      className={className}
-      style={{ height: "100%", ...style }}
-    >
-      {status === "error" && error && (
-        <div className="pt-loading">Error: {error}</div>
-      )}
+    <div ref={containerRef} className={className} style={{ height: "100%", ...style }}>
+      {status === "error" && error && <div className="pt-loading">Error: {error}</div>}
     </div>
   );
 }
@@ -296,11 +278,7 @@ export function useSiftEngine(engine: TableEngine | null): SiftTableHandle {
   };
 }
 
-export type {
-  ExplorerState,
-  FilterPredicate,
-  SortEntry,
-} from "./filter-schema";
+export type { ExplorerState, FilterPredicate, SortEntry } from "./filter-schema";
 export {
   engineStateToExplorerState,
   explorerStateToJSON,
@@ -309,11 +287,4 @@ export {
   predicateToSQL,
 } from "./filter-schema";
 // Re-export key types and utilities for consumer convenience
-export type {
-  Column,
-  ColumnFilter,
-  ColumnType,
-  TableData,
-  TableEngine,
-  TableEngineState,
-};
+export type { Column, ColumnFilter, ColumnType, TableData, TableEngine, TableEngineState };

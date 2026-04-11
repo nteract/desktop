@@ -9,7 +9,7 @@
  *   npm run build:plugins
  */
 
-import { build } from "vite";
+import { build } from "vite-plus";
 import tailwindcss from "@tailwindcss/vite";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -106,9 +106,7 @@ async function buildRendererPlugin(pluginEntry, pluginName) {
   }
 
   if (!code) {
-    throw new Error(
-      `Failed to build ${pluginName} renderer plugin: no JS output produced`,
-    );
+    throw new Error(`Failed to build ${pluginName} renderer plugin: no JS output produced`);
   }
 
   return { code, css };

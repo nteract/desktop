@@ -6,16 +6,12 @@ import { expect, test } from "@playwright/test";
  */
 
 test.describe("Filter Labels", () => {
-  test("timestamp filter label shows formatted date, not epoch", async ({
-    page,
-  }) => {
+  test("timestamp filter label shows formatted date, not epoch", async ({ page }) => {
     await page.goto("/?dataset=generated");
     await page.waitForSelector(".pt-table-container");
-    await expect(page.locator(".pt-stat-rows")).toHaveAttribute(
-      "data-value",
-      /100,000/,
-      { timeout: 10_000 },
-    );
+    await expect(page.locator(".pt-stat-rows")).toHaveAttribute("data-value", /100,000/, {
+      timeout: 10_000,
+    });
 
     // Find the Joined column (timestamp) — may need to scroll right
     const labels = await page.locator(".pt-th-label").allTextContents();

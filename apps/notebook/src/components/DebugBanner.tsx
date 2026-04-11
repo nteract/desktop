@@ -17,9 +17,7 @@ export function DebugBanner({
 }: DebugBannerProps) {
   const daemonLabel = isDevMode ? "Dev Daemon" : "System Daemon";
 
-  const daemonCommit = daemonVersion?.includes("+")
-    ? daemonVersion.split("+")[1]
-    : daemonVersion;
+  const daemonCommit = daemonVersion?.includes("+") ? daemonVersion.split("+")[1] : daemonVersion;
 
   return (
     <div className="@container flex items-center justify-center gap-2 bg-violet-600/90 px-3 py-1 text-xs text-white">

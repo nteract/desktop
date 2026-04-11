@@ -174,14 +174,7 @@ const noteTemplates = [
   "تم مراجعة الشفرة البرمجية لوحدة التخطيط. أصبح النص العربي مع علامات الترقيم يلتف بشكل صحيح. تم اختبار ذلك مع نصوص متعددة اللغات تجمع بين العربية والإنجليزية واليابانية.",
 ];
 
-const statuses = [
-  "Active",
-  "On Leave",
-  "Contractor",
-  "Probation",
-  "Remote",
-  "Hybrid",
-];
+const statuses = ["Active", "On Leave", "Contractor", "Probation", "Remote", "Hybrid"];
 const priorities = ["P0", "P1", "P2", "P3", "P4"];
 
 const emailDomains = [
@@ -253,9 +246,7 @@ function generateBatch(startId: number, count: number) {
     statusCol.push(pick(statuses));
     priorityCol.push(pick(priorities));
     scores[i] = Math.round(rand() * 10000) / 100;
-    emails.push(
-      `${sanitizeEmail(first)}.${sanitizeEmail(last)}@${pick(emailDomains)}`,
-    );
+    emails.push(`${sanitizeEmail(first)}.${sanitizeEmail(last)}@${pick(emailDomains)}`);
     verified.push(rand() < 0.72);
     joined[i] = Math.round(NOW - rand() * FIVE_YEARS_MS);
 

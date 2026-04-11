@@ -98,11 +98,7 @@ export function VegaOutput({ data, className }: VegaOutputProps) {
       data-slot="vega-output"
       className={cn("not-prose py-2 max-w-full overflow-visible", className)}
     >
-      {error && (
-        <div className="text-sm text-destructive py-1">
-          Vega rendering error: {error}
-        </div>
-      )}
+      {error && <div className="text-sm text-destructive py-1">Vega rendering error: {error}</div>}
     </div>
   );
 }

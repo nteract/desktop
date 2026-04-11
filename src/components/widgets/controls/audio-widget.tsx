@@ -19,10 +19,7 @@ export function AudioWidget({ modelId, className }: WidgetComponentProps) {
   const controls = useWidgetModelValue<boolean>(modelId, "controls") ?? true;
   const description = useWidgetModelValue<string>(modelId, "description");
 
-  const src = useMemo(
-    () => buildMediaSrc(value, "audio", format),
-    [value, format],
-  );
+  const src = useMemo(() => buildMediaSrc(value, "audio", format), [value, format]);
 
   if (!value) {
     return null;
@@ -34,9 +31,7 @@ export function AudioWidget({ modelId, className }: WidgetComponentProps) {
       data-widget-id={modelId}
       data-widget-type="Audio"
     >
-      {description && (
-        <Label className="shrink-0 pt-1 text-sm">{description}</Label>
-      )}
+      {description && <Label className="shrink-0 pt-1 text-sm">{description}</Label>}
       {/* biome-ignore lint/a11y/useMediaCaption: ipywidgets audio does not provide captions */}
       <audio src={src} autoPlay={autoplay} loop={loop} controls={controls} />
     </div>

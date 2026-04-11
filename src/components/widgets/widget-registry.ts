@@ -11,10 +11,7 @@ export interface WidgetComponentProps {
  * Registry of model names to widget components.
  * Components are loaded lazily to avoid bundling unused widgets.
  */
-export const WIDGET_REGISTRY: Record<
-  string,
-  ComponentType<WidgetComponentProps>
-> = {};
+export const WIDGET_REGISTRY: Record<string, ComponentType<WidgetComponentProps>> = {};
 
 /**
  * Register a widget component for a model name.

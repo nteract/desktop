@@ -42,9 +42,7 @@ function NotebookRow({
         <div className="flex flex-col">
           <span className="text-sm font-medium">{notebook.display_name}</span>
           {notebook.is_dirty && (
-            <span className="text-xs text-muted-foreground">
-              Unsaved changes
-            </span>
+            <span className="text-xs text-muted-foreground">Unsaved changes</span>
           )}
         </div>
       </div>
@@ -80,18 +78,12 @@ function NotebookRow({
 function StepRow({ step }: { step: StepInfo }) {
   return (
     <div className="flex items-center gap-3 py-1.5">
-      {step.status === "completed" && (
-        <Check className="h-4 w-4 text-green-600" />
-      )}
+      {step.status === "completed" && <Check className="h-4 w-4 text-green-600" />}
       {step.status === "in_progress" && (
         <Loader2 className="h-4 w-4 animate-spin text-foreground" />
       )}
-      {step.status === "pending" && (
-        <Circle className="h-4 w-4 text-muted-foreground/40" />
-      )}
-      {step.status === "failed" && (
-        <AlertTriangle className="h-4 w-4 text-red-500" />
-      )}
+      {step.status === "pending" && <Circle className="h-4 w-4 text-muted-foreground/40" />}
+      {step.status === "failed" && <AlertTriangle className="h-4 w-4 text-red-500" />}
       <span
         className={cn(
           "text-sm",
@@ -110,9 +102,7 @@ function StepRow({ step }: { step: StepInfo }) {
 export default function App() {
   const [phase, setPhase] = useState<Phase>("review");
   const [notebooks, setNotebooks] = useState<NotebookStatus[]>([]);
-  const [abortingKernels, setAbortingKernels] = useState<Set<string>>(
-    new Set(),
-  );
+  const [abortingKernels, setAbortingKernels] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<{
     total: number | null;
@@ -136,52 +126,48 @@ export default function App() {
 
   // Listen for progress events
   useEffect(() => {
-    const unlistenProgress = listen<UpgradeStep>(
-      "upgrade:progress",
-      (event) => {
-        const payload = event.payload;
+    const unlistenProgress = listen<UpgradeStep>("upgrade:progress", (event) => {
+      const payload = event.payload;
 
-        setSteps((prev) => {
-          const newSteps = [...prev];
+      setSteps((prev) => {
+        const newSteps = [...prev];
 
-          // Mark all steps as completed up to the current one
-          const stepMap: Record<string, number> = {
-            saving_notebooks: 1,
-            stopping_runtimes: 2,
-            closing_windows: 3,
-            upgrading_daemon: 4,
-            ready: 5,
-          };
+        // Mark all steps as completed up to the current one
+        const stepMap: Record<string, number> = {
+          saving_notebooks: 1,
+          stopping_runtimes: 2,
+          closing_windows: 3,
+          upgrading_daemon: 4,
+          ready: 5,
+        };
 
-          if (payload.step === "failed") {
-            // Mark current in-progress step as failed
-            const failedStep = newSteps.find((s) => s.status === "in_progress");
-            if (failedStep) {
-              failedStep.status = "failed";
-              failedStep.error = payload.error;
-            }
-            setError(payload.error);
-            return newSteps;
+        if (payload.step === "failed") {
+          // Mark current in-progress step as failed
+          const failedStep = newSteps.find((s) => s.status === "in_progress");
+          if (failedStep) {
+            failedStep.status = "failed";
+            failedStep.error = payload.error;
           }
-
-          const currentIndex = stepMap[payload.step];
-          if (currentIndex !== undefined) {
-            for (let i = 0; i < newSteps.length; i++) {
-              if (i < currentIndex) {
-                newSteps[i].status = "completed";
-              } else if (i === currentIndex) {
-                newSteps[i].status =
-                  payload.step === "ready" ? "completed" : "in_progress";
-              } else {
-                newSteps[i].status = "pending";
-              }
-            }
-          }
-
+          setError(payload.error);
           return newSteps;
-        });
-      },
-    );
+        }
+
+        const currentIndex = stepMap[payload.step];
+        if (currentIndex !== undefined) {
+          for (let i = 0; i < newSteps.length; i++) {
+            if (i < currentIndex) {
+              newSteps[i].status = "completed";
+            } else if (i === currentIndex) {
+              newSteps[i].status = payload.step === "ready" ? "completed" : "in_progress";
+            } else {
+              newSteps[i].status = "pending";
+            }
+          }
+        }
+
+        return newSteps;
+      });
+    });
 
     return () => {
       unlistenProgress.then((unlisten) => unlisten()).catch(() => {});
@@ -197,9 +183,7 @@ export default function App() {
     try {
       await invoke("abort_kernel_for_upgrade", { windowLabel });
       // Refresh notebook status
-      const updated = await invoke<NotebookStatus[]>(
-        "get_upgrade_notebook_status",
-      );
+      const updated = await invoke<NotebookStatus[]>("get_upgrade_notebook_status");
       setNotebooks(updated);
     } catch (e) {
       setError(String(e));
@@ -217,9 +201,7 @@ export default function App() {
     setError(null);
 
     // Step 0: Download and install the update
-    setSteps((prev) =>
-      prev.map((s, i) => (i === 0 ? { ...s, status: "in_progress" } : s)),
-    );
+    setSteps((prev) => prev.map((s, i) => (i === 0 ? { ...s, status: "in_progress" } : s)));
 
     try {
       const update = await check();
@@ -251,16 +233,12 @@ export default function App() {
       });
 
       // Mark download as completed
-      setSteps((prev) =>
-        prev.map((s, i) => (i === 0 ? { ...s, status: "completed" } : s)),
-      );
+      setSteps((prev) => prev.map((s, i) => (i === 0 ? { ...s, status: "completed" } : s)));
       setDownloadProgress(null);
     } catch (e) {
       setSteps((prev) =>
         prev.map((s) =>
-          s.status === "in_progress"
-            ? { ...s, status: "failed", error: String(e) }
-            : s,
+          s.status === "in_progress" ? { ...s, status: "failed", error: String(e) } : s,
         ),
       );
       setError(String(e));
@@ -285,12 +263,8 @@ export default function App() {
         {phase === "review" && (
           <>
             <div className="text-center space-y-2">
-              <h1 className="text-2xl font-semibold tracking-tight">
-                Update Ready
-              </h1>
-              <p className="text-sm text-muted-foreground">
-                Review your notebooks before updating
-              </p>
+              <h1 className="text-2xl font-semibold tracking-tight">Update Ready</h1>
+              <p className="text-sm text-muted-foreground">Review your notebooks before updating</p>
             </div>
 
             {notebooks.length > 0 ? (
@@ -319,8 +293,7 @@ export default function App() {
               <div className="flex items-start gap-2 p-3 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800">
                 <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
                 <p className="text-sm text-amber-800 dark:text-amber-200">
-                  Some notebooks have running code. Stop or wait before
-                  continuing.
+                  Some notebooks have running code. Stop or wait before continuing.
                 </p>
               </div>
             )}
@@ -329,12 +302,7 @@ export default function App() {
               Runtimes will restart after update
             </div>
 
-            <Button
-              onClick={handleContinue}
-              disabled={hasBusyKernels}
-              className="w-full"
-              size="lg"
-            >
+            <Button onClick={handleContinue} disabled={hasBusyKernels} className="w-full" size="lg">
               {hasBusyKernels ? "Stop busy runtimes first" : "Continue Update"}
             </Button>
           </>
@@ -344,11 +312,7 @@ export default function App() {
           <>
             <div className="text-center space-y-2">
               <h1 className="text-2xl font-semibold tracking-tight">
-                {isReady
-                  ? "Update Complete"
-                  : hasFailed
-                    ? "Update Failed"
-                    : "Updating..."}
+                {isReady ? "Update Complete" : hasFailed ? "Update Failed" : "Updating..."}
               </h1>
               <p className="text-sm text-muted-foreground">
                 {isReady
@@ -378,9 +342,7 @@ export default function App() {
                                 ? {
                                     width: `${Math.min(
                                       100,
-                                      (downloadProgress.downloaded /
-                                        downloadProgress.total) *
-                                        100,
+                                      (downloadProgress.downloaded / downloadProgress.total) * 100,
                                     )}%`,
                                   }
                                 : undefined
@@ -402,27 +364,16 @@ export default function App() {
             {error && (
               <div className="flex items-start gap-2 p-3 rounded-md bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800">
                 <AlertTriangle className="h-4 w-4 text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
-                <p className="text-sm text-red-800 dark:text-red-200">
-                  {error}
-                </p>
+                <p className="text-sm text-red-800 dark:text-red-200">{error}</p>
               </div>
             )}
 
             {hasFailed ? (
-              <Button
-                onClick={() => window.close()}
-                className="w-full"
-                size="lg"
-              >
+              <Button onClick={() => window.close()} className="w-full" size="lg">
                 Close
               </Button>
             ) : (
-              <Button
-                onClick={handleRestart}
-                disabled={!isReady}
-                className="w-full"
-                size="lg"
-              >
+              <Button onClick={handleRestart} disabled={!isReady} className="w-full" size="lg">
                 {isReady ? "Restart Now" : "Preparing..."}
               </Button>
             )}

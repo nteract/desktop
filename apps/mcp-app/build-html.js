@@ -38,7 +38,9 @@ writeFileSync("dist/output.html", html);
 const pkgDir = "../../python/nteract/src/nteract";
 try {
   writeFileSync(`${pkgDir}/_widget.html`, html);
-} catch { /* nteract package dir may not exist */ }
+} catch {
+  /* nteract package dir may not exist */
+}
 
 // Copy to the runt-mcp crate for Rust include_str! embedding
 const mcpDir = "../../crates/runt-mcp/assets";

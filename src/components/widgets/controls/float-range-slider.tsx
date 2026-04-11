@@ -8,29 +8,22 @@ import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { cn } from "@/lib/utils";
 import type { WidgetComponentProps } from "../widget-registry";
-import {
-  useWidgetModelValue,
-  useWidgetStoreRequired,
-} from "../widget-store-context";
+import { useWidgetModelValue, useWidgetStoreRequired } from "../widget-store-context";
 
 export function FloatRangeSlider({ modelId, className }: WidgetComponentProps) {
   const { sendUpdate } = useWidgetStoreRequired();
 
   // ipywidgets uses "value" as a tuple [lower, upper]
-  const value = useWidgetModelValue<[number, number]>(modelId, "value") ?? [
-    25.0, 75.0,
-  ];
+  const value = useWidgetModelValue<[number, number]>(modelId, "value") ?? [25.0, 75.0];
   const min = useWidgetModelValue<number>(modelId, "min") ?? 0;
   const max = useWidgetModelValue<number>(modelId, "max") ?? 100;
   const step = useWidgetModelValue<number>(modelId, "step") ?? 0.1;
   const description = useWidgetModelValue<string>(modelId, "description");
   const disabled = useWidgetModelValue<boolean>(modelId, "disabled") ?? false;
   const orientation =
-    useWidgetModelValue<"horizontal" | "vertical">(modelId, "orientation") ??
-    "horizontal";
+    useWidgetModelValue<"horizontal" | "vertical">(modelId, "orientation") ?? "horizontal";
   const readout = useWidgetModelValue<boolean>(modelId, "readout") ?? true;
-  const readoutFormat =
-    useWidgetModelValue<string>(modelId, "readout_format") ?? ".2f";
+  const readoutFormat = useWidgetModelValue<string>(modelId, "readout_format") ?? ".2f";
 
   const handleChange = (newValue: number[]) => {
     // Clamp to range (no integer rounding for floats)
@@ -53,11 +46,7 @@ export function FloatRangeSlider({ modelId, className }: WidgetComponentProps) {
 
   return (
     <div
-      className={cn(
-        "flex gap-3",
-        isVertical ? "flex-col items-center" : "items-center",
-        className,
-      )}
+      className={cn("flex gap-3", isVertical ? "flex-col items-center" : "items-center", className)}
       data-widget-id={modelId}
       data-widget-type="FloatRangeSlider"
     >

@@ -9,10 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import type { WidgetComponentProps } from "../widget-registry";
-import {
-  useWidgetModelValue,
-  useWidgetStoreRequired,
-} from "../widget-store-context";
+import { useWidgetModelValue, useWidgetStoreRequired } from "../widget-store-context";
 
 export function TextareaWidget({ modelId, className }: WidgetComponentProps) {
   const { sendUpdate } = useWidgetStoreRequired();
@@ -23,8 +20,7 @@ export function TextareaWidget({ modelId, className }: WidgetComponentProps) {
   const placeholder = useWidgetModelValue<string>(modelId, "placeholder") ?? "";
   const disabled = useWidgetModelValue<boolean>(modelId, "disabled") ?? false;
   const rows = useWidgetModelValue<number>(modelId, "rows") ?? 4;
-  const continuousUpdate =
-    useWidgetModelValue<boolean>(modelId, "continuous_update") ?? true;
+  const continuousUpdate = useWidgetModelValue<boolean>(modelId, "continuous_update") ?? true;
 
   // Local state for non-continuous updates
   const [localValue, setLocalValue] = useState(value);

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   BIN_COUNT,
   BooleanAccumulator,
@@ -41,17 +41,7 @@ describe("NumericAccumulator", () => {
 
   it("excludes NaN, Infinity, -Infinity, null from bins", () => {
     const acc = new NumericAccumulator();
-    const data: (number | null)[] = [
-      10,
-      NaN,
-      20,
-      Infinity,
-      -Infinity,
-      null,
-      30,
-      15,
-      25,
-    ];
+    const data: (number | null)[] = [10, NaN, 20, Infinity, -Infinity, null, 30, 15, 25];
     acc.add(data, 0, data.length);
     const result = acc.snapshot() as NumericColumnSummary;
     expect(result).not.toBeNull();
@@ -340,13 +330,7 @@ describe("refineColumnType", () => {
   });
 
   it("refines string dates to timestamp", () => {
-    const values = [
-      "2019-06-23",
-      "2018-10-19",
-      "2020-01-15",
-      "2019-07-01",
-      "2021-03-28",
-    ];
+    const values = ["2019-06-23", "2018-10-19", "2020-01-15", "2019-07-01", "2021-03-28"];
     const result = refineColumnType("categorical", values);
     expect(result.type).toBe("timestamp");
   });
@@ -365,14 +349,7 @@ describe("refineColumnType", () => {
 
   it("ignores null sentinels when determining date type", () => {
     // Dates + some "?" sentinels should still detect as timestamp
-    const values = [
-      "2019-06-23",
-      "?",
-      "2018-10-19",
-      "?",
-      "2020-01-15",
-      "2019-07-01",
-    ];
+    const values = ["2019-06-23", "?", "2018-10-19", "?", "2020-01-15", "2019-07-01"];
     const result = refineColumnType("categorical", values);
     expect(result.type).toBe("timestamp");
     expect(result.hasNullSentinels).toBe(true);

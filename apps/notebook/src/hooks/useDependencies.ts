@@ -50,12 +50,8 @@ export function useDependencies() {
   const [loading, setLoading] = useState(false);
 
   // pyproject.toml state
-  const [pyprojectInfo, setPyprojectInfo] = useState<PyProjectInfo | null>(
-    null,
-  );
-  const [pyprojectDeps, setPyprojectDeps] = useState<PyProjectDeps | null>(
-    null,
-  );
+  const [pyprojectInfo, setPyprojectInfo] = useState<PyProjectInfo | null>(null);
+  const [pyprojectDeps, setPyprojectDeps] = useState<PyProjectDeps | null>(null);
 
   // Detect pyproject on mount
   useEffect(() => {
@@ -157,8 +153,7 @@ export function useDependencies() {
     [resignTrust],
   );
 
-  const hasDependencies =
-    dependencies !== null && dependencies.dependencies.length > 0;
+  const hasDependencies = dependencies !== null && dependencies.dependencies.length > 0;
 
   // True if uv metadata exists (even with empty deps)
   const isUvConfigured = dependencies !== null;
@@ -166,9 +161,7 @@ export function useDependencies() {
   // Load full pyproject dependencies
   const loadPyprojectDeps = useCallback(async () => {
     try {
-      const deps = await invoke<PyProjectDeps | null>(
-        "get_pyproject_dependencies",
-      );
+      const deps = await invoke<PyProjectDeps | null>("get_pyproject_dependencies");
       setPyprojectDeps(deps);
     } catch (e) {
       logger.error("Failed to load pyproject dependencies:", e);

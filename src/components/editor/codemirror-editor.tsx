@@ -17,11 +17,7 @@ import {
 
 import { cn } from "@/lib/utils";
 import { defaultExtensions } from "./extensions";
-import {
-  getIPythonExtension,
-  getLanguageExtension,
-  type SupportedLanguage,
-} from "./languages";
+import { getIPythonExtension, getLanguageExtension, type SupportedLanguage } from "./languages";
 import { darkTheme, isDarkMode, lightTheme, type ThemeMode } from "./themes";
 
 export interface CodeMirrorEditorRef {
@@ -84,10 +80,7 @@ export interface CodeMirrorEditorProps {
  * change for consumers that need it (e.g., non-CRDT editors). It does
  * NOT fire for inbound CRDT changes (reconcile-annotated transactions).
  */
-export const CodeMirrorEditor = forwardRef<
-  CodeMirrorEditorRef,
-  CodeMirrorEditorProps
->(
+export const CodeMirrorEditor = forwardRef<CodeMirrorEditorRef, CodeMirrorEditorProps>(
   (
     {
       initialValue = "",
@@ -218,8 +211,7 @@ export const CodeMirrorEditor = forwardRef<
         if (languageRef.current === "ipython") {
           // Only read the first line — magic detection is O(1) vs O(n) toString().
           const firstLine = vu.state.doc.line(1).text;
-          const { extension: newLangExt, cellMagic } =
-            getIPythonExtension(firstLine);
+          const { extension: newLangExt, cellMagic } = getIPythonExtension(firstLine);
           const magicKey = cellMagic ?? "";
           if (magicKey !== (lastMagicRef.current ?? "")) {
             lastMagicRef.current = magicKey;
@@ -234,21 +226,13 @@ export const CodeMirrorEditor = forwardRef<
         doc: initialValue,
         extensions: [
           // Custom keymaps first — highest precedence (Shift-Enter, etc.)
-          keymapCompartment.current.of(
-            keyMap && keyMap.length > 0 ? keymap.of(keyMap) : [],
-          ),
+          keymapCompartment.current.of(keyMap && keyMap.length > 0 ? keymap.of(keyMap) : []),
           ...baseExtensions,
           langCompartment.current.of(langExtension),
           themeCompartment.current.of(themeExtension),
-          placeholderCompartment.current.of(
-            placeholder ? placeholderExt(placeholder) : [],
-          ),
-          lineWrappingCompartment.current.of(
-            lineWrapping ? EditorView.lineWrapping : [],
-          ),
-          readOnlyCompartment.current.of(
-            readOnly ? EditorView.editable.of(false) : [],
-          ),
+          placeholderCompartment.current.of(placeholder ? placeholderExt(placeholder) : []),
+          lineWrappingCompartment.current.of(lineWrapping ? EditorView.lineWrapping : []),
+          readOnlyCompartment.current.of(readOnly ? EditorView.editable.of(false) : []),
           additionalCompartment.current.of(additionalExtensions ?? []),
           ...maxHeightTheme,
           updateListener,
@@ -268,9 +252,7 @@ export const CodeMirrorEditor = forwardRef<
             effects: placeholderCompartment.current.reconfigure([]),
           });
           view.dispatch({
-            effects: placeholderCompartment.current.reconfigure(
-              placeholderExt(placeholder),
-            ),
+            effects: placeholderCompartment.current.reconfigure(placeholderExt(placeholder)),
           });
         }
         if (autoFocus) {
@@ -342,9 +324,7 @@ export const CodeMirrorEditor = forwardRef<
 
     useEffect(() => {
       viewRef.current?.dispatch({
-        effects: additionalCompartment.current.reconfigure(
-          additionalExtensions ?? [],
-        ),
+        effects: additionalCompartment.current.reconfigure(additionalExtensions ?? []),
       });
     }, [additionalExtensions]);
 
