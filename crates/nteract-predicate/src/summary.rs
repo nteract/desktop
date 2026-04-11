@@ -23,7 +23,10 @@ pub struct HistogramBin {
 }
 
 /// Compute value_counts for a string column from Arrow IPC bytes.
-pub fn value_counts_impl(ipc_bytes: &[u8], column_index: usize) -> Result<JsValue, Box<dyn std::error::Error>> {
+pub fn value_counts_impl(
+    ipc_bytes: &[u8],
+    column_index: usize,
+) -> Result<JsValue, Box<dyn std::error::Error>> {
     let cursor = Cursor::new(ipc_bytes);
     let reader = StreamReader::try_new(cursor, None)?;
 
@@ -35,7 +38,9 @@ pub fn value_counts_impl(ipc_bytes: &[u8], column_index: usize) -> Result<JsValu
 
         match col.data_type() {
             DataType::Utf8 | DataType::LargeUtf8 => {
-                let arr = col.as_any().downcast_ref::<StringArray>()
+                let arr = col
+                    .as_any()
+                    .downcast_ref::<StringArray>()
                     .ok_or("expected StringArray for Utf8 column")?;
                 for i in 0..arr.len() {
                     if !arr.is_null(i) {
@@ -47,7 +52,9 @@ pub fn value_counts_impl(ipc_bytes: &[u8], column_index: usize) -> Result<JsValu
                 let dict_arr = col.as_any_dictionary();
                 let keys = dict_arr.keys();
                 let values = dict_arr.values();
-                let str_values = values.as_any().downcast_ref::<StringArray>()
+                let str_values = values
+                    .as_any()
+                    .downcast_ref::<StringArray>()
                     .ok_or("expected StringArray for dictionary values")?;
                 for i in 0..keys.len() {
                     if let Some(key) = dict_key_at(keys, i) {

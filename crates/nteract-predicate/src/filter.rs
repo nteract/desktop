@@ -8,7 +8,10 @@ use std::io::Cursor;
 use crate::utils::dict_key_at;
 
 /// Filter rows by a boolean mask, return filtered Arrow IPC bytes.
-pub fn filter_rows_impl(ipc_bytes: &[u8], mask: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+pub fn filter_rows_impl(
+    ipc_bytes: &[u8],
+    mask: &[u8],
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let cursor = Cursor::new(ipc_bytes);
     let reader = StreamReader::try_new(cursor, None)?;
     let schema = reader.schema();
@@ -63,7 +66,9 @@ pub fn string_contains_impl(
 
         match col.data_type() {
             DataType::Utf8 | DataType::LargeUtf8 => {
-                let arr = col.as_any().downcast_ref::<StringArray>()
+                let arr = col
+                    .as_any()
+                    .downcast_ref::<StringArray>()
                     .ok_or("expected StringArray for Utf8 column")?;
                 for i in 0..arr.len() {
                     if !arr.is_null(i) && arr.value(i).to_lowercase().contains(&query_lower) {
@@ -75,14 +80,19 @@ pub fn string_contains_impl(
                 let dict_arr = col.as_any_dictionary();
                 let keys = dict_arr.keys();
                 let values = dict_arr.values();
-                let str_values = values.as_any().downcast_ref::<StringArray>()
+                let str_values = values
+                    .as_any()
+                    .downcast_ref::<StringArray>()
                     .ok_or("expected StringArray for dictionary values")?;
 
                 // Pre-check which dictionary values match (much faster for repeated values)
                 let dict_matches: Vec<bool> = (0..str_values.len())
                     .map(|i| {
-                        if str_values.is_null(i) { false }
-                        else { str_values.value(i).to_lowercase().contains(&query_lower) }
+                        if str_values.is_null(i) {
+                            false
+                        } else {
+                            str_values.value(i).to_lowercase().contains(&query_lower)
+                        }
                     })
                     .collect();
 

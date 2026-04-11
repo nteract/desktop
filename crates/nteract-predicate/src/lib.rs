@@ -1,10 +1,10 @@
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsValue;
 
-mod utils;
-mod summary;
 mod filter;
 mod store;
+mod summary;
+mod utils;
 
 /// Initialize the WASM module. Call once before using other functions.
 /// Sets up panic hook so Rust panics show readable messages in the browser console.
@@ -29,7 +29,11 @@ pub fn value_counts(ipc_bytes: &[u8], column_index: usize) -> Result<JsValue, Js
 /// Takes: Arrow IPC bytes, column index, number of bins
 /// Returns: JSON array of { x0, x1, count }
 #[wasm_bindgen]
-pub fn histogram(ipc_bytes: &[u8], column_index: usize, num_bins: usize) -> Result<JsValue, JsValue> {
+pub fn histogram(
+    ipc_bytes: &[u8],
+    column_index: usize,
+    num_bins: usize,
+) -> Result<JsValue, JsValue> {
     summary::histogram_impl(ipc_bytes, column_index, num_bins)
         .map_err(|e| JsValue::from_str(&e.to_string()))
 }
@@ -40,8 +44,7 @@ pub fn histogram(ipc_bytes: &[u8], column_index: usize, num_bins: usize) -> Resu
 /// Returns: Filtered Arrow IPC bytes
 #[wasm_bindgen]
 pub fn filter_rows(ipc_bytes: &[u8], mask: &[u8]) -> Result<Vec<u8>, JsValue> {
-    filter::filter_rows_impl(ipc_bytes, mask)
-        .map_err(|e| JsValue::from_str(&e.to_string()))
+    filter::filter_rows_impl(ipc_bytes, mask).map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
 /// Search a string column for values containing a substring.
@@ -50,7 +53,11 @@ pub fn filter_rows(ipc_bytes: &[u8], mask: &[u8]) -> Result<Vec<u8>, JsValue> {
 /// Takes: Arrow IPC bytes, column index, search query
 /// Returns: Array of matching row indices
 #[wasm_bindgen]
-pub fn string_contains(ipc_bytes: &[u8], column_index: usize, query: &str) -> Result<Vec<u32>, JsValue> {
+pub fn string_contains(
+    ipc_bytes: &[u8],
+    column_index: usize,
+    query: &str,
+) -> Result<Vec<u32>, JsValue> {
     filter::string_contains_impl(ipc_bytes, column_index, query)
         .map_err(|e| JsValue::from_str(&e.to_string()))
 }
