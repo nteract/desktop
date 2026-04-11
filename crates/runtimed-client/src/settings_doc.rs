@@ -406,6 +406,18 @@ impl SettingsDoc {
         if let Some(completed) = json.get("onboarding_completed").and_then(|v| v.as_bool()) {
             settings.put_bool("onboarding_completed", completed);
         }
+
+        // Pool sizes (numeric values, import from JSON if present)
+        if let Some(uv_size) = json.get("uv_pool_size").and_then(|v| v.as_u64()) {
+            settings.put_u64("uv_pool_size", uv_size);
+        }
+        if let Some(conda_size) = json.get("conda_pool_size").and_then(|v| v.as_u64()) {
+            settings.put_u64("conda_pool_size", conda_size);
+        }
+        if let Some(pixi_size) = json.get("pixi_pool_size").and_then(|v| v.as_u64()) {
+            settings.put_u64("pixi_pool_size", pixi_size);
+        }
+
         let uv_packages = Self::extract_packages_from_json(json, "uv");
         if !uv_packages.is_empty() {
             settings.put_list("uv.default_packages", &uv_packages);
@@ -867,6 +879,41 @@ impl SettingsDoc {
                     current, completed
                 );
                 self.put_bool("onboarding_completed", completed);
+                changed = true;
+            }
+        }
+
+        // Pool sizes: uv_pool_size, conda_pool_size, pixi_pool_size
+        if let Some(uv_pool) = json.get("uv_pool_size").and_then(|v| v.as_u64()) {
+            let current = self.get_u64("uv_pool_size");
+            if current != Some(uv_pool) {
+                info!(
+                    "[settings] apply_json_changes: uv_pool_size changed {:?} -> {}",
+                    current, uv_pool
+                );
+                self.put_u64("uv_pool_size", uv_pool);
+                changed = true;
+            }
+        }
+        if let Some(conda_pool) = json.get("conda_pool_size").and_then(|v| v.as_u64()) {
+            let current = self.get_u64("conda_pool_size");
+            if current != Some(conda_pool) {
+                info!(
+                    "[settings] apply_json_changes: conda_pool_size changed {:?} -> {}",
+                    current, conda_pool
+                );
+                self.put_u64("conda_pool_size", conda_pool);
+                changed = true;
+            }
+        }
+        if let Some(pixi_pool) = json.get("pixi_pool_size").and_then(|v| v.as_u64()) {
+            let current = self.get_u64("pixi_pool_size");
+            if current != Some(pixi_pool) {
+                info!(
+                    "[settings] apply_json_changes: pixi_pool_size changed {:?} -> {}",
+                    current, pixi_pool
+                );
+                self.put_u64("pixi_pool_size", pixi_pool);
                 changed = true;
             }
         }

@@ -68,6 +68,10 @@ enum Commands {
         /// Number of Conda environments to maintain
         #[arg(long, default_value = "3")]
         conda_pool_size: usize,
+
+        /// Number of Pixi environments to maintain
+        #[arg(long, default_value = "2")]
+        pixi_pool_size: usize,
     },
 
     /// Install daemon as a system service
@@ -289,7 +293,7 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         None | Some(Commands::Run { .. }) => {
             // Extract run args from command or use defaults
-            let (socket, cache_dir, blob_store_dir, uv_pool_size, conda_pool_size) =
+            let (socket, cache_dir, blob_store_dir, uv_pool_size, conda_pool_size, pixi_pool_size) =
                 match cli.command {
                     Some(Commands::Run {
                         socket,
@@ -297,14 +301,16 @@ async fn main() -> anyhow::Result<()> {
                         blob_store_dir,
                         uv_pool_size,
                         conda_pool_size,
+                        pixi_pool_size,
                     }) => (
                         socket,
                         cache_dir,
                         blob_store_dir,
                         uv_pool_size,
                         conda_pool_size,
+                        pixi_pool_size,
                     ),
-                    _ => (None, None, None, 3, 3),
+                    _ => (None, None, None, 3, 3, 2),
                 };
 
             run_daemon(
@@ -313,6 +319,7 @@ async fn main() -> anyhow::Result<()> {
                 blob_store_dir,
                 uv_pool_size,
                 conda_pool_size,
+                pixi_pool_size,
             )
             .await
         }
@@ -383,6 +390,7 @@ async fn run_daemon(
     blob_store_dir: Option<PathBuf>,
     uv_pool_size: usize,
     conda_pool_size: usize,
+    pixi_pool_size: usize,
 ) -> anyhow::Result<()> {
     info!("runtimed starting...");
 
@@ -392,6 +400,7 @@ async fn run_daemon(
         blob_store_dir: blob_store_dir.unwrap_or_else(runtimed::default_blob_store_dir),
         uv_pool_size,
         conda_pool_size,
+        pixi_pool_size,
         ..Default::default()
     };
 
@@ -401,6 +410,7 @@ async fn run_daemon(
     info!("  Blob store: {:?}", config.blob_store_dir);
     info!("  UV pool size: {}", config.uv_pool_size);
     info!("  Conda pool size: {}", config.conda_pool_size);
+    info!("  Pixi pool size: {}", config.pixi_pool_size);
     let daemon = match Daemon::new(config) {
         Ok(d) => d,
         Err(e) => {
