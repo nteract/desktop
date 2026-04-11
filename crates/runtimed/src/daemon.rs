@@ -109,15 +109,19 @@ struct FailureState {
 /// Classify whether an error message indicates a network failure.
 ///
 /// Network failures get shorter backoff since kernel-env's offline-first
-/// path may succeed without network access.
+/// path may succeed without network access. We use specific substrings
+/// rather than broad terms to avoid false positives (e.g., a local socket
+/// "connection" or a subprocess "timeout" is not a network failure).
 fn is_network_error(error_msg: &str) -> bool {
     let lower = error_msg.to_lowercase();
-    lower.contains("timeout")
-        || lower.contains("timed out")
-        || lower.contains("connection")
+    lower.contains("connection refused")
+        || lower.contains("connection reset")
+        || lower.contains("connection timed out")
+        || lower.contains("request timed out")
+        || lower.contains("connect timed out")
         || lower.contains("dns")
-        || lower.contains("network")
-        || lower.contains("offline")
+        || lower.contains("network is unreachable")
+        || lower.contains("network unreachable")
         || lower.contains("failed to fetch")
         || lower.contains("could not resolve")
         || lower.contains("no cached repodata")
@@ -383,7 +387,8 @@ impl Pool {
     /// Calculate backoff delay based on consecutive failures.
     ///
     /// Returns Duration::ZERO if no failures, otherwise exponential backoff:
-    /// 30s, 60s, 120s, 240s, max 300s (5 min).
+    /// - Network failures: 10s, 20s, 40s, max 60s (shorter — offline-first may succeed)
+    /// - Other failures: 30s, 60s, 120s, 240s, max 300s (5 min)
     fn backoff_delay(&self) -> std::time::Duration {
         if self.failure_state.consecutive_failures == 0 {
             return std::time::Duration::ZERO;
@@ -4555,15 +4560,24 @@ mod tests {
 
     #[test]
     fn test_is_network_error_classification() {
+        // Network errors
         assert!(is_network_error("connection refused"));
-        assert!(is_network_error("DNS resolution failed"));
+        assert!(is_network_error("connection reset by peer"));
+        assert!(is_network_error("connection timed out"));
         assert!(is_network_error("request timed out"));
+        assert!(is_network_error("connect timed out"));
+        assert!(is_network_error("DNS resolution failed"));
         assert!(is_network_error("Failed to fetch repodata"));
         assert!(is_network_error("No cached repodata available"));
         assert!(is_network_error("network is unreachable"));
+        assert!(is_network_error("could not resolve host"));
+
+        // NOT network errors — these should use normal backoff
         assert!(!is_network_error("package pandas not found"));
         assert!(!is_network_error("invalid version specifier"));
         assert!(!is_network_error("Failed to solve dependencies"));
+        assert!(!is_network_error("connection pool exhausted")); // not a network error
+        assert!(!is_network_error("subprocess timed out")); // not a network error
     }
 
     #[test]
@@ -4592,5 +4606,24 @@ mod tests {
         let delay = pool.backoff_delay();
         // 30s * 2^2 = 120s
         assert_eq!(delay.as_secs(), 120);
+    }
+
+    #[test]
+    fn test_pool_network_backoff_progression() {
+        let mut pool = Pool::new(3, 3600);
+        pool.failure_state.is_network_failure = true;
+
+        // 10s base, doubling, capped at 60s
+        let expected = [10, 20, 40, 60, 60];
+        for (i, &expected_secs) in expected.iter().enumerate() {
+            pool.failure_state.consecutive_failures = (i + 1) as u32;
+            assert_eq!(
+                pool.backoff_delay().as_secs(),
+                expected_secs,
+                "network backoff at {} failures should be {}s",
+                i + 1,
+                expected_secs
+            );
+        }
     }
 }
