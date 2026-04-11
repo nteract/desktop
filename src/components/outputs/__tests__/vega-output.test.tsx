@@ -21,13 +21,11 @@ beforeEach(() => {
   mockVegaEmbed.mockResolvedValue({
     view: { finalize: mockFinalize, background: vi.fn() },
   });
-  // biome-ignore lint/suspicious/noExplicitAny: test mock
   (window as any).vegaEmbed = mockVegaEmbed;
 });
 
 afterEach(() => {
   cleanup();
-  // biome-ignore lint/suspicious/noExplicitAny: test cleanup
   delete (window as any).vegaEmbed;
 });
 
@@ -63,10 +61,7 @@ describe("VegaOutput", () => {
   });
 
   it("returns null when data is null", () => {
-    const { container } = render(
-      // biome-ignore lint/suspicious/noExplicitAny: testing edge case
-      <VegaOutput data={null as any} />,
-    );
+    const { container } = render(<VegaOutput data={null as any} />);
     expect(container.firstChild).toBeNull();
   });
 

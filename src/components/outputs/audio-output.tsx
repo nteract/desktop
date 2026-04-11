@@ -32,7 +32,6 @@ export function AudioOutput({ data, mediaType = "audio/wav", className = "" }: A
 
   return (
     <div data-slot="audio-output" className={cn("py-2", className)}>
-      {/* biome-ignore lint/a11y/useMediaCaption: kernel audio outputs don't include captions */}
       <audio src={src} controls preload="metadata" />
     </div>
   );

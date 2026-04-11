@@ -17,7 +17,6 @@ export function GeoJsonOutput({ data, className }: GeoJsonOutputProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    // biome-ignore lint/suspicious/noExplicitAny: Leaflet is injected as a global
     const L = (window as any).L;
     if (!containerRef.current || !data || !L) return;
 

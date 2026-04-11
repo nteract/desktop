@@ -47,7 +47,6 @@ export function useCellKeyboardNavigation({
   // Memoize keybindings - they're stable because they read from refs.
   // The keybindings close over refs, not the callbacks directly, so we only
   // need to recreate when the presence of optional callbacks changes.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: callbacks accessed via refs
   return useMemo(
     () => [
       {

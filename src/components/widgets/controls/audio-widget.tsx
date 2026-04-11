@@ -32,7 +32,6 @@ export function AudioWidget({ modelId, className }: WidgetComponentProps) {
       data-widget-type="Audio"
     >
       {description && <Label className="shrink-0 pt-1 text-sm">{description}</Label>}
-      {/* biome-ignore lint/a11y/useMediaCaption: ipywidgets audio does not provide captions */}
       <audio src={src} autoPlay={autoplay} loop={loop} controls={controls} />
     </div>
   );

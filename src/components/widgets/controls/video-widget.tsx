@@ -38,7 +38,6 @@ export function VideoWidget({ modelId, className }: WidgetComponentProps) {
       data-widget-type="Video"
     >
       {description && <Label className="shrink-0 pt-1 text-sm">{description}</Label>}
-      {/* biome-ignore lint/a11y/useMediaCaption: ipywidgets video does not provide captions */}
       <video
         src={src}
         autoPlay={autoplay}

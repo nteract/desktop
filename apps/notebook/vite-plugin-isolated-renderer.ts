@@ -268,7 +268,6 @@ export function isolatedRendererPlugin(options: IsolatedRendererPluginOptions = 
       throw new Error("Failed to build isolated renderer: no JS output produced");
     }
 
-
     // --- Build renderer plugins (CJS, React externalized) ---
     const [markdownPlugin, vegaPlugin, plotlyPlugin, leafletPlugin] = await Promise.all([
       buildRendererPlugin(markdownEntry, "markdown-renderer", srcDir),

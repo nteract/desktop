@@ -56,7 +56,6 @@ export function PlotlyOutput({ data, className }: PlotlyOutputProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    // biome-ignore lint/suspicious/noExplicitAny: plotly.js is injected as a global
     const Plotly = (window as any).Plotly;
     if (!containerRef.current || !data?.data || !Plotly) return;
 

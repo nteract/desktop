@@ -142,7 +142,7 @@ function fixBackspace(txt: string): string {
   let previous: string;
   do {
     previous = result;
-    // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional backspace (\x08) matching for terminal emulation
+    // eslint-disable-next-line no-control-regex -- intentional backspace (\x08) matching
     result = result.replace(/[^\n]\x08/gm, "");
   } while (result.length < previous.length);
   return result;

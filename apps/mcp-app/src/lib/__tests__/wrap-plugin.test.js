@@ -31,7 +31,6 @@ function createMockNteract() {
 /** Execute wrapped plugin code using Node's vm module.
  * @returns The execution context for inspecting global state
  */
-// biome-ignore lint/security/noGlobalEval: vm.runInContext is the correct way to test dynamic code in Node
 function execWrapped(code, nteractApi) {
   const context = vm.createContext({ window: { __nteract: nteractApi } });
   vm.runInContext(code, context);

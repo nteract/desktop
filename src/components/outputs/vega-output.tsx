@@ -33,7 +33,6 @@ export function VegaOutput({ data, className }: VegaOutputProps) {
   useEffect(() => {
     setError(null);
 
-    // biome-ignore lint/suspicious/noExplicitAny: vega-embed is injected as a global
     const vegaEmbed = (window as any).vegaEmbed;
     if (!containerRef.current || !data || !vegaEmbed) return;
 
@@ -82,7 +81,6 @@ export function VegaOutput({ data, className }: VegaOutputProps) {
 
   if (!data) return null;
 
-  // biome-ignore lint/suspicious/noExplicitAny: vega-embed is injected as a global
   const vegaEmbed = (window as any).vegaEmbed;
   if (!vegaEmbed) {
     return (

@@ -20,7 +20,6 @@ const mockPlotly = {
 };
 
 beforeEach(() => {
-  // biome-ignore lint/suspicious/noExplicitAny: test mock
   (window as any).Plotly = mockPlotly;
 });
 
@@ -31,7 +30,6 @@ afterEach(() => {
   mockPlotly.relayout.mockClear();
   mockPlotly.purge.mockClear();
   mockPlotly.Plots.resize.mockClear();
-  // biome-ignore lint/suspicious/noExplicitAny: test cleanup
   delete (window as any).Plotly;
 });
 
@@ -64,10 +62,7 @@ describe("PlotlyOutput", () => {
   });
 
   it("returns null when data prop has no data array", () => {
-    const { container } = render(
-      // biome-ignore lint/suspicious/noExplicitAny: testing edge case
-      <PlotlyOutput data={null as any} />,
-    );
+    const { container } = render(<PlotlyOutput data={null as any} />);
     expect(container.firstChild).toBeNull();
   });
 

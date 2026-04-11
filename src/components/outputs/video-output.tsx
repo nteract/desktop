@@ -50,7 +50,6 @@ export function VideoOutput({
 
   return (
     <div data-slot="video-output" className={cn("py-2", className)}>
-      {/* biome-ignore lint/a11y/useMediaCaption: kernel video outputs don't include captions */}
       <video
         src={src}
         controls

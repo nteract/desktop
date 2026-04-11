@@ -771,7 +771,6 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
           visibility: isReloading ? "hidden" : "visible",
           transition: revealOnRender ? "height 150ms ease-out, opacity 150ms ease-out" : undefined,
         }}
-        // biome-ignore lint/a11y/useIframeTitle: intentionally no tooltip on output iframes
         title=""
       />
     );

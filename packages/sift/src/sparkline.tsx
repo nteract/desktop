@@ -643,14 +643,12 @@ function CategoricalBars({
 }) {
   const [popoverOpen, setPopoverOpen] = useState(false);
 
-  const items = [
-    ...summary.topCategories.map((c) => ({
-      label: c.label,
-      count: c.count,
-      pct: c.pct,
-      isOthers: false,
-    })),
-  ];
+  const items = summary.topCategories.map((c) => ({
+    label: c.label,
+    count: c.count,
+    pct: c.pct,
+    isOthers: false,
+  }));
   if (summary.othersCount > 0) {
     items.push({
       label: `${summary.uniqueCount - summary.topCategories.length} others`,
