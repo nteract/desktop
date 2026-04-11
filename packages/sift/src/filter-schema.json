@@ -26,7 +26,14 @@
       "properties": {
         "column": { "type": "string" },
         "op": { "const": "eq" },
-        "value": { "oneOf": [{ "type": "string" }, { "type": "number" }, { "type": "boolean" }, { "type": "null" }] }
+        "value": {
+          "oneOf": [
+            { "type": "string" },
+            { "type": "number" },
+            { "type": "boolean" },
+            { "type": "null" }
+          ]
+        }
       },
       "required": ["column", "op", "value"],
       "additionalProperties": false
@@ -36,7 +43,14 @@
       "properties": {
         "column": { "type": "string" },
         "op": { "const": "neq" },
-        "value": { "oneOf": [{ "type": "string" }, { "type": "number" }, { "type": "boolean" }, { "type": "null" }] }
+        "value": {
+          "oneOf": [
+            { "type": "string" },
+            { "type": "number" },
+            { "type": "boolean" },
+            { "type": "null" }
+          ]
+        }
       },
       "required": ["column", "op", "value"],
       "additionalProperties": false
@@ -48,7 +62,13 @@
         "op": { "const": "in" },
         "value": {
           "type": "array",
-          "items": { "oneOf": [{ "type": "string" }, { "type": "number" }, { "type": "null" }] }
+          "items": {
+            "oneOf": [
+              { "type": "string" },
+              { "type": "number" },
+              { "type": "null" }
+            ]
+          }
         }
       },
       "required": ["column", "op", "value"],
@@ -61,7 +81,13 @@
         "op": { "const": "not_in" },
         "value": {
           "type": "array",
-          "items": { "oneOf": [{ "type": "string" }, { "type": "number" }, { "type": "null" }] }
+          "items": {
+            "oneOf": [
+              { "type": "string" },
+              { "type": "number" },
+              { "type": "null" }
+            ]
+          }
         }
       },
       "required": ["column", "op", "value"],

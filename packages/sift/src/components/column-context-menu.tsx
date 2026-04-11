@@ -2,65 +2,75 @@
  * Column header context menu.
  * Positioned manually at click coordinates, rendered as a portal.
  */
-import { useEffect, useRef } from 'react'
-import type { ColumnType } from '../table'
+import { useEffect, useRef } from "react";
+import type { ColumnType } from "../table";
 
 export type ColumnAction =
-  | { kind: 'sort'; direction: 'asc' | 'desc' }
-  | { kind: 'pin' }
-  | { kind: 'unpin' }
-  | { kind: 'cast'; targetType: ColumnType }
-  | { kind: 'undo-cast' }
+  | { kind: "sort"; direction: "asc" | "desc" }
+  | { kind: "pin" }
+  | { kind: "unpin" }
+  | { kind: "cast"; targetType: ColumnType }
+  | { kind: "undo-cast" };
 
 export type ColumnMenuState = {
-  colIndex: number
-  colName: string
-  colType: ColumnType
-  isPinned: boolean
-  isCast: boolean
-  isStreaming: boolean
-  sortDirection: 'asc' | 'desc' | null
-  x: number
-  y: number
-} | null
+  colIndex: number;
+  colName: string;
+  colType: ColumnType;
+  isPinned: boolean;
+  isCast: boolean;
+  isStreaming: boolean;
+  sortDirection: "asc" | "desc" | null;
+  x: number;
+  y: number;
+} | null;
 
 type Props = {
-  state: ColumnMenuState
-  onAction: (colIndex: number, action: ColumnAction) => void
-  onClose: () => void
-}
+  state: ColumnMenuState;
+  onAction: (colIndex: number, action: ColumnAction) => void;
+  onClose: () => void;
+};
 
 export function ColumnContextMenu({ state, onAction, onClose }: Props) {
-  const menuRef = useRef<HTMLDivElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!state) return
+    if (!state) return;
     function onClick(e: MouseEvent) {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        onClose()
+        onClose();
       }
     }
     function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') onClose()
+      if (e.key === "Escape") onClose();
     }
     const timer = setTimeout(() => {
-      document.addEventListener('mousedown', onClick, true)
-      document.addEventListener('keydown', onKey, true)
-    }, 0)
+      document.addEventListener("mousedown", onClick, true);
+      document.addEventListener("keydown", onKey, true);
+    }, 0);
     return () => {
-      clearTimeout(timer)
-      document.removeEventListener('mousedown', onClick, true)
-      document.removeEventListener('keydown', onKey, true)
-    }
-  }, [state, onClose])
+      clearTimeout(timer);
+      document.removeEventListener("mousedown", onClick, true);
+      document.removeEventListener("keydown", onKey, true);
+    };
+  }, [state, onClose]);
 
-  if (!state) return null
+  if (!state) return null;
 
-  const { colIndex, colName, colType, isPinned, isCast, isStreaming, sortDirection, x, y } = state
+  const {
+    colIndex,
+    colName,
+    colType,
+    isPinned,
+    isCast,
+    isStreaming,
+    sortDirection,
+    x,
+    y,
+  } = state;
 
   function act(action: ColumnAction) {
-    onAction(colIndex, action)
-    onClose()
+    onAction(colIndex, action);
+    onClose();
   }
 
   return (
@@ -74,23 +84,19 @@ export function ColumnContextMenu({ state, onAction, onClose }: Props) {
       </div>
       <div className="h-px bg-[var(--rule)] -mx-1 my-1" />
 
-      <MenuItem onClick={() => act({ kind: 'sort', direction: 'asc' })}>
-        Sort ascending {sortDirection === 'asc' && <Check />}
+      <MenuItem onClick={() => act({ kind: "sort", direction: "asc" })}>
+        Sort ascending {sortDirection === "asc" && <Check />}
       </MenuItem>
-      <MenuItem onClick={() => act({ kind: 'sort', direction: 'desc' })}>
-        Sort descending {sortDirection === 'desc' && <Check />}
+      <MenuItem onClick={() => act({ kind: "sort", direction: "desc" })}>
+        Sort descending {sortDirection === "desc" && <Check />}
       </MenuItem>
 
       <div className="h-px bg-[var(--rule)] -mx-1 my-1" />
 
       {isPinned ? (
-        <MenuItem onClick={() => act({ kind: 'unpin' })}>
-          Unpin column
-        </MenuItem>
+        <MenuItem onClick={() => act({ kind: "unpin" })}>Unpin column</MenuItem>
       ) : (
-        <MenuItem onClick={() => act({ kind: 'pin' })}>
-          Pin column
-        </MenuItem>
+        <MenuItem onClick={() => act({ kind: "pin" })}>Pin column</MenuItem>
       )}
 
       <div className="h-px bg-[var(--rule)] -mx-1 my-1" />
@@ -102,23 +108,31 @@ export function ColumnContextMenu({ state, onAction, onClose }: Props) {
       ) : (
         <>
           <div className="px-2 py-1 text-xs text-[var(--muted)]">Treat as…</div>
-          <MenuItem onClick={() => act({ kind: 'cast', targetType: 'categorical' })}>
-            Text {colType === 'categorical' && <Check />}
+          <MenuItem
+            onClick={() => act({ kind: "cast", targetType: "categorical" })}
+          >
+            Text {colType === "categorical" && <Check />}
           </MenuItem>
-          <MenuItem onClick={() => act({ kind: 'cast', targetType: 'numeric' })}>
-            Number {colType === 'numeric' && <Check />}
+          <MenuItem
+            onClick={() => act({ kind: "cast", targetType: "numeric" })}
+          >
+            Number {colType === "numeric" && <Check />}
           </MenuItem>
-          <MenuItem onClick={() => act({ kind: 'cast', targetType: 'timestamp' })}>
-            Date {colType === 'timestamp' && <Check />}
+          <MenuItem
+            onClick={() => act({ kind: "cast", targetType: "timestamp" })}
+          >
+            Date {colType === "timestamp" && <Check />}
           </MenuItem>
-          <MenuItem onClick={() => act({ kind: 'cast', targetType: 'boolean' })}>
-            Boolean {colType === 'boolean' && <Check />}
+          <MenuItem
+            onClick={() => act({ kind: "cast", targetType: "boolean" })}
+          >
+            Boolean {colType === "boolean" && <Check />}
           </MenuItem>
 
           {isCast && (
             <>
               <div className="h-px bg-[var(--rule)] -mx-1 my-1" />
-              <MenuItem onClick={() => act({ kind: 'undo-cast' })}>
+              <MenuItem onClick={() => act({ kind: "undo-cast" })}>
                 Revert to original type
               </MenuItem>
             </>
@@ -126,10 +140,16 @@ export function ColumnContextMenu({ state, onAction, onClose }: Props) {
         </>
       )}
     </div>
-  )
+  );
 }
 
-function MenuItem({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
+function MenuItem({
+  children,
+  onClick,
+}: {
+  children: React.ReactNode;
+  onClick: () => void;
+}) {
   return (
     <button
       className="flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm text-[var(--ink)] hover:bg-[color-mix(in_srgb,var(--accent)_8%,transparent)] cursor-default outline-none"
@@ -137,9 +157,9 @@ function MenuItem({ children, onClick }: { children: React.ReactNode; onClick: (
     >
       {children}
     </button>
-  )
+  );
 }
 
 function Check() {
-  return <span className="text-[var(--accent)] text-xs">✓</span>
+  return <span className="text-[var(--accent)] text-xs">✓</span>;
 }
