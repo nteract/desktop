@@ -1,0 +1,118 @@
+[
+  {
+    "scene": "intro",
+    "text": "This is Sift — a crossfilter data explorer. We're looking at a hundred and fourteen thousand Spotify tracks, loaded from HuggingFace as Parquet and decoded with WebAssembly.",
+    "speed": 0.95,
+    "overlay": {
+      "type": "headline-card",
+      "kicker": "DATA EXPLORER",
+      "title": "Sift",
+      "body": "Crossfilter exploration for large datasets — Apache Arrow + WASM",
+      "placement": "center",
+      "motion": "fade-in"
+    }
+  },
+  {
+    "scene": "summaries",
+    "text": "Every column gets a live summary automatically. Histograms for numbers, frequency bars for categories, and ratio indicators for booleans. All computed in Rust, running as WASM.",
+    "speed": 0.95,
+    "overlay": {
+      "type": "callout",
+      "text": "Live summaries — histograms, category bars, boolean ratios",
+      "placement": "top-left",
+      "motion": "slide-in"
+    }
+  },
+  {
+    "scene": "scroll-fast",
+    "text": "Over a hundred thousand tracks. Zero jank. Watch the stats bar — the dom only holds visible rows at any time. Everything else renders on demand.",
+    "speed": 0.95,
+    "overlay": {
+      "type": "lower-third",
+      "text": "114,000 tracks — zero jank",
+      "placement": "bottom-center",
+      "motion": "fade-in"
+    }
+  },
+  {
+    "scene": "resize-text",
+    "text": "Here's the real trick. Drag the track name column wider and every row height recalculates instantly. No dom measurement. Pretext computes text layout with pure arithmetic — faster than a single dom reflow.",
+    "speed": 0.93,
+    "overlay": {
+      "type": "headline-card",
+      "kicker": "PRETEXT LAYOUT",
+      "title": "0.0002ms per cell",
+      "body": "Pure arithmetic text measurement — faster than one DOM reflow",
+      "placement": "top-left",
+      "motion": "slide-in"
+    }
+  },
+  {
+    "scene": "sort",
+    "text": "Sort by danceability with a single click. Nulls always go last, exactly where you'd expect them.",
+    "speed": 0.95,
+    "overlay": {
+      "type": "callout",
+      "text": "Click to sort — nulls always last",
+      "placement": "top-right",
+      "motion": "fade-in"
+    }
+  },
+  {
+    "scene": "brush-filter",
+    "text": "Drag across the danceability histogram to filter by range. Watch every other column's summary update in real time — that's crossfiltering.",
+    "speed": 0.95,
+    "overlay": {
+      "type": "callout",
+      "text": "Brush to filter — crossfilter updates everything",
+      "placement": "top-left",
+      "motion": "slide-in"
+    }
+  },
+  {
+    "scene": "boolean-filter",
+    "text": "Click Yes on the explicit column and the table filters instantly. Row count drops, every summary updates.",
+    "speed": 0.95,
+    "overlay": {
+      "type": "callout",
+      "text": "Boolean filter — click Yes or No to drill down",
+      "placement": "top-right",
+      "motion": "fade-in"
+    }
+  },
+  {
+    "scene": "clear",
+    "text": "Clear all filters and the full dataset snaps back instantly. A hundred and fourteen thousand tracks, ready to explore again.",
+    "speed": 0.95,
+    "overlay": {
+      "type": "lower-third",
+      "text": "All 114,000 tracks — back in an instant",
+      "placement": "bottom-center",
+      "motion": "fade-in"
+    }
+  },
+  {
+    "scene": "darkmode",
+    "text": "Light and dark themes, built in.",
+    "speed": 0.95,
+    "overlay": {
+      "type": "callout",
+      "text": "Dark mode, built in",
+      "placement": "top-right",
+      "motion": "fade-in"
+    }
+  },
+  {
+    "scene": "closing",
+    "text": "Sift. Open source on GitHub. Star the repo and explore your own data.",
+    "speed": 0.9,
+    "overlay": {
+      "type": "headline-card",
+      "kicker": "OPEN SOURCE",
+      "title": "github.com/rgbkrk/sift",
+      "body": "Apache Arrow • Rust WASM • Pretext Layout • Semiotic Charts",
+      "placement": "center",
+      "motion": "fade-in"
+    }
+  }
+]

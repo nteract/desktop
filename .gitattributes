@@ -1,3 +1,4 @@
 *.wasm filter=lfs diff=lfs merge=lfs -text
+*.parquet filter=lfs diff=lfs merge=lfs -text
 crates/runt-mcp/assets/plugins/*.css filter=lfs diff=lfs merge=lfs -text
 crates/runt-mcp/assets/plugins/*.js filter=lfs diff=lfs merge=lfs -text

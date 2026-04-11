@@ -72,7 +72,10 @@ fn main() {
             let filter = args.iter().find(|a| !a.starts_with('-')).cloned();
             cmd_integration(filter);
         }
-        "wasm" => cmd_wasm(),
+        "wasm" => {
+            let target = args.get(1).map(|s| s.as_str());
+            cmd_wasm(target);
+        }
         "mcpb" => {
             let output = args
                 .windows(2)
@@ -141,6 +144,8 @@ Testing:
 
 Other:
   wasm                       Rebuild runtimed-wasm (wasm-pack build)
+  wasm sift                  Rebuild nteract-predicate WASM for sift
+  wasm --all                 Rebuild all WASM targets
   icons [source.png]         Generate icon variants
   mcpb                       Package nteract as a Claude Desktop extension (.mcpb)
   mcpb --variant nightly     Build nightly variant (different name/icon)
@@ -1018,22 +1023,52 @@ fn cmd_e2e_test_all() {
     println!("\nAll E2E tests passed!");
 }
 
-fn cmd_wasm() {
+fn cmd_wasm(target: Option<&str>) {
     require_tool("wasm-pack", WASM_PACK_INSTALL);
 
-    println!("Building runtimed-wasm...");
-    run_cmd(
-        "wasm-pack",
-        &[
-            "build",
-            "crates/runtimed-wasm",
-            "--target",
-            "web",
-            "--out-dir",
-            "../../apps/notebook/src/wasm/runtimed-wasm",
-        ],
-    );
-    println!("WASM build complete. Output: apps/notebook/src/wasm/runtimed-wasm/");
+    let build_runtimed = match target {
+        None => true,
+        Some("--all") => true,
+        Some("sift") => false,
+        Some(other) => {
+            eprintln!("Unknown wasm target: {other}. Use 'sift' or '--all'.");
+            std::process::exit(1);
+        }
+    };
+    let build_sift = matches!(target, Some("sift") | Some("--all"));
+
+    if build_runtimed {
+        println!("Building runtimed-wasm...");
+        run_cmd(
+            "wasm-pack",
+            &[
+                "build",
+                "crates/runtimed-wasm",
+                "--target",
+                "web",
+                "--out-dir",
+                "../../apps/notebook/src/wasm/runtimed-wasm",
+            ],
+        );
+        println!("WASM build complete. Output: apps/notebook/src/wasm/runtimed-wasm/");
+    }
+
+    if build_sift {
+        println!("Building nteract-predicate WASM for sift...");
+        run_cmd(
+            "wasm-pack",
+            &[
+                "build",
+                "crates/nteract-predicate",
+                "--target",
+                "web",
+                "--release",
+                "--out-dir",
+                "../../packages/sift/public/wasm",
+            ],
+        );
+        println!("WASM build complete. Output: packages/sift/public/wasm/");
+    }
 }
 
 fn cmd_icons(source: Option<&str>) {

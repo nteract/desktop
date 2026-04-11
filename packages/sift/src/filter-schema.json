@@ -1,0 +1,216 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/rgbkrk/pretext-table/filter-schema.json",
+  "title": "Data Explorer Filter Schema",
+  "description": "Predicate schema for interactive data exploration filters. Designed to be emitted by UI interactions, stored in Automerge, read by AI, and compiled to pandas/polars/SQL/Arrow compute.",
+
+  "$defs": {
+    "between": {
+      "type": "object",
+      "properties": {
+        "column": { "type": "string" },
+        "op": { "const": "between" },
+        "value": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "[min, max] inclusive"
+        }
+      },
+      "required": ["column", "op", "value"],
+      "additionalProperties": false
+    },
+    "eq": {
+      "type": "object",
+      "properties": {
+        "column": { "type": "string" },
+        "op": { "const": "eq" },
+        "value": { "oneOf": [{ "type": "string" }, { "type": "number" }, { "type": "boolean" }, { "type": "null" }] }
+      },
+      "required": ["column", "op", "value"],
+      "additionalProperties": false
+    },
+    "neq": {
+      "type": "object",
+      "properties": {
+        "column": { "type": "string" },
+        "op": { "const": "neq" },
+        "value": { "oneOf": [{ "type": "string" }, { "type": "number" }, { "type": "boolean" }, { "type": "null" }] }
+      },
+      "required": ["column", "op", "value"],
+      "additionalProperties": false
+    },
+    "in": {
+      "type": "object",
+      "properties": {
+        "column": { "type": "string" },
+        "op": { "const": "in" },
+        "value": {
+          "type": "array",
+          "items": { "oneOf": [{ "type": "string" }, { "type": "number" }, { "type": "null" }] }
+        }
+      },
+      "required": ["column", "op", "value"],
+      "additionalProperties": false
+    },
+    "not_in": {
+      "type": "object",
+      "properties": {
+        "column": { "type": "string" },
+        "op": { "const": "not_in" },
+        "value": {
+          "type": "array",
+          "items": { "oneOf": [{ "type": "string" }, { "type": "number" }, { "type": "null" }] }
+        }
+      },
+      "required": ["column", "op", "value"],
+      "additionalProperties": false
+    },
+    "gt": {
+      "type": "object",
+      "properties": {
+        "column": { "type": "string" },
+        "op": { "const": "gt" },
+        "value": { "type": "number" }
+      },
+      "required": ["column", "op", "value"],
+      "additionalProperties": false
+    },
+    "gte": {
+      "type": "object",
+      "properties": {
+        "column": { "type": "string" },
+        "op": { "const": "gte" },
+        "value": { "type": "number" }
+      },
+      "required": ["column", "op", "value"],
+      "additionalProperties": false
+    },
+    "lt": {
+      "type": "object",
+      "properties": {
+        "column": { "type": "string" },
+        "op": { "const": "lt" },
+        "value": { "type": "number" }
+      },
+      "required": ["column", "op", "value"],
+      "additionalProperties": false
+    },
+    "lte": {
+      "type": "object",
+      "properties": {
+        "column": { "type": "string" },
+        "op": { "const": "lte" },
+        "value": { "type": "number" }
+      },
+      "required": ["column", "op", "value"],
+      "additionalProperties": false
+    },
+    "is_null": {
+      "type": "object",
+      "properties": {
+        "column": { "type": "string" },
+        "op": { "const": "is_null" }
+      },
+      "required": ["column", "op"],
+      "additionalProperties": false
+    },
+    "is_not_null": {
+      "type": "object",
+      "properties": {
+        "column": { "type": "string" },
+        "op": { "const": "is_not_null" }
+      },
+      "required": ["column", "op"],
+      "additionalProperties": false
+    },
+    "contains": {
+      "type": "object",
+      "properties": {
+        "column": { "type": "string" },
+        "op": { "const": "contains" },
+        "value": { "type": "string" }
+      },
+      "required": ["column", "op", "value"],
+      "additionalProperties": false
+    },
+    "columnPredicate": {
+      "oneOf": [
+        { "$ref": "#/$defs/between" },
+        { "$ref": "#/$defs/eq" },
+        { "$ref": "#/$defs/neq" },
+        { "$ref": "#/$defs/in" },
+        { "$ref": "#/$defs/not_in" },
+        { "$ref": "#/$defs/gt" },
+        { "$ref": "#/$defs/gte" },
+        { "$ref": "#/$defs/lt" },
+        { "$ref": "#/$defs/lte" },
+        { "$ref": "#/$defs/is_null" },
+        { "$ref": "#/$defs/is_not_null" },
+        { "$ref": "#/$defs/contains" }
+      ]
+    },
+    "compoundPredicate": {
+      "type": "object",
+      "properties": {
+        "op": { "enum": ["and", "or"] },
+        "args": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/filterPredicate" }
+        }
+      },
+      "required": ["op", "args"],
+      "additionalProperties": false
+    },
+    "notPredicate": {
+      "type": "object",
+      "properties": {
+        "op": { "const": "not" },
+        "arg": { "$ref": "#/$defs/filterPredicate" }
+      },
+      "required": ["op", "arg"],
+      "additionalProperties": false
+    },
+    "filterPredicate": {
+      "oneOf": [
+        { "$ref": "#/$defs/columnPredicate" },
+        { "$ref": "#/$defs/compoundPredicate" },
+        { "$ref": "#/$defs/notPredicate" }
+      ]
+    },
+    "sortEntry": {
+      "type": "object",
+      "properties": {
+        "column": { "type": "string" },
+        "direction": { "enum": ["asc", "desc"] }
+      },
+      "required": ["column", "direction"],
+      "additionalProperties": false
+    }
+  },
+
+  "type": "object",
+  "properties": {
+    "filters": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/filterPredicate" },
+      "description": "Top-level predicates composed with implicit AND"
+    },
+    "sort": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/sortEntry" },
+      "description": "Sort order, first entry is primary"
+    },
+    "resultCount": {
+      "type": "integer",
+      "description": "Number of rows passing all filters"
+    },
+    "totalCount": {
+      "type": "integer",
+      "description": "Total rows before filtering"
+    }
+  },
+  "required": ["filters"],
+  "additionalProperties": false
+}

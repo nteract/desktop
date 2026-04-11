@@ -19,6 +19,7 @@ members = [
     "crates/runt-mcp-proxy",
     "crates/mcpb-runt",
     "crates/repr-llm",
+    "crates/nteract-predicate",
 ]
 default-members = ["crates/notebook"]
 resolver = "2"

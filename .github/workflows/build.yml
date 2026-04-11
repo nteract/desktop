@@ -38,6 +38,7 @@ jobs:
               - "python/**"
               - "scripts/**"
               - "src/**"
+              - "packages/**"
               - "Cargo.toml"
               - "Cargo.lock"
               - "rust-toolchain.toml"
@@ -77,7 +78,7 @@ jobs:
         run: pnpm install
 
       - name: Check Biome (format + lint + imports)
-        run: npx @biomejs/biome check apps/notebook/src/ e2e/
+        run: npx @biomejs/biome check apps/notebook/src/ e2e/ packages/sift/src/
 
       - name: Check MCP App renderer plugins are up to date
         run: |
@@ -124,7 +125,7 @@ jobs:
       - run: pnpm --filter nteract-mcp-app install && pnpm --filter nteract-mcp-app run build
 
       - name: Clippy (Windows cross-check)
-        run: cargo clippy --target x86_64-pc-windows-gnu --workspace --exclude notebook --exclude runtimed-wasm --exclude runtimed-py --all-targets -- -D warnings
+        run: cargo clippy --target x86_64-pc-windows-gnu --workspace --exclude notebook --exclude runtimed-wasm --exclude nteract-predicate --exclude runtimed-py --all-targets -- -D warnings
 
   wasm-deno:
     name: WASM + Deno Tests
@@ -240,6 +241,9 @@ jobs:
 
       - name: Run JS tests
         run: pnpm test:run
+
+      - name: Run sift tests
+        run: pnpm --filter @nteract/sift test
 
       - name: Run JS benchmarks
         run: pnpm vitest bench --run apps/notebook/src/lib/__tests__/
@@ -383,10 +387,10 @@ jobs:
       # runtimed-wasm (needs wasm-pack, tested in wasm-deno),
       # runtimed-py (needs Python/maturin, tested in runtimed-py-integration).
       - name: Clippy
-        run: cargo clippy --workspace --exclude notebook --exclude runtimed-wasm --exclude runtimed-py --all-targets -- -D warnings
+        run: cargo clippy --workspace --exclude notebook --exclude runtimed-wasm --exclude nteract-predicate --exclude runtimed-py --all-targets -- -D warnings
 
       - name: Run tests
-        run: cargo test --workspace --exclude notebook --exclude runtimed-wasm --exclude runtimed-py --verbose
+        run: cargo test --workspace --exclude notebook --exclude runtimed-wasm --exclude nteract-predicate --exclude runtimed-py --verbose
 
   build:
     name: ${{ matrix.platform.name }}
