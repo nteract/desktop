@@ -34,6 +34,8 @@ pub enum EnvProgressPhase {
     Starting { env_hash: String },
     /// Using a cached environment (fast path).
     CacheHit { env_path: String },
+    /// Environment being rebuilt from lock file (skipping repodata + solve).
+    LockFileHit,
     /// Environment resolved from local package cache without network access.
     OfflineHit,
     /// Fetching package metadata from channels.
@@ -115,6 +117,9 @@ impl ProgressHandler for LogHandler {
             }
             EnvProgressPhase::CacheHit { env_path } => {
                 log::info!("[{env_type}] Cache hit: {env_path}");
+            }
+            EnvProgressPhase::LockFileHit => {
+                log::info!("[{env_type}] Rebuilding from lock file (skipping repodata + solve)");
             }
             EnvProgressPhase::OfflineHit => {
                 log::info!("[{env_type}] Resolved from local cache (offline mode)");
