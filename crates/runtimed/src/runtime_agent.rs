@@ -794,6 +794,10 @@ async fn handle_queue_command(
 
         QueueCommand::KernelDied => {
             warn!("[runtime-agent] Kernel died");
+            if let Some(ref mut k) = kernel {
+                k.shutdown().await.ok();
+            }
+            *kernel = None;
             let (interrupted, cleared) = state.kernel_died();
             let mut sd = ctx.state_doc.write().await;
             if let Some((_, ref eid)) = interrupted {
