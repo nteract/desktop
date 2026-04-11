@@ -181,10 +181,11 @@ pub async fn query_repodata_offline_first(
     };
 
     let elapsed = repodata_start.elapsed();
+    let total_records: usize = repo_data.iter().map(|r| r.len()).sum();
     handler.on_progress(
         env_type,
         EnvProgressPhase::RepodataComplete {
-            record_count: repo_data.len(),
+            record_count: total_records,
             elapsed_ms: elapsed.as_millis() as u64,
         },
     );

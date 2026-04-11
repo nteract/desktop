@@ -229,6 +229,7 @@ pub async fn prepare_environment_in(
 
     // Try offline first: use local cache if available
     let mut offline_args = install_args.clone();
+    // Insert --offline after "pip install" (index 2)
     offline_args.insert(2, "--offline".to_string());
 
     let offline_output = tokio::process::Command::new(&uv_path)
@@ -348,6 +349,7 @@ pub async fn sync_dependencies(env: &UvEnvironment, deps: &[String]) -> Result<(
 
     // Try offline first
     let mut offline_args = install_args.clone();
+    // Insert --offline after "pip install" (index 2)
     offline_args.insert(2, "--offline".to_string());
 
     let offline_output = tokio::process::Command::new(&uv_path)
@@ -460,6 +462,7 @@ pub async fn create_prewarmed_environment_in(
 
     // Try offline first for prewarmed environments
     let mut offline_args = install_args.clone();
+    // Insert --offline after "pip install" (index 2)
     offline_args.insert(2, "--offline".to_string());
 
     let offline_output = tokio::process::Command::new(&uv_path)
