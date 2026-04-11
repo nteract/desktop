@@ -6,113 +6,114 @@
 
 ## Goal
 
-Wire `@nteract/sift` into the notebook frontend so that outputs with MIME type `application/vnd.apache.parquet` render as interactive, filterable, sortable tables. No kernel integration, no python formatter, no blob upload — just the rendering path.
+Wire `@nteract/sift` into the notebook frontend as an iframe renderer plugin so that outputs with MIME type `application/vnd.apache.parquet` render as interactive, filterable, sortable tables. Must work in both the notebook app and the MCPB (Claude Desktop extension). No kernel integration, no python formatter, no blob upload — just the rendering path.
 
 ## MIME Type
 
 `application/vnd.apache.parquet` — the registered IANA MIME type for Apache Parquet files.
 
-## Rendering Approach: Main DOM (not iframe plugin)
+## Rendering Approach: Iframe Plugin
 
-Sift is pure DOM — no script execution risk from user-supplied specs (unlike plotly/vega which eval user JSON). It renders in the **main DOM** via a custom renderer registered in `MediaProvider`, the same pattern used for `application/vnd.jupyter.widget-view+json`.
+Sift renders as an **iframe renderer plugin** — the same architecture as plotly, vega, leaflet, and markdown. This is required for MCPB support, where all rich output renders inside isolated iframes.
 
-This means:
-- No `sift-renderer.tsx` CJS plugin
-- No iframe `installRendererPlugin` path
-- No changes to `vite-plugin-isolated-renderer.ts` or `iframe-libraries.ts`
+The plugin is:
+- Built as a CJS module with React externalized
+- Loaded on demand via `virtual:renderer-plugin/sift`
+- Installed into the iframe via `installRendererPlugin()`
+- Registered in the iframe's renderer registry for `application/vnd.apache.parquet`
 
 ## Data Flow
 
 ```
 CRDT output (application/vnd.apache.parquet)
   → WASM resolves ContentRef → blob URL (http://127.0.0.1:<port>/blob/<hash>)
-  → MediaRouter selects MIME type
-  → custom renderer in MediaProvider
-  → DataFrameOutput component
-  → <SiftTable url={blobUrl} />
+  → OutputArea pre-scans MIME types, sees needsPlugin() → true
+  → injectPluginsForMimes() loads virtual:renderer-plugin/sift
+  → iframe installRendererPlugin() executes CJS, registers SiftRenderer
+  → iframe receives NTERACT_RENDER_OUTPUT with blob URL as data
+  → SiftRenderer passes blob URL to <SiftTable url={blobUrl} />
   → sift fetches parquet bytes from blob URL
   → parquet-wasm decodes client-side
   → virtual-scrolled interactive table
+  → iframe sends render_complete with height
 ```
 
 `application/vnd.apache.parquet` is `application/*` with no text carve-out in `mime.rs`, so `is_binary_mime()` returns `true`. WASM resolves the `ContentRef` to a `Url` variant pointing at the blob server. The `data` field arriving at the renderer is already a blob URL string.
 
 ## Components
 
-### 1. `DataFrameOutput` component
+### 1. Sift renderer plugin
 
-**Location:** `src/components/outputs/dataframe-output.tsx`
+**Location:** `src/isolated-renderer/sift-renderer.tsx`
 
-A thin wrapper that takes the blob URL from the output data and renders `SiftTable`:
+CJS plugin module following the same pattern as `plotly-renderer.tsx`:
 
 ```tsx
 import { SiftTable } from "@nteract/sift";
+import "@nteract/sift/style.css";
 
-interface DataFrameOutputProps {
+interface RendererProps {
   data: unknown;
+  metadata?: Record<string, unknown>;
+  mimeType: string;
 }
 
-export function DataFrameOutput({ data }: DataFrameOutputProps) {
+function SiftRenderer({ data }: RendererProps) {
   const url = String(data);
   return <SiftTable url={url} />;
 }
+
+export function install(ctx: {
+  register: (mimeTypes: string[], component: React.ComponentType<RendererProps>) => void;
+}) {
+  ctx.register(["application/vnd.apache.parquet"], SiftRenderer);
+}
 ```
 
-The `data` prop is the resolved blob URL string (e.g. `http://127.0.0.1:8765/blob/abc123`). Sift handles everything else — fetching, parquet decoding via WASM, column type detection, virtual scrolling.
+### 2. Vite build plugin integration
 
-### 2. MediaProvider registration
+**Location:** `apps/notebook/vite-plugin-isolated-renderer.ts`
 
-**Location:** `apps/notebook/src/App.tsx` (existing `MediaProvider` block)
+- Add `sift-renderer.tsx` as a new plugin entry alongside markdown, vega, plotly, leaflet
+- Build via `buildRendererPlugin(siftEntry, "sift-renderer", srcDir)`
+- Register `virtual:renderer-plugin/sift` virtual module
+- Add to HMR invalidation list
 
-Add `application/vnd.apache.parquet` to the `renderers` map alongside the existing widget-view renderer:
+### 3. MIME → plugin mapping
 
-```tsx
-<MediaProvider
-  renderers={{
-    "application/vnd.jupyter.widget-view+json": ({ data }) => {
-      const { model_id } = data as { model_id: string };
-      return <WidgetView modelId={model_id} />;
-    },
-    "application/vnd.apache.parquet": ({ data }) => {
-      return <DataFrameOutput data={data} />;
-    },
-  }}
->
+**Location:** `src/components/isolated/iframe-libraries.ts`
+
+Add to `PLUGIN_MIME_TYPES`:
+
+```typescript
+"application/vnd.apache.parquet": () => import("virtual:renderer-plugin/sift").then(normalize),
 ```
 
-### 3. MIME priority
+This makes `needsPlugin("application/vnd.apache.parquet")` return `true`, triggering plugin injection before render.
+
+### 4. MIME priority
 
 **Location:** `src/components/outputs/media-router.tsx` (`DEFAULT_PRIORITY`) and `packages/runtimed/src/mime-priority.ts` (`DEFAULT_MIME_PRIORITY`)
 
 Add `application/vnd.apache.parquet` above `text/html` in both priority lists. When a kernel produces both parquet and HTML representations, sift wins.
 
-### 4. Main DOM safe types
-
-**Location:** `src/components/outputs/safe-mime-types.ts`
-
-Add `application/vnd.apache.parquet` to `MAIN_DOM_SAFE_TYPES`. Sift is pure DOM — no eval, no script injection surface.
-
-### 5. Sift CSS
-
-Sift ships its own stylesheet (`@nteract/sift/style.css`). Import it in `DataFrameOutput` or at the app level. Since this renders in the main DOM (not iframe), normal CSS imports work.
-
 ## Files Changed
 
 | File | Change |
 |------|--------|
-| `src/components/outputs/dataframe-output.tsx` | **New** — `DataFrameOutput` component |
-| `apps/notebook/src/App.tsx` | Add parquet renderer to `MediaProvider` |
+| `src/isolated-renderer/sift-renderer.tsx` | **New** — CJS plugin wrapping SiftTable |
+| `apps/notebook/vite-plugin-isolated-renderer.ts` | Add sift to plugin build, virtual module, HMR |
+| `src/components/isolated/iframe-libraries.ts` | Add MIME → plugin mapping |
 | `src/components/outputs/media-router.tsx` | Add to `DEFAULT_PRIORITY` |
 | `packages/runtimed/src/mime-priority.ts` | Add to `DEFAULT_MIME_PRIORITY` |
-| `src/components/outputs/safe-mime-types.ts` | Add to `MAIN_DOM_SAFE_TYPES` |
 
 ## Files NOT Changed
 
 | File | Why |
 |------|-----|
-| `vite-plugin-isolated-renderer.ts` | Not an iframe plugin |
-| `iframe-libraries.ts` | Not an iframe plugin |
-| `isolated-renderer/index.tsx` | Not an iframe plugin |
+| `src/components/outputs/safe-mime-types.ts` | Not rendering in main DOM |
+| `apps/notebook/src/App.tsx` | No MediaProvider registration needed — iframe handles it |
+| `src/isolated-renderer/index.tsx` | Already has generic `installRendererPlugin()` infrastructure |
 | `crates/notebook-doc/src/mime.rs` | Already classifies as binary correctly |
 
 ## WASM Dependencies
@@ -121,20 +122,20 @@ Sift depends on two WASM modules:
 - **nteract-predicate** — filtering/summary compute kernels (already in Cargo workspace via #1709)
 - **parquet-wasm** — parquet decoding (npm dependency of `@nteract/sift`)
 
-Both are loaded at runtime by sift internally. The Vite build needs to handle `.wasm` files as assets. Verify that sift's WASM initialization works in the Tauri webview context (file:// or custom protocol origins may need CSP adjustments for WASM).
+Both are loaded at runtime by sift internally. Since sift runs inside the iframe, WASM must be loadable from the iframe's blob: origin. The iframe CSP already allows `'unsafe-eval'` (required by plotly), which covers WASM instantiation. The `.wasm` files need to be served as assets accessible from the iframe — verify they're included in the Vite build output or accessible via the blob server.
 
 ## Testing
 
 Manual verification:
 1. Place a `.parquet` file in the blob store with a known hash
 2. Create a notebook output referencing it (via MCP tools or manual CRDT edit)
-3. Confirm sift renders the interactive table in the main DOM
+3. Confirm sift renders inside the iframe as an interactive table
 4. Verify column detection, sorting, filtering, virtual scroll all work
+5. Verify iframe height auto-sizing works (render_complete message)
 
 ## Out of Scope
 
 - Kernel integration (python formatter, blob upload) — Phase 2 of #1453
-- iframe fallback for ipywidgets Output contexts — Phase 3
 - Dark/light theme integration — Phase 3
 - `application/vnd.apache.arrow.stream` (Arrow IPC) — future work
 - Streaming by row group — future work
