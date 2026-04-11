@@ -1001,6 +1001,20 @@ jobs:
             echo ''
             echo 'This release includes auto-update support. Existing installations will be notified of this update automatically.'
             echo ''
+            echo '### Linux (APT repository)'
+            echo ''
+            echo '```bash'
+            echo '# Add the nteract signing key'
+            echo 'curl -fsSL https://apt.runtimed.com/nteract-keyring.gpg \'
+            echo '  | sudo gpg --dearmor -o /usr/share/keyrings/nteract-keyring.gpg'
+            echo ''
+            echo '# Add the repository'
+            echo "echo \"deb [arch=amd64 signed-by=/usr/share/keyrings/nteract-keyring.gpg] https://apt.runtimed.com ${VERSION_SUFFIX} main\" \\"
+            echo '  | sudo tee /etc/apt/sources.list.d/nteract.list'
+            echo ''
+            echo "sudo apt update && sudo apt install nteract-${VERSION_SUFFIX}"
+            echo '```'
+            echo ''
             echo "## ${CLI_NAME} (CLI)"
             echo ''
             echo 'Also bundled inside the desktop app. Standalone binaries:'
@@ -1082,3 +1096,54 @@ jobs:
               \"color\": 3066993
             }]
           }" "$DISCORD_WEBHOOK"
+
+  publish-apt:
+    name: Publish to APT Repository
+    runs-on: blacksmith-4vcpu-ubuntu-2204
+    needs: [build-notebook-linux-x64]
+    if: github.event_name != 'pull_request'
+    concurrency:
+      group: apt-publish-${{ inputs.version_suffix }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download Linux x64 notebook artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: nteract-linux-x64
+          path: ./linux-artifacts
+
+      - name: Install APT publishing dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends dpkg-dev awscli
+
+      - name: Install publish scripts
+        run: |
+          sudo cp scripts/apt/publish-apt.sh /usr/local/bin/publish-apt.sh
+          sudo cp scripts/apt/prune-packages.py /usr/local/bin/prune-packages.py
+          sudo chmod +x /usr/local/bin/publish-apt.sh /usr/local/bin/prune-packages.py
+
+      - name: Publish .deb to APT repository
+        env:
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+          R2_PUBLIC_URL: https://apt.runtimed.com
+          GPG_KEY_ID: ${{ secrets.APT_GPG_KEY_ID }}
+          GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        run: |
+          CHANNEL="${{ inputs.version_suffix }}"
+          DEB_FILE="./linux-artifacts/nteract-${CHANNEL}-linux-x64.deb"
+
+          if [ ! -f "$DEB_FILE" ]; then
+            echo "ERROR: .deb not found at $DEB_FILE"
+            ls -la ./linux-artifacts/
+            exit 1
+          fi
+
+          publish-apt.sh --channel "$CHANNEL" "$DEB_FILE"
