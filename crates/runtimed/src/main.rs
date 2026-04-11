@@ -70,6 +70,7 @@ enum Commands {
         conda_pool_size: usize,
 
         /// Number of Pixi environments to maintain
+        /// Default matches DEFAULT_PIXI_POOL_SIZE in settings_doc.rs
         #[arg(long, default_value = "2")]
         pixi_pool_size: usize,
     },

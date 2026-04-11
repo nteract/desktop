@@ -2703,6 +2703,9 @@ impl Daemon {
             }
 
             let (deficit, should_retry, backoff_info) = {
+                // Read pool size from SettingsDoc (imported from settings.json)
+                // NOT from config (config values are CLI defaults)
+                // Verified by: test_pool_size_config_honored
                 let target = {
                     let settings = self.settings.read().await;
                     settings
@@ -2784,6 +2787,9 @@ impl Daemon {
             }
 
             let (deficit, should_retry, backoff_info) = {
+                // Read pool size from SettingsDoc (imported from settings.json)
+                // NOT from config (config values are CLI defaults)
+                // Verified by: test_pool_size_config_honored
                 let target = {
                     let settings = self.settings.read().await;
                     settings
@@ -2875,6 +2881,9 @@ impl Daemon {
             }
 
             let (deficit, should_retry, backoff_info) = {
+                // Read pool size from SettingsDoc (imported from settings.json)
+                // NOT from config (config values are CLI defaults)
+                // Verified by: test_pool_size_config_honored
                 let target = {
                     let settings = self.settings.read().await;
                     settings
