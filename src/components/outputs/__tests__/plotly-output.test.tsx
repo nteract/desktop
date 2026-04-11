@@ -27,6 +27,10 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  mockPlotly.newPlot.mockClear();
+  mockPlotly.relayout.mockClear();
+  mockPlotly.purge.mockClear();
+  mockPlotly.Plots.resize.mockClear();
   // biome-ignore lint/suspicious/noExplicitAny: test cleanup
   delete (window as any).Plotly;
 });
