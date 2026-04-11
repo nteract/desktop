@@ -118,7 +118,6 @@ export function isolatedRendererPlugin(options: IsolatedRendererPluginOptions = 
         rollupOptions: {
           external: ["react", "react/jsx-runtime"],
           output: {
-            inlineDynamicImports: true,
             assetFileNames: `${pluginName}.[ext]`,
           },
           onwarn(warning, warn) {
@@ -220,7 +219,6 @@ export function isolatedRendererPlugin(options: IsolatedRendererPluginOptions = 
         },
         rollupOptions: {
           output: {
-            inlineDynamicImports: true,
             assetFileNames: "isolated-renderer.[ext]",
           },
           external: [
