@@ -41,19 +41,9 @@ jobs:
       - name: Build nteract-predicate WASM
         run: wasm-pack build crates/nteract-predicate --target web --release
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
+      - uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: "22"
-
-      - name: Enable corepack
-        run: corepack enable
-
-      - name: Install dependencies
-        run: pnpm install
-
-      - name: Install Vite Plus
-        run: curl -fsSL https://vite.plus | bash
+          cache: true
 
       - name: Generate demo data
         working-directory: packages/sift

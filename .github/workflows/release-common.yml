@@ -93,27 +93,9 @@ jobs:
         with:
           shared-key: "linux-release"
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
+      - uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: "20"
-
-      - name: Enable corepack
-        run: corepack enable
-
-      - name: Set pnpm store directory
-        run: pnpm config set store-dir ~/.pnpm-store
-
-      - name: Cache pnpm store
-        uses: actions/cache@v5
-        with:
-          path: ~/.pnpm-store
-          key: pnpm-store-${{ runner.os }}-${{ hashFiles('**/pnpm-lock.yaml') }}
-          restore-keys: |
-            pnpm-store-${{ runner.os }}-
-
-      - name: Install JS dependencies
-        run: pnpm install
+          cache: true
 
       - name: Build UI
         run: pnpm build
@@ -165,27 +147,9 @@ jobs:
         with:
           shared-key: "macos-release"
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
+      - uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: "20"
-
-      - name: Enable corepack
-        run: corepack enable
-
-      - name: Set pnpm store directory
-        run: pnpm config set store-dir ~/.pnpm-store
-
-      - name: Cache pnpm store
-        uses: actions/cache@v5
-        with:
-          path: ~/.pnpm-store
-          key: pnpm-store-${{ runner.os }}-${{ hashFiles('**/pnpm-lock.yaml') }}
-          restore-keys: |
-            pnpm-store-${{ runner.os }}-
-
-      - name: Install JS dependencies
-        run: pnpm install
+          cache: true
 
       - name: Build UI
         run: pnpm build
@@ -234,27 +198,9 @@ jobs:
         with:
           shared-key: "macos-notebook-arm64"
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
+      - uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: "20"
-
-      - name: Enable corepack
-        run: corepack enable
-
-      - name: Set pnpm store directory
-        run: pnpm config set store-dir ~/.pnpm-store
-
-      - name: Cache pnpm store
-        uses: actions/cache@v5
-        with:
-          path: ~/.pnpm-store
-          key: pnpm-store-${{ runner.os }}-${{ hashFiles('**/pnpm-lock.yaml') }}
-          restore-keys: |
-            pnpm-store-${{ runner.os }}-
-
-      - name: Install JS dependencies
-        run: pnpm install
+          cache: true
 
       - name: Build frontend
         run: pnpm build
@@ -409,24 +355,9 @@ jobs:
         with:
           shared-key: "windows-notebook-x64"
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
+      - uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: "20"
-
-      - name: Enable corepack
-        run: corepack enable
-
-      - name: Cache pnpm store
-        uses: actions/cache@v5
-        with:
-          path: ~\AppData\Local\pnpm\store
-          key: pnpm-store-${{ runner.os }}-${{ hashFiles('**/pnpm-lock.yaml') }}
-          restore-keys: |
-            pnpm-store-${{ runner.os }}-
-
-      - name: Install JS dependencies
-        run: pnpm install
+          cache: true
 
       - name: Build frontend
         run: pnpm build
@@ -554,27 +485,9 @@ jobs:
         with:
           shared-key: "linux-notebook-x64"
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
+      - uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: "20"
-
-      - name: Enable corepack
-        run: corepack enable
-
-      - name: Set pnpm store directory
-        run: pnpm config set store-dir ~/.pnpm-store
-
-      - name: Cache pnpm store
-        uses: actions/cache@v5
-        with:
-          path: ~/.pnpm-store
-          key: pnpm-store-${{ runner.os }}-${{ hashFiles('**/pnpm-lock.yaml') }}
-          restore-keys: |
-            pnpm-store-${{ runner.os }}-
-
-      - name: Install JS dependencies
-        run: pnpm install
+          cache: true
 
       - name: Build frontend
         run: pnpm build

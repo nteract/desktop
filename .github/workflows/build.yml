@@ -66,19 +66,9 @@ jobs:
       - name: Check Rust formatting
         run: cargo fmt --check
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
+      - uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: "20"
-
-      - name: Enable corepack
-        run: corepack enable
-
-      - name: Install JS dependencies
-        run: pnpm install
-
-      - name: Install Vite Plus
-        run: curl -fsSL https://vite.plus | bash
+          cache: true
 
       - name: Check (format + lint)
         run: vp check
@@ -176,27 +166,9 @@ jobs:
         with:
           lfs: true
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
+      - uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: "20"
-
-      - name: Enable corepack
-        run: corepack enable
-
-      - name: Set pnpm store directory
-        run: pnpm config set store-dir ~/.pnpm-store
-
-      - name: Cache pnpm store
-        uses: actions/cache@v5
-        with:
-          path: ~/.pnpm-store
-          key: pnpm-store-${{ runner.os }}-${{ hashFiles('**/pnpm-lock.yaml') }}
-          restore-keys: |
-            pnpm-store-${{ runner.os }}-
-
-      - name: Install JS dependencies
-        run: pnpm install
+          cache: true
 
       - name: Build UIs
         run: |
@@ -220,36 +192,15 @@ jobs:
         with:
           lfs: true
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
+      - uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: "20"
-
-      - name: Enable corepack
-        run: corepack enable
-
-      - name: Set pnpm store directory
-        run: pnpm config set store-dir ~/.pnpm-store
-
-      - name: Cache pnpm store
-        uses: actions/cache@v5
-        with:
-          path: ~/.pnpm-store
-          key: pnpm-store-${{ runner.os }}-${{ hashFiles('**/pnpm-lock.yaml') }}
-          restore-keys: |
-            pnpm-store-${{ runner.os }}-
-
-      - name: Install JS dependencies
-        run: pnpm install
+          cache: true
 
       - name: Run JS tests
-        run: pnpm test:run
+        run: vp test run
 
       - name: Run sift tests
         run: pnpm --filter @nteract/sift test
-
-      - name: Install Vite Plus
-        run: curl -fsSL https://vite.plus | bash
 
       - name: Run JS benchmarks
         run: vp test bench --run apps/notebook/src/lib/__tests__/
