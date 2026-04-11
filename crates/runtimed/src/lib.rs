@@ -29,6 +29,7 @@ pub mod kernel_manager;
 pub mod kernel_pids;
 pub mod kernel_state;
 pub mod markdown_assets;
+pub mod notebook_registry;
 pub mod notebook_sync_server;
 pub mod output_store;
 pub mod project_file;

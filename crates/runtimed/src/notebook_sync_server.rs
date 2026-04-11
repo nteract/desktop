@@ -8074,6 +8074,7 @@ fn build_new_notebook_metadata(
             RuntMetadata {
                 schema_version: "1".to_string(),
                 env_id: Some(env_id.to_string()),
+                id: None,
                 uv: None,
                 conda: None,
                 pixi: None,
@@ -8132,6 +8133,7 @@ fn build_new_notebook_metadata(
                 RuntMetadata {
                     schema_version: "1".to_string(),
                     env_id: Some(env_id.to_string()),
+                    id: None,
                     uv,
                     conda,
                     pixi,
