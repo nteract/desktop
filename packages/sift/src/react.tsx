@@ -24,6 +24,7 @@ import {
   type SummaryAccumulator,
   TimestampAccumulator,
 } from "./accumulators";
+import { getModuleSync, isAvailable } from "./predicate";
 import {
   type Column,
   type ColumnFilter,
@@ -33,14 +34,17 @@ import {
   type TableEngine,
   type TableEngineState,
 } from "./table";
+import { createWasmTableData } from "./wasm-table-data";
 
 // --- Props ---
 
 export type SiftTableProps = {
-  /** Pre-built TableData object. Mutually exclusive with `url`. */
+  /** Pre-built TableData object. Mutually exclusive with `url` and `parquetUrl`. */
   data?: TableData;
-  /** Arrow IPC URL to stream from. Mutually exclusive with `data`. */
+  /** Arrow IPC URL to stream from. Mutually exclusive with `data` and `parquetUrl`. */
   url?: string;
+  /** Parquet URL to load via WASM. Mutually exclusive with `data` and `url`. */
+  parquetUrl?: string;
   /** Column type overrides keyed by column name. */
   typeOverrides?: Record<string, ColumnType>;
   /** Column display overrides (label, width, sortable). */
@@ -104,11 +108,101 @@ function buildTableState(
   return { columns, fieldNames, stringCols, rawCols, accumulators, tableData };
 }
 
+// --- WASM summary helper ---
+
+/** Compute unfiltered summaries from the WASM store and update tableData. */
+function updateWasmSummaries(
+  mod: ReturnType<typeof getModuleSync>,
+  handle: number,
+  tableData: TableData,
+  columns: Column[],
+) {
+  const numRows = mod.num_rows(handle);
+  const BIN_COUNT = 25;
+
+  tableData.rowCount = numRows;
+  tableData.columnSummaries = columns.map((col, c) => {
+    switch (col.columnType) {
+      case "categorical": {
+        const counts = mod.store_value_counts(handle, c) as {
+          label: string;
+          count: number;
+        }[];
+        const allCategories = counts.map(({ label, count }) => ({
+          label,
+          count,
+          pct: Math.round((count / numRows) * 1000) / 10,
+        }));
+        const topCategories = allCategories.slice(0, 3);
+        const othersCount = counts.slice(3).reduce((s, e) => s + e.count, 0);
+        const othersPct = Math.round((othersCount / numRows) * 1000) / 10;
+        const lengths = counts.map(({ label }) => label.length).sort((a, b) => a - b);
+        const medianTextLength = lengths.length > 0 ? lengths[Math.floor(lengths.length / 2)] : 0;
+
+        return {
+          kind: "categorical" as const,
+          uniqueCount: counts.length,
+          topCategories,
+          othersCount,
+          othersPct,
+          allCategories,
+          medianTextLength,
+        };
+      }
+      case "boolean": {
+        const [trueCount, falseCount, nullCount] = mod.store_bool_counts(handle, c);
+        return {
+          kind: "boolean" as const,
+          trueCount,
+          falseCount,
+          nullCount,
+          total: numRows,
+        };
+      }
+      case "timestamp": {
+        const bins = mod.store_temporal_histogram(handle, c) as {
+          x0: number;
+          x1: number;
+          count: number;
+        }[];
+        if (bins.length === 0) return null;
+        const totalInBins = bins.reduce((s, b) => s + b.count, 0);
+        const nullCount = numRows - totalInBins;
+        return {
+          kind: "timestamp" as const,
+          min: bins[0].x0,
+          max: bins[bins.length - 1].x1,
+          bins,
+          nullCount: nullCount > 0 ? nullCount : undefined,
+        };
+      }
+      case "numeric": {
+        const bins = mod.store_histogram(handle, c, BIN_COUNT) as {
+          x0: number;
+          x1: number;
+          count: number;
+        }[];
+        if (bins.length === 0) return null;
+        const totalInBins = bins.reduce((s, b) => s + b.count, 0);
+        const nullCount = numRows - totalInBins;
+        return {
+          kind: "numeric" as const,
+          min: bins[0].x0,
+          max: bins[bins.length - 1].x1,
+          bins,
+          nullCount: nullCount > 0 ? nullCount : undefined,
+        };
+      }
+    }
+  });
+}
+
 // --- Component ---
 
 export function SiftTable({
   data,
   url,
+  parquetUrl,
   typeOverrides,
   columnOverrides,
   onChange,
@@ -247,6 +341,102 @@ export function SiftTable({
       engineRef.current = null;
     };
   }, [url, typeOverrides, columnOverrides, stableOnChange]);
+
+  // Load from parquet URL via WASM when `parquetUrl` prop is provided
+  useEffect(() => {
+    if (!parquetUrl || !containerRef.current) return;
+
+    let cancelled = false;
+    const container = containerRef.current;
+
+    async function loadFromParquetUrl() {
+      setStatus("loading");
+      setError(null);
+
+      try {
+        // Start WASM init in parallel with data fetch
+        const [response, wasmOk] = await Promise.all([fetch(parquetUrl!), isAvailable()]);
+
+        if (cancelled) return;
+
+        if (!wasmOk) {
+          throw new Error("Failed to load nteract-predicate WASM module");
+        }
+        if (!response.ok) {
+          throw new Error(`Failed to fetch: ${response.status} ${response.statusText}`);
+        }
+
+        const parquetBytes = new Uint8Array(await response.arrayBuffer());
+        if (cancelled) return;
+
+        const mod = getModuleSync();
+
+        // Get metadata to know how many row groups
+        const meta = mod.parquet_metadata(parquetBytes);
+        const numRowGroups = meta[0];
+
+        // Load first row group → mount table immediately
+        const handle = mod.load_parquet_row_group(parquetBytes, 0, 0);
+
+        const { tableData, columns, prefetchViewport } = createWasmTableData(
+          handle,
+          columnOverrides,
+        );
+        tableData.prefetchViewport = prefetchViewport;
+        tableData.recomputeSummaries = () => updateWasmSummaries(mod, handle, tableData, columns);
+
+        // Compute initial summaries from first row group
+        updateWasmSummaries(mod, handle, tableData, columns);
+
+        if (cancelled) return;
+
+        // Clean up previous engine before creating new one
+        if (engineRef.current) {
+          engineRef.current.destroy();
+          engineRef.current = null;
+        }
+
+        // Create a dedicated div for the engine — don't touch React-managed children
+        const engineDiv = document.createElement("div");
+        engineDiv.style.height = "100%";
+        container.appendChild(engineDiv);
+
+        engineRef.current = createTable(engineDiv, tableData, {
+          onChange: stableOnChange,
+        });
+        setStatus("ready");
+
+        // Stream remaining row groups progressively
+        for (let g = 1; g < numRowGroups; g++) {
+          if (cancelled) break;
+          // Yield to the event loop so the UI stays responsive
+          await new Promise((r) => setTimeout(r, 0));
+          if (cancelled) break;
+          mod.load_parquet_row_group(parquetBytes, g, handle);
+          tableData.rowCount = mod.num_rows(handle);
+          updateWasmSummaries(mod, handle, tableData, columns);
+          engineRef.current!.onBatchAppended();
+        }
+
+        if (!cancelled) {
+          engineRef.current!.setStreamingDone();
+        }
+      } catch (err) {
+        if (cancelled) return;
+        const message = err instanceof Error ? err.message : String(err);
+        setError(message);
+        setStatus("error");
+      }
+    }
+
+    loadFromParquetUrl();
+
+    return () => {
+      cancelled = true;
+      engineRef.current?.destroy();
+      engineRef.current = null;
+    };
+  }, [parquetUrl, columnOverrides, stableOnChange]);
 
   return (
     <div ref={containerRef} className={className} style={{ height: "100%", ...style }}>
