@@ -5,7 +5,7 @@ import { resolve } from 'node:path'
 const wasmPkg = resolve(__dirname, '../../crates/nteract-predicate/pkg')
 
 export default defineConfig({
-  base: process.env.GITHUB_ACTIONS ? '/sift/' : '/',
+  base: '/',
   plugins: [tailwindcss()],
   resolve: {
     alias: {

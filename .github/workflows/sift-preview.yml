@@ -39,7 +39,7 @@ jobs:
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
       - name: Build nteract-predicate WASM
-        run: wasm-pack build crates/nteract-predicate --target web --release --out-dir ../../packages/sift/public/wasm
+        run: wasm-pack build crates/nteract-predicate --target web --release
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
