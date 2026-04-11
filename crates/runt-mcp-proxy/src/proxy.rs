@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, Content, Implementation, ListResourceTemplatesResult,
@@ -16,7 +16,7 @@ use rmcp::model::{
 };
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{ErrorData as McpError, ServerHandler};
-use tokio::sync::{mpsc, Notify, RwLock};
+use tokio::sync::{mpsc, Mutex, Notify, RwLock};
 use tracing::{error, info, warn};
 
 use crate::child::{self, RunningChild};
@@ -68,6 +68,10 @@ pub struct ProxyState {
     pub tool_list_changed_tx: Option<mpsc::Sender<()>>,
     /// Whether the proxy should exit (set on incompatible tool divergence).
     pub should_exit: bool,
+    /// Timestamp when the current child was spawned (for uptime tracking).
+    pub child_spawn_time: Option<Instant>,
+    /// Timestamp of the last child restart.
+    pub last_restart_time: Option<Instant>,
 }
 
 /// The MCP proxy — manages child process lifecycle and forwards MCP calls.
@@ -79,6 +83,8 @@ pub struct McpProxy {
     pub child_ready: Arc<Notify>,
     /// Signaled when the proxy should exit (incompatible tool divergence).
     pub exit_signal: Arc<Notify>,
+    /// Flag to prevent concurrent restarts (monitor + tool call racing).
+    restart_in_progress: Arc<Mutex<bool>>,
 }
 
 impl McpProxy {
@@ -113,10 +119,13 @@ impl McpProxy {
                 reconnection_message: None,
                 tool_list_changed_tx,
                 should_exit: false,
+                child_spawn_time: None,
+                last_restart_time: None,
             })),
             config: Arc::new(config),
             child_ready: Arc::new(Notify::new()),
             exit_signal: Arc::new(Notify::new()),
+            restart_in_progress: Arc::new(Mutex::new(false)),
         }
     }
 
@@ -137,6 +146,14 @@ impl McpProxy {
         let child_command = (self.config.resolve_child_command)()
             .map_err(|e| format!("Failed to resolve child binary: {e}"))?;
 
+        info!(
+            event = "child_spawned",
+            binary = %child_command.display(),
+            args = ?self.config.child_args,
+            upstream_client = %upstream_name,
+            "Spawning child process"
+        );
+
         let client = child::spawn_child(
             &child_command,
             &self.config.child_args,
@@ -148,6 +165,7 @@ impl McpProxy {
 
         let mut state = self.state.write().await;
         state.child_client = Some(client);
+        state.child_spawn_time = Some(Instant::now());
 
         // Refresh tool cache from the new child
         self.refresh_tool_cache_locked(&mut state).await;
@@ -158,6 +176,10 @@ impl McpProxy {
         }
 
         drop(state);
+
+        // Spawn background task to monitor child lifecycle
+        self.spawn_child_monitor();
+
         self.child_ready.notify_waiters();
         info!("Child process initialized successfully");
 
@@ -169,6 +191,15 @@ impl McpProxy {
     /// Handles circuit breaker, version detection, session rejoin, and
     /// tool divergence detection.
     pub async fn restart_child(&self) -> Result<(), String> {
+        // Prevent concurrent restarts (monitor task + tool call racing)
+        let mut restart_lock = self.restart_in_progress.lock().await;
+        if *restart_lock {
+            info!("Restart already in progress, skipping duplicate request");
+            return Ok(());
+        }
+        *restart_lock = true;
+        drop(restart_lock);
+
         // Phase 1: Drop old client, check circuit breaker
         let child_was_dead = {
             let mut state = self.state.write().await;
@@ -178,10 +209,17 @@ impl McpProxy {
                 let _ = old.cancel().await;
             }
 
+            let uptime = state
+                .child_spawn_time
+                .map(|t| t.elapsed().as_secs())
+                .unwrap_or(0);
+
             info!(
-                "Restarting child (restart #{}{})",
-                state.restart_count + 1,
-                if was_dead { ", child had exited" } else { "" }
+                event = "child_restart_requested",
+                restart_num = state.restart_count + 1,
+                child_was_dead = was_dead,
+                uptime_secs = uptime,
+                "Restarting child process"
             );
 
             // Skip circuit breaker if child exited on its own (daemon upgrade)
@@ -191,6 +229,7 @@ impl McpProxy {
                            so a fresh MCP connection is established. You may also need to \
                            reinstall the nteract extension.";
                 state.reconnection_message = Some(msg.to_string());
+                *self.restart_in_progress.lock().await = false;
                 return Err(msg.to_string());
             }
 
@@ -242,6 +281,8 @@ impl McpProxy {
                 let mut state = self.state.write().await;
                 state.child_client = Some(client);
                 state.restart_count += 1;
+                state.child_spawn_time = Some(Instant::now());
+                state.last_restart_time = Some(Instant::now());
 
                 // Refresh tool cache and check for divergence
                 let old_tools = state.cached_tools.clone();
@@ -321,6 +362,20 @@ impl McpProxy {
                     state.reconnection_message = Some(msg);
                 }
 
+                drop(state);
+
+                // Spawn new monitor for the restarted child
+                self.spawn_child_monitor();
+
+                // Notify upstream client to keep connection alive
+                let state = self.state.read().await;
+                if let Some(ref tx) = state.tool_list_changed_tx {
+                    let _ = tx.send(()).await;
+                    info!("Notified upstream client of tool list change to keep connection alive");
+                }
+                drop(state);
+
+                *self.restart_in_progress.lock().await = false;
                 self.child_ready.notify_waiters();
                 info!("Child restarted successfully");
                 Ok(())
@@ -329,9 +384,81 @@ impl McpProxy {
                 let mut state = self.state.write().await;
                 state.reconnection_message = Some(format!("Child restart failed: {e}"));
                 error!("Failed to restart child: {e}");
+                *self.restart_in_progress.lock().await = false;
                 Err(e)
             }
         }
+    }
+
+    /// Spawn a background task to monitor the child process and auto-restart on exit.
+    ///
+    /// The task polls `child_client.is_closed()` periodically and triggers restart when
+    /// the child exits. This is simpler than using `waiting()` which requires ownership.
+    fn spawn_child_monitor(&self) {
+        let proxy = self.clone();
+        tokio::spawn(async move {
+            loop {
+                // Check if child exists
+                let has_child = {
+                    let state = proxy.state.read().await;
+                    state.child_client.is_some()
+                };
+
+                if !has_child {
+                    info!("Child monitor: no child to monitor, exiting");
+                    break;
+                }
+
+                // Poll every 500ms for child closure
+                tokio::time::sleep(Duration::from_millis(500)).await;
+
+                // Check if child is closed
+                let is_closed = {
+                    let state = proxy.state.read().await;
+                    state
+                        .child_client
+                        .as_ref()
+                        .map(|c| c.is_closed())
+                        .unwrap_or(true)
+                };
+
+                if !is_closed {
+                    continue;
+                }
+
+                // Child has exited, record uptime
+                let uptime_secs = {
+                    let state = proxy.state.read().await;
+                    state
+                        .child_spawn_time
+                        .map(|t| t.elapsed().as_secs())
+                        .unwrap_or(0)
+                };
+
+                info!(
+                    event = "child_exited",
+                    uptime_secs = uptime_secs,
+                    "Child process exited, attempting automatic restart"
+                );
+
+                // Attempt to restart the child
+                match proxy.restart_child().await {
+                    Ok(_) => {
+                        info!("Child monitor: restart successful, continuing to monitor new child");
+                        // Loop continues to monitor the new child
+                    }
+                    Err(e) => {
+                        error!(
+                            event = "child_restart_failed",
+                            error = %e,
+                            "Child monitor: restart failed, stopping monitor task"
+                        );
+                        // Circuit breaker may have tripped, stop monitoring
+                        break;
+                    }
+                }
+            }
+        });
     }
 
     /// Forward a tool call to the child, restarting if the child has disconnected.
@@ -465,6 +592,25 @@ impl McpProxy {
     /// Reset the circuit breaker (used by supervisor after manual restart or file change).
     pub async fn reset_circuit_breaker(&self) {
         self.state.write().await.circuit_breaker.reset();
+    }
+
+    /// Get the number of child restarts since proxy creation.
+    pub async fn restart_count(&self) -> u32 {
+        self.state.read().await.restart_count
+    }
+
+    /// Get the child process uptime in seconds (None if no child).
+    pub async fn child_uptime_secs(&self) -> Option<u64> {
+        self.state
+            .read()
+            .await
+            .child_spawn_time
+            .map(|t| t.elapsed().as_secs())
+    }
+
+    /// Get the timestamp of the last restart (None if never restarted).
+    pub async fn last_restart_time(&self) -> Option<Instant> {
+        self.state.read().await.last_restart_time
     }
 
     // ── Internal helpers ──────────────────────────────────────────────
@@ -666,6 +812,8 @@ mod tests {
         assert!(state.last_notebook_id.is_none());
         assert!(state.reconnection_message.is_none());
         assert!(!state.should_exit);
+        assert!(state.child_spawn_time.is_none());
+        assert!(state.last_restart_time.is_none());
     }
 
     #[tokio::test]
@@ -1072,5 +1220,44 @@ mod tests {
         let proxy = McpProxy::new(config, None);
         let state = proxy.state.read().await;
         assert!(state.last_daemon_version.is_none());
+    }
+
+    // ── Restart metrics ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn restart_count_starts_at_zero() {
+        let proxy = McpProxy::new(test_config(), None);
+        assert_eq!(proxy.restart_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn child_uptime_is_none_without_child() {
+        let proxy = McpProxy::new(test_config(), None);
+        assert!(proxy.child_uptime_secs().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn last_restart_time_is_none_initially() {
+        let proxy = McpProxy::new(test_config(), None);
+        assert!(proxy.last_restart_time().await.is_none());
+    }
+
+    // ── Concurrent restart prevention ─────────────────────────────────
+
+    #[tokio::test]
+    async fn restart_in_progress_prevents_duplicate_restarts() {
+        let proxy = McpProxy::new(test_config(), None);
+
+        // Simulate restart in progress
+        *proxy.restart_in_progress.lock().await = true;
+
+        // Attempt restart should return early
+        let result = proxy.restart_child().await;
+
+        // Should succeed but do nothing (early return)
+        assert!(result.is_ok());
+
+        // Restart count should still be 0
+        assert_eq!(proxy.restart_count().await, 0);
     }
 }
