@@ -41,7 +41,10 @@ pub struct NotebookEntry {
     /// Stable notebook ID (UUID v4).
     pub id: Uuid,
     /// Canonical filesystem path.
-    #[serde(serialize_with = "serialize_path", deserialize_with = "deserialize_path")]
+    #[serde(
+        serialize_with = "serialize_path",
+        deserialize_with = "deserialize_path"
+    )]
     pub path: PathBuf,
     /// Last modification time of the notebook file.
     #[serde(with = "systemtime_serde")]
@@ -52,7 +55,7 @@ pub struct NotebookEntry {
 }
 
 /// Serialization helpers for PathBuf (as string).
-fn serialize_path<S>(path: &PathBuf, serializer: S) -> Result<S::Ok, S::Error>
+fn serialize_path<S>(path: &Path, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
 {
@@ -93,8 +96,8 @@ mod systemtime_serde {
         D: Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        let datetime = chrono::DateTime::parse_from_rfc3339(&s)
-            .map_err(serde::de::Error::custom)?;
+        let datetime =
+            chrono::DateTime::parse_from_rfc3339(&s).map_err(serde::de::Error::custom)?;
         let secs = datetime.timestamp() as u64;
         let nanos = datetime.timestamp_subsec_nanos();
         Ok(SystemTime::UNIX_EPOCH + std::time::Duration::new(secs, nanos))
@@ -208,12 +211,12 @@ impl NotebookRegistry {
             // Validate file exists and mtime matches
             match tokio::fs::metadata(&entry.path).await {
                 Ok(meta) => {
-                    let current_mtime = meta
-                        .modified()
-                        .unwrap_or(SystemTime::UNIX_EPOCH);
+                    let current_mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
                     if current_mtime == entry.mtime {
                         // Entry is still valid
-                        inner.path_to_entry.insert(entry.path.clone(), entry.clone());
+                        inner
+                            .path_to_entry
+                            .insert(entry.path.clone(), entry.clone());
                         inner.id_to_path.insert(entry.id, entry.path.clone());
                     } else {
                         debug!(
@@ -257,7 +260,9 @@ impl NotebookRegistry {
             last_seen: SystemTime::now(),
         };
 
-        inner.path_to_entry.insert(canonical_path.clone(), entry.clone());
+        inner
+            .path_to_entry
+            .insert(canonical_path.clone(), entry.clone());
         inner.id_to_path.insert(id, canonical_path);
         inner.dirty = true;
 
@@ -274,11 +279,10 @@ impl NotebookRegistry {
         let canonical_path = self.canonicalize_path(path).await?;
         let inner = self.inner.read().await;
 
-        let id = if let Some(entry) = inner.path_to_entry.get(&canonical_path) {
-            Some(entry.id)
-        } else {
-            None
-        };
+        let id = inner
+            .path_to_entry
+            .get(&canonical_path)
+            .map(|entry| entry.id);
 
         if id.is_some() {
             // Update last_seen (needs write lock)
@@ -328,7 +332,9 @@ impl NotebookRegistry {
             last_seen: SystemTime::now(),
         };
 
-        inner.path_to_entry.insert(canonical_new_path.clone(), entry);
+        inner
+            .path_to_entry
+            .insert(canonical_new_path.clone(), entry);
         inner.id_to_path.insert(id, canonical_new_path);
         inner.dirty = true;
 
@@ -380,20 +386,17 @@ impl NotebookRegistry {
         drop(inner); // Release read lock before I/O
 
         // Serialize
-        let json = serde_json::to_string_pretty(&cache).map_err(|e| {
-            anyhow::anyhow!("Failed to serialize notebook registry: {}", e)
-        })?;
+        let json = serde_json::to_string_pretty(&cache)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize notebook registry: {}", e))?;
 
         // Atomic write: write to temp file, then rename
         let temp_path = self.cache_path.with_extension("tmp");
-        tokio::fs::write(&temp_path, json).await.map_err(|e| {
-            anyhow::anyhow!("Failed to write notebook registry: {}", e)
-        })?;
+        tokio::fs::write(&temp_path, json)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to write notebook registry: {}", e))?;
         tokio::fs::rename(&temp_path, &self.cache_path)
             .await
-            .map_err(|e| {
-                anyhow::anyhow!("Failed to rename notebook registry: {}", e)
-            })?;
+            .map_err(|e| anyhow::anyhow!("Failed to rename notebook registry: {}", e))?;
 
         // Clear dirty flag
         let mut inner = self.inner.write().await;
@@ -460,5 +463,199 @@ impl Drop for RegistryInner {
         if let Some(task) = self.persist_task.take() {
             task.abort();
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use std::time::SystemTime;
+    use tempfile::TempDir;
+
+    fn test_cache_path(tmp: &TempDir) -> PathBuf {
+        tmp.path().join("notebook_registry.json")
+    }
+
+    #[tokio::test]
+    async fn test_load_empty_registry() {
+        let tmp = TempDir::new().unwrap();
+        let cache_path = test_cache_path(&tmp);
+
+        // Load from non-existent cache - should succeed with empty registry
+        let registry = NotebookRegistry::load(cache_path.clone()).await.unwrap();
+
+        // Lookup should return None for unknown path
+        let test_path = PathBuf::from("/tmp/test.ipynb");
+        let result = registry.lookup_by_path(&test_path).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_register_and_lookup_round_trip() {
+        let tmp = TempDir::new().unwrap();
+        let cache_path = test_cache_path(&tmp);
+        let registry = NotebookRegistry::new(cache_path);
+
+        // Create a test file
+        let test_file = tmp.path().join("test.ipynb");
+        tokio::fs::write(&test_file, b"{}").await.unwrap();
+
+        let test_id = Uuid::new_v4();
+        let mtime = tokio::fs::metadata(&test_file)
+            .await
+            .unwrap()
+            .modified()
+            .unwrap();
+
+        // Register
+        registry.register(&test_file, test_id, mtime).await.unwrap();
+
+        // Lookup by path
+        let result = registry.lookup_by_path(&test_file).await.unwrap();
+        assert_eq!(result, Some(test_id));
+
+        // Lookup by ID
+        let result_path = registry.lookup_by_id(test_id).await;
+        assert!(result_path.is_some());
+        assert_eq!(
+            result_path.unwrap(),
+            tokio::fs::canonicalize(&test_file).await.unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_path_for_file_move() {
+        let tmp = TempDir::new().unwrap();
+        let cache_path = test_cache_path(&tmp);
+        let registry = NotebookRegistry::new(cache_path);
+
+        // Create test file at old path
+        let old_path = tmp.path().join("old.ipynb");
+        tokio::fs::write(&old_path, b"{}").await.unwrap();
+
+        let test_id = Uuid::new_v4();
+        let mtime = tokio::fs::metadata(&old_path)
+            .await
+            .unwrap()
+            .modified()
+            .unwrap();
+
+        registry.register(&old_path, test_id, mtime).await.unwrap();
+
+        // Move file
+        let new_path = tmp.path().join("new.ipynb");
+        tokio::fs::rename(&old_path, &new_path).await.unwrap();
+
+        let new_mtime = tokio::fs::metadata(&new_path)
+            .await
+            .unwrap()
+            .modified()
+            .unwrap();
+
+        // Update registry with new path
+        registry
+            .update_path(test_id, &new_path, new_mtime)
+            .await
+            .unwrap();
+
+        // Old path should not resolve
+        let old_result = registry.lookup_by_path(&old_path).await.unwrap();
+        assert!(old_result.is_none());
+
+        // New path should resolve to same ID
+        let new_result = registry.lookup_by_path(&new_path).await.unwrap();
+        assert_eq!(new_result, Some(test_id));
+    }
+
+    #[tokio::test]
+    async fn test_persist_and_reload() {
+        let tmp = TempDir::new().unwrap();
+        let cache_path = test_cache_path(&tmp);
+
+        // Create test file
+        let test_file = tmp.path().join("test.ipynb");
+        tokio::fs::write(&test_file, b"{}").await.unwrap();
+
+        let test_id = Uuid::new_v4();
+        let mtime = tokio::fs::metadata(&test_file)
+            .await
+            .unwrap()
+            .modified()
+            .unwrap();
+
+        // Register and persist
+        {
+            let registry = NotebookRegistry::new(cache_path.clone());
+            registry.register(&test_file, test_id, mtime).await.unwrap();
+            registry.persist().await.unwrap();
+        }
+
+        // Load new registry from persisted cache
+        let registry = NotebookRegistry::load(cache_path).await.unwrap();
+
+        // Should find the registered entry
+        let result = registry.lookup_by_path(&test_file).await.unwrap();
+        assert_eq!(result, Some(test_id));
+    }
+
+    #[tokio::test]
+    async fn test_ttl_eviction() {
+        let tmp = TempDir::new().unwrap();
+        let cache_path = test_cache_path(&tmp);
+
+        // Create test file
+        let test_file = tmp.path().join("test.ipynb");
+        tokio::fs::write(&test_file, b"{}").await.unwrap();
+
+        let test_id = Uuid::new_v4();
+        let mtime = SystemTime::now();
+
+        // Create entry with very old last_seen
+        let old_last_seen = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
+        let entry = NotebookEntry {
+            id: test_id,
+            path: tokio::fs::canonicalize(&test_file).await.unwrap(),
+            mtime,
+            last_seen: old_last_seen,
+        };
+
+        // Write cache with old entry
+        let cache = CacheFormat {
+            version: 1,
+            entries: vec![entry],
+        };
+        let json = serde_json::to_string_pretty(&cache).unwrap();
+        tokio::fs::write(&cache_path, json).await.unwrap();
+
+        // Load - should evict the stale entry
+        let registry = NotebookRegistry::load(cache_path).await.unwrap();
+
+        // Should not find the evicted entry
+        let result = registry.lookup_by_path(&test_file).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_active_session_tracking() {
+        let tmp = TempDir::new().unwrap();
+        let cache_path = test_cache_path(&tmp);
+        let registry = NotebookRegistry::new(cache_path);
+
+        let test_id = Uuid::new_v4();
+        let session_id = "session-123".to_string();
+
+        // No active session initially
+        assert!(!registry.has_active_session(test_id).await);
+
+        // Mark as active
+        registry
+            .mark_session_active(test_id, session_id.clone())
+            .await;
+        assert!(registry.has_active_session(test_id).await);
+
+        // Unregister
+        registry.unregister(test_id).await;
+        assert!(!registry.has_active_session(test_id).await);
     }
 }

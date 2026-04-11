@@ -408,6 +408,38 @@ impl DocHandle {
         self.with_notebook_doc(|nd| nd.remove_pixi_dependency(pkg))
     }
 
+    /// Read the stable notebook ID from metadata.runt.id.
+    pub fn read_id(&self) -> Option<String> {
+        self.with_doc_readonly(|doc| {
+            let nd = notebook_doc::NotebookDoc::wrap(doc.clone());
+            nd.read_id()
+        })
+        .ok()
+        .flatten()
+    }
+
+    /// Write a stable notebook ID to metadata.runt.id.
+    pub fn write_id(&self, id: &str) -> Result<(), SyncError> {
+        self.with_notebook_doc(|nd| nd.write_id(id))
+    }
+
+    /// Ensure a stable notebook ID exists in metadata.runt.id.
+    ///
+    /// Returns the existing ID if present, or generates a new UUID v4 if missing.
+    /// This method is idempotent - calling it multiple times returns the same ID.
+    pub fn ensure_id(&self) -> Result<String, SyncError> {
+        self.with_notebook_doc(|nd| nd.ensure_id())
+    }
+
+    /// Deprecated: use `ensure_id()` instead.
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use `ensure_id()` instead for idempotent behavior"
+    )]
+    pub fn generate_and_write_id(&self) -> Result<String, SyncError> {
+        self.ensure_id()
+    }
+
     /// Get a single cell by ID from the latest snapshot.
     pub fn get_cell(&self, cell_id: &str) -> Option<notebook_doc::CellSnapshot> {
         let snapshot = self.snapshot_rx.borrow();

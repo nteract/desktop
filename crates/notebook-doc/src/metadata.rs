@@ -770,6 +770,7 @@ mod tests {
             runt: RuntMetadata {
                 schema_version: "1".to_string(),
                 env_id: Some("abc-123".to_string()),
+                id: None,
                 uv: Some(UvInlineMetadata {
                     dependencies: vec!["pandas>=2.0".to_string(), "numpy".to_string()],
                     requires_python: Some(">=3.10".to_string()),
@@ -882,6 +883,7 @@ mod tests {
         let meta = RuntMetadata {
             schema_version: "1".to_string(),
             env_id: None,
+            id: None,
             uv: None,
             conda: None,
             pixi: None,

@@ -448,6 +448,7 @@ fn default_metadata_snapshot() -> notebook_doc::metadata::NotebookMetadataSnapsh
         runt: notebook_doc::metadata::RuntMetadata {
             schema_version: "1".to_string(),
             env_id: None,
+            id: None,
             uv: None,
             conda: None,
             pixi: None,
@@ -498,6 +499,7 @@ fn snapshot_from_nbformat(
             .unwrap_or_else(|_| RuntMetadata {
                 schema_version: "1".to_string(),
                 env_id: None,
+                id: None,
                 uv: None,
                 conda: None,
                 pixi: None,
@@ -538,6 +540,7 @@ fn snapshot_from_nbformat(
         RuntMetadata {
             schema_version: "1".to_string(),
             env_id: None,
+            id: None,
             uv,
             conda,
             pixi: None,

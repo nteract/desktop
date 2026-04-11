@@ -9173,6 +9173,7 @@ mod tests {
             runt: crate::notebook_metadata::RuntMetadata {
                 schema_version: "1".to_string(),
                 env_id: None,
+                id: None,
                 uv: Some(crate::notebook_metadata::UvInlineMetadata {
                     dependencies: deps,
                     requires_python: None,
@@ -9196,6 +9197,7 @@ mod tests {
             runt: crate::notebook_metadata::RuntMetadata {
                 schema_version: "1".to_string(),
                 env_id: None,
+                id: None,
                 uv: None,
                 conda: Some(crate::notebook_metadata::CondaInlineMetadata {
                     dependencies: deps,
@@ -9219,6 +9221,7 @@ mod tests {
             runt: crate::notebook_metadata::RuntMetadata {
                 schema_version: "1".to_string(),
                 env_id: None,
+                id: None,
                 uv: None,
                 conda: None,
                 pixi: None,
@@ -9267,6 +9270,7 @@ mod tests {
             runt: crate::notebook_metadata::RuntMetadata {
                 schema_version: "1".to_string(),
                 env_id: None,
+                id: None,
                 uv: Some(crate::notebook_metadata::UvInlineMetadata {
                     dependencies: vec!["numpy".to_string()],
                     requires_python: None,
@@ -9296,6 +9300,7 @@ mod tests {
             runt: crate::notebook_metadata::RuntMetadata {
                 schema_version: "1".to_string(),
                 env_id: None,
+                id: None,
                 uv: Some(crate::notebook_metadata::UvInlineMetadata {
                     dependencies: vec!["numpy".to_string()],
                     requires_python: None,

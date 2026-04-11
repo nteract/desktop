@@ -155,6 +155,9 @@ pub struct RoomInfo {
     pub kernel_status: Option<String>,
     #[serde(default)]
     pub ephemeral: bool,
+    /// Stable notebook ID from metadata.runt.id (UUID v4)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stable_id: Option<String>,
 }
 
 /// Blob channel request.
