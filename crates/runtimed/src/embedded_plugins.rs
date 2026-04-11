@@ -51,6 +51,10 @@ pub fn get(name: &str) -> Option<(&'static [u8], &'static str)> {
             include_bytes!("../../runt-mcp/assets/plugins/leaflet.css"),
             "text/css; charset=utf-8",
         )),
+        "nteract-predicate.wasm" => Some((
+            include_bytes!("../../runt-mcp/assets/plugins/nteract-predicate.wasm"),
+            "application/wasm",
+        )),
         _ => None,
     }
 }
