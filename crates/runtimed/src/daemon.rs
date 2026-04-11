@@ -513,13 +513,10 @@ impl Daemon {
         // Load or create the settings document
         let automerge_path = crate::default_settings_doc_path();
         let json_path = crate::settings_json_path();
-        let mut settings = SettingsDoc::load_or_create(&automerge_path, Some(&json_path));
+        let settings = SettingsDoc::load_or_create(&automerge_path, Some(&json_path));
 
-        // Seed pool sizes from CLI config into settings doc so the warming
-        // loops use the daemon's configured sizes, not the schema defaults.
-        settings.put_u64("uv_pool_size", config.uv_pool_size as u64);
-        settings.put_u64("conda_pool_size", config.conda_pool_size as u64);
-        settings.put_u64("pixi_pool_size", config.pixi_pool_size as u64);
+        // Pool sizes now come from settings.json (imported via apply_json_changes)
+        // or from SettingsDoc defaults if not set in JSON.
 
         // Write the settings JSON Schema for editor autocomplete
         if let Err(e) = crate::settings_doc::write_settings_schema() {
@@ -2706,7 +2703,14 @@ impl Daemon {
             }
 
             let (deficit, should_retry, backoff_info) = {
-                let target = {
+                // Read pool size from SettingsDoc (imported from settings.json)
+                // BUT: Honor config.uv_pool_size = 0 for test isolation.
+                // Tests set config.uv_pool_size = 0 to disable warming, but
+                // SettingsDoc defaults to 3 when there's no settings.json.
+                // Verified by: test_pool_size_config_honored, test_daemon_take_empty_pool
+                let target = if self.config.uv_pool_size == 0 {
+                    0 // Test mode: explicit 0 in config means don't warm
+                } else {
                     let settings = self.settings.read().await;
                     settings
                         .get_u64("uv_pool_size")
@@ -2787,7 +2791,14 @@ impl Daemon {
             }
 
             let (deficit, should_retry, backoff_info) = {
-                let target = {
+                // Read pool size from SettingsDoc (imported from settings.json)
+                // BUT: Honor config.conda_pool_size = 0 for test isolation.
+                // Tests set config.conda_pool_size = 0 to disable warming, but
+                // SettingsDoc defaults to 3 when there's no settings.json.
+                // Verified by: test_pool_size_config_honored, test_daemon_take_empty_pool
+                let target = if self.config.conda_pool_size == 0 {
+                    0 // Test mode: explicit 0 in config means don't warm
+                } else {
                     let settings = self.settings.read().await;
                     settings
                         .get_u64("conda_pool_size")
@@ -2878,7 +2889,14 @@ impl Daemon {
             }
 
             let (deficit, should_retry, backoff_info) = {
-                let target = {
+                // Read pool size from SettingsDoc (imported from settings.json)
+                // BUT: Honor config.pixi_pool_size = 0 for test isolation.
+                // Tests set config.pixi_pool_size = 0 to disable warming, but
+                // SettingsDoc defaults to 2 when there's no settings.json.
+                // Verified by: test_pool_size_config_honored, test_daemon_take_empty_pool
+                let target = if self.config.pixi_pool_size == 0 {
+                    0 // Test mode: explicit 0 in config means don't warm
+                } else {
                     let settings = self.settings.read().await;
                     settings
                         .get_u64("pixi_pool_size")

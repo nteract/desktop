@@ -1346,3 +1346,102 @@ async fn test_pipe_mode_preserves_frame_order() {
     pool_client.shutdown().await.ok();
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
 }
+
+#[tokio::test]
+async fn test_pool_size_config_honored() {
+    let temp_dir = TempDir::new().unwrap();
+
+    // Write settings.json with custom pool sizes
+    let settings_path = temp_dir.path().join("settings.json");
+    let settings = serde_json::json!({
+        "uv_pool_size": 15,
+        "conda_pool_size": 10,
+        "pixi_pool_size": 5
+    });
+    std::fs::write(
+        &settings_path,
+        serde_json::to_string_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+
+    // Create a custom settings doc path for this test
+    let settings_doc_path = temp_dir.path().join("settings.amg");
+
+    // Test 1: Verify that from_json() correctly imports pool sizes during initial migration
+    let settings_doc = runtimed_client::settings_doc::SettingsDoc::load_or_create(
+        &settings_doc_path,
+        Some(&settings_path),
+    );
+
+    assert_eq!(
+        settings_doc.get_u64("uv_pool_size"),
+        Some(15),
+        "UV pool size should be imported from settings.json via from_json()"
+    );
+    assert_eq!(
+        settings_doc.get_u64("conda_pool_size"),
+        Some(10),
+        "Conda pool size should be imported from settings.json via from_json()"
+    );
+    assert_eq!(
+        settings_doc.get_u64("pixi_pool_size"),
+        Some(5),
+        "Pixi pool size should be imported from settings.json via from_json()"
+    );
+
+    // Test 2: Verify that apply_json_changes() correctly updates pool sizes
+    let mut settings_doc2 = runtimed_client::settings_doc::SettingsDoc::new();
+
+    // Initially, pool sizes should have default values (3, 3, 2)
+    assert_eq!(
+        settings_doc2.get_u64("uv_pool_size"),
+        Some(3),
+        "UV pool should start with default value"
+    );
+    assert_eq!(
+        settings_doc2.get_u64("conda_pool_size"),
+        Some(3),
+        "Conda pool should start with default value"
+    );
+    assert_eq!(
+        settings_doc2.get_u64("pixi_pool_size"),
+        Some(2),
+        "Pixi pool should start with default value"
+    );
+
+    // Apply JSON changes with different values
+    let new_settings = serde_json::json!({
+        "uv_pool_size": 20,
+        "conda_pool_size": 12,
+        "pixi_pool_size": 8
+    });
+
+    let changed = settings_doc2.apply_json_changes(&new_settings);
+    assert!(
+        changed,
+        "apply_json_changes should return true when pool sizes change"
+    );
+
+    assert_eq!(
+        settings_doc2.get_u64("uv_pool_size"),
+        Some(20),
+        "UV pool size should be updated via apply_json_changes()"
+    );
+    assert_eq!(
+        settings_doc2.get_u64("conda_pool_size"),
+        Some(12),
+        "Conda pool size should be updated via apply_json_changes()"
+    );
+    assert_eq!(
+        settings_doc2.get_u64("pixi_pool_size"),
+        Some(8),
+        "Pixi pool size should be updated via apply_json_changes()"
+    );
+
+    // Test 3: Verify that apply_json_changes() doesn't report changes when values are the same
+    let changed_again = settings_doc2.apply_json_changes(&new_settings);
+    assert!(
+        !changed_again,
+        "apply_json_changes should return false when values don't change"
+    );
+}
