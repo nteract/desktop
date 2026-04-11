@@ -59,6 +59,9 @@ jobs:
         working-directory: packages/sift
         run: vp build
 
+      - name: Install Wrangler
+        run: pnpm add -w wrangler@3.90.0
+
       - name: Deploy to Cloudflare Pages
         id: deploy
         uses: cloudflare/wrangler-action@v3
