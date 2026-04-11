@@ -321,14 +321,12 @@ async fn read_notebook_resource(
             }
         }
         "status" => {
-            // Return runtime status (would need to get from RuntimeStateDoc)
-            // For now, return a placeholder
-            let status = serde_json::json!({
-                "kernel_status": "unknown",
-                "message": "Runtime status not yet implemented"
-            });
+            // Return runtime status from RuntimeStateDoc
+            let runtime_state = session.handle.get_runtime_state().map_err(|e| {
+                McpError::internal_error(format!("Failed to read runtime state: {}", e), None)
+            })?;
 
-            let json = serde_json::to_string_pretty(&status).map_err(|e| {
+            let json = serde_json::to_string_pretty(&runtime_state).map_err(|e| {
                 McpError::internal_error(format!("Failed to serialize status: {}", e), None)
             })?;
 
