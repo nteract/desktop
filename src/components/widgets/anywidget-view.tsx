@@ -179,7 +179,8 @@ export function createAFMModelProxy(
 
   return {
     get(key: string): unknown {
-      // Return pending change if it exists, otherwise current state
+      // Pending changes are caller-owned (just set via model.set()),
+      // so return them directly without cloning.
       if (key in pendingChanges) {
         return pendingChanges[key];
       }
@@ -189,7 +190,11 @@ export function createAFMModelProxy(
       // readonly properties in WebKit, causing "Attempted to assign to
       // readonly property" errors when widgets like Plotly mutate in-place.
       if (value !== null && typeof value === "object") {
-        return structuredClone(value);
+        try {
+          return structuredClone(value);
+        } catch {
+          return value;
+        }
       }
       return value;
     },
