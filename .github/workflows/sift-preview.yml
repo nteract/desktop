@@ -43,7 +43,13 @@ jobs:
 
       - uses: voidzero-dev/setup-vp@v1
         with:
-          cache: true
+          run-install: false
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: pnpm
+      - run: pnpm install
 
       - name: Generate demo data
         working-directory: packages/sift
