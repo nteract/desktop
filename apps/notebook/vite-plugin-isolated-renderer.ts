@@ -53,6 +53,7 @@ export function isolatedRendererPlugin(options: IsolatedRendererPluginOptions = 
   const vegaEntry = path.resolve(__dirname, "../../src/isolated-renderer/vega-renderer.tsx");
   const plotlyEntry = path.resolve(__dirname, "../../src/isolated-renderer/plotly-renderer.tsx");
   const leafletEntry = path.resolve(__dirname, "../../src/isolated-renderer/leaflet-renderer.tsx");
+  const siftEntry = path.resolve(__dirname, "../../src/isolated-renderer/sift-renderer.tsx");
 
   let rendererCode = "";
   let rendererCss = "";
@@ -64,6 +65,8 @@ export function isolatedRendererPlugin(options: IsolatedRendererPluginOptions = 
   let plotlyRendererCss = "";
   let leafletRendererCode = "";
   let leafletRendererCss = "";
+  let siftRendererCode = "";
+  let siftRendererCss = "";
   let buildPromise: Promise<void> | null = null;
 
   // Directories to watch for changes that should trigger rebuild
@@ -82,6 +85,8 @@ export function isolatedRendererPlugin(options: IsolatedRendererPluginOptions = 
     plotlyRendererCss = "";
     leafletRendererCode = "";
     leafletRendererCss = "";
+    siftRendererCode = "";
+    siftRendererCss = "";
   }
 
   /**
@@ -106,6 +111,7 @@ export function isolatedRendererPlugin(options: IsolatedRendererPluginOptions = 
       resolve: {
         alias: {
           "@/": `${srcDir}/`,
+          "nteract-predicate": path.resolve(__dirname, "../../crates/nteract-predicate/pkg"),
         },
       },
       build: {
@@ -269,11 +275,12 @@ export function isolatedRendererPlugin(options: IsolatedRendererPluginOptions = 
     }
 
     // --- Build renderer plugins (CJS, React externalized) ---
-    const [markdownPlugin, vegaPlugin, plotlyPlugin, leafletPlugin] = await Promise.all([
+    const [markdownPlugin, vegaPlugin, plotlyPlugin, leafletPlugin, siftPlugin] = await Promise.all([
       buildRendererPlugin(markdownEntry, "markdown-renderer", srcDir),
       buildRendererPlugin(vegaEntry, "vega-renderer", srcDir),
       buildRendererPlugin(plotlyEntry, "plotly-renderer", srcDir),
       buildRendererPlugin(leafletEntry, "leaflet-renderer", srcDir),
+      buildRendererPlugin(siftEntry, "sift-renderer", srcDir),
     ]);
     markdownRendererCode = markdownPlugin.code;
     markdownRendererCss = markdownPlugin.css;
@@ -283,6 +290,8 @@ export function isolatedRendererPlugin(options: IsolatedRendererPluginOptions = 
     plotlyRendererCss = plotlyPlugin.css;
     leafletRendererCode = leafletPlugin.code;
     leafletRendererCss = leafletPlugin.css;
+    siftRendererCode = siftPlugin.code;
+    siftRendererCss = siftPlugin.css;
   }
 
   return {
@@ -350,6 +359,12 @@ export const code = ${JSON.stringify(leafletRendererCode)};
 export const css = ${JSON.stringify(leafletRendererCss)};
 `;
       }
+      if (pluginName === "sift") {
+        return `
+export const code = ${JSON.stringify(siftRendererCode)};
+export const css = ${JSON.stringify(siftRendererCss)};
+`;
+      }
     },
 
     // For dev server: serve the virtual module
@@ -391,7 +406,7 @@ export const css = ${JSON.stringify(leafletRendererCss)};
           devServer.moduleGraph.invalidateModule(mod);
         }
 
-        const pluginNames = ["markdown", "vega", "plotly", "leaflet"];
+        const pluginNames = ["markdown", "vega", "plotly", "leaflet", "sift"];
         for (const name of pluginNames) {
           const pluginMod = devServer.moduleGraph.getModuleById(`${RESOLVED_PLUGIN_PREFIX}${name}`);
           if (pluginMod) {

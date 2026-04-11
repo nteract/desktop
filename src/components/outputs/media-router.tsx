@@ -57,6 +57,7 @@ export const DEFAULT_PRIORITY = [
   "application/vnd.vega.v5.json",
   "application/vnd.vega.v4+json",
   "application/geo+json",
+  "application/vnd.apache.parquet",
   // HTML, PDF, markdown, and LaTeX
   "text/html",
   "application/pdf",
