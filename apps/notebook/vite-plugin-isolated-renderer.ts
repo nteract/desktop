@@ -112,6 +112,8 @@ export function isolatedRendererPlugin(options: IsolatedRendererPluginOptions = 
         alias: {
           "@/": `${srcDir}/`,
           "nteract-predicate": path.resolve(__dirname, "../../crates/nteract-predicate/pkg"),
+          "@nteract/sift/style.css": path.resolve(__dirname, "../../packages/sift/src/style.css"),
+          "@nteract/sift": path.resolve(__dirname, "../../packages/sift/src/index.ts"),
         },
       },
       build: {
@@ -275,13 +277,15 @@ export function isolatedRendererPlugin(options: IsolatedRendererPluginOptions = 
     }
 
     // --- Build renderer plugins (CJS, React externalized) ---
-    const [markdownPlugin, vegaPlugin, plotlyPlugin, leafletPlugin, siftPlugin] = await Promise.all([
-      buildRendererPlugin(markdownEntry, "markdown-renderer", srcDir),
-      buildRendererPlugin(vegaEntry, "vega-renderer", srcDir),
-      buildRendererPlugin(plotlyEntry, "plotly-renderer", srcDir),
-      buildRendererPlugin(leafletEntry, "leaflet-renderer", srcDir),
-      buildRendererPlugin(siftEntry, "sift-renderer", srcDir),
-    ]);
+    const [markdownPlugin, vegaPlugin, plotlyPlugin, leafletPlugin, siftPlugin] = await Promise.all(
+      [
+        buildRendererPlugin(markdownEntry, "markdown-renderer", srcDir),
+        buildRendererPlugin(vegaEntry, "vega-renderer", srcDir),
+        buildRendererPlugin(plotlyEntry, "plotly-renderer", srcDir),
+        buildRendererPlugin(leafletEntry, "leaflet-renderer", srcDir),
+        buildRendererPlugin(siftEntry, "sift-renderer", srcDir),
+      ],
+    );
     markdownRendererCode = markdownPlugin.code;
     markdownRendererCss = markdownPlugin.css;
     vegaRendererCode = vegaPlugin.code;
