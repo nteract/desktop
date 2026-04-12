@@ -63,8 +63,6 @@ import { autoWidth } from "./auto-width";
 /** Parquet magic bytes: PAR1 */
 const PARQUET_MAGIC = new Uint8Array([0x50, 0x41, 0x52, 0x31]);
 
-type DataFormat = "parquet" | "arrow-ipc";
-
 /**
  * Detect whether a fetch response contains Parquet or Arrow IPC data.
  * Checks Content-Type header first, then falls back to magic byte inspection.
@@ -82,11 +80,13 @@ async function detectFormat(
     return { format: "parquet", bytes: new Uint8Array(await response.arrayBuffer()) };
   }
   if (contentType.includes("arrow") || contentType.includes("ipc")) {
-    return { format: "arrow-ipc", stream: response.body! };
+    if (!response.body) throw new Error("Response has no body");
+    return { format: "arrow-ipc", stream: response.body };
   }
 
   // Ambiguous content type — peek magic bytes
-  const reader = response.body!.getReader();
+  if (!response.body) throw new Error("Response has no body");
+  const reader = response.body.getReader();
   const { value: firstChunk, done } = await reader.read();
 
   if (done || !firstChunk || firstChunk.length < 4) {
@@ -340,13 +340,15 @@ export function SiftTable({
     let cancelled = false;
     const container = containerRef.current;
     let wasmHandle: number | null = null;
+    let engineDiv: HTMLDivElement | null = null;
 
     function mountEngine(tableData: TableData) {
       if (engineRef.current) {
         engineRef.current.destroy();
         engineRef.current = null;
       }
-      const engineDiv = document.createElement("div");
+      engineDiv?.remove();
+      engineDiv = document.createElement("div");
       engineDiv.style.height = "100%";
       container.appendChild(engineDiv);
       engineRef.current = createTable(engineDiv, tableData, {
@@ -361,6 +363,12 @@ export function SiftTable({
 
       const meta = mod.parquet_metadata(parquetBytes);
       const numRowGroups = meta[0];
+
+      if (numRowGroups === 0) {
+        setError("Parquet file has no row groups.");
+        setStatus("error");
+        return;
+      }
 
       // Load first row group → mount table immediately
       const handle = mod.load_parquet_row_group(parquetBytes, 0, 0);
@@ -383,10 +391,10 @@ export function SiftTable({
         mod.load_parquet_row_group(parquetBytes, g, handle);
         tableData.rowCount = mod.num_rows(handle);
         updateWasmSummaries(mod, handle, tableData, columns);
-        engineRef.current!.onBatchAppended();
+        engineRef.current?.onBatchAppended();
       }
 
-      engineRef.current!.setStreamingDone();
+      engineRef.current?.setStreamingDone();
     }
 
     async function loadArrowIpc(source: Response | ReadableStream<Uint8Array>) {
@@ -435,9 +443,9 @@ export function SiftTable({
       for await (const batch of reader) {
         if (cancelled) break;
         appendBatch(batch);
-        engineRef.current!.onBatchAppended();
+        engineRef.current?.onBatchAppended();
       }
-      engineRef.current!.setStreamingDone();
+      engineRef.current?.setStreamingDone();
     }
 
     async function loadFromUrl() {
@@ -478,6 +486,7 @@ export function SiftTable({
       }
       engineRef.current?.destroy();
       engineRef.current = null;
+      engineDiv?.remove();
     };
   }, [url, typeOverrides, columnOverrides, stableOnChange]);
 
