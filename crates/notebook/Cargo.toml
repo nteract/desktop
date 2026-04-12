@@ -37,7 +37,7 @@ notebook-protocol = { path = "../notebook-protocol" }
 notebook-sync = { path = "../notebook-sync" }
 runt-trust = { path = "../runt-trust" }
 runt-workspace = { path = "../runt-workspace" }
-nbformat = "1.2.1"
+nbformat = "2.0.0"
 log = "0.4"
 tauri-plugin-log = "2"
 strsim = "0.11"  # For Levenshtein distance (typosquat detection)

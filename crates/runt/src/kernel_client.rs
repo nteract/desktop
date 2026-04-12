@@ -12,7 +12,8 @@ use uuid::Uuid;
 use runtimelib::{
     create_client_control_connection, create_client_iopub_connection,
     create_client_shell_connection_with_identity, create_client_stdin_connection_with_identity,
-    peek_ports, peer_identity_for_session, runtime_dir, KernelspecDir, Result, RuntimeError,
+    peek_ports_with_listeners, peer_identity_for_session, runtime_dir, KernelspecDir, Result,
+    RuntimeError,
 };
 
 /// Get the default working directory for kernel processes.
@@ -57,7 +58,7 @@ impl KernelClient {
         let key = Uuid::new_v4().to_string();
 
         let ip = std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1));
-        let ports = peek_ports(ip, 5).await?;
+        let (ports, _listeners) = peek_ports_with_listeners(ip, 5).await?;
         let connection_info = ConnectionInfo {
             transport: jupyter_protocol::connection_info::Transport::TCP,
             ip: ip.to_string(),
@@ -80,6 +81,7 @@ impl KernelClient {
         command.current_dir(default_kernel_cwd());
 
         let child = command.spawn()?;
+        drop(_listeners);
 
         let content = serde_json::to_string(&connection_info)?;
         tokio::fs::write(&connection_file, &content).await?;
@@ -104,7 +106,7 @@ impl KernelClient {
         let key = Uuid::new_v4().to_string();
 
         let ip = std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1));
-        let ports = peek_ports(ip, 5).await?;
+        let (ports, _listeners) = peek_ports_with_listeners(ip, 5).await?;
         let connection_info = ConnectionInfo {
             transport: jupyter_protocol::connection_info::Transport::TCP,
             ip: ip.to_string(),
@@ -138,6 +140,7 @@ impl KernelClient {
             command: "kernel",
             source: e,
         })?;
+        drop(_listeners);
 
         Ok(Self {
             kernel_id,

@@ -126,9 +126,9 @@ impl KernelConnection for JupyterKernel {
             _ => &kernel_type,
         };
 
-        // Reserve ports
+        // Reserve ports — hold listeners until after spawn() to prevent TOCTOU races
         let ip = std::net::IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-        let ports = runtimelib::peek_ports(ip, 5).await?;
+        let (ports, _listeners) = runtimelib::peek_ports_with_listeners(ip, 5).await?;
 
         let connection_info = ConnectionInfo {
             transport: jupyter_protocol::connection_info::Transport::TCP,
@@ -419,6 +419,7 @@ impl KernelConnection for JupyterKernel {
         cmd.process_group(0);
 
         let mut process = cmd.kill_on_drop(true).spawn()?;
+        drop(_listeners);
 
         // Capture kernel stderr for diagnostics
         if let Some(stderr) = process.stderr.take() {
