@@ -2131,6 +2131,10 @@ where
                 // the pool's VecDeque on take() and have been mutated with the
                 // notebook's deps, so they cannot be returned. Delete eagerly to
                 // prevent disk pressure during sustained workloads.
+                //
+                // Use pool_env_root() to normalise pixi paths — their venv_path
+                // is nested (e.g. .pixi/envs/default) but we need to delete the
+                // top-level runtimed-pixi-* directory.
                 {
                     let env_path = room_for_eviction
                         .runtime_agent_env_path
@@ -2138,12 +2142,13 @@ where
                         .await
                         .clone();
                     if let Some(ref path) = env_path {
-                        if path.exists() {
+                        let root = crate::daemon::pool_env_root(path);
+                        if root.exists() {
                             info!(
                                 "[notebook-sync] Cleaning up env {:?} on room eviction",
-                                path
+                                root
                             );
-                            tokio::fs::remove_dir_all(path).await.ok();
+                            tokio::fs::remove_dir_all(&root).await.ok();
                         }
                     }
                 }

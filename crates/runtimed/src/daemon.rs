@@ -4,7 +4,7 @@
 //! notebook windows via IPC (Unix domain sockets on Unix, named pipes on Windows).
 
 use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Instant;
@@ -270,6 +270,33 @@ fn pixi_prewarmed_packages(extra: &[String]) -> Vec<String> {
     ];
     packages.extend(extra.iter().cloned());
     packages
+}
+
+/// Walk up from a pool env's `venv_path` to find the top-level
+/// `runtimed-{uv,conda,pixi}-*` directory. Pixi envs have nested venv_paths
+/// (e.g. `runtimed-pixi-{uuid}/.pixi/envs/default`) but GC and room eviction
+/// operate on top-level dirs, so we need this to normalise before comparing or
+/// deleting.
+///
+/// Returns the path unchanged if no `runtimed-*` ancestor is found (e.g. for
+/// content-addressed envs that are already top-level).
+pub(crate) fn pool_env_root(path: &Path) -> PathBuf {
+    let mut cur = path;
+    loop {
+        if let Some(name) = cur.file_name().and_then(|n| n.to_str()) {
+            if name.starts_with("runtimed-uv-")
+                || name.starts_with("runtimed-conda-")
+                || name.starts_with("runtimed-pixi-")
+            {
+                return cur.to_path_buf();
+            }
+        }
+        match cur.parent() {
+            Some(p) if p != cur => cur = p,
+            _ => break,
+        }
+    }
+    path.to_path_buf()
 }
 
 impl Pool {
@@ -2370,9 +2397,11 @@ impl Daemon {
         };
         let mut paths = std::collections::HashSet::new();
         for room in &snapshot {
-            // Check runtime-agent-backed kernel
+            // Check runtime-agent-backed kernel. Normalise to the top-level
+            // pool dir so that GC's top-level scan will match pixi envs
+            // whose venv_path is nested (e.g. .pixi/envs/default).
             if let Some(ref env_path) = *room.runtime_agent_env_path.read().await {
-                paths.insert(env_path.clone());
+                paths.insert(pool_env_root(env_path));
             }
         }
         paths
@@ -2429,25 +2458,28 @@ impl Daemon {
             {
                 let cache_dir = &self.config.cache_dir;
                 if cache_dir.exists() {
-                    // Collect pool-tracked paths
+                    // Collect pool-tracked paths, normalised to top-level
+                    // pool dirs so pixi's nested venv_path
+                    // (runtimed-pixi-{uuid}/.pixi/envs/default) matches the
+                    // top-level directory that the scan below sees.
                     let mut tracked: std::collections::HashSet<PathBuf> =
                         std::collections::HashSet::new();
                     {
                         let pool = self.uv_pool.lock().await;
                         for entry in &pool.available {
-                            tracked.insert(entry.env.venv_path.clone());
+                            tracked.insert(pool_env_root(&entry.env.venv_path));
                         }
                     }
                     {
                         let pool = self.conda_pool.lock().await;
                         for entry in &pool.available {
-                            tracked.insert(entry.env.venv_path.clone());
+                            tracked.insert(pool_env_root(&entry.env.venv_path));
                         }
                     }
                     {
                         let pool = self.pixi_pool.lock().await;
                         for entry in &pool.available {
-                            tracked.insert(entry.env.venv_path.clone());
+                            tracked.insert(pool_env_root(&entry.env.venv_path));
                         }
                     }
 
