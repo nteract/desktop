@@ -37,7 +37,7 @@ function SiftRenderer({ data }: RendererProps) {
   const url = String(data);
   configureWasm(url);
   return (
-    <div style={{ height: "min(600px, 80vh)", width: "100%" }}>
+    <div style={{ height: 600, width: "100%" }}>
       <SiftTable parquetUrl={url} />
     </div>
   );
