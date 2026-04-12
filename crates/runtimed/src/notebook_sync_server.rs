@@ -2125,12 +2125,12 @@ where
                     );
                 }
 
-                // Clean up content-addressed environment directory on eviction.
-                // Pool envs (runtimed-uv-*, runtimed-conda-*, runtimed-pixi-*) are
-                // managed by the pool and must NOT be deleted here. Content-addressed
-                // envs (16-char hex dirs in envs/, conda-envs/, inline-envs/) are
-                // orphaned once the room is gone — delete them eagerly to prevent
-                // disk pressure during sustained workloads (e.g. gremlin sessions).
+                // Clean up the environment directory on eviction. Both pool envs
+                // (runtimed-uv-*, etc.) and content-addressed envs (16-char hex)
+                // are orphaned once the room is gone — pool envs were removed from
+                // the pool's VecDeque on take() and have been mutated with the
+                // notebook's deps, so they cannot be returned. Delete eagerly to
+                // prevent disk pressure during sustained workloads.
                 {
                     let env_path = room_for_eviction
                         .runtime_agent_env_path
@@ -2138,15 +2138,9 @@ where
                         .await
                         .clone();
                     if let Some(ref path) = env_path {
-                        let is_content_addressed = path
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .is_some_and(|name| {
-                                name.len() == 16 && name.chars().all(|c| c.is_ascii_hexdigit())
-                            });
-                        if is_content_addressed {
+                        if path.exists() {
                             info!(
-                                "[notebook-sync] Cleaning up content-addressed env {:?} on room eviction",
+                                "[notebook-sync] Cleaning up env {:?} on room eviction",
                                 path
                             );
                             tokio::fs::remove_dir_all(path).await.ok();
@@ -3288,6 +3282,9 @@ async fn try_uv_pool_for_inline_deps(
                         "[notebook-sync] Failed to install delta into UV pool env: {}, falling back",
                         e
                     );
+                    // Clean up the taken pool env — it's out of the pool's
+                    // tracking and would otherwise leak on disk.
+                    tokio::fs::remove_dir_all(&env.venv_path).await.ok();
                     Err(())
                 }
             }
@@ -3295,6 +3292,7 @@ async fn try_uv_pool_for_inline_deps(
         crate::inline_env::PoolDepRelation::Independent => {
             // Shouldn't reach here (pre-check above), but handle gracefully
             debug!("[notebook-sync] UV pool env doesn't match inline deps, falling back");
+            tokio::fs::remove_dir_all(&env.venv_path).await.ok();
             Err(())
         }
     }
@@ -3381,12 +3379,14 @@ async fn try_conda_pool_for_inline_deps(
                         "[notebook-sync] Failed to install delta into Conda pool env: {}, falling back",
                         e
                     );
+                    tokio::fs::remove_dir_all(&env.venv_path).await.ok();
                     Err(())
                 }
             }
         }
         crate::inline_env::PoolDepRelation::Independent => {
             debug!("[notebook-sync] Conda pool env doesn't match inline deps, falling back");
+            tokio::fs::remove_dir_all(&env.venv_path).await.ok();
             Err(())
         }
     }
