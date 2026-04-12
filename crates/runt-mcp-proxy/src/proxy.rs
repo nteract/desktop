@@ -486,11 +486,13 @@ impl McpProxy {
             }
             Err(e) => {
                 let state = self.state.read().await;
-                if state.child_client.is_some() {
+                let child_alive = state.child_client.as_ref().is_some_and(|c| !c.is_closed());
+                drop(state);
+                if child_alive {
                     warn!("Tool call failed but child still connected, not restarting: {e}");
                     return Err(e);
                 }
-                warn!("Tool call failed and child disconnected, attempting restart: {e}");
+                warn!("Tool call failed and child transport closed, attempting restart: {e}");
             }
         }
 
@@ -531,10 +533,12 @@ impl McpProxy {
             Ok(result) => return Ok(result),
             Err(e) => {
                 let state = self.state.read().await;
-                if state.child_client.is_some() {
+                let child_alive = state.child_client.as_ref().is_some_and(|c| !c.is_closed());
+                drop(state);
+                if child_alive {
                     return Err(e);
                 }
-                warn!("Resource read failed and child disconnected, attempting restart: {e}");
+                warn!("Resource read failed and child transport closed, attempting restart: {e}");
             }
         }
 
