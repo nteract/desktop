@@ -24,7 +24,7 @@ export default defineConfig({
       fileName: "index",
     },
     outDir: "lib",
-    rollupOptions: {
+    rolldownOptions: {
       // Don't bundle peer dependencies
       external: [
         "react",
