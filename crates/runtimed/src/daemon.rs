@@ -2422,6 +2422,64 @@ impl Daemon {
                 );
             }
 
+            // Clean up orphaned pool env directories (runtimed-uv-*, runtimed-conda-*,
+            // runtimed-pixi-*) that are not tracked by the pool and not in use by
+            // running kernels. These can leak when a notebook takes a pool env, mutates
+            // it, and then the room is evicted without cleanup.
+            {
+                let cache_dir = &self.config.cache_dir;
+                if cache_dir.exists() {
+                    // Collect pool-tracked paths
+                    let mut tracked: std::collections::HashSet<PathBuf> =
+                        std::collections::HashSet::new();
+                    {
+                        let pool = self.uv_pool.lock().await;
+                        for entry in &pool.available {
+                            tracked.insert(entry.env.venv_path.clone());
+                        }
+                    }
+                    {
+                        let pool = self.conda_pool.lock().await;
+                        for entry in &pool.available {
+                            tracked.insert(entry.env.venv_path.clone());
+                        }
+                    }
+                    {
+                        let pool = self.pixi_pool.lock().await;
+                        for entry in &pool.available {
+                            tracked.insert(entry.env.venv_path.clone());
+                        }
+                    }
+
+                    let mut orphans_deleted = 0;
+                    if let Ok(mut entries) = tokio::fs::read_dir(cache_dir).await {
+                        while let Ok(Some(entry)) = entries.next_entry().await {
+                            let name = entry.file_name().to_string_lossy().to_string();
+                            let is_pool_dir = name.starts_with("runtimed-uv-")
+                                || name.starts_with("runtimed-conda-")
+                                || name.starts_with("runtimed-pixi-");
+                            if !is_pool_dir {
+                                continue;
+                            }
+                            let path = entry.path();
+                            if tracked.contains(&path) || in_use.contains(&path) {
+                                continue;
+                            }
+                            info!("[runtimed] GC: removing orphaned pool env {:?}", path);
+                            if tokio::fs::remove_dir_all(&path).await.is_ok() {
+                                orphans_deleted += 1;
+                            }
+                        }
+                    }
+                    if orphans_deleted > 0 {
+                        info!(
+                            "[runtimed] GC: cleaned up {} orphaned pool environments",
+                            orphans_deleted
+                        );
+                    }
+                }
+            }
+
             // Clean up stale worktree state directories
             let worktrees_dir = dirs::cache_dir()
                 .unwrap_or_else(|| PathBuf::from("/tmp"))
