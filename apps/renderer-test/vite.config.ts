@@ -5,11 +5,7 @@ import { defineConfig } from "vite-plus";
 import { isolatedRendererPlugin } from "../notebook/vite-plugin-isolated-renderer";
 
 export default defineConfig({
-  plugins: [
-    react(),
-    tailwindcss(),
-    isolatedRendererPlugin({ minify: false }),
-  ],
+  plugins: [react(), tailwindcss(), isolatedRendererPlugin({ minify: false })],
   resolve: {
     alias: {
       "@/": path.resolve(__dirname, "../../src") + "/",
