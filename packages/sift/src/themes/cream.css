@@ -72,6 +72,8 @@
 }
 
 /* --- Dark (explicit attribute) --- */
+:root:not([data-color-theme])[data-theme="dark"],
+:root:not([data-color-theme]).dark,
 [data-color-theme="cream"][data-theme="dark"],
 [data-color-theme="cream"].dark {
   color-scheme: dark;
