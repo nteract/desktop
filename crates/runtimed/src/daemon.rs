@@ -791,16 +791,12 @@ impl Daemon {
                     )
                     .await;
                 }
-                // Unregister from process group registry before dropping handle
+                // Unregister from process group registry and drop handle
                 {
-                    let ra_guard = room.runtime_agent_handle.lock().await;
+                    let mut ra_guard = room.runtime_agent_handle.lock().await;
                     if let Some(ref handle) = *ra_guard {
                         handle.unregister();
                     }
-                }
-                // Scope each lock independently to avoid cross-lock ordering.
-                {
-                    let mut ra_guard = room.runtime_agent_handle.lock().await;
                     *ra_guard = None;
                 }
                 {

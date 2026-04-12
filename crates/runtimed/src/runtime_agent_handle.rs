@@ -130,9 +130,11 @@ impl Drop for RuntimeAgentHandle {
         // SIGKILL the entire process group (agent + kernel)
         #[cfg(unix)]
         if let Some(pgid) = self.pgid.take() {
-            use nix::sys::signal::{killpg, Signal};
-            use nix::unistd::Pid;
-            let _ = killpg(Pid::from_raw(pgid), Signal::SIGKILL);
+            if pgid > 0 {
+                use nix::sys::signal::{killpg, Signal};
+                use nix::unistd::Pid;
+                let _ = killpg(Pid::from_raw(pgid), Signal::SIGKILL);
+            }
         }
 
         info!(
