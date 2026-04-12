@@ -115,7 +115,7 @@ jobs:
 
       # Build MCP output widget HTML (needed by runt-mcp's include_str!)
       - name: Build MCP output widget
-        run: pnpm --filter nteract-mcp-app install && pnpm --filter nteract-mcp-app run build
+        run: pnpm --filter nteract-mcp-app install && vp run nteract-mcp-app#build
 
       - name: Build for Linux x64
         run: cargo build --release --target x86_64-unknown-linux-gnu -p runt-cli
@@ -175,7 +175,7 @@ jobs:
 
       # Build MCP output widget HTML (needed by runt-mcp's include_str!)
       - name: Build MCP output widget
-        run: pnpm --filter nteract-mcp-app install && pnpm --filter nteract-mcp-app run build
+        run: pnpm --filter nteract-mcp-app install && vp run nteract-mcp-app#build
 
       - name: Build for macOS ARM64
         run: cargo build --release --target aarch64-apple-darwin -p runt-cli
@@ -287,7 +287,7 @@ jobs:
 
       # Build MCP output widget HTML (needed by runt-mcp's include_str!)
       - name: Build MCP output widget
-        run: pnpm --filter nteract-mcp-app install && pnpm --filter nteract-mcp-app run build
+        run: pnpm --filter nteract-mcp-app install && vp run nteract-mcp-app#build
 
       - name: Build external binaries
         run: |
@@ -433,7 +433,7 @@ jobs:
 
       # Build MCP output widget HTML (needed by runt-mcp's include_str!)
       - name: Build MCP output widget
-        run: pnpm --filter nteract-mcp-app install && pnpm --filter nteract-mcp-app run build
+        run: pnpm --filter nteract-mcp-app install && vp run nteract-mcp-app#build
 
       - name: Build external binaries
         shell: bash
@@ -558,7 +558,7 @@ jobs:
 
       # Build MCP output widget HTML (needed by runt-mcp's include_str!)
       - name: Build MCP output widget
-        run: pnpm --filter nteract-mcp-app install && pnpm --filter nteract-mcp-app run build
+        run: pnpm --filter nteract-mcp-app install && vp run nteract-mcp-app#build
 
       - name: Build external binaries
         run: |

@@ -81,9 +81,10 @@ jobs:
 
       - name: Check MCP App renderer plugins are up to date
         run: |
-          pnpm --filter nteract-mcp-app run build:plugins
+          pnpm --filter nteract-mcp-app install
+          vp run nteract-mcp-app#build:plugins
           git diff --exit-code crates/runt-mcp/assets/plugins/ || {
-            echo "::error::MCP App renderer plugins are stale. Run 'cd apps/mcp-app && pnpm build:plugins' and commit the changes."
+            echo "::error::MCP App renderer plugins are stale. Run 'vp run nteract-mcp-app#build:plugins' and commit the changes."
             exit 1
           }
 
@@ -121,7 +122,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - run: pnpm --filter nteract-mcp-app install && pnpm --filter nteract-mcp-app run build
+      - run: pnpm --filter nteract-mcp-app install && vp run nteract-mcp-app#build
 
       - name: Clippy (Windows cross-check)
         run: cargo clippy --target x86_64-pc-windows-gnu --workspace --exclude notebook --exclude runtimed-wasm --exclude nteract-predicate --exclude runtimed-py --all-targets -- -D warnings
@@ -260,7 +261,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - run: pnpm --filter nteract-mcp-app install && pnpm --filter nteract-mcp-app run build
+      - run: pnpm --filter nteract-mcp-app install && vp run nteract-mcp-app#build
 
       - name: Build external binaries
         shell: bash
@@ -356,7 +357,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - run: pnpm --filter nteract-mcp-app install && pnpm --filter nteract-mcp-app run build
+      - run: pnpm --filter nteract-mcp-app install && vp run nteract-mcp-app#build
 
       # Excludes: notebook (needs bundled binaries, checked in build-linux),
       # runtimed-wasm (needs wasm-pack, tested in wasm-deno),
@@ -432,7 +433,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - run: pnpm --filter nteract-mcp-app install && pnpm --filter nteract-mcp-app run build
+      - run: pnpm --filter nteract-mcp-app install && vp run nteract-mcp-app#build
         if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
 
       - name: Build external binaries

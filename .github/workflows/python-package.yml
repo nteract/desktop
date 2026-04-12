@@ -248,7 +248,7 @@ jobs:
           node-version: 22
 
       - name: Build MCP Apps widget
-        run: pnpm --filter nteract-mcp-app install && pnpm --filter nteract-mcp-app run build
+        run: pnpm --filter nteract-mcp-app install && vp run nteract-mcp-app#build
 
       - name: Set dev version
         run: |

@@ -161,7 +161,7 @@ jobs:
 
       # Build MCP output widget HTML (needed by runt-mcp's include_str!)
       - name: Build MCP output widget
-        run: pnpm --filter nteract-mcp-app install && pnpm --filter nteract-mcp-app run build
+        run: pnpm --filter nteract-mcp-app install && vp run nteract-mcp-app#build
 
       - name: Build external binaries (Unix)
         if: runner.os != 'Windows'
