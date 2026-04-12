@@ -1,9 +1,52 @@
+import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite-plus";
 
-export default defineConfig({
-  root: "src",
-  server: {
-    // Open the dev preview by default
-    open: "/dev/index.html",
-  },
+export default defineConfig(({ command }) => {
+  if (command === "serve") {
+    return {
+      root: "src",
+      plugins: [tailwindcss()],
+      server: {
+        open: "/dev/index.html",
+      },
+    };
+  }
+
+  return {
+    plugins: [tailwindcss()],
+    esbuild: {
+      jsx: "automatic",
+      jsxImportSource: "react",
+      jsxDev: false,
+    },
+    build: {
+      outDir: "dist",
+      emptyDirBefore: true,
+      lib: {
+        entry: "src/mcp-app.tsx",
+        formats: ["es"],
+        fileName: () => "mcp-app.js",
+      },
+      rolldownOptions: {
+        output: {
+          codeSplitting: false,
+        },
+        onwarn(warning, warn) {
+          if (
+            warning.code === "MODULE_LEVEL_DIRECTIVE" &&
+            warning.message?.includes('"use client"')
+          ) {
+            return;
+          }
+          warn(warning);
+        },
+      },
+      minify: true,
+      sourcemap: false,
+    },
+    define: {
+      "process.env.NODE_ENV": JSON.stringify("production"),
+    },
+    logLevel: "warn",
+  };
 });

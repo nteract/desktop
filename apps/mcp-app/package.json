@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "vp dev",
-    "build": "tsx build-main.ts && node build-html.js",
+    "build": "vp build && node build-html.js",
     "build:plugins": "tsx build-plugins.ts",
     "build:all": "npm run build && npm run build:plugins"
   },
