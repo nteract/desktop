@@ -40,7 +40,7 @@ bytes = "1"
 base64 = "0.22"
 tokio = { version = "1.36.0", features = ["full"] }
 runtimelib = { git = "https://github.com/runtimed/runtimed", rev = "5e24d9b", default-features = false }
-jupyter-protocol = "1.4.0"
+jupyter-protocol = { git = "https://github.com/runtimed/runtimed", rev = "5e24d9b" }
 thiserror = "2"
 schemars = "1"
 notify = "8"
