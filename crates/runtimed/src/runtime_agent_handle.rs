@@ -1,9 +1,9 @@
 //! Coordinator-side management of a runtime agent subprocess.
 //!
-//! `RuntimeAgentHandle` spawns a `runtimed runtime-agent` child process that
-//! connects back to the daemon's Unix socket as a regular peer. The handle
-//! only monitors the child process lifecycle — all communication happens via
-//! the socket.
+//! `RuntimeAgentHandle` spawns a `runtimed runtime-agent` child process in its
+//! own process group. The PGID is registered in `agents.json` for orphan
+//! reaping. The handle monitors the child lifecycle and sends SIGKILL to the
+//! entire process group on drop.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,10 +15,14 @@ use tracing::{info, warn};
 /// Handle to a running runtime agent subprocess.
 ///
 /// The runtime agent connects back to the daemon's Unix socket as a peer.
-/// This handle only spawns and monitors the child process — it does
-/// not manage any communication channels.
+/// On drop, sends SIGKILL to the agent's process group (agent + kernel).
 pub struct RuntimeAgentHandle {
     alive: Arc<AtomicBool>,
+    /// Notebook ID used as the registry key for orphan tracking.
+    notebook_id: String,
+    /// Process group ID (== agent PID on Unix, since we use process_group(0)).
+    #[cfg(unix)]
+    pgid: Option<i32>,
 }
 
 impl RuntimeAgentHandle {
@@ -41,8 +45,8 @@ impl RuntimeAgentHandle {
             socket_path.display(),
         );
 
-        let mut child = tokio::process::Command::new(&exe)
-            .arg("runtime-agent")
+        let mut cmd = tokio::process::Command::new(&exe);
+        cmd.arg("runtime-agent")
             .arg("--notebook-id")
             .arg(&notebook_id)
             .arg("--runtime-agent-id")
@@ -54,12 +58,26 @@ impl RuntimeAgentHandle {
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::inherit())
-            .kill_on_drop(true)
-            .spawn()?;
+            .kill_on_drop(true);
+
+        #[cfg(unix)]
+        cmd.process_group(0);
+
+        let mut child = cmd.spawn()?;
+
+        #[cfg(unix)]
+        let pgid = child.id().map(|pid| pid as i32);
+
+        // Register PGID for orphan reaping on unclean daemon exit
+        #[cfg(unix)]
+        if let Some(pgid) = pgid {
+            crate::process_groups::register_agent(&notebook_id, pgid);
+        }
 
         info!(
-            "[runtime-agent-handle] Runtime agent spawned (pid={:?})",
-            child.id()
+            "[runtime-agent-handle] Runtime agent spawned (pid={:?}, notebook_id={})",
+            child.id(),
+            notebook_id,
         );
 
         let alive = Arc::new(AtomicBool::new(true));
@@ -85,11 +103,41 @@ impl RuntimeAgentHandle {
             alive_clone.store(false, Ordering::Relaxed);
         });
 
-        Ok(Self { alive })
+        Ok(Self {
+            alive,
+            notebook_id,
+            #[cfg(unix)]
+            pgid,
+        })
     }
 
     /// Check if the runtime agent process is still running.
     pub fn is_alive(&self) -> bool {
         self.alive.load(Ordering::Relaxed)
+    }
+
+    /// Unregister this agent from the process group registry.
+    ///
+    /// Called during graceful shutdown and room eviction, before
+    /// the handle is dropped.
+    pub fn unregister(&self) {
+        crate::process_groups::unregister_agent(&self.notebook_id);
+    }
+}
+
+impl Drop for RuntimeAgentHandle {
+    fn drop(&mut self) {
+        // SIGKILL the entire process group (agent + kernel)
+        #[cfg(unix)]
+        if let Some(pgid) = self.pgid.take() {
+            use nix::sys::signal::{killpg, Signal};
+            use nix::unistd::Pid;
+            let _ = killpg(Pid::from_raw(pgid), Signal::SIGKILL);
+        }
+
+        info!(
+            "[runtime-agent-handle] RuntimeAgentHandle dropped for notebook {}",
+            self.notebook_id
+        );
     }
 }
