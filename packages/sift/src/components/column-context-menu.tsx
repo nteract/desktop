@@ -66,13 +66,13 @@ export function ColumnContextMenu({ state, onAction, onClose }: Props) {
   return (
     <div
       ref={menuRef}
-      className="fixed z-50 min-w-[12rem] overflow-hidden rounded-lg border border-[var(--rule)] bg-[var(--panel)] p-1 shadow-lg"
+      className="fixed z-50 min-w-[12rem] overflow-hidden rounded-lg border border-[var(--sift-rule)] bg-[var(--sift-panel)] p-1 shadow-lg"
       style={{ left: x, top: y }}
     >
-      <div className="px-2 py-1.5 text-xs font-semibold text-[var(--muted)] uppercase tracking-wider">
+      <div className="px-2 py-1.5 text-xs font-semibold text-[var(--sift-muted)] uppercase tracking-wider">
         {colName}
       </div>
-      <div className="h-px bg-[var(--rule)] -mx-1 my-1" />
+      <div className="h-px bg-[var(--sift-rule)] -mx-1 my-1" />
 
       <MenuItem onClick={() => act({ kind: "sort", direction: "asc" })}>
         Sort ascending {sortDirection === "asc" && <Check />}
@@ -81,7 +81,7 @@ export function ColumnContextMenu({ state, onAction, onClose }: Props) {
         Sort descending {sortDirection === "desc" && <Check />}
       </MenuItem>
 
-      <div className="h-px bg-[var(--rule)] -mx-1 my-1" />
+      <div className="h-px bg-[var(--sift-rule)] -mx-1 my-1" />
 
       {isPinned ? (
         <MenuItem onClick={() => act({ kind: "unpin" })}>Unpin column</MenuItem>
@@ -89,15 +89,15 @@ export function ColumnContextMenu({ state, onAction, onClose }: Props) {
         <MenuItem onClick={() => act({ kind: "pin" })}>Pin column</MenuItem>
       )}
 
-      <div className="h-px bg-[var(--rule)] -mx-1 my-1" />
+      <div className="h-px bg-[var(--sift-rule)] -mx-1 my-1" />
 
       {isStreaming ? (
-        <div className="px-2 py-1.5 text-xs text-[var(--muted)] italic">
+        <div className="px-2 py-1.5 text-xs text-[var(--sift-muted)] italic">
           Some operations hidden while loading
         </div>
       ) : (
         <>
-          <div className="px-2 py-1 text-xs text-[var(--muted)]">Treat as…</div>
+          <div className="px-2 py-1 text-xs text-[var(--sift-muted)]">Treat as…</div>
           <MenuItem onClick={() => act({ kind: "cast", targetType: "categorical" })}>
             Text {colType === "categorical" && <Check />}
           </MenuItem>
@@ -113,7 +113,7 @@ export function ColumnContextMenu({ state, onAction, onClose }: Props) {
 
           {isCast && (
             <>
-              <div className="h-px bg-[var(--rule)] -mx-1 my-1" />
+              <div className="h-px bg-[var(--sift-rule)] -mx-1 my-1" />
               <MenuItem onClick={() => act({ kind: "undo-cast" })}>
                 Revert to original type
               </MenuItem>
@@ -128,7 +128,7 @@ export function ColumnContextMenu({ state, onAction, onClose }: Props) {
 function MenuItem({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
   return (
     <button
-      className="flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm text-[var(--ink)] hover:bg-[color-mix(in_srgb,var(--accent)_8%,transparent)] cursor-default outline-none"
+      className="flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm text-[var(--sift-ink)] hover:bg-[color-mix(in_srgb,var(--sift-accent)_8%,transparent)] cursor-default outline-none"
       onClick={onClick}
     >
       {children}
@@ -137,5 +137,5 @@ function MenuItem({ children, onClick }: { children: React.ReactNode; onClick: (
 }
 
 function Check() {
-  return <span className="text-[var(--accent)] text-xs">✓</span>;
+  return <span className="text-[var(--sift-accent)] text-xs">✓</span>;
 }
