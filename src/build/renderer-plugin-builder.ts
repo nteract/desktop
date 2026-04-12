@@ -35,12 +35,9 @@ export interface RendererPluginOutput {
  * Get the absolute path to the src directory (parent of build/)
  */
 function getSrcDir(): string {
-  // Handle both ESM (import.meta.url) and tsx/eval contexts
-  // import.meta.dirname is not available in tsx -e mode, so fall back to URL resolution
   if (typeof import.meta.dirname !== "undefined") {
     return path.resolve(import.meta.dirname, "..");
   }
-  // Fall back to import.meta.url when dirname is not available
   if (typeof import.meta.url !== "undefined") {
     const __filename = fileURLToPath(import.meta.url);
     const __dirname = path.dirname(__filename);
@@ -49,26 +46,13 @@ function getSrcDir(): string {
   throw new Error("Unable to resolve source directory: import.meta not available");
 }
 
-/**
- * Standard renderer plugins (markdown, plotly, vega, leaflet)
- */
+const srcDir = getSrcDir();
+
 export const RENDERER_PLUGINS: RendererPluginDef[] = [
-  {
-    name: "markdown",
-    entry: path.resolve(getSrcDir(), "isolated-renderer/markdown-renderer.tsx"),
-  },
-  {
-    name: "plotly",
-    entry: path.resolve(getSrcDir(), "isolated-renderer/plotly-renderer.tsx"),
-  },
-  {
-    name: "vega",
-    entry: path.resolve(getSrcDir(), "isolated-renderer/vega-renderer.tsx"),
-  },
-  {
-    name: "leaflet",
-    entry: path.resolve(getSrcDir(), "isolated-renderer/leaflet-renderer.tsx"),
-  },
+  { name: "markdown", entry: path.resolve(srcDir, "isolated-renderer/markdown-renderer.tsx") },
+  { name: "plotly", entry: path.resolve(srcDir, "isolated-renderer/plotly-renderer.tsx") },
+  { name: "vega", entry: path.resolve(srcDir, "isolated-renderer/vega-renderer.tsx") },
+  { name: "leaflet", entry: path.resolve(srcDir, "isolated-renderer/leaflet-renderer.tsx") },
 ];
 
 /**

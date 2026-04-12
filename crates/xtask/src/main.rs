@@ -2210,7 +2210,9 @@ fn mcp_widget_needs_rebuild() -> Option<&'static str> {
     let top_level_sources = [
         Path::new("apps/mcp-app/package.json"),
         Path::new("apps/mcp-app/build-html.js"),
-        Path::new("apps/mcp-app/build-main.js"),
+        Path::new("apps/mcp-app/vite.config.ts"),
+        Path::new("apps/mcp-app/build-plugins.ts"),
+        Path::new("src/build/renderer-plugin-builder.ts"),
         Path::new("pnpm-lock.yaml"),
     ];
     for src in &top_level_sources {
@@ -2251,7 +2253,7 @@ fn build_mcp_widget() {
     if let Some(reason) = mcp_widget_needs_rebuild() {
         println!("Building MCP Apps widget ({reason})...");
         run_cmd("pnpm", &["--filter", "nteract-mcp-app", "install"]);
-        run_cmd("pnpm", &["--filter", "nteract-mcp-app", "run", "build"]);
+        run_cmd("vp", &["run", "nteract-mcp-app#build"]);
         let dest = Path::new("python/nteract/src/nteract/_widget.html");
         if !dest.exists() {
             eprintln!("Error: MCP widget build did not produce _widget.html");
