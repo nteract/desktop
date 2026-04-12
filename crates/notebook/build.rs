@@ -78,46 +78,37 @@ fn maybe_disable_external_bin_for_local_checks() {
 }
 
 fn main() {
-    // Capture git branch name
-    let branch = Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
+    // Capture git metadata for About menu and version strings.
+    let branch = git_output(&["rev-parse", "--abbrev-ref", "HEAD"]);
+    let commit = git_output(&["rev-parse", "--short=7", "HEAD"]);
+    let release_date = git_output(&["show", "-s", "--format=%cs", "HEAD"]);
 
-    // Capture short commit hash
-    let commit = Command::new("git")
-        .args(["rev-parse", "--short=7", "HEAD"])
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
+    println!("cargo:rustc-env=GIT_BRANCH={branch}");
+    println!("cargo:rustc-env=GIT_COMMIT={commit}");
+    println!("cargo:rustc-env=GIT_COMMIT_DATE={release_date}");
 
-    // Capture commit date (used as release date in About metadata)
-    let release_date = Command::new("git")
-        .args(["show", "-s", "--format=%cs", "HEAD"])
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
-
-    // Set environment variables for use in Rust code
-    println!("cargo:rustc-env=GIT_BRANCH={}", branch);
-    println!("cargo:rustc-env=GIT_COMMIT={}", commit);
-    println!("cargo:rustc-env=GIT_COMMIT_DATE={}", release_date);
-
-    // Re-run if git HEAD changes (detects branch switches, commits)
-    println!("cargo:rerun-if-changed=../../.git/HEAD");
-    println!("cargo:rerun-if-changed=../../.git/index");
-
-    // Re-run if frontend dist changes (ensures fresh frontend is embedded)
+    // Re-run if frontend dist changes (ensures fresh frontend is embedded).
+    // This is the only non-git watcher — Phase 2 builds the frontend, then
+    // Phase 3 (cargo tauri build) picks up the updated dist/.
     println!("cargo:rerun-if-changed=../../apps/notebook/dist");
+
+    // We intentionally do NOT watch .git/HEAD, .git/index, or refs.
+    // That caused recompilation of notebook + all dependents on every
+    // commit, branch switch, pull, or fetch. The git metadata is refreshed
+    // whenever dist/ changes (every build) or this build script changes.
+    // CI always starts clean so release builds always get the right hash.
 
     maybe_disable_external_bin_for_local_checks();
 
     tauri_build::build()
+}
+
+fn git_output(args: &[&str]) -> String {
+    Command::new("git")
+        .args(args)
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "unknown".to_string())
 }
