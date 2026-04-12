@@ -72,11 +72,21 @@ type PredicateModule = {
 };
 
 let mod: PredicateModule | null = null;
+let configuredWasmUrl: string | undefined;
 
-async function ensureModule(): Promise<PredicateModule> {
+/**
+ * Configure an explicit URL for the WASM binary.
+ * Must be called before the first WASM operation.
+ * Used in iframe contexts where import.meta.url doesn't resolve.
+ */
+export function setWasmUrl(url: string): void {
+  configuredWasmUrl = url;
+}
+
+export async function ensureModule(): Promise<PredicateModule> {
   if (mod) return mod;
   const wasm = await import("nteract-predicate/nteract_predicate.js");
-  await wasm.default();
+  await wasm.default(configuredWasmUrl);
   mod = wasm as unknown as PredicateModule;
   return mod;
 }
