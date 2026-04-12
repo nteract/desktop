@@ -13,6 +13,19 @@
 import { setWasmUrl, SiftTable } from "@nteract/sift";
 import "@nteract/sift/style.css";
 
+const themeOverrides = `
+:root, :root[data-theme="dark"], :root[data-theme="light"] {
+  --page: var(--background);
+  --panel: var(--card);
+  --ink: var(--foreground);
+  --muted: var(--muted-foreground);
+  --rule: var(--border);
+  --accent: var(--primary);
+  --row-alt: var(--muted);
+  --pin-shadow: var(--border);
+}
+`;
+
 interface RendererProps {
   data: unknown;
   metadata?: Record<string, unknown>;
@@ -38,6 +51,7 @@ function SiftRenderer({ data }: RendererProps) {
   configureWasm(url);
   return (
     <div style={{ height: 600, width: "100%" }}>
+      <style>{themeOverrides}</style>
       <SiftTable parquetUrl={url} />
     </div>
   );
