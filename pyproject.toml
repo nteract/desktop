@@ -59,6 +59,8 @@ dev = [
     "anywidget>=0.9.21",
     "quak>=0.3.4",
     "polars>=1.39.3",
+    "plotly>=6.0",
+    "nbformat>=5.0",
 ]
 agents = [
     "claude-agent-sdk>=0.1.0",
