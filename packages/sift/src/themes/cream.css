@@ -40,7 +40,7 @@
 
 /* --- Dark (system preference) --- */
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]):not([data-color-theme="classic"]),
+  :root:not([data-theme="light"]):not([data-color-theme]),
   [data-color-theme="cream"]:not([data-theme="light"]) {
     color-scheme: dark;
     --sift-page: #1a1816;
