@@ -35,7 +35,7 @@ export default defineConfig(({ command }) => {
       emptyOutDir: true,
       sourcemap: debugBundleSourceMapsEnabled,
       chunkSizeWarningLimit: 10000,
-      rollupOptions: {
+      rolldownOptions: {
         input: {
           main: path.resolve(__dirname, "index.html"),
           onboarding: path.resolve(__dirname, "onboarding/index.html"),
