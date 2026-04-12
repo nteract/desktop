@@ -449,21 +449,37 @@ impl McpProxy {
                     "Child process exited, attempting automatic restart"
                 );
 
-                // Attempt to restart the child
-                match proxy.restart_child().await {
-                    Ok(_) => {
-                        info!("Child monitor: restart successful, exiting (new monitor spawned)");
-                        // Exit this monitor — restart_child() spawned a new one
-                        break;
-                    }
-                    Err(e) => {
-                        error!(
-                            event = "child_restart_failed",
-                            error = %e,
-                            "Child monitor: restart failed, stopping monitor task"
-                        );
-                        // Circuit breaker may have tripped, stop monitoring
-                        break;
+                // Attempt to restart the child with exponential backoff
+                let mut backoff_secs = 2u64;
+                loop {
+                    match proxy.restart_child().await {
+                        Ok(_) => {
+                            info!("Child monitor: restart successful, exiting (new monitor spawned)");
+                            // Exit this monitor — restart_child() spawned a new one
+                            return;
+                        }
+                        Err(e) => {
+                            error!(
+                                event = "child_restart_failed",
+                                error = %e,
+                                backoff_secs = backoff_secs,
+                                "Child monitor: restart failed, retrying after backoff"
+                            );
+
+                            // Check if we should give up (circuit breaker or exit signal)
+                            let should_exit = {
+                                let state = proxy.state.read().await;
+                                state.should_exit
+                            };
+                            if should_exit {
+                                error!("Circuit breaker tripped or exit requested, monitor giving up");
+                                return;
+                            }
+
+                            // Wait before retry with exponential backoff (cap at 60s)
+                            tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+                            backoff_secs = (backoff_secs * 2).min(60);
+                        }
                     }
                 }
             }
