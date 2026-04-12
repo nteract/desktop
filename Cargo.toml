@@ -62,6 +62,9 @@ all = { level = "warn", priority = -1 }
 unwrap_used = "warn"
 expect_used = "warn"
 
+[profile.dev]
+split-debuginfo = "packed"
+
 [profile.release]
 opt-level = 'z'
 strip = true
