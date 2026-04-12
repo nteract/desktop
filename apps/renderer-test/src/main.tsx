@@ -72,8 +72,8 @@ function FixtureCard({ fixture, index }: { fixture: Fixture; index: number }) {
           id={`fixture-${index}`}
           onReady={onReady}
           onError={(e) => setError(e.message)}
-          autoHeight
-          minHeight={60}
+          minHeight={40}
+          maxHeight={400}
         />
       </div>
     </div>
@@ -91,9 +91,7 @@ function App() {
           fontFamily: "system-ui, sans-serif",
         }}
       >
-        <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>
-          Renderer Plugin Test
-        </h1>
+        <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>Renderer Plugin Test</h1>
         <p style={{ color: "#6b7280", fontSize: 13, marginBottom: 24 }}>
           {fixtures.length} fixtures — each rendered in an isolated iframe
         </p>
