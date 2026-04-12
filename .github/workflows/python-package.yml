@@ -247,6 +247,8 @@ jobs:
         with:
           node-version: 22
 
+      - uses: voidzero-dev/setup-vp@v1
+
       - name: Build MCP Apps widget
         run: pnpm --filter nteract-mcp-app install && vp run nteract-mcp-app#build
 

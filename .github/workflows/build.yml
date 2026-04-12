@@ -122,6 +122,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      - uses: voidzero-dev/setup-vp@v1
       - run: pnpm --filter nteract-mcp-app install && vp run nteract-mcp-app#build
 
       - name: Clippy (Windows cross-check)
@@ -261,6 +262,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      - uses: voidzero-dev/setup-vp@v1
       - run: pnpm --filter nteract-mcp-app install && vp run nteract-mcp-app#build
 
       - name: Build external binaries
@@ -357,6 +359,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      - uses: voidzero-dev/setup-vp@v1
       - run: pnpm --filter nteract-mcp-app install && vp run nteract-mcp-app#build
 
       # Excludes: notebook (needs bundled binaries, checked in build-linux),
@@ -433,6 +436,8 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      - uses: voidzero-dev/setup-vp@v1
+        if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
       - run: pnpm --filter nteract-mcp-app install && vp run nteract-mcp-app#build
         if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
 
