@@ -9,6 +9,7 @@
  * (plotly alone is 20MB unminified).
  */
 
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import tailwindcss from "@tailwindcss/vite";
@@ -53,7 +54,21 @@ export const RENDERER_PLUGINS: RendererPluginDef[] = [
   { name: "plotly", entry: path.resolve(srcDir, "isolated-renderer/plotly-renderer.tsx") },
   { name: "vega", entry: path.resolve(srcDir, "isolated-renderer/vega-renderer.tsx") },
   { name: "leaflet", entry: path.resolve(srcDir, "isolated-renderer/leaflet-renderer.tsx") },
+  { name: "sift", entry: path.resolve(srcDir, "isolated-renderer/sift-renderer.tsx") },
 ];
+
+/**
+ * Resolve the WASM JS glue for nteract-predicate.
+ * Falls back to a stub if the WASM crate hasn't been built.
+ */
+function resolveWasmGlue(): string {
+  const realPath = path.resolve(srcDir, "../crates/nteract-predicate/pkg/nteract_predicate.js");
+  const mockPath = path.resolve(
+    srcDir,
+    "../packages/sift/src/__mocks__/nteract-predicate/nteract_predicate.js",
+  );
+  return fs.existsSync(realPath) ? realPath : mockPath;
+}
 
 /**
  * Extract JS and CSS from Vite build output
@@ -116,6 +131,10 @@ export async function buildRendererPlugin(
     resolve: {
       alias: {
         "@/": `${srcDir}/`,
+        // Sift plugin needs workspace package resolution + WASM glue
+        "@nteract/sift/style.css": path.resolve(srcDir, "../packages/sift/src/style.css"),
+        "@nteract/sift": path.resolve(srcDir, "../packages/sift/src/index.ts"),
+        "nteract-predicate/nteract_predicate.js": resolveWasmGlue(),
       },
     },
     build: {
