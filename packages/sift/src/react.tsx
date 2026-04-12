@@ -353,6 +353,7 @@ export function SiftTable({
     if (!parquetUrl || !containerRef.current) return;
 
     let cancelled = false;
+    let mountDiv: HTMLDivElement | null = null;
     const container = containerRef.current;
 
     async function loadFromParquetUrl() {
@@ -403,11 +404,11 @@ export function SiftTable({
         }
 
         // Create a dedicated div for the engine — don't touch React-managed children
-        const engineDiv = document.createElement("div");
-        engineDiv.style.height = "100%";
-        container.appendChild(engineDiv);
+        mountDiv = document.createElement("div");
+        mountDiv.style.height = "100%";
+        container.appendChild(mountDiv);
 
-        engineRef.current = createTable(engineDiv, tableData, {
+        engineRef.current = createTable(mountDiv, tableData, {
           onChange: stableOnChange,
         });
         setStatus("ready");
@@ -421,11 +422,11 @@ export function SiftTable({
           mod.load_parquet_row_group(parquetBytes, g, handle);
           tableData.rowCount = mod.num_rows(handle);
           updateWasmSummaries(mod, handle, tableData, columns);
-          engineRef.current!.onBatchAppended();
+          engineRef.current?.onBatchAppended();
         }
 
         if (!cancelled) {
-          engineRef.current!.setStreamingDone();
+          engineRef.current?.setStreamingDone();
         }
       } catch (err) {
         if (cancelled) return;
@@ -441,6 +442,7 @@ export function SiftTable({
       cancelled = true;
       engineRef.current?.destroy();
       engineRef.current = null;
+      mountDiv?.remove();
     };
   }, [parquetUrl, columnOverrides, stableOnChange]);
 

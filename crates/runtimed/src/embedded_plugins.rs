@@ -21,6 +21,11 @@ const _: () = {
         MARKDOWN.len() > 1024,
         "markdown.js appears to be a Git LFS pointer — run `git lfs pull`"
     );
+    const WASM: &[u8] = include_bytes!("../../runt-mcp/assets/plugins/nteract-predicate.wasm");
+    assert!(
+        WASM.len() > 1024,
+        "nteract-predicate.wasm appears to be a Git LFS pointer — run `git lfs pull`"
+    );
 };
 
 /// Look up an embedded renderer plugin asset by filename.
