@@ -1,0 +1,101 @@
+/**
+ * Sift Classic Theme
+ *
+ * Neutral palette matching the nteract notebook's shadcn-based design system.
+ * Light and dark variants.
+ */
+
+/* --- Light (default) --- */
+[data-color-theme="classic"] {
+  color-scheme: light;
+  --sift-page: #ffffff;
+  --sift-panel: #ffffff;
+  --sift-ink: #1a1a1a;
+  --sift-muted: #6b7280;
+  --sift-rule: #e5e7eb;
+  --sift-accent: #3b82f6;
+  --sift-row-alt: rgba(0, 0, 0, 0.02);
+  --sift-pin-shadow: rgba(0, 0, 0, 0.06);
+  --sift-font: Inter, ui-sans-serif, system-ui, sans-serif;
+
+  /* Semantic colors */
+  --sift-badge-true-bg: rgba(34, 197, 94, 0.12);
+  --sift-badge-true-color: #15803d;
+  --sift-badge-false-bg: rgba(239, 68, 68, 0.12);
+  --sift-badge-false-color: #b91c1c;
+  --sift-bool-true: #22c55e;
+  --sift-bool-false: #ef4444;
+  --sift-bool-null-fg: rgba(0, 0, 0, 0.08);
+  --sift-bool-null-bg: rgba(0, 0, 0, 0.03);
+  --sift-loading-code-bg: rgba(0, 0, 0, 0.04);
+  --sift-detail-backdrop: rgba(0, 0, 0, 0.4);
+  --sift-detail-shadow: rgba(0, 0, 0, 0.1);
+  --sift-skeleton-bar-from: rgba(0, 0, 0, 0.04);
+  --sift-skeleton-bar-via: rgba(0, 0, 0, 0.08);
+  --sift-cat-bar-track: rgba(0, 0, 0, 0.04);
+  --sift-scrollbar-thumb: rgba(0, 0, 0, 0.15);
+  --sift-scrollbar-thumb-hover: rgba(0, 0, 0, 0.3);
+}
+
+/* --- Dark (system preference) --- */
+@media (prefers-color-scheme: dark) {
+  [data-color-theme="classic"]:not([data-theme="light"]) {
+    color-scheme: dark;
+    --sift-page: #0a0a0a;
+    --sift-panel: #171717;
+    --sift-ink: #e5e5e5;
+    --sift-muted: #a3a3a3;
+    --sift-rule: #2a2a2a;
+    --sift-accent: #60a5fa;
+    --sift-row-alt: rgba(255, 255, 255, 0.025);
+    --sift-pin-shadow: rgba(255, 255, 255, 0.06);
+
+    --sift-badge-true-bg: rgba(34, 197, 94, 0.15);
+    --sift-badge-true-color: #4ade80;
+    --sift-badge-false-bg: rgba(239, 68, 68, 0.15);
+    --sift-badge-false-color: #f87171;
+    --sift-bool-true: #4ade80;
+    --sift-bool-false: #f87171;
+    --sift-bool-null-fg: rgba(255, 255, 255, 0.1);
+    --sift-bool-null-bg: rgba(255, 255, 255, 0.04);
+    --sift-loading-code-bg: rgba(255, 255, 255, 0.06);
+    --sift-detail-backdrop: rgba(0, 0, 0, 0.6);
+    --sift-detail-shadow: rgba(0, 0, 0, 0.5);
+    --sift-skeleton-bar-from: rgba(255, 255, 255, 0.04);
+    --sift-skeleton-bar-via: rgba(255, 255, 255, 0.08);
+    --sift-cat-bar-track: rgba(255, 255, 255, 0.06);
+    --sift-scrollbar-thumb: rgba(255, 255, 255, 0.2);
+    --sift-scrollbar-thumb-hover: rgba(255, 255, 255, 0.35);
+  }
+}
+
+/* --- Dark (explicit attribute) --- */
+[data-color-theme="classic"][data-theme="dark"],
+[data-color-theme="classic"].dark {
+  color-scheme: dark;
+  --sift-page: #0a0a0a;
+  --sift-panel: #171717;
+  --sift-ink: #e5e5e5;
+  --sift-muted: #a3a3a3;
+  --sift-rule: #2a2a2a;
+  --sift-accent: #60a5fa;
+  --sift-row-alt: rgba(255, 255, 255, 0.025);
+  --sift-pin-shadow: rgba(255, 255, 255, 0.06);
+
+  --sift-badge-true-bg: rgba(34, 197, 94, 0.15);
+  --sift-badge-true-color: #4ade80;
+  --sift-badge-false-bg: rgba(239, 68, 68, 0.15);
+  --sift-badge-false-color: #f87171;
+  --sift-bool-true: #4ade80;
+  --sift-bool-false: #f87171;
+  --sift-bool-null-fg: rgba(255, 255, 255, 0.1);
+  --sift-bool-null-bg: rgba(255, 255, 255, 0.04);
+  --sift-loading-code-bg: rgba(255, 255, 255, 0.06);
+  --sift-detail-backdrop: rgba(0, 0, 0, 0.6);
+  --sift-detail-shadow: rgba(0, 0, 0, 0.5);
+  --sift-skeleton-bar-from: rgba(255, 255, 255, 0.04);
+  --sift-skeleton-bar-via: rgba(255, 255, 255, 0.08);
+  --sift-cat-bar-track: rgba(255, 255, 255, 0.06);
+  --sift-scrollbar-thumb: rgba(255, 255, 255, 0.2);
+  --sift-scrollbar-thumb-hover: rgba(255, 255, 255, 0.35);
+}

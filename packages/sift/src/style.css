@@ -1,53 +1,15 @@
 @import "tailwindcss";
+@import "./themes/cream.css";
 
 * {
   box-sizing: border-box;
 }
 
-:root {
-  color-scheme: light;
-  --page: #f5f2ec;
-  --panel: #fffdf9;
-  --ink: #1e1a18;
-  --muted: #6e655f;
-  --rule: #d8cec3;
-  --accent: #955f3b;
-  --row-alt: rgba(0, 0, 0, 0.018);
-  --pin-shadow: rgba(0, 0, 0, 0.06);
-  --font: Inter, "Helvetica Neue", Helvetica, Arial, sans-serif;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    color-scheme: dark;
-    --page: #1a1816;
-    --panel: #242120;
-    --ink: #e8e2dc;
-    --muted: #9a918a;
-    --rule: #3a3533;
-    --accent: #d4896a;
-    --row-alt: rgba(255, 255, 255, 0.025);
-    --pin-shadow: rgba(255, 255, 255, 0.08);
-  }
-}
-
-:root[data-theme="dark"] {
-  color-scheme: dark;
-  --page: #1a1816;
-  --panel: #242120;
-  --ink: #e8e2dc;
-  --muted: #9a918a;
-  --rule: #3a3533;
-  --accent: #d4896a;
-  --row-alt: rgba(255, 255, 255, 0.025);
-  --pin-shadow: rgba(255, 255, 255, 0.08);
-}
-
 body {
   margin: 0;
-  background: var(--page);
-  color: var(--ink);
-  font-family: var(--font);
+  background: var(--sift-page);
+  color: var(--sift-ink);
+  font-family: var(--sift-font);
 }
 
 /* --- Page layout --- */
@@ -78,7 +40,7 @@ body {
     monospace;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--accent);
+  color: var(--sift-accent);
 }
 
 h1 {
@@ -87,18 +49,18 @@ h1 {
     700 30px/1.08 Georgia,
     "Times New Roman",
     serif;
-  color: var(--ink);
+  color: var(--sift-ink);
 }
 
 .sift-subtitle {
   margin: 10px 0 0;
   max-width: 72ch;
   line-height: 1.45;
-  color: var(--muted);
+  color: var(--sift-muted);
 }
 
 .sift-subtitle a {
-  color: var(--accent);
+  color: var(--sift-accent);
   text-decoration: none;
 }
 
@@ -116,12 +78,12 @@ h1 {
 }
 
 .sift-dataset-picker select {
-  font: 13px/1.3 var(--font);
+  font: 13px/1.3 var(--sift-font);
   padding: 4px 24px 4px 10px;
-  border: 1px solid var(--rule);
+  border: 1px solid var(--sift-rule);
   border-radius: 8px;
-  background: var(--panel);
-  color: var(--ink);
+  background: var(--sift-panel);
+  color: var(--sift-ink);
   cursor: pointer;
   appearance: none;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 5l3 3 3-3' fill='none' stroke='%236e655f' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
@@ -130,11 +92,11 @@ h1 {
 }
 
 .sift-dataset-picker select:hover {
-  border-color: var(--muted);
+  border-color: var(--sift-muted);
 }
 
 .sift-dataset-picker select:focus {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--sift-accent);
   outline-offset: 1px;
 }
 
@@ -142,11 +104,11 @@ h1 {
 
 .sift-theme-toggle {
   background: none;
-  border: 1px solid var(--rule);
+  border: 1px solid var(--sift-rule);
   border-radius: 8px;
   padding: 4px 10px;
-  font: 14px/1.3 var(--font);
-  color: var(--muted);
+  font: 14px/1.3 var(--sift-font);
+  color: var(--sift-muted);
   cursor: pointer;
   align-self: center;
   transition:
@@ -155,17 +117,17 @@ h1 {
 }
 
 .sift-theme-toggle:hover {
-  color: var(--ink);
-  border-color: var(--muted);
+  color: var(--sift-ink);
+  border-color: var(--sift-muted);
 }
 
 .sift-github-btn {
   background: none;
-  border: 1px solid var(--rule);
+  border: 1px solid var(--sift-rule);
   border-radius: 8px;
   padding: 4px 10px;
-  font: 14px/1.3 var(--font);
-  color: var(--muted);
+  font: 14px/1.3 var(--sift-font);
+  color: var(--sift-muted);
   cursor: pointer;
   text-decoration: none;
   display: inline-flex;
@@ -182,20 +144,20 @@ h1 {
 }
 
 .sift-github-btn:hover {
-  color: var(--ink);
-  border-color: var(--muted);
+  color: var(--sift-ink);
+  border-color: var(--sift-muted);
 }
 
 .sift-loading {
   padding: 80px 20px;
   text-align: center;
-  color: var(--muted);
+  color: var(--sift-muted);
   font-size: 18px;
 }
 
 .sift-loading code {
   font-family: "SF Mono", ui-monospace, monospace;
-  background: rgba(0, 0, 0, 0.06);
+  background: var(--sift-loading-code-bg);
   padding: 2px 8px;
   border-radius: 4px;
 }
@@ -203,9 +165,9 @@ h1 {
 /* --- Table container --- */
 
 .sift-table-container {
-  border: 1px solid var(--rule);
+  border: 1px solid var(--sift-rule);
   border-radius: 18px;
-  background: var(--panel);
+  background: var(--sift-panel);
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -225,7 +187,7 @@ h1 {
 .sift-progress-bar-fill {
   height: 100%;
   width: 30%;
-  background: var(--accent);
+  background: var(--sift-accent);
   border-radius: 1px;
   animation: sift-progress-slide 1.2s ease-in-out infinite;
 }
@@ -249,8 +211,8 @@ h1 {
   position: sticky;
   top: 0;
   z-index: 5;
-  border-bottom: 1px solid var(--rule);
-  background: color-mix(in srgb, var(--panel) 90%, var(--page) 10%);
+  border-bottom: 1px solid var(--sift-rule);
+  background: color-mix(in srgb, var(--sift-panel) 90%, var(--sift-page) 10%);
 }
 
 .sift-header-row {
@@ -261,11 +223,11 @@ h1 {
   flex-shrink: 0;
   position: relative;
   padding: 8px 12px;
-  font: 600 12px/1.2 var(--font);
+  font: 600 12px/1.2 var(--sift-font);
   text-align: left;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--muted);
+  color: var(--sift-muted);
   user-select: none;
   display: flex;
   flex-direction: column;
@@ -274,7 +236,7 @@ h1 {
 }
 
 .sift-th:hover {
-  color: var(--ink);
+  color: var(--sift-ink);
 }
 
 .sift-th-top {
@@ -287,8 +249,8 @@ h1 {
   position: absolute;
   top: 8px;
   right: 12px;
-  font: 400 10px/1 var(--font);
-  color: var(--muted);
+  font: 400 10px/1 var(--sift-font);
+  color: var(--sift-muted);
   opacity: 0.4;
   text-transform: none;
   letter-spacing: normal;
@@ -296,8 +258,8 @@ h1 {
 }
 
 .sift-filter-line {
-  font: 400 10px/1.2 var(--font);
-  color: var(--accent);
+  font: 400 10px/1.2 var(--sift-font);
+  color: var(--sift-accent);
   text-transform: none;
   letter-spacing: normal;
   font-style: italic;
@@ -314,7 +276,7 @@ h1 {
 
 .sift-sort-arrow {
   font-size: 11px;
-  color: var(--accent);
+  color: var(--sift-accent);
 }
 
 /* --- Column summary charts --- */
@@ -324,11 +286,11 @@ h1 {
   overflow: hidden;
   animation: summary-fade-in 300ms ease-out;
   --semiotic-bg: transparent;
-  --semiotic-text: var(--muted);
-  --semiotic-text-secondary: var(--muted);
+  --semiotic-text: var(--sift-muted);
+  --semiotic-text-secondary: var(--sift-muted);
   --semiotic-border: transparent;
   --semiotic-grid: transparent;
-  --semiotic-primary: var(--accent);
+  --semiotic-primary: var(--sift-accent);
 }
 
 .sift-th-summary svg,
@@ -355,8 +317,8 @@ h1 {
 .sift-th-range {
   display: block;
   margin-top: 2px;
-  font: 400 10px/1.2 var(--font);
-  color: var(--muted);
+  font: 400 10px/1.2 var(--sift-font);
+  color: var(--sift-muted);
   text-transform: none;
   letter-spacing: normal;
 }
@@ -364,8 +326,8 @@ h1 {
 .sift-th-profile {
   display: block;
   margin-top: 1px;
-  font: 400 9px/1.2 var(--font);
-  color: color-mix(in srgb, var(--muted) 70%, transparent);
+  font: 400 9px/1.2 var(--sift-font);
+  color: color-mix(in srgb, var(--sift-muted) 70%, transparent);
   text-transform: none;
   letter-spacing: normal;
 }
@@ -380,10 +342,10 @@ h1 {
   display: flex;
   align-items: center;
   gap: 4px;
-  font: 400 10px/1.2 var(--font);
+  font: 400 10px/1.2 var(--sift-font);
   text-transform: none;
   letter-spacing: normal;
-  color: var(--muted);
+  color: var(--sift-muted);
   overflow: hidden;
   white-space: nowrap;
   transition: opacity 150ms ease-out;
@@ -392,7 +354,7 @@ h1 {
 .sift-cat-bar-track {
   flex: 1;
   height: 8px;
-  background: rgba(0, 0, 0, 0.04);
+  background: var(--sift-cat-bar-track);
   border-radius: 2px;
   overflow: hidden;
   min-width: 20px;
@@ -400,7 +362,7 @@ h1 {
 
 .sift-cat-bar-fill {
   height: 100%;
-  background: var(--accent);
+  background: var(--sift-accent);
   border-radius: 2px;
   min-width: 2px;
   transition: width 200ms ease-out;
@@ -441,20 +403,20 @@ h1 {
 .sift-cat-popover-search {
   margin: 8px 8px 0;
   padding: 6px 10px;
-  border: 1px solid var(--rule);
+  border: 1px solid var(--sift-rule);
   border-radius: 6px;
-  background: var(--page);
-  color: var(--ink);
-  font: 13px/1.3 var(--font);
+  background: var(--sift-page);
+  color: var(--sift-ink);
+  font: 13px/1.3 var(--sift-font);
   outline: none;
 }
 
 .sift-cat-popover-search:focus {
-  border-color: var(--accent);
+  border-color: var(--sift-accent);
 }
 
 .sift-cat-popover-search::placeholder {
-  color: var(--muted);
+  color: var(--sift-muted);
 }
 
 .sift-cat-popover-actions {
@@ -462,22 +424,22 @@ h1 {
   align-items: center;
   gap: 6px;
   padding: 6px 8px 4px;
-  font: 11px/1.2 var(--font);
-  color: var(--muted);
+  font: 11px/1.2 var(--sift-font);
+  color: var(--sift-muted);
 }
 
 .sift-cat-popover-btn {
   background: none;
-  border: 1px solid var(--rule);
+  border: 1px solid var(--sift-rule);
   border-radius: 4px;
   padding: 2px 8px;
-  font: 11px/1.3 var(--font);
-  color: var(--accent);
+  font: 11px/1.3 var(--sift-font);
+  color: var(--sift-accent);
   cursor: pointer;
 }
 
 .sift-cat-popover-btn:hover {
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  background: color-mix(in srgb, var(--sift-accent) 8%, transparent);
 }
 
 .sift-cat-popover-count {
@@ -487,7 +449,7 @@ h1 {
 .sift-cat-popover-list {
   overflow-y: auto;
   overflow-x: hidden;
-  border-top: 1px solid var(--rule);
+  border-top: 1px solid var(--sift-rule);
 }
 
 .sift-cat-popover-row {
@@ -495,19 +457,19 @@ h1 {
   align-items: center;
   gap: 6px;
   padding: 0 10px;
-  font: 13px/1.3 var(--font);
-  color: var(--ink);
+  font: 13px/1.3 var(--sift-font);
+  color: var(--sift-ink);
   cursor: pointer;
   user-select: none;
 }
 
 .sift-cat-popover-row:hover {
-  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  background: color-mix(in srgb, var(--sift-accent) 6%, transparent);
 }
 
 .sift-cat-popover-check {
   flex-shrink: 0;
-  accent-color: var(--accent);
+  accent-color: var(--sift-accent);
 }
 
 .sift-cat-popover-label {
@@ -521,8 +483,8 @@ h1 {
 
 .sift-cat-popover-pct {
   flex-shrink: 0;
-  font: 11px/1.2 var(--font);
-  color: var(--muted);
+  font: 11px/1.2 var(--sift-font);
+  color: var(--sift-muted);
   text-transform: none;
   letter-spacing: normal;
 }
@@ -530,8 +492,8 @@ h1 {
 .sift-cat-popover-empty {
   padding: 12px;
   text-align: center;
-  font: 13px/1.3 var(--font);
-  color: var(--muted);
+  font: 13px/1.3 var(--sift-font);
+  color: var(--sift-muted);
   text-transform: none;
   letter-spacing: normal;
 }
@@ -556,13 +518,13 @@ h1 {
   width: 2px;
   height: 60%;
   border-radius: 1px;
-  background: var(--rule);
+  background: var(--sift-rule);
   transition: background 120ms ease;
 }
 
 .sift-resize-handle:hover::after,
 .sift-resize-handle.dragging::after {
-  background: var(--accent);
+  background: var(--sift-accent);
 }
 
 /* --- Virtual scroll viewport --- */
@@ -595,17 +557,17 @@ h1 {
   left: 0;
   display: flex;
   width: max-content;
-  border-bottom: 1px solid color-mix(in srgb, var(--rule) 40%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--sift-rule) 40%, transparent);
 }
 
 .sift-row-alt {
-  background: var(--row-alt);
+  background: var(--sift-row-alt);
 }
 
 .sift-cell {
   flex-shrink: 0;
   padding: 8px 12px;
-  font: 14px/20px var(--font);
+  font: 14px/20px var(--sift-font);
   overflow: hidden;
   word-wrap: break-word;
   overflow-wrap: break-word;
@@ -617,20 +579,20 @@ h1 {
   position: sticky;
   left: 0;
   z-index: 1;
-  background: var(--panel);
-  box-shadow: 2px 0 4px var(--pin-shadow);
+  background: var(--sift-panel);
+  box-shadow: 2px 0 4px var(--sift-pin-shadow);
 }
 
 .sift-row-alt .sift-cell:first-child {
-  background: color-mix(in srgb, var(--panel) 97%, var(--page));
+  background: color-mix(in srgb, var(--sift-panel) 97%, var(--sift-page));
 }
 
 .sift-th:first-child {
   position: sticky;
   left: 0;
   z-index: 3;
-  background: color-mix(in srgb, var(--panel) 90%, var(--page) 10%);
-  box-shadow: 2px 0 4px var(--pin-shadow);
+  background: color-mix(in srgb, var(--sift-panel) 90%, var(--sift-page) 10%);
+  box-shadow: 2px 0 4px var(--sift-pin-shadow);
 }
 
 /* --- Type-aware cells --- */
@@ -643,39 +605,24 @@ h1 {
   display: inline-block;
   padding: 2px 8px;
   border-radius: 10px;
-  font: 600 11px/1.4 var(--font);
+  font: 600 11px/1.4 var(--sift-font);
   letter-spacing: 0.02em;
 }
 
 .sift-badge-true {
-  background: rgba(58, 138, 92, 0.15);
-  color: #2d6e4a;
+  background: var(--sift-badge-true-bg);
+  color: var(--sift-badge-true-color);
 }
 
 .sift-badge-false {
-  background: rgba(196, 81, 58, 0.15);
-  color: #9e3a24;
+  background: var(--sift-badge-false-bg);
+  color: var(--sift-badge-false-color);
 }
 
 .sift-badge-null {
-  background: color-mix(in srgb, var(--muted) 15%, transparent);
-  color: var(--muted);
+  background: color-mix(in srgb, var(--sift-muted) 15%, transparent);
+  color: var(--sift-muted);
   font-style: italic;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) .sift-badge-true {
-    color: #5ec98a;
-  }
-  :root:not([data-theme="light"]) .sift-badge-false {
-    color: #e07a64;
-  }
-}
-:root[data-theme="dark"] .sift-badge-true {
-  color: #5ec98a;
-}
-:root[data-theme="dark"] .sift-badge-false {
-  color: #e07a64;
 }
 
 /* --- Boolean summary in header --- */
@@ -694,22 +641,22 @@ h1 {
 }
 
 .sift-bool-true {
-  background: #3a8a5c;
+  background: var(--sift-bool-true);
   transition: width 200ms ease-out;
 }
 
 .sift-bool-false {
-  background: #c4513a;
+  background: var(--sift-bool-false);
   transition: width 200ms ease-out;
 }
 
 .sift-bool-null {
   background: repeating-linear-gradient(
-    -45deg,
-    rgba(0, 0, 0, 0.08),
-    rgba(0, 0, 0, 0.08) 2px,
-    rgba(0, 0, 0, 0.03) 2px,
-    rgba(0, 0, 0, 0.03) 4px
+    135deg,
+    var(--sift-bool-null-fg),
+    var(--sift-bool-null-fg) 2px,
+    var(--sift-bool-null-bg) 2px,
+    var(--sift-bool-null-bg) 4px
   );
   transition: width 200ms ease-out;
 }
@@ -720,7 +667,7 @@ h1 {
 }
 
 .sift-bool-null-label {
-  color: var(--muted);
+  color: var(--sift-muted);
   opacity: 0.7;
   font-style: italic;
 }
@@ -728,14 +675,14 @@ h1 {
 .sift-bool-labels {
   display: flex;
   justify-content: space-between;
-  font: 400 10px/1.2 var(--font);
+  font: 400 10px/1.2 var(--sift-font);
   text-transform: none;
   letter-spacing: normal;
-  color: var(--muted);
+  color: var(--sift-muted);
 }
 .sift-bool-labels strong {
   font-weight: 600;
-  color: var(--ink);
+  color: var(--sift-ink);
 }
 .sift-pct {
   opacity: 0.6;
@@ -751,9 +698,9 @@ h1 {
     12px/1.3 "SF Mono",
     ui-monospace,
     monospace;
-  color: var(--muted);
-  border-top: 1px solid var(--rule);
-  background: color-mix(in srgb, var(--panel) 90%, var(--page) 10%);
+  color: var(--sift-muted);
+  border-top: 1px solid var(--sift-rule);
+  background: color-mix(in srgb, var(--sift-panel) 90%, var(--sift-page) 10%);
   display: flex;
   align-items: center;
 }
@@ -773,10 +720,10 @@ h1 {
 
 @keyframes stat-pop {
   0% {
-    color: var(--accent);
+    color: var(--sift-accent);
   }
   100% {
-    color: var(--muted);
+    color: var(--sift-muted);
   }
 }
 
@@ -826,12 +773,12 @@ h1 {
 }
 
 .sift-status-streaming {
-  color: var(--accent);
+  color: var(--sift-accent);
   animation: sift-status-pulse 1s ease-in-out infinite;
 }
 
 .sift-status-ready {
-  color: var(--muted);
+  color: var(--sift-muted);
   font-size: 10px;
   opacity: 0.6;
 }
@@ -860,11 +807,11 @@ h1 {
   align-items: center;
   gap: 4px;
   padding: 2px 6px 2px 8px;
-  background: rgba(149, 95, 59, 0.1);
-  border: 1px solid rgba(149, 95, 59, 0.2);
+  background: color-mix(in srgb, var(--sift-accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--sift-accent) 20%, transparent);
   border-radius: 10px;
-  font: 11px/1.3 var(--font);
-  color: var(--accent);
+  font: 11px/1.3 var(--sift-font);
+  color: var(--sift-accent);
   white-space: nowrap;
   max-width: 200px;
   overflow: hidden;
@@ -873,8 +820,8 @@ h1 {
 .sift-filter-pill-x {
   background: none;
   border: none;
-  color: var(--accent);
-  font: 14px/1 var(--font);
+  color: var(--sift-accent);
+  font: 14px/1 var(--sift-font);
   cursor: pointer;
   padding: 0 2px;
   opacity: 0.6;
@@ -891,10 +838,10 @@ h1 {
 
 .sift-debug-btn {
   background: none;
-  border: 1px solid var(--rule);
+  border: 1px solid var(--sift-rule);
   border-radius: 6px;
-  color: var(--muted);
-  font: 14px/1 var(--font);
+  color: var(--sift-muted);
+  font: 14px/1 var(--sift-font);
   padding: 2px 6px;
   cursor: pointer;
   margin-right: 4px;
@@ -907,22 +854,22 @@ h1 {
 
 .sift-debug-btn:hover {
   opacity: 1;
-  color: var(--ink);
-  border-color: var(--muted);
+  color: var(--sift-ink);
+  border-color: var(--sift-muted);
 }
 
 .sift-debug-btn.sift-debug-active {
   opacity: 1;
-  color: var(--accent);
-  border-color: var(--accent);
+  color: var(--sift-accent);
+  border-color: var(--sift-accent);
 }
 
 .sift-fullscreen-btn {
   background: none;
-  border: 1px solid var(--rule);
+  border: 1px solid var(--sift-rule);
   border-radius: 6px;
-  color: var(--muted);
-  font: 16px/1 var(--font);
+  color: var(--sift-muted);
+  font: 16px/1 var(--sift-font);
   padding: 2px 8px;
   cursor: pointer;
   transition:
@@ -931,8 +878,8 @@ h1 {
 }
 
 .sift-fullscreen-btn:hover {
-  color: var(--ink);
-  border-color: var(--muted);
+  color: var(--sift-ink);
+  border-color: var(--sift-muted);
 }
 
 /* --- Fullscreen state --- */
@@ -940,7 +887,7 @@ h1 {
 .sift-table-container:fullscreen {
   border-radius: 0;
   border: none;
-  background: var(--panel);
+  background: var(--sift-panel);
 }
 
 .sift-table-container:fullscreen .sift-viewport {
@@ -950,9 +897,9 @@ h1 {
 /* --- Loading skeleton --- */
 
 .sift-skeleton {
-  border: 1px solid var(--rule);
+  border: 1px solid var(--sift-rule);
   border-radius: 18px;
-  background: var(--panel);
+  background: var(--sift-panel);
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -962,8 +909,8 @@ h1 {
 .sift-skeleton-header {
   display: flex;
   padding: 8px 0;
-  border-bottom: 1px solid var(--rule);
-  background: color-mix(in srgb, var(--panel) 90%, var(--page) 10%);
+  border-bottom: 1px solid var(--sift-rule);
+  background: color-mix(in srgb, var(--sift-panel) 90%, var(--sift-page) 10%);
 }
 
 .sift-skeleton-th {
@@ -978,9 +925,9 @@ h1 {
   border-radius: 4px;
   background: linear-gradient(
     90deg,
-    rgba(0, 0, 0, 0.04) 25%,
-    rgba(0, 0, 0, 0.08) 50%,
-    rgba(0, 0, 0, 0.04) 75%
+    var(--sift-skeleton-bar-from) 25%,
+    var(--sift-skeleton-bar-via) 50%,
+    var(--sift-skeleton-bar-from) 75%
   );
   background-size: 200% 100%;
   animation: skeleton-shimmer 1.5s ease-in-out infinite;
@@ -1003,11 +950,11 @@ h1 {
 
 .sift-skeleton-row {
   display: flex;
-  border-bottom: 1px solid color-mix(in srgb, var(--rule) 40%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--sift-rule) 40%, transparent);
 }
 
 .sift-skeleton-row:nth-child(even) {
-  background: var(--row-alt);
+  background: var(--sift-row-alt);
 }
 
 .sift-skeleton-cell {
@@ -1029,8 +976,8 @@ h1 {
 
 .sift-skeleton-footer {
   padding: 8px 16px;
-  border-top: 1px solid var(--rule);
-  background: color-mix(in srgb, var(--panel) 90%, var(--page) 10%);
+  border-top: 1px solid var(--sift-rule);
+  background: color-mix(in srgb, var(--sift-panel) 90%, var(--sift-page) 10%);
 }
 
 .sift-skeleton-status {
@@ -1038,7 +985,7 @@ h1 {
     12px/1.3 "SF Mono",
     ui-monospace,
     monospace;
-  color: var(--accent);
+  color: var(--sift-accent);
 }
 
 @keyframes skeleton-shimmer {
@@ -1063,15 +1010,15 @@ h1 {
 }
 
 .sift-empty-text {
-  font: 14px/1.4 var(--font);
-  color: var(--muted);
+  font: 14px/1.4 var(--sift-font);
+  color: var(--sift-muted);
 }
 
 .sift-empty-clear {
-  font: 13px/1.3 var(--font);
-  color: var(--accent);
+  font: 13px/1.3 var(--sift-font);
+  color: var(--sift-accent);
   background: none;
-  border: 1px solid var(--accent);
+  border: 1px solid var(--sift-accent);
   border-radius: 8px;
   padding: 6px 16px;
   cursor: pointer;
@@ -1079,7 +1026,7 @@ h1 {
 }
 
 .sift-empty-clear:hover {
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  background: color-mix(in srgb, var(--sift-accent) 8%, transparent);
 }
 
 /* --- Mobile detail sheet --- */
@@ -1087,7 +1034,7 @@ h1 {
 .sift-detail-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.3);
+  background: var(--sift-detail-backdrop);
   z-index: 100;
 }
 
@@ -1097,9 +1044,9 @@ h1 {
   left: 0;
   right: 0;
   max-height: 70vh;
-  background: var(--panel);
+  background: var(--sift-panel);
   border-radius: 16px 16px 0 0;
-  box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 -4px 20px var(--sift-detail-shadow);
   z-index: 101;
   display: flex;
   flex-direction: column;
@@ -1116,27 +1063,27 @@ h1 {
   align-items: center;
   justify-content: space-between;
   padding: 16px 20px 12px;
-  border-bottom: 1px solid var(--rule);
+  border-bottom: 1px solid var(--sift-rule);
   flex-shrink: 0;
 }
 
 .sift-detail-title {
-  font: 600 15px/1.2 var(--font);
-  color: var(--ink);
+  font: 600 15px/1.2 var(--sift-font);
+  color: var(--sift-ink);
 }
 
 .sift-detail-close {
   background: none;
   border: none;
-  font: 400 24px/1 var(--font);
-  color: var(--muted);
+  font: 400 24px/1 var(--sift-font);
+  color: var(--sift-muted);
   cursor: pointer;
   padding: 0 4px;
   transition: color 150ms ease;
 }
 
 .sift-detail-close:hover {
-  color: var(--ink);
+  color: var(--sift-ink);
 }
 
 .sift-detail-list {
@@ -1150,7 +1097,7 @@ h1 {
   align-items: baseline;
   gap: 12px;
   padding: 10px 20px;
-  border-bottom: 1px solid color-mix(in srgb, var(--rule) 40%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--sift-rule) 40%, transparent);
 }
 
 .sift-detail-row:last-child {
@@ -1162,8 +1109,8 @@ h1 {
   display: flex;
   align-items: baseline;
   gap: 6px;
-  font: 400 12px/1.3 var(--font);
-  color: var(--muted);
+  font: 400 12px/1.3 var(--sift-font);
+  color: var(--sift-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
   overflow: hidden;
@@ -1177,7 +1124,7 @@ h1 {
 
 .sift-detail-type-icon {
   flex-shrink: 0;
-  font: 400 10px/1 var(--font);
+  font: 400 10px/1 var(--sift-font);
   opacity: 0.5;
   text-transform: none;
   letter-spacing: normal;
@@ -1185,8 +1132,8 @@ h1 {
 
 .sift-detail-col-value {
   flex: 1;
-  font: 14px/1.4 var(--font);
-  color: var(--ink);
+  font: 14px/1.4 var(--sift-font);
+  color: var(--sift-ink);
   word-wrap: break-word;
   overflow-wrap: break-word;
 }
@@ -1211,10 +1158,10 @@ h1 {
 }
 
 .sift-viewport::-webkit-scrollbar-thumb {
-  background: var(--rule);
+  background: var(--sift-scrollbar-thumb);
   border-radius: 4px;
 }
 
 .sift-viewport::-webkit-scrollbar-thumb:hover {
-  background: var(--muted);
+  background: var(--sift-scrollbar-thumb-hover);
 }
