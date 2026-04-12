@@ -1,10 +1,3 @@
-/**
- * Build the MCP Apps widget as a single ESM bundle using Vite (Rollup).
- *
- * Produces dist/mcp-app.js (and optionally dist/mcp-app.css if Vite extracts CSS).
- * The HTML inlining step is handled by build-html.js which runs after this.
- */
-
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import tailwindcss from "@tailwindcss/vite";
@@ -31,9 +24,9 @@ await build({
       formats: ["es"],
       fileName: () => "mcp-app.js",
     },
-    rollupOptions: {
+    rolldownOptions: {
       output: {
-        inlineDynamicImports: true,
+        codeSplitting: false,
       },
       onwarn(warning, warn) {
         if (

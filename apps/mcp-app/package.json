@@ -4,8 +4,8 @@
   "type": "module",
   "scripts": {
     "dev": "vp dev",
-    "build": "node build-main.js && node build-html.js",
-    "build:plugins": "node build-plugins.js",
+    "build": "tsx build-main.ts && node build-html.js",
+    "build:plugins": "tsx build-plugins.ts",
     "build:all": "npm run build && npm run build:plugins"
   },
   "dependencies": {
