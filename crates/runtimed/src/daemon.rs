@@ -77,7 +77,7 @@ impl Default for DaemonConfig {
             max_age_secs: 172800, // 2 days
             lock_dir: None,
             room_eviction_delay_ms: None,
-            env_cache_max_age_secs: 604800, // 7 days
+            env_cache_max_age_secs: 86400, // 1 day
             env_cache_max_count: 10,
         }
     }
@@ -2380,7 +2380,7 @@ impl Daemon {
 
     /// Background GC loop for content-addressed environment caches.
     ///
-    /// Runs once after a 60-second startup delay, then every 6 hours.
+    /// Runs once after a 60-second startup delay, then every 30 minutes.
     /// Evicts stale cached environments from the global UV, Conda, and inline-env
     /// cache directories based on `env_cache_max_age_secs` and `env_cache_max_count`.
     async fn env_gc_loop(&self) {
@@ -2582,8 +2582,9 @@ impl Daemon {
                 }
             }
 
-            // Run every 6 hours
-            tokio::time::sleep(std::time::Duration::from_secs(6 * 3600)).await;
+            // Run every 30 minutes (was 6 hours — too slow for sustained
+            // workloads that create many ephemeral environments).
+            tokio::time::sleep(std::time::Duration::from_secs(30 * 60)).await;
         }
     }
 }

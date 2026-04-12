@@ -2125,6 +2125,35 @@ where
                     );
                 }
 
+                // Clean up content-addressed environment directory on eviction.
+                // Pool envs (runtimed-uv-*, runtimed-conda-*, runtimed-pixi-*) are
+                // managed by the pool and must NOT be deleted here. Content-addressed
+                // envs (16-char hex dirs in envs/, conda-envs/, inline-envs/) are
+                // orphaned once the room is gone — delete them eagerly to prevent
+                // disk pressure during sustained workloads (e.g. gremlin sessions).
+                {
+                    let env_path = room_for_eviction
+                        .runtime_agent_env_path
+                        .read()
+                        .await
+                        .clone();
+                    if let Some(ref path) = env_path {
+                        let is_content_addressed = path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .is_some_and(|name| {
+                                name.len() == 16 && name.chars().all(|c| c.is_ascii_hexdigit())
+                            });
+                        if is_content_addressed {
+                            info!(
+                                "[notebook-sync] Cleaning up content-addressed env {:?} on room eviction",
+                                path
+                            );
+                            tokio::fs::remove_dir_all(path).await.ok();
+                        }
+                    }
+                }
+
                 info!(
                     "[notebook-sync] Evicted room {} (idle timeout)",
                     notebook_id_for_eviction
