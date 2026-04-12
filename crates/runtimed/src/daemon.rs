@@ -4,7 +4,7 @@
 //! notebook windows via IPC (Unix domain sockets on Unix, named pipes on Windows).
 
 use std::collections::{HashMap, VecDeque};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Instant;
@@ -30,7 +30,10 @@ use crate::notebook_sync_server::NotebookRooms;
 use crate::protocol::{BlobRequest, BlobResponse, Request, Response};
 use crate::settings_doc::SettingsDoc;
 use crate::singleton::DaemonLock;
-use crate::{default_blob_store_dir, default_cache_dir, default_socket_path, EnvType, PooledEnv};
+use crate::{
+    default_blob_store_dir, default_cache_dir, default_socket_path, is_pool_env_dir,
+    is_within_cache_dir, pool_env_root, EnvType, PooledEnv,
+};
 use runtimed_client::singleton::DaemonInfo;
 
 /// Configuration for the pool daemon.
@@ -270,33 +273,6 @@ fn pixi_prewarmed_packages(extra: &[String]) -> Vec<String> {
     ];
     packages.extend(extra.iter().cloned());
     packages
-}
-
-/// Walk up from a pool env's `venv_path` to find the top-level
-/// `runtimed-{uv,conda,pixi}-*` directory. Pixi envs have nested venv_paths
-/// (e.g. `runtimed-pixi-{uuid}/.pixi/envs/default`) but GC and room eviction
-/// operate on top-level dirs, so we need this to normalise before comparing or
-/// deleting.
-///
-/// Returns the path unchanged if no `runtimed-*` ancestor is found (e.g. for
-/// content-addressed envs that are already top-level).
-pub(crate) fn pool_env_root(path: &Path) -> PathBuf {
-    let mut cur = path;
-    loop {
-        if let Some(name) = cur.file_name().and_then(|n| n.to_str()) {
-            if name.starts_with("runtimed-uv-")
-                || name.starts_with("runtimed-conda-")
-                || name.starts_with("runtimed-pixi-")
-            {
-                return cur.to_path_buf();
-            }
-        }
-        match cur.parent() {
-            Some(p) if p != cur => cur = p,
-            _ => break,
-        }
-    }
-    path.to_path_buf()
 }
 
 impl Pool {
@@ -1131,7 +1107,7 @@ impl Daemon {
             let env_path = entry.path();
 
             // Check for runtimed-uv-* directories
-            if name.starts_with("runtimed-uv-") {
+            if name.starts_with(crate::POOL_PREFIX_UV) {
                 #[cfg(target_os = "windows")]
                 let python_path = env_path.join("Scripts").join("python.exe");
                 #[cfg(not(target_os = "windows"))]
@@ -1156,11 +1132,16 @@ impl Daemon {
                     }
                 } else {
                     // Invalid env, clean up
-                    tokio::fs::remove_dir_all(&env_path).await.ok();
+                    if let Err(e) = tokio::fs::remove_dir_all(&env_path).await {
+                        warn!(
+                            "[runtimed] Failed to clean up invalid UV env {:?}: {}",
+                            env_path, e
+                        );
+                    }
                 }
             }
             // Check for runtimed-conda-* directories
-            else if name.starts_with("runtimed-conda-") {
+            else if name.starts_with(crate::POOL_PREFIX_CONDA) {
                 #[cfg(target_os = "windows")]
                 let python_path = env_path.join("python.exe");
                 #[cfg(not(target_os = "windows"))]
@@ -1183,11 +1164,16 @@ impl Daemon {
                         orphans.push(env_path);
                     }
                 } else {
-                    tokio::fs::remove_dir_all(&env_path).await.ok();
+                    if let Err(e) = tokio::fs::remove_dir_all(&env_path).await {
+                        warn!(
+                            "[runtimed] Failed to clean up invalid Conda env {:?}: {}",
+                            env_path, e
+                        );
+                    }
                 }
             }
             // Check for runtimed-pixi-* directories
-            else if name.starts_with("runtimed-pixi-") {
+            else if name.starts_with(crate::POOL_PREFIX_PIXI) {
                 let venv_path = env_path.join(".pixi").join("envs").join("default");
                 #[cfg(target_os = "windows")]
                 let python_path = venv_path.join("python.exe");
@@ -1211,7 +1197,12 @@ impl Daemon {
                         orphans.push(env_path);
                     }
                 } else {
-                    tokio::fs::remove_dir_all(&env_path).await.ok();
+                    if let Err(e) = tokio::fs::remove_dir_all(&env_path).await {
+                        warn!(
+                            "[runtimed] Failed to clean up invalid Pixi env {:?}: {}",
+                            env_path, e
+                        );
+                    }
                 }
             }
         }
@@ -2487,18 +2478,27 @@ impl Daemon {
                     if let Ok(mut entries) = tokio::fs::read_dir(cache_dir).await {
                         while let Ok(Some(entry)) = entries.next_entry().await {
                             let name = entry.file_name().to_string_lossy().to_string();
-                            let is_pool_dir = name.starts_with("runtimed-uv-")
-                                || name.starts_with("runtimed-conda-")
-                                || name.starts_with("runtimed-pixi-");
-                            if !is_pool_dir {
+                            if !is_pool_env_dir(&name) {
                                 continue;
                             }
                             let path = entry.path();
                             if tracked.contains(&path) || in_use.contains(&path) {
                                 continue;
                             }
+                            if !is_within_cache_dir(&path, cache_dir) {
+                                warn!(
+                                    "[runtimed] GC: refusing to delete {:?} (not within cache dir)",
+                                    path
+                                );
+                                continue;
+                            }
                             info!("[runtimed] GC: removing orphaned pool env {:?}", path);
-                            if tokio::fs::remove_dir_all(&path).await.is_ok() {
+                            if let Err(e) = tokio::fs::remove_dir_all(&path).await {
+                                warn!(
+                                    "[runtimed] GC: failed to remove orphaned pool env {:?}: {}",
+                                    path, e
+                                );
+                            } else {
                                 orphans_deleted += 1;
                             }
                         }
@@ -3143,7 +3143,7 @@ impl Daemon {
         use rattler_repodata_gateway::Gateway;
         use rattler_solve::{resolvo, SolverImpl, SolverTask};
 
-        let temp_id = format!("runtimed-conda-{}", uuid::Uuid::new_v4());
+        let temp_id = format!("{}{}", crate::POOL_PREFIX_CONDA, uuid::Uuid::new_v4());
         let env_path = self.config.cache_dir.join(&temp_id);
 
         #[cfg(target_os = "windows")]
@@ -3553,7 +3553,7 @@ impl Daemon {
     async fn create_pixi_env(&self) {
         let cache_dir = self.config.cache_dir.clone();
         let env_id = uuid::Uuid::new_v4().to_string();
-        let project_dir = cache_dir.join(format!("runtimed-pixi-{}", env_id));
+        let project_dir = cache_dir.join(format!("{}{}", crate::POOL_PREFIX_PIXI, env_id));
 
         info!("[runtimed] Creating Pixi environment at {:?}", project_dir);
 
@@ -3706,7 +3706,7 @@ impl Daemon {
             }
         };
 
-        let temp_id = format!("runtimed-uv-{}", uuid::Uuid::new_v4());
+        let temp_id = format!("{}{}", crate::POOL_PREFIX_UV, uuid::Uuid::new_v4());
         let venv_path = self.config.cache_dir.join(&temp_id);
 
         #[cfg(target_os = "windows")]

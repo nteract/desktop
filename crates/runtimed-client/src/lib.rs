@@ -12,7 +12,8 @@
 //! - `runtimed-py` (Python bindings) — PoolClient, SyncClient, settings
 //! - `runtimed` (daemon) — re-exports everything, adds server-only code
 
-use std::path::PathBuf;
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -88,6 +89,62 @@ pub struct PooledEnv {
     pub prewarmed_packages: Vec<String>,
 }
 
+// ============================================================================
+// Pool Directory Naming
+// ============================================================================
+
+/// Directory name prefixes for prewarmed pool environments.
+///
+/// Pool envs are created in `default_cache_dir()` with these prefixes
+/// followed by a UUID (e.g. `runtimed-uv-a1b2c3d4-...`). GC, room
+/// eviction, and pool recovery use these to identify pool-managed dirs
+/// vs. content-addressed caches (which are 16-char hex names).
+pub const POOL_PREFIX_UV: &str = "runtimed-uv-";
+pub const POOL_PREFIX_CONDA: &str = "runtimed-conda-";
+pub const POOL_PREFIX_PIXI: &str = "runtimed-pixi-";
+
+/// All pool directory prefixes, for iteration.
+pub const POOL_PREFIXES: &[&str] = &[POOL_PREFIX_UV, POOL_PREFIX_CONDA, POOL_PREFIX_PIXI];
+
+/// Check whether a directory name looks like a pool-managed environment.
+pub fn is_pool_env_dir(name: &str) -> bool {
+    POOL_PREFIXES.iter().any(|prefix| name.starts_with(prefix))
+}
+
+/// Walk up from a pool env's `venv_path` to find the top-level
+/// `runtimed-{uv,conda,pixi}-*` directory.
+///
+/// Pixi envs have nested venv_paths (e.g.
+/// `runtimed-pixi-{uuid}/.pixi/envs/default`) but GC and room eviction
+/// operate on top-level dirs, so this normalises before comparing or
+/// deleting.
+///
+/// Returns the path unchanged if no pool-prefixed ancestor is found
+/// (e.g. for content-addressed envs that are already top-level).
+pub fn pool_env_root(path: &Path) -> PathBuf {
+    let mut cur = path;
+    loop {
+        if let Some(name) = cur.file_name().and_then(|n: &OsStr| n.to_str()) {
+            if is_pool_env_dir(name) {
+                return cur.to_path_buf();
+            }
+        }
+        match cur.parent() {
+            Some(p) if p != cur => cur = p,
+            _ => break,
+        }
+    }
+    path.to_path_buf()
+}
+
+/// Check whether a path is inside the given cache directory.
+///
+/// Used as a safety gate before `remove_dir_all` to ensure we never
+/// accidentally delete paths outside the daemon's cache tree.
+pub fn is_within_cache_dir(path: &Path, cache_dir: &Path) -> bool {
+    path.starts_with(cache_dir)
+}
+
 /// Get the default cache directory for environments.
 pub fn default_cache_dir() -> PathBuf {
     daemon_base_dir().join("envs")
@@ -124,4 +181,56 @@ pub fn settings_schema_path() -> PathBuf {
 /// Get the default directory for persisted notebook Automerge documents.
 pub fn default_notebook_docs_dir() -> PathBuf {
     daemon_base_dir().join("notebook-docs")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_pool_env_dir() {
+        assert!(is_pool_env_dir("runtimed-uv-a1b2c3d4"));
+        assert!(is_pool_env_dir("runtimed-conda-a1b2c3d4"));
+        assert!(is_pool_env_dir("runtimed-pixi-a1b2c3d4"));
+        assert!(!is_pool_env_dir("abcdef0123456789")); // content-addressed
+        assert!(!is_pool_env_dir("some-other-dir"));
+    }
+
+    #[test]
+    fn test_pool_env_root_uv() {
+        // UV venv_path IS the top-level dir — returned unchanged
+        let path = Path::new("/cache/envs/runtimed-uv-abc123");
+        assert_eq!(pool_env_root(path), path);
+    }
+
+    #[test]
+    fn test_pool_env_root_pixi_nested() {
+        // Pixi venv_path is nested — walk up to top-level
+        let path = Path::new("/cache/envs/runtimed-pixi-abc123/.pixi/envs/default");
+        assert_eq!(
+            pool_env_root(path),
+            Path::new("/cache/envs/runtimed-pixi-abc123")
+        );
+    }
+
+    #[test]
+    fn test_pool_env_root_content_addressed() {
+        // Content-addressed envs have no runtimed-* ancestor — returned unchanged
+        let path = Path::new("/cache/envs/abcdef0123456789");
+        assert_eq!(pool_env_root(path), path);
+    }
+
+    #[test]
+    fn test_is_within_cache_dir() {
+        let cache = Path::new("/home/user/.cache/runt-nightly/envs");
+        assert!(is_within_cache_dir(
+            Path::new("/home/user/.cache/runt-nightly/envs/runtimed-uv-abc"),
+            cache
+        ));
+        assert!(!is_within_cache_dir(
+            Path::new("/tmp/runtimed-uv-abc"),
+            cache
+        ));
+        assert!(!is_within_cache_dir(Path::new("/home/user/.cache"), cache));
+    }
 }

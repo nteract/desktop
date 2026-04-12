@@ -2142,13 +2142,24 @@ where
                         .await
                         .clone();
                     if let Some(ref path) = env_path {
-                        let root = crate::daemon::pool_env_root(path);
-                        if root.exists() {
+                        let root = crate::pool_env_root(path);
+                        let cache_dir = crate::default_cache_dir();
+                        if !crate::is_within_cache_dir(&root, &cache_dir) {
+                            warn!(
+                                "[notebook-sync] Refusing to delete env {:?} on eviction (not within cache dir)",
+                                root
+                            );
+                        } else if root.exists() {
                             info!(
                                 "[notebook-sync] Cleaning up env {:?} on room eviction",
                                 root
                             );
-                            tokio::fs::remove_dir_all(&root).await.ok();
+                            if let Err(e) = tokio::fs::remove_dir_all(&root).await {
+                                warn!(
+                                    "[notebook-sync] Failed to clean up env {:?} on eviction: {}",
+                                    root, e
+                                );
+                            }
                         }
                     }
                 }
@@ -3289,7 +3300,16 @@ async fn try_uv_pool_for_inline_deps(
                     );
                     // Clean up the taken pool env — it's out of the pool's
                     // tracking and would otherwise leak on disk.
-                    tokio::fs::remove_dir_all(&env.venv_path).await.ok();
+                    let root = crate::pool_env_root(&env.venv_path);
+                    let cache_dir = crate::default_cache_dir();
+                    if crate::is_within_cache_dir(&root, &cache_dir) {
+                        if let Err(e) = tokio::fs::remove_dir_all(&root).await {
+                            warn!(
+                                "[notebook-sync] Failed to clean up UV pool env {:?}: {}",
+                                root, e
+                            );
+                        }
+                    }
                     Err(())
                 }
             }
@@ -3297,7 +3317,16 @@ async fn try_uv_pool_for_inline_deps(
         crate::inline_env::PoolDepRelation::Independent => {
             // Shouldn't reach here (pre-check above), but handle gracefully
             debug!("[notebook-sync] UV pool env doesn't match inline deps, falling back");
-            tokio::fs::remove_dir_all(&env.venv_path).await.ok();
+            let root = crate::pool_env_root(&env.venv_path);
+            let cache_dir = crate::default_cache_dir();
+            if crate::is_within_cache_dir(&root, &cache_dir) {
+                if let Err(e) = tokio::fs::remove_dir_all(&root).await {
+                    warn!(
+                        "[notebook-sync] Failed to clean up UV pool env {:?}: {}",
+                        root, e
+                    );
+                }
+            }
             Err(())
         }
     }
@@ -3384,14 +3413,32 @@ async fn try_conda_pool_for_inline_deps(
                         "[notebook-sync] Failed to install delta into Conda pool env: {}, falling back",
                         e
                     );
-                    tokio::fs::remove_dir_all(&env.venv_path).await.ok();
+                    let root = crate::pool_env_root(&env.venv_path);
+                    let cache_dir = crate::default_cache_dir();
+                    if crate::is_within_cache_dir(&root, &cache_dir) {
+                        if let Err(e) = tokio::fs::remove_dir_all(&root).await {
+                            warn!(
+                                "[notebook-sync] Failed to clean up Conda pool env {:?}: {}",
+                                root, e
+                            );
+                        }
+                    }
                     Err(())
                 }
             }
         }
         crate::inline_env::PoolDepRelation::Independent => {
             debug!("[notebook-sync] Conda pool env doesn't match inline deps, falling back");
-            tokio::fs::remove_dir_all(&env.venv_path).await.ok();
+            let root = crate::pool_env_root(&env.venv_path);
+            let cache_dir = crate::default_cache_dir();
+            if crate::is_within_cache_dir(&root, &cache_dir) {
+                if let Err(e) = tokio::fs::remove_dir_all(&root).await {
+                    warn!(
+                        "[notebook-sync] Failed to clean up Conda pool env {:?}: {}",
+                        root, e
+                    );
+                }
+            }
             Err(())
         }
     }
