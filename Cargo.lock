@@ -3421,6 +3421,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "jupyter-protocol"
+version = "1.4.0"
+source = "git+https://github.com/runtimed/runtimed?rev=5e24d9b#5e24d9b3b81382bc8a07226bb9523e79599b9902"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "chrono",
+ "futures",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
 name = "kernel-env"
 version = "0.2.0"
 dependencies = [
@@ -4008,7 +4023,7 @@ checksum = "89bd627a9b44814f546a1ce9dbc088599d3a030b8667b8816c07f2bd5a4507ba"
 dependencies = [
  "anyhow",
  "chrono",
- "jupyter-protocol",
+ "jupyter-protocol 1.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -6604,7 +6619,7 @@ dependencies = [
  "dirs",
  "flate2",
  "futures",
- "jupyter-protocol",
+ "jupyter-protocol 1.4.0 (git+https://github.com/runtimed/runtimed?rev=5e24d9b)",
  "kernel-env",
  "libc",
  "notebook-doc",
@@ -6709,7 +6724,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "jiter",
- "jupyter-protocol",
+ "jupyter-protocol 1.4.0 (git+https://github.com/runtimed/runtimed?rev=5e24d9b)",
  "kernel-env",
  "kernel-launch",
  "libc",
@@ -6817,8 +6832,7 @@ dependencies = [
 [[package]]
 name = "runtimelib"
 version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "524187cd923df8c146810a9f09be45fcaf4e5ba168f22f5f85598ca3c08c9202"
+source = "git+https://github.com/runtimed/runtimed?rev=5e24d9b#5e24d9b3b81382bc8a07226bb9523e79599b9902"
 dependencies = [
  "aws-lc-rs",
  "base64 0.22.1",
@@ -6828,7 +6842,7 @@ dependencies = [
  "dirs",
  "futures",
  "glob",
- "jupyter-protocol",
+ "jupyter-protocol 1.4.0 (git+https://github.com/runtimed/runtimed?rev=5e24d9b)",
  "serde",
  "serde_json",
  "shellexpand",
