@@ -11,6 +11,10 @@
 import path from "node:path";
 import tailwindcss from "@tailwindcss/vite";
 import { build, type Plugin } from "vite-plus";
+import {
+  buildAllRendererPlugins,
+  type RendererPluginOutput,
+} from "../../src/build/renderer-plugin-builder";
 
 const VIRTUAL_MODULE_ID = "virtual:isolated-renderer";
 const RESOLVED_VIRTUAL_MODULE_ID = `\0${VIRTUAL_MODULE_ID}`;
@@ -46,24 +50,9 @@ export function isolatedRendererPlugin(options: IsolatedRendererPluginOptions = 
     sourcemap = false,
   } = options;
 
-  const markdownEntry = path.resolve(
-    __dirname,
-    "../../src/isolated-renderer/markdown-renderer.tsx",
-  );
-  const vegaEntry = path.resolve(__dirname, "../../src/isolated-renderer/vega-renderer.tsx");
-  const plotlyEntry = path.resolve(__dirname, "../../src/isolated-renderer/plotly-renderer.tsx");
-  const leafletEntry = path.resolve(__dirname, "../../src/isolated-renderer/leaflet-renderer.tsx");
-
   let rendererCode = "";
   let rendererCss = "";
-  let markdownRendererCode = "";
-  let markdownRendererCss = "";
-  let vegaRendererCode = "";
-  let vegaRendererCss = "";
-  let plotlyRendererCode = "";
-  let plotlyRendererCss = "";
-  let leafletRendererCode = "";
-  let leafletRendererCss = "";
+  let pluginOutputs = new Map<string, RendererPluginOutput>();
   let buildPromise: Promise<void> | null = null;
 
   // Directories to watch for changes that should trigger rebuild
@@ -74,94 +63,7 @@ export function isolatedRendererPlugin(options: IsolatedRendererPluginOptions = 
     buildPromise = null;
     rendererCode = "";
     rendererCss = "";
-    markdownRendererCode = "";
-    markdownRendererCss = "";
-    vegaRendererCode = "";
-    vegaRendererCss = "";
-    plotlyRendererCode = "";
-    plotlyRendererCss = "";
-    leafletRendererCode = "";
-    leafletRendererCss = "";
-  }
-
-  /**
-   * Build a renderer plugin as CJS with React externalized.
-   * Always minified — these are string constants containing entire libraries
-   * (plotly alone is 20MB unminified). No debugging value in readable output.
-   */
-  async function buildRendererPlugin(
-    pluginEntry: string,
-    pluginName: string,
-    srcDir: string,
-  ): Promise<{ code: string; css: string }> {
-    const result = await build({
-      configFile: false,
-      mode: "production",
-      plugins: [tailwindcss()],
-      esbuild: {
-        jsx: "automatic",
-        jsxImportSource: "react",
-        jsxDev: false,
-      },
-      resolve: {
-        alias: {
-          "@/": `${srcDir}/`,
-        },
-      },
-      build: {
-        write: false,
-        lib: {
-          entry: pluginEntry,
-          formats: ["cjs"],
-          fileName: () => `${pluginName}.js`,
-        },
-        rollupOptions: {
-          external: ["react", "react/jsx-runtime"],
-          output: {
-            assetFileNames: `${pluginName}.[ext]`,
-          },
-          onwarn(warning, warn) {
-            if (
-              warning.code === "MODULE_LEVEL_DIRECTIVE" &&
-              warning.message?.includes('"use client"')
-            ) {
-              return;
-            }
-            warn(warning);
-          },
-        },
-        minify: true,
-        sourcemap: false,
-      },
-      define: {
-        "process.env.NODE_ENV": JSON.stringify("production"),
-      },
-      logLevel: "warn",
-    });
-
-    let code = "";
-    let css = "";
-    const outputs = Array.isArray(result) ? result : [result];
-    for (const output of outputs) {
-      if ("output" in output) {
-        for (const chunk of output.output) {
-          if (chunk.type === "chunk" && chunk.fileName.endsWith(".js")) {
-            code = chunk.code;
-          } else if (chunk.type === "asset" && chunk.fileName.endsWith(".css")) {
-            css =
-              typeof chunk.source === "string"
-                ? chunk.source
-                : new TextDecoder().decode(chunk.source);
-          }
-        }
-      }
-    }
-
-    if (!code) {
-      throw new Error(`Failed to build ${pluginName} renderer plugin: no JS output produced`);
-    }
-
-    return { code, css };
+    pluginOutputs = new Map();
   }
 
   async function buildRenderer() {
@@ -217,7 +119,7 @@ export function isolatedRendererPlugin(options: IsolatedRendererPluginOptions = 
           formats: ["iife"],
           fileName: () => "isolated-renderer.js",
         },
-        rollupOptions: {
+        rolldownOptions: {
           output: {
             assetFileNames: "isolated-renderer.[ext]",
           },
@@ -269,20 +171,10 @@ export function isolatedRendererPlugin(options: IsolatedRendererPluginOptions = 
     }
 
     // --- Build renderer plugins (CJS, React externalized) ---
-    const [markdownPlugin, vegaPlugin, plotlyPlugin, leafletPlugin] = await Promise.all([
-      buildRendererPlugin(markdownEntry, "markdown-renderer", srcDir),
-      buildRendererPlugin(vegaEntry, "vega-renderer", srcDir),
-      buildRendererPlugin(plotlyEntry, "plotly-renderer", srcDir),
-      buildRendererPlugin(leafletEntry, "leaflet-renderer", srcDir),
-    ]);
-    markdownRendererCode = markdownPlugin.code;
-    markdownRendererCss = markdownPlugin.css;
-    vegaRendererCode = vegaPlugin.code;
-    vegaRendererCss = vegaPlugin.css;
-    plotlyRendererCode = plotlyPlugin.code;
-    plotlyRendererCss = plotlyPlugin.css;
-    leafletRendererCode = leafletPlugin.code;
-    leafletRendererCss = leafletPlugin.css;
+    const plugins = await buildAllRendererPlugins();
+    for (const plugin of plugins) {
+      pluginOutputs.set(plugin.name, plugin);
+    }
   }
 
   return {
@@ -326,29 +218,14 @@ export const rendererCss = ${JSON.stringify(rendererCss)};
       const pluginName = id.startsWith(RESOLVED_PLUGIN_PREFIX)
         ? id.slice(RESOLVED_PLUGIN_PREFIX.length)
         : null;
-      if (pluginName === "markdown") {
-        return `
-export const code = ${JSON.stringify(markdownRendererCode)};
-export const css = ${JSON.stringify(markdownRendererCss)};
+      if (pluginName) {
+        const plugin = pluginOutputs.get(pluginName);
+        if (plugin) {
+          return `
+export const code = ${JSON.stringify(plugin.code)};
+export const css = ${JSON.stringify(plugin.css)};
 `;
-      }
-      if (pluginName === "vega") {
-        return `
-export const code = ${JSON.stringify(vegaRendererCode)};
-export const css = ${JSON.stringify(vegaRendererCss)};
-`;
-      }
-      if (pluginName === "plotly") {
-        return `
-export const code = ${JSON.stringify(plotlyRendererCode)};
-export const css = ${JSON.stringify(plotlyRendererCss)};
-`;
-      }
-      if (pluginName === "leaflet") {
-        return `
-export const code = ${JSON.stringify(leafletRendererCode)};
-export const css = ${JSON.stringify(leafletRendererCss)};
-`;
+        }
       }
     },
 
@@ -391,8 +268,7 @@ export const css = ${JSON.stringify(leafletRendererCss)};
           devServer.moduleGraph.invalidateModule(mod);
         }
 
-        const pluginNames = ["markdown", "vega", "plotly", "leaflet"];
-        for (const name of pluginNames) {
+        for (const name of pluginOutputs.keys()) {
           const pluginMod = devServer.moduleGraph.getModuleById(`${RESOLVED_PLUGIN_PREFIX}${name}`);
           if (pluginMod) {
             devServer.moduleGraph.invalidateModule(pluginMod);
