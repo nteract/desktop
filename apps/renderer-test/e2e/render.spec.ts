@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
+import { fixtures } from "../src/fixtures";
 
-const FIXTURE_COUNT = 6;
+const FIXTURE_COUNT = fixtures.length;
 
 test.describe("Renderer plugin fixtures", () => {
   test.beforeEach(async ({ page }) => {
