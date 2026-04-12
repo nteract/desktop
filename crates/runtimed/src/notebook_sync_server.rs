@@ -4073,6 +4073,15 @@ async fn auto_launch_kernel(
         (pooled_env, None)
     };
 
+    // Register the env path for GC protection immediately after pool.take(),
+    // BEFORE any async work (agent spawn, connect timeout, delta install).
+    // Without this, there's a race window where GC sees the taken env as an
+    // orphan and deletes it while we're still setting up the kernel.
+    if let Some(ref env) = pooled_env {
+        let mut ep = room.runtime_agent_env_path.write().await;
+        *ep = Some(env.venv_path.clone());
+    }
+
     // Build LaunchedEnvConfig to track what config the kernel was launched with
     let venv_path = pooled_env.as_ref().map(|e| e.venv_path.clone());
     let python_path = pooled_env.as_ref().map(|e| e.python_path.clone());
@@ -4182,11 +4191,7 @@ async fn auto_launch_kernel(
                     Ok(notebook_protocol::protocol::RuntimeAgentResponse::KernelLaunched {
                         env_source: es,
                     }) => {
-                        // Store env path for GC protection
-                        if let Some(ref env) = pooled_env {
-                            let mut ep = room.runtime_agent_env_path.write().await;
-                            *ep = Some(env.venv_path.clone());
-                        }
+                        // env path already registered for GC protection above (before spawn)
 
                         // Store launched config for env sync drift detection
                         {
@@ -5194,6 +5199,13 @@ async fn handle_notebook_request(
             } else {
                 (pooled_env, None)
             };
+
+            // Register the env path for GC protection immediately after pool.take(),
+            // BEFORE any async work (agent spawn, connect timeout, delta install).
+            if let Some(ref env) = pooled_env {
+                let mut ep = room.runtime_agent_env_path.write().await;
+                *ep = Some(env.venv_path.clone());
+            }
 
             // Build LaunchedEnvConfig to track what config the kernel was launched with
             let venv_path = pooled_env.as_ref().map(|e| e.venv_path.clone());
