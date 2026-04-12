@@ -74,10 +74,7 @@ export const RENDERER_PLUGINS: RendererPluginDef[] = [
 /**
  * Extract JS and CSS from Vite build output
  */
-export function extractBuildOutput(
-  result: unknown,
-  label: string,
-): { code: string; css: string } {
+export function extractBuildOutput(result: unknown, label: string): { code: string; css: string } {
   let code = "";
   let css = "";
 
@@ -183,7 +180,5 @@ export async function buildRendererPlugin(
 export async function buildAllRendererPlugins(
   plugins: RendererPluginDef[] = RENDERER_PLUGINS,
 ): Promise<RendererPluginOutput[]> {
-  return Promise.all(
-    plugins.map((plugin) => buildRendererPlugin(plugin.entry, plugin.name)),
-  );
+  return Promise.all(plugins.map((plugin) => buildRendererPlugin(plugin.entry, plugin.name)));
 }

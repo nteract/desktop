@@ -44,6 +44,20 @@ export default defineConfig(({ command }) => {
       minify: true,
       sourcemap: false,
     },
+    run: {
+      tasks: {
+        build: {
+          command: "vp build && node build-html.js",
+        },
+        "build:plugins": {
+          command: "node build-plugins.ts",
+        },
+        "build:all": {
+          command: "echo 'MCP app build complete'",
+          dependsOn: ["build", "build:plugins"],
+        },
+      },
+    },
     define: {
       "process.env.NODE_ENV": JSON.stringify("production"),
     },

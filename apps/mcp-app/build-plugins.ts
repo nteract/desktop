@@ -5,7 +5,7 @@ import { wrapForMcpApp } from "./src/lib/wrap-plugin.js";
 import {
   buildAllRendererPlugins,
   RENDERER_PLUGINS,
-} from "../../src/build/renderer-plugin-builder";
+} from "../../src/build/renderer-plugin-builder.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../..");
