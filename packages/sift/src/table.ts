@@ -1767,7 +1767,7 @@ export function createTable(
       const f = filters[c];
 
       if (label) {
-        label.style.color = f ? "var(--accent)" : "";
+        label.style.color = f ? "var(--sift-accent)" : "";
         label.textContent = columns[c].label;
       }
 
@@ -2042,8 +2042,8 @@ export function createTable(
       cell.style.position = "sticky";
       cell.style.left = pinnedLeftOffsets[colIndex] + "px";
       cell.style.zIndex = "1";
-      cell.style.background = "var(--panel)";
-      cell.style.boxShadow = "2px 0 4px var(--pin-shadow)";
+      cell.style.background = "var(--sift-panel)";
+      cell.style.boxShadow = "2px 0 4px var(--sift-pin-shadow)";
     } else {
       cell.style.position = "";
       cell.style.left = "";
@@ -2093,8 +2093,8 @@ export function createTable(
         th.style.position = "sticky";
         th.style.left = pinnedLeftOffsets[dataCol] + "px";
         th.style.zIndex = "6";
-        th.style.background = "color-mix(in srgb, var(--panel) 90%, var(--page) 10%)";
-        th.style.boxShadow = vi === lastPinnedVi ? "2px 0 4px var(--pin-shadow)" : "";
+        th.style.background = "color-mix(in srgb, var(--sift-panel) 90%, var(--sift-page) 10%)";
+        th.style.boxShadow = vi === lastPinnedVi ? "2px 0 4px var(--sift-pin-shadow)" : "";
         // Hide resize bar on last pinned column (shadow provides the edge)
         if (handle) handle.style.opacity = vi === lastPinnedVi ? "0" : "";
       } else {

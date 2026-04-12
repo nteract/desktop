@@ -1,5 +1,5 @@
-@import "tailwindcss";
 @import "./themes/cream.css";
+@import "tailwindcss";
 
 * {
   box-sizing: border-box;
