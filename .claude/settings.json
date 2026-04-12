@@ -1,6 +1,5 @@
 {
   "enabledPlugins": {
-    "biome-lsp@nteract-plugins": true,
     "async-rust-lsp@nteract-plugins": true
   },
   "extraKnownMarketplaces": {
