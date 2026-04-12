@@ -752,11 +752,14 @@ impl Daemon {
             self.run_windows_server().await?;
         }
 
-        // Shut down all running kernels before exiting.
+        // Shut down all runtime agents before exiting.
         //
-        // Kernels are spawned in their own process group (process_group(0)),
+        // Runtime agents are spawned in their own process group (process_group(0)),
         // so they do NOT receive the SIGINT/SIGTERM that the daemon receives.
-        // Without explicit shutdown here, kernel processes become orphans.
+        // Their kernel subprocesses inherit the agent's PGID, so killing the
+        // agent's process group kills the kernel too.
+        //
+        // Without explicit shutdown here, agent process groups become orphans.
         // We cannot rely on Drop alone because:
         //   1. The runtime agent handle is behind Arc<Mutex<Option<...>>> inside
         //      Arc<NotebookRoom> — multiple spawned tasks hold Arc clones that
@@ -764,7 +767,7 @@ impl Daemon {
         //   2. A second ctrl-c or SIGKILL skips destructors entirely.
         //
         // To avoid holding the notebook_rooms lock across .await points, first
-        // drain the map into an owned collection, then shut down kernels.
+        // drain the map into an owned collection, then shut down agents.
         let drained_rooms = {
             let mut rooms = self.notebook_rooms.lock().await;
             rooms.drain().collect::<Vec<_>>()
@@ -787,6 +790,13 @@ impl Daemon {
                         ),
                     )
                     .await;
+                }
+                // Unregister from process group registry before dropping handle
+                {
+                    let ra_guard = room.runtime_agent_handle.lock().await;
+                    if let Some(ref handle) = *ra_guard {
+                        handle.unregister();
+                    }
                 }
                 // Scope each lock independently to avoid cross-lock ordering.
                 {

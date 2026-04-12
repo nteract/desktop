@@ -2100,6 +2100,13 @@ where
                                 );
                             }
                         }
+                        // Unregister from process group registry before dropping handle
+                        {
+                            let ra_guard = room_for_eviction.runtime_agent_handle.lock().await;
+                            if let Some(ref handle) = *ra_guard {
+                                handle.unregister();
+                            }
+                        }
                         // Scope each lock independently to avoid cross-lock ordering.
                         {
                             let mut guard = room_for_eviction.runtime_agent_handle.lock().await;
