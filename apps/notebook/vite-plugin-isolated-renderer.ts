@@ -127,6 +127,7 @@ export function isolatedRendererPlugin(options: IsolatedRendererPluginOptions = 
           external: ["react", "react/jsx-runtime"],
           output: {
             assetFileNames: `${pluginName}.[ext]`,
+            inlineDynamicImports: true,
           },
           onwarn(warning, warn) {
             if (
