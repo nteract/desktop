@@ -285,12 +285,12 @@ h1 {
   width: 100%;
   overflow: hidden;
   animation: summary-fade-in 300ms ease-out;
-  --semiotic-bg: transparent;
-  --semiotic-text: var(--sift-muted);
-  --semiotic-text-secondary: var(--sift-muted);
-  --semiotic-border: transparent;
-  --semiotic-grid: transparent;
-  --semiotic-primary: var(--sift-accent);
+  --sift-chart-bg: transparent;
+  --sift-chart-text: var(--sift-muted);
+  --sift-chart-text-secondary: var(--sift-muted);
+  --sift-chart-border: transparent;
+  --sift-chart-grid: transparent;
+  --sift-chart-primary: var(--sift-accent);
 }
 
 .sift-th-summary svg,

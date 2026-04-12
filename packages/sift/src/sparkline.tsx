@@ -104,7 +104,7 @@ function BrushLayer({
     const x = Math.min(brushState.startX, brushState.currentX);
     const w = Math.abs(brushState.currentX - brushState.startX);
     brushRect = (
-      <rect x={x} y={0} width={w} height={CHART_HEIGHT} fill="var(--accent)" opacity={0.2} />
+      <rect x={x} y={0} width={w} height={CHART_HEIGHT} fill="var(--sift-accent)" opacity={0.2} />
     );
   } else if (activeFilter) {
     const x = valueToX(activeFilter.min);
@@ -115,7 +115,7 @@ function BrushLayer({
         y={0}
         width={w}
         height={CHART_HEIGHT}
-        fill="var(--accent)"
+        fill="var(--sift-accent)"
         opacity={0.15}
         rx={2}
       />
@@ -362,9 +362,11 @@ function NumericHistogram({
   const numBins = summary.bins.length;
   const gap = 1;
   const barW = Math.max(1, (width - (numBins - 1) * gap) / numBins);
-  const baseFill = hasOverlay ? "rgba(149, 95, 59, 0.2)" : "rgba(149, 95, 59, 0.7)";
-  const dimFill = "rgba(149, 95, 59, 0.12)";
-  const activeFill = "rgba(149, 95, 59, 0.7)";
+  const baseFill = hasOverlay
+    ? "color-mix(in srgb, var(--sift-accent) 20%, transparent)"
+    : "color-mix(in srgb, var(--sift-accent) 70%, transparent)";
+  const dimFill = "color-mix(in srgb, var(--sift-accent) 12%, transparent)";
+  const activeFill = "color-mix(in srgb, var(--sift-accent) 70%, transparent)";
 
   return (
     <div>
@@ -479,7 +481,7 @@ function VisibleOverlay({
             y={CHART_HEIGHT - h}
             width={barW}
             height={h}
-            fill="var(--accent)"
+            fill="var(--sift-accent)"
             opacity={0.85}
           />
         );
@@ -834,9 +836,11 @@ function TimestampHistogram({
   const maxCount = Math.max(...summary.bins.map((b) => b.count));
   const numBins = summary.bins.length;
   const barW = width / numBins;
-  const baseFill = hasOverlay ? "rgba(149, 95, 59, 0.18)" : "rgba(149, 95, 59, 0.55)";
-  const dimFill = "rgba(149, 95, 59, 0.1)";
-  const activeFill = "rgba(149, 95, 59, 0.55)";
+  const baseFill = hasOverlay
+    ? "color-mix(in srgb, var(--sift-accent) 18%, transparent)"
+    : "color-mix(in srgb, var(--sift-accent) 55%, transparent)";
+  const dimFill = "color-mix(in srgb, var(--sift-accent) 10%, transparent)";
+  const activeFill = "color-mix(in srgb, var(--sift-accent) 55%, transparent)";
 
   // Compute bin boundaries from the linear range
   const binSpan = (summary.max - summary.min) / numBins;
