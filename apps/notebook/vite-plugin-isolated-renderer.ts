@@ -8,6 +8,7 @@
  *   import { rendererCode, rendererCss } from 'virtual:isolated-renderer';
  */
 
+import { existsSync } from "node:fs";
 import path from "node:path";
 import tailwindcss from "@tailwindcss/vite";
 import { build, type Plugin } from "vite-plus";
@@ -111,7 +112,11 @@ export function isolatedRendererPlugin(options: IsolatedRendererPluginOptions = 
       resolve: {
         alias: {
           "@/": `${srcDir}/`,
-          "nteract-predicate": path.resolve(__dirname, "../../crates/nteract-predicate/pkg"),
+          "nteract-predicate": existsSync(
+            path.resolve(__dirname, "../../crates/nteract-predicate/pkg/nteract_predicate.js"),
+          )
+            ? path.resolve(__dirname, "../../crates/nteract-predicate/pkg")
+            : path.resolve(__dirname, "../../packages/sift/src/__mocks__/nteract-predicate"),
           "@nteract/sift/style.css": path.resolve(__dirname, "../../packages/sift/src/style.css"),
           "@nteract/sift": path.resolve(__dirname, "../../packages/sift/src/index.ts"),
         },
