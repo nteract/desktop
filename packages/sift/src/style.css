@@ -1,4 +1,5 @@
 @import "./themes/cream.css";
+@import "./themes/classic.css";
 @import "tailwindcss";
 
 * {
@@ -100,25 +101,63 @@ h1 {
   outline-offset: 1px;
 }
 
-/* --- Theme toggle --- */
+/* --- Appearance controls --- */
 
-.sift-theme-toggle {
-  background: none;
-  border: 1px solid var(--sift-rule);
-  border-radius: 8px;
-  padding: 4px 10px;
-  font: 14px/1.3 var(--sift-font);
-  color: var(--sift-muted);
-  cursor: pointer;
+.sift-appearance {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  flex-wrap: wrap;
   align-self: center;
-  transition:
-    color 150ms ease,
-    border-color 150ms ease;
 }
 
-.sift-theme-toggle:hover {
+.sift-appearance-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sift-appearance-label {
+  font: 500 11px/1 var(--sift-font);
+  color: var(--sift-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.sift-toggle-group {
+  display: inline-flex;
+  border: 1px solid var(--sift-rule);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.sift-toggle-btn {
+  background: none;
+  border: none;
+  border-right: 1px solid var(--sift-rule);
+  padding: 5px 12px;
+  font: 13px/1.3 var(--sift-font);
+  color: var(--sift-muted);
+  cursor: pointer;
+  transition:
+    background 150ms ease,
+    color 150ms ease;
+  white-space: nowrap;
+}
+
+.sift-toggle-btn:last-child {
+  border-right: none;
+}
+
+.sift-toggle-btn:hover {
   color: var(--sift-ink);
-  border-color: var(--sift-muted);
+  background: color-mix(in srgb, var(--sift-accent) 5%, transparent);
+}
+
+.sift-toggle-btn[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--sift-ink) 8%, transparent);
+  color: var(--sift-ink);
+  font-weight: 600;
 }
 
 .sift-github-btn {
