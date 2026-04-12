@@ -400,6 +400,12 @@ async fn test_notebook_sync_via_unified_socket() {
     let cells = client1.get_cells();
     assert!(cells.is_empty(), "new notebook should have no cells");
 
+    // Wait for the daemon's document structure (cells map) to sync to the client.
+    // connect_create() returns after the initial handshake, but the background sync
+    // task may not have delivered the cells Map yet.
+    let mut watcher = client1.subscribe();
+    let _ = tokio::time::timeout(Duration::from_secs(2), watcher.changed()).await;
+
     // Add a cell from client1
     client1.add_cell_after("cell-1", "code", None).unwrap();
     client1.update_source("cell-1", "print('hello')").unwrap();
@@ -454,6 +460,10 @@ async fn test_notebook_sync_cross_window_propagation() {
         .await
         .unwrap()
         .handle;
+
+    // Wait for the daemon's document structure (cells map) to sync to client1.
+    let mut watcher1 = client1.subscribe();
+    let _ = tokio::time::timeout(Duration::from_secs(2), watcher1.changed()).await;
 
     // Client1 adds a cell
     client1.add_cell_after("c1", "code", None).unwrap();
@@ -578,6 +588,10 @@ async fn test_notebook_cell_delete_propagation() {
     let notebook_id = result.info.notebook_id.clone();
     let client1 = result.handle;
 
+    // Wait for the daemon's document structure (cells map) to sync to client1.
+    let mut watcher1 = client1.subscribe();
+    let _ = tokio::time::timeout(Duration::from_secs(2), watcher1.changed()).await;
+
     client1.add_cell_after("keep-1", "code", None).unwrap();
     client1
         .add_cell_after("to-delete", "code", Some("keep-1"))
@@ -680,6 +694,14 @@ async fn test_multiple_notebooks_concurrent_isolation() {
     let nb_a = nb_a.handle;
     let nb_b = nb_b.handle;
     let nb_c = nb_c.handle;
+
+    // Wait for the daemon's document structure (cells map) to sync to each client.
+    let (mut wa, mut wb, mut wc) = (nb_a.subscribe(), nb_b.subscribe(), nb_c.subscribe());
+    let _ = tokio::join!(
+        tokio::time::timeout(Duration::from_secs(2), wa.changed()),
+        tokio::time::timeout(Duration::from_secs(2), wb.changed()),
+        tokio::time::timeout(Duration::from_secs(2), wc.changed()),
+    );
 
     // Add cells to each notebook
     nb_a.add_cell_after("alpha-1", "code", None).unwrap();
