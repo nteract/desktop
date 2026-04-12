@@ -441,7 +441,7 @@ impl KernelConnection for JupyterKernel {
         let process_group_id = process.id().map(|pid| pid as i32);
         #[cfg(unix)]
         if let Some(pgid) = process_group_id {
-            crate::kernel_pids::register_kernel(&kernel_id, pgid);
+            crate::process_groups::register_agent(&kernel_id, pgid);
         }
 
         info!(
@@ -1953,7 +1953,7 @@ impl KernelConnection for JupyterKernel {
         }
 
         if let Some(kid) = self.kernel_id.take() {
-            crate::kernel_pids::unregister_kernel(&kid);
+            crate::process_groups::unregister_agent(&kid);
         }
 
         if let Some(ref path) = self.connection_file {
@@ -2228,7 +2228,7 @@ impl Drop for JupyterKernel {
 
         // Unregister from process registry
         if let Some(kid) = self.kernel_id.take() {
-            crate::kernel_pids::unregister_kernel(&kid);
+            crate::process_groups::unregister_agent(&kid);
         }
 
         // Clean up connection file

@@ -695,13 +695,13 @@ impl Daemon {
             error!("[runtimed] Failed to write daemon info: {}", e);
         }
 
-        // Reap any orphaned kernel process groups from a previous crash
+        // Reap any orphaned agent process groups from a previous crash
         #[cfg(unix)]
         {
-            let reaped = crate::kernel_pids::reap_orphaned_kernels();
+            let reaped = crate::process_groups::reap_orphaned_agents();
             if reaped > 0 {
                 info!(
-                    "[runtimed] Reaped {} orphaned kernel process group(s)",
+                    "[runtimed] Reaped {} orphaned agent process group(s)",
                     reaped
                 );
             }
