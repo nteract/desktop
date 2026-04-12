@@ -72,11 +72,17 @@ type PredicateModule = {
 };
 
 let mod: PredicateModule | null = null;
+let configuredWasmUrl: string | undefined;
+
+/** Set an explicit URL for the WASM binary (e.g. blob server URL). */
+export function setWasmUrl(url: string): void {
+  configuredWasmUrl = url;
+}
 
 async function ensureModule(): Promise<PredicateModule> {
   if (mod) return mod;
   const wasm = await import("nteract-predicate/nteract_predicate.js");
-  await wasm.default();
+  await wasm.default(configuredWasmUrl);
   mod = wasm as unknown as PredicateModule;
   return mod;
 }

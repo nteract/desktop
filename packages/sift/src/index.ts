@@ -68,3 +68,5 @@ export type {
 } from "./table";
 // Imperative engine
 export { createTable } from "./table";
+// WASM configuration
+export { setWasmUrl } from "./predicate";
