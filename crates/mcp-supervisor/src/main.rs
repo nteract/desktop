@@ -366,6 +366,11 @@ fn run_maturin_develop(project_root: &Path) -> bool {
     // is installed where the MCP server actually runs from. Without this,
     // maturin installs into python/runtimed/.venv (the test-only venv)
     // and the MCP server never sees the updated bindings.
+    // Use a separate target directory so maturin's cdylib build doesn't
+    // invalidate fingerprints in the main target/ dir. Without this,
+    // concurrent or subsequent cargo builds see stale timestamps from
+    // maturin's writes and recompile the entire dependency tree.
+    let maturin_target = project_root.join("target/maturin");
     let status = std::process::Command::new("uv")
         .args([
             "run",
@@ -373,6 +378,8 @@ fn run_maturin_develop(project_root: &Path) -> bool {
             &project_root.join("python/runtimed").to_string_lossy(),
             "maturin",
             "develop",
+            "--target-dir",
+            &maturin_target.to_string_lossy(),
         ])
         .env(
             "VIRTUAL_ENV",

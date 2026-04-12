@@ -571,6 +571,11 @@ fn ensure_maturin_develop() {
         eprintln!("Warning: failed to get current directory for maturin develop");
         return;
     };
+    // Use a separate target directory so maturin's cdylib build doesn't
+    // invalidate fingerprints in the main target/ dir. Without this,
+    // cargo tauri build (Phase 3) sees stale timestamps from maturin's
+    // concurrent writes and recompiles the entire dependency tree.
+    let maturin_target = cwd.join("target/maturin");
     let status = Command::new("uv")
         .args([
             "run",
@@ -578,6 +583,8 @@ fn ensure_maturin_develop() {
             "python/runtimed",
             "maturin",
             "develop",
+            "--target-dir",
+            &maturin_target.to_string_lossy(),
         ])
         .env("VIRTUAL_ENV", cwd.join(".venv"))
         .env_remove("CONDA_PREFIX")
@@ -627,11 +634,15 @@ fn cmd_build(rust_only: bool) {
         None
     };
 
-    // Phase 1: Single cargo invocation for all binaries.
-    // Building all packages together ensures workspace feature unification
-    // happens in one pass, so the later `cargo tauri build` finds everything
-    // cached instead of recompiling the entire dependency tree.
-    println!("Building all Rust targets (runtimed, runt, mcpb-runt, mcp-supervisor, notebook)...");
+    // Phase 1: Build all Rust crates except `notebook`.
+    // The `notebook` crate's build.rs declares `rerun-if-changed` on
+    // `apps/notebook/dist`, so building it here would be wasted work —
+    // Phase 2 rebuilds the frontend (updating dist/), which invalidates
+    // notebook's fingerprint and forces cargo tauri build to recompile it
+    // anyway. By excluding notebook here, we still pre-warm the entire
+    // dependency tree (all shared crates are built via the other targets),
+    // and Phase 3 only needs to compile notebook + link.
+    println!("Building Rust targets (runtimed, runt, mcpb-runt, mcp-supervisor)...");
     run_cmd(
         "cargo",
         &[
@@ -644,8 +655,6 @@ fn cmd_build(rust_only: bool) {
             "mcpb-runt",
             "-p",
             "mcp-supervisor",
-            "-p",
-            "notebook",
         ],
     );
 
