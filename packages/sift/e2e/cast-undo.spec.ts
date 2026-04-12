@@ -6,8 +6,8 @@ import { expect, type Page, test } from "@playwright/test";
  */
 
 async function openColumnMenu(page: Page, columnLabel: string) {
-  const th = page.locator(".pt-th").filter({
-    has: page.locator(".pt-th-label", {
+  const th = page.locator(".sift-th").filter({
+    has: page.locator(".sift-th-label", {
       hasText: new RegExp(`^${columnLabel}$`),
     }),
   });
@@ -24,20 +24,20 @@ test.describe("Cast Column Undo (Titanic)", () => {
 
   test.beforeEach(async ({ page }) => {
     await page.goto("/?dataset=titanic");
-    await page.waitForSelector(".pt-table-container", { timeout: 90_000 });
-    await expect(page.locator(".pt-stat-rows")).toHaveAttribute("data-value", /891/, {
+    await page.waitForSelector(".sift-table-container", { timeout: 90_000 });
+    await expect(page.locator(".sift-stat-rows")).toHaveAttribute("data-value", /891/, {
       timeout: 30_000,
     });
   });
 
   test("cast Name to Number then back to Text restores values", async ({ page }) => {
     // Get the original first row's Name value
-    const labels = await page.locator(".pt-th-label").allTextContents();
+    const labels = await page.locator(".sift-th-label").allTextContents();
     const nameIdx = labels.indexOf("Name");
     expect(nameIdx).toBeGreaterThan(-1);
 
-    const firstRow = page.locator(".pt-row").first();
-    const nameCell = firstRow.locator(".pt-cell").nth(nameIdx);
+    const firstRow = page.locator(".sift-row").first();
+    const nameCell = firstRow.locator(".sift-cell").nth(nameIdx);
     const originalName = await nameCell.textContent();
     expect(originalName).toBeTruthy();
     expect(originalName!.length).toBeGreaterThan(3); // Should be a real name
@@ -48,10 +48,10 @@ test.describe("Cast Column Undo (Titanic)", () => {
     await page.waitForTimeout(500);
 
     // After casting to Number, the type icon should change to #
-    const nameTh = page.locator(".pt-th").filter({
-      has: page.locator(".pt-th-label", { hasText: /^Name$/ }),
+    const nameTh = page.locator(".sift-th").filter({
+      has: page.locator(".sift-th-label", { hasText: /^Name$/ }),
     });
-    await expect(nameTh.locator(".pt-type-icon")).toHaveText("#");
+    await expect(nameTh.locator(".sift-type-icon")).toHaveText("#");
 
     // Now cast back to Text
     await openColumnMenu(page, "Name");
@@ -59,7 +59,7 @@ test.describe("Cast Column Undo (Titanic)", () => {
     await page.waitForTimeout(500);
 
     // Type icon should be back to Aa
-    await expect(nameTh.locator(".pt-type-icon")).toHaveText("Aa");
+    await expect(nameTh.locator(".sift-type-icon")).toHaveText("Aa");
 
     // The original name value should be restored
     const restoredName = await nameCell.textContent();
@@ -67,12 +67,12 @@ test.describe("Cast Column Undo (Titanic)", () => {
   });
 
   test("cast Fare to Text then back to Number preserves values", async ({ page }) => {
-    const labels = await page.locator(".pt-th-label").allTextContents();
+    const labels = await page.locator(".sift-th-label").allTextContents();
     const fareIdx = labels.indexOf("Fare");
     expect(fareIdx).toBeGreaterThan(-1);
 
-    const firstRow = page.locator(".pt-row").first();
-    const fareCell = firstRow.locator(".pt-cell").nth(fareIdx);
+    const firstRow = page.locator(".sift-row").first();
+    const fareCell = firstRow.locator(".sift-cell").nth(fareIdx);
     const originalFare = await fareCell.textContent();
 
     // Cast Fare to Text
@@ -80,17 +80,17 @@ test.describe("Cast Column Undo (Titanic)", () => {
     await clickMenuItem(page, "Text");
     await page.waitForTimeout(500);
 
-    const fareTh = page.locator(".pt-th").filter({
-      has: page.locator(".pt-th-label", { hasText: /^Fare$/ }),
+    const fareTh = page.locator(".sift-th").filter({
+      has: page.locator(".sift-th-label", { hasText: /^Fare$/ }),
     });
-    await expect(fareTh.locator(".pt-type-icon")).toHaveText("Aa");
+    await expect(fareTh.locator(".sift-type-icon")).toHaveText("Aa");
 
     // Cast back to Number
     await openColumnMenu(page, "Fare");
     await clickMenuItem(page, "Number");
     await page.waitForTimeout(500);
 
-    await expect(fareTh.locator(".pt-type-icon")).toHaveText("#");
+    await expect(fareTh.locator(".sift-type-icon")).toHaveText("#");
 
     // Value should be restored
     const restoredFare = await fareCell.textContent();

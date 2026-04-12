@@ -10,37 +10,37 @@ test.describe("Titanic Edge Cases", () => {
 
   test("loads with correct row count", async ({ page }) => {
     await page.goto("/?dataset=titanic");
-    await page.waitForSelector(".pt-table-container", { timeout: 90_000 });
+    await page.waitForSelector(".sift-table-container", { timeout: 90_000 });
 
-    await expect(page.locator(".pt-stat-rows")).toHaveAttribute("data-value", /891/, {
+    await expect(page.locator(".sift-stat-rows")).toHaveAttribute("data-value", /891/, {
       timeout: 30_000,
     });
   });
 
   test("shows null badges in Age column", async ({ page }) => {
     await page.goto("/?dataset=titanic");
-    await page.waitForSelector(".pt-table-container", { timeout: 90_000 });
-    await expect(page.locator(".pt-stat-rows")).toHaveAttribute("data-value", /891/, {
+    await page.waitForSelector(".sift-table-container", { timeout: 90_000 });
+    await expect(page.locator(".sift-stat-rows")).toHaveAttribute("data-value", /891/, {
       timeout: 30_000,
     });
 
     // Scroll down to find a null age (row 6 — Mr. James Moran)
     // Null badges should be visible somewhere in the visible rows
-    await expect(page.locator(".pt-badge-null").first()).toBeVisible({
+    await expect(page.locator(".sift-badge-null").first()).toBeVisible({
       timeout: 10_000,
     });
   });
 
   test("has mixed column types", async ({ page }) => {
     await page.goto("/?dataset=titanic");
-    await page.waitForSelector(".pt-table-container", { timeout: 90_000 });
-    await expect(page.locator(".pt-stat-rows")).toHaveAttribute("data-value", /891/, {
+    await page.waitForSelector(".sift-table-container", { timeout: 90_000 });
+    await expect(page.locator(".sift-stat-rows")).toHaveAttribute("data-value", /891/, {
       timeout: 30_000,
     });
 
     // Should have both numeric histograms and categorical bars
-    const histograms = page.locator(".pt-th-range");
-    const catSummaries = page.locator(".pt-cat-summary");
+    const histograms = page.locator(".sift-th-range");
+    const catSummaries = page.locator(".sift-cat-summary");
 
     await expect(histograms.first()).toBeVisible({ timeout: 5_000 });
     await expect(catSummaries.first()).toBeVisible({ timeout: 5_000 });
@@ -48,13 +48,13 @@ test.describe("Titanic Edge Cases", () => {
 
   test("category bars show sex distribution", async ({ page }) => {
     await page.goto("/?dataset=titanic");
-    await page.waitForSelector(".pt-table-container", { timeout: 90_000 });
-    await expect(page.locator(".pt-stat-rows")).toHaveAttribute("data-value", /891/, {
+    await page.waitForSelector(".sift-table-container", { timeout: 90_000 });
+    await expect(page.locator(".sift-stat-rows")).toHaveAttribute("data-value", /891/, {
       timeout: 30_000,
     });
 
     // Sex column should show male/female distribution
-    const sexBars = page.locator(".pt-cat-row", { hasText: "male" });
+    const sexBars = page.locator(".sift-cat-row", { hasText: "male" });
     await expect(sexBars.first()).toBeVisible({ timeout: 5_000 });
   });
 });

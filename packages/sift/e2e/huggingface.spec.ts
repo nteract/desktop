@@ -12,26 +12,26 @@ test.describe("HuggingFace Dataset Loading", () => {
 
   test("Heart Failure loads with boolean columns", async ({ page }) => {
     await page.goto("/?dataset=heart-failure");
-    await page.waitForSelector(".pt-table-container", { timeout: 90_000 });
+    await page.waitForSelector(".sift-table-container", { timeout: 90_000 });
 
-    await expect(page.locator(".pt-stat-rows")).toHaveAttribute("data-value", /299/, {
+    await expect(page.locator(".sift-stat-rows")).toHaveAttribute("data-value", /299/, {
       timeout: 30_000,
     });
-    await expect(page.locator(".pt-badge").first()).toBeVisible({
+    await expect(page.locator(".sift-badge").first()).toBeVisible({
       timeout: 5_000,
     });
   });
 
   test("Adult Census loads with many categorical columns", async ({ page }) => {
     await page.goto("/?dataset=adult-census");
-    await page.waitForSelector(".pt-table-container", { timeout: 90_000 });
+    await page.waitForSelector(".sift-table-container", { timeout: 90_000 });
 
     // Wait for all row groups to load (progressive loading shows partial counts first)
-    await expect(page.locator(".pt-stat-rows")).toHaveAttribute("data-value", /3[0-9],/, {
+    await expect(page.locator(".sift-stat-rows")).toHaveAttribute("data-value", /3[0-9],/, {
       timeout: 60_000,
     });
 
-    await expect(page.locator(".pt-cat-summary").first()).toBeVisible({
+    await expect(page.locator(".sift-cat-summary").first()).toBeVisible({
       timeout: 5_000,
     });
   });

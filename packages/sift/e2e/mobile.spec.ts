@@ -10,28 +10,28 @@ test.describe("Mobile Viewport", () => {
 
   test.beforeEach(async ({ page }) => {
     await page.goto("/?dataset=generated");
-    await page.waitForSelector(".pt-table-container");
-    await page.waitForSelector(".pt-row");
+    await page.waitForSelector(".sift-table-container");
+    await page.waitForSelector(".sift-row");
   });
 
   test("table renders and shows rows at mobile width", async ({ page }) => {
-    const rows = page.locator(".pt-row");
+    const rows = page.locator(".sift-row");
     const count = await rows.count();
     expect(count).toBeGreaterThan(0);
 
     // Stats bar is visible
-    await expect(page.locator(".pt-stat-rows")).toBeVisible();
+    await expect(page.locator(".sift-stat-rows")).toBeVisible();
   });
 
   test("header summaries render at narrow width", async ({ page }) => {
     // At least some summary containers should have content
-    const summaries = page.locator(".pt-th-summary");
+    const summaries = page.locator(".sift-th-summary");
     const count = await summaries.count();
     expect(count).toBeGreaterThan(0);
   });
 
   test("horizontal scroll works", async ({ page }) => {
-    const viewport = page.locator(".pt-viewport");
+    const viewport = page.locator(".sift-viewport");
 
     // Scroll right
     await viewport.evaluate((el) => (el.scrollLeft = 200));
@@ -42,8 +42,8 @@ test.describe("Mobile Viewport", () => {
   });
 
   test("first pinned column stays visible when scrolling", async ({ page }) => {
-    const viewport = page.locator(".pt-viewport");
-    const firstTh = page.locator(".pt-th").first();
+    const viewport = page.locator(".sift-viewport");
+    const firstTh = page.locator(".sift-th").first();
 
     // Scroll right
     await viewport.evaluate((el) => (el.scrollLeft = 300));
@@ -64,16 +64,16 @@ test.describe("Mobile Viewport", () => {
   });
 
   test("fullscreen button is visible", async ({ page }) => {
-    await expect(page.locator(".pt-fullscreen-btn")).toBeVisible();
+    await expect(page.locator(".sift-fullscreen-btn")).toBeVisible();
   });
 
   test("sort works via column header tap", async ({ page }) => {
     // Tap a column header to sort (click simulates tap at mobile viewport)
-    const firstSortable = page.locator(".pt-th-top").first();
+    const firstSortable = page.locator(".sift-th-top").first();
     await firstSortable.click();
 
     // Sort arrow should appear
-    const arrow = page.locator(".pt-sort-arrow").first();
+    const arrow = page.locator(".sift-sort-arrow").first();
     await expect(arrow).toContainText("↑", { timeout: 2000 });
   });
 });

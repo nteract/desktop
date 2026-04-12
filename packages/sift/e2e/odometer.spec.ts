@@ -3,12 +3,12 @@ import { expect, test } from "@playwright/test";
 test.describe("Odometer", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/?dataset=generated");
-    await page.waitForSelector(".pt-table-container");
-    await page.waitForSelector(".pt-row");
+    await page.waitForSelector(".sift-table-container");
+    await page.waitForSelector(".sift-row");
   });
 
   test("row count rolls up during streaming", async ({ page }) => {
-    const stats = page.locator(".pt-stat-rows");
+    const stats = page.locator(".sift-stat-rows");
 
     // Wait for streaming to start
     await expect(stats).toHaveAttribute("data-value", /rows/, {
@@ -25,12 +25,12 @@ test.describe("Odometer", () => {
     await page.screenshot({ path: "test-results/odometer-full.png" });
 
     // Verify odometer slots exist (digits should be in strip elements)
-    const slots = stats.locator(".pt-odo-slot");
+    const slots = stats.locator(".sift-odo-slot");
     await expect(slots.first()).toBeVisible();
   });
 
   test("row count rolls down on filter, back up on clear", async ({ page }) => {
-    const stats = page.locator(".pt-stat-rows");
+    const stats = page.locator(".sift-stat-rows");
 
     // Wait for all data
     await expect(stats).toHaveAttribute("data-value", /100,000/, {
@@ -40,8 +40,8 @@ test.describe("Odometer", () => {
     await page.screenshot({ path: "test-results/odometer-before-filter.png" });
 
     // Apply a range filter on Score column via brush
-    const scoreTh = page.locator(".pt-th", { hasText: "SCORE" });
-    const summary = scoreTh.locator(".pt-th-summary");
+    const scoreTh = page.locator(".sift-th", { hasText: "SCORE" });
+    const summary = scoreTh.locator(".sift-th-summary");
     const box = await summary.boundingBox();
     if (!box) throw new Error("No summary bounding box");
 
@@ -62,7 +62,7 @@ test.describe("Odometer", () => {
     expect(afterFilter).toContain("100,000");
 
     // Clear filter by clicking pill X
-    await page.locator(".pt-filter-pill-x").click();
+    await page.locator(".sift-filter-pill-x").click();
     await expect(stats).not.toHaveAttribute("data-value", /of/, {
       timeout: 3000,
     });

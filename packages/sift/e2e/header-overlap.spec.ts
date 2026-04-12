@@ -9,14 +9,14 @@ import { expect, test } from "@playwright/test";
 test.describe("Header Overlap", () => {
   test("first row is visible below header on generated dataset", async ({ page }) => {
     await page.goto("/?dataset=generated");
-    await page.waitForSelector(".pt-table-container");
-    await page.waitForSelector(".pt-row");
+    await page.waitForSelector(".sift-table-container");
+    await page.waitForSelector(".sift-row");
 
     // Wait for summaries to render (React async mount)
     await page.waitForTimeout(500);
 
-    const header = page.locator(".pt-header");
-    const firstRow = page.locator(".pt-row").first();
+    const header = page.locator(".sift-header");
+    const firstRow = page.locator(".sift-row").first();
 
     const headerBox = await header.boundingBox();
     const rowBox = await firstRow.boundingBox();
@@ -31,16 +31,16 @@ test.describe("Header Overlap", () => {
   test("first row is visible below header on HF dataset", async ({ page }) => {
     test.setTimeout(120_000);
     await page.goto("/?dataset=titanic");
-    await page.waitForSelector(".pt-table-container", { timeout: 90_000 });
-    await expect(page.locator(".pt-stat-rows")).toHaveAttribute("data-value", /891/, {
+    await page.waitForSelector(".sift-table-container", { timeout: 90_000 });
+    await expect(page.locator(".sift-stat-rows")).toHaveAttribute("data-value", /891/, {
       timeout: 30_000,
     });
 
     // Wait for summaries to render
     await page.waitForTimeout(1000);
 
-    const header = page.locator(".pt-header");
-    const firstRow = page.locator(".pt-row").first();
+    const header = page.locator(".sift-header");
+    const firstRow = page.locator(".sift-row").first();
 
     const headerBox = await header.boundingBox();
     const rowBox = await firstRow.boundingBox();

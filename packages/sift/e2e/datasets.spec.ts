@@ -3,7 +3,7 @@ import { expect, test } from "@playwright/test";
 test.describe("Dataset Picker", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/?dataset=generated");
-    await page.waitForSelector(".pt-table-container");
+    await page.waitForSelector(".sift-table-container");
   });
 
   test("shows dataset dropdown with all options", async ({ page }) => {

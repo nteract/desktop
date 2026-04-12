@@ -6,7 +6,7 @@ import { cursorHighlight, trackCursor } from "@argo-video/cli";
 /** Mark scene + let sift's render settle before overlay injection. */
 async function mark(page: any, narration: any, scene: string) {
   narration.mark(scene);
-  await page.waitForSelector(".pt-row", { state: "visible", timeout: 5000 }).catch(() => {});
+  await page.waitForSelector(".sift-row", { state: "visible", timeout: 5000 }).catch(() => {});
   await page.waitForTimeout(1000);
 }
 
@@ -37,19 +37,19 @@ test("sift-showcase", async ({ page, narration }) => {
 
   // Wait for all ~114k rows to stream in (odometer uses data-value attr)
   await page.waitForFunction(
-    () => document.querySelector(".pt-stat-rows")?.getAttribute("data-value")?.includes("rows"),
+    () => document.querySelector(".sift-stat-rows")?.getAttribute("data-value")?.includes("rows"),
     { timeout: 60000 },
   );
   // Extra settle time — HuggingFace data streams in row groups
   await page.waitForTimeout(2000);
 
-  const headerRow = page.locator(".pt-header-row");
-  const tableContainer = page.locator(".pt-table-container");
+  const headerRow = page.locator(".sift-header-row");
+  const tableContainer = page.locator(".sift-table-container");
   // Spotify column order (from HF parquet schema):
   // 0:Unnamed:0 1:track_id 2:artists 3:album_name 4:track_name
   // 5:popularity 6:duration_ms 7:explicit 8:danceability 9:energy
   // 10:key ... 20:track_genre
-  const col = (n: number) => headerRow.locator(".pt-th").nth(n);
+  const col = (n: number) => headerRow.locator(".sift-th").nth(n);
 
   await mark(page, narration, "intro");
   await showOverlay(page, "intro", narration.durationFor("intro"));
@@ -72,7 +72,7 @@ test("sift-showcase", async ({ page, narration }) => {
 
   await mark(page, narration, "scroll-fast");
   showOverlay(page, "scroll-fast", narration.durationFor("scroll-fast"));
-  focusRing(page, page.locator(".pt-stats"), { color: "#60a5fa", duration: 4000 });
+  focusRing(page, page.locator(".sift-stats"), { color: "#60a5fa", duration: 4000 });
   await scroll(page, tableContainer, 8000);
   await page.waitForTimeout(800);
   await scroll(page, tableContainer, 12000);
@@ -100,7 +100,7 @@ test("sift-showcase", async ({ page, narration }) => {
     holdMs: Math.floor(resizeDur * 0.7),
   });
   await page.waitForTimeout(800);
-  const resizeHandle = resizeCol.locator(".pt-resize-handle");
+  const resizeHandle = resizeCol.locator(".sift-resize-handle");
   await resizeHandle.waitFor({ state: "attached", timeout: 5000 });
   // Hover the handle to ensure Playwright targets it precisely (6px wide)
   await resizeHandle.hover({ force: true });
@@ -125,7 +125,7 @@ test("sift-showcase", async ({ page, narration }) => {
   // Sort by danceability — recognizable music metric
   const danceHeader = col(8);
   await danceHeader.scrollIntoViewIfNeeded();
-  await danceHeader.locator(".pt-th-top").click();
+  await danceHeader.locator(".sift-th-top").click();
   await mark(page, narration, "sort");
   const sortDur = narration.durationFor("sort");
   showOverlay(page, "sort", sortDur);
@@ -136,7 +136,7 @@ test("sift-showcase", async ({ page, narration }) => {
   await mark(page, narration, "brush-filter");
   const brushDur = narration.durationFor("brush-filter");
   showOverlay(page, "brush-filter", brushDur);
-  const box = await danceHeader.locator(".pt-th-summary").boundingBox();
+  const box = await danceHeader.locator(".sift-th-summary").boundingBox();
   if (box) {
     const y = box.y + box.height / 2;
     const x0 = box.x + box.width * 0.2;
@@ -160,15 +160,15 @@ test("sift-showcase", async ({ page, narration }) => {
   await explicitHeader.scrollIntoViewIfNeeded();
   focusRing(page, explicitHeader, { color: "#22d3ee", duration: 2500 });
   await page.waitForTimeout(600);
-  await explicitHeader.locator(".pt-bool-true").click();
+  await explicitHeader.locator(".sift-bool-true").click();
   await page.waitForTimeout(3000);
 
   await mark(page, narration, "clear");
   const clearDur = narration.durationFor("clear");
   showOverlay(page, "clear", clearDur);
-  focusRing(page, page.locator(".pt-filter-pills"), { color: "#e879f9", duration: 2000 });
+  focusRing(page, page.locator(".sift-filter-pills"), { color: "#e879f9", duration: 2000 });
   await page.waitForTimeout(600);
-  const pills = page.locator(".pt-filter-pill-x");
+  const pills = page.locator(".sift-filter-pill-x");
   while ((await pills.count()) > 0) {
     await pills.first().click();
     await page.waitForTimeout(400);
@@ -188,7 +188,7 @@ test("sift-showcase", async ({ page, narration }) => {
   narration.mark("closing");
   showConfetti(page, { emoji: ["📊", "⚡", "🔥"], spread: "burst", duration: 3000, pieces: 180 });
   showOverlay(page, "closing", 4000);
-  const starBtn = page.locator(".pt-github-btn");
+  const starBtn = page.locator(".sift-github-btn");
   await page.waitForTimeout(1200);
   focusRing(page, starBtn, { color: "#f59e0b", duration: 2500 });
   await page.waitForTimeout(2800);

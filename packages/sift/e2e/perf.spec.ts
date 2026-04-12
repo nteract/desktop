@@ -28,9 +28,9 @@ function record(metric: string, value: number, unit: string) {
 test.describe("Performance Benchmarks (100k rows)", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/?dataset=generated");
-    await page.waitForSelector(".pt-table-container");
+    await page.waitForSelector(".sift-table-container");
     // Wait for all 100k rows to stream in
-    await expect(page.locator(".pt-stat-rows")).toHaveAttribute("data-value", /100,000/, {
+    await expect(page.locator(".sift-stat-rows")).toHaveAttribute("data-value", /100,000/, {
       timeout: 30_000,
     });
   });
@@ -38,10 +38,10 @@ test.describe("Performance Benchmarks (100k rows)", () => {
   test("mount and stream all batches", async ({ page }) => {
     const start = Date.now();
     await page.goto("/?dataset=generated");
-    await page.waitForSelector(".pt-table-container");
+    await page.waitForSelector(".sift-table-container");
     const firstBatch = Date.now() - start;
 
-    await expect(page.locator(".pt-stat-rows")).toHaveAttribute("data-value", /100,000/, {
+    await expect(page.locator(".sift-stat-rows")).toHaveAttribute("data-value", /100,000/, {
       timeout: 30_000,
     });
     const allBatches = Date.now() - start;
@@ -52,7 +52,7 @@ test.describe("Performance Benchmarks (100k rows)", () => {
   });
 
   test("scroll frame time", async ({ page }) => {
-    const viewport = page.locator(".pt-viewport");
+    const viewport = page.locator(".sift-viewport");
 
     await viewport.evaluate((el) => (el.scrollTop = 1000));
     await page.waitForTimeout(100);
@@ -86,12 +86,12 @@ test.describe("Performance Benchmarks (100k rows)", () => {
   });
 
   test("sort response time", async ({ page }) => {
-    const scoreTh = page.locator(".pt-th").filter({ hasText: "Score" });
+    const scoreTh = page.locator(".sift-th").filter({ hasText: "Score" });
 
     const sortTime = await page.evaluate(() => {
       return new Promise<number>((resolve) => {
-        // Click .pt-th-top (sort handler) not .pt-th (outer container)
-        const top = document.querySelector(".pt-th:nth-child(8) .pt-th-top") as HTMLElement;
+        // Click .sift-th-top (sort handler) not .sift-th (outer container)
+        const top = document.querySelector(".sift-th:nth-child(8) .sift-th-top") as HTMLElement;
         const t0 = performance.now();
         top.click();
         requestAnimationFrame(() => {
@@ -106,12 +106,12 @@ test.describe("Performance Benchmarks (100k rows)", () => {
     record("sort_click_to_render", sortTime, "ms");
 
     // Verify sort actually applied
-    await expect(scoreTh.locator(".pt-sort-arrow")).toContainText("↑");
+    await expect(scoreTh.locator(".sift-sort-arrow")).toContainText("↑");
   });
 
   test("filter response time", async ({ page }) => {
-    const scoreTh = page.locator(".pt-th", { hasText: "SCORE" });
-    const summary = scoreTh.locator(".pt-th-summary");
+    const scoreTh = page.locator(".sift-th", { hasText: "SCORE" });
+    const summary = scoreTh.locator(".sift-th-summary");
     const box = await summary.boundingBox();
     if (!box) throw new Error("No summary bounding box");
 
@@ -119,7 +119,7 @@ test.describe("Performance Benchmarks (100k rows)", () => {
       ({ x, y, w, h }) => {
         return new Promise<number>((resolve) => {
           const svg = document.querySelector(
-            ".pt-th:nth-child(8) .pt-th-summary svg:last-child",
+            ".sift-th:nth-child(8) .sift-th-summary svg:last-child",
           ) as SVGElement;
           if (!svg) {
             resolve(-1);
@@ -164,8 +164,8 @@ test.describe("Performance Benchmarks (100k rows)", () => {
   });
 
   test("column resize frame time", async ({ page }) => {
-    const nameTh = page.locator(".pt-th").nth(1);
-    const handle = nameTh.locator(".pt-resize-handle");
+    const nameTh = page.locator(".sift-th").nth(1);
+    const handle = nameTh.locator(".sift-resize-handle");
     const handleBox = await handle.boundingBox();
     if (!handleBox) throw new Error("No handle bounding box");
 
@@ -173,7 +173,7 @@ test.describe("Performance Benchmarks (100k rows)", () => {
       ({ x, y }) => {
         return new Promise<number[]>((resolve) => {
           const handle = document.querySelector(
-            ".pt-th:nth-child(2) .pt-resize-handle",
+            ".sift-th:nth-child(2) .sift-resize-handle",
           ) as HTMLElement;
           if (!handle) {
             resolve([]);

@@ -4,12 +4,12 @@ test.describe("Table Viewer", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/?dataset=generated");
     // Wait for the table to mount and first batch to render
-    await page.waitForSelector(".pt-table-container");
-    await page.waitForSelector(".pt-row");
+    await page.waitForSelector(".sift-table-container");
+    await page.waitForSelector(".sift-row");
   });
 
   test("loads and shows rows", async ({ page }) => {
-    const stats = page.locator(".pt-stat-rows");
+    const stats = page.locator(".sift-stat-rows");
     // Should eventually show 100,000 rows after all batches
     await expect(stats).toHaveAttribute("data-value", /100,000/, {
       timeout: 10_000,
@@ -17,23 +17,23 @@ test.describe("Table Viewer", () => {
   });
 
   test("renders header labels for all columns", async ({ page }) => {
-    const labels = page.locator(".pt-th-label");
+    const labels = page.locator(".sift-th-label");
     await expect(labels).toHaveCount(12); // id, name, location, department, note, status, priority, score, email, verified, joined, chaos
   });
 
   test("renders header summaries", async ({ page }) => {
     // Wait for all batches so summaries are populated
-    await expect(page.locator(".pt-stat-rows")).toHaveAttribute("data-value", /100,000/, {
+    await expect(page.locator(".sift-stat-rows")).toHaveAttribute("data-value", /100,000/, {
       timeout: 10_000,
     });
     // At least some summary containers should have content
-    const summaries = page.locator(".pt-th-summary");
+    const summaries = page.locator(".sift-th-summary");
     const count = await summaries.count();
     expect(count).toBeGreaterThan(0);
   });
 
   test("scrolls vertically", async ({ page }) => {
-    const viewport = page.locator(".pt-viewport");
+    const viewport = page.locator(".sift-viewport");
     // Scroll down
     await viewport.evaluate((el) => (el.scrollTop = 5000));
     await page.waitForTimeout(100);
@@ -43,24 +43,24 @@ test.describe("Table Viewer", () => {
   });
 
   test("sorts on column click", async ({ page }) => {
-    // Click the Score header label area to sort (sort handler is on .pt-th-top)
-    const scoreTh = page.locator(".pt-th", { hasText: "SCORE" });
-    const scoreLabel = scoreTh.locator(".pt-th-top");
+    // Click the Score header label area to sort (sort handler is on .sift-th-top)
+    const scoreTh = page.locator(".sift-th", { hasText: "SCORE" });
+    const scoreLabel = scoreTh.locator(".sift-th-top");
     await scoreLabel.click();
     // Sort arrow should appear
-    await expect(scoreTh.locator(".pt-sort-arrow")).toContainText("↑");
+    await expect(scoreTh.locator(".sift-sort-arrow")).toContainText("↑");
     // Click again for descending
     await scoreLabel.click();
-    await expect(scoreTh.locator(".pt-sort-arrow")).toContainText("↓");
+    await expect(scoreTh.locator(".sift-sort-arrow")).toContainText("↓");
     // Click again to clear
     await scoreLabel.click();
-    await expect(scoreTh.locator(".pt-sort-arrow")).toHaveText("");
+    await expect(scoreTh.locator(".sift-sort-arrow")).toHaveText("");
   });
 
   test("column resize changes header width", async ({ page }) => {
     // Use the Name column (second) which definitely has a resize handle
-    const nameTh = page.locator(".pt-th").nth(1);
-    const handle = nameTh.locator(".pt-resize-handle");
+    const nameTh = page.locator(".sift-th").nth(1);
+    const handle = nameTh.locator(".sift-resize-handle");
 
     const startWidth = await nameTh.evaluate((el) => el.offsetWidth);
 
@@ -89,13 +89,13 @@ test.describe("Table Viewer", () => {
 
   test("histogram brush creates filter pill", async ({ page }) => {
     // Wait for all data
-    await expect(page.locator(".pt-stat-rows")).toHaveAttribute("data-value", /100,000/, {
+    await expect(page.locator(".sift-stat-rows")).toHaveAttribute("data-value", /100,000/, {
       timeout: 10_000,
     });
 
     // Find the Score histogram (it has a brush layer SVG)
-    const scoreTh = page.locator(".pt-th", { hasText: "SCORE" });
-    const summary = scoreTh.locator(".pt-th-summary");
+    const scoreTh = page.locator(".sift-th", { hasText: "SCORE" });
+    const summary = scoreTh.locator(".sift-th-summary");
     const box = await summary.boundingBox();
     if (!box) throw new Error("No summary bounding box");
 
@@ -108,23 +108,23 @@ test.describe("Table Viewer", () => {
     await page.mouse.up();
 
     // A filter pill should appear
-    await expect(page.locator(".pt-filter-pill")).toHaveCount(1, {
+    await expect(page.locator(".sift-filter-pill")).toHaveCount(1, {
       timeout: 2000,
     });
-    await expect(page.locator(".pt-filter-pill")).toContainText("Score");
+    await expect(page.locator(".sift-filter-pill")).toContainText("Score");
 
     // Stats should show filtered count
-    await expect(page.locator(".pt-stat-rows")).toHaveAttribute("data-value", /of/);
+    await expect(page.locator(".sift-stat-rows")).toHaveAttribute("data-value", /of/);
   });
 
   test("filter pill X clears the filter", async ({ page }) => {
-    await expect(page.locator(".pt-stat-rows")).toHaveAttribute("data-value", /100,000/, {
+    await expect(page.locator(".sift-stat-rows")).toHaveAttribute("data-value", /100,000/, {
       timeout: 10_000,
     });
 
     // Brush the score histogram
-    const scoreTh = page.locator(".pt-th", { hasText: "SCORE" });
-    const summary = scoreTh.locator(".pt-th-summary");
+    const scoreTh = page.locator(".sift-th", { hasText: "SCORE" });
+    const summary = scoreTh.locator(".sift-th-summary");
     const box = await summary.boundingBox();
     if (!box) throw new Error("No summary bounding box");
 
@@ -135,29 +135,29 @@ test.describe("Table Viewer", () => {
     });
     await page.mouse.up();
 
-    await expect(page.locator(".pt-filter-pill")).toHaveCount(1, {
+    await expect(page.locator(".sift-filter-pill")).toHaveCount(1, {
       timeout: 2000,
     });
 
     // Click the X on the pill
-    await page.locator(".pt-filter-pill-x").click();
+    await page.locator(".sift-filter-pill-x").click();
 
     // Pill should be gone, all rows restored
-    await expect(page.locator(".pt-filter-pill")).toHaveCount(0);
-    await expect(page.locator(".pt-stat-rows")).not.toHaveAttribute("data-value", /of/);
+    await expect(page.locator(".sift-filter-pill")).toHaveCount(0);
+    await expect(page.locator(".sift-stat-rows")).not.toHaveAttribute("data-value", /of/);
   });
 
   test("boolean badge renders for verified column", async ({ page }) => {
     // Check that at least one boolean badge exists in the visible rows
-    await expect(page.locator(".pt-badge").first()).toBeVisible();
+    await expect(page.locator(".sift-badge").first()).toBeVisible();
   });
 
   test("fullscreen button exists", async ({ page }) => {
-    await expect(page.locator(".pt-fullscreen-btn")).toBeVisible();
+    await expect(page.locator(".sift-fullscreen-btn")).toBeVisible();
   });
 
   test("header scrolls with viewport horizontally", async ({ page }) => {
-    const viewport = page.locator(".pt-viewport");
+    const viewport = page.locator(".sift-viewport");
 
     // Header is inside the viewport scroll content — scrolls naturally
     await viewport.evaluate((el) => (el.scrollLeft = 200));
@@ -170,7 +170,7 @@ test.describe("Table Viewer", () => {
 
   test("streaming: row count increases over time", async ({ page }) => {
     // First batch should be visible quickly
-    const stats = page.locator(".pt-stat-rows");
+    const stats = page.locator(".sift-stat-rows");
     await expect(stats).toHaveAttribute("data-value", /rows/, {
       timeout: 3000,
     });

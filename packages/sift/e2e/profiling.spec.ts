@@ -3,16 +3,16 @@ import { expect, test } from "@playwright/test";
 test.describe("Column Profiling", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/?dataset=generated");
-    await page.waitForSelector(".pt-table-container");
+    await page.waitForSelector(".sift-table-container");
     // Wait for all data to load
-    await expect(page.locator(".pt-stat-rows")).toHaveAttribute("data-value", /100,000/, {
+    await expect(page.locator(".sift-stat-rows")).toHaveAttribute("data-value", /100,000/, {
       timeout: 10_000,
     });
   });
 
   test("shows null% and distinct count for low-cardinality numeric columns", async ({ page }) => {
     // The Chaos column has NaN, Infinity, null values — should show profiling stats
-    const profileEls = page.locator(".pt-th-profile");
+    const profileEls = page.locator(".sift-th-profile");
     // At least one profile element should be visible
     await expect(profileEls.first()).toBeVisible({ timeout: 5_000 });
 
@@ -24,12 +24,12 @@ test.describe("Column Profiling", () => {
 
   test("profiling stats survive filter application", async ({ page }) => {
     // Find a profile element before filtering
-    const profileEls = page.locator(".pt-th-profile");
+    const profileEls = page.locator(".sift-th-profile");
     const countBefore = await profileEls.count();
 
     // Apply a filter via the Score histogram
-    const scoreTh = page.locator(".pt-th", { hasText: "SCORE" });
-    const summary = scoreTh.locator(".pt-th-summary");
+    const scoreTh = page.locator(".sift-th", { hasText: "SCORE" });
+    const summary = scoreTh.locator(".sift-th-summary");
     const box = await summary.boundingBox();
     if (!box) return; // skip if not visible
 
@@ -50,25 +50,25 @@ test.describe("Column Profiling", () => {
 test.describe("Debug Toggle", () => {
   test("gear button toggles debug stats", async ({ page }) => {
     await page.goto("/?dataset=generated");
-    await page.waitForSelector(".pt-table-container");
-    await expect(page.locator(".pt-stat-rows")).toHaveAttribute("data-value", /100,000/, {
+    await page.waitForSelector(".sift-table-container");
+    await expect(page.locator(".sift-stat-rows")).toHaveAttribute("data-value", /100,000/, {
       timeout: 10_000,
     });
 
     // Debug group should be hidden by default
-    const debugGroup = page.locator(".pt-debug-group");
+    const debugGroup = page.locator(".sift-debug-group");
     await expect(debugGroup).toBeHidden();
 
     // Click the gear button
-    await page.locator(".pt-debug-btn").click();
+    await page.locator(".sift-debug-btn").click();
     await expect(debugGroup).toBeVisible();
 
     // Should show FPS and DOM rows
-    await expect(page.locator(".pt-stat-frame")).toBeVisible();
-    await expect(page.locator(".pt-stat-dom")).toBeVisible();
+    await expect(page.locator(".sift-stat-frame")).toBeVisible();
+    await expect(page.locator(".sift-stat-dom")).toBeVisible();
 
     // Click again to hide
-    await page.locator(".pt-debug-btn").click();
+    await page.locator(".sift-debug-btn").click();
     await expect(debugGroup).toBeHidden();
   });
 });
@@ -76,7 +76,7 @@ test.describe("Debug Toggle", () => {
 test.describe("Dark Mode", () => {
   test("theme toggle switches theme", async ({ page }) => {
     await page.goto("/?dataset=generated");
-    await page.waitForSelector(".pt-table-container");
+    await page.waitForSelector(".sift-table-container");
 
     // Click theme toggle
     await page.locator("#theme-toggle").click();
