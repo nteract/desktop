@@ -502,6 +502,25 @@ impl McpProxy {
             ));
         }
 
+        // Wait for child to become ready (handles concurrent restart from monitor)
+        // Set up notified BEFORE checking if child exists to avoid race
+        let notified = self.child_ready.notified();
+        let needs_wait = self.state.read().await.child_client.is_none();
+        if needs_wait {
+            info!(
+                "Child restart in progress, waiting up to 2s for child to become ready..."
+            );
+            if tokio::time::timeout(Duration::from_secs(2), notified)
+                .await
+                .is_err()
+            {
+                return Err(McpError::internal_error(
+                    "Child restart timed out after 2 seconds",
+                    None,
+                ));
+            }
+        }
+
         // Check if we should exit due to tool divergence
         {
             let state = self.state.read().await;
@@ -543,6 +562,22 @@ impl McpProxy {
                 format!("Child restart failed: {e}"),
                 None,
             ));
+        }
+
+        // Wait for child to become ready (handles concurrent restart from monitor)
+        let notified = self.child_ready.notified();
+        let needs_wait = self.state.read().await.child_client.is_none();
+        if needs_wait {
+            info!("Child restart in progress, waiting up to 2s for child to become ready...");
+            if tokio::time::timeout(Duration::from_secs(2), notified)
+                .await
+                .is_err()
+            {
+                return Err(McpError::internal_error(
+                    "Child restart timed out after 2 seconds",
+                    None,
+                ));
+            }
         }
 
         self.try_forward_read_resource(&params).await
