@@ -354,8 +354,10 @@ export function SiftTable({
 
     let cancelled = false;
     let mountDiv: HTMLDivElement | null = null;
+    let wasmHandle: number | undefined;
     const container = containerRef.current;
 
+    // typeOverrides is intentionally not used here — WASM detects types from the Arrow schema
     async function loadFromParquetUrl() {
       setStatus("loading");
       setError(null);
@@ -383,7 +385,8 @@ export function SiftTable({
         const numRowGroups = meta[0];
 
         // Load first row group → mount table immediately
-        const handle = mod.load_parquet_row_group(parquetBytes, 0, 0);
+        wasmHandle = mod.load_parquet_row_group(parquetBytes, 0, 0);
+        const handle = wasmHandle;
 
         const { tableData, columns, prefetchViewport } = createWasmTableData(
           handle,
@@ -443,6 +446,9 @@ export function SiftTable({
       engineRef.current?.destroy();
       engineRef.current = null;
       mountDiv?.remove();
+      if (wasmHandle !== undefined) {
+        getModuleSync().free(wasmHandle);
+      }
     };
   }, [parquetUrl, columnOverrides, stableOnChange]);
 
