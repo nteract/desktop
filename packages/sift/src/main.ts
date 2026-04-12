@@ -81,7 +81,7 @@ function boot() {
         return load$.pipe(
           catchError((err) => {
             console.error("Failed to load dataset:", err);
-            tableRoot.innerHTML = `<div class="pt-loading">
+            tableRoot.innerHTML = `<div class="sift-loading">
             Failed to load dataset: ${err instanceof Error ? err.message : String(err)}
           </div>`;
             return EMPTY;
@@ -100,12 +100,12 @@ function renderShell(app: HTMLElement) {
   const dataset = DATASETS.find((d) => d.id === currentDatasetId) ?? DATASETS[0];
 
   app.innerHTML = `
-    <div class="pt-page">
-      <div class="pt-intro">
-        <p class="pt-eyebrow">Pretext × Arrow × Semiotic</p>
-        <div class="pt-intro-row">
+    <div class="sift-page">
+      <div class="sift-intro">
+        <p class="sift-eyebrow">Pretext × Arrow × Semiotic</p>
+        <div class="sift-intro-row">
           <h1>Sift</h1>
-          <div class="pt-dataset-picker">
+          <div class="sift-dataset-picker">
             <select id="dataset-select">
               ${DATASETS.map(
                 (d) => `
@@ -116,13 +116,13 @@ function renderShell(app: HTMLElement) {
               ).join("")}
             </select>
           </div>
-          <button class="pt-theme-toggle" id="theme-toggle" title="Toggle dark mode">◑</button>
-          <a href="https://github.com/rgbkrk/sift" class="pt-github-btn" target="_blank" rel="noopener">
+          <button class="sift-theme-toggle" id="theme-toggle" title="Toggle dark mode">◑</button>
+          <a href="https://github.com/rgbkrk/sift" class="sift-github-btn" target="_blank" rel="noopener">
             <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
             Star on GitHub
           </a>
         </div>
-        <p class="pt-subtitle" id="dataset-description">${dataset.description}</p>
+        <p class="sift-subtitle" id="dataset-description">${dataset.description}</p>
       </div>
       <div id="table-root"></div>
     </div>
@@ -179,7 +179,7 @@ function loadLocalArrow$(dataset: DatasetEntry, tableRoot: HTMLElement): Observa
           const response = await fetch(`${import.meta.env.BASE_URL}${dataset.path}`);
           if (!response.ok) {
             tableRoot.innerHTML =
-              '<div class="pt-loading">Missing data.arrow — run <code>npm run generate</code> first.</div>';
+              '<div class="sift-loading">Missing data.arrow — run <code>npm run generate</code> first.</div>';
             subscriber.complete();
             return;
           }
@@ -272,7 +272,7 @@ async function loadLocalArrowJs$(
   const firstResult = await reader.next();
   if (isCancelled()) return;
   if (firstResult.done) {
-    tableRoot.innerHTML = '<div class="pt-loading">No data in Arrow file.</div>';
+    tableRoot.innerHTML = '<div class="sift-loading">No data in Arrow file.</div>';
     subscriber.complete();
     return;
   }
@@ -555,22 +555,22 @@ function updateWasmSummaries(
 }
 
 function renderLoadingSkeleton(tableRoot: HTMLElement, status: string) {
-  const existing = tableRoot.querySelector(".pt-skeleton");
+  const existing = tableRoot.querySelector(".sift-skeleton");
   if (existing) {
-    const statusEl = existing.querySelector(".pt-skeleton-status");
+    const statusEl = existing.querySelector(".sift-skeleton-status");
     if (statusEl) statusEl.textContent = status;
     return;
   }
   tableRoot.innerHTML = `
-    <div class="pt-skeleton">
-      <div class="pt-skeleton-header">
-        ${Array.from({ length: 6 }, () => '<div class="pt-skeleton-th"><div class="pt-skeleton-bar pt-skeleton-label"></div><div class="pt-skeleton-bar pt-skeleton-chart"></div></div>').join("")}
+    <div class="sift-skeleton">
+      <div class="sift-skeleton-header">
+        ${Array.from({ length: 6 }, () => '<div class="sift-skeleton-th"><div class="sift-skeleton-bar sift-skeleton-label"></div><div class="sift-skeleton-bar sift-skeleton-chart"></div></div>').join("")}
       </div>
-      <div class="pt-skeleton-body">
-        ${Array.from({ length: 12 }, () => `<div class="pt-skeleton-row">${Array.from({ length: 6 }, () => '<div class="pt-skeleton-cell"><div class="pt-skeleton-bar pt-skeleton-text"></div></div>').join("")}</div>`).join("")}
+      <div class="sift-skeleton-body">
+        ${Array.from({ length: 12 }, () => `<div class="sift-skeleton-row">${Array.from({ length: 6 }, () => '<div class="sift-skeleton-cell"><div class="sift-skeleton-bar sift-skeleton-text"></div></div>').join("")}</div>`).join("")}
       </div>
-      <div class="pt-skeleton-footer">
-        <span class="pt-skeleton-status">${status}</span>
+      <div class="sift-skeleton-footer">
+        <span class="sift-skeleton-status">${status}</span>
       </div>
     </div>
   `;

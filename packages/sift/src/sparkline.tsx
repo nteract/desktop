@@ -180,10 +180,10 @@ function BinaryNumericRatioBar({
     !activeFilter || (highBin.x1 > activeFilter.min && highBin.x0 < activeFilter.max);
 
   return (
-    <div className="pt-bool-summary">
-      <div className="pt-bool-bar">
+    <div className="sift-bool-summary">
+      <div className="sift-bool-bar">
         <div
-          className="pt-bool-true pt-bool-clickable"
+          className="sift-bool-true sift-bool-clickable"
           style={{
             width: `${lowPct}%`,
             opacity: activeFilter && !lowActive ? 0.3 : 1,
@@ -197,7 +197,7 @@ function BinaryNumericRatioBar({
           }}
         />
         <div
-          className="pt-bool-false pt-bool-clickable"
+          className="sift-bool-false sift-bool-clickable"
           style={{
             width: `${highPct}%`,
             opacity: activeFilter && !highActive ? 0.3 : 1,
@@ -215,12 +215,12 @@ function BinaryNumericRatioBar({
           }}
         />
       </div>
-      <div className="pt-bool-labels">
+      <div className="sift-bool-labels">
         <span>
-          <strong>{lowLabel}</strong> <span className="pt-pct">{lowPct}%</span>
+          <strong>{lowLabel}</strong> <span className="sift-pct">{lowPct}%</span>
         </span>
         <span>
-          <strong>{highLabel}</strong> <span className="pt-pct">{highPct}%</span>
+          <strong>{highLabel}</strong> <span className="sift-pct">{highPct}%</span>
         </span>
       </div>
     </div>
@@ -232,8 +232,8 @@ function BinaryNumericRatioBar({
 /** Renders a simple unique count for high-cardinality columns with long text. */
 function HighCardinalityText({ summary }: { summary: CategoricalColumnSummary }) {
   return (
-    <div className="pt-cat-summary">
-      <span className="pt-th-range">{summary.uniqueCount.toLocaleString()} unique values</span>
+    <div className="sift-cat-summary">
+      <span className="sift-th-range">{summary.uniqueCount.toLocaleString()} unique values</span>
     </div>
   );
 }
@@ -268,7 +268,7 @@ function LowCardinalityNumericBars({
   }));
 
   return (
-    <div className="pt-cat-summary">
+    <div className="sift-cat-summary">
       {items.map((item) => {
         // Highlight bar if its range overlaps the active range filter
         const isActive =
@@ -276,7 +276,7 @@ function LowCardinalityNumericBars({
         return (
           <div
             key={item.label}
-            className="pt-cat-row pt-cat-clickable"
+            className="sift-cat-row sift-cat-clickable"
             style={{ opacity: activeFilter && !isActive ? 0.3 : 1 }}
             onClick={() => {
               if (activeFilter && activeFilter.min === item.x0 && activeFilter.max === item.x1) {
@@ -286,11 +286,11 @@ function LowCardinalityNumericBars({
               }
             }}
           >
-            <div className="pt-cat-bar-track">
-              <div className="pt-cat-bar-fill" style={{ width: `${item.pct}%` }} />
+            <div className="sift-cat-bar-track">
+              <div className="sift-cat-bar-fill" style={{ width: `${item.pct}%` }} />
             </div>
-            <span className="pt-cat-label">{item.label}</span>
-            <span className="pt-cat-pct">{item.pct}%</span>
+            <span className="sift-cat-label">{item.label}</span>
+            <span className="sift-cat-pct">{item.pct}%</span>
           </div>
         );
       })}
@@ -319,7 +319,7 @@ function NumericHistogram({
   if (summary.isIndex) {
     return (
       <div>
-        <span className="pt-th-range">
+        <span className="sift-th-range">
           {formatNum(summary.min)} – {formatNum(summary.max)}
         </span>
       </div>
@@ -418,7 +418,7 @@ function NumericHistogram({
         Number.isInteger(summary.max) &&
         summary.max - summary.min <= 1
       ) && (
-        <span className="pt-th-range">
+        <span className="sift-th-range">
           {formatNum(summary.min)} – {formatNum(summary.max)}
         </span>
       )}
@@ -444,7 +444,7 @@ function NumericProfile({ summary }: { summary: NumericColumnSummary }) {
   }
   if (parts.length === 0) return null;
 
-  return <span className="pt-th-profile">{parts.join(" · ")}</span>;
+  return <span className="sift-th-profile">{parts.join(" · ")}</span>;
 }
 
 function VisibleOverlay({
@@ -563,10 +563,10 @@ function CategoryPopoverContent({
   }
 
   return (
-    <div className="pt-cat-popover">
+    <div className="sift-cat-popover">
       <input
         ref={inputRef}
-        className="pt-cat-popover-search"
+        className="sift-cat-popover-search"
         type="text"
         placeholder={`Search ${allCategories.length} values…`}
         value={searchInput}
@@ -575,18 +575,18 @@ function CategoryPopoverContent({
           setScrollTop(0);
         }}
       />
-      <div className="pt-cat-popover-actions">
-        <button onClick={selectAll} className="pt-cat-popover-btn">
+      <div className="sift-cat-popover-actions">
+        <button onClick={selectAll} className="sift-cat-popover-btn">
           All
         </button>
-        <button onClick={clearAll} className="pt-cat-popover-btn">
+        <button onClick={clearAll} className="sift-cat-popover-btn">
           None
         </button>
-        <span className="pt-cat-popover-count">{selectedCount} selected</span>
+        <span className="sift-cat-popover-count">{selectedCount} selected</span>
       </div>
       <div
         ref={listRef}
-        className="pt-cat-popover-list"
+        className="sift-cat-popover-list"
         style={{
           height: Math.min(filtered.length, visibleCount) * POPOVER_ROW_HEIGHT,
         }}
@@ -601,7 +601,7 @@ function CategoryPopoverContent({
             return (
               <label
                 key={cat.label}
-                className="pt-cat-popover-row"
+                className="sift-cat-popover-row"
                 style={{
                   position: "absolute",
                   top: idx * POPOVER_ROW_HEIGHT,
@@ -614,16 +614,16 @@ function CategoryPopoverContent({
                   type="checkbox"
                   checked={checked}
                   onChange={() => toggleItem(cat.label)}
-                  className="pt-cat-popover-check"
+                  className="sift-cat-popover-check"
                 />
-                <span className="pt-cat-popover-label">{cat.label}</span>
-                <span className="pt-cat-popover-pct">{cat.pct}%</span>
+                <span className="sift-cat-popover-label">{cat.label}</span>
+                <span className="sift-cat-popover-pct">{cat.pct}%</span>
               </label>
             );
           })}
         </div>
       </div>
-      {filtered.length === 0 && <div className="pt-cat-popover-empty">No matches</div>}
+      {filtered.length === 0 && <div className="sift-cat-popover-empty">No matches</div>}
     </div>
   );
 }
@@ -662,13 +662,13 @@ function CategoricalBars({
 
   return (
     <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
-      <div className="pt-cat-summary">
+      <div className="sift-cat-summary">
         {items.map((item) => {
           const isActive = activeSet ? activeSet.has(item.label) : true;
           const row = (
             <div
               key={item.label}
-              className={`pt-cat-row pt-cat-clickable`}
+              className={`sift-cat-row sift-cat-clickable`}
               style={{
                 opacity: activeSet && !isActive && !item.isOthers ? 0.3 : 1,
               }}
@@ -688,13 +688,13 @@ function CategoricalBars({
                     }
               }
             >
-              <div className="pt-cat-bar-track">
-                <div className="pt-cat-bar-fill" style={{ width: `${item.pct}%` }} />
+              <div className="sift-cat-bar-track">
+                <div className="sift-cat-bar-fill" style={{ width: `${item.pct}%` }} />
               </div>
-              <span className="pt-cat-label">
+              <span className="sift-cat-label">
                 {item.isOthers ? item.label + " ▾" : truncate(item.label, 16)}
               </span>
-              <span className="pt-cat-pct">{item.pct}%</span>
+              <span className="sift-cat-pct">{item.pct}%</span>
             </div>
           );
           if (item.isOthers) {
@@ -737,10 +737,10 @@ function BooleanRatioBar({
   const hasNulls = summary.nullCount > 0;
 
   return (
-    <div className="pt-bool-summary">
-      <div className="pt-bool-bar">
+    <div className="sift-bool-summary">
+      <div className="sift-bool-bar">
         <div
-          className="pt-bool-true pt-bool-clickable"
+          className="sift-bool-true sift-bool-clickable"
           style={{
             width: `${truePct}%`,
             opacity: activeValue === false ? 0.3 : 1,
@@ -748,7 +748,7 @@ function BooleanRatioBar({
           onClick={() => onFilter(activeValue === true ? null : { kind: "boolean", value: true })}
         />
         <div
-          className="pt-bool-false pt-bool-clickable"
+          className="sift-bool-false sift-bool-clickable"
           style={{
             width: `${falsePct}%`,
             opacity: activeValue === true ? 0.3 : 1,
@@ -757,15 +757,15 @@ function BooleanRatioBar({
         />
         {hasNulls && (
           <div
-            className="pt-bool-null"
+            className="sift-bool-null"
             style={{ width: `${nullPct}%` }}
             title={`${summary.nullCount} null values`}
           />
         )}
       </div>
-      <div className="pt-bool-labels">
+      <div className="sift-bool-labels">
         <span>Yes {nonNull > 0 ? truePct.toFixed(0) : 0}%</span>
-        {hasNulls && <span className="pt-bool-null-label">{nullPct.toFixed(0)}% null</span>}
+        {hasNulls && <span className="sift-bool-null-label">{nullPct.toFixed(0)}% null</span>}
         <span>No {nonNull > 0 ? falsePct.toFixed(0) : 0}%</span>
       </div>
     </div>
@@ -889,7 +889,7 @@ function TimestampHistogram({
           onFilter={onFilter}
         />
       </div>
-      <span className="pt-th-range">
+      <span className="sift-th-range">
         {minLabel} – {maxLabel}
       </span>
     </div>

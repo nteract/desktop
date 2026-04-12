@@ -64,9 +64,9 @@ describe("SiftTable", () => {
     const { container } = render(<SiftTable data={data} />);
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(container.querySelector(".pt-table-container")).not.toBeNull();
-    expect(container.querySelector(".pt-header")).not.toBeNull();
-    expect(container.querySelector(".pt-viewport")).not.toBeNull();
+    expect(container.querySelector(".sift-table-container")).not.toBeNull();
+    expect(container.querySelector(".sift-header")).not.toBeNull();
+    expect(container.querySelector(".sift-viewport")).not.toBeNull();
   });
 
   it("renders correct header labels from data", async () => {
@@ -76,7 +76,7 @@ describe("SiftTable", () => {
     const { container } = render(<SiftTable data={data} />);
     await vi.advanceTimersByTimeAsync(0);
 
-    const labels = container.querySelectorAll(".pt-th-label");
+    const labels = container.querySelectorAll(".sift-th-label");
     expect(labels).toHaveLength(3);
     expect(labels[0].textContent).toBe("ID");
     expect(labels[1].textContent).toBe("Name");
@@ -90,7 +90,7 @@ describe("SiftTable", () => {
     const { container } = render(<SiftTable data={data} />);
     await vi.advanceTimersByTimeAsync(0);
 
-    const stats = container.querySelector(".pt-stat-rows") as HTMLElement;
+    const stats = container.querySelector(".sift-stat-rows") as HTMLElement;
     expect(stats?.dataset.value).toContain("25");
   });
 
@@ -104,7 +104,7 @@ describe("SiftTable", () => {
 
     // The engine is mounted — we can interact via the DOM
     // The onChange should be wired up; we test by verifying the container has content
-    expect(container.querySelector(".pt-table-container")).not.toBeNull();
+    expect(container.querySelector(".sift-table-container")).not.toBeNull();
   });
 
   it("cleans up engine on unmount", async () => {
@@ -114,7 +114,7 @@ describe("SiftTable", () => {
     const { container, unmount } = render(<SiftTable data={data} />);
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(container.querySelector(".pt-table-container")).not.toBeNull();
+    expect(container.querySelector(".sift-table-container")).not.toBeNull();
 
     unmount();
 
@@ -130,7 +130,7 @@ describe("SiftTable", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     // No loading indicator — engine handles its own skeleton
-    expect(container.querySelector(".pt-loading")).toBeNull();
+    expect(container.querySelector(".sift-loading")).toBeNull();
 
     vi.unstubAllGlobals();
   });
@@ -146,7 +146,7 @@ describe("SiftTable", () => {
     // Wait for the async fetch to resolve and state to update
     await new Promise((r) => setTimeout(r, 50));
 
-    const loading = container.querySelector(".pt-loading");
+    const loading = container.querySelector(".sift-loading");
     expect(loading?.textContent).toContain("404");
 
     vi.unstubAllGlobals();

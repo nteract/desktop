@@ -492,7 +492,7 @@ export function SiftTable({
 
   return (
     <div ref={containerRef} className={className} style={{ height: "100%", ...style }}>
-      {status === "error" && error && <div className="pt-loading">Error: {error}</div>}
+      {status === "error" && error && <div className="sift-loading">Error: {error}</div>}
     </div>
   );
 }

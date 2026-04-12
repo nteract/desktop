@@ -404,7 +404,7 @@ export function createTable(
   // --- DOM ---
 
   container.innerHTML = "";
-  container.classList.add("pt-table-container");
+  container.classList.add("sift-table-container");
   container.setAttribute("role", "grid");
   container.setAttribute("aria-label", "Data table");
   container.setAttribute("aria-rowcount", String(rowCount));
@@ -413,39 +413,39 @@ export function createTable(
   // Streaming state — progress bar is appended after stats bar below
   let streaming = true;
   const progressBar = document.createElement("div");
-  progressBar.className = "pt-progress-bar";
-  progressBar.innerHTML = '<div class="pt-progress-bar-fill"></div>';
+  progressBar.className = "sift-progress-bar";
+  progressBar.innerHTML = '<div class="sift-progress-bar-fill"></div>';
 
   // Header — lives inside the scroll content so it scrolls
   // horizontally with the data. position: sticky keeps it at top.
   const headerEl = document.createElement("div");
-  headerEl.className = "pt-header";
+  headerEl.className = "sift-header";
 
   const headerRowEl = document.createElement("div");
-  headerRowEl.className = "pt-header-row";
+  headerRowEl.className = "sift-header-row";
   headerRowEl.setAttribute("role", "row");
 
   const summaryContainers: HTMLDivElement[] = [];
 
   for (let c = 0; c < columns.length; c++) {
     const th = document.createElement("div");
-    th.className = "pt-th";
+    th.className = "sift-th";
     th.setAttribute("role", "columnheader");
     th.setAttribute("aria-colindex", String(c + 1));
     th.style.width = colWidths[c] + "px";
     th.dataset.col = String(c);
 
     const topRow = document.createElement("div");
-    topRow.className = "pt-th-top";
+    topRow.className = "sift-th-top";
 
     const label = document.createElement("span");
-    label.className = "pt-th-label";
+    label.className = "sift-th-label";
     label.textContent = columns[c].label;
     topRow.appendChild(label);
 
     if (columns[c].sortable) {
       const arrow = document.createElement("span");
-      arrow.className = "pt-sort-arrow";
+      arrow.className = "sift-sort-arrow";
       arrow.textContent = "";
       topRow.appendChild(arrow);
       topRow.style.cursor = "pointer";
@@ -457,7 +457,7 @@ export function createTable(
     // Type icon — hide for index columns (empty label = hidden index)
     if (columns[c].label) {
       const typeIcon = document.createElement("span");
-      typeIcon.className = "pt-type-icon";
+      typeIcon.className = "sift-type-icon";
       typeIcon.textContent =
         columns[c].columnType === "numeric"
           ? "#"
@@ -471,7 +471,7 @@ export function createTable(
     }
 
     const summaryEl = document.createElement("div");
-    summaryEl.className = "pt-th-summary";
+    summaryEl.className = "sift-th-summary";
     // Prevent clicks on summary charts (filter interactions) from triggering sort
     summaryEl.addEventListener("click", (e) => e.stopPropagation());
     th.appendChild(summaryEl);
@@ -557,7 +557,7 @@ export function createTable(
 
     if (c < columns.length - 1) {
       const handle = document.createElement("div");
-      handle.className = "pt-resize-handle";
+      handle.className = "sift-resize-handle";
       handle.addEventListener("pointerdown", (e) => onResizeStart(e, c));
       th.appendChild(handle);
     }
@@ -597,10 +597,10 @@ export function createTable(
 
   // Scroll viewport
   const viewport = document.createElement("div");
-  viewport.className = "pt-viewport";
+  viewport.className = "sift-viewport";
 
   const scrollContent = document.createElement("div");
-  scrollContent.className = "pt-scroll-content";
+  scrollContent.className = "sift-scroll-content";
   // Set min-width so horizontal scroll position is preserved when pool rows are hidden
   function updateScrollContentWidth() {
     const totalW = colWidths.reduce((s, w) => s + w, 0);
@@ -609,22 +609,22 @@ export function createTable(
   updateScrollContentWidth();
 
   const rowPool = document.createElement("div");
-  rowPool.className = "pt-row-pool";
+  rowPool.className = "sift-row-pool";
 
   scrollContent.appendChild(headerEl); // Header inside scroll content for natural H scroll
   scrollContent.appendChild(rowPool);
 
   // Empty state (shown when filters exclude all rows)
   const emptyEl = document.createElement("div");
-  emptyEl.className = "pt-empty-state";
+  emptyEl.className = "sift-empty-state";
   emptyEl.style.display = "none";
 
   const emptyText = document.createElement("div");
-  emptyText.className = "pt-empty-text";
+  emptyText.className = "sift-empty-text";
   emptyText.textContent = "No matching rows";
 
   const emptyClearBtn = document.createElement("button");
-  emptyClearBtn.className = "pt-empty-clear";
+  emptyClearBtn.className = "sift-empty-clear";
   emptyClearBtn.textContent = "Clear all filters";
   emptyClearBtn.addEventListener("click", () => clearAllFilters());
 
@@ -639,7 +639,7 @@ export function createTable(
 
   // Stats bar
   const statsEl = document.createElement("div");
-  statsEl.className = "pt-stats";
+  statsEl.className = "sift-stats";
 
   // ARIA live region for screen reader announcements (filter changes, streaming)
   const ariaLive = document.createElement("div");
@@ -652,23 +652,23 @@ export function createTable(
 
   function makeStatSpan(className: string): HTMLSpanElement {
     const el = document.createElement("span");
-    el.className = `pt-stat-value ${className}`;
+    el.className = `sift-stat-value ${className}`;
     return el;
   }
 
   // Status indicator (streaming dot → checkmark)
   const statusIndicator = document.createElement("span");
-  statusIndicator.className = "pt-status-indicator pt-status-streaming";
+  statusIndicator.className = "sift-status-indicator sift-status-streaming";
   statusIndicator.textContent = "●";
   statusIndicator.title = "Loading data…";
 
-  const statRows = makeStatSpan("pt-stat-rows");
+  const statRows = makeStatSpan("sift-stat-rows");
   // Debug stats (DOM rows, FPS) — hidden by default
   const debugGroup = document.createElement("span");
-  debugGroup.className = "pt-debug-group";
+  debugGroup.className = "sift-debug-group";
   debugGroup.style.display = "none";
-  const statDom = makeStatSpan("pt-stat-dom");
-  const statFrame = makeStatSpan("pt-stat-frame");
+  const statDom = makeStatSpan("sift-stat-dom");
+  const statFrame = makeStatSpan("sift-stat-frame");
 
   // Reusable odometer — rolling digit strips for any numeric display
   type OdometerSlot = {
@@ -681,7 +681,7 @@ export function createTable(
   function createOdometer(host: HTMLElement): {
     update: (text: string) => void;
   } {
-    host.classList.add("pt-odometer");
+    host.classList.add("sift-odometer");
     const slots: OdometerSlot[] = [];
     // Track the previous numeric value to determine roll direction
     let prevNumericValue = 0;
@@ -694,10 +694,10 @@ export function createTable(
 
     function createDigitStrip(): HTMLSpanElement {
       const strip = document.createElement("span");
-      strip.className = "pt-odo-strip";
+      strip.className = "sift-odo-strip";
       for (const d of STRIP_DIGITS) {
         const digit = document.createElement("span");
-        digit.className = "pt-odo-num";
+        digit.className = "sift-odo-num";
         digit.textContent = String(d);
         strip.appendChild(digit);
       }
@@ -718,7 +718,7 @@ export function createTable(
 
       while (slots.length < text.length) {
         const el = document.createElement("span");
-        el.className = "pt-odo-slot";
+        el.className = "sift-odo-slot";
         host.appendChild(el);
         slots.push({ el, strip: null, current: "", pos: -1 });
       }
@@ -810,7 +810,7 @@ export function createTable(
 
   // Fullscreen toggle
   const fullscreenBtn = document.createElement("button");
-  fullscreenBtn.className = "pt-fullscreen-btn";
+  fullscreenBtn.className = "sift-fullscreen-btn";
   fullscreenBtn.title = "Toggle fullscreen";
   fullscreenBtn.textContent = "⛶";
   fullscreenBtn.addEventListener("click", () => {
@@ -833,20 +833,20 @@ export function createTable(
   document.addEventListener("fullscreenchange", onFullscreenChange);
 
   const filterPillsEl = document.createElement("div");
-  filterPillsEl.className = "pt-filter-pills";
+  filterPillsEl.className = "sift-filter-pills";
 
   const statsSpacer = document.createElement("div");
   statsSpacer.style.flex = "1";
 
   // Debug toggle button
   const debugBtn = document.createElement("button");
-  debugBtn.className = "pt-debug-btn";
+  debugBtn.className = "sift-debug-btn";
   debugBtn.title = "Toggle debug stats";
   debugBtn.textContent = "⚙";
   debugBtn.addEventListener("click", () => {
     const visible = debugGroup.style.display !== "none";
     debugGroup.style.display = visible ? "none" : "";
-    debugBtn.classList.toggle("pt-debug-active", !visible);
+    debugBtn.classList.toggle("sift-debug-active", !visible);
   });
 
   debugGroup.append(sep(), statDom, sep(), statFrame);
@@ -886,7 +886,7 @@ export function createTable(
       const f = filters[c];
       if (!f) continue;
       const pill = document.createElement("span");
-      pill.className = "pt-filter-pill";
+      pill.className = "sift-filter-pill";
 
       let text = columns[c].label + ": ";
       switch (f.kind) {
@@ -936,7 +936,7 @@ export function createTable(
       label.textContent = text;
 
       const closeBtn = document.createElement("button");
-      closeBtn.className = "pt-filter-pill-x";
+      closeBtn.className = "sift-filter-pill-x";
       closeBtn.textContent = "×";
       closeBtn.addEventListener("click", (e) => {
         e.stopPropagation();
@@ -950,7 +950,7 @@ export function createTable(
 
   function sep(): HTMLSpanElement {
     const s = document.createElement("span");
-    s.className = "pt-stat-sep";
+    s.className = "sift-stat-sep";
     s.textContent = " · ";
     return s;
   }
@@ -995,9 +995,9 @@ export function createTable(
   function updateStat(el: HTMLSpanElement, value: string, prev: string): string {
     if (value !== prev) {
       el.textContent = value;
-      el.classList.remove("pt-stat-flash");
+      el.classList.remove("sift-stat-flash");
       void el.offsetWidth;
-      el.classList.add("pt-stat-flash");
+      el.classList.add("sift-stat-flash");
     }
     return value;
   }
@@ -1047,13 +1047,13 @@ export function createTable(
       if (pr.assignedRow === -1) return pr;
     }
     const el = document.createElement("div");
-    el.className = "pt-row";
+    el.className = "sift-row";
     el.setAttribute("role", "row");
     const cells: HTMLDivElement[] = [];
     // Create cells in data order (cells[c] = column c)
     for (let c = 0; c < columns.length; c++) {
       const cell = document.createElement("div");
-      cell.className = "pt-cell";
+      cell.className = "sift-cell";
       cell.setAttribute("role", "gridcell");
       cell.setAttribute("aria-colindex", String(c + 1));
       cell.style.width = colWidths[c] + "px";
@@ -1078,12 +1078,12 @@ export function createTable(
 
     // Clear previous content
     cellEl.textContent = "";
-    cellEl.className = "pt-cell";
+    cellEl.className = "sift-cell";
 
     // Null values get a distinct badge regardless of column type
     if (raw == null) {
       const badge = document.createElement("span");
-      badge.className = "pt-badge pt-badge-null";
+      badge.className = "sift-badge sift-badge-null";
       badge.textContent = "null";
       cellEl.appendChild(badge);
       return;
@@ -1092,14 +1092,14 @@ export function createTable(
     switch (col.columnType) {
       case "boolean": {
         const badge = document.createElement("span");
-        badge.className = raw ? "pt-badge pt-badge-true" : "pt-badge pt-badge-false";
+        badge.className = raw ? "sift-badge sift-badge-true" : "sift-badge sift-badge-false";
         badge.textContent = raw ? "Yes" : "No";
         cellEl.appendChild(badge);
         break;
       }
       case "timestamp": {
         cellEl.textContent = str;
-        cellEl.classList.add("pt-cell-timestamp");
+        cellEl.classList.add("sift-cell-timestamp");
         break;
       }
       default:
@@ -1204,8 +1204,8 @@ export function createTable(
       pr.el.style.height = rowHeights[r] + "px";
       pr.el.setAttribute("aria-rowindex", String(r + 2)); // 1-based, header is row 1
 
-      if (r % 2 === 1) pr.el.classList.add("pt-row-alt");
-      else pr.el.classList.remove("pt-row-alt");
+      if (r % 2 === 1) pr.el.classList.add("sift-row-alt");
+      else pr.el.classList.remove("sift-row-alt");
 
       for (let c = 0; c < columns.length; c++) {
         renderCell(pr.cells[c], dataRow, c);
@@ -1233,8 +1233,8 @@ export function createTable(
         pr.el.style.transform = `translateY(${rowPositions[r]}px)`;
         pr.el.style.height = rowHeights[r] + "px";
         pr.el.setAttribute("aria-rowindex", String(r + 2));
-        if (r % 2 === 1) pr.el.classList.add("pt-row-alt");
-        else pr.el.classList.remove("pt-row-alt");
+        if (r % 2 === 1) pr.el.classList.add("sift-row-alt");
+        else pr.el.classList.remove("sift-row-alt");
         for (let c = 0; c < columns.length; c++) {
           renderCell(pr.cells[c], dataRow, c);
           pr.cells[c].style.width = colWidths[c] + "px";
@@ -1290,7 +1290,7 @@ export function createTable(
     if (!activeDetailSheet) return;
     const sheet = activeDetailSheet;
     const backdrop = sheet.previousElementSibling as HTMLElement | null;
-    sheet.classList.remove("pt-detail-sheet-open");
+    sheet.classList.remove("sift-detail-sheet-open");
     sheet.addEventListener(
       "transitionend",
       () => {
@@ -1310,23 +1310,23 @@ export function createTable(
 
     // Backdrop
     const backdrop = document.createElement("div");
-    backdrop.className = "pt-detail-backdrop";
+    backdrop.className = "sift-detail-backdrop";
     backdrop.addEventListener("click", dismissDetailSheet);
 
     // Sheet
     const sheet = document.createElement("div");
-    sheet.className = "pt-detail-sheet";
+    sheet.className = "sift-detail-sheet";
 
     // Header with row number and close button
     const header = document.createElement("div");
-    header.className = "pt-detail-header";
+    header.className = "sift-detail-header";
 
     const title = document.createElement("span");
-    title.className = "pt-detail-title";
+    title.className = "sift-detail-title";
     title.textContent = `Row ${dataRow + 1}`;
 
     const closeBtn = document.createElement("button");
-    closeBtn.className = "pt-detail-close";
+    closeBtn.className = "sift-detail-close";
     closeBtn.textContent = "×";
     closeBtn.addEventListener("click", dismissDetailSheet);
 
@@ -1336,17 +1336,17 @@ export function createTable(
 
     // Column-value list
     const list = document.createElement("div");
-    list.className = "pt-detail-list";
+    list.className = "sift-detail-list";
 
     for (let c = 0; c < columns.length; c++) {
       const row = document.createElement("div");
-      row.className = "pt-detail-row";
+      row.className = "sift-detail-row";
 
       const nameEl = document.createElement("div");
-      nameEl.className = "pt-detail-col-name";
+      nameEl.className = "sift-detail-col-name";
 
       const icon = document.createElement("span");
-      icon.className = "pt-detail-type-icon";
+      icon.className = "sift-detail-type-icon";
       icon.textContent = typeIconChar(columns[c].columnType);
 
       const label = document.createElement("span");
@@ -1356,17 +1356,17 @@ export function createTable(
       nameEl.appendChild(label);
 
       const valueEl = document.createElement("div");
-      valueEl.className = "pt-detail-col-value";
+      valueEl.className = "sift-detail-col-value";
 
       const raw = data.getCellRaw(dataRow, c);
       if (raw == null) {
         const badge = document.createElement("span");
-        badge.className = "pt-badge pt-badge-null";
+        badge.className = "sift-badge sift-badge-null";
         badge.textContent = "null";
         valueEl.appendChild(badge);
       } else if (columns[c].columnType === "boolean") {
         const badge = document.createElement("span");
-        badge.className = raw ? "pt-badge pt-badge-true" : "pt-badge pt-badge-false";
+        badge.className = raw ? "sift-badge sift-badge-true" : "sift-badge sift-badge-false";
         badge.textContent = raw ? "Yes" : "No";
         valueEl.appendChild(badge);
       } else {
@@ -1386,7 +1386,7 @@ export function createTable(
 
     // Trigger slide-up animation on next frame
     requestAnimationFrame(() => {
-      sheet.classList.add("pt-detail-sheet-open");
+      sheet.classList.add("sift-detail-sheet-open");
     });
   }
 
@@ -1417,7 +1417,7 @@ export function createTable(
 
     // Find which pool row was tapped
     const target = e.target as HTMLElement;
-    const rowEl = target.closest(".pt-row") as HTMLDivElement | null;
+    const rowEl = target.closest(".sift-row") as HTMLDivElement | null;
     if (!rowEl) return;
 
     for (const pr of pool) {
@@ -1485,7 +1485,7 @@ export function createTable(
   function updateSortUI() {
     const ths = headerRowEl.children as HTMLCollectionOf<HTMLDivElement>;
     for (let c = 0; c < columns.length; c++) {
-      const arrow = ths[c].querySelector(".pt-sort-arrow");
+      const arrow = ths[c].querySelector(".sift-sort-arrow");
       if (!arrow) continue;
       if (sortState && sortState.col === c) {
         arrow.textContent = sortState.dir === "asc" ? " ↑" : " ↓";
@@ -1546,11 +1546,11 @@ export function createTable(
   function setStreamingDone() {
     if (!streaming) return;
     streaming = false;
-    progressBar.classList.add("pt-progress-bar-done");
+    progressBar.classList.add("sift-progress-bar-done");
     updateRowCountDisplay();
     // Switch status indicator from streaming dot to checkmark
-    statusIndicator.classList.remove("pt-status-streaming");
-    statusIndicator.classList.add("pt-status-ready");
+    statusIndicator.classList.remove("sift-status-streaming");
+    statusIndicator.classList.add("sift-status-ready");
     statusIndicator.textContent = "✓";
     statusIndicator.title = "All data loaded";
     // Remove the progress bar from DOM after fade-out transition
@@ -1662,7 +1662,7 @@ export function createTable(
 
     // Clear DOM
     container.innerHTML = "";
-    container.classList.remove("pt-table-container");
+    container.classList.remove("sift-table-container");
   }
 
   // --- Filter API ---
@@ -1758,10 +1758,10 @@ export function createTable(
     const ths = headerRowEl.children as HTMLCollectionOf<HTMLDivElement>;
     for (let c = 0; c < columns.length; c++) {
       const th = ths[c];
-      const label = th.querySelector(".pt-th-label") as HTMLElement;
+      const label = th.querySelector(".sift-th-label") as HTMLElement;
 
       // Remove existing filter line
-      const existing = th.querySelector(".pt-filter-line");
+      const existing = th.querySelector(".sift-filter-line");
       if (existing) existing.remove();
 
       const f = filters[c];
@@ -1779,7 +1779,7 @@ export function createTable(
 
         if (parts.length > 0) {
           const line = document.createElement("div");
-          line.className = "pt-filter-line";
+          line.className = "sift-filter-line";
           line.textContent = parts.join(" · ");
           th.appendChild(line);
         }
@@ -1958,7 +1958,7 @@ export function createTable(
           columns[colIndex].numeric = action.targetType === "numeric";
           // Update type icon
           const ths = headerRowEl.children as HTMLCollectionOf<HTMLDivElement>;
-          const icon = ths[colIndex].querySelector(".pt-type-icon");
+          const icon = ths[colIndex].querySelector(".sift-type-icon");
           if (icon) {
             icon.textContent =
               action.targetType === "numeric"
@@ -1993,7 +1993,7 @@ export function createTable(
           columns[colIndex].numeric = restoredType === "numeric";
           // Update type icon
           const thsUndo = headerRowEl.children as HTMLCollectionOf<HTMLDivElement>;
-          const iconUndo = thsUndo[colIndex].querySelector(".pt-type-icon");
+          const iconUndo = thsUndo[colIndex].querySelector(".sift-type-icon");
           if (iconUndo) {
             iconUndo.textContent =
               restoredType === "numeric"
@@ -2088,7 +2088,7 @@ export function createTable(
     for (let vi = 0; vi < visualOrder.length; vi++) {
       const dataCol = visualOrder[vi];
       const th = ths[vi];
-      const handle = th.querySelector(".pt-resize-handle") as HTMLElement | null;
+      const handle = th.querySelector(".sift-resize-handle") as HTMLElement | null;
       if (pinnedColumns.has(dataCol)) {
         th.style.position = "sticky";
         th.style.left = pinnedLeftOffsets[dataCol] + "px";

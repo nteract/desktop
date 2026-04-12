@@ -83,14 +83,14 @@ describe("createTable", () => {
   describe("DOM structure", () => {
     it("creates header, viewport, and stats bar", async () => {
       await flushRAF();
-      expect(container.querySelector(".pt-header")).not.toBeNull();
-      expect(container.querySelector(".pt-viewport")).not.toBeNull();
-      expect(container.querySelector(".pt-stats")).not.toBeNull();
+      expect(container.querySelector(".sift-header")).not.toBeNull();
+      expect(container.querySelector(".sift-viewport")).not.toBeNull();
+      expect(container.querySelector(".sift-stats")).not.toBeNull();
     });
 
     it("renders correct header labels", async () => {
       await flushRAF();
-      const labels = container.querySelectorAll(".pt-th-label");
+      const labels = container.querySelectorAll(".sift-th-label");
       expect(labels).toHaveLength(4);
       expect(labels[0].textContent).toBe("ID");
       expect(labels[1].textContent).toBe("Name");
@@ -100,7 +100,7 @@ describe("createTable", () => {
 
     it("shows row count in stats bar", async () => {
       await flushRAF();
-      const stats = container.querySelector(".pt-stat-rows") as HTMLElement;
+      const stats = container.querySelector(".sift-stat-rows") as HTMLElement;
       expect(stats?.dataset.value).toContain("50");
     });
   });
@@ -110,7 +110,7 @@ describe("createTable", () => {
       await flushRAF();
       engine.setFilter(2, { kind: "range", min: 0, max: 30 });
       await flushRAF();
-      const stats = container.querySelector(".pt-stat-rows") as HTMLElement;
+      const stats = container.querySelector(".sift-stat-rows") as HTMLElement;
       expect(stats?.dataset.value).toContain("of");
       expect(stats?.dataset.value).toContain("50");
     });
@@ -119,7 +119,7 @@ describe("createTable", () => {
       await flushRAF();
       engine.setFilter(2, { kind: "range", min: 10, max: 50 });
       await flushRAF();
-      const pills = container.querySelectorAll(".pt-filter-pill");
+      const pills = container.querySelectorAll(".sift-filter-pill");
       expect(pills.length).toBe(1);
       expect(pills[0].textContent).toContain("Score");
     });
@@ -130,7 +130,7 @@ describe("createTable", () => {
       await flushRAF();
       engine.clearFilter(2);
       await flushRAF();
-      const pills = container.querySelectorAll(".pt-filter-pill");
+      const pills = container.querySelectorAll(".sift-filter-pill");
       expect(pills.length).toBe(0);
     });
 
@@ -139,17 +139,17 @@ describe("createTable", () => {
       engine.setFilter(1, { kind: "set", values: new Set(["Person 1"]) });
       engine.setFilter(3, { kind: "boolean", value: true });
       await flushRAF();
-      expect(container.querySelectorAll(".pt-filter-pill").length).toBe(2);
+      expect(container.querySelectorAll(".sift-filter-pill").length).toBe(2);
       engine.clearAllFilters();
       await flushRAF();
-      expect(container.querySelectorAll(".pt-filter-pill").length).toBe(0);
+      expect(container.querySelectorAll(".sift-filter-pill").length).toBe(0);
     });
 
     it("boolean filter works", async () => {
       await flushRAF();
       engine.setFilter(3, { kind: "boolean", value: true });
       await flushRAF();
-      const stats = container.querySelector(".pt-stat-rows") as HTMLElement;
+      const stats = container.querySelector(".sift-stat-rows") as HTMLElement;
       expect(stats?.dataset.value).toContain("of");
     });
 
@@ -160,7 +160,7 @@ describe("createTable", () => {
         values: new Set(["Person 0", "Person 1"]),
       });
       await flushRAF();
-      const stats = container.querySelector(".pt-stat-rows") as HTMLElement;
+      const stats = container.querySelector(".sift-stat-rows") as HTMLElement;
       expect(stats?.dataset.value).toContain("of");
     });
   });
@@ -172,11 +172,11 @@ describe("createTable", () => {
       expect(container.innerHTML).toBe("");
     });
 
-    it("removes pt-table-container class", async () => {
+    it("removes sift-table-container class", async () => {
       await flushRAF();
-      expect(container.classList.contains("pt-table-container")).toBe(true);
+      expect(container.classList.contains("sift-table-container")).toBe(true);
       engine.destroy();
-      expect(container.classList.contains("pt-table-container")).toBe(false);
+      expect(container.classList.contains("sift-table-container")).toBe(false);
     });
   });
 
@@ -272,7 +272,7 @@ describe("createTable", () => {
 
     it('header cells have role="columnheader"', async () => {
       await flushRAF();
-      const headers = container.querySelectorAll(".pt-th");
+      const headers = container.querySelectorAll(".sift-th");
       expect(headers.length).toBe(4);
       for (const h of headers) {
         expect(h.getAttribute("role")).toBe("columnheader");
@@ -283,7 +283,7 @@ describe("createTable", () => {
       await flushRAF();
       engine.setSort("name", "asc");
       await flushRAF();
-      const headers = container.querySelectorAll(".pt-th");
+      const headers = container.querySelectorAll(".sift-th");
       expect(headers[1].getAttribute("aria-sort")).toBe("ascending");
       expect(headers[0].hasAttribute("aria-sort")).toBe(false);
     });
@@ -299,7 +299,7 @@ describe("createTable", () => {
       data.rowCount = 60;
       engine.onBatchAppended();
       await flushRAF();
-      const stats = container.querySelector(".pt-stat-rows") as HTMLElement;
+      const stats = container.querySelector(".sift-stat-rows") as HTMLElement;
       expect(stats?.dataset.value).toContain("60");
     });
   });
@@ -312,9 +312,9 @@ describe("createTable", () => {
       const singleEngine = createTable(singleContainer, singleData);
       await flushRAF();
       // Engine mounts: header + stats bar + viewport exist
-      expect(singleContainer.querySelector(".pt-header")).not.toBeNull();
-      expect(singleContainer.querySelector(".pt-viewport")).not.toBeNull();
-      const stats = singleContainer.querySelector(".pt-stat-rows") as HTMLElement;
+      expect(singleContainer.querySelector(".sift-header")).not.toBeNull();
+      expect(singleContainer.querySelector(".sift-viewport")).not.toBeNull();
+      const stats = singleContainer.querySelector(".sift-stat-rows") as HTMLElement;
       expect(stats?.dataset.value).toContain("1");
       singleEngine.destroy();
     });
@@ -323,7 +323,7 @@ describe("createTable", () => {
       await flushRAF();
       engine.setFilter(2, { kind: "range", min: 999, max: 1000 });
       await flushRAF();
-      const stats = container.querySelector(".pt-stat-rows") as HTMLElement;
+      const stats = container.querySelector(".sift-stat-rows") as HTMLElement;
       expect(stats?.dataset.value).toContain("0 of");
     });
 
@@ -336,7 +336,7 @@ describe("createTable", () => {
         max: targetScore,
       });
       await flushRAF();
-      const pills = container.querySelectorAll(".pt-filter-pill");
+      const pills = container.querySelectorAll(".sift-filter-pill");
       expect(pills.length).toBe(1);
       // Single-value pill should NOT show range dash
       expect(pills[0].textContent).not.toContain("–");
@@ -346,7 +346,7 @@ describe("createTable", () => {
       await flushRAF();
       engine.setFilter(1, { kind: "set", values: new Set() });
       await flushRAF();
-      const stats = container.querySelector(".pt-stat-rows") as HTMLElement;
+      const stats = container.querySelector(".sift-stat-rows") as HTMLElement;
       expect(stats?.dataset.value).toContain("0 of");
     });
 
@@ -364,8 +364,8 @@ describe("createTable", () => {
       const nullEngine = createTable(nullContainer, nullData);
       await flushRAF();
       // Engine mounts without throwing
-      expect(nullContainer.querySelector(".pt-header")).not.toBeNull();
-      expect(nullContainer.querySelector(".pt-viewport")).not.toBeNull();
+      expect(nullContainer.querySelector(".sift-header")).not.toBeNull();
+      expect(nullContainer.querySelector(".sift-viewport")).not.toBeNull();
       nullEngine.destroy();
     });
 
@@ -375,7 +375,7 @@ describe("createTable", () => {
       engine.setFilter(2, { kind: "range", min: 0, max: 50 });
       engine.setFilter(3, { kind: "boolean", value: true });
       await flushRAF();
-      const stats = container.querySelector(".pt-stat-rows") as HTMLElement;
+      const stats = container.querySelector(".sift-stat-rows") as HTMLElement;
       expect(stats?.dataset.value).toContain("of");
 
       engine.clearAllFilters();
