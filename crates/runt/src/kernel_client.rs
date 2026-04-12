@@ -58,7 +58,7 @@ impl KernelClient {
         let key = Uuid::new_v4().to_string();
 
         let ip = std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1));
-        let (ports, _listeners) = peek_ports_with_listeners(ip, 5).await?;
+        let (ports, listeners) = peek_ports_with_listeners(ip, 5).await?;
         let connection_info = ConnectionInfo {
             transport: jupyter_protocol::connection_info::Transport::TCP,
             ip: ip.to_string(),
@@ -81,7 +81,7 @@ impl KernelClient {
         command.current_dir(default_kernel_cwd());
 
         let child = command.spawn()?;
-        drop(_listeners);
+        drop(listeners);
 
         let content = serde_json::to_string(&connection_info)?;
         tokio::fs::write(&connection_file, &content).await?;
@@ -106,7 +106,7 @@ impl KernelClient {
         let key = Uuid::new_v4().to_string();
 
         let ip = std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1));
-        let (ports, _listeners) = peek_ports_with_listeners(ip, 5).await?;
+        let (ports, listeners) = peek_ports_with_listeners(ip, 5).await?;
         let connection_info = ConnectionInfo {
             transport: jupyter_protocol::connection_info::Transport::TCP,
             ip: ip.to_string(),
@@ -140,7 +140,7 @@ impl KernelClient {
             command: "kernel",
             source: e,
         })?;
-        drop(_listeners);
+        drop(listeners);
 
         Ok(Self {
             kernel_id,
