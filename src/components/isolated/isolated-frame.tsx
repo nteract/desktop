@@ -320,6 +320,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
 
     // Track initial darkMode for blob URL (don't recreate blob on theme change)
     const initialDarkModeRef = useRef(darkMode);
+    const initialColorThemeRef = useRef(colorTheme);
 
     // Stable refs for callback props — avoids tearing down the message
     // handler when callers pass unstable (inline) callbacks.
@@ -344,7 +345,10 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
 
     // Create blob URL on mount (only once, with initial darkMode)
     useEffect(() => {
-      const url = createFrameBlobUrl({ darkMode: initialDarkModeRef.current });
+      const url = createFrameBlobUrl({
+        darkMode: initialDarkModeRef.current,
+        colorTheme: initialColorThemeRef.current,
+      });
       setBlobUrl(url);
 
       return () => {
@@ -357,7 +361,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     useEffect(() => {
       if (isIframeReady && iframeRef.current?.contentWindow) {
         iframeRef.current.contentWindow.postMessage(
-          { type: "theme", payload: { isDark: darkMode, colorTheme } },
+          { type: "theme", payload: { isDark: darkMode, colorTheme: colorTheme ?? null } },
           "*",
         );
       }
