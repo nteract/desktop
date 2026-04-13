@@ -390,7 +390,9 @@ pub async fn create_notebook(
     let used_kernel_alias = kernel_alias.is_some() && runtime_arg.is_none();
     let runtime = runtime_arg.or(kernel_alias).unwrap_or("python");
 
-    let working_dir = arg_str(request, "working_dir").map(|s| PathBuf::from(resolve_path(s)));
+    let working_dir = arg_str(request, "working_dir")
+        .map(|s| PathBuf::from(resolve_path(s)))
+        .or_else(|| std::env::current_dir().ok());
     let working_dir_for_detection = working_dir.clone();
     let ephemeral = arg_bool(request, "ephemeral").unwrap_or(true);
 
