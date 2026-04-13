@@ -146,6 +146,8 @@ function updateDocumentTheme(isDark: boolean, colorTheme?: string) {
   // Set color theme for sift and other themed plugins
   if (colorTheme) {
     root.setAttribute("data-color-theme", colorTheme);
+  } else {
+    root.removeAttribute("data-color-theme");
   }
 
   // Set color-scheme to influence prefers-color-scheme media queries
