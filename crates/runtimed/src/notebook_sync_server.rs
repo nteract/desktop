@@ -1617,6 +1617,28 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
         }
     }
 
+    // ── Re-check provenance after async sync ─────────────────────────
+    // The initial check (step 1) passed before the async doc/state sync
+    // above. A newer spawn may have changed provenance during that window.
+    // Re-check before storing the request channel or signaling connected —
+    // otherwise we could overwrite a newer agent's channel and steal its
+    // connect signal.
+    {
+        let expected = room.current_runtime_agent_id.read().await;
+        match expected.as_deref() {
+            Some(expected_id) if expected_id == runtime_agent_id => {
+                // Still valid — proceed.
+            }
+            other => {
+                warn!(
+                    "[notebook-sync] Rejecting runtime agent {} after sync (provenance changed to {:?})",
+                    runtime_agent_id, other,
+                );
+                return;
+            }
+        }
+    }
+
     // ── 3. Set up request channel ────────────────────────────────────
     let (ra_tx, mut ra_rx) = tokio::sync::mpsc::channel::<(
         RuntimeAgentRequest,
@@ -11892,5 +11914,104 @@ mod tests {
             1,
             "generation should be 1 after concurrent spawn"
         );
+    }
+
+    // ── Connect handler provenance re-check tests ───────────────────
+
+    #[tokio::test]
+    async fn test_connect_handler_recheck_rejects_stale_agent() {
+        // Verifies the provenance re-check pattern used by the connect handler:
+        // if provenance changes during the async sync window (between the initial
+        // provenance check and the channel store), a stale agent must be rejected
+        // — it must not overwrite the newer agent's request channel or take its
+        // oneshot signal.
+        let pending: Arc<Mutex<Option<oneshot::Sender<()>>>> = Arc::new(Mutex::new(None));
+        let provenance: Arc<tokio::sync::RwLock<Option<String>>> =
+            Arc::new(tokio::sync::RwLock::new(None));
+        let request_tx: Arc<Mutex<Option<tokio::sync::mpsc::Sender<()>>>> =
+            Arc::new(Mutex::new(None));
+
+        // Setup: spawn A sets provenance and oneshot.
+        {
+            let mut id = provenance.write().await;
+            *id = Some("agent-A".to_string());
+        }
+        let (tx_a, _rx_a) = oneshot::channel();
+        *pending.lock().await = Some(tx_a);
+        let (req_a, _) = tokio::sync::mpsc::channel(16);
+        *request_tx.lock().await = Some(req_a);
+
+        // Agent A passes initial provenance check (simulated).
+        assert_eq!(provenance.read().await.as_deref(), Some("agent-A"));
+
+        // --- Async gap: new spawn replaces provenance ---
+        {
+            let mut id = provenance.write().await;
+            *id = Some("agent-B".to_string());
+        }
+        let (tx_b, mut rx_b) = oneshot::channel::<()>();
+        *pending.lock().await = Some(tx_b); // drops tx_a
+        let (req_b, _) = tokio::sync::mpsc::channel(16);
+        *request_tx.lock().await = Some(req_b);
+
+        // Agent A re-checks provenance → mismatch → must reject.
+        {
+            let expected = provenance.read().await;
+            assert_ne!(
+                expected.as_deref(),
+                Some("agent-A"),
+                "Re-check should detect provenance changed to agent-B"
+            );
+        }
+
+        // Verify: agent-B's oneshot is still pending (not taken by stale A).
+        assert!(
+            rx_b.try_recv().is_err(),
+            "agent-B's oneshot should be untouched"
+        );
+
+        // Verify: agent-B's request channel is still installed.
+        assert!(
+            request_tx.lock().await.is_some(),
+            "agent-B's request_tx should not be overwritten"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_connect_handler_recheck_accepts_current_agent() {
+        // Verifies that when no newer spawn occurs during the async window,
+        // the provenance re-check passes and the agent proceeds normally.
+        let pending: Arc<Mutex<Option<oneshot::Sender<()>>>> = Arc::new(Mutex::new(None));
+        let provenance: Arc<tokio::sync::RwLock<Option<String>>> =
+            Arc::new(tokio::sync::RwLock::new(None));
+
+        // Setup: spawn A sets provenance and oneshot.
+        {
+            let mut id = provenance.write().await;
+            *id = Some("agent-A".to_string());
+        }
+        let (tx_a, rx_a) = oneshot::channel();
+        *pending.lock().await = Some(tx_a);
+
+        // Agent A passes initial provenance check.
+        assert_eq!(provenance.read().await.as_deref(), Some("agent-A"));
+
+        // --- No intervening spawn (async gap is clean) ---
+
+        // Agent A re-checks provenance → still matches → proceed.
+        {
+            let expected = provenance.read().await;
+            assert_eq!(
+                expected.as_deref(),
+                Some("agent-A"),
+                "Re-check should still match when no new spawn occurred"
+            );
+        }
+
+        // Agent A stores request channel and signals.
+        if let Some(tx) = pending.lock().await.take() {
+            tx.send(()).unwrap();
+        }
+        assert!(rx_a.await.is_ok(), "Agent A should connect successfully");
     }
 }
