@@ -1,5 +1,5 @@
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import { oneDark, oneLight, SyntaxHighlighter } from "@/components/outputs/syntax-highlighter";
+import { StaticCodeBlock } from "@/components/editor/static-highlight";
 import {
   Command,
   CommandEmpty,
@@ -15,7 +15,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { isDarkMode } from "@/lib/dark-mode";
+import { isDarkMode, useColorTheme } from "@/lib/dark-mode";
 import { type HistoryEntry, useHistorySearch } from "../hooks/useHistorySearch";
 
 interface HistorySearchDialogProps {
@@ -33,6 +33,7 @@ const CodePreview = memo(function CodePreview({
   maxLines?: number;
 }) {
   const isDark = isDarkMode();
+  const colorTheme = (useColorTheme() ?? "classic") as "classic" | "cream";
 
   // Truncate to maxLines
   const lines = code.split("\n");
@@ -40,25 +41,13 @@ const CodePreview = memo(function CodePreview({
   const displayCode = truncated ? `${lines.slice(0, maxLines).join("\n")}\n...` : code;
 
   return (
-    <SyntaxHighlighter
+    <StaticCodeBlock
+      code={displayCode}
       language="python"
-      style={isDark ? oneDark : oneLight}
-      customStyle={{
-        margin: 0,
-        padding: "0.5rem",
-        fontSize: "0.75rem",
-        lineHeight: "1.4",
-        background: "transparent",
-        overflow: "hidden",
-      }}
-      codeTagProps={{
-        style: {
-          fontFamily: "var(--font-mono, ui-monospace, monospace)",
-        },
-      }}
-    >
-      {displayCode}
-    </SyntaxHighlighter>
+      isDark={isDark}
+      colorTheme={colorTheme}
+      className="!m-0 !p-2 !text-xs !leading-[1.4] !bg-transparent overflow-hidden"
+    />
   );
 });
 
