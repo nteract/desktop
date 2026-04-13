@@ -57,14 +57,25 @@ describe("generateFrameHtml", () => {
 
   describe("dark mode", () => {
     it("bakes theme-correct background to prevent flash", () => {
-      // Background matches theme from the start so iframe never flashes white
+      // --bg-primary is always transparent; the notebook background shows through
       const darkHtml = generateFrameHtml({ darkMode: true });
-      expect(darkHtml).toContain("--bg-primary: #0a0a0a");
+      expect(darkHtml).toContain("--bg-primary: transparent");
       expect(darkHtml).toContain("--bg-secondary: #1a1a1a");
 
       const lightHtml = generateFrameHtml({ darkMode: false });
-      expect(lightHtml).toContain("--bg-primary: #ffffff");
+      expect(lightHtml).toContain("--bg-primary: transparent");
       expect(lightHtml).toContain("--bg-secondary: #f5f5f5");
+
+      // Cream uses warm tones
+      const creamDarkHtml = generateFrameHtml({ darkMode: true, colorTheme: "cream" });
+      expect(creamDarkHtml).toContain("--bg-secondary: #242120");
+      expect(creamDarkHtml).toContain("--text-primary: #e8e2dc");
+      expect(creamDarkHtml).toContain("--border-color: #3a3533");
+
+      const creamLightHtml = generateFrameHtml({ darkMode: false, colorTheme: "cream" });
+      expect(creamLightHtml).toContain("--bg-secondary: #f0ede7");
+      expect(creamLightHtml).toContain("--text-primary: #1e1a18");
+      expect(creamLightHtml).toContain("--border-color: #d8cec3");
     });
 
     it("uses dark text colors when darkMode is true", () => {
