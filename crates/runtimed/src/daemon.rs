@@ -4783,4 +4783,67 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_warming_paths_registered_and_cleared_on_success() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut pool = Pool::new(3, 3600);
+
+        // Use a pool-prefixed name so pool_env_root can find it
+        let env = create_test_env(&temp_dir, "runtimed-uv-test");
+        let root = pool_env_root(&env.venv_path);
+
+        pool.register_warming_path(root.clone());
+        assert!(pool.warming_paths.contains(&root));
+        assert_eq!(pool.warming_paths.len(), 1);
+
+        pool.mark_warming(1);
+        pool.add(env);
+
+        // add() should remove the path from warming_paths
+        assert!(pool.warming_paths.is_empty());
+        assert_eq!(pool.warming, 0);
+    }
+
+    #[test]
+    fn test_warming_paths_cleared_on_failure() {
+        let mut pool = Pool::new(3, 3600);
+        let path = PathBuf::from("/cache/runtimed-uv-failed");
+
+        pool.register_warming_path(path.clone());
+        pool.mark_warming(1);
+
+        assert!(pool.warming_paths.contains(&path));
+
+        pool.warming_failed_for_path(&path, None);
+
+        assert!(pool.warming_paths.is_empty());
+        assert_eq!(pool.warming, 0);
+        assert_eq!(pool.failure_state.consecutive_failures, 1);
+    }
+
+    #[test]
+    fn test_warming_paths_multiple_concurrent() {
+        let mut pool = Pool::new(3, 3600);
+        let path1 = PathBuf::from("/cache/runtimed-uv-aaa");
+        let path2 = PathBuf::from("/cache/runtimed-uv-bbb");
+        let path3 = PathBuf::from("/cache/runtimed-conda-ccc");
+
+        pool.register_warming_path(path1.clone());
+        pool.register_warming_path(path2.clone());
+        pool.register_warming_path(path3.clone());
+        pool.mark_warming(3);
+
+        assert_eq!(pool.warming_paths.len(), 3);
+
+        // One fails, two remain
+        pool.warming_failed_for_path(&path2, None);
+        assert_eq!(pool.warming_paths.len(), 2);
+        assert!(!pool.warming_paths.contains(&path2));
+
+        // Another fails
+        pool.warming_failed_for_path(&path1, None);
+        assert_eq!(pool.warming_paths.len(), 1);
+        assert!(pool.warming_paths.contains(&path3));
+    }
 }
