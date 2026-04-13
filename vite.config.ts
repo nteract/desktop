@@ -16,6 +16,7 @@ const ignoreNonSource = [
   "**/*.json",
   "**/*.toml",
   "**/wasm/**",
+  "**/renderer-plugins/**",
   "**/dist/**",
   "**/lib/**",
   "**/node_modules/**",
