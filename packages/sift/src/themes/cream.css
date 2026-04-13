@@ -8,7 +8,7 @@
 /* --- Light --- */
 [data-color-theme="cream"] {
   color-scheme: light;
-  --sift-page: #f5f2ec;
+  --sift-bg: #f5f2ec;
   --sift-panel: #fffdf9;
   --sift-ink: #1e1a18;
   --sift-muted: #6e655f;
@@ -41,7 +41,7 @@
 @media (prefers-color-scheme: dark) {
   [data-color-theme="cream"]:not([data-theme="light"]) {
     color-scheme: dark;
-    --sift-page: #1a1816;
+    --sift-bg: #1a1816;
     --sift-panel: #242120;
     --sift-ink: #e8e2dc;
     --sift-muted: #9a918a;
@@ -73,7 +73,7 @@
 [data-color-theme="cream"][data-theme="dark"],
 [data-color-theme="cream"].dark {
   color-scheme: dark;
-  --sift-page: #1a1816;
+  --sift-bg: #1a1816;
   --sift-panel: #242120;
   --sift-ink: #e8e2dc;
   --sift-muted: #9a918a;

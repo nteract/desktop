@@ -41,15 +41,7 @@ function NotebookDemo() {
       </div>
 
       {cells.map((cell, i) => (
-        <div
-          key={i}
-          style={{
-            marginBottom: 32,
-            border: "1px solid #e8ddd0",
-            borderRadius: 12,
-            overflow: "hidden",
-          }}
-        >
+        <div key={i} className="sift-card" style={{ marginBottom: 32 }}>
           <div
             style={{
               padding: "8px 16px",
