@@ -288,25 +288,22 @@ fn extract_pyproject_deps(content: &str) -> Vec<String> {
     deps
 }
 
-/// Extract the bare package name from a conda dependency spec.
-/// e.g., "pandas>=2.0" → "pandas", "numpy" → "numpy", "python=3.12" → "python"
-fn conda_spec_pkg_name(spec: &str) -> &str {
-    let end = spec
-        .find(|c: char| c == '=' || c == '>' || c == '<' || c == '!' || c == '~' || c == ' ')
-        .unwrap_or(spec.len());
-    &spec[..end]
-}
-
 /// Merge environment.yml base deps with CRDT-added deps.
 ///
 /// The env.yml deps form the baseline (e.g. pandas, numpy, matplotlib).
 /// CRDT deps are packages added at runtime via `add_dependency` (e.g. scipy).
-/// Returns the union, preferring the CRDT version spec if a package appears in both.
+/// Returns the union; when a package appears in both, the CRDT version spec
+/// wins (runtime overrides take precedence over the project file).
 fn merge_env_yml_and_crdt_deps(yml_deps: Vec<String>, crdt_deps: Vec<String>) -> Vec<String> {
+    use notebook_doc::metadata::extract_package_name;
+
     let mut merged = yml_deps;
     for dep in crdt_deps {
-        let pkg = conda_spec_pkg_name(&dep);
-        if !merged.iter().any(|d| conda_spec_pkg_name(d) == pkg) {
+        let pkg = extract_package_name(&dep);
+        if let Some(existing) = merged.iter_mut().find(|d| extract_package_name(d) == pkg) {
+            // CRDT spec wins — replace the env.yml entry
+            *existing = dep;
+        } else {
             merged.push(dep);
         }
     }
