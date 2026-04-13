@@ -152,7 +152,7 @@ export function isolatedRendererPlugin(options: IsolatedRendererPluginOptions = 
             warn(warning);
           },
         },
-        minify: true,
+        minify: false, // Dev-mode rebuilds skip minification for faster HMR
         sourcemap,
       },
       define: {
@@ -191,12 +191,14 @@ export function isolatedRendererPlugin(options: IsolatedRendererPluginOptions = 
     name: "isolated-renderer",
 
     async buildStart() {
-      // Production builds: verify pre-built artifacts exist
+      // Production builds: verify all pre-built artifacts exist
       if (!isDevMode) {
-        const coreJs = readPrebuilt("isolated-renderer.js");
-        if (!coreJs) {
+        const missing = ["isolated-renderer.js", ...PLUGIN_NAMES.map((n) => `${n}.js`)].filter(
+          (f) => !readPrebuilt(f),
+        );
+        if (missing.length > 0) {
           throw new Error(
-            "Pre-built renderer plugins not found at apps/notebook/src/renderer-plugins/.\n" +
+            `Pre-built renderer plugins missing: ${missing.join(", ")}\n` +
               "Run `cargo xtask renderer-plugins` to build them.",
           );
         }

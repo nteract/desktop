@@ -6,7 +6,7 @@ import { defineConfig } from "vite-plus";
 import { isolatedRendererPlugin } from "./vite-plugin-isolated-renderer";
 import { rawLibPlugin } from "./vite-plugin-raw-lib";
 
-export default defineConfig(({ command }) => {
+export default defineConfig(() => {
   const debugBundleSourceMapsEnabled = process.env.RUNT_NOTEBOOK_DEBUG_BUILD === "1";
 
   return {
@@ -14,9 +14,7 @@ export default defineConfig(({ command }) => {
       react(),
       tailwindcss(),
       rawLibPlugin(path.resolve(__dirname, "../../node_modules")),
-      isolatedRendererPlugin({
-        minify: command !== "serve",
-      }),
+      isolatedRendererPlugin(),
       visualizer({
         filename: "dist/stats.html",
         open: false,
