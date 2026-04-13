@@ -3226,10 +3226,7 @@ fn is_untitled_notebook(notebook_id: &str) -> bool {
 /// `expected_runtime_agent_id`: If `Some`, only reset if the current runtime agent
 /// matches — prevents a stale error handler from clobbering a newer agent's state.
 /// Pre-spawn callers pass `None` (no agent exists yet, always safe to reset).
-async fn reset_starting_state(
-    room: &NotebookRoom,
-    expected_runtime_agent_id: Option<&str>,
-) {
+async fn reset_starting_state(room: &NotebookRoom, expected_runtime_agent_id: Option<&str>) {
     if let Some(expected) = expected_runtime_agent_id {
         let current = room.current_runtime_agent_id.read().await;
         if current.as_deref() != Some(expected) {
@@ -4220,7 +4217,9 @@ async fn auto_launch_kernel(
                     Ok(Err(_)) => {
                         // Oneshot sender dropped — runtime agent died or was
                         // superseded by a newer spawn before connecting.
-                        warn!("[notebook-sync] Runtime agent connect cancelled (superseded or died)");
+                        warn!(
+                            "[notebook-sync] Runtime agent connect cancelled (superseded or died)"
+                        );
                         reset_starting_state(room, Some(&runtime_agent_id)).await;
                         return;
                     }
@@ -5401,8 +5400,7 @@ async fn handle_notebook_request(
                         // Create per-spawn connect channel (see auto_launch_kernel).
                         let runtime_agent_connect_rx = {
                             let (tx, rx) = oneshot::channel();
-                            let mut guard =
-                                room.pending_runtime_agent_connect_tx.lock().await;
+                            let mut guard = room.pending_runtime_agent_connect_tx.lock().await;
                             *guard = Some(tx);
                             rx
                         };
@@ -11491,8 +11489,7 @@ mod tests {
     async fn test_per_runtime_agent_oneshot_isolation() {
         // Verify that each spawn generation gets its own oneshot channel
         // and that connecting one agent doesn't resolve another's receiver.
-        let pending: Arc<Mutex<Option<oneshot::Sender<()>>>> =
-            Arc::new(Mutex::new(None));
+        let pending: Arc<Mutex<Option<oneshot::Sender<()>>>> = Arc::new(Mutex::new(None));
 
         // Spawn A: create oneshot, store sender
         let (tx_a, rx_a) = oneshot::channel();
@@ -11522,8 +11519,7 @@ mod tests {
     async fn test_oneshot_replaced_before_runtime_agent_connect() {
         // When a new spawn replaces the oneshot before the previous agent
         // connects, the old receiver should resolve with Err (sender dropped).
-        let pending: Arc<Mutex<Option<oneshot::Sender<()>>>> =
-            Arc::new(Mutex::new(None));
+        let pending: Arc<Mutex<Option<oneshot::Sender<()>>>> = Arc::new(Mutex::new(None));
 
         // Spawn A
         let (_tx_a, rx_a) = oneshot::channel();
@@ -11600,7 +11596,10 @@ mod tests {
         // Verify: current_runtime_agent_id cleared (provenance cleanup)
         {
             let id = room.current_runtime_agent_id.read().await;
-            assert!(id.is_none(), "Provenance should be cleared after guarded reset");
+            assert!(
+                id.is_none(),
+                "Provenance should be cleared after guarded reset"
+            );
         }
 
         // Call with None (pre-spawn) — should always reset
