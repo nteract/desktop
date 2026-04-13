@@ -1,12 +1,12 @@
 import { Check, Copy } from "lucide-react";
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { SyntaxHighlighter, oneDark, oneLight } from "./syntax-highlighter";
+import { StaticCodeBlock } from "@/components/editor/static-highlight";
 import rehypeKatex from "rehype-katex";
 import rehypeRaw from "rehype-raw";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
-import { useDarkMode } from "@/lib/dark-mode";
+import { useColorTheme, useDarkMode } from "@/lib/dark-mode";
 import { cn } from "@/lib/utils";
 
 import "katex/dist/katex.min.css";
@@ -46,6 +46,8 @@ interface CodeBlockProps {
 
 function CodeBlock({ children, language = "", enableCopy = true, isDark = false }: CodeBlockProps) {
   const [copied, setCopied] = useState(false);
+  const rawTheme = useColorTheme();
+  const colorTheme = (rawTheme === "cream" ? "cream" : "classic") as "classic" | "cream";
 
   const handleCopy = async () => {
     try {
@@ -59,21 +61,12 @@ function CodeBlock({ children, language = "", enableCopy = true, isDark = false 
 
   return (
     <div className="group/codeblock relative">
-      <SyntaxHighlighter
+      <StaticCodeBlock
+        code={children}
         language={language}
-        style={isDark ? oneDark : oneLight}
-        PreTag="div"
-        customStyle={{
-          margin: 0,
-          padding: "0.75rem",
-          fontSize: "0.875rem",
-          overflow: "auto",
-          background: isDark ? "#282c34" : "#fafafa",
-          borderRadius: "0.375rem",
-        }}
-      >
-        {children}
-      </SyntaxHighlighter>
+        isDark={isDark}
+        colorTheme={colorTheme}
+      />
       {enableCopy && (
         <button
           onClick={handleCopy}
