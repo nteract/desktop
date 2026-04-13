@@ -25,6 +25,7 @@
     "@codemirror/lint": "^6.9.3",
     "@codemirror/state": "^6.5.4",
     "@codemirror/view": "^6.39.12",
+    "@lezer/common": "^1.5.2",
     "@lezer/highlight": "^1.2.3",
     "@lezer/lr": "^1.4.8",
     "@radix-ui/react-accordion": "^1.2.12",
@@ -96,8 +97,8 @@
     "ts-node": "^10.9.2",
     "typescript": "~5.8.3",
     "vite": "catalog:",
+    "vite-plus": "catalog:",
     "vitest": "catalog:",
-    "webdriverio": "^8.40.0",
-    "vite-plus": "catalog:"
+    "webdriverio": "^8.40.0"
   }
 }
