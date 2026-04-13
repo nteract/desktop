@@ -76,6 +76,7 @@ fn main() {
             let target = args.get(1).map(|s| s.as_str());
             cmd_wasm(target);
         }
+        "renderer-plugins" => cmd_renderer_plugins(),
         "mcpb" => {
             let output = args
                 .windows(2)
@@ -146,6 +147,7 @@ Other:
   wasm                       Rebuild runtimed-wasm (wasm-pack build)
   wasm sift                  Rebuild nteract-predicate WASM for sift
   wasm --all                 Rebuild all WASM targets
+  renderer-plugins           Rebuild pre-built renderer plugins (notebook + MCP)
   icons [source.png]         Generate icon variants
   mcpb                       Package nteract as a Claude Desktop extension (.mcpb)
   mcpb --variant nightly     Build nightly variant (different name/icon)
@@ -1078,6 +1080,26 @@ fn cmd_wasm(target: Option<&str>) {
         );
         println!("WASM build complete. Output: packages/sift/public/wasm/");
     }
+}
+
+fn cmd_renderer_plugins() {
+    require_pnpm();
+    println!("Building renderer plugins...");
+    // Build both the notebook renderer plugins and the runt-mcp plugin assets.
+    // Uses the shared renderer-plugin-builder.ts to produce:
+    //   - apps/notebook/src/renderer-plugins/ (IIFE + 4 CJS plugins, checked in via git LFS)
+    //   - crates/runt-mcp/assets/plugins/ (MCP-wrapped plugins, checked in via git LFS)
+    run_cmd(
+        "node",
+        &[
+            "--experimental-strip-types",
+            "scripts/build-renderer-plugins.ts",
+        ],
+    );
+    println!("Renderer plugins built.");
+    println!("  Notebook: apps/notebook/src/renderer-plugins/");
+    println!("  MCP:      crates/runt-mcp/assets/plugins/");
+    println!("Commit the updated artifacts (they're tracked via git LFS).");
 }
 
 fn cmd_icons(source: Option<&str>) {

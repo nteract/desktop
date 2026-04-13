@@ -1,13 +1,23 @@
 /**
  * Vite Plugin: Isolated Renderer
  *
- * Builds the isolated renderer bundle during the notebook build and exposes
- * it as a virtual module. This eliminates the need for a separate build step.
+ * Loads pre-built renderer plugin artifacts from disk and exposes them as
+ * virtual modules. The artifacts are checked into the repo (via git LFS)
+ * at `apps/notebook/src/renderer-plugins/`, following the same pattern as
+ * the WASM bindings in `apps/notebook/src/wasm/`.
+ *
+ * To rebuild the artifacts: `cargo xtask renderer-plugins`
+ *
+ * In dev mode (Vite dev server), changes to isolated renderer source files
+ * trigger a live rebuild + HMR reload so you don't need to re-run the
+ * xtask command during active renderer development.
  *
  * Usage:
  *   import { rendererCode, rendererCss } from 'virtual:isolated-renderer';
+ *   import { code, css } from 'virtual:renderer-plugin/plotly';
  */
 
+import fs from "node:fs";
 import path from "node:path";
 import tailwindcss from "@tailwindcss/vite";
 import { build, type Plugin } from "vite-plus";
@@ -24,61 +34,69 @@ const RESOLVED_VIRTUAL_MODULE_ID = `\0${VIRTUAL_MODULE_ID}`;
 const VIRTUAL_PLUGIN_PREFIX = "virtual:renderer-plugin/";
 const RESOLVED_PLUGIN_PREFIX = "\0virtual:renderer-plugin/";
 
+/** Directory containing pre-built renderer plugin artifacts (checked in via git LFS). */
+const PREBUILT_DIR = path.resolve(__dirname, "../notebook/src/renderer-plugins");
+
+/** Plugin names that have pre-built artifacts (excludes sift — built from source). */
+const PLUGIN_NAMES = ["markdown", "plotly", "vega", "leaflet"];
+
 interface IsolatedRendererPluginOptions {
   /**
-   * Path to the isolated renderer entry file.
+   * Path to the isolated renderer entry file (used only for dev-mode rebuilds).
    * @default "../../src/isolated-renderer/index.tsx"
    */
   entry?: string;
   /**
-   * Enable minification for production builds.
-   * @default false
-   */
-  minify?: boolean;
-  /**
-   * Source map mode for the embedded renderer bundle.
-   * Use inline source maps when the bundle is in-memory or injected.
+   * Source map mode for dev-mode rebuilds.
    * @default false
    */
   sourcemap?: false | "inline";
 }
 
+/**
+ * Read a pre-built artifact from disk, returning empty string if missing.
+ */
+function readPrebuilt(filename: string): string {
+  const filepath = path.join(PREBUILT_DIR, filename);
+  try {
+    return fs.readFileSync(filepath, "utf-8");
+  } catch {
+    return "";
+  }
+}
+
 export function isolatedRendererPlugin(options: IsolatedRendererPluginOptions = {}): Plugin {
   const {
     entry = path.resolve(__dirname, "../../src/isolated-renderer/index.tsx"),
-    minify = false,
     sourcemap = false,
   } = options;
 
-  let rendererCode = "";
-  let rendererCss = "";
-  let pluginOutputs = new Map<string, RendererPluginOutput>();
-  let buildPromise: Promise<void> | null = null;
+  // In-memory cache for dev-mode rebuilds (overrides pre-built artifacts)
+  let devRendererCode = "";
+  let devRendererCss = "";
+  let devPluginOutputs = new Map<string, RendererPluginOutput>();
+  let devBuildPromise: Promise<void> | null = null;
+  let isDevMode = false;
 
   // Directories to watch for changes that should trigger rebuild
   const isolatedRendererDir = path.resolve(__dirname, "../../src/isolated-renderer");
   const componentsDir = path.resolve(__dirname, "../../src/components");
 
-  function invalidateCache() {
-    buildPromise = null;
-    rendererCode = "";
-    rendererCss = "";
-    pluginOutputs = new Map();
+  function invalidateDevCache() {
+    devBuildPromise = null;
+    devRendererCode = "";
+    devRendererCss = "";
+    devPluginOutputs = new Map();
   }
 
-  async function buildRenderer() {
+  async function buildRendererFromSource() {
     const srcDir = path.resolve(__dirname, "../../src");
 
     const result = await build({
       configFile: false,
-      // Force production mode to ensure esbuild uses jsx-runtime (not jsx-dev-runtime)
       mode: "production",
       plugins: [
-        // Don't use React plugin - use esbuild's native JSX handling instead
-        // The React plugin uses Babel which doesn't respect mode for JSX transform
         tailwindcss(),
-        // Resolve vega-raw/vega-lite-raw/vega-embed-raw virtual modules.
-        // These bypass restrictive "exports" fields in vega packages (v6+).
         {
           name: "vega-raw-resolve",
           resolveId(source: string) {
@@ -97,13 +115,8 @@ export function isolatedRendererPlugin(options: IsolatedRendererPluginOptions = 
         },
       ],
       esbuild: {
-        // Use esbuild's native JSX handling with automatic runtime
-        // This properly bundles jsx-runtime into the IIFE
         jsx: "automatic",
         jsxImportSource: "react",
-        // CRITICAL: Explicitly disable jsxDev to use production runtime
-        // Without this, Vite's dev server passes jsxDev: true to esbuild,
-        // which generates jsxDEV calls that fail in the sandboxed iframe
         jsxDev: false,
       },
       resolve: {
@@ -112,7 +125,7 @@ export function isolatedRendererPlugin(options: IsolatedRendererPluginOptions = 
         },
       },
       build: {
-        write: false, // Don't write to disk, return in memory
+        write: false,
         lib: {
           entry,
           name: "IsolatedRenderer",
@@ -129,7 +142,6 @@ export function isolatedRendererPlugin(options: IsolatedRendererPluginOptions = 
             "@tauri-apps/plugin-fs",
             /^@tauri-apps\/.*/,
           ],
-          // Suppress "use client" directive warnings from node_modules
           onwarn(warning, warn) {
             if (
               warning.code === "MODULE_LEVEL_DIRECTIVE" &&
@@ -140,24 +152,23 @@ export function isolatedRendererPlugin(options: IsolatedRendererPluginOptions = 
             warn(warning);
           },
         },
-        minify,
+        minify: false, // Dev-mode rebuilds skip minification for faster HMR
         sourcemap,
       },
       define: {
         "process.env.NODE_ENV": JSON.stringify("production"),
       },
-      logLevel: "warn", // Reduce noise during build
+      logLevel: "warn",
     });
 
-    // Extract JS and CSS from build output
     const outputs = Array.isArray(result) ? result : [result];
     for (const output of outputs) {
       if ("output" in output) {
         for (const chunk of output.output) {
           if (chunk.type === "chunk" && chunk.fileName.endsWith(".js")) {
-            rendererCode = chunk.code;
+            devRendererCode = chunk.code;
           } else if (chunk.type === "asset" && chunk.fileName.endsWith(".css")) {
-            rendererCss =
+            devRendererCss =
               typeof chunk.source === "string"
                 ? chunk.source
                 : new TextDecoder().decode(chunk.source);
@@ -166,14 +177,13 @@ export function isolatedRendererPlugin(options: IsolatedRendererPluginOptions = 
       }
     }
 
-    if (!rendererCode) {
+    if (!devRendererCode) {
       throw new Error("Failed to build isolated renderer: no JS output produced");
     }
 
-    // --- Build renderer plugins (CJS, React externalized) ---
     const plugins = await buildAllRendererPlugins();
     for (const plugin of plugins) {
-      pluginOutputs.set(plugin.name, plugin);
+      devPluginOutputs.set(plugin.name, plugin);
     }
   }
 
@@ -181,12 +191,18 @@ export function isolatedRendererPlugin(options: IsolatedRendererPluginOptions = 
     name: "isolated-renderer",
 
     async buildStart() {
-      // Build the isolated renderer at the start of the main build
-      // Cache the promise so we only build once even if called multiple times
-      if (!buildPromise) {
-        buildPromise = buildRenderer();
+      // Production builds: verify all pre-built artifacts exist
+      if (!isDevMode) {
+        const missing = ["isolated-renderer.js", ...PLUGIN_NAMES.map((n) => `${n}.js`)].filter(
+          (f) => !readPrebuilt(f),
+        );
+        if (missing.length > 0) {
+          throw new Error(
+            `Pre-built renderer plugins missing: ${missing.join(", ")}\n` +
+              "Run `cargo xtask renderer-plugins` to build them.",
+          );
+        }
       }
-      await buildPromise;
     },
 
     resolveId(id) {
@@ -199,54 +215,66 @@ export function isolatedRendererPlugin(options: IsolatedRendererPluginOptions = 
     },
 
     async load(id) {
-      if (id === RESOLVED_VIRTUAL_MODULE_ID || id.startsWith(RESOLVED_PLUGIN_PREFIX)) {
-        // Ensure build is complete before returning module content
-        if (buildPromise) {
-          await buildPromise;
-        }
+      // In dev mode, wait for any in-progress build
+      if (isDevMode && devBuildPromise) {
+        await devBuildPromise;
       }
 
-      // Core IIFE bundle (no plugin strings — they have their own modules)
+      // Core IIFE bundle
       if (id === RESOLVED_VIRTUAL_MODULE_ID) {
+        const code =
+          isDevMode && devRendererCode ? devRendererCode : readPrebuilt("isolated-renderer.js");
+        const css =
+          isDevMode && devRendererCss ? devRendererCss : readPrebuilt("isolated-renderer.css");
         return `
-export const rendererCode = ${JSON.stringify(rendererCode)};
-export const rendererCss = ${JSON.stringify(rendererCss)};
+export const rendererCode = ${JSON.stringify(code)};
+export const rendererCss = ${JSON.stringify(css)};
 `;
       }
 
-      // Renderer plugin modules (code-split from the core bundle)
+      // Renderer plugin modules
       const pluginName = id.startsWith(RESOLVED_PLUGIN_PREFIX)
         ? id.slice(RESOLVED_PLUGIN_PREFIX.length)
         : null;
       if (pluginName) {
-        const plugin = pluginOutputs.get(pluginName);
-        if (plugin) {
+        // Dev mode: use freshly built output if available
+        if (isDevMode) {
+          const devPlugin = devPluginOutputs.get(pluginName);
+          if (devPlugin) {
+            return `
+export const code = ${JSON.stringify(devPlugin.code)};
+export const css = ${JSON.stringify(devPlugin.css)};
+`;
+          }
+        }
+        // Production: read from pre-built artifacts
+        const code = readPrebuilt(`${pluginName}.js`);
+        const css = readPrebuilt(`${pluginName}.css`);
+        if (code) {
           return `
-export const code = ${JSON.stringify(plugin.code)};
-export const css = ${JSON.stringify(plugin.css)};
+export const code = ${JSON.stringify(code)};
+export const css = ${JSON.stringify(css)};
 `;
         }
       }
     },
 
-    // For dev server: serve the virtual module
+    // Dev server: build from source for live development
     configureServer(devServer) {
-      // Ensure renderer is built before serving
+      isDevMode = true;
       devServer.middlewares.use(async (_req, _res, next) => {
-        if (!buildPromise) {
-          buildPromise = buildRenderer();
+        if (!devBuildPromise) {
+          devBuildPromise = buildRendererFromSource();
         }
-        await buildPromise;
+        await devBuildPromise;
         next();
       });
     },
 
-    // Handle HMR: rebuild when isolated renderer source files change
+    // HMR: rebuild from source when isolated renderer files change
     async handleHotUpdate({ file, server: devServer }) {
-      // Check if the changed file is part of the isolated renderer bundle
       const isIsolatedRendererFile =
         file.startsWith(isolatedRendererDir) ||
-        // Components used by the isolated renderer
         (file.startsWith(componentsDir) &&
           (file.includes("/outputs/") ||
             file.includes("/isolated/") ||
@@ -256,26 +284,22 @@ export const css = ${JSON.stringify(plugin.css)};
         console.log(
           `[isolated-renderer] Rebuilding due to change in: ${path.relative(path.resolve(__dirname, "../.."), file)}`,
         );
-        invalidateCache();
-        buildPromise = buildRenderer();
-        await buildPromise;
+        invalidateDevCache();
+        devBuildPromise = buildRendererFromSource();
+        await devBuildPromise;
 
-        // Invalidate the core virtual module and all plugin virtual modules.
-        // Without this, Vite's module graph retains stale load() results for
-        // plugin modules and serves old plugin code after a full-reload.
         const mod = devServer.moduleGraph.getModuleById(RESOLVED_VIRTUAL_MODULE_ID);
         if (mod) {
           devServer.moduleGraph.invalidateModule(mod);
         }
 
-        for (const name of pluginOutputs.keys()) {
+        for (const name of devPluginOutputs.keys()) {
           const pluginMod = devServer.moduleGraph.getModuleById(`${RESOLVED_PLUGIN_PREFIX}${name}`);
           if (pluginMod) {
             devServer.moduleGraph.invalidateModule(pluginMod);
           }
         }
 
-        // Send HMR update
         devServer.ws.send({
           type: "full-reload",
           path: "*",
