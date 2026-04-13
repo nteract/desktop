@@ -270,6 +270,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       id,
       initialContent,
       darkMode = true,
+      colorTheme,
       minHeight = 24,
       maxHeight = 2000,
       autoHeight = false,
