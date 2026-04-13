@@ -11484,4 +11484,138 @@ mod tests {
         let ts = room.trust_state.read().await;
         assert_eq!(ts.status, runt_trust::TrustStatus::NoDependencies);
     }
+
+    // ── Per-agent oneshot channel tests ──────────────────────────────
+
+    #[tokio::test]
+    async fn test_per_runtime_agent_oneshot_isolation() {
+        // Verify that each spawn generation gets its own oneshot channel
+        // and that connecting one agent doesn't resolve another's receiver.
+        let pending: Arc<Mutex<Option<oneshot::Sender<()>>>> =
+            Arc::new(Mutex::new(None));
+
+        // Spawn A: create oneshot, store sender
+        let (tx_a, rx_a) = oneshot::channel();
+        *pending.lock().await = Some(tx_a);
+
+        // A connects: take and send
+        if let Some(tx) = pending.lock().await.take() {
+            tx.send(()).unwrap();
+        }
+        assert!(rx_a.await.is_ok(), "A's receiver should resolve Ok");
+
+        // Spawn B: create new oneshot (A's sender already consumed via take)
+        let (tx_b, rx_b) = oneshot::channel();
+        *pending.lock().await = Some(tx_b);
+
+        // B connects
+        if let Some(tx) = pending.lock().await.take() {
+            tx.send(()).unwrap();
+        }
+        assert!(rx_b.await.is_ok(), "B's receiver should resolve Ok");
+
+        // After both consumed, pending should be None
+        assert!(pending.lock().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_oneshot_replaced_before_runtime_agent_connect() {
+        // When a new spawn replaces the oneshot before the previous agent
+        // connects, the old receiver should resolve with Err (sender dropped).
+        let pending: Arc<Mutex<Option<oneshot::Sender<()>>>> =
+            Arc::new(Mutex::new(None));
+
+        // Spawn A
+        let (_tx_a, rx_a) = oneshot::channel();
+        *pending.lock().await = Some(_tx_a);
+
+        // Spawn B BEFORE A connects — replaces A's sender (drops tx_a)
+        let (tx_b, rx_b) = oneshot::channel();
+        *pending.lock().await = Some(tx_b); // tx_a dropped here
+
+        // A's receiver resolves with Err (sender dropped = superseded)
+        assert!(
+            rx_a.await.is_err(),
+            "A's receiver should get Err (sender was dropped by B's spawn)"
+        );
+
+        // B connects normally
+        if let Some(tx) = pending.lock().await.take() {
+            tx.send(()).unwrap();
+        }
+        assert!(rx_b.await.is_ok(), "B's receiver should resolve Ok");
+    }
+
+    #[tokio::test]
+    async fn test_reset_starting_state_guard() {
+        // Verify that reset_starting_state skips when expected_runtime_agent_id
+        // doesn't match current_runtime_agent_id.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (room, _notebook_path) = test_room_with_path(&tmp, "guard_test.ipynb");
+
+        // Set current runtime agent to "agent-B"
+        {
+            let mut id = room.current_runtime_agent_id.write().await;
+            *id = Some("agent-B".to_string());
+        }
+
+        // Set kernel status to "starting" (simulates in-progress launch)
+        {
+            let mut sd = room.state_doc.write().await;
+            sd.set_kernel_status("starting");
+        }
+
+        // Call reset with expected="agent-A" (stale handler) — should skip
+        reset_starting_state(&room, Some("agent-A")).await;
+
+        // Verify: kernel_status should still be "starting" (NOT reset)
+        {
+            let sd = room.state_doc.read().await;
+            assert_eq!(
+                sd.read_state().kernel.status,
+                "starting",
+                "Guard should have prevented reset (agent-A != agent-B)"
+            );
+        }
+
+        // Verify: current_runtime_agent_id unchanged
+        {
+            let id = room.current_runtime_agent_id.read().await;
+            assert_eq!(id.as_deref(), Some("agent-B"));
+        }
+
+        // Now call with matching expected="agent-B" — should reset
+        reset_starting_state(&room, Some("agent-B")).await;
+
+        // Verify: kernel_status should be "not_started"
+        {
+            let sd = room.state_doc.read().await;
+            assert_eq!(
+                sd.read_state().kernel.status,
+                "not_started",
+                "Reset should proceed when expected matches current"
+            );
+        }
+
+        // Verify: current_runtime_agent_id cleared (provenance cleanup)
+        {
+            let id = room.current_runtime_agent_id.read().await;
+            assert!(id.is_none(), "Provenance should be cleared after guarded reset");
+        }
+
+        // Call with None (pre-spawn) — should always reset
+        {
+            let mut sd = room.state_doc.write().await;
+            sd.set_kernel_status("starting");
+        }
+        reset_starting_state(&room, None).await;
+        {
+            let sd = room.state_doc.read().await;
+            assert_eq!(
+                sd.read_state().kernel.status,
+                "not_started",
+                "None (pre-spawn) should always reset"
+            );
+        }
+    }
 }
