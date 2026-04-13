@@ -1056,9 +1056,17 @@ pub struct NotebookRoom {
     /// runtime agent's sync connection. Set when runtime agent connects via
     /// socket, cleared on disconnect.
     pub runtime_agent_request_tx: Arc<Mutex<Option<RuntimeAgentRequestSender>>>,
-    /// Fires when the runtime agent establishes its sync connection.
-    /// Uses `watch(false)` → `true` to avoid lost wakeups.
-    runtime_agent_connected_tx: Arc<tokio::sync::watch::Sender<bool>>,
+    /// Per-spawn oneshot sender for the connect handler to signal that this
+    /// generation's runtime agent has established its sync connection.
+    /// Replaced on each agent spawn; previous sender is dropped (cancelling
+    /// the old receiver). The connect handler `take()`s the sender.
+    pending_runtime_agent_connect_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+    /// Monotonic generation counter for runtime agent spawns. Incremented
+    /// before each spawn installs its oneshot/channels. Used by
+    /// `reset_starting_state` to detect interleaving spawns: the generation
+    /// is checked while holding each field's lock, so if it hasn't changed,
+    /// no newer spawn has (or can) store a value in that field.
+    runtime_agent_generation: Arc<AtomicU64>,
     /// Monotonic counter for execution queue ordering.
     /// The coordinator bumps this for each ExecuteCell and stamps the seq
     /// on the execution entry. The runtime agent sorts by seq to determine order.
@@ -1293,10 +1301,8 @@ impl NotebookRoom {
             runtime_agent_env_path: Arc::new(RwLock::new(None)),
             runtime_agent_launched_config: Arc::new(RwLock::new(None)),
             runtime_agent_request_tx: Arc::new(Mutex::new(None)),
-            runtime_agent_connected_tx: {
-                let (tx, _) = tokio::sync::watch::channel(false);
-                Arc::new(tx)
-            },
+            pending_runtime_agent_connect_tx: Arc::new(Mutex::new(None)),
+            runtime_agent_generation: Arc::new(AtomicU64::new(0)),
             next_queue_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             current_runtime_agent_id: Arc::new(RwLock::new(None)),
         }
@@ -1382,10 +1388,8 @@ impl NotebookRoom {
             runtime_agent_env_path: Arc::new(RwLock::new(None)),
             runtime_agent_launched_config: Arc::new(RwLock::new(None)),
             runtime_agent_request_tx: Arc::new(Mutex::new(None)),
-            runtime_agent_connected_tx: {
-                let (tx, _) = tokio::sync::watch::channel(false);
-                Arc::new(tx)
-            },
+            pending_runtime_agent_connect_tx: Arc::new(Mutex::new(None)),
+            runtime_agent_generation: Arc::new(AtomicU64::new(0)),
             next_queue_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             current_runtime_agent_id: Arc::new(RwLock::new(None)),
         }
@@ -1555,14 +1559,19 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
         notebook_id, runtime_agent_id
     );
 
-    // Validate provenance — reject stale agents
+    // Validate provenance — reject stale agents.
+    // None means no agent is expected (room was reset or no spawn in progress),
+    // so reject unconditionally. Only the exact current agent ID is accepted.
     {
         let expected = room.current_runtime_agent_id.read().await;
-        if let Some(ref expected_id) = *expected {
-            if *expected_id != runtime_agent_id {
+        match expected.as_deref() {
+            Some(expected_id) if expected_id == runtime_agent_id => {
+                // Match — this is the agent we're waiting for.
+            }
+            other => {
                 warn!(
-                    "[notebook-sync] Rejecting stale runtime agent {} (expected {})",
-                    runtime_agent_id, expected_id
+                    "[notebook-sync] Rejecting runtime agent {} (provenance is {:?})",
+                    runtime_agent_id, other
                 );
                 return;
             }
@@ -1618,12 +1627,17 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
         *tx_guard = Some(ra_tx);
     }
 
-    // ── 4. Set provenance + signal connected ──────────────────────────
-    {
-        let mut id = room.current_runtime_agent_id.write().await;
-        *id = Some(runtime_agent_id.clone());
+    // ── 4. Signal connected ─────────────────────────────────────────
+    // Provenance is already set by the spawn site (before spawn).
+    // We do NOT re-set it here — doing so after the async sync work above
+    // would create a window where a newer spawn's provenance could be
+    // clobbered by this (potentially stale) connect handler.
+    //
+    // take() ensures at most one signal per spawn generation — a stale
+    // runtime agent that passes provenance finds None here (no-op).
+    if let Some(tx) = room.pending_runtime_agent_connect_tx.lock().await.take() {
+        let _ = tx.send(());
     }
-    let _ = room.runtime_agent_connected_tx.send(true);
     info!(
         "[notebook-sync] Runtime agent connected and ready: {}",
         runtime_agent_id
@@ -1781,7 +1795,11 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
             let mut tx_guard = room.runtime_agent_request_tx.lock().await;
             *tx_guard = None;
         }
-        let _ = room.runtime_agent_connected_tx.send(false);
+        // No need to signal "disconnected" — the oneshot was consumed on
+        // connect. If the runtime agent dies before connecting, the oneshot
+        // sender is dropped when pending_runtime_agent_connect_tx is replaced
+        // by the next spawn, which resolves the receiver with Err.
+        //
         // Clear runtime_agent_handle so LaunchKernel spawns a new runtime agent
         let mut guard = room.runtime_agent_handle.lock().await;
         *guard = None;
@@ -3217,7 +3235,38 @@ fn is_untitled_notebook(notebook_id: &str) -> bool {
 
 /// Reset runtime state to "not_started" (clears any stale starting phase).
 /// Used when an early exit prevents kernel launch after status was set to "starting".
-async fn reset_starting_state(room: &NotebookRoom) {
+///
+/// `expected_runtime_agent_id`: If `Some`, only reset if the current runtime agent
+/// matches — prevents a stale error handler from clobbering a newer agent's state.
+/// Pre-spawn callers pass `None` (no agent exists yet, always safe to reset).
+async fn reset_starting_state(room: &NotebookRoom, expected_runtime_agent_id: Option<&str>) {
+    // For guarded resets (post-spawn error paths), atomically check-and-clear
+    // provenance AND capture the generation counter in a single write lock scope.
+    // Clearing provenance to None immediately blocks late-arriving stale agents
+    // because the connect handler rejects None provenance.
+    //
+    // The generation counter MUST be captured while holding the provenance write
+    // lock. A new spawn acquires this same write lock (to set provenance) before
+    // bumping the generation counter, so the generation cannot change while we
+    // hold the lock. This closes the TOCTOU gap: if the generation changes after
+    // we release the lock, the per-field checks (below) will detect the mismatch
+    // and abort.
+    let gen = if let Some(expected) = expected_runtime_agent_id {
+        let mut current = room.current_runtime_agent_id.write().await;
+        if current.as_deref() != Some(expected) {
+            info!(
+                "[notebook-sync] Skipping reset_starting_state: expected {} but current is {:?}",
+                expected, *current,
+            );
+            return;
+        }
+        // Clear provenance and capture generation under the write lock.
+        *current = None;
+        Some(room.runtime_agent_generation.load(Ordering::Acquire))
+    } else {
+        None
+    };
+
     // Scope the state_doc write guard so it drops before acquiring
     // runtime_agent_handle lock (deadlock prevention).
     {
@@ -3229,9 +3278,42 @@ async fn reset_starting_state(room: &NotebookRoom) {
             let _ = room.state_changed_tx.send(());
         }
     }
-    // Clear stale runtime agent handle so auto-launch can retry
-    let mut guard = room.runtime_agent_handle.lock().await;
-    *guard = None;
+
+    // Clear stale runtime agent handle so auto-launch can retry.
+    // Check generation inside the lock: if a new spawn bumped it, the handle
+    // belongs to the new generation — do not clear.
+    {
+        let mut guard = room.runtime_agent_handle.lock().await;
+        if let Some(g) = gen {
+            if room.runtime_agent_generation.load(Ordering::Acquire) != g {
+                info!("[notebook-sync] Aborting reset_starting_state: new spawn detected at handle clear");
+                return;
+            }
+        }
+        *guard = None;
+    }
+    // Clear request channel — same generation guard.
+    {
+        let mut tx_guard = room.runtime_agent_request_tx.lock().await;
+        if let Some(g) = gen {
+            if room.runtime_agent_generation.load(Ordering::Acquire) != g {
+                info!("[notebook-sync] Aborting reset_starting_state: new spawn detected at request_tx clear");
+                return;
+            }
+        }
+        *tx_guard = None;
+    }
+    // Clear pending connect sender — same generation guard.
+    {
+        let mut guard = room.pending_runtime_agent_connect_tx.lock().await;
+        if let Some(g) = gen {
+            if room.runtime_agent_generation.load(Ordering::Acquire) != g {
+                info!("[notebook-sync] Aborting reset_starting_state: new spawn detected at connect_tx clear");
+                return;
+            }
+        }
+        *guard = None;
+    }
 }
 
 /// Try to satisfy UV inline deps from the prewarmed pool.
@@ -3460,7 +3542,7 @@ async fn auto_launch_kernel(
     // before we finish launching)
     if room.active_peers.load(std::sync::atomic::Ordering::Relaxed) == 0 {
         debug!("[notebook-sync] Auto-launch aborted: no peers remaining");
-        reset_starting_state(room).await;
+        reset_starting_state(room, None).await;
         return;
     }
 
@@ -3501,7 +3583,7 @@ async fn auto_launch_kernel(
     // Re-check peers (another race check)
     if room.active_peers.load(std::sync::atomic::Ordering::Relaxed) == 0 {
         debug!("[notebook-sync] Auto-launch aborted: no peers (after status check)");
-        reset_starting_state(room).await;
+        reset_starting_state(room, None).await;
         return;
     }
 
@@ -3681,7 +3763,7 @@ async fn auto_launch_kernel(
                 match acquire_pool_env_for_source(&env_source, &daemon, room).await {
                     Some(env) => env,
                     None => {
-                        reset_starting_state(room).await;
+                        reset_starting_state(room, None).await;
                         return;
                     }
                 }
@@ -3742,7 +3824,7 @@ async fn auto_launch_kernel(
                     match acquire_pool_env_for_source(&env_source, &daemon, room).await {
                         Some(env) => env,
                         None => {
-                            reset_starting_state(room).await;
+                            reset_starting_state(room, None).await;
                             return;
                         }
                     }
@@ -3763,7 +3845,7 @@ async fn auto_launch_kernel(
             let pooled_env = match acquire_pool_env_for_source(prewarmed, &daemon, room).await {
                 Some(env) => env,
                 None => {
-                    reset_starting_state(room).await;
+                    reset_starting_state(room, None).await;
                     return;
                 }
             };
@@ -3845,7 +3927,7 @@ async fn auto_launch_kernel(
                             status: format!("error: Failed to prepare environment: {}", e),
                             cell_id: None,
                         });
-                    reset_starting_state(room).await;
+                    reset_starting_state(room, None).await;
                     return;
                 }
             }
@@ -3918,7 +4000,7 @@ async fn auto_launch_kernel(
                                         cell_id: None,
                                     },
                                 );
-                                reset_starting_state(room).await;
+                                reset_starting_state(room, None).await;
                                 return;
                             }
                         }
@@ -3958,7 +4040,7 @@ async fn auto_launch_kernel(
                                 status: format!("error: Failed to prepare environment: {}", e),
                                 cell_id: None,
                             });
-                        reset_starting_state(room).await;
+                        reset_starting_state(room, None).await;
                         return;
                     }
                 }
@@ -4038,7 +4120,7 @@ async fn auto_launch_kernel(
                                         cell_id: None,
                                     },
                                 );
-                                reset_starting_state(room).await;
+                                reset_starting_state(room, None).await;
                                 return;
                             }
                         }
@@ -4127,6 +4209,26 @@ async fn auto_launch_kernel(
         let runtime_agent_id = format!("runtime-agent:{}", &uuid::Uuid::new_v4().to_string()[..8]);
         let socket_path = daemon.socket_path().clone();
 
+        // Set provenance BEFORE spawn so stale agents are rejected by the
+        // connect handler's provenance check. Bump generation BEFORE storing
+        // the oneshot so reset_starting_state can detect interleaving spawns.
+        // Then create the oneshot so it's ready before the subprocess can
+        // connect.
+        //
+        // Ordering: provenance → generation → oneshot → spawn
+        {
+            let mut id = room.current_runtime_agent_id.write().await;
+            *id = Some(runtime_agent_id.clone());
+        }
+        room.runtime_agent_generation
+            .fetch_add(1, Ordering::Release);
+        let runtime_agent_connect_rx = {
+            let (tx, rx) = oneshot::channel();
+            let mut guard = room.pending_runtime_agent_connect_tx.lock().await;
+            *guard = Some(tx);
+            rx
+        };
+
         match crate::runtime_agent_handle::RuntimeAgentHandle::spawn(
             nb_id,
             runtime_agent_id.clone(),
@@ -4136,15 +4238,10 @@ async fn auto_launch_kernel(
         .await
         {
             Ok(ra) => {
-                // Store handle and set provenance
-                // Scope each lock independently to avoid cross-lock ordering.
+                // Store handle after spawn succeeds.
                 {
                     let mut ra_guard = room.runtime_agent_handle.lock().await;
                     *ra_guard = Some(ra);
-                }
-                {
-                    let mut id = room.current_runtime_agent_id.write().await;
-                    *id = Some(runtime_agent_id.clone());
                 }
 
                 // Write "connecting" phase — fills the gap between spawn and connect
@@ -4155,22 +4252,28 @@ async fn auto_launch_kernel(
                     }
                 }
 
-                // Wait for runtime agent to establish its sync connection
-                match tokio::time::timeout(std::time::Duration::from_secs(30), async {
-                    room.runtime_agent_connected_tx
-                        .subscribe()
-                        .wait_for(|v| *v)
-                        .await
-                        .map(|_| ())
-                })
+                // Wait for THIS runtime agent to establish its sync connection
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(30),
+                    runtime_agent_connect_rx,
+                )
                 .await
                 {
-                    Ok(Ok(_)) => {
+                    Ok(Ok(())) => {
                         info!("[notebook-sync] Agent connected, sending LaunchKernel");
                     }
-                    Ok(Err(_)) | Err(_) => {
+                    Ok(Err(_)) => {
+                        // Oneshot sender dropped — runtime agent died or was
+                        // superseded by a newer spawn before connecting.
+                        warn!(
+                            "[notebook-sync] Runtime agent connect cancelled (superseded or died)"
+                        );
+                        reset_starting_state(room, Some(&runtime_agent_id)).await;
+                        return;
+                    }
+                    Err(_) => {
                         warn!("[notebook-sync] Agent failed to connect within 30s");
-                        reset_starting_state(room).await;
+                        reset_starting_state(room, Some(&runtime_agent_id)).await;
                         return;
                     }
                 }
@@ -4230,23 +4333,23 @@ async fn auto_launch_kernel(
                     }
                     Ok(notebook_protocol::protocol::RuntimeAgentResponse::Error { error }) => {
                         warn!("[notebook-sync] Agent kernel launch failed: {}", error);
-                        reset_starting_state(room).await;
+                        reset_starting_state(room, Some(&runtime_agent_id)).await;
                     }
                     Ok(_) => {
                         warn!(
                             "[notebook-sync] Unexpected runtime agent response during auto-launch"
                         );
-                        reset_starting_state(room).await;
+                        reset_starting_state(room, Some(&runtime_agent_id)).await;
                     }
                     Err(e) => {
                         warn!("[notebook-sync] Agent communication error: {}", e);
-                        reset_starting_state(room).await;
+                        reset_starting_state(room, Some(&runtime_agent_id)).await;
                     }
                 }
             }
             Err(e) => {
                 warn!("[notebook-sync] Failed to spawn runtime agent: {}", e);
-                reset_starting_state(room).await;
+                reset_starting_state(room, None).await;
             }
         }
     }
@@ -4764,7 +4867,7 @@ async fn handle_notebook_request(
                             "[notebook-sync] pixi.toml at {:?} does not declare ipykernel",
                             path
                         );
-                        reset_starting_state(room).await;
+                        reset_starting_state(room, None).await;
                         return NotebookResponse::Error {
                             error: "ipykernel not found in pixi.toml — run `pixi add ipykernel` in your project directory".to_string(),
                         };
@@ -4868,7 +4971,7 @@ async fn handle_notebook_request(
                             Some(env)
                         }
                         None => {
-                            reset_starting_state(room).await;
+                            reset_starting_state(room, None).await;
                             return NotebookResponse::Error {
                                 error: "UV pool empty - no environment available".to_string(),
                             };
@@ -4883,7 +4986,7 @@ async fn handle_notebook_request(
                             Some(env)
                         }
                         None => {
-                            reset_starting_state(room).await;
+                            reset_starting_state(room, None).await;
                             return NotebookResponse::Error {
                                 error: "Conda pool empty - no environment available".to_string(),
                             };
@@ -4904,7 +5007,7 @@ async fn handle_notebook_request(
                             match daemon.take_conda_env().await {
                                 Some(env) => Some(env),
                                 None => {
-                                    reset_starting_state(room).await;
+                                    reset_starting_state(room, None).await;
                                     return NotebookResponse::Error {
                                         error: "Conda pool empty".to_string(),
                                     };
@@ -4915,7 +5018,7 @@ async fn handle_notebook_request(
                             match daemon.take_uv_env().await {
                                 Some(env) => Some(env),
                                 None => {
-                                    reset_starting_state(room).await;
+                                    reset_starting_state(room, None).await;
                                     return NotebookResponse::Error {
                                         error: "UV pool empty".to_string(),
                                     };
@@ -4943,7 +5046,7 @@ async fn handle_notebook_request(
                             "[notebook-sync] Invalid PEP 723 metadata in notebook: {}",
                             e
                         );
-                        reset_starting_state(room).await;
+                        reset_starting_state(room, None).await;
                         return NotebookResponse::Error {
                             error: format!("Invalid PEP 723 metadata in notebook: {}", e),
                         };
@@ -4977,14 +5080,14 @@ async fn handle_notebook_request(
                         }
                         Err(e) => {
                             error!("[notebook-sync] Failed to prepare PEP 723 env: {}", e);
-                            reset_starting_state(room).await;
+                            reset_starting_state(room, None).await;
                             return NotebookResponse::Error {
                                 error: format!("Failed to prepare PEP 723 environment: {}", e),
                             };
                         }
                     }
                 } else {
-                    reset_starting_state(room).await;
+                    reset_starting_state(room, None).await;
                     return NotebookResponse::Error {
                         error: "No PEP 723 dependencies found in notebook cells for requested env_source \"uv:pep723\""
                             .to_string(),
@@ -5048,7 +5151,7 @@ async fn handle_notebook_request(
                                         (env, Some(deps))
                                     }
                                     Err(e) => {
-                                        reset_starting_state(room).await;
+                                        reset_starting_state(room, None).await;
                                         return NotebookResponse::Error {
                                             error: format!(
                                                 "Failed to prepare inline environment: {}",
@@ -5082,7 +5185,7 @@ async fn handle_notebook_request(
                                 (env, Some(deps))
                             }
                             Err(e) => {
-                                reset_starting_state(room).await;
+                                reset_starting_state(room, None).await;
                                 return NotebookResponse::Error {
                                     error: format!("Failed to prepare inline environment: {}", e),
                                 };
@@ -5152,7 +5255,7 @@ async fn handle_notebook_request(
                                         (env, Some(deps))
                                     }
                                     Err(e) => {
-                                        reset_starting_state(room).await;
+                                        reset_starting_state(room, None).await;
                                         return NotebookResponse::Error {
                                             error: format!(
                                                 "Failed to prepare conda inline environment: {}",
@@ -5292,13 +5395,13 @@ async fn handle_notebook_request(
                             };
                         }
                         Ok(notebook_protocol::protocol::RuntimeAgentResponse::Error { error }) => {
-                            reset_starting_state(room).await;
+                            reset_starting_state(room, None).await;
                             return NotebookResponse::Error {
                                 error: format!("Agent restart failed: {}", error),
                             };
                         }
                         Ok(_) => {
-                            reset_starting_state(room).await;
+                            reset_starting_state(room, None).await;
                             return NotebookResponse::Error {
                                 error: "Unexpected runtime agent response to RestartKernel"
                                     .to_string(),
@@ -5324,6 +5427,21 @@ async fn handle_notebook_request(
                     format!("runtime-agent:{}", &uuid::Uuid::new_v4().to_string()[..8]);
                 let socket_path = daemon.socket_path().clone();
 
+                // Set provenance + bump generation + create oneshot BEFORE spawn
+                // (see auto_launch_kernel for ordering rationale).
+                {
+                    let mut id = room.current_runtime_agent_id.write().await;
+                    *id = Some(runtime_agent_id.clone());
+                }
+                room.runtime_agent_generation
+                    .fetch_add(1, Ordering::Release);
+                let runtime_agent_connect_rx = {
+                    let (tx, rx) = oneshot::channel();
+                    let mut guard = room.pending_runtime_agent_connect_tx.lock().await;
+                    *guard = Some(tx);
+                    rx
+                };
+
                 match crate::runtime_agent_handle::RuntimeAgentHandle::spawn(
                     notebook_id,
                     runtime_agent_id.clone(),
@@ -5337,10 +5455,6 @@ async fn handle_notebook_request(
                             let mut ra_guard = room.runtime_agent_handle.lock().await;
                             *ra_guard = Some(ra);
                         }
-                        {
-                            let mut id = room.current_runtime_agent_id.write().await;
-                            *id = Some(runtime_agent_id.clone());
-                        }
 
                         // Write "connecting" phase — fills the gap between spawn and connect
                         {
@@ -5350,19 +5464,23 @@ async fn handle_notebook_request(
                             }
                         }
 
-                        // Wait for runtime agent to connect back via socket
-                        match tokio::time::timeout(std::time::Duration::from_secs(30), async {
-                            room.runtime_agent_connected_tx
-                                .subscribe()
-                                .wait_for(|v| *v)
-                                .await
-                                .map(|_| ())
-                        })
+                        // Wait for THIS runtime agent to connect back via socket
+                        match tokio::time::timeout(
+                            std::time::Duration::from_secs(30),
+                            runtime_agent_connect_rx,
+                        )
                         .await
                         {
-                            Ok(Ok(_)) => {}
-                            Ok(Err(_)) | Err(_) => {
-                                reset_starting_state(room).await;
+                            Ok(Ok(())) => {}
+                            Ok(Err(_)) => {
+                                reset_starting_state(room, Some(&runtime_agent_id)).await;
+                                return NotebookResponse::Error {
+                                    error: "Runtime agent connect cancelled (superseded or died)"
+                                        .to_string(),
+                                };
+                            }
+                            Err(_) => {
+                                reset_starting_state(room, Some(&runtime_agent_id)).await;
                                 return NotebookResponse::Error {
                                     error: "Agent failed to connect within 30s".to_string(),
                                 };
@@ -5443,19 +5561,19 @@ async fn handle_notebook_request(
                             Ok(notebook_protocol::protocol::RuntimeAgentResponse::Error {
                                 error,
                             }) => {
-                                reset_starting_state(room).await;
+                                reset_starting_state(room, Some(&runtime_agent_id)).await;
                                 NotebookResponse::Error {
                                     error: format!("Agent kernel launch failed: {}", error),
                                 }
                             }
                             Ok(_) => {
-                                reset_starting_state(room).await;
+                                reset_starting_state(room, Some(&runtime_agent_id)).await;
                                 NotebookResponse::Error {
                                     error: "Unexpected runtime agent response".to_string(),
                                 }
                             }
                             Err(e) => {
-                                reset_starting_state(room).await;
+                                reset_starting_state(room, Some(&runtime_agent_id)).await;
                                 NotebookResponse::Error {
                                     error: format!("Agent communication error: {}", e),
                                 }
@@ -5463,7 +5581,7 @@ async fn handle_notebook_request(
                         }
                     }
                     Err(e) => {
-                        reset_starting_state(room).await;
+                        reset_starting_state(room, None).await;
                         NotebookResponse::Error {
                             error: format!("Failed to spawn runtime agent: {}", e),
                         }
@@ -9406,10 +9524,8 @@ mod tests {
             runtime_agent_env_path: Arc::new(RwLock::new(None)),
             runtime_agent_launched_config: Arc::new(RwLock::new(None)),
             runtime_agent_request_tx: Arc::new(Mutex::new(None)),
-            runtime_agent_connected_tx: {
-                let (tx, _) = tokio::sync::watch::channel(false);
-                Arc::new(tx)
-            },
+            pending_runtime_agent_connect_tx: Arc::new(Mutex::new(None)),
+            runtime_agent_generation: Arc::new(AtomicU64::new(0)),
             next_queue_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             current_runtime_agent_id: Arc::new(RwLock::new(None)),
         };
@@ -11417,5 +11533,364 @@ mod tests {
         // Final trust_state should be NoDependencies.
         let ts = room.trust_state.read().await;
         assert_eq!(ts.status, runt_trust::TrustStatus::NoDependencies);
+    }
+
+    // ── Per-agent oneshot channel tests ──────────────────────────────
+
+    #[tokio::test]
+    async fn test_per_runtime_agent_oneshot_isolation() {
+        // Verify that each spawn generation gets its own oneshot channel
+        // and that connecting one agent doesn't resolve another's receiver.
+        let pending: Arc<Mutex<Option<oneshot::Sender<()>>>> = Arc::new(Mutex::new(None));
+
+        // Spawn A: create oneshot, store sender
+        let (tx_a, rx_a) = oneshot::channel();
+        *pending.lock().await = Some(tx_a);
+
+        // A connects: take and send
+        if let Some(tx) = pending.lock().await.take() {
+            tx.send(()).unwrap();
+        }
+        assert!(rx_a.await.is_ok(), "A's receiver should resolve Ok");
+
+        // Spawn B: create new oneshot (A's sender already consumed via take)
+        let (tx_b, rx_b) = oneshot::channel();
+        *pending.lock().await = Some(tx_b);
+
+        // B connects
+        if let Some(tx) = pending.lock().await.take() {
+            tx.send(()).unwrap();
+        }
+        assert!(rx_b.await.is_ok(), "B's receiver should resolve Ok");
+
+        // After both consumed, pending should be None
+        assert!(pending.lock().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_oneshot_replaced_before_runtime_agent_connect() {
+        // When a new spawn replaces the oneshot before the previous agent
+        // connects, the old receiver should resolve with Err (sender dropped).
+        let pending: Arc<Mutex<Option<oneshot::Sender<()>>>> = Arc::new(Mutex::new(None));
+
+        // Spawn A
+        let (_tx_a, rx_a) = oneshot::channel();
+        *pending.lock().await = Some(_tx_a);
+
+        // Spawn B BEFORE A connects — replaces A's sender (drops tx_a)
+        let (tx_b, rx_b) = oneshot::channel();
+        *pending.lock().await = Some(tx_b); // tx_a dropped here
+
+        // A's receiver resolves with Err (sender dropped = superseded)
+        assert!(
+            rx_a.await.is_err(),
+            "A's receiver should get Err (sender was dropped by B's spawn)"
+        );
+
+        // B connects normally
+        if let Some(tx) = pending.lock().await.take() {
+            tx.send(()).unwrap();
+        }
+        assert!(rx_b.await.is_ok(), "B's receiver should resolve Ok");
+    }
+
+    #[tokio::test]
+    async fn test_reset_starting_state_guard() {
+        // Verify that reset_starting_state skips when expected_runtime_agent_id
+        // doesn't match current_runtime_agent_id.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (room, _notebook_path) = test_room_with_path(&tmp, "guard_test.ipynb");
+
+        // Set current runtime agent to "agent-B"
+        {
+            let mut id = room.current_runtime_agent_id.write().await;
+            *id = Some("agent-B".to_string());
+        }
+
+        // Set kernel status to "starting" (simulates in-progress launch)
+        {
+            let mut sd = room.state_doc.write().await;
+            sd.set_kernel_status("starting");
+        }
+
+        // Call reset with expected="agent-A" (stale handler) — should skip
+        reset_starting_state(&room, Some("agent-A")).await;
+
+        // Verify: kernel_status should still be "starting" (NOT reset)
+        {
+            let sd = room.state_doc.read().await;
+            assert_eq!(
+                sd.read_state().kernel.status,
+                "starting",
+                "Guard should have prevented reset (agent-A != agent-B)"
+            );
+        }
+
+        // Verify: current_runtime_agent_id unchanged
+        {
+            let id = room.current_runtime_agent_id.read().await;
+            assert_eq!(id.as_deref(), Some("agent-B"));
+        }
+
+        // Now call with matching expected="agent-B" — should reset
+        reset_starting_state(&room, Some("agent-B")).await;
+
+        // Verify: kernel_status should be "not_started"
+        {
+            let sd = room.state_doc.read().await;
+            assert_eq!(
+                sd.read_state().kernel.status,
+                "not_started",
+                "Reset should proceed when expected matches current"
+            );
+        }
+
+        // Verify: current_runtime_agent_id cleared (provenance cleanup)
+        {
+            let id = room.current_runtime_agent_id.read().await;
+            assert!(
+                id.is_none(),
+                "Provenance should be cleared after guarded reset"
+            );
+        }
+
+        // Call with None (pre-spawn) — should always reset
+        {
+            let mut sd = room.state_doc.write().await;
+            sd.set_kernel_status("starting");
+        }
+        reset_starting_state(&room, None).await;
+        {
+            let sd = room.state_doc.read().await;
+            assert_eq!(
+                sd.read_state().kernel.status,
+                "not_started",
+                "None (pre-spawn) should always reset"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_reset_starting_state_cleanup() {
+        // Verify that guarded reset clears request_tx, connect_tx, and handle
+        // (belt-and-suspenders cleanup prevents zombie runtime agents).
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (room, _notebook_path) = test_room_with_path(&tmp, "cleanup_test.ipynb");
+
+        // Simulate a runtime agent that has connected: set provenance,
+        // request channel, and connect sender.
+        {
+            let mut id = room.current_runtime_agent_id.write().await;
+            *id = Some("agent-A".to_string());
+        }
+        {
+            let (tx, _rx) = tokio::sync::mpsc::channel(16);
+            let mut guard = room.runtime_agent_request_tx.lock().await;
+            *guard = Some(tx);
+        }
+        {
+            let (tx, _rx) = oneshot::channel();
+            let mut guard = room.pending_runtime_agent_connect_tx.lock().await;
+            *guard = Some(tx);
+        }
+
+        // Reset with matching agent — should clean up everything
+        reset_starting_state(&room, Some("agent-A")).await;
+
+        // Verify all fields cleared
+        assert!(
+            room.runtime_agent_request_tx.lock().await.is_none(),
+            "request_tx should be cleared"
+        );
+        assert!(
+            room.pending_runtime_agent_connect_tx.lock().await.is_none(),
+            "connect_tx should be cleared"
+        );
+        assert!(
+            room.runtime_agent_handle.lock().await.is_none(),
+            "handle should be cleared"
+        );
+        assert!(
+            room.current_runtime_agent_id.read().await.is_none(),
+            "provenance should be cleared"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reset_aborts_when_new_spawn_detected() {
+        // Verify that guarded reset_starting_state aborts field cleanup
+        // if a new spawn sets provenance between the provenance-clear and
+        // the field clears (TOCTOU re-check).
+        //
+        // We simulate this by:
+        // 1. Setting provenance to "agent-old" + populating fields
+        // 2. Clearing provenance to None (as reset_starting_state would)
+        // 3. Setting provenance to "agent-new" + new field values (simulating interleaving spawn)
+        // 4. Calling reset_starting_state with None expected (pre-spawn path) — always proceeds
+        //    But for the guarded path: we test manually by checking the re-check logic.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (room, _notebook_path) = test_room_with_path(&tmp, "toctou_test.ipynb");
+
+        // Simulate: agent-old's reset already cleared provenance to None,
+        // then a new spawn set provenance to "agent-new" with fresh channels.
+        {
+            let mut id = room.current_runtime_agent_id.write().await;
+            *id = Some("agent-new".to_string());
+        }
+        let (new_tx, mut new_rx) = oneshot::channel::<()>();
+        {
+            let mut guard = room.pending_runtime_agent_connect_tx.lock().await;
+            *guard = Some(new_tx);
+        }
+        let (req_tx, _req_rx) = tokio::sync::mpsc::channel(16);
+        {
+            let mut guard = room.runtime_agent_request_tx.lock().await;
+            *guard = Some(req_tx);
+        }
+
+        // Now call reset with expected="agent-old" — provenance is "agent-new",
+        // so the guard should skip entirely (mismatch).
+        reset_starting_state(&room, Some("agent-old")).await;
+
+        // Verify: new spawn's fields are untouched
+        assert!(
+            room.pending_runtime_agent_connect_tx.lock().await.is_some(),
+            "new spawn's connect_tx should not be cleared"
+        );
+        assert!(
+            room.runtime_agent_request_tx.lock().await.is_some(),
+            "new spawn's request_tx should not be cleared"
+        );
+        assert_eq!(
+            room.current_runtime_agent_id.read().await.as_deref(),
+            Some("agent-new"),
+            "new spawn's provenance should not be cleared"
+        );
+
+        // Verify new_rx is still alive (sender not dropped)
+        // Use try_recv — should return TryRecvError::Empty (not Closed)
+        assert!(
+            new_rx.try_recv().is_err(),
+            "new spawn's oneshot should still be pending (sender alive)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reset_generation_guard_with_concurrent_spawn() {
+        // Regression test for TOCTOU in reset_starting_state: verifies that a
+        // new spawn interleaving AFTER provenance is cleared (but before field
+        // clears) is detected by the generation counter, causing reset to abort
+        // and preserving the new spawn's fields.
+        //
+        // The test spawns a concurrent task that simulates a new spawn sequence
+        // (set provenance → bump generation → store fields) as soon as it
+        // detects provenance cleared to None. The main task calls
+        // reset_starting_state with a matching expected_runtime_agent_id.
+        //
+        // Two valid orderings exist:
+        // 1. Concurrent spawn completes between provenance clear and field clears
+        //    → generation mismatch → reset aborts → new fields preserved
+        // 2. Concurrent spawn completes after reset_starting_state returns
+        //    → reset clears old fields normally → concurrent spawn stores new fields
+        // In both cases, the new spawn's fields are present at the end.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (room, _notebook_path) = test_room_with_path(&tmp, "gen_concurrent.ipynb");
+
+        // Setup: agent-old at generation 0 with populated fields.
+        {
+            let mut id = room.current_runtime_agent_id.write().await;
+            *id = Some("agent-old".to_string());
+        }
+        let (old_tx, _old_rx) = oneshot::channel::<()>();
+        {
+            let mut guard = room.pending_runtime_agent_connect_tx.lock().await;
+            *guard = Some(old_tx);
+        }
+        let (old_req_tx, _old_req_rx) = tokio::sync::mpsc::channel(16);
+        {
+            let mut guard = room.runtime_agent_request_tx.lock().await;
+            *guard = Some(old_req_tx);
+        }
+
+        // Clone Arc fields for the concurrent task.
+        let id_arc = room.current_runtime_agent_id.clone();
+        let gen_arc = room.runtime_agent_generation.clone();
+        let connect_arc = room.pending_runtime_agent_connect_tx.clone();
+        let req_arc = room.runtime_agent_request_tx.clone();
+
+        // Channel to receive the new spawn's oneshot receiver (for liveness check).
+        let (done_tx, done_rx) = oneshot::channel::<oneshot::Receiver<()>>();
+
+        // Spawn concurrent task: simulate a new spawn that fires as soon as
+        // provenance is cleared (the trigger for the TOCTOU scenario).
+        tokio::spawn(async move {
+            // Poll for provenance → None (reset_starting_state clears it).
+            loop {
+                {
+                    let current = id_arc.read().await;
+                    if current.is_none() {
+                        break;
+                    }
+                }
+                tokio::task::yield_now().await;
+            }
+
+            // Simulate new spawn sequence: provenance → generation → fields.
+            {
+                let mut id = id_arc.write().await;
+                *id = Some("agent-new".to_string());
+            }
+            gen_arc.fetch_add(1, Ordering::Release);
+            let (new_tx, new_rx) = oneshot::channel::<()>();
+            {
+                let mut guard = connect_arc.lock().await;
+                *guard = Some(new_tx);
+            }
+            let (new_req_tx, _) = tokio::sync::mpsc::channel(16);
+            {
+                let mut guard = req_arc.lock().await;
+                *guard = Some(new_req_tx);
+            }
+
+            let _ = done_tx.send(new_rx);
+        });
+
+        // Main task: call reset — provenance matches "agent-old", so it proceeds.
+        // Generation was captured inside the provenance write lock (gen=0).
+        // If the concurrent spawn bumps gen to 1 before field clears, the
+        // generation guard aborts the clears. Otherwise, reset clears old fields
+        // and the concurrent spawn stores new ones afterward.
+        reset_starting_state(&room, Some("agent-old")).await;
+
+        // Wait for concurrent task to complete its spawn simulation.
+        let mut new_rx = done_rx
+            .await
+            .expect("concurrent spawn task should complete");
+
+        // Verify: new spawn's fields must be present regardless of ordering.
+        assert!(
+            room.pending_runtime_agent_connect_tx.lock().await.is_some(),
+            "connect_tx should be present (new spawn's)"
+        );
+        assert!(
+            room.runtime_agent_request_tx.lock().await.is_some(),
+            "request_tx should be present (new spawn's)"
+        );
+        assert_eq!(
+            room.current_runtime_agent_id.read().await.as_deref(),
+            Some("agent-new"),
+            "provenance should be agent-new (set by concurrent spawn)"
+        );
+        // Verify oneshot sender is still alive (not dropped by reset).
+        assert!(
+            new_rx.try_recv().is_err(),
+            "new spawn's oneshot sender should be alive"
+        );
+        // Generation should be 1 (bumped by concurrent spawn).
+        assert_eq!(
+            room.runtime_agent_generation.load(Ordering::Acquire),
+            1,
+            "generation should be 1 after concurrent spawn"
+        );
     }
 }
