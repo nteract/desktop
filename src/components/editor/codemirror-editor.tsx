@@ -101,6 +101,7 @@ export const CodeMirrorEditor = forwardRef<CodeMirrorEditorRef, CodeMirrorEditor
       baseExtensions = defaultExtensions,
       readOnly = false,
       theme = "system",
+      colorTheme,
     },
     ref,
   ) => {
