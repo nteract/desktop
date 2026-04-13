@@ -42,8 +42,7 @@ import { tabCompletionKeymap } from "../lib/tab-completion";
 import type { CodeCell as CodeCellType } from "../types";
 import { CellPresenceIndicators } from "./cell/CellPresenceIndicators";
 
-// Lazy load HistorySearchDialog - it pulls in react-syntax-highlighter (~800KB)
-// Only loaded when user opens history search (Ctrl+R)
+// Lazy load HistorySearchDialog — only loaded when user opens history search (Ctrl+R)
 const HistorySearchDialog = lazy(() =>
   import("./HistorySearchDialog").then((m) => ({
     default: m.HistorySearchDialog,
