@@ -205,13 +205,11 @@ const themeOptions: { value: ThemeMode; label: string; icon: typeof Sun }[] = [
 
 export default function App() {
   // Apply theme to window and get theme controls
-  // IMPORTANT: Use theme/setTheme from useSyncedTheme, not a separate useSyncedSettings call,
-  // so that setTheme updates the same state instance that applies the DOM theme.
-  const { theme, setTheme } = useSyncedTheme();
+  // IMPORTANT: Use theme/setTheme/colorTheme/setColorTheme from useSyncedTheme, not a separate
+  // useSyncedSettings call, so that setState updates the same instance that applies the DOM theme.
+  const { theme, setTheme, colorTheme, setColorTheme } = useSyncedTheme();
 
   const {
-    colorTheme,
-    setColorTheme,
     defaultRuntime,
     setDefaultRuntime,
     defaultPythonEnv,
