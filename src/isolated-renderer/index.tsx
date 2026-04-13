@@ -155,7 +155,17 @@ function updateDocumentTheme(isDark: boolean, colorTheme?: string | null) {
   root.style.colorScheme = isDark ? "dark" : "light";
 
   // Update CSS variables for base styles (background kept transparent for cell focus colors to show through)
-  if (isDark) {
+  const isCream = root.getAttribute("data-color-theme") === "cream";
+  // NOTE: sift's --sift-page/--sift-panel are intentionally NOT overridden here.
+  // Sift needs a proper "embedded" mode to drop card chrome (border, shadow,
+  // border-radius) before we can make it blend seamlessly into the notebook.
+  if (isCream) {
+    root.style.setProperty("--bg-primary", "transparent");
+    root.style.setProperty("--bg-secondary", isDark ? "#242120" : "#f0ede7");
+    root.style.setProperty("--text-primary", isDark ? "#e8e2dc" : "#1e1a18");
+    root.style.setProperty("--text-secondary", isDark ? "#9a918a" : "#6e655f");
+    root.style.setProperty("--foreground", isDark ? "#e8e2dc" : "#1e1a18");
+  } else if (isDark) {
     root.style.setProperty("--bg-primary", "#0a0a0a");
     root.style.setProperty("--bg-secondary", "#1a1a1a");
     root.style.setProperty("--text-primary", "#e0e0e0");

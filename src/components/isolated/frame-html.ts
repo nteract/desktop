@@ -44,12 +44,12 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
   <meta http-equiv="Content-Security-Policy" content="default-src 'self' blob: data:; script-src 'unsafe-inline' 'unsafe-eval' blob: https: http://127.0.0.1:*; style-src 'unsafe-inline' https: http://127.0.0.1:*; img-src * data: blob:; font-src * data:; media-src * data: blob:; object-src * data: blob:; connect-src *;">
   <style>
     :root {
-      --bg-primary: ${darkMode ? "#0a0a0a" : "#ffffff"};
-      --bg-secondary: ${darkMode ? "#1a1a1a" : "#f5f5f5"};
-      --text-primary: ${darkMode ? "#e0e0e0" : "#1a1a1a"};
-      --text-secondary: ${darkMode ? "#a0a0a0" : "#666666"};
-      --border-color: ${darkMode ? "#333333" : "#e0e0e0"};
-      --accent-color: #3b82f6;
+      --bg-primary: transparent;
+      --bg-secondary: ${colorTheme === "cream" ? (darkMode ? "#242120" : "#f0ede7") : darkMode ? "#1a1a1a" : "#f5f5f5"};
+      --text-primary: ${colorTheme === "cream" ? (darkMode ? "#e8e2dc" : "#1e1a18") : darkMode ? "#e0e0e0" : "#1a1a1a"};
+      --text-secondary: ${colorTheme === "cream" ? (darkMode ? "#9a918a" : "#6e655f") : darkMode ? "#a0a0a0" : "#666666"};
+      --border-color: ${colorTheme === "cream" ? (darkMode ? "#3a3533" : "#d8cec3") : darkMode ? "#333333" : "#e0e0e0"};
+      --accent-color: ${colorTheme === "cream" ? "#d4896a" : "#3b82f6"};
       --error-color: #ef4444;
       --success-color: #22c55e;
     }
@@ -408,6 +408,13 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
         const { isDark, colorTheme, cssVariables } = payload || {};
         const rootEl = document.documentElement;
 
+        // Apply color theme attribute first so CSS var computation can read it
+        if (colorTheme) {
+          rootEl.setAttribute('data-color-theme', colorTheme);
+        } else if (colorTheme === null || colorTheme === '') {
+          rootEl.removeAttribute('data-color-theme');
+        }
+
         if (isDark !== undefined) {
           // Set class for Tailwind dark: variant and CSS selectors
           if (isDark) {
@@ -421,18 +428,22 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
           rootEl.setAttribute('data-theme', isDark ? 'dark' : 'light');
           // Set color-scheme for prefers-color-scheme media queries
           rootEl.style.colorScheme = isDark ? 'dark' : 'light';
-          // Set CSS variables
+          // Set CSS variables — cream uses warm tones matching Sift's palette
+          var ct = rootEl.getAttribute('data-color-theme');
+          var isCream = ct === 'cream';
           rootEl.style.setProperty('--bg-primary', 'transparent');
-          rootEl.style.setProperty('--bg-secondary', isDark ? '#1a1a1a' : '#f5f5f5');
-          rootEl.style.setProperty('--text-primary', isDark ? '#e0e0e0' : '#1a1a1a');
-          rootEl.style.setProperty('--text-secondary', isDark ? '#a0a0a0' : '#666666');
-          rootEl.style.setProperty('--border-color', isDark ? '#333333' : '#e0e0e0');
-        }
-
-        if (colorTheme) {
-          rootEl.setAttribute('data-color-theme', colorTheme);
-        } else if (colorTheme === null || colorTheme === '') {
-          rootEl.removeAttribute('data-color-theme');
+          rootEl.style.setProperty('--bg-secondary', isCream
+            ? (isDark ? '#242120' : '#f0ede7')
+            : (isDark ? '#1a1a1a' : '#f5f5f5'));
+          rootEl.style.setProperty('--text-primary', isCream
+            ? (isDark ? '#e8e2dc' : '#1e1a18')
+            : (isDark ? '#e0e0e0' : '#1a1a1a'));
+          rootEl.style.setProperty('--text-secondary', isCream
+            ? (isDark ? '#9a918a' : '#6e655f')
+            : (isDark ? '#a0a0a0' : '#666666'));
+          rootEl.style.setProperty('--border-color', isCream
+            ? (isDark ? '#3a3533' : '#d8cec3')
+            : (isDark ? '#333333' : '#e0e0e0'));
         }
 
         if (cssVariables) {
