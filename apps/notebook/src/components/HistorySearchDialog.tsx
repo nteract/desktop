@@ -15,7 +15,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { isDarkMode, useColorTheme } from "@/lib/dark-mode";
+import { useDarkMode, useColorTheme } from "@/lib/dark-mode";
 import { type HistoryEntry, useHistorySearch } from "../hooks/useHistorySearch";
 
 interface HistorySearchDialogProps {
@@ -32,7 +32,7 @@ const CodePreview = memo(function CodePreview({
   code: string;
   maxLines?: number;
 }) {
-  const isDark = isDarkMode();
+  const isDark = useDarkMode();
   const colorTheme = (useColorTheme() ?? "classic") as "classic" | "cream";
 
   // Truncate to maxLines
