@@ -156,8 +156,10 @@ function updateDocumentTheme(isDark: boolean, colorTheme?: string | null) {
 
   // Update CSS variables for base styles (background kept transparent for cell focus colors to show through)
   const isCream = root.getAttribute("data-color-theme") === "cream";
-  // Set --sift-bg to the notebook's background so the table body is opaque
-  // (prevents focused-cell highlight from bleeding through the iframe).
+  // Set --sift-bg to the notebook's background so the table container is
+  // opaque (prevents focused-cell highlight from bleeding through the iframe).
+  // Leave --sift-panel to sift's theme CSS — it needs to be brighter than
+  // --sift-bg so rows have visible contrast.
   root.style.setProperty("--sift-bg", isCream
     ? (isDark ? "#1a1816" : "#f5f2ec")
     : (isDark ? "#0d1117" : "#ffffff"));
