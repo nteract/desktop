@@ -4,6 +4,11 @@ export interface FrameHtmlOptions {
    */
   darkMode?: boolean;
   /**
+   * Color theme to set on the document element (e.g. "cream").
+   * Omit or pass undefined for the default (classic) theme.
+   */
+  colorTheme?: string;
+  /**
    * Additional CSS to inject into the frame.
    */
   additionalCss?: string;
@@ -26,12 +31,13 @@ export interface FrameHtmlOptions {
  * @returns HTML string to be used with a blob URL
  */
 export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
-  const { darkMode = true, additionalCss = "", additionalScript = "" } = options;
+  const { darkMode = true, colorTheme, additionalCss = "", additionalScript = "" } = options;
+  const colorThemeAttr = colorTheme ? ` data-color-theme="${colorTheme}"` : "";
 
   // Start with transparent backgrounds to prevent flash while theme loads
   // Parent will send theme message immediately after iframe is ready
   return `<!DOCTYPE html>
-<html style="background:transparent;color-scheme:${darkMode ? "dark" : "light"}">
+<html style="background:transparent;color-scheme:${darkMode ? "dark" : "light"}"${colorThemeAttr}>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -423,8 +429,10 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
           rootEl.style.setProperty('--border-color', isDark ? '#333333' : '#e0e0e0');
         }
 
-        if (colorTheme !== undefined) {
+        if (colorTheme) {
           rootEl.setAttribute('data-color-theme', colorTheme);
+        } else if (colorTheme === null || colorTheme === '') {
+          rootEl.removeAttribute('data-color-theme');
         }
 
         if (cssVariables) {

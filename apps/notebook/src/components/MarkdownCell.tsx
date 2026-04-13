@@ -8,7 +8,7 @@ import { searchHighlight } from "@/components/editor/search-highlight";
 import { textAttributionExtension } from "@/components/editor/text-attribution";
 import { IsolatedFrame, type IsolatedFrameHandle } from "@/components/isolated";
 import { injectPluginsForMimes } from "@/components/isolated/iframe-libraries";
-import { useDarkMode } from "@/lib/dark-mode";
+import { useColorTheme, useDarkMode } from "@/lib/dark-mode";
 import { cn } from "@/lib/utils";
 import { usePresenceContext } from "../contexts/PresenceContext";
 import { useCellKeyboardNavigation } from "../hooks/useCellKeyboardNavigation";
@@ -191,8 +191,11 @@ export const MarkdownCell = memo(function MarkdownCell({
   }, [cell.id, editing]);
 
   const darkMode = useDarkMode();
+  const colorTheme = useColorTheme();
   const darkModeRef = useRef(darkMode);
   darkModeRef.current = darkMode;
+  const colorThemeRef = useRef(colorTheme);
+  colorThemeRef.current = colorTheme;
 
   const blobPort = useBlobPort();
 
@@ -210,7 +213,7 @@ export const MarkdownCell = memo(function MarkdownCell({
   const handleFrameReady = useCallback(async () => {
     if (!frameRef.current || !cell.source) return;
     // Ensure theme is in sync before re-rendering (fixes theme drift after cell moves)
-    frameRef.current.setTheme(darkModeRef.current);
+    frameRef.current.setTheme(darkModeRef.current, colorThemeRef.current ?? null);
     // Clear injected set — a reloaded iframe has a fresh renderer registry
     injectedLibsRef.current.clear();
     // Inject markdown renderer plugin before rendering (idempotent, cached after first load)
@@ -470,6 +473,7 @@ export const MarkdownCell = memo(function MarkdownCell({
               <IsolatedFrame
                 ref={frameRef}
                 darkMode={darkMode}
+                colorTheme={colorTheme}
                 minHeight={24}
                 autoHeight
                 revealOnRender

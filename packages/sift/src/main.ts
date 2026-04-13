@@ -200,10 +200,10 @@ function renderShell(app: HTMLElement) {
   });
 
   // Theme: cream | classic
-  const savedColorTheme = localStorage.getItem("sift-color-theme") ?? "cream";
+  const savedColorTheme = localStorage.getItem("sift-color-theme") ?? "classic";
 
   function applyColorTheme(theme: string) {
-    if (theme === "cream") {
+    if (theme === "classic") {
       root.removeAttribute("data-color-theme");
     } else {
       root.setAttribute("data-color-theme", theme);

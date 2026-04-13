@@ -262,6 +262,8 @@ export function OutputArea({
   // Ref for reading current darkMode in callbacks without adding to deps
   const darkModeRef = useRef(darkMode);
   darkModeRef.current = darkMode;
+  const colorThemeRef = useRef(colorTheme);
+  colorThemeRef.current = colorTheme;
 
   // Get widget store context (may be null if not in provider)
   const widgetContext = useWidgetStore();
@@ -323,7 +325,7 @@ export function OutputArea({
 
     // Ensure theme is in sync before re-rendering (fixes theme drift after cell moves)
     // Use ref to avoid adding darkMode to deps which would cause re-renders on theme toggle
-    frameRef.current.setTheme(darkModeRef.current);
+    frameRef.current.setTheme(darkModeRef.current, colorThemeRef.current ?? null);
 
     // Install renderer plugins required by the outputs (e.g. plotly, vega).
     // Must happen before clear+render so the installRenderer messages arrive first.

@@ -5,8 +5,7 @@
  * Light and dark variants.
  */
 
-/* --- Light (default) --- */
-:root,
+/* --- Light --- */
 [data-color-theme="cream"] {
   color-scheme: light;
   --sift-page: #f5f2ec;
@@ -40,7 +39,6 @@
 
 /* --- Dark (system preference) --- */
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]):not([data-color-theme]),
   [data-color-theme="cream"]:not([data-theme="light"]) {
     color-scheme: dark;
     --sift-page: #1a1816;
@@ -72,8 +70,6 @@
 }
 
 /* --- Dark (explicit attribute) --- */
-:root:not([data-color-theme])[data-theme="dark"],
-:root:not([data-color-theme]).dark,
 [data-color-theme="cream"][data-theme="dark"],
 [data-color-theme="cream"].dark {
   color-scheme: dark;
