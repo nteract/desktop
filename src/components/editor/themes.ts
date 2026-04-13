@@ -76,7 +76,7 @@ function buildTheme(
     { dark: mode === "dark" },
   );
 
-  const highlightStyle = HighlightStyle.define(styles, { themeType: mode });
+  const highlightStyle = HighlightStyle.define(styles);
 
   return [themeExtension, syntaxHighlighting(highlightStyle)];
 }
