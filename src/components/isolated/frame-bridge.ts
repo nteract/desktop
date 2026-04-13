@@ -66,6 +66,8 @@ export interface ThemeMessage {
   payload: {
     /** Whether dark mode is active */
     isDark: boolean;
+    /** Color theme name (e.g., "classic", "cream") */
+    colorTheme?: string;
     /** Optional CSS variables to inject */
     cssVariables?: Record<string, string>;
   };

@@ -210,6 +210,7 @@ export default function App() {
   const { theme, setTheme } = useSyncedTheme();
 
   const {
+    // colorTheme and setColorTheme available but UI hidden until whole-app theming is ready
     defaultRuntime,
     setDefaultRuntime,
     defaultPythonEnv,
@@ -259,6 +260,31 @@ export default function App() {
               })}
             </div>
           </div>
+          {/* Color theme toggle — hidden until whole-app theming is ready
+          <div className="flex items-center gap-3">
+            <span className="text-sm text-muted-foreground">Color</span>
+            <div className="flex items-center gap-1 rounded-md border bg-muted/50 p-0.5">
+              {(["classic", "cream"] as const).map((option) => {
+                const isActive = colorTheme === option;
+                return (
+                  <button
+                    key={option}
+                    type="button"
+                    onClick={() => setColorTheme(option)}
+                    className={cn(
+                      "flex items-center gap-1.5 rounded-sm px-2.5 py-1 text-xs transition-colors capitalize",
+                      isActive
+                        ? "bg-background text-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {option}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          */}
         </div>
 
         {/* Default Runtime */}

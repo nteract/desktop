@@ -399,7 +399,7 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
       }
 
       function handleTheme(payload) {
-        const { isDark, cssVariables } = payload || {};
+        const { isDark, colorTheme, cssVariables } = payload || {};
         const rootEl = document.documentElement;
 
         if (isDark !== undefined) {
@@ -421,6 +421,10 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
           rootEl.style.setProperty('--text-primary', isDark ? '#e0e0e0' : '#1a1a1a');
           rootEl.style.setProperty('--text-secondary', isDark ? '#a0a0a0' : '#666666');
           rootEl.style.setProperty('--border-color', isDark ? '#333333' : '#e0e0e0');
+        }
+
+        if (colorTheme !== undefined) {
+          rootEl.setAttribute('data-color-theme', colorTheme);
         }
 
         if (cssVariables) {

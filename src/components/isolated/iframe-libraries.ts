@@ -37,6 +37,7 @@ const PLUGIN_MIME_TYPES: Record<string, () => Promise<PluginModule>> = {
   "text/latex": () => import("virtual:renderer-plugin/markdown").then(normalize),
   "application/vnd.plotly.v1+json": () => import("virtual:renderer-plugin/plotly").then(normalize),
   "application/geo+json": () => import("virtual:renderer-plugin/leaflet").then(normalize),
+  "application/vnd.apache.parquet": () => import("virtual:renderer-plugin/sift").then(normalize),
 };
 
 /** Lazy loader for all Vega/Vega-Lite MIME variants. */

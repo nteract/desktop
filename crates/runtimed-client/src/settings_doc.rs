@@ -53,6 +53,18 @@ impl std::fmt::Display for ThemeMode {
     }
 }
 
+/// Color theme for the notebook editor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema, TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(export)]
+pub enum ColorTheme {
+    /// Neutral palette matching the notebook design system
+    #[default]
+    Classic,
+    /// Warm, document-like palette with brown accents
+    Cream,
+}
+
 use crate::runtime::Runtime;
 
 /// Python environment type for dependency management.
@@ -164,9 +176,13 @@ pub const MAX_POOL_SIZE: u64 = 20;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema, TS)]
 #[ts(export)]
 pub struct SyncedSettings {
-    /// UI theme
+    /// UI theme mode (light/dark/system)
     #[serde(default)]
     pub theme: ThemeMode,
+
+    /// Color theme (classic/cream)
+    #[serde(default)]
+    pub color_theme: ColorTheme,
 
     /// Default runtime for new notebooks
     #[serde(default)]
@@ -216,6 +232,7 @@ impl Default for SyncedSettings {
     fn default() -> Self {
         Self {
             theme: ThemeMode::default(),
+            color_theme: ColorTheme::default(),
             default_runtime: Runtime::default(),
             default_python_env: PythonEnvType::default(),
             uv: UvDefaults::default(),
@@ -764,6 +781,10 @@ impl SettingsDoc {
                 .get("theme")
                 .and_then(|s| serde_json::from_str::<ThemeMode>(&format!("\"{s}\"")).ok())
                 .unwrap_or(defaults.theme),
+            color_theme: self
+                .get("color_theme")
+                .and_then(|s| serde_json::from_str::<ColorTheme>(&format!("\"{s}\"")).ok())
+                .unwrap_or(defaults.color_theme),
             default_runtime: self
                 .get("default_runtime")
                 .and_then(|s| s.parse().ok())

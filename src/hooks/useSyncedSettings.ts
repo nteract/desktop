@@ -3,10 +3,32 @@ import { listen } from "@tauri-apps/api/event";
 import type { Theme } from "@tauri-apps/api/window";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useEffect, useState } from "react";
-import type { PythonEnvType, Runtime, SyncedSettings, ThemeMode } from "@/bindings";
+import type { ColorTheme, PythonEnvType, Runtime, SyncedSettings, ThemeMode } from "@/bindings";
 
 // Re-export generated types so consumers can import from this module.
-export type { ThemeMode, Runtime, PythonEnvType };
+export type { ColorTheme, ThemeMode, Runtime, PythonEnvType };
+
+function isValidColorTheme(value: string): value is ColorTheme {
+  return value === "classic" || value === "cream";
+}
+
+function getStoredColorTheme(): ColorTheme {
+  try {
+    const stored = localStorage.getItem("notebook-color-theme");
+    if (stored && isValidColorTheme(stored)) return stored;
+  } catch {
+    // ignore
+  }
+  return "classic";
+}
+
+function setStoredColorTheme(value: ColorTheme) {
+  try {
+    localStorage.setItem("notebook-color-theme", value);
+  } catch {
+    // ignore
+  }
+}
 
 function resolveTheme(theme: ThemeMode): "light" | "dark" {
   if (theme === "system") {
@@ -86,6 +108,7 @@ function setStoredTheme(value: ThemeMode) {
 export function useSyncedSettings() {
   // Theme uses localStorage to avoid flash of wrong theme on startup
   const [theme, setThemeState] = useState<ThemeMode>(getStoredTheme);
+  const [colorTheme, setColorThemeState] = useState<ColorTheme>(getStoredColorTheme);
   // All other settings use defaults — daemon is the source of truth.
   // State is `string` (not just the known union) to preserve unknown values
   // from other branches without silently dropping them.
@@ -104,6 +127,10 @@ export function useSyncedSettings() {
         if (isValidTheme(settings.theme)) {
           setThemeState(settings.theme);
           setStoredTheme(settings.theme);
+        }
+        if (isValidColorTheme(settings.color_theme)) {
+          setColorThemeState(settings.color_theme);
+          setStoredColorTheme(settings.color_theme);
         }
         if (typeof settings.default_runtime === "string") {
           setDefaultRuntimeState(settings.default_runtime);
@@ -137,6 +164,7 @@ export function useSyncedSettings() {
     const unlisten = listen<SyncedSettings>("settings:changed", (event) => {
       const {
         theme: newTheme,
+        color_theme: newColorTheme,
         default_runtime,
         default_python_env,
         keep_alive_secs,
@@ -144,6 +172,10 @@ export function useSyncedSettings() {
       if (isValidTheme(newTheme)) {
         setThemeState(newTheme);
         setStoredTheme(newTheme);
+      }
+      if (isValidColorTheme(newColorTheme)) {
+        setColorThemeState(newColorTheme);
+        setStoredColorTheme(newColorTheme);
       }
       if (typeof default_runtime === "string") {
         setDefaultRuntimeState(default_runtime);
@@ -177,6 +209,14 @@ export function useSyncedSettings() {
     setStoredTheme(newTheme);
     invoke("set_synced_setting", { key: "theme", value: newTheme }).catch((e) =>
       console.warn("[settings] Failed to persist theme:", e),
+    );
+  }, []);
+
+  const setColorTheme = useCallback((newColorTheme: ColorTheme) => {
+    setColorThemeState(newColorTheme);
+    setStoredColorTheme(newColorTheme);
+    invoke("set_synced_setting", { key: "color_theme", value: newColorTheme }).catch((e) =>
+      console.warn("[settings] Failed to persist color theme:", e),
     );
   }, []);
 
@@ -231,6 +271,8 @@ export function useSyncedSettings() {
   return {
     theme,
     setTheme,
+    colorTheme,
+    setColorTheme,
     defaultRuntime,
     setDefaultRuntime,
     defaultPythonEnv,
@@ -253,7 +295,7 @@ export function useSyncedSettings() {
  * Falls back to localStorage if the daemon is unavailable.
  */
 export function useSyncedTheme() {
-  const { theme, setTheme } = useSyncedSettings();
+  const { theme, setTheme, colorTheme, setColorTheme } = useSyncedSettings();
 
   const [resolvedTheme, setResolvedTheme] = useState<"light" | "dark">(() => resolveTheme(theme));
 
@@ -276,5 +318,15 @@ export function useSyncedTheme() {
     return () => mediaQuery.removeEventListener("change", handleChange);
   }, [theme]);
 
-  return { theme, setTheme, resolvedTheme };
+  // Apply color theme to DOM so iframes can read it
+  useEffect(() => {
+    const html = document.documentElement;
+    if (colorTheme === "classic") {
+      html.removeAttribute("data-color-theme");
+    } else {
+      html.setAttribute("data-color-theme", colorTheme);
+    }
+  }, [colorTheme]);
+
+  return { theme, setTheme, colorTheme, setColorTheme, resolvedTheme };
 }

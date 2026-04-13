@@ -119,3 +119,31 @@ export function useDarkMode(): boolean {
 
   return isDark;
 }
+
+/**
+ * React hook that returns the current color theme from the document element.
+ * Observes `data-color-theme` attribute changes via MutationObserver.
+ */
+export function useColorTheme(): string | undefined {
+  const [colorTheme, setColorTheme] = useState<string | undefined>(() =>
+    typeof document !== "undefined"
+      ? document.documentElement.getAttribute("data-color-theme") ?? undefined
+      : undefined,
+  );
+
+  useEffect(() => {
+    setColorTheme(document.documentElement.getAttribute("data-color-theme") ?? undefined);
+
+    const observer = new MutationObserver(() => {
+      setColorTheme(document.documentElement.getAttribute("data-color-theme") ?? undefined);
+    });
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-color-theme"],
+    });
+
+    return () => observer.disconnect();
+  }, []);
+
+  return colorTheme;
+}
