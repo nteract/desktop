@@ -3217,7 +3217,25 @@ fn is_untitled_notebook(notebook_id: &str) -> bool {
 
 /// Reset runtime state to "not_started" (clears any stale starting phase).
 /// Used when an early exit prevents kernel launch after status was set to "starting".
-async fn reset_starting_state(room: &NotebookRoom) {
+/// Reset kernel state after a failed launch or connect timeout.
+///
+/// When `expected_agent_id` is provided, the reset is skipped if a newer agent
+/// has already taken over `current_runtime_agent_id`. This prevents a stale
+/// timeout (from agent A) from clobbering a newer agent B that connected in the
+/// meantime.
+async fn reset_starting_state(room: &NotebookRoom, expected_agent_id: Option<&str>) {
+    // Guard: if a newer agent has replaced ours, don't clobber its state.
+    if let Some(expected) = expected_agent_id {
+        let current = room.current_runtime_agent_id.read().await;
+        if current.as_deref() != Some(expected) {
+            info!(
+                "[notebook-sync] Skipping reset_starting_state for stale agent {} (current: {:?})",
+                expected, *current
+            );
+            return;
+        }
+    }
+
     // Scope the state_doc write guard so it drops before acquiring
     // runtime_agent_handle lock (deadlock prevention).
     {
@@ -3228,6 +3246,12 @@ async fn reset_starting_state(room: &NotebookRoom) {
         if changed {
             let _ = room.state_changed_tx.send(());
         }
+    }
+    // Clear the expected agent ID so late-arriving subprocesses from this
+    // agent are rejected by the provenance check in handle_runtime_agent_sync.
+    if expected_agent_id.is_some() {
+        let mut id = room.current_runtime_agent_id.write().await;
+        *id = None;
     }
     // Clear stale runtime agent handle so auto-launch can retry
     let mut guard = room.runtime_agent_handle.lock().await;
@@ -3460,7 +3484,7 @@ async fn auto_launch_kernel(
     // before we finish launching)
     if room.active_peers.load(std::sync::atomic::Ordering::Relaxed) == 0 {
         debug!("[notebook-sync] Auto-launch aborted: no peers remaining");
-        reset_starting_state(room).await;
+        reset_starting_state(room, None).await;
         return;
     }
 
@@ -3501,7 +3525,7 @@ async fn auto_launch_kernel(
     // Re-check peers (another race check)
     if room.active_peers.load(std::sync::atomic::Ordering::Relaxed) == 0 {
         debug!("[notebook-sync] Auto-launch aborted: no peers (after status check)");
-        reset_starting_state(room).await;
+        reset_starting_state(room, None).await;
         return;
     }
 
@@ -3681,7 +3705,7 @@ async fn auto_launch_kernel(
                 match acquire_pool_env_for_source(&env_source, &daemon, room).await {
                     Some(env) => env,
                     None => {
-                        reset_starting_state(room).await;
+                        reset_starting_state(room, None).await;
                         return;
                     }
                 }
@@ -3742,7 +3766,7 @@ async fn auto_launch_kernel(
                     match acquire_pool_env_for_source(&env_source, &daemon, room).await {
                         Some(env) => env,
                         None => {
-                            reset_starting_state(room).await;
+                            reset_starting_state(room, None).await;
                             return;
                         }
                     }
@@ -3763,7 +3787,7 @@ async fn auto_launch_kernel(
             let pooled_env = match acquire_pool_env_for_source(prewarmed, &daemon, room).await {
                 Some(env) => env,
                 None => {
-                    reset_starting_state(room).await;
+                    reset_starting_state(room, None).await;
                     return;
                 }
             };
@@ -3845,7 +3869,7 @@ async fn auto_launch_kernel(
                             status: format!("error: Failed to prepare environment: {}", e),
                             cell_id: None,
                         });
-                    reset_starting_state(room).await;
+                    reset_starting_state(room, None).await;
                     return;
                 }
             }
@@ -3918,7 +3942,7 @@ async fn auto_launch_kernel(
                                         cell_id: None,
                                     },
                                 );
-                                reset_starting_state(room).await;
+                                reset_starting_state(room, None).await;
                                 return;
                             }
                         }
@@ -3958,7 +3982,7 @@ async fn auto_launch_kernel(
                                 status: format!("error: Failed to prepare environment: {}", e),
                                 cell_id: None,
                             });
-                        reset_starting_state(room).await;
+                        reset_starting_state(room, None).await;
                         return;
                     }
                 }
@@ -4038,7 +4062,7 @@ async fn auto_launch_kernel(
                                         cell_id: None,
                                     },
                                 );
-                                reset_starting_state(room).await;
+                                reset_starting_state(room, None).await;
                                 return;
                             }
                         }
@@ -4170,7 +4194,7 @@ async fn auto_launch_kernel(
                     }
                     Ok(Err(_)) | Err(_) => {
                         warn!("[notebook-sync] Agent failed to connect within 30s");
-                        reset_starting_state(room).await;
+                        reset_starting_state(room, Some(&runtime_agent_id)).await;
                         return;
                     }
                 }
@@ -4230,23 +4254,23 @@ async fn auto_launch_kernel(
                     }
                     Ok(notebook_protocol::protocol::RuntimeAgentResponse::Error { error }) => {
                         warn!("[notebook-sync] Agent kernel launch failed: {}", error);
-                        reset_starting_state(room).await;
+                        reset_starting_state(room, Some(&runtime_agent_id)).await;
                     }
                     Ok(_) => {
                         warn!(
                             "[notebook-sync] Unexpected runtime agent response during auto-launch"
                         );
-                        reset_starting_state(room).await;
+                        reset_starting_state(room, Some(&runtime_agent_id)).await;
                     }
                     Err(e) => {
                         warn!("[notebook-sync] Agent communication error: {}", e);
-                        reset_starting_state(room).await;
+                        reset_starting_state(room, Some(&runtime_agent_id)).await;
                     }
                 }
             }
             Err(e) => {
                 warn!("[notebook-sync] Failed to spawn runtime agent: {}", e);
-                reset_starting_state(room).await;
+                reset_starting_state(room, None).await;
             }
         }
     }
@@ -4764,7 +4788,7 @@ async fn handle_notebook_request(
                             "[notebook-sync] pixi.toml at {:?} does not declare ipykernel",
                             path
                         );
-                        reset_starting_state(room).await;
+                        reset_starting_state(room, None).await;
                         return NotebookResponse::Error {
                             error: "ipykernel not found in pixi.toml — run `pixi add ipykernel` in your project directory".to_string(),
                         };
@@ -4868,7 +4892,7 @@ async fn handle_notebook_request(
                             Some(env)
                         }
                         None => {
-                            reset_starting_state(room).await;
+                            reset_starting_state(room, None).await;
                             return NotebookResponse::Error {
                                 error: "UV pool empty - no environment available".to_string(),
                             };
@@ -4883,7 +4907,7 @@ async fn handle_notebook_request(
                             Some(env)
                         }
                         None => {
-                            reset_starting_state(room).await;
+                            reset_starting_state(room, None).await;
                             return NotebookResponse::Error {
                                 error: "Conda pool empty - no environment available".to_string(),
                             };
@@ -4904,7 +4928,7 @@ async fn handle_notebook_request(
                             match daemon.take_conda_env().await {
                                 Some(env) => Some(env),
                                 None => {
-                                    reset_starting_state(room).await;
+                                    reset_starting_state(room, None).await;
                                     return NotebookResponse::Error {
                                         error: "Conda pool empty".to_string(),
                                     };
@@ -4915,7 +4939,7 @@ async fn handle_notebook_request(
                             match daemon.take_uv_env().await {
                                 Some(env) => Some(env),
                                 None => {
-                                    reset_starting_state(room).await;
+                                    reset_starting_state(room, None).await;
                                     return NotebookResponse::Error {
                                         error: "UV pool empty".to_string(),
                                     };
@@ -4943,7 +4967,7 @@ async fn handle_notebook_request(
                             "[notebook-sync] Invalid PEP 723 metadata in notebook: {}",
                             e
                         );
-                        reset_starting_state(room).await;
+                        reset_starting_state(room, None).await;
                         return NotebookResponse::Error {
                             error: format!("Invalid PEP 723 metadata in notebook: {}", e),
                         };
@@ -4977,14 +5001,14 @@ async fn handle_notebook_request(
                         }
                         Err(e) => {
                             error!("[notebook-sync] Failed to prepare PEP 723 env: {}", e);
-                            reset_starting_state(room).await;
+                            reset_starting_state(room, None).await;
                             return NotebookResponse::Error {
                                 error: format!("Failed to prepare PEP 723 environment: {}", e),
                             };
                         }
                     }
                 } else {
-                    reset_starting_state(room).await;
+                    reset_starting_state(room, None).await;
                     return NotebookResponse::Error {
                         error: "No PEP 723 dependencies found in notebook cells for requested env_source \"uv:pep723\""
                             .to_string(),
@@ -5048,7 +5072,7 @@ async fn handle_notebook_request(
                                         (env, Some(deps))
                                     }
                                     Err(e) => {
-                                        reset_starting_state(room).await;
+                                        reset_starting_state(room, None).await;
                                         return NotebookResponse::Error {
                                             error: format!(
                                                 "Failed to prepare inline environment: {}",
@@ -5082,7 +5106,7 @@ async fn handle_notebook_request(
                                 (env, Some(deps))
                             }
                             Err(e) => {
-                                reset_starting_state(room).await;
+                                reset_starting_state(room, None).await;
                                 return NotebookResponse::Error {
                                     error: format!("Failed to prepare inline environment: {}", e),
                                 };
@@ -5152,7 +5176,7 @@ async fn handle_notebook_request(
                                         (env, Some(deps))
                                     }
                                     Err(e) => {
-                                        reset_starting_state(room).await;
+                                        reset_starting_state(room, None).await;
                                         return NotebookResponse::Error {
                                             error: format!(
                                                 "Failed to prepare conda inline environment: {}",
@@ -5292,13 +5316,13 @@ async fn handle_notebook_request(
                             };
                         }
                         Ok(notebook_protocol::protocol::RuntimeAgentResponse::Error { error }) => {
-                            reset_starting_state(room).await;
+                            reset_starting_state(room, None).await;
                             return NotebookResponse::Error {
                                 error: format!("Agent restart failed: {}", error),
                             };
                         }
                         Ok(_) => {
-                            reset_starting_state(room).await;
+                            reset_starting_state(room, None).await;
                             return NotebookResponse::Error {
                                 error: "Unexpected runtime agent response to RestartKernel"
                                     .to_string(),
@@ -5326,7 +5350,7 @@ async fn handle_notebook_request(
 
                 match crate::runtime_agent_handle::RuntimeAgentHandle::spawn(
                     notebook_id,
-                    runtime_agent_id,
+                    runtime_agent_id.clone(),
                     room.blob_store.root().to_path_buf(),
                     socket_path,
                 )
@@ -5336,6 +5360,10 @@ async fn handle_notebook_request(
                         {
                             let mut ra_guard = room.runtime_agent_handle.lock().await;
                             *ra_guard = Some(ra);
+                        }
+                        {
+                            let mut id = room.current_runtime_agent_id.write().await;
+                            *id = Some(runtime_agent_id.clone());
                         }
 
                         // Write "connecting" phase — fills the gap between spawn and connect
@@ -5358,7 +5386,7 @@ async fn handle_notebook_request(
                         {
                             Ok(Ok(_)) => {}
                             Ok(Err(_)) | Err(_) => {
-                                reset_starting_state(room).await;
+                                reset_starting_state(room, Some(&runtime_agent_id)).await;
                                 return NotebookResponse::Error {
                                     error: "Agent failed to connect within 30s".to_string(),
                                 };
@@ -5439,19 +5467,19 @@ async fn handle_notebook_request(
                             Ok(notebook_protocol::protocol::RuntimeAgentResponse::Error {
                                 error,
                             }) => {
-                                reset_starting_state(room).await;
+                                reset_starting_state(room, Some(&runtime_agent_id)).await;
                                 NotebookResponse::Error {
                                     error: format!("Agent kernel launch failed: {}", error),
                                 }
                             }
                             Ok(_) => {
-                                reset_starting_state(room).await;
+                                reset_starting_state(room, Some(&runtime_agent_id)).await;
                                 NotebookResponse::Error {
                                     error: "Unexpected runtime agent response".to_string(),
                                 }
                             }
                             Err(e) => {
-                                reset_starting_state(room).await;
+                                reset_starting_state(room, Some(&runtime_agent_id)).await;
                                 NotebookResponse::Error {
                                     error: format!("Agent communication error: {}", e),
                                 }
@@ -5459,7 +5487,7 @@ async fn handle_notebook_request(
                         }
                     }
                     Err(e) => {
-                        reset_starting_state(room).await;
+                        reset_starting_state(room, None).await;
                         NotebookResponse::Error {
                             error: format!("Failed to spawn runtime agent: {}", e),
                         }
