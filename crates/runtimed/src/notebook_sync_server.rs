@@ -5326,7 +5326,7 @@ async fn handle_notebook_request(
 
                 match crate::runtime_agent_handle::RuntimeAgentHandle::spawn(
                     notebook_id,
-                    runtime_agent_id,
+                    runtime_agent_id.clone(),
                     room.blob_store.root().to_path_buf(),
                     socket_path,
                 )
@@ -5336,6 +5336,10 @@ async fn handle_notebook_request(
                         {
                             let mut ra_guard = room.runtime_agent_handle.lock().await;
                             *ra_guard = Some(ra);
+                        }
+                        {
+                            let mut id = room.current_runtime_agent_id.write().await;
+                            *id = Some(runtime_agent_id.clone());
                         }
 
                         // Write "connecting" phase — fills the gap between spawn and connect
