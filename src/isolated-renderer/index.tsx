@@ -128,7 +128,7 @@ interface RendererState {
  * Update the document theme so components can detect it via isDarkMode().
  * Sets class and data-theme on documentElement (html tag).
  */
-function updateDocumentTheme(isDark: boolean, colorTheme?: string) {
+function updateDocumentTheme(isDark: boolean, colorTheme?: string | null) {
   const root = document.documentElement;
 
   // Set class for Tailwind dark: variant detection
@@ -146,7 +146,7 @@ function updateDocumentTheme(isDark: boolean, colorTheme?: string) {
   // Set color theme for sift and other themed plugins
   if (colorTheme) {
     root.setAttribute("data-color-theme", colorTheme);
-  } else {
+  } else if (colorTheme === null || colorTheme === "") {
     root.removeAttribute("data-color-theme");
   }
 
@@ -314,7 +314,7 @@ function IsolatedRendererApp() {
         break;
 
       case "theme": {
-        const themePayload = payload as { isDark?: boolean; colorTheme?: string };
+        const themePayload = payload as { isDark?: boolean; colorTheme?: string | null };
         if (themePayload?.isDark !== undefined || themePayload?.colorTheme !== undefined) {
           setState((prev) => ({
             ...prev,

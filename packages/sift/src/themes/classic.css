@@ -6,7 +6,7 @@
  */
 
 /* --- Light (default) --- */
-:root,
+:root:not([data-color-theme]),
 [data-color-theme="classic"] {
   color-scheme: light;
   --sift-page: #ffffff;

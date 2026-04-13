@@ -167,7 +167,7 @@ export interface IsolatedFrameHandle {
   /**
    * Update theme settings in the iframe.
    */
-  setTheme: (isDark: boolean, colorTheme?: string) => void;
+  setTheme: (isDark: boolean, colorTheme?: string | null) => void;
 
   /**
    * Clear all content in the iframe.
@@ -356,16 +356,19 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       };
     }, []);
 
-    // Send theme as soon as iframe is ready (before renderer bootstrap)
-    // This prevents flash of wrong theme while React initializes
+    // Send theme as soon as iframe is ready (before renderer bootstrap).
+    // Once the renderer transport is active, prefer JSON-RPC so live theme
+    // changes follow the same path as other renderer updates.
     useEffect(() => {
       if (isIframeReady && iframeRef.current?.contentWindow) {
-        iframeRef.current.contentWindow.postMessage(
-          { type: "theme", payload: { isDark: darkMode, colorTheme: colorTheme ?? null } },
-          "*",
-        );
+        const payload = { isDark: darkMode, colorTheme: colorTheme ?? null };
+        if (rpcRef.current && isReadyRef.current) {
+          rpcRef.current.notify(NTERACT_THEME, payload);
+        } else {
+          iframeRef.current.contentWindow.postMessage({ type: "theme", payload }, "*");
+        }
       }
-    }, [darkMode, colorTheme, isIframeReady]);
+    }, [darkMode, colorTheme, isIframeReady, isReady]);
 
     // Keep ref in sync with state (ref avoids stale closures in callbacks)
     useEffect(() => {
@@ -723,7 +726,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
         eval: (code: string) => send({ type: "eval", payload: { code } }),
         installRenderer: (code: string, css?: string) =>
           send({ type: "install_renderer", payload: { code, css } }),
-        setTheme: (isDark: boolean, colorTheme?: string) =>
+        setTheme: (isDark: boolean, colorTheme?: string | null) =>
           send({ type: "theme", payload: { isDark, colorTheme } }),
         clear: () => send({ type: "clear" }),
         search: (query: string, caseSensitive?: boolean) => {
