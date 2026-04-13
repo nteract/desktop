@@ -128,7 +128,7 @@ interface RendererState {
  * Update the document theme so components can detect it via isDarkMode().
  * Sets class and data-theme on documentElement (html tag).
  */
-function updateDocumentTheme(isDark: boolean) {
+function updateDocumentTheme(isDark: boolean, colorTheme?: string) {
   const root = document.documentElement;
 
   // Set class for Tailwind dark: variant detection
@@ -142,6 +142,11 @@ function updateDocumentTheme(isDark: boolean) {
 
   // Set data-theme for components that check this attribute
   root.setAttribute("data-theme", isDark ? "dark" : "light");
+
+  // Set color theme for sift and other themed plugins
+  if (colorTheme) {
+    root.setAttribute("data-color-theme", colorTheme);
+  }
 
   // Set color-scheme to influence prefers-color-scheme media queries
   // Some widgets (like drawdata) use @media (prefers-color-scheme: dark)
@@ -307,11 +312,13 @@ function IsolatedRendererApp() {
         break;
 
       case "theme": {
-        const themePayload = payload as { isDark?: boolean };
-        if (themePayload?.isDark !== undefined) {
-          setState((prev) => ({ ...prev, isDark: themePayload.isDark! }));
-          // Update theme on document.documentElement so theme detection works
-          updateDocumentTheme(themePayload.isDark);
+        const themePayload = payload as { isDark?: boolean; colorTheme?: string };
+        if (themePayload?.isDark !== undefined || themePayload?.colorTheme !== undefined) {
+          setState((prev) => ({
+            ...prev,
+            isDark: themePayload.isDark ?? prev.isDark,
+          }));
+          updateDocumentTheme(themePayload.isDark ?? state.isDark, themePayload.colorTheme);
         }
         break;
       }

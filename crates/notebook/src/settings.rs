@@ -17,7 +17,7 @@ use std::path::PathBuf;
 // Re-export types that notebook code uses from runtimed
 pub use runtimed::runtime::Runtime;
 pub use runtimed::settings_doc::{
-    CondaDefaults, PixiDefaults, PythonEnvType, ThemeMode, UvDefaults,
+    ColorTheme, CondaDefaults, PixiDefaults, PythonEnvType, ThemeMode, UvDefaults,
 };
 
 /// Get the path to the settings file
@@ -56,6 +56,10 @@ pub fn load_settings() -> SyncedSettings {
             .get("theme")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or(defaults.theme),
+        color_theme: json
+            .get("color_theme")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or(defaults.color_theme),
         default_runtime: json
             .get("default_runtime")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
@@ -120,6 +124,7 @@ mod tests {
     fn test_settings_serde_nested_format() {
         let settings = SyncedSettings {
             theme: ThemeMode::Dark,
+            color_theme: ColorTheme::default(),
             default_runtime: Runtime::Deno,
             default_python_env: PythonEnvType::Uv,
             uv: UvDefaults {
@@ -251,6 +256,10 @@ mod tests {
                 .get("theme")
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or(defaults.theme),
+            color_theme: json_val
+                .get("color_theme")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or(defaults.color_theme),
             default_runtime: json_val
                 .get("default_runtime")
                 .and_then(|v| serde_json::from_value(v.clone()).ok())

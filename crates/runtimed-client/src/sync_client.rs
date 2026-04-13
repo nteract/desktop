@@ -15,8 +15,8 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::connection::{self, Handshake};
 use crate::settings_doc::{
-    read_nested_list, split_comma_list, CondaDefaults, PixiDefaults, SyncedSettings, ThemeMode,
-    UvDefaults,
+    read_nested_list, split_comma_list, ColorTheme, CondaDefaults, PixiDefaults, SyncedSettings,
+    ThemeMode, UvDefaults,
 };
 
 /// Error type for sync client operations.
@@ -425,6 +425,9 @@ pub fn get_all_from_doc(doc: &AutoCommit) -> SyncedSettings {
         theme: get_str("theme")
             .and_then(|s| serde_json::from_str::<ThemeMode>(&format!("\"{s}\"")).ok())
             .unwrap_or(defaults.theme),
+        color_theme: get_str("color_theme")
+            .and_then(|s| serde_json::from_str::<ColorTheme>(&format!("\"{s}\"")).ok())
+            .unwrap_or(defaults.color_theme),
         default_runtime: get_str("default_runtime")
             .and_then(|s| s.parse().ok())
             .unwrap_or_default(),

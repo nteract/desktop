@@ -3,6 +3,7 @@ import type { CondaDefaults } from "./CondaDefaults";
 import type { PixiDefaults } from "./PixiDefaults";
 import type { PythonEnvType } from "./PythonEnvType";
 import type { Runtime } from "./Runtime";
+import type { ColorTheme } from "./ColorTheme";
 import type { ThemeMode } from "./ThemeMode";
 import type { UvDefaults } from "./UvDefaults";
 
@@ -11,9 +12,13 @@ import type { UvDefaults } from "./UvDefaults";
  */
 export type SyncedSettings = {
   /**
-   * UI theme
+   * UI theme mode (light/dark/system)
    */
   theme: ThemeMode;
+  /**
+   * Color theme (classic/cream)
+   */
+  color_theme: ColorTheme;
   /**
    * Default runtime for new notebooks
    */
