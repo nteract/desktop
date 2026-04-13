@@ -4,11 +4,7 @@ import type { Parser } from "@lezer/common";
 import { highlightCode } from "@lezer/highlight";
 
 import { pythonLanguage } from "@codemirror/lang-python";
-import {
-  javascriptLanguage,
-  tsxLanguage,
-  jsxLanguage,
-} from "@codemirror/lang-javascript";
+import { javascriptLanguage, tsxLanguage, jsxLanguage } from "@codemirror/lang-javascript";
 import { jsonLanguage } from "@codemirror/lang-json";
 import { yamlLanguage } from "@codemirror/lang-yaml";
 import { htmlLanguage } from "@codemirror/lang-html";
@@ -59,10 +55,7 @@ export const supportedLanguages = Object.keys(languageParsers);
 /**
  * Get the appropriate HighlightStyle for a given theme variant.
  */
-function getHighlightStyle(
-  isDark: boolean,
-  colorTheme: ColorTheme,
-): HighlightStyle {
+function getHighlightStyle(isDark: boolean, colorTheme: ColorTheme): HighlightStyle {
   if (colorTheme === "cream") {
     return HighlightStyle.define(isDark ? creamDarkStyle : creamLightStyle);
   }
