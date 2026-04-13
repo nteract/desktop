@@ -42,14 +42,26 @@ function configureWasm(blobUrl: string): void {
 
 // --- SiftRenderer component ---
 
+// Override sift container styles for embedded use (no background, no border-radius)
+const embeddedStyle = `
+.sift-table-container {
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+}
+`;
+
 function SiftRenderer({ data }: RendererProps) {
   const url = String(data);
   configureWasm(url);
 
   return (
-    <div style={{ height: 600, width: "100%" }}>
-      <SiftTable url={url} />
-    </div>
+    <>
+      <style>{embeddedStyle}</style>
+      <div style={{ height: 600, width: "100%" }}>
+        <SiftTable url={url} />
+      </div>
+    </>
   );
 }
 

@@ -11,7 +11,7 @@ import { AnsiErrorOutput, AnsiStreamOutput } from "@/components/outputs/ansi-out
 import { isSafeForMainDom } from "@/components/outputs/safe-mime-types";
 import { DEFAULT_PRIORITY, MediaRouter } from "@/components/outputs/media-router";
 import { useWidgetStore } from "@/components/widgets/widget-store-context";
-import { useDarkMode } from "@/lib/dark-mode";
+import { useColorTheme, useDarkMode } from "@/lib/dark-mode";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { highlightTextInDom } from "@/lib/highlight-text";
 import { OutputErrorFallback } from "@/lib/output-error-fallback";
@@ -258,6 +258,7 @@ export function OutputArea({
   searchQueryRef.current = searchQuery;
 
   const darkMode = useDarkMode();
+  const colorTheme = useColorTheme();
   // Ref for reading current darkMode in callbacks without adding to deps
   const darkModeRef = useRef(darkMode);
   darkModeRef.current = darkMode;
@@ -514,6 +515,7 @@ export function OutputArea({
               <IsolatedFrame
                 ref={frameRef}
                 darkMode={darkMode}
+                colorTheme={colorTheme}
                 minHeight={24}
                 maxHeight={maxHeight ?? 2000}
                 onReady={handleFrameReady}

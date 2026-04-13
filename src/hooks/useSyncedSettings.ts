@@ -295,7 +295,7 @@ export function useSyncedSettings() {
  * Falls back to localStorage if the daemon is unavailable.
  */
 export function useSyncedTheme() {
-  const { theme, setTheme } = useSyncedSettings();
+  const { theme, setTheme, colorTheme, setColorTheme } = useSyncedSettings();
 
   const [resolvedTheme, setResolvedTheme] = useState<"light" | "dark">(() => resolveTheme(theme));
 
@@ -318,5 +318,15 @@ export function useSyncedTheme() {
     return () => mediaQuery.removeEventListener("change", handleChange);
   }, [theme]);
 
-  return { theme, setTheme, resolvedTheme };
+  // Apply color theme to DOM so iframes can read it
+  useEffect(() => {
+    const html = document.documentElement;
+    if (colorTheme === "classic") {
+      html.removeAttribute("data-color-theme");
+    } else {
+      html.setAttribute("data-color-theme", colorTheme);
+    }
+  }, [colorTheme]);
+
+  return { theme, setTheme, colorTheme, setColorTheme, resolvedTheme };
 }
