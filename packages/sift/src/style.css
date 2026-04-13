@@ -12,6 +12,9 @@
   background: var(--sift-bg);
   color: var(--sift-ink);
   font-family: var(--sift-font);
+}
+
+.sift-page-layout {
   width: min(1200px, calc(100vw - 32px));
   margin: 0 auto;
   padding: 32px 0 48px;
@@ -213,7 +216,7 @@ h1 {
   display: flex;
   flex-direction: column;
   height: 100%; /* fill parent */
-  background: var(--sift-bg);
+  background: var(--sift-panel);
 }
 
 /* --- Streaming progress bar --- */
@@ -599,7 +602,6 @@ h1 {
   left: 0;
   display: flex;
   width: max-content;
-  background: var(--sift-panel);
   border-bottom: 1px solid color-mix(in srgb, var(--sift-rule) 40%, transparent);
 }
 

@@ -100,7 +100,7 @@ function renderShell(app: HTMLElement) {
   const dataset = DATASETS.find((d) => d.id === currentDatasetId) ?? DATASETS[0];
 
   app.innerHTML = `
-    <div class="sift-page">
+    <div class="sift-page-layout">
       <div class="sift-intro">
         <p class="sift-eyebrow">Pretext × Arrow × Semiotic</p>
         <div class="sift-intro-row">
