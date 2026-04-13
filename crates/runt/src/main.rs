@@ -820,12 +820,10 @@ async fn run_mcp_server(no_show: bool) -> Result<()> {
             result?;
         }
         exit_code = monitor_handle => {
-            // Health monitor returned — daemon was upgraded.
-            // Gracefully close the MCP transport so the client sees a clean
-            // EOF rather than a broken pipe, then exit with EX_TEMPFAIL (75)
-            // so the wrapper or client knows to restart us.
-            let code = exit_code.unwrap_or(runt_mcp::health::EXIT_DAEMON_UPGRADED);
-            eprintln!("Daemon upgraded, exiting for restart (exit code {code}).");
+            // Health monitor exited unexpectedly (it should run forever).
+            // Gracefully close the MCP transport and exit.
+            let code = exit_code.unwrap_or(75);
+            eprintln!("Health monitor exited unexpectedly (exit code {code}).");
             cancel_token.cancel();
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             std::process::exit(code);

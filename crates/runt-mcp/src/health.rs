@@ -17,10 +17,6 @@ use tracing::{info, warn};
 
 use crate::session::NotebookSession;
 
-/// Exit code when the daemon has been upgraded and the MCP server should restart.
-/// EX_TEMPFAIL (sysexits.h) — "temporary failure; try again."
-pub const EXIT_DAEMON_UPGRADED: i32 = 75;
-
 /// Current connection state to the daemon.
 pub enum DaemonState {
     /// Connected and healthy.
@@ -63,9 +59,9 @@ fn backoff_duration(attempt: u32) -> Duration {
 
 /// Run the daemon health monitor loop.
 ///
-/// Returns `Ok(EXIT_DAEMON_UPGRADED)` when the daemon has been upgraded and the
-/// process should exit. Never returns under normal reconnection — it runs until
-/// the daemon is upgraded or the task is cancelled.
+/// Runs indefinitely, reconnecting and rejoining sessions as the daemon
+/// restarts or upgrades. Never returns under normal operation — it runs
+/// until the task is cancelled.
 pub async fn daemon_health_monitor(
     socket_path: PathBuf,
     daemon_state: Arc<RwLock<DaemonState>>,
@@ -93,22 +89,22 @@ pub async fn daemon_health_monitor(
                 match &*state {
                     DaemonState::Connected { info } => {
                         if let Some(current) = read_daemon_info(&info_path) {
-                            if current.version != info.version {
-                                // Version changed — genuine upgrade, exit for new binary
-                                info!(
-                                    "Daemon upgraded while connected: {} → {}",
-                                    info.version, current.version
-                                );
-                                return EXIT_DAEMON_UPGRADED;
-                            }
-                            if current.pid != info.pid {
-                                // Same version, different PID — daemon restarted but is
-                                // already reachable (this ping succeeded). Stay Connected
-                                // so tools aren't blocked, and rejoin the session inline.
-                                info!(
-                                    "Daemon restarted (same version {}, PID {} → {}), rejoining session",
-                                    info.version, info.pid, current.pid
-                                );
+                            if current.version != info.version || current.pid != info.pid {
+                                // Daemon restarted (possibly upgraded). Stay connected
+                                // and rejoin the session — don't exit. The proxy handles
+                                // binary upgrades via child respawn if needed; exiting
+                                // here would break MCP clients that can't auto-reconnect.
+                                if current.version != info.version {
+                                    info!(
+                                        "Daemon upgraded while connected: {} → {}, rejoining session",
+                                        info.version, current.version
+                                    );
+                                } else {
+                                    info!(
+                                        "Daemon restarted (same version {}, PID {} → {}), rejoining session",
+                                        info.version, info.pid, current.pid
+                                    );
+                                }
                                 *state = DaemonState::Connected {
                                     info: current.clone(),
                                 };
@@ -135,11 +131,12 @@ pub async fn daemon_health_monitor(
                                     elapsed.as_secs_f64(),
                                     attempt
                                 );
-                                return EXIT_DAEMON_UPGRADED;
+                                // Don't exit — reconnect in place. Exiting would break
+                                // MCP clients that can't auto-reconnect.
                             }
                         }
 
-                        // Same version (or first connect with no prior info) — connect.
+                        // Connect (same version, upgrade, or first connect with no prior info).
                         // We need daemon info to enter Connected; if neither the info
                         // file nor last_info is available, stay in Reconnecting.
                         let Some(new_info) = current_info.or_else(|| last_info.clone()) else {
