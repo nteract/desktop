@@ -1061,6 +1061,12 @@ pub struct NotebookRoom {
     /// Replaced on each agent spawn; previous sender is dropped (cancelling
     /// the old receiver). The connect handler `take()`s the sender.
     pending_runtime_agent_connect_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+    /// Monotonic generation counter for runtime agent spawns. Incremented
+    /// before each spawn installs its oneshot/channels. Used by
+    /// `reset_starting_state` to detect interleaving spawns: the generation
+    /// is checked while holding each field's lock, so if it hasn't changed,
+    /// no newer spawn has (or can) store a value in that field.
+    runtime_agent_generation: Arc<AtomicU64>,
     /// Monotonic counter for execution queue ordering.
     /// The coordinator bumps this for each ExecuteCell and stamps the seq
     /// on the execution entry. The runtime agent sorts by seq to determine order.
@@ -1296,6 +1302,7 @@ impl NotebookRoom {
             runtime_agent_launched_config: Arc::new(RwLock::new(None)),
             runtime_agent_request_tx: Arc::new(Mutex::new(None)),
             pending_runtime_agent_connect_tx: Arc::new(Mutex::new(None)),
+            runtime_agent_generation: Arc::new(AtomicU64::new(0)),
             next_queue_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             current_runtime_agent_id: Arc::new(RwLock::new(None)),
         }
@@ -1382,6 +1389,7 @@ impl NotebookRoom {
             runtime_agent_launched_config: Arc::new(RwLock::new(None)),
             runtime_agent_request_tx: Arc::new(Mutex::new(None)),
             pending_runtime_agent_connect_tx: Arc::new(Mutex::new(None)),
+            runtime_agent_generation: Arc::new(AtomicU64::new(0)),
             next_queue_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             current_runtime_agent_id: Arc::new(RwLock::new(None)),
         }
@@ -3233,10 +3241,17 @@ fn is_untitled_notebook(notebook_id: &str) -> bool {
 /// Pre-spawn callers pass `None` (no agent exists yet, always safe to reset).
 async fn reset_starting_state(room: &NotebookRoom, expected_runtime_agent_id: Option<&str>) {
     // For guarded resets (post-spawn error paths), atomically check-and-clear
-    // provenance in a single write lock scope. Clearing provenance to None
-    // immediately blocks late-arriving stale agents because the connect handler
-    // rejects None provenance. This must happen FIRST — before any other cleanup.
-    if let Some(expected) = expected_runtime_agent_id {
+    // provenance AND capture the generation counter in a single write lock scope.
+    // Clearing provenance to None immediately blocks late-arriving stale agents
+    // because the connect handler rejects None provenance.
+    //
+    // The generation counter MUST be captured while holding the provenance write
+    // lock. A new spawn acquires this same write lock (to set provenance) before
+    // bumping the generation counter, so the generation cannot change while we
+    // hold the lock. This closes the TOCTOU gap: if the generation changes after
+    // we release the lock, the per-field checks (below) will detect the mismatch
+    // and abort.
+    let gen = if let Some(expected) = expected_runtime_agent_id {
         let mut current = room.current_runtime_agent_id.write().await;
         if current.as_deref() != Some(expected) {
             info!(
@@ -3245,9 +3260,12 @@ async fn reset_starting_state(room: &NotebookRoom, expected_runtime_agent_id: Op
             );
             return;
         }
-        // Clear provenance under the write lock — no interleaving possible.
+        // Clear provenance and capture generation under the write lock.
         *current = None;
-    }
+        Some(room.runtime_agent_generation.load(Ordering::Acquire))
+    } else {
+        None
+    };
 
     // Scope the state_doc write guard so it drops before acquiring
     // runtime_agent_handle lock (deadlock prevention).
@@ -3261,34 +3279,39 @@ async fn reset_starting_state(room: &NotebookRoom, expected_runtime_agent_id: Op
         }
     }
 
-    // Before clearing handle/channels, verify no new spawn has started.
-    // A new spawn sets provenance to Some(new_id) BEFORE creating its
-    // channels (ordering invariant), so if provenance is Some, those fields
-    // belong to the new generation and we must not touch them.
-    if expected_runtime_agent_id.is_some() {
-        let current = room.current_runtime_agent_id.read().await;
-        if current.is_some() {
-            info!(
-                "[notebook-sync] Aborting reset_starting_state cleanup: new spawn detected (provenance: {:?})",
-                *current
-            );
-            return;
-        }
-    }
-
-    // Clear stale runtime agent handle so auto-launch can retry
+    // Clear stale runtime agent handle so auto-launch can retry.
+    // Check generation inside the lock: if a new spawn bumped it, the handle
+    // belongs to the new generation — do not clear.
     {
         let mut guard = room.runtime_agent_handle.lock().await;
+        if let Some(g) = gen {
+            if room.runtime_agent_generation.load(Ordering::Acquire) != g {
+                info!("[notebook-sync] Aborting reset_starting_state: new spawn detected at handle clear");
+                return;
+            }
+        }
         *guard = None;
     }
-    // Belt-and-suspenders: clear request channel and pending connect sender
-    // so no zombie runtime agent can signal or receive RPCs after reset.
+    // Clear request channel — same generation guard.
     {
         let mut tx_guard = room.runtime_agent_request_tx.lock().await;
+        if let Some(g) = gen {
+            if room.runtime_agent_generation.load(Ordering::Acquire) != g {
+                info!("[notebook-sync] Aborting reset_starting_state: new spawn detected at request_tx clear");
+                return;
+            }
+        }
         *tx_guard = None;
     }
+    // Clear pending connect sender — same generation guard.
     {
         let mut guard = room.pending_runtime_agent_connect_tx.lock().await;
+        if let Some(g) = gen {
+            if room.runtime_agent_generation.load(Ordering::Acquire) != g {
+                info!("[notebook-sync] Aborting reset_starting_state: new spawn detected at connect_tx clear");
+                return;
+            }
+        }
         *guard = None;
     }
 }
@@ -4187,14 +4210,18 @@ async fn auto_launch_kernel(
         let socket_path = daemon.socket_path().clone();
 
         // Set provenance BEFORE spawn so stale agents are rejected by the
-        // connect handler's provenance check. Then create the oneshot so it's
-        // ready before the subprocess can connect. This ordering satisfies both
-        // Edge Case 1 (oneshot ready before agent connects) and Edge Case 3
-        // (provenance blocks stale agents from taking the new sender).
+        // connect handler's provenance check. Bump generation BEFORE storing
+        // the oneshot so reset_starting_state can detect interleaving spawns.
+        // Then create the oneshot so it's ready before the subprocess can
+        // connect.
+        //
+        // Ordering: provenance → generation → oneshot → spawn
         {
             let mut id = room.current_runtime_agent_id.write().await;
             *id = Some(runtime_agent_id.clone());
         }
+        room.runtime_agent_generation
+            .fetch_add(1, Ordering::Release);
         let runtime_agent_connect_rx = {
             let (tx, rx) = oneshot::channel();
             let mut guard = room.pending_runtime_agent_connect_tx.lock().await;
@@ -5400,11 +5427,14 @@ async fn handle_notebook_request(
                     format!("runtime-agent:{}", &uuid::Uuid::new_v4().to_string()[..8]);
                 let socket_path = daemon.socket_path().clone();
 
-                // Set provenance + create oneshot BEFORE spawn (see auto_launch_kernel).
+                // Set provenance + bump generation + create oneshot BEFORE spawn
+                // (see auto_launch_kernel for ordering rationale).
                 {
                     let mut id = room.current_runtime_agent_id.write().await;
                     *id = Some(runtime_agent_id.clone());
                 }
+                room.runtime_agent_generation
+                    .fetch_add(1, Ordering::Release);
                 let runtime_agent_connect_rx = {
                     let (tx, rx) = oneshot::channel();
                     let mut guard = room.pending_runtime_agent_connect_tx.lock().await;
@@ -9495,6 +9525,7 @@ mod tests {
             runtime_agent_launched_config: Arc::new(RwLock::new(None)),
             runtime_agent_request_tx: Arc::new(Mutex::new(None)),
             pending_runtime_agent_connect_tx: Arc::new(Mutex::new(None)),
+            runtime_agent_generation: Arc::new(AtomicU64::new(0)),
             next_queue_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             current_runtime_agent_id: Arc::new(RwLock::new(None)),
         };
@@ -11741,6 +11772,125 @@ mod tests {
         assert!(
             new_rx.try_recv().is_err(),
             "new spawn's oneshot should still be pending (sender alive)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reset_generation_guard_with_concurrent_spawn() {
+        // Regression test for TOCTOU in reset_starting_state: verifies that a
+        // new spawn interleaving AFTER provenance is cleared (but before field
+        // clears) is detected by the generation counter, causing reset to abort
+        // and preserving the new spawn's fields.
+        //
+        // The test spawns a concurrent task that simulates a new spawn sequence
+        // (set provenance → bump generation → store fields) as soon as it
+        // detects provenance cleared to None. The main task calls
+        // reset_starting_state with a matching expected_runtime_agent_id.
+        //
+        // Two valid orderings exist:
+        // 1. Concurrent spawn completes between provenance clear and field clears
+        //    → generation mismatch → reset aborts → new fields preserved
+        // 2. Concurrent spawn completes after reset_starting_state returns
+        //    → reset clears old fields normally → concurrent spawn stores new fields
+        // In both cases, the new spawn's fields are present at the end.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (room, _notebook_path) = test_room_with_path(&tmp, "gen_concurrent.ipynb");
+
+        // Setup: agent-old at generation 0 with populated fields.
+        {
+            let mut id = room.current_runtime_agent_id.write().await;
+            *id = Some("agent-old".to_string());
+        }
+        let (old_tx, _old_rx) = oneshot::channel::<()>();
+        {
+            let mut guard = room.pending_runtime_agent_connect_tx.lock().await;
+            *guard = Some(old_tx);
+        }
+        let (old_req_tx, _old_req_rx) = tokio::sync::mpsc::channel(16);
+        {
+            let mut guard = room.runtime_agent_request_tx.lock().await;
+            *guard = Some(old_req_tx);
+        }
+
+        // Clone Arc fields for the concurrent task.
+        let id_arc = room.current_runtime_agent_id.clone();
+        let gen_arc = room.runtime_agent_generation.clone();
+        let connect_arc = room.pending_runtime_agent_connect_tx.clone();
+        let req_arc = room.runtime_agent_request_tx.clone();
+
+        // Channel to receive the new spawn's oneshot receiver (for liveness check).
+        let (done_tx, done_rx) = oneshot::channel::<oneshot::Receiver<()>>();
+
+        // Spawn concurrent task: simulate a new spawn that fires as soon as
+        // provenance is cleared (the trigger for the TOCTOU scenario).
+        tokio::spawn(async move {
+            // Poll for provenance → None (reset_starting_state clears it).
+            loop {
+                {
+                    let current = id_arc.read().await;
+                    if current.is_none() {
+                        break;
+                    }
+                }
+                tokio::task::yield_now().await;
+            }
+
+            // Simulate new spawn sequence: provenance → generation → fields.
+            {
+                let mut id = id_arc.write().await;
+                *id = Some("agent-new".to_string());
+            }
+            gen_arc.fetch_add(1, Ordering::Release);
+            let (new_tx, new_rx) = oneshot::channel::<()>();
+            {
+                let mut guard = connect_arc.lock().await;
+                *guard = Some(new_tx);
+            }
+            let (new_req_tx, _) = tokio::sync::mpsc::channel(16);
+            {
+                let mut guard = req_arc.lock().await;
+                *guard = Some(new_req_tx);
+            }
+
+            let _ = done_tx.send(new_rx);
+        });
+
+        // Main task: call reset — provenance matches "agent-old", so it proceeds.
+        // Generation was captured inside the provenance write lock (gen=0).
+        // If the concurrent spawn bumps gen to 1 before field clears, the
+        // generation guard aborts the clears. Otherwise, reset clears old fields
+        // and the concurrent spawn stores new ones afterward.
+        reset_starting_state(&room, Some("agent-old")).await;
+
+        // Wait for concurrent task to complete its spawn simulation.
+        let mut new_rx = done_rx
+            .await
+            .expect("concurrent spawn task should complete");
+
+        // Verify: new spawn's fields must be present regardless of ordering.
+        assert!(
+            room.pending_runtime_agent_connect_tx.lock().await.is_some(),
+            "connect_tx should be present (new spawn's)"
+        );
+        assert!(
+            room.runtime_agent_request_tx.lock().await.is_some(),
+            "request_tx should be present (new spawn's)"
+        );
+        assert_eq!(
+            room.current_runtime_agent_id.read().await.as_deref(),
+            Some("agent-new"),
+            "provenance should be agent-new (set by concurrent spawn)"
+        );
+        // Verify oneshot sender is still alive (not dropped by reset).
+        assert!(
+            new_rx.try_recv().is_err(),
+            "new spawn's oneshot sender should be alive"
+        );
+        // Generation should be 1 (bumped by concurrent spawn).
+        assert_eq!(
+            room.runtime_agent_generation.load(Ordering::Acquire),
+            1,
+            "generation should be 1 after concurrent spawn"
         );
     }
 }
