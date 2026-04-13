@@ -444,27 +444,47 @@ pub async fn get_dependencies(
     let deps = get_deps_for_manager(&handle, &manager);
 
     // Include prewarmed packages from RuntimeStateDoc when available
-    let prewarmed = handle
-        .get_runtime_state()
-        .ok()
-        .map(|s| s.env.prewarmed_packages)
+    let state = handle.get_runtime_state().ok();
+    let prewarmed = state
+        .as_ref()
+        .map(|s| s.env.prewarmed_packages.clone())
         .unwrap_or_default();
 
-    // Indicate whether deps come from a project file or notebook metadata
-    let env_source = handle
-        .get_runtime_state()
-        .ok()
-        .map(|s| s.kernel.env_source.clone());
-    let mode = match env_source.as_deref() {
-        Some("pixi:toml") | Some("uv:pyproject") => "project",
-        _ => "inline",
+    let env_source = state
+        .as_ref()
+        .map(|s| s.kernel.env_source.clone())
+        .unwrap_or_default();
+
+    // Classify the dependency mode by env_source so the caller knows where
+    // packages originate and whether they can be add/removed via MCP.
+    //
+    // - "project": deps come from a project file (environment.yaml, pyproject.toml,
+    //   pixi.toml). The project file is the source of truth for baseline deps.
+    //   add_dependency adds ON TOP of the baseline; remove_dependency only
+    //   removes runtime-added deps.
+    // - "prewarmed": deps come from the kernel pool's default packages.
+    //   add_dependency adds on top; baseline changes with pool configuration.
+    // - "inline": deps are self-contained in notebook metadata (CRDT).
+    //   add_dependency/remove_dependency have full control.
+    let (mode, source_file) = match env_source.as_str() {
+        "conda:env_yml" => ("project", Some("environment.yaml")),
+        "uv:pyproject" => ("project", Some("pyproject.toml")),
+        "pixi:toml" => ("project", Some("pixi.toml")),
+        "conda:prewarmed" | "uv:prewarmed" | "pixi:prewarmed" => ("prewarmed", None),
+        _ => ("inline", None),
     };
 
     let mut result = serde_json::json!({
         "dependencies": deps,
         "package_manager": manager,
         "mode": mode,
+        "env_source": env_source,
     });
+
+    if let Some(file) = source_file {
+        result["source_file"] = serde_json::json!(file);
+    }
+
     if !prewarmed.is_empty() {
         result["available_packages"] = serde_json::json!(prewarmed);
     }
