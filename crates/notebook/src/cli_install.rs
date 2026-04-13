@@ -762,6 +762,7 @@ fn install_with_privilege_escalation(
 }
 
 /// Escape a string for use inside a single-quoted shell argument.
+#[cfg(unix)]
 fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
