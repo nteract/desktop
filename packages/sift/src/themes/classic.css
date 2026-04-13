@@ -6,6 +6,7 @@
  */
 
 /* --- Light (default) --- */
+:root,
 [data-color-theme="classic"] {
   color-scheme: light;
   --sift-page: #ffffff;
@@ -39,6 +40,7 @@
 
 /* --- Dark (system preference) --- */
 @media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]):not([data-color-theme]),
   [data-color-theme="classic"]:not([data-theme="light"]) {
     color-scheme: dark;
     --sift-page: #0a0a0a;
@@ -70,6 +72,8 @@
 }
 
 /* --- Dark (explicit attribute) --- */
+:root:not([data-color-theme])[data-theme="dark"],
+:root:not([data-color-theme]).dark,
 [data-color-theme="classic"][data-theme="dark"],
 [data-color-theme="classic"].dark {
   color-scheme: dark;
