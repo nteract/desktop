@@ -814,16 +814,20 @@ export function createTable(
   fullscreenBtn.title = "Toggle fullscreen";
   fullscreenBtn.textContent = "⛶";
   fullscreenBtn.addEventListener("click", () => {
-    if (document.fullscreenElement === container) {
-      document.exitFullscreen();
+    const fsElement =
+      document.fullscreenElement ?? (document as any).webkitFullscreenElement ?? null;
+    if (fsElement === container) {
+      (document.exitFullscreen ?? (document as any).webkitExitFullscreen)?.call(document);
     } else {
-      container.requestFullscreen();
+      (container.requestFullscreen ?? (container as any).webkitRequestFullscreen)?.call(container);
     }
   });
 
   // Update button label on fullscreen change
   function onFullscreenChange() {
-    const isFS = document.fullscreenElement === container;
+    const fsElement =
+      document.fullscreenElement ?? (document as any).webkitFullscreenElement ?? null;
+    const isFS = fsElement === container;
     fullscreenBtn.textContent = isFS ? "⛶" : "⛶";
     fullscreenBtn.title = isFS ? "Exit fullscreen" : "Toggle fullscreen";
     // Trigger re-render since dimensions changed
@@ -831,6 +835,7 @@ export function createTable(
     scheduleRender();
   }
   document.addEventListener("fullscreenchange", onFullscreenChange);
+  document.addEventListener("webkitfullscreenchange", onFullscreenChange);
 
   const filterPillsEl = document.createElement("div");
   filterPillsEl.className = "sift-filter-pills";
@@ -1650,6 +1655,7 @@ export function createTable(
     container.removeEventListener("keydown", onKeyDown);
     window.removeEventListener("resize", scheduleRender);
     document.removeEventListener("fullscreenchange", onFullscreenChange);
+    document.removeEventListener("webkitfullscreenchange", onFullscreenChange);
 
     // Unmount React roots
     for (const el of summaryContainers) {
