@@ -663,6 +663,10 @@ pub async fn sync_dependencies(env: &CondaEnvironment, deps: &CondaDependencies)
 
     let match_spec_options = ParseMatchSpecOptions::strict();
 
+    // Read currently installed packages first — we need them both for the
+    // solver's locked_packages and to build preservation specs below.
+    let installed_packages = PrefixRecord::collect_from_prefix::<PrefixRecord>(&env.env_path)?;
+
     // Always include base runtime packages — the solver only returns packages
     // needed to satisfy specs, and locked_packages are "preferred" not "required".
     // Without these, the Installer will remove ipykernel etc from the env.
@@ -709,12 +713,15 @@ pub async fn sync_dependencies(env: &CondaEnvironment, deps: &CondaDependencies)
     .map(|vpkg| GenericVirtualPackage::from(vpkg.clone()))
     .collect::<Vec<_>>();
 
-    let installed_packages = PrefixRecord::collect_from_prefix::<PrefixRecord>(&env.env_path)?;
-
     let solver_task = SolverTask {
         virtual_packages,
         specs,
-        locked_packages: installed_packages
+        // Pin existing packages so the solver MUST keep them. locked_packages
+        // are merely "preferred" — the solver can drop them if no spec requires
+        // them, causing the Installer to remove prewarmed pool packages (pandas,
+        // matplotlib, etc.). pinned_packages are "required and version-locked",
+        // making sync_dependencies purely additive.
+        pinned_packages: installed_packages
             .iter()
             .map(|r| r.repodata_record.clone())
             .collect(),
