@@ -1,13 +1,10 @@
 import type { Extension } from "@codemirror/state";
 import {
-  defaultSettingsGithubDark,
-  defaultSettingsGithubLight,
   githubDark,
-  githubDarkStyle,
+  githubDarkInit,
   githubLight,
-  githubLightStyle,
+  githubLightInit,
 } from "@uiw/codemirror-theme-github";
-import { createTheme } from "@uiw/codemirror-themes";
 
 import { documentHasDarkMode, isDarkMode, prefersDarkMode, useDarkMode } from "@/lib/dark-mode";
 
@@ -31,32 +28,27 @@ export const classicLight: Extension = githubLight;
 export const classicDark: Extension = githubDark;
 
 /**
- * Cream themes — warm backgrounds with GitHub syntax highlighting
+ * Cream themes — warm backgrounds with GitHub syntax highlighting.
+ * Uses githubLightInit/githubDarkInit with settings overrides.
  */
-export const creamLight: Extension = createTheme({
-  theme: "light",
+export const creamLight: Extension = githubLightInit({
   settings: {
-    ...defaultSettingsGithubLight,
     background: "#f5f2ec",
     gutterBackground: "#f5f2ec",
     gutterForeground: "#6e655f",
     selection: "#d8cec3",
     selectionMatch: "#d8cec3",
   },
-  styles: githubLightStyle,
 });
 
-export const creamDark: Extension = createTheme({
-  theme: "dark",
+export const creamDark: Extension = githubDarkInit({
   settings: {
-    ...defaultSettingsGithubDark,
     background: "#1a1816",
     gutterBackground: "#1a1816",
     gutterForeground: "#9a918a",
     selection: "#3a3533",
     selectionMatch: "#3a3533",
   },
-  styles: githubDarkStyle,
 });
 
 // Legacy exports for backward compatibility
