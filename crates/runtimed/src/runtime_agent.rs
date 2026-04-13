@@ -519,17 +519,19 @@ async fn handle_runtime_agent_request(
             if let Some(ref mut k) = kernel {
                 match k.interrupt().await {
                     Ok(()) => {
-                        let cleared = state.clear_queue();
-                        // Write cleared entries to state doc
-                        {
-                            let mut sd = ctx.state_doc.write().await;
-                            for entry in &cleared {
-                                sd.set_execution_done(&entry.execution_id, false);
-                            }
-                        }
-                        state.write_queue_to_state_doc().await;
+                        // Do NOT clear the execution queue here. SIGINT only
+                        // targets the currently-executing cell — queued cells
+                        // should execute after the kernel processes the
+                        // interrupt. Clearing the queue races with concurrent
+                        // ExecuteCell requests: a cell queued in the same
+                        // scheduling window as the interrupt gets silently
+                        // dropped and marked as errored instead of running.
+                        //
+                        // The interrupted cell will receive an error reply via
+                        // the normal IOPub path (KeyboardInterrupt), triggering
+                        // execution_done() → process_next() for any queued cells.
                         (
-                            RuntimeAgentResponse::InterruptAcknowledged { cleared },
+                            RuntimeAgentResponse::InterruptAcknowledged { cleared: vec![] },
                             None,
                         )
                     }

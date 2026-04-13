@@ -48,7 +48,7 @@ use crate::protocol::{
 };
 use notebook_doc::diff::diff_metadata_touched;
 use notebook_doc::presence::{self, PresenceState};
-use notebook_doc::runtime_state::{QueueEntry as DocQueueEntry, RuntimeStateDoc};
+use notebook_doc::runtime_state::RuntimeStateDoc;
 
 /// Capacity for the per-room kernel broadcast channel. Sized to absorb bursts
 /// of output messages (e.g. fast-printing cells) so slower peers trigger a
@@ -758,7 +758,19 @@ pub(crate) async fn apply_interrupt_to_state_doc(
     room_state_changed_tx: &broadcast::Sender<()>,
     cleared: &[notebook_protocol::protocol::QueueEntry],
 ) {
-    // Fork state_doc so mutations compose with any concurrent writes.
+    // Do NOT clear the CRDT queue on interrupt. SIGINT targets only the
+    // currently-executing cell — the kernel will reply with an error, and
+    // the runtime agent's execution_done() → process_next() will pick up
+    // any remaining queued cells. Clearing the queue here races with
+    // concurrent ExecuteCell requests: an entry written to the CRDT in the
+    // same window as the interrupt gets removed and silently lost.
+    //
+    // If the agent explicitly cleared some entries (legacy path), mark
+    // those as errored so their lifecycle is terminal.
+    if cleared.is_empty() {
+        return;
+    }
+
     let mut fork = {
         let mut sd = room_state_doc.write().await;
         let mut f = sd.fork();
@@ -766,23 +778,10 @@ pub(crate) async fn apply_interrupt_to_state_doc(
         f
     };
 
-    // Read the currently-executing entry from the CRDT (it stays — the
-    // kernel will send an execute_reply for it via the normal IOPub path).
-    let state = fork.read_state();
-    let exec = state.queue.executing.as_ref().map(|e| DocQueueEntry {
-        cell_id: e.cell_id.clone(),
-        execution_id: e.execution_id.clone(),
-    });
-
-    // Clear the queued entries, keeping only the executing one.
-    fork.set_queue(exec.as_ref(), &[]);
-
-    // Mark cleared executions as errored on the fork
     for entry in cleared {
         fork.set_execution_done(&entry.execution_id, false);
     }
 
-    // Merge fork back — concurrent state_doc writes compose via CRDT
     {
         let mut sd = room_state_doc.write().await;
         match catch_automerge_panic("interrupt-state-merge", || sd.merge(&mut fork)) {
