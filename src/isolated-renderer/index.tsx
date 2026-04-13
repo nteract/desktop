@@ -160,9 +160,10 @@ function updateDocumentTheme(isDark: boolean, colorTheme?: string | null) {
   // opaque (prevents focused-cell highlight from bleeding through the iframe).
   // Leave --sift-panel to sift's theme CSS — it needs to be brighter than
   // --sift-bg so rows have visible contrast.
-  root.style.setProperty("--sift-bg", isCream
-    ? (isDark ? "#1a1816" : "#f5f2ec")
-    : (isDark ? "#0d1117" : "#ffffff"));
+  root.style.setProperty(
+    "--sift-bg",
+    isCream ? (isDark ? "#1a1816" : "#f5f2ec") : isDark ? "#0d1117" : "#ffffff",
+  );
   if (isCream) {
     root.style.setProperty("--bg-primary", "transparent");
     root.style.setProperty("--bg-secondary", isDark ? "#242120" : "#f0ede7");
