@@ -473,16 +473,14 @@ export function OutputArea({
   // Hide the entire output area when only preloading (no visible outputs)
   const isPreloadOnly = showPreloadedIframe && outputs.length === 0;
 
-  // pl-6 aligns the output left edge with the code editor indent.
-  // pr-9 compensates for the right gutter (w-10) so that centered
-  // content (widgets, plots) appears visually centered between the
-  // code indent and the right edge. The CellContainer output wrapper
+  // pl-6 pr-3 matches the code editor row padding so outputs align
+  // flush with the editor content. The CellContainer output wrapper
   // has no horizontal padding — it must live here because the iframe
   // ignores padding on its parent container.
   return (
     <div
       data-slot="output-area"
-      className={cn("output-area pl-6 pr-9", isPreloadOnly && "hidden", className)}
+      className={cn("output-area pl-6 pr-3", isPreloadOnly && "hidden", className)}
     >
       {/* Collapse toggle */}
       {hasCollapseControl && (
