@@ -1,4 +1,5 @@
-import { tags as t, type TagStyle } from "@lezer/highlight";
+import type { TagStyle } from "@codemirror/language";
+import { tags as t } from "@lezer/highlight";
 
 /**
  * Editor UI settings for CodeMirror themes.

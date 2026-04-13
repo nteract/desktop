@@ -1,10 +1,19 @@
 import type { Extension } from "@codemirror/state";
+import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
+import type { TagStyle } from "@codemirror/language";
+import { EditorView } from "@codemirror/view";
+
 import {
-  githubDark,
-  githubDarkInit,
-  githubLight,
-  githubLightInit,
-} from "@uiw/codemirror-theme-github";
+  type ThemeSettings,
+  classicDarkSettings,
+  classicDarkStyle,
+  classicLightSettings,
+  classicLightStyle,
+  creamDarkSettings,
+  creamDarkStyle,
+  creamLightSettings,
+  creamLightStyle,
+} from "./highlight-styles";
 
 import { documentHasDarkMode, isDarkMode, prefersDarkMode, useDarkMode } from "@/lib/dark-mode";
 
@@ -22,34 +31,67 @@ export type ThemeMode = "light" | "dark" | "system";
 export type ColorTheme = "classic" | "cream";
 
 /**
- * Classic themes — GitHub Light/Dark
+ * Build a CodeMirror theme extension from structural settings and syntax styles.
  */
-export const classicLight: Extension = githubLight;
-export const classicDark: Extension = githubDark;
+function buildTheme(
+  mode: "light" | "dark",
+  settings: ThemeSettings,
+  styles: TagStyle[],
+): Extension {
+  const themeExtension = EditorView.theme(
+    {
+      "&": {
+        color: settings.foreground,
+        backgroundColor: settings.background,
+      },
+      ".cm-content": {
+        caretColor: settings.caret ?? settings.foreground,
+      },
+      ".cm-cursor, .cm-dropCursor": {
+        borderLeftColor: settings.caret ?? settings.foreground,
+      },
+      "&.cm-focused .cm-selectionBackground, & .cm-line::selection, & .cm-selectionLayer .cm-selectionBackground, .cm-content ::selection":
+        {
+          background: `${settings.selection} !important`,
+        },
+      "& .cm-selectionMatch": {
+        backgroundColor: settings.selectionMatch,
+      },
+      ".cm-gutters": {
+        backgroundColor: settings.gutterBackground,
+        color: settings.gutterForeground,
+        borderRight: "none",
+      },
+      ...(settings.lineHighlight
+        ? {
+            ".cm-activeLine": {
+              backgroundColor: settings.lineHighlight,
+            },
+            ".cm-activeLineGutter": {
+              backgroundColor: settings.lineHighlight,
+            },
+          }
+        : {}),
+    },
+    { dark: mode === "dark" },
+  );
+
+  const highlightStyle = HighlightStyle.define(styles, { themeType: mode });
+
+  return [themeExtension, syntaxHighlighting(highlightStyle)];
+}
 
 /**
- * Cream themes — warm backgrounds with GitHub syntax highlighting.
- * Uses githubLightInit/githubDarkInit with settings overrides.
+ * Classic themes — GitHub-inspired Light/Dark
  */
-export const creamLight: Extension = githubLightInit({
-  settings: {
-    background: "#f5f2ec",
-    gutterBackground: "#f5f2ec",
-    gutterForeground: "#6e655f",
-    selection: "#d8cec3",
-    selectionMatch: "#d8cec3",
-  },
-});
+export const classicLight: Extension = buildTheme("light", classicLightSettings, classicLightStyle);
+export const classicDark: Extension = buildTheme("dark", classicDarkSettings, classicDarkStyle);
 
-export const creamDark: Extension = githubDarkInit({
-  settings: {
-    background: "#1a1816",
-    gutterBackground: "#1a1816",
-    gutterForeground: "#9a918a",
-    selection: "#3a3533",
-    selectionMatch: "#3a3533",
-  },
-});
+/**
+ * Cream themes — warm Gruvbox-inspired Light/Dark
+ */
+export const creamLight: Extension = buildTheme("light", creamLightSettings, creamLightStyle);
+export const creamDark: Extension = buildTheme("dark", creamDarkSettings, creamDarkStyle);
 
 // Legacy exports for backward compatibility
 export const lightTheme: Extension = classicLight;
