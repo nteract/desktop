@@ -48,12 +48,22 @@ interface NotebookViewProps {
   onSetCellOutputsHidden?: (cellId: string, hidden: boolean) => void;
 }
 
-const adderRibbonColors: Record<string, { light: string; dark: string }> = {
-  code: { light: "rgb(56, 189, 248)", dark: "rgb(2, 132, 199)" },
-  markdown: { light: "rgb(52, 211, 153)", dark: "rgb(5, 150, 105)" },
-  raw: { light: "rgb(251, 113, 133)", dark: "rgb(225, 29, 72)" },
+/** Tailwind classes for cell adder ribbon colors — must be static strings for tree-shaking. */
+const adderRibbonClasses: Record<string, string> = {
+  code: [
+    "group-hover/adder:bg-sky-400 dark:group-hover/adder:bg-sky-600",
+    "group-focus-within/adder:bg-sky-400 dark:group-focus-within/adder:bg-sky-600",
+  ].join(" "),
+  markdown: [
+    "group-hover/adder:bg-emerald-400 dark:group-hover/adder:bg-emerald-600",
+    "group-focus-within/adder:bg-emerald-400 dark:group-focus-within/adder:bg-emerald-600",
+  ].join(" "),
+  raw: [
+    "group-hover/adder:bg-rose-400 dark:group-hover/adder:bg-rose-600",
+    "group-focus-within/adder:bg-rose-400 dark:group-focus-within/adder:bg-rose-600",
+  ].join(" "),
 };
-const defaultAdderRibbonColor = adderRibbonColors.code;
+const defaultAdderRibbonClass = adderRibbonClasses.code;
 
 function CellAdder({
   afterCellId,
@@ -64,7 +74,7 @@ function CellAdder({
   onAdd: (type: "code" | "markdown", afterCellId?: string | null) => void;
   cellType?: string;
 }) {
-  const ribbonColor = adderRibbonColors[cellType] ?? defaultAdderRibbonColor;
+  const ribbonClass = adderRibbonClasses[cellType] ?? defaultAdderRibbonClass;
 
   return (
     <div className="flex h-7 w-full items-center select-none">
@@ -74,17 +84,12 @@ function CellAdder({
         <div className="w-10" />
         {/* Ribbon zone — widens on hover to reveal cell type options */}
         <div
-          style={
-            {
-              "--adder-ribbon": ribbonColor.light,
-              "--adder-ribbon-dark": ribbonColor.dark,
-            } as React.CSSProperties
-          }
           className={cn(
             "flex h-full flex-shrink-0 items-center overflow-hidden",
             "w-1 bg-gray-200 transition-all duration-200 ease-out dark:bg-gray-700",
-            "group-hover/adder:w-auto group-hover/adder:rounded-r-sm group-hover/adder:bg-[var(--adder-ribbon)] group-hover/adder:pr-1 dark:group-hover/adder:bg-[var(--adder-ribbon-dark)]",
-            "group-focus-within/adder:w-auto group-focus-within/adder:rounded-r-sm group-focus-within/adder:bg-[var(--adder-ribbon)] group-focus-within/adder:pr-1 dark:group-focus-within/adder:bg-[var(--adder-ribbon-dark)]",
+            "group-hover/adder:w-auto group-hover/adder:rounded-r-sm group-hover/adder:pr-1",
+            "group-focus-within/adder:w-auto group-focus-within/adder:rounded-r-sm group-focus-within/adder:pr-1",
+            ribbonClass,
           )}
         >
           <div
