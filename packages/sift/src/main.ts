@@ -140,7 +140,7 @@ function renderShell(app: HTMLElement) {
         </div>
         <p class="sift-subtitle" id="dataset-description">${dataset.description}</p>
       </div>
-      <div id="table-root"></div>
+      <div id="table-root" class="sift-card"></div>
     </div>
   `;
 

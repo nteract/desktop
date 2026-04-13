@@ -201,12 +201,18 @@ h1 {
   border-radius: 4px;
 }
 
-/* --- Table container --- */
-
-.sift-table-container {
+/* Reusable card chrome for embedding contexts (demo page, notebook demo).
+   The table container itself is chrome-free so it blends into any host. */
+.sift-card {
   border: 1px solid var(--sift-rule);
   border-radius: 18px;
   background: var(--sift-panel);
+  overflow: hidden;
+}
+
+/* --- Table container --- */
+
+.sift-table-container {
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -924,9 +930,7 @@ h1 {
 /* --- Fullscreen state --- */
 
 .sift-table-container:fullscreen {
-  border-radius: 0;
-  border: none;
-  background: var(--sift-panel);
+  background: var(--sift-page);
 }
 
 .sift-table-container:fullscreen .sift-viewport {
@@ -936,9 +940,6 @@ h1 {
 /* --- Loading skeleton --- */
 
 .sift-skeleton {
-  border: 1px solid var(--sift-rule);
-  border-radius: 18px;
-  background: var(--sift-panel);
   overflow: hidden;
   display: flex;
   flex-direction: column;
