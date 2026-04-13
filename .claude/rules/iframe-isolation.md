@@ -27,11 +27,10 @@ Untrusted content renders inside iframes with `blob:` URLs. Blob URLs have a uni
 ### Sandbox Attributes
 
 ```
-allow-scripts, allow-downloads, allow-forms, allow-pointer-lock,
-allow-popups, allow-popups-to-escape-sandbox, allow-modals
+allow-scripts, allow-downloads, allow-forms, allow-pointer-lock, allow-fullscreen
 ```
 
-No `allow-same-origin`. Ever.
+No `allow-same-origin`. Ever. No `allow-popups` or `allow-modals` — these were removed to reduce phishing surface.
 
 ### Content Security Policy
 

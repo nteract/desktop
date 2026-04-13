@@ -39,9 +39,7 @@ const SANDBOX_ATTRS = [
   "allow-downloads",        // Allow file downloads
   "allow-forms",            // Allow form submissions
   "allow-pointer-lock",     // Allow pointer lock API
-  "allow-popups",           // Allow window.open (for links)
-  "allow-popups-to-escape-sandbox",
-  "allow-modals",           // Allow alert/confirm dialogs
+  "allow-fullscreen",       // For sift maximize, interactive visualizations
 ].join(" ");
 ```
 

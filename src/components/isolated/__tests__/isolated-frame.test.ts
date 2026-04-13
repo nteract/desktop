@@ -18,9 +18,7 @@ const EXPECTED_SANDBOX_ATTRS = [
   "allow-downloads",
   "allow-forms",
   "allow-pointer-lock",
-  "allow-popups",
-  "allow-popups-to-escape-sandbox",
-  "allow-modals",
+  "allow-fullscreen",
 ].join(" ");
 
 describe("iframe sandbox security", () => {
@@ -42,8 +40,16 @@ describe("iframe sandbox security", () => {
     expect(EXPECTED_SANDBOX_ATTRS).toContain("allow-scripts");
   });
 
-  it("sandbox includes allow-popups (required for links)", () => {
-    expect(EXPECTED_SANDBOX_ATTRS).toContain("allow-popups");
+  it("sandbox includes allow-fullscreen (required for sift maximize)", () => {
+    expect(EXPECTED_SANDBOX_ATTRS).toContain("allow-fullscreen");
+  });
+
+  it("sandbox does NOT include allow-popups", () => {
+    expect(EXPECTED_SANDBOX_ATTRS).not.toContain("allow-popups");
+  });
+
+  it("sandbox does NOT include allow-modals", () => {
+    expect(EXPECTED_SANDBOX_ATTRS).not.toContain("allow-modals");
   });
 
   /**

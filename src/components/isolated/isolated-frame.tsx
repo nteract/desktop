@@ -227,9 +227,7 @@ const SANDBOX_ATTRS = [
   "allow-downloads", // Allow file downloads (e.g., from widgets)
   "allow-forms", // Allow form submissions
   "allow-pointer-lock", // For interactive visualizations
-  "allow-popups", // Allow window.open (for links)
-  "allow-popups-to-escape-sandbox", // Popups should be unrestricted
-  "allow-modals", // Allow alert/confirm/prompt
+  "allow-fullscreen", // For sift maximize, interactive visualizations (e.g., maps, 3D)
 ].join(" ");
 
 /**
@@ -771,6 +769,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
         id={id}
         src={blobUrl}
         sandbox={SANDBOX_ATTRS}
+        allowFullScreen
         className={className}
         data-slot="isolated-frame"
         style={{
