@@ -1,7 +1,7 @@
-import type { ReactNode } from "react";
-import { HighlightStyle } from "@codemirror/language";
+import type { CSSProperties, ReactNode } from "react";
+import type { TagStyle } from "@codemirror/language";
 import type { Parser } from "@lezer/common";
-import { highlightCode } from "@lezer/highlight";
+import { highlightCode, tagHighlighter } from "@lezer/highlight";
 
 import { pythonLanguage } from "@codemirror/lang-python";
 import { javascriptLanguage, tsxLanguage, jsxLanguage } from "@codemirror/lang-javascript";
@@ -49,17 +49,54 @@ const languageParsers: Record<string, Parser> = {
 export const supportedLanguages = Object.keys(languageParsers);
 
 // ---------------------------------------------------------------------------
-// Highlight style resolution
+// Inline-style highlighting (no CSS class injection needed)
 // ---------------------------------------------------------------------------
 
 /**
- * Get the appropriate HighlightStyle for a given theme variant.
+ * Build a tagHighlighter that returns synthetic class names, plus a map
+ * from those names to React CSSProperties. This avoids needing to inject
+ * a StyleModule — the styles are applied inline on each <span>.
  */
-function getHighlightStyle(isDark: boolean, colorTheme: ColorTheme): HighlightStyle {
-  if (colorTheme === "cream") {
-    return HighlightStyle.define(isDark ? creamDarkStyle : creamLightStyle);
+function buildInlineHighlighter(tagStyles: TagStyle[]) {
+  const rules: { tag: (typeof tagStyles)[0]["tag"]; class: string }[] = [];
+  const styleMap = new Map<string, CSSProperties>();
+
+  for (let i = 0; i < tagStyles.length; i++) {
+    const ts = tagStyles[i];
+    const cls = `_sh${i}`;
+    const style: CSSProperties = {};
+    if (ts.color) style.color = ts.color;
+    if (ts.fontWeight) style.fontWeight = ts.fontWeight as CSSProperties["fontWeight"];
+    if (ts.fontStyle) style.fontStyle = ts.fontStyle as CSSProperties["fontStyle"];
+    if (ts.textDecoration) style.textDecoration = ts.textDecoration as string;
+    if (ts.backgroundColor) style.backgroundColor = ts.backgroundColor as string;
+
+    rules.push({ tag: ts.tag, class: cls });
+    styleMap.set(cls, style);
   }
-  return HighlightStyle.define(isDark ? classicDarkStyle : classicLightStyle);
+
+  return { highlighter: tagHighlighter(rules), styleMap };
+}
+
+// Cache built highlighters (one per theme variant)
+const highlighterCache = new Map<string, ReturnType<typeof buildInlineHighlighter>>();
+
+function getInlineHighlighter(isDark: boolean, colorTheme: ColorTheme) {
+  const key = `${isDark}-${colorTheme}`;
+  let cached = highlighterCache.get(key);
+  if (!cached) {
+    const styles =
+      colorTheme === "cream"
+        ? isDark
+          ? creamDarkStyle
+          : creamLightStyle
+        : isDark
+          ? classicDarkStyle
+          : classicLightStyle;
+    cached = buildInlineHighlighter(styles);
+    highlighterCache.set(key, cached);
+  }
+  return cached;
 }
 
 // ---------------------------------------------------------------------------
@@ -68,7 +105,7 @@ function getHighlightStyle(isDark: boolean, colorTheme: ColorTheme): HighlightSt
 
 /**
  * Highlight code into an array of React nodes using CodeMirror's Lezer
- * parsers and our owned highlight styles.
+ * parsers and inline styles from our owned highlight styles.
  *
  * Returns plain text if the language is not recognized.
  */
@@ -84,18 +121,24 @@ function highlight(
   }
 
   const tree = parser.parse(code);
-  const style = getHighlightStyle(isDark, colorTheme);
+  const { highlighter, styleMap } = getInlineHighlighter(isDark, colorTheme);
   const nodes: ReactNode[] = [];
   let key = 0;
 
   highlightCode(
     code,
     tree,
-    style,
+    highlighter,
     (text: string, classes: string) => {
       if (classes) {
+        // classes may be space-separated; merge all matched styles
+        const merged: CSSProperties = {};
+        for (const cls of classes.split(" ")) {
+          const s = styleMap.get(cls);
+          if (s) Object.assign(merged, s);
+        }
         nodes.push(
-          <span key={key++} className={classes}>
+          <span key={key++} style={merged}>
             {text}
           </span>,
         );
@@ -147,8 +190,11 @@ interface StaticCodeBlockProps {
 
 /**
  * Renders syntax-highlighted code in a `<pre>` block without requiring a
- * CodeMirror editor instance. Uses Lezer parsers and our owned highlight
- * styles for consistent coloring.
+ * CodeMirror editor instance. Uses Lezer parsers and inline styles from
+ * our owned highlight definitions for consistent coloring.
+ *
+ * Works in both the main window and isolated iframes (no CSS class
+ * injection needed).
  */
 export function StaticCodeBlock({
   code,
