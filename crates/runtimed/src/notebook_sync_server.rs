@@ -11617,4 +11617,50 @@ mod tests {
             );
         }
     }
+
+    #[tokio::test]
+    async fn test_reset_starting_state_cleanup() {
+        // Verify that guarded reset clears request_tx, connect_tx, and handle
+        // (belt-and-suspenders cleanup prevents zombie runtime agents).
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (room, _notebook_path) = test_room_with_path(&tmp, "cleanup_test.ipynb");
+
+        // Simulate a runtime agent that has connected: set provenance,
+        // request channel, and connect sender.
+        {
+            let mut id = room.current_runtime_agent_id.write().await;
+            *id = Some("agent-A".to_string());
+        }
+        {
+            let (tx, _rx) = tokio::sync::mpsc::channel(16);
+            let mut guard = room.runtime_agent_request_tx.lock().await;
+            *guard = Some(tx);
+        }
+        {
+            let (tx, _rx) = oneshot::channel();
+            let mut guard = room.pending_runtime_agent_connect_tx.lock().await;
+            *guard = Some(tx);
+        }
+
+        // Reset with matching agent — should clean up everything
+        reset_starting_state(&room, Some("agent-A")).await;
+
+        // Verify all fields cleared
+        assert!(
+            room.runtime_agent_request_tx.lock().await.is_none(),
+            "request_tx should be cleared"
+        );
+        assert!(
+            room.pending_runtime_agent_connect_tx.lock().await.is_none(),
+            "connect_tx should be cleared"
+        );
+        assert!(
+            room.runtime_agent_handle.lock().await.is_none(),
+            "handle should be cleared"
+        );
+        assert!(
+            room.current_runtime_agent_id.read().await.is_none(),
+            "provenance should be cleared"
+        );
+    }
 }
