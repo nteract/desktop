@@ -20,50 +20,49 @@ export interface ThemeSettings {
 // ---------------------------------------------------------------------------
 
 export const classicLightSettings: ThemeSettings = {
-  background: "#ffffff",
-  foreground: "#24292f",
+  background: "#fff",
+  foreground: "#24292e",
   selection: "#BBDFFF",
   selectionMatch: "#BBDFFF",
-  gutterBackground: "#ffffff",
+  gutterBackground: "#fff",
   gutterForeground: "#6e7781",
 };
 
 export const classicLightStyle: TagStyle[] = [
-  { tag: [t.keyword, t.typeName, t.typeOperator], color: "#cf222e" },
-  { tag: [t.variableName, t.attributeName], color: "#24292f" },
+  { tag: [t.keyword, t.typeName, t.typeOperator], color: "#d73a49" },
+  {
+    tag: [t.variableName, t.attributeName, t.number, t.operator],
+    color: "#005cc5",
+  },
   {
     tag: [t.definition(t.variableName), t.function(t.variableName)],
-    color: "#8250df",
+    color: "#6f42c1",
   },
-  { tag: [t.propertyName], color: "#8250df" },
-  { tag: [t.className], color: "#8250df" },
+  { tag: [t.className, t.propertyName], color: "#6f42c1" },
   {
-    tag: [t.number, t.bool, t.atom, t.special(t.variableName)],
-    color: "#0969da",
+    tag: [t.atom, t.bool, t.special(t.variableName)],
+    color: "#e36209",
   },
-  { tag: [t.string, t.regexp], color: "#0550ae" },
-  { tag: [t.comment], color: "#6e7781" },
-  { tag: [t.operator], color: "#cf222e" },
-  { tag: [t.bracket], color: "#24292f" },
-  { tag: [t.name, t.quote], color: "#1a7f37" },
-  { tag: [t.meta], color: "#6e7781" },
-  { tag: [t.standard(t.tagName), t.tagName], color: "#1a7f37" },
-  { tag: [t.heading, t.strong], color: "#24292f", fontWeight: "bold" },
-  { tag: [t.emphasis], color: "#24292f", fontStyle: "italic" },
-  { tag: [t.link, t.url, t.escape], color: "#0969da" },
+  { tag: [t.string, t.meta, t.regexp], color: "#032f62" },
+  { tag: [t.comment, t.bracket], color: "#6a737d" },
+  { tag: [t.name, t.quote], color: "#22863a" },
+  { tag: [t.standard(t.tagName), t.tagName], color: "#116329" },
+  { tag: [t.heading, t.strong], color: "#24292e", fontWeight: "bold" },
+  { tag: [t.emphasis], color: "#24292e", fontStyle: "italic" },
+  { tag: [t.url, t.escape, t.link], color: "#032f62" },
   { tag: t.link, textDecoration: "underline" },
   {
     tag: [t.deleted],
-    color: "#82071e",
-    backgroundColor: "#ffebe9",
+    color: "#b31d28",
+    backgroundColor: "#ffeef0",
   },
   {
     tag: [t.inserted],
-    color: "#1a7f37",
+    color: "#22863a",
     backgroundColor: "#dafbe1",
   },
   { tag: t.strikethrough, textDecoration: "line-through" },
-  { tag: t.invalid, color: "#cf222e" },
+  { tag: t.invalid, color: "#cb2431" },
 ];
 
 // ---------------------------------------------------------------------------
