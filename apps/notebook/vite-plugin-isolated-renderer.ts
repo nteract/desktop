@@ -37,8 +37,8 @@ const RESOLVED_PLUGIN_PREFIX = "\0virtual:renderer-plugin/";
 /** Directory containing pre-built renderer plugin artifacts (checked in via git LFS). */
 const PREBUILT_DIR = path.resolve(__dirname, "../notebook/src/renderer-plugins");
 
-/** Plugin names that have pre-built artifacts (excludes sift — built from source). */
-const PLUGIN_NAMES = ["markdown", "plotly", "vega", "leaflet"];
+/** Plugin names that have pre-built artifacts. */
+const PLUGIN_NAMES = ["markdown", "plotly", "vega", "leaflet", "sift"];
 
 interface IsolatedRendererPluginOptions {
   /**
