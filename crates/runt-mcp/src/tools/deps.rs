@@ -218,6 +218,12 @@ pub async fn add_dependency(
 
     let manager = detect_package_manager(&handle);
 
+    // When adding the first dep to a prewarmed kernel, bootstrap the pool's
+    // user-default packages into the CRDT so they survive restarts/rebuilds.
+    // Without this, a restart builds a fresh env from CRDT deps alone (just the
+    // newly added package), losing pandas/numpy/etc. that were in the pool env.
+    bootstrap_prewarmed_to_crdt(&handle, &manager);
+
     add_dep_for_manager(&handle, package, &manager)
         .map_err(|e| McpError::internal_error(e, None))?;
 
@@ -288,13 +294,38 @@ pub async fn add_dependency(
         "restart" => {
             // Shutdown + relaunch with scoped auto-detect to preserve the
             // package manager family (auto:uv, auto:conda, auto:pixi)
-            let restart_env_source = match handle
+            let current_env_source = handle
                 .get_runtime_state()
                 .ok()
-                .map(|s| s.kernel.env_source.clone())
-                .as_deref()
-            {
+                .map(|s| s.kernel.env_source.clone());
+            tracing::debug!(
+                "[mcp] restart: current env_source = {:?}",
+                current_env_source
+            );
+
+            // Check if CRDT has inline deps — if so, use inline source on restart
+            // instead of auto-detect, so the LaunchKernel handler builds from CRDT
+            // deps rather than falling back to a generic pool env.
+            let metadata = handle.get_notebook_metadata();
+            let has_conda_deps = metadata
+                .as_ref()
+                .and_then(|s| s.runt.conda.as_ref())
+                .is_some_and(|c| !c.dependencies.is_empty());
+            let has_uv_deps = metadata
+                .as_ref()
+                .and_then(|s| s.runt.uv.as_ref())
+                .is_some_and(|u| !u.dependencies.is_empty());
+
+            let restart_env_source = match current_env_source.as_deref() {
+                Some("uv:prewarmed") if has_uv_deps => {
+                    tracing::info!("[mcp] restart: uv:prewarmed + CRDT has deps → uv:inline");
+                    "uv:inline".to_string()
+                }
                 Some("uv:prewarmed") => "auto:uv".to_string(),
+                Some("conda:prewarmed") if has_conda_deps => {
+                    tracing::info!("[mcp] restart: conda:prewarmed + CRDT has deps → conda:inline");
+                    "conda:inline".to_string()
+                }
                 Some("conda:prewarmed") => "auto:conda".to_string(),
                 Some("pixi:prewarmed") => "auto:pixi".to_string(),
                 Some("") | None => "auto".to_string(),
@@ -306,6 +337,19 @@ pub async fn add_dependency(
             } else {
                 None
             };
+            tracing::debug!(
+                "[mcp] restart: LaunchKernel env_source={:?}, notebook_path={:?}",
+                restart_env_source,
+                notebook_path
+            );
+
+            // Ensure the daemon has all our CRDT changes (bootstrap + new dep)
+            // before we send LaunchKernel. Without this, the daemon may read
+            // stale metadata and build an env missing packages.
+            if let Err(e) = handle.confirm_sync().await {
+                tracing::warn!("[mcp] restart: confirm_sync failed: {e}, proceeding anyway");
+            }
+
             let _ = handle
                 .send_request(NotebookRequest::ShutdownKernel {})
                 .await;
@@ -319,9 +363,22 @@ pub async fn add_dependency(
                 .await
             {
                 Ok(NotebookResponse::KernelLaunched { env_source, .. }) => {
+                    // The new kernel got a pool env that may not include
+                    // runtime-added deps (e.g. conda:env_yml only reads the
+                    // project file). Sync the CRDT metadata deps into the
+                    // running env so the newly added package is available.
+                    let sync_result = handle
+                        .send_request(NotebookRequest::SyncEnvironment {})
+                        .await;
+                    let sync_ok = matches!(
+                        sync_result,
+                        Ok(NotebookResponse::SyncEnvironmentComplete { .. })
+                            | Ok(NotebookResponse::SyncEnvironmentStarted { .. })
+                    );
                     result["restart"] = serde_json::json!({
                         "success": true,
                         "env_source": env_source,
+                        "sync_after_restart": sync_ok,
                     });
                 }
                 Ok(NotebookResponse::Error { error }) => {
@@ -468,6 +525,62 @@ pub async fn sync_environment(
         }
         Ok(_) => tool_success(&serde_json::json!({ "success": true }).to_string()),
         Err(e) => tool_error(&format!("Failed to sync environment: {e}")),
+    }
+}
+
+/// Packages that `install_conda_env` / UV pool always installs.
+/// No need to record them as explicit CRDT deps — they'd just be noise.
+const CONDA_BASE_PACKAGES: &[&str] = &["ipykernel", "ipywidgets", "anywidget", "nbformat"];
+const UV_BASE_PACKAGES: &[&str] = &["ipykernel", "ipywidgets", "anywidget"];
+
+/// When the kernel is prewarmed, copy the pool's user-default packages
+/// (e.g. pandas, numpy, matplotlib) into the CRDT metadata so they survive
+/// a restart that builds a fresh environment from CRDT deps alone.
+///
+/// This is a no-op when:
+/// - the kernel isn't prewarmed (deps already in CRDT from inline/project)
+/// - prewarmed_packages is empty
+/// - all prewarmed packages are base packages (ipykernel etc.)
+fn bootstrap_prewarmed_to_crdt(handle: &notebook_sync::handle::DocHandle, manager: &str) {
+    let state = match handle.get_runtime_state() {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
+    let is_prewarmed = match manager {
+        "conda" => state.kernel.env_source == "conda:prewarmed",
+        "uv" => state.kernel.env_source == "uv:prewarmed",
+        _ => false,
+    };
+    if !is_prewarmed {
+        return;
+    }
+
+    let base = match manager {
+        "conda" => CONDA_BASE_PACKAGES,
+        "uv" => UV_BASE_PACKAGES,
+        _ => return,
+    };
+
+    let user_packages: Vec<&String> = state
+        .env
+        .prewarmed_packages
+        .iter()
+        .filter(|p| !base.contains(&p.as_str()))
+        .collect();
+
+    if user_packages.is_empty() {
+        return;
+    }
+
+    tracing::info!(
+        "[mcp] Bootstrapping {} prewarmed packages into CRDT: {:?}",
+        user_packages.len(),
+        user_packages
+    );
+
+    for pkg in user_packages {
+        let _ = add_dep_for_manager(handle, pkg, manager);
     }
 }
 

@@ -288,6 +288,126 @@ fn extract_pyproject_deps(content: &str) -> Vec<String> {
     deps
 }
 
+/// Extract the bare package name from a conda dependency spec.
+/// e.g., "pandas>=2.0" → "pandas", "numpy" → "numpy", "python=3.12" → "python"
+fn conda_spec_pkg_name(spec: &str) -> &str {
+    let end = spec
+        .find(|c: char| c == '=' || c == '>' || c == '<' || c == '!' || c == '~' || c == ' ')
+        .unwrap_or(spec.len());
+    &spec[..end]
+}
+
+/// Merge environment.yml base deps with CRDT-added deps.
+///
+/// The env.yml deps form the baseline (e.g. pandas, numpy, matplotlib).
+/// CRDT deps are packages added at runtime via `add_dependency` (e.g. scipy).
+/// Returns the union, preferring the CRDT version spec if a package appears in both.
+fn merge_env_yml_and_crdt_deps(yml_deps: Vec<String>, crdt_deps: Vec<String>) -> Vec<String> {
+    let mut merged = yml_deps;
+    for dep in crdt_deps {
+        let pkg = conda_spec_pkg_name(&dep);
+        if !merged.iter().any(|d| conda_spec_pkg_name(d) == pkg) {
+            merged.push(dep);
+        }
+    }
+    merged.sort();
+    merged
+}
+
+/// Extract conda dependencies, channels, and python version from an environment.yml file.
+///
+/// Returns `(deps, channels, python)` where:
+/// - `deps` excludes `python`, `pip`, `ipykernel` (base packages handled elsewhere)
+/// - `channels` defaults to `["conda-forge"]` if not specified
+/// - `python` is the version constraint if `python=X.Y` appears in dependencies
+fn extract_env_yml_config(content: &str) -> (Vec<String>, Vec<String>, Option<String>) {
+    let mut deps = Vec::new();
+    let mut channels = Vec::new();
+    let mut python = None;
+    let mut in_deps = false;
+    let mut in_channels = false;
+    let mut in_pip = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        // Top-level keys have no leading whitespace
+        if !line.starts_with(' ') && !line.starts_with('\t') {
+            if trimmed.starts_with("dependencies:") {
+                in_deps = true;
+                in_channels = false;
+                in_pip = false;
+                continue;
+            } else if trimmed.starts_with("channels:") {
+                in_channels = true;
+                in_deps = false;
+                in_pip = false;
+                continue;
+            } else if !trimmed.is_empty() && !trimmed.starts_with('#') {
+                // Any other top-level key ends the current section
+                in_deps = false;
+                in_channels = false;
+                in_pip = false;
+                continue;
+            }
+        }
+
+        if in_channels {
+            if let Some(val) = trimmed.strip_prefix("- ") {
+                let val = val.trim().trim_matches('"').trim_matches('\'');
+                if !val.is_empty() {
+                    channels.push(val.to_string());
+                }
+            }
+        }
+
+        if in_deps {
+            // Detect pip sub-list
+            if trimmed == "- pip:" {
+                in_pip = true;
+                continue;
+            }
+            if in_pip {
+                // pip sub-list items are more deeply indented
+                if trimmed.starts_with("- ") && line.starts_with("    ") {
+                    continue; // skip pip deps
+                }
+                // Less-indented line means we left the pip sub-list
+                in_pip = false;
+            }
+            if let Some(val) = trimmed.strip_prefix("- ") {
+                let val = val.trim().trim_matches('"').trim_matches('\'');
+                if val.is_empty() || val.starts_with('#') {
+                    continue;
+                }
+                // Extract bare package name for filtering
+                let name = val
+                    .split(&['=', '>', '<', '!', ' '][..])
+                    .next()
+                    .unwrap_or(val)
+                    .to_lowercase();
+                if name == "python" {
+                    // Capture python version: "python=3.12" → "3.12"
+                    if let Some(ver) = val.strip_prefix("python=") {
+                        python = Some(ver.trim().to_string());
+                    } else if let Some(ver) = val.strip_prefix("python==") {
+                        python = Some(ver.trim().to_string());
+                    }
+                } else if name != "pip" && name != "ipykernel" {
+                    deps.push(val.to_string());
+                }
+            }
+        }
+    }
+
+    if channels.is_empty() {
+        channels.push("conda-forge".to_string());
+    }
+
+    deps.sort();
+    (deps, channels, python)
+}
+
 /// Build a LaunchedEnvConfig from the current metadata snapshot.
 /// This captures what configuration was used at kernel launch time.
 #[allow(clippy::too_many_arguments)]
@@ -385,9 +505,21 @@ fn build_launched_config(
                 config.prewarmed_packages = pkgs.to_vec();
             }
         }
+        "conda:env_yml" => {
+            // environment.yml-backed notebook with deps installed.
+            // Track conda_deps so SyncEnvironment can compute drift.
+            config.conda_deps = inline_deps.map(|d| d.to_vec());
+            config.venv_path = venv_path;
+            config.python_path = python_path;
+            if let Some(snapshot) = metadata_snapshot {
+                config.conda_channels = Some(get_inline_conda_channels(snapshot));
+            }
+            if let Some(pkgs) = prewarmed_packages {
+                config.prewarmed_packages = pkgs.to_vec();
+            }
+        }
         _ => {
-            // All other Python env sources (conda:env_yml, etc.)
-            // use pooled environments — store paths so the runtime agent can reconstruct.
+            // All other Python env sources — store paths for runtime agent.
             config.venv_path = venv_path;
             config.python_path = python_path;
             if let Some(pkgs) = prewarmed_packages {
@@ -3472,8 +3604,12 @@ async fn try_conda_pool_for_inline_deps(
                 env_path: env.venv_path.clone(),
                 python_path: env.python_path.clone(),
             };
+            // Pass ALL requested deps (not just the delta) to sync_dependencies.
+            // The conda solver only keeps packages that appear in its specs;
+            // passing only the delta causes it to remove pool packages (e.g.
+            // pandas, matplotlib) that aren't in the spec list.
             let conda_deps = kernel_env::CondaDependencies {
-                dependencies: delta.clone(),
+                dependencies: deps.to_vec(),
                 channels: vec!["conda-forge".to_string()],
                 python: None,
                 env_id: None,
@@ -3694,7 +3830,35 @@ async fn auto_launch_kernel(
                     }
                 }
             }
-            _ => {}
+            crate::project_file::ProjectFileKind::EnvironmentYml => {
+                // Read environment.yml deps and bootstrap into CRDT conda metadata
+                // so downstream code paths (LaunchKernel, SyncEnvironment) can use them.
+                if let Ok(content) = std::fs::read_to_string(&detected.path) {
+                    let (deps, channels, python) = extract_env_yml_config(&content);
+                    if !deps.is_empty() || python.is_some() {
+                        let mut doc = room.doc.write().await;
+                        doc.fork_and_merge(|fork| {
+                            let mut snap = fork.get_metadata_snapshot().unwrap_or_default();
+                            let conda = snap.runt.conda.get_or_insert_with(|| {
+                                notebook_doc::metadata::CondaInlineMetadata {
+                                    dependencies: Vec::new(),
+                                    channels: vec!["conda-forge".to_string()],
+                                    python: None,
+                                }
+                            });
+                            // Only bootstrap if the CRDT conda section is empty
+                            // (avoid overwriting user-added deps on re-launch)
+                            if conda.dependencies.is_empty() {
+                                conda.dependencies = deps;
+                                conda.channels = channels;
+                                conda.python = python;
+                            }
+                            let _ = fork.set_metadata_snapshot(&snap);
+                        });
+                        info!("[notebook-sync] Bootstrapped environment.yml deps into CRDT");
+                    }
+                }
+            }
         }
     }
 
@@ -3750,6 +3914,7 @@ async fn auto_launch_kernel(
                 || env_source == "uv:inline"
                 || env_source == "uv:pep723"
                 || env_source == "conda:inline"
+                || env_source == "conda:env_yml"
                 || env_source == "pixi:toml"
                 || env_source == "pixi:inline"
                 || env_source == "pixi:pep723"
@@ -3813,6 +3978,7 @@ async fn auto_launch_kernel(
                     || env_source == "uv:inline"
                     || env_source == "uv:pep723"
                     || env_source == "conda:inline"
+                    || env_source == "conda:env_yml"
                     || env_source == "pixi:toml"
                 {
                     info!(
@@ -4129,6 +4295,183 @@ async fn auto_launch_kernel(
             }
         } else {
             (pooled_env, None)
+        }
+    } else if env_source == "conda:env_yml" {
+        // environment.yml-backed notebook: read deps from CRDT metadata
+        // (bootstrapped by Step 3b), then build a proper env with all deps.
+        let crdt_deps = metadata_snapshot.as_ref().and_then(get_inline_conda_deps);
+        let crdt_channels = metadata_snapshot
+            .as_ref()
+            .map(get_inline_conda_channels)
+            .unwrap_or_else(|| vec!["conda-forge".to_string()]);
+        let crdt_python = metadata_snapshot
+            .as_ref()
+            .and_then(|s| s.runt.conda.as_ref())
+            .and_then(|c| c.python.clone());
+
+        // Always read environment.yml as the baseline, then merge any
+        // CRDT deps (added at runtime via add_dependency) on top.
+        let yml_config = notebook_path_opt
+            .as_ref()
+            .and_then(|p| {
+                crate::project_file::find_nearest_project_file(
+                    p,
+                    &[crate::project_file::ProjectFileKind::EnvironmentYml],
+                )
+            })
+            .map(|yml_path| {
+                let content = std::fs::read_to_string(&yml_path.path).unwrap_or_default();
+                extract_env_yml_config(&content)
+            });
+
+        let (deps, channels, python) = match (crdt_deps, yml_config) {
+            (Some(crdt), Some((yml_d, yml_ch, yml_py))) => {
+                info!(
+                    "[notebook-sync] auto_launch: conda:env_yml merging {} env.yml deps + {} CRDT deps",
+                    yml_d.len(), crdt.len()
+                );
+                let merged = merge_env_yml_and_crdt_deps(yml_d, crdt);
+                let channels = if crdt_channels.len() > 1
+                    || (crdt_channels.len() == 1 && crdt_channels[0] != "conda-forge")
+                {
+                    crdt_channels
+                } else {
+                    yml_ch
+                };
+                (merged, channels, crdt_python.or(yml_py))
+            }
+            (Some(crdt), None) => (crdt, crdt_channels, crdt_python),
+            (None, Some((d, ch, py))) if !d.is_empty() => (d, ch, py),
+            _ => {
+                info!("[notebook-sync] auto_launch: conda:env_yml has no deps, using pool");
+                (vec![], vec![], None)
+            }
+        };
+
+        if deps.is_empty() {
+            (pooled_env, None)
+        } else {
+            info!(
+                "[notebook-sync] auto_launch: conda:env_yml deps: {:?} (channels: {:?}, python: {:?})",
+                deps, channels, python
+            );
+
+            let conda_deps = kernel_env::CondaDependencies {
+                dependencies: deps.clone(),
+                channels: channels.clone(),
+                python: python.clone(),
+                env_id: None,
+            };
+
+            // Check content-addressed cache (hash includes python pin)
+            let cache_dir = crate::inline_env::get_inline_cache_dir();
+            let hash = kernel_env::conda::compute_env_hash(&conda_deps);
+            let cached_path = cache_dir.join(&hash);
+            #[cfg(unix)]
+            let cached_python = cached_path.join("bin").join("python");
+            #[cfg(windows)]
+            let cached_python = cached_path.join("Scripts").join("python.exe");
+
+            if cached_python.exists() {
+                info!(
+                    "[notebook-sync] auto_launch: conda:env_yml cache hit at {:?}",
+                    cached_python
+                );
+                let env = Some(crate::PooledEnv {
+                    env_type: crate::EnvType::Conda,
+                    venv_path: cached_path,
+                    python_path: cached_python,
+                    prewarmed_packages: vec![],
+                });
+                (env, Some(deps))
+            } else if python.is_none() {
+                // No python pin — pool reuse is safe
+                match try_conda_pool_for_inline_deps(
+                    &deps,
+                    &channels,
+                    &daemon,
+                    progress_handler.clone(),
+                )
+                .await
+                {
+                    Ok((env, pool_pkgs)) => {
+                        let mut pooled = env;
+                        pooled.prewarmed_packages = pool_pkgs;
+                        (Some(pooled), Some(deps))
+                    }
+                    Err(_) => {
+                        info!("[notebook-sync] auto_launch: conda:env_yml pool path failed, building from scratch");
+                        match kernel_env::conda::prepare_environment_in(
+                            &conda_deps,
+                            &cache_dir,
+                            progress_handler.clone(),
+                        )
+                        .await
+                        {
+                            Ok(env) => {
+                                let pooled = Some(crate::PooledEnv {
+                                    env_type: crate::EnvType::Conda,
+                                    venv_path: env.env_path,
+                                    python_path: env.python_path,
+                                    prewarmed_packages: vec![],
+                                });
+                                (pooled, Some(deps))
+                            }
+                            Err(e) => {
+                                error!(
+                                    "[notebook-sync] Failed to prepare conda:env_yml env: {}",
+                                    e
+                                );
+                                let _ = room.kernel_broadcast_tx.send(
+                                    NotebookBroadcast::KernelStatus {
+                                        status: format!(
+                                        "error: Failed to prepare conda:env_yml environment: {}",
+                                        e
+                                    ),
+                                        cell_id: None,
+                                    },
+                                );
+                                reset_starting_state(room, None).await;
+                                return;
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Python pin present — skip pool reuse, build from scratch
+                info!("[notebook-sync] auto_launch: conda:env_yml building env with python pin");
+                match kernel_env::conda::prepare_environment_in(
+                    &conda_deps,
+                    &cache_dir,
+                    progress_handler.clone(),
+                )
+                .await
+                {
+                    Ok(env) => {
+                        let pooled = Some(crate::PooledEnv {
+                            env_type: crate::EnvType::Conda,
+                            venv_path: env.env_path,
+                            python_path: env.python_path,
+                            prewarmed_packages: vec![],
+                        });
+                        (pooled, Some(deps))
+                    }
+                    Err(e) => {
+                        error!("[notebook-sync] Failed to prepare conda:env_yml env: {}", e);
+                        let _ = room
+                            .kernel_broadcast_tx
+                            .send(NotebookBroadcast::KernelStatus {
+                                status: format!(
+                                    "error: Failed to prepare conda:env_yml environment: {}",
+                                    e
+                                ),
+                                cell_id: None,
+                            });
+                        reset_starting_state(room, None).await;
+                        return;
+                    }
+                }
+            }
         }
     } else if env_source == "pixi:inline" {
         // pixi exec handles its own env caching — just extract deps for the -w flags
@@ -4847,8 +5190,17 @@ async fn handle_notebook_request(
                 }
             } else {
                 // Use explicit env_source (e.g., "uv:inline", "conda:inline")
+                info!(
+                    "[notebook-sync] LaunchKernel: using explicit env_source='{}' (not auto-detecting)",
+                    env_source
+                );
                 env_source.clone()
             };
+
+            info!(
+                "[notebook-sync] LaunchKernel: resolved_env_source='{}' (from request env_source='{}')",
+                resolved_env_source, env_source
+            );
 
             // For pixi:toml, verify ipykernel is declared before launching
             if resolved_env_source == "pixi:toml" {
@@ -4992,8 +5344,8 @@ async fn handle_notebook_request(
                             };
                         }
                     },
-                    "uv:pyproject" | "uv:inline" | "uv:pep723" | "conda:inline" | "pixi:toml"
-                    | "pixi:inline" | "pixi:pep723" => {
+                    "uv:pyproject" | "uv:inline" | "uv:pep723" | "conda:inline"
+                    | "conda:env_yml" | "pixi:toml" | "pixi:inline" | "pixi:pep723" => {
                         // These sources prepare their own environments, no pooled env needed
                         info!(
                             "[notebook-sync] LaunchKernel: {} prepares its own env, no pool env",
@@ -5003,6 +5355,10 @@ async fn handle_notebook_request(
                     }
                     other => {
                         // For remaining conda sources, route to conda pool
+                        info!(
+                            "[notebook-sync] LaunchKernel: pool gate FALLTHROUGH for env_source='{}' — taking pool env",
+                            other
+                        );
                         if other.starts_with("conda:") {
                             match daemon.take_conda_env().await {
                                 Some(env) => Some(env),
@@ -5299,7 +5655,195 @@ async fn handle_notebook_request(
                     }
                     _ => (pooled_env, None),
                 }
+            } else if resolved_env_source == "conda:env_yml" {
+                // environment.yml-backed notebook: read deps from CRDT metadata
+                // (bootstrapped by Step 3b or added by add_dependency), then
+                // build a proper env with all deps instead of a bare pool env.
+                debug!(
+                    "[notebook-sync] LaunchKernel: conda:env_yml branch (pooled_env={:?})",
+                    pooled_env.as_ref().map(|e| &e.python_path)
+                );
+                let crdt_deps = metadata_snapshot.as_ref().and_then(get_inline_conda_deps);
+                let crdt_channels = metadata_snapshot
+                    .as_ref()
+                    .map(get_inline_conda_channels)
+                    .unwrap_or_else(|| vec!["conda-forge".to_string()]);
+                let crdt_python = metadata_snapshot
+                    .as_ref()
+                    .and_then(|s| s.runt.conda.as_ref())
+                    .and_then(|c| c.python.clone());
+
+                // Always read environment.yml as the baseline, then merge any
+                // CRDT deps (added at runtime via add_dependency) on top.
+                // Without this merge, a restart after add_dependency("scipy")
+                // would build an env with only ["scipy"], losing the env.yml
+                // baseline packages (pandas, numpy, matplotlib, etc.).
+                let yml_config = notebook_path
+                    .as_ref()
+                    .and_then(|p| {
+                        crate::project_file::find_nearest_project_file(
+                            p,
+                            &[crate::project_file::ProjectFileKind::EnvironmentYml],
+                        )
+                    })
+                    .map(|yml_path| {
+                        let content = std::fs::read_to_string(&yml_path.path).unwrap_or_default();
+                        extract_env_yml_config(&content)
+                    });
+
+                let (deps, channels, python) = match (crdt_deps, yml_config) {
+                    (Some(crdt), Some((yml_d, yml_ch, yml_py))) => {
+                        info!(
+                            "[notebook-sync] LaunchKernel: conda:env_yml merging {} env.yml deps + {} CRDT deps",
+                            yml_d.len(), crdt.len()
+                        );
+                        let merged = merge_env_yml_and_crdt_deps(yml_d, crdt);
+                        let channels = if crdt_channels.len() > 1
+                            || (crdt_channels.len() == 1 && crdt_channels[0] != "conda-forge")
+                        {
+                            crdt_channels
+                        } else {
+                            yml_ch
+                        };
+                        (merged, channels, crdt_python.or(yml_py))
+                    }
+                    (Some(crdt), None) => {
+                        // No env.yml found — use CRDT deps alone
+                        (crdt, crdt_channels, crdt_python)
+                    }
+                    (None, Some((d, ch, py))) if !d.is_empty() => (d, ch, py),
+                    _ => {
+                        info!(
+                            "[notebook-sync] LaunchKernel: conda:env_yml has no deps, using pool"
+                        );
+                        (vec![], vec![], None)
+                    }
+                };
+
+                if deps.is_empty() {
+                    (pooled_env, None)
+                } else {
+                    info!(
+                        "[notebook-sync] LaunchKernel: conda:env_yml deps: {:?} (channels: {:?}, python: {:?})",
+                        deps, channels, python
+                    );
+
+                    // Build CondaDependencies with the python pin from environment.yml
+                    // so the env matches the project's Python version, not the pool's.
+                    let conda_deps = kernel_env::CondaDependencies {
+                        dependencies: deps.clone(),
+                        channels: channels.clone(),
+                        python: python.clone(),
+                        env_id: None,
+                    };
+
+                    // Check content-addressed cache (hash includes python pin)
+                    let cache_dir = crate::inline_env::get_inline_cache_dir();
+                    let hash = kernel_env::conda::compute_env_hash(&conda_deps);
+                    let cached_path = cache_dir.join(&hash);
+                    #[cfg(unix)]
+                    let cached_python = cached_path.join("bin").join("python");
+                    #[cfg(windows)]
+                    let cached_python = cached_path.join("Scripts").join("python.exe");
+
+                    if cached_python.exists() {
+                        info!(
+                            "[notebook-sync] LaunchKernel: conda:env_yml cache hit at {:?}",
+                            cached_python
+                        );
+                        let env = Some(crate::PooledEnv {
+                            env_type: crate::EnvType::Conda,
+                            venv_path: cached_path,
+                            python_path: cached_python,
+                            prewarmed_packages: vec![],
+                        });
+                        (env, Some(deps))
+                    } else if python.is_none() {
+                        // No python pin — pool reuse is safe (pool's Python is compatible)
+                        match try_conda_pool_for_inline_deps(
+                            &deps,
+                            &channels,
+                            &daemon,
+                            launch_progress_handler.clone(),
+                        )
+                        .await
+                        {
+                            Ok((env, pool_pkgs)) => {
+                                let mut pooled = env;
+                                pooled.prewarmed_packages = pool_pkgs;
+                                (Some(pooled), Some(deps))
+                            }
+                            Err(_) => {
+                                // Fall through to full build below
+                                info!("[notebook-sync] LaunchKernel: conda:env_yml pool path failed, building from scratch");
+                                match kernel_env::conda::prepare_environment_in(
+                                    &conda_deps,
+                                    &cache_dir,
+                                    launch_progress_handler.clone(),
+                                )
+                                .await
+                                {
+                                    Ok(env) => {
+                                        let pooled = Some(crate::PooledEnv {
+                                            env_type: crate::EnvType::Conda,
+                                            venv_path: env.env_path,
+                                            python_path: env.python_path,
+                                            prewarmed_packages: vec![],
+                                        });
+                                        (pooled, Some(deps))
+                                    }
+                                    Err(e) => {
+                                        reset_starting_state(room, None).await;
+                                        return NotebookResponse::Error {
+                                            error: format!(
+                                                "Failed to prepare conda:env_yml environment: {}",
+                                                e
+                                            ),
+                                        };
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        // Python pin present — pool envs have a different Python
+                        // version, so skip pool reuse and build from scratch.
+                        info!(
+                            "[notebook-sync] LaunchKernel: conda:env_yml building env with python pin"
+                        );
+                        match kernel_env::conda::prepare_environment_in(
+                            &conda_deps,
+                            &cache_dir,
+                            launch_progress_handler.clone(),
+                        )
+                        .await
+                        {
+                            Ok(env) => {
+                                let pooled = Some(crate::PooledEnv {
+                                    env_type: crate::EnvType::Conda,
+                                    venv_path: env.env_path,
+                                    python_path: env.python_path,
+                                    prewarmed_packages: vec![],
+                                });
+                                (pooled, Some(deps))
+                            }
+                            Err(e) => {
+                                reset_starting_state(room, None).await;
+                                return NotebookResponse::Error {
+                                    error: format!(
+                                        "Failed to prepare conda:env_yml environment: {}",
+                                        e
+                                    ),
+                                };
+                            }
+                        }
+                    }
+                }
             } else {
+                debug!(
+                    "[notebook-sync] LaunchKernel: fallback for resolved_env_source='{}' — using pooled_env={:?}",
+                    resolved_env_source,
+                    pooled_env.as_ref().map(|e| &e.python_path)
+                );
                 (pooled_env, None)
             };
 

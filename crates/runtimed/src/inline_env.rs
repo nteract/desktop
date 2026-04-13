@@ -51,7 +51,7 @@ impl ProgressHandler for BroadcastProgressHandler {
 }
 
 /// Get the cache directory for inline dependency environments.
-fn get_inline_cache_dir() -> std::path::PathBuf {
+pub(crate) fn get_inline_cache_dir() -> std::path::PathBuf {
     dirs::cache_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
         .join("runt")
