@@ -1,0 +1,78 @@
+/**
+ * Cream theme — warm palette for the notebook app.
+ *
+ * Overrides shadcn CSS variables when `data-color-theme="cream"` is set
+ * on the document element. Import this file in any app's CSS to enable
+ * cream theme support.
+ */
+
+/* --- Light --- */
+[data-color-theme="cream"] {
+  --background: #f5f2ec;
+  --foreground: #1e1a18;
+  --card: #fffdf9;
+  --card-foreground: #1e1a18;
+  --popover: #fffdf9;
+  --popover-foreground: #1e1a18;
+  --primary: #955f3b;
+  --primary-foreground: #fffdf9;
+  --secondary: #ebe6df;
+  --secondary-foreground: #1e1a18;
+  --muted: #ebe6df;
+  --muted-foreground: #6e655f;
+  --accent: #ebe6df;
+  --accent-foreground: #1e1a18;
+  --destructive: #c4513a;
+  --destructive-foreground: #fffdf9;
+  --border: #d8cec3;
+  --input: #d8cec3;
+  --ring: #955f3b;
+}
+
+/* --- Dark (explicit) --- */
+[data-color-theme="cream"].dark {
+  --background: #1a1816;
+  --foreground: #e8e2dc;
+  --card: #242120;
+  --card-foreground: #e8e2dc;
+  --popover: #242120;
+  --popover-foreground: #e8e2dc;
+  --primary: #d4896a;
+  --primary-foreground: #1a1816;
+  --secondary: #3a3533;
+  --secondary-foreground: #e8e2dc;
+  --muted: #3a3533;
+  --muted-foreground: #9a918a;
+  --accent: #3a3533;
+  --accent-foreground: #e8e2dc;
+  --destructive: #e07a64;
+  --destructive-foreground: #1a1816;
+  --border: rgba(255, 255, 255, 0.1);
+  --input: rgba(255, 255, 255, 0.15);
+  --ring: #d4896a;
+}
+
+/* --- Dark (system preference) --- */
+@media (prefers-color-scheme: dark) {
+  [data-color-theme="cream"]:not(.light) {
+    --background: #1a1816;
+    --foreground: #e8e2dc;
+    --card: #242120;
+    --card-foreground: #e8e2dc;
+    --popover: #242120;
+    --popover-foreground: #e8e2dc;
+    --primary: #d4896a;
+    --primary-foreground: #1a1816;
+    --secondary: #3a3533;
+    --secondary-foreground: #e8e2dc;
+    --muted: #3a3533;
+    --muted-foreground: #9a918a;
+    --accent: #3a3533;
+    --accent-foreground: #e8e2dc;
+    --destructive: #e07a64;
+    --destructive-foreground: #1a1816;
+    --border: rgba(255, 255, 255, 0.1);
+    --input: rgba(255, 255, 255, 0.15);
+    --ring: #d4896a;
+  }
+}

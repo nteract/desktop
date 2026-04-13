@@ -4,6 +4,7 @@
 
 @import "tailwindcss";
 @import "tw-animate-css";
+@import "../../../src/styles/cream-theme.css";
 
 @custom-variant dark (&:is(.dark *));
 

@@ -18,7 +18,8 @@ import {
 import { cn } from "@/lib/utils";
 import { defaultExtensions } from "./extensions";
 import { getIPythonExtension, getLanguageExtension, type SupportedLanguage } from "./languages";
-import { darkTheme, isDarkMode, lightTheme, type ThemeMode } from "./themes";
+import { useColorTheme } from "@/lib/dark-mode";
+import { type ColorTheme, getTheme, isDarkMode, type ThemeMode } from "./themes";
 
 export interface CodeMirrorEditorRef {
   /** Focus the editor */
@@ -67,6 +68,8 @@ export interface CodeMirrorEditorProps {
   readOnly?: boolean;
   /** Theme mode: "light", "dark", or "auto" (default) */
   theme?: ThemeMode;
+  /** Color theme: "classic" or "cream" */
+  colorTheme?: ColorTheme;
 }
 
 /**
@@ -122,6 +125,10 @@ export const CodeMirrorEditor = forwardRef<CodeMirrorEditorRef, CodeMirrorEditor
       typeof window !== "undefined" ? isDarkMode() : false,
     );
 
+    // Track color theme from DOM attribute
+    const domColorTheme = useColorTheme();
+    const resolvedColorTheme: ColorTheme = colorTheme ?? (domColorTheme as ColorTheme) ?? "classic";
+
     // Listen for dark mode changes (system preference + document class)
     useEffect(() => {
       if (theme !== "system") return;
@@ -169,10 +176,10 @@ export const CodeMirrorEditor = forwardRef<CodeMirrorEditorRef, CodeMirrorEditor
     // ── Theme extension ──────────────────────────────────────────────
 
     const themeExtension = useMemo(() => {
-      if (theme === "light") return lightTheme;
-      if (theme === "dark") return darkTheme;
-      return isDark ? darkTheme : lightTheme;
-    }, [theme, isDark]);
+      const mode =
+        theme === "system" ? (isDark ? "dark" : "light") : (theme ?? (isDark ? "dark" : "light"));
+      return getTheme(mode, resolvedColorTheme);
+    }, [theme, resolvedColorTheme, isDark]);
 
     // ── Max height ───────────────────────────────────────────────────
 
