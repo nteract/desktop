@@ -5,7 +5,7 @@ use std::path::Path;
 use std::process::{exit, Child, Command, ExitStatus, Stdio};
 use std::sync::OnceLock;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -491,6 +491,8 @@ fn modified_time(path: &Path) -> Option<std::time::SystemTime> {
     fs::metadata(path).ok()?.modified().ok()
 }
 
+const PYTHON_SYNC_STAMP: &str = "target/uv/.sync-stamp";
+
 /// Ensure the Python workspace venv is synced (`uv sync`).
 ///
 /// This installs all workspace members (nteract, runtimed) and their
@@ -511,7 +513,14 @@ fn ensure_python_env() {
         println!("Syncing Python workspace ({reason})...");
         let status = Command::new("uv").args(["sync"]).status();
         match status {
-            Ok(s) if s.success() => {}
+            Ok(s) if s.success() => {
+                let stamp = Path::new(PYTHON_SYNC_STAMP);
+                if let Some(parent) = stamp.parent() {
+                    if let Err(e) = fs::create_dir_all(parent).and_then(|_| fs::write(stamp, "")) {
+                        eprintln!("Warning: failed to write Python sync stamp: {e}");
+                    }
+                }
+            }
             Ok(s) => {
                 eprintln!("Warning: uv sync failed (exit {})", s.code().unwrap_or(-1));
             }
@@ -530,8 +539,8 @@ fn python_sync_reason() -> Option<&'static str> {
         return Some("missing .venv");
     }
 
-    let Some(venv_time) = modified_time(venv_marker) else {
-        return Some("could not read .venv timestamp");
+    let Some(sync_time) = modified_time(Path::new(PYTHON_SYNC_STAMP)) else {
+        return Some("missing Python sync stamp");
     };
 
     for manifest in [
@@ -539,15 +548,73 @@ fn python_sync_reason() -> Option<&'static str> {
         Path::new("pyproject.toml"),
         Path::new("python/nteract/pyproject.toml"),
         Path::new("python/runtimed/pyproject.toml"),
+        venv_marker,
     ] {
         if let Some(manifest_time) = modified_time(manifest) {
-            if manifest_time > venv_time {
+            if manifest_time > sync_time {
                 return Some("pyproject.toml or uv.lock changed");
             }
+        } else {
+            return Some("could not read Python env timestamps");
         }
     }
 
     None
+}
+
+const MATURIN_DEVELOP_STAMP: &str = "target/maturin/.develop-stamp";
+
+fn maturin_develop_reason() -> Option<&'static str> {
+    let stamp_time = modified_time(Path::new(MATURIN_DEVELOP_STAMP));
+    let watched_times = [
+        latest_modified_time_under(Path::new("Cargo.lock")),
+        latest_modified_time_under(Path::new("crates/runtimed-py/Cargo.toml")),
+        latest_modified_time_under(Path::new("crates/runtimed-py/src")),
+        latest_modified_time_under(Path::new("crates/runtimed/Cargo.toml")),
+        latest_modified_time_under(Path::new("crates/runtimed/src")),
+        latest_modified_time_under(Path::new("crates/runtimed-client/Cargo.toml")),
+        latest_modified_time_under(Path::new("crates/runtimed-client/src")),
+        latest_modified_time_under(Path::new("python/runtimed/pyproject.toml")),
+        latest_modified_time_under(Path::new("python/runtimed/src")),
+        latest_modified_time_under(Path::new("pyproject.toml")),
+        latest_modified_time_under(Path::new(".venv/pyvenv.cfg")),
+    ];
+    freshness_reason(stamp_time, watched_times)
+}
+
+fn freshness_reason<I>(stamp_time: Option<SystemTime>, watched_times: I) -> Option<&'static str>
+where
+    I: IntoIterator<Item = Option<SystemTime>>,
+{
+    let Some(stamp_time) = stamp_time else {
+        return Some("missing develop stamp");
+    };
+
+    for watched_time in watched_times {
+        let Some(watched_time) = watched_time else {
+            return Some("could not read binding source timestamps");
+        };
+        if watched_time > stamp_time {
+            return Some("binding sources changed");
+        }
+    }
+
+    None
+}
+
+fn latest_modified_time_under(path: &Path) -> Option<SystemTime> {
+    let metadata = fs::metadata(path).ok()?;
+    let mut latest = metadata.modified().ok()?;
+
+    if metadata.is_dir() {
+        for entry in fs::read_dir(path).ok()? {
+            let entry = entry.ok()?;
+            let entry_latest = latest_modified_time_under(&entry.path())?;
+            latest = latest.max(entry_latest);
+        }
+    }
+
+    Some(latest)
 }
 
 /// Ensure `maturin develop` has been run so the native `runtimed` extension
@@ -565,7 +632,12 @@ fn ensure_maturin_develop() {
         return;
     }
 
-    println!("Building runtimed Python bindings (maturin develop)...");
+    let Some(reason) = maturin_develop_reason() else {
+        println!("Skipping maturin develop (bindings are up to date).");
+        return;
+    };
+
+    println!("Building runtimed Python bindings (maturin develop, {reason})...");
     // Resolve absolute path — maturin warns on relative VIRTUAL_ENV.
     // cargo xtask always runs from the workspace root (all paths in this
     // file are relative to it), so current_dir() is the repo root.
@@ -593,7 +665,13 @@ fn ensure_maturin_develop() {
         .status();
 
     match status {
-        Ok(s) if s.success() => {}
+        Ok(s) if s.success() => {
+            let stamp = maturin_target.join(".develop-stamp");
+            if let Err(e) = fs::create_dir_all(&maturin_target).and_then(|_| fs::write(&stamp, ""))
+            {
+                eprintln!("Warning: failed to write maturin develop stamp: {e}");
+            }
+        }
         Ok(s) => {
             eprintln!(
                 "Warning: maturin develop failed (exit {})",
@@ -2799,6 +2877,7 @@ fn update_manifest_tools(manifest_json: &str, tools: &[serde_json::Value]) -> St
 mod tests {
     use super::*;
     use std::path::Path;
+    use std::time::UNIX_EPOCH;
 
     #[test]
     fn parse_dev_options_reads_flags_and_path() {
@@ -2826,5 +2905,44 @@ mod tests {
         let port = runt_workspace::vite_port_for_workspace(workspace);
         assert_eq!(port, runt_workspace::vite_port_for_workspace(workspace));
         assert!((5100u16..10000u16).contains(&port));
+    }
+
+    #[test]
+    fn freshness_reason_requires_stamp() {
+        let watched = [Some(UNIX_EPOCH + Duration::from_secs(5))];
+        assert_eq!(
+            freshness_reason(None, watched),
+            Some("missing develop stamp")
+        );
+    }
+
+    #[test]
+    fn freshness_reason_detects_newer_sources() {
+        let stamp = UNIX_EPOCH + Duration::from_secs(5);
+        let watched = [Some(UNIX_EPOCH + Duration::from_secs(6))];
+        assert_eq!(
+            freshness_reason(Some(stamp), watched),
+            Some("binding sources changed")
+        );
+    }
+
+    #[test]
+    fn freshness_reason_detects_missing_timestamps() {
+        let stamp = UNIX_EPOCH + Duration::from_secs(5);
+        let watched = [None];
+        assert_eq!(
+            freshness_reason(Some(stamp), watched),
+            Some("could not read binding source timestamps")
+        );
+    }
+
+    #[test]
+    fn freshness_reason_skips_when_stamp_is_newer() {
+        let stamp = UNIX_EPOCH + Duration::from_secs(10);
+        let watched = [
+            Some(UNIX_EPOCH + Duration::from_secs(5)),
+            Some(UNIX_EPOCH + Duration::from_secs(9)),
+        ];
+        assert_eq!(freshness_reason(Some(stamp), watched), None);
     }
 }
