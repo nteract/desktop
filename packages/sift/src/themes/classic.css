@@ -9,7 +9,7 @@
 :root:not([data-color-theme]),
 [data-color-theme="classic"] {
   color-scheme: light;
-  --sift-page: #ffffff;
+  --sift-bg: #ffffff;
   --sift-panel: #ffffff;
   --sift-ink: #1a1a1a;
   --sift-muted: #6b7280;
@@ -43,7 +43,7 @@
   :root:not([data-theme="light"]):not([data-color-theme]),
   [data-color-theme="classic"]:not([data-theme="light"]) {
     color-scheme: dark;
-    --sift-page: #0a0a0a;
+    --sift-bg: #0a0a0a;
     --sift-panel: #171717;
     --sift-ink: #e5e5e5;
     --sift-muted: #a3a3a3;
@@ -77,7 +77,7 @@
 [data-color-theme="classic"][data-theme="dark"],
 [data-color-theme="classic"].dark {
   color-scheme: dark;
-  --sift-page: #0a0a0a;
+  --sift-bg: #0a0a0a;
   --sift-panel: #171717;
   --sift-ink: #e5e5e5;
   --sift-muted: #a3a3a3;
