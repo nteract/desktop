@@ -4,6 +4,19 @@
  * Overrides shadcn CSS variables when `data-color-theme="cream"` is set
  * on the document element. Import this file in any app's CSS to enable
  * cream theme support.
+ *
+ * Accent colors use a Gruvbox-inspired warm palette so that status dots,
+ * cell gutter ribbons, badges, and other UI accents harmonise with the
+ * warm background instead of clashing with cold Tailwind defaults.
+ *
+ * Gruvbox reference:
+ *   green  #98971a / #b8bb26   — idle status, success
+ *   aqua   #689d6a / #8ec07c   — deno badges, emerald accents
+ *   blue   #458588 / #83a598   — python badges, code gutter, starting status
+ *   purple #b16286 / #d3869b   — AI cells, fuchsia accents
+ *   red    #cc241d / #fb4934   — errors, destructive, rose accents
+ *   yellow #d79921 / #fabd2f   — markdown, amber (already warm)
+ *   orange #d65d0e / #fe8019   — warnings
  */
 
 /* --- Light --- */
@@ -27,6 +40,107 @@
   --border: #d8cec3;
   --input: #d8cec3;
   --ring: #955f3b;
+
+  /* ── Gruvbox green (idle status, success) ── */
+  --color-green-50: #f4f3e6;
+  --color-green-100: #e5e4c4;
+  --color-green-200: #d0cf8e;
+  --color-green-300: #b8b75c;
+  --color-green-400: #a8a73a;
+  --color-green-500: #98971a;
+  --color-green-600: #7a7914;
+  --color-green-700: #5e5c0f;
+  --color-green-800: #44430b;
+  --color-green-900: #2e2d07;
+  --color-green-950: #1a1a04;
+
+  /* ── Gruvbox aqua (deno, emerald accents) ── */
+  --color-emerald-50: #eef4ef;
+  --color-emerald-100: #d2e5d4;
+  --color-emerald-200: #aed0b2;
+  --color-emerald-300: #8ec07c;
+  --color-emerald-400: #78ae7a;
+  --color-emerald-500: #689d6a;
+  --color-emerald-600: #558756;
+  --color-emerald-700: #427b58;
+  --color-emerald-800: #33603f;
+  --color-emerald-900: #284d33;
+  --color-emerald-950: #162e1c;
+
+  /* ── Gruvbox blue (code gutter, python badge, starting status) ── */
+  --color-sky-50: #ecf1f1;
+  --color-sky-100: #cfe0e1;
+  --color-sky-200: #a4c9ca;
+  --color-sky-300: #83a598;
+  --color-sky-400: #5f9a93;
+  --color-sky-500: #458588;
+  --color-sky-600: #377578;
+  --color-sky-700: #2a6265;
+  --color-sky-800: #204d50;
+  --color-sky-900: #183d40;
+  --color-sky-950: #0d2426;
+
+  --color-blue-50: #ecf1f1;
+  --color-blue-100: #cfe0e1;
+  --color-blue-200: #a4c9ca;
+  --color-blue-300: #83a598;
+  --color-blue-400: #5f9a93;
+  --color-blue-500: #458588;
+  --color-blue-600: #377578;
+  --color-blue-700: #2a6265;
+  --color-blue-800: #204d50;
+  --color-blue-900: #183d40;
+  --color-blue-950: #0d2426;
+
+  /* ── Gruvbox purple (AI cells, fuchsia) ── */
+  --color-purple-50: #f5eef2;
+  --color-purple-100: #e8d5df;
+  --color-purple-200: #d7b3c5;
+  --color-purple-300: #d3869b;
+  --color-purple-400: #c27490;
+  --color-purple-500: #b16286;
+  --color-purple-600: #9a5474;
+  --color-purple-700: #8f3f71;
+  --color-purple-800: #6e3056;
+  --color-purple-900: #562844;
+  --color-purple-950: #371828;
+
+  --color-fuchsia-50: #f5eef2;
+  --color-fuchsia-100: #e8d5df;
+  --color-fuchsia-200: #d7b3c5;
+  --color-fuchsia-300: #d3869b;
+  --color-fuchsia-400: #c27490;
+  --color-fuchsia-500: #b16286;
+  --color-fuchsia-600: #9a5474;
+  --color-fuchsia-700: #8f3f71;
+  --color-fuchsia-800: #6e3056;
+  --color-fuchsia-900: #562844;
+  --color-fuchsia-950: #371828;
+
+  /* ── Gruvbox red (errors, destructive, rose) ── */
+  --color-red-50: #f9eeec;
+  --color-red-100: #f0d2ce;
+  --color-red-200: #e3a29c;
+  --color-red-300: #d6726a;
+  --color-red-400: #d04a40;
+  --color-red-500: #cc241d;
+  --color-red-600: #b01d17;
+  --color-red-700: #9d0006;
+  --color-red-800: #7a0005;
+  --color-red-900: #5c0004;
+  --color-red-950: #3a0003;
+
+  --color-rose-50: #f9eeec;
+  --color-rose-100: #f0d2ce;
+  --color-rose-200: #e3a29c;
+  --color-rose-300: #d6726a;
+  --color-rose-400: #d04a40;
+  --color-rose-500: #cc241d;
+  --color-rose-600: #b01d17;
+  --color-rose-700: #9d0006;
+  --color-rose-800: #7a0005;
+  --color-rose-900: #5c0004;
+  --color-rose-950: #3a0003;
 }
 
 /* --- Dark (explicit) --- */
@@ -50,6 +164,107 @@
   --border: rgba(255, 255, 255, 0.1);
   --input: rgba(255, 255, 255, 0.15);
   --ring: #d4896a;
+
+  /* ── Gruvbox green (dark) ── */
+  --color-green-50: #2a2a0a;
+  --color-green-100: #3d3c0e;
+  --color-green-200: #575614;
+  --color-green-300: #7a7918;
+  --color-green-400: #a8a738;
+  --color-green-500: #b8bb26;
+  --color-green-600: #c8ca48;
+  --color-green-700: #d5d66c;
+  --color-green-800: #e0e090;
+  --color-green-900: #eaeab8;
+  --color-green-950: #f4f4dc;
+
+  /* ── Gruvbox aqua (dark) ── */
+  --color-emerald-50: #1a2e1f;
+  --color-emerald-100: #264a30;
+  --color-emerald-200: #356842;
+  --color-emerald-300: #4a8558;
+  --color-emerald-400: #689d6a;
+  --color-emerald-500: #8ec07c;
+  --color-emerald-600: #a3cf94;
+  --color-emerald-700: #b8dbac;
+  --color-emerald-800: #cde7c6;
+  --color-emerald-900: #e2f1de;
+  --color-emerald-950: #f0f8ee;
+
+  /* ── Gruvbox blue (dark) ── */
+  --color-sky-50: #122d30;
+  --color-sky-100: #1c4245;
+  --color-sky-200: #2a5c5f;
+  --color-sky-300: #3a7578;
+  --color-sky-400: #538e8c;
+  --color-sky-500: #83a598;
+  --color-sky-600: #98b6ac;
+  --color-sky-700: #afc7bf;
+  --color-sky-800: #c6d8d2;
+  --color-sky-900: #dde9e5;
+  --color-sky-950: #eef4f2;
+
+  --color-blue-50: #122d30;
+  --color-blue-100: #1c4245;
+  --color-blue-200: #2a5c5f;
+  --color-blue-300: #3a7578;
+  --color-blue-400: #538e8c;
+  --color-blue-500: #83a598;
+  --color-blue-600: #98b6ac;
+  --color-blue-700: #afc7bf;
+  --color-blue-800: #c6d8d2;
+  --color-blue-900: #dde9e5;
+  --color-blue-950: #eef4f2;
+
+  /* ── Gruvbox purple (dark) ── */
+  --color-purple-50: #2e1a24;
+  --color-purple-100: #472838;
+  --color-purple-200: #63384e;
+  --color-purple-300: #8f3f71;
+  --color-purple-400: #b16286;
+  --color-purple-500: #d3869b;
+  --color-purple-600: #de9caf;
+  --color-purple-700: #e6b2c2;
+  --color-purple-800: #eec8d4;
+  --color-purple-900: #f5dee6;
+  --color-purple-950: #faeef2;
+
+  --color-fuchsia-50: #2e1a24;
+  --color-fuchsia-100: #472838;
+  --color-fuchsia-200: #63384e;
+  --color-fuchsia-300: #8f3f71;
+  --color-fuchsia-400: #b16286;
+  --color-fuchsia-500: #d3869b;
+  --color-fuchsia-600: #de9caf;
+  --color-fuchsia-700: #e6b2c2;
+  --color-fuchsia-800: #eec8d4;
+  --color-fuchsia-900: #f5dee6;
+  --color-fuchsia-950: #faeef2;
+
+  /* ── Gruvbox red (dark) ── */
+  --color-red-50: #3a0a08;
+  --color-red-100: #5c1410;
+  --color-red-200: #7e201a;
+  --color-red-300: #a83226;
+  --color-red-400: #d44a3e;
+  --color-red-500: #fb4934;
+  --color-red-600: #fc6e5c;
+  --color-red-700: #fd9080;
+  --color-red-800: #feb0a5;
+  --color-red-900: #fed0ca;
+  --color-red-950: #ffeae6;
+
+  --color-rose-50: #3a0a08;
+  --color-rose-100: #5c1410;
+  --color-rose-200: #7e201a;
+  --color-rose-300: #a83226;
+  --color-rose-400: #d44a3e;
+  --color-rose-500: #fb4934;
+  --color-rose-600: #fc6e5c;
+  --color-rose-700: #fd9080;
+  --color-rose-800: #feb0a5;
+  --color-rose-900: #fed0ca;
+  --color-rose-950: #ffeae6;
 }
 
 /* --- Dark (system preference) --- */
@@ -74,5 +289,106 @@
     --border: rgba(255, 255, 255, 0.1);
     --input: rgba(255, 255, 255, 0.15);
     --ring: #d4896a;
+
+    /* ── Gruvbox green (dark) ── */
+    --color-green-50: #2a2a0a;
+    --color-green-100: #3d3c0e;
+    --color-green-200: #575614;
+    --color-green-300: #7a7918;
+    --color-green-400: #a8a738;
+    --color-green-500: #b8bb26;
+    --color-green-600: #c8ca48;
+    --color-green-700: #d5d66c;
+    --color-green-800: #e0e090;
+    --color-green-900: #eaeab8;
+    --color-green-950: #f4f4dc;
+
+    /* ── Gruvbox aqua (dark) ── */
+    --color-emerald-50: #1a2e1f;
+    --color-emerald-100: #264a30;
+    --color-emerald-200: #356842;
+    --color-emerald-300: #4a8558;
+    --color-emerald-400: #689d6a;
+    --color-emerald-500: #8ec07c;
+    --color-emerald-600: #a3cf94;
+    --color-emerald-700: #b8dbac;
+    --color-emerald-800: #cde7c6;
+    --color-emerald-900: #e2f1de;
+    --color-emerald-950: #f0f8ee;
+
+    /* ── Gruvbox blue (dark) ── */
+    --color-sky-50: #122d30;
+    --color-sky-100: #1c4245;
+    --color-sky-200: #2a5c5f;
+    --color-sky-300: #3a7578;
+    --color-sky-400: #538e8c;
+    --color-sky-500: #83a598;
+    --color-sky-600: #98b6ac;
+    --color-sky-700: #afc7bf;
+    --color-sky-800: #c6d8d2;
+    --color-sky-900: #dde9e5;
+    --color-sky-950: #eef4f2;
+
+    --color-blue-50: #122d30;
+    --color-blue-100: #1c4245;
+    --color-blue-200: #2a5c5f;
+    --color-blue-300: #3a7578;
+    --color-blue-400: #538e8c;
+    --color-blue-500: #83a598;
+    --color-blue-600: #98b6ac;
+    --color-blue-700: #afc7bf;
+    --color-blue-800: #c6d8d2;
+    --color-blue-900: #dde9e5;
+    --color-blue-950: #eef4f2;
+
+    /* ── Gruvbox purple (dark) ── */
+    --color-purple-50: #2e1a24;
+    --color-purple-100: #472838;
+    --color-purple-200: #63384e;
+    --color-purple-300: #8f3f71;
+    --color-purple-400: #b16286;
+    --color-purple-500: #d3869b;
+    --color-purple-600: #de9caf;
+    --color-purple-700: #e6b2c2;
+    --color-purple-800: #eec8d4;
+    --color-purple-900: #f5dee6;
+    --color-purple-950: #faeef2;
+
+    --color-fuchsia-50: #2e1a24;
+    --color-fuchsia-100: #472838;
+    --color-fuchsia-200: #63384e;
+    --color-fuchsia-300: #8f3f71;
+    --color-fuchsia-400: #b16286;
+    --color-fuchsia-500: #d3869b;
+    --color-fuchsia-600: #de9caf;
+    --color-fuchsia-700: #e6b2c2;
+    --color-fuchsia-800: #eec8d4;
+    --color-fuchsia-900: #f5dee6;
+    --color-fuchsia-950: #faeef2;
+
+    /* ── Gruvbox red (dark) ── */
+    --color-red-50: #3a0a08;
+    --color-red-100: #5c1410;
+    --color-red-200: #7e201a;
+    --color-red-300: #a83226;
+    --color-red-400: #d44a3e;
+    --color-red-500: #fb4934;
+    --color-red-600: #fc6e5c;
+    --color-red-700: #fd9080;
+    --color-red-800: #feb0a5;
+    --color-red-900: #fed0ca;
+    --color-red-950: #ffeae6;
+
+    --color-rose-50: #3a0a08;
+    --color-rose-100: #5c1410;
+    --color-rose-200: #7e201a;
+    --color-rose-300: #a83226;
+    --color-rose-400: #d44a3e;
+    --color-rose-500: #fb4934;
+    --color-rose-600: #fc6e5c;
+    --color-rose-700: #fd9080;
+    --color-rose-800: #feb0a5;
+    --color-rose-900: #fed0ca;
+    --color-rose-950: #ffeae6;
   }
 }
