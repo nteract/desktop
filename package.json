@@ -97,5 +97,11 @@
     "vite-plus": "catalog:",
     "vitest": "catalog:",
     "webdriverio": "^8.40.0"
+  },
+  "pnpm": {
+    "overrides": {
+      "react": "19.1.0",
+      "react-dom": "19.1.0"
+    }
   }
 }
