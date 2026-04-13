@@ -1056,9 +1056,11 @@ pub struct NotebookRoom {
     /// runtime agent's sync connection. Set when runtime agent connects via
     /// socket, cleared on disconnect.
     pub runtime_agent_request_tx: Arc<Mutex<Option<RuntimeAgentRequestSender>>>,
-    /// Fires when the runtime agent establishes its sync connection.
-    /// Uses `watch(false)` → `true` to avoid lost wakeups.
-    runtime_agent_connected_tx: Arc<tokio::sync::watch::Sender<bool>>,
+    /// Per-spawn oneshot sender for the connect handler to signal that this
+    /// generation's runtime agent has established its sync connection.
+    /// Replaced on each agent spawn; previous sender is dropped (cancelling
+    /// the old receiver). The connect handler `take()`s the sender.
+    pending_runtime_agent_connect_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
     /// Monotonic counter for execution queue ordering.
     /// The coordinator bumps this for each ExecuteCell and stamps the seq
     /// on the execution entry. The runtime agent sorts by seq to determine order.
@@ -1293,10 +1295,7 @@ impl NotebookRoom {
             runtime_agent_env_path: Arc::new(RwLock::new(None)),
             runtime_agent_launched_config: Arc::new(RwLock::new(None)),
             runtime_agent_request_tx: Arc::new(Mutex::new(None)),
-            runtime_agent_connected_tx: {
-                let (tx, _) = tokio::sync::watch::channel(false);
-                Arc::new(tx)
-            },
+            pending_runtime_agent_connect_tx: Arc::new(Mutex::new(None)),
             next_queue_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             current_runtime_agent_id: Arc::new(RwLock::new(None)),
         }
@@ -1382,10 +1381,7 @@ impl NotebookRoom {
             runtime_agent_env_path: Arc::new(RwLock::new(None)),
             runtime_agent_launched_config: Arc::new(RwLock::new(None)),
             runtime_agent_request_tx: Arc::new(Mutex::new(None)),
-            runtime_agent_connected_tx: {
-                let (tx, _) = tokio::sync::watch::channel(false);
-                Arc::new(tx)
-            },
+            pending_runtime_agent_connect_tx: Arc::new(Mutex::new(None)),
             next_queue_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             current_runtime_agent_id: Arc::new(RwLock::new(None)),
         }
@@ -1623,7 +1619,12 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
         let mut id = room.current_runtime_agent_id.write().await;
         *id = Some(runtime_agent_id.clone());
     }
-    let _ = room.runtime_agent_connected_tx.send(true);
+    // Signal the spawner that this runtime agent has connected.
+    // take() ensures at most one signal per spawn generation — a stale
+    // runtime agent that passes provenance finds None here (no-op).
+    if let Some(tx) = room.pending_runtime_agent_connect_tx.lock().await.take() {
+        let _ = tx.send(());
+    }
     info!(
         "[notebook-sync] Runtime agent connected and ready: {}",
         runtime_agent_id
@@ -1781,7 +1782,11 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
             let mut tx_guard = room.runtime_agent_request_tx.lock().await;
             *tx_guard = None;
         }
-        let _ = room.runtime_agent_connected_tx.send(false);
+        // No need to signal "disconnected" — the oneshot was consumed on
+        // connect. If the runtime agent dies before connecting, the oneshot
+        // sender is dropped when pending_runtime_agent_connect_tx is replaced
+        // by the next spawn, which resolves the receiver with Err.
+        //
         // Clear runtime_agent_handle so LaunchKernel spawns a new runtime agent
         let mut guard = room.runtime_agent_handle.lock().await;
         *guard = None;
@@ -4136,7 +4141,7 @@ async fn auto_launch_kernel(
         .await
         {
             Ok(ra) => {
-                // Store handle and set provenance
+                // Store handle and set provenance.
                 // Scope each lock independently to avoid cross-lock ordering.
                 {
                     let mut ra_guard = room.runtime_agent_handle.lock().await;
@@ -4147,6 +4152,18 @@ async fn auto_launch_kernel(
                     *id = Some(runtime_agent_id.clone());
                 }
 
+                // Create per-spawn connect channel. Provenance is already set above,
+                // so any stale runtime agent checking provenance in the connect handler
+                // will be rejected before it can take() this sender.
+                // Replacing the sender drops the previous one, which resolves any
+                // stale receiver with Err (clean cancellation).
+                let runtime_agent_connect_rx = {
+                    let (tx, rx) = oneshot::channel();
+                    let mut guard = room.pending_runtime_agent_connect_tx.lock().await;
+                    *guard = Some(tx);
+                    rx
+                };
+
                 // Write "connecting" phase — fills the gap between spawn and connect
                 {
                     let mut sd = room.state_doc.write().await;
@@ -4155,20 +4172,24 @@ async fn auto_launch_kernel(
                     }
                 }
 
-                // Wait for runtime agent to establish its sync connection
-                match tokio::time::timeout(std::time::Duration::from_secs(30), async {
-                    room.runtime_agent_connected_tx
-                        .subscribe()
-                        .wait_for(|v| *v)
-                        .await
-                        .map(|_| ())
-                })
+                // Wait for THIS runtime agent to establish its sync connection
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(30),
+                    runtime_agent_connect_rx,
+                )
                 .await
                 {
-                    Ok(Ok(_)) => {
+                    Ok(Ok(())) => {
                         info!("[notebook-sync] Agent connected, sending LaunchKernel");
                     }
-                    Ok(Err(_)) | Err(_) => {
+                    Ok(Err(_)) => {
+                        // Oneshot sender dropped — runtime agent died or was
+                        // superseded by a newer spawn before connecting.
+                        warn!("[notebook-sync] Runtime agent connect cancelled (superseded or died)");
+                        reset_starting_state(room).await;
+                        return;
+                    }
+                    Err(_) => {
                         warn!("[notebook-sync] Agent failed to connect within 30s");
                         reset_starting_state(room).await;
                         return;
@@ -5342,6 +5363,15 @@ async fn handle_notebook_request(
                             *id = Some(runtime_agent_id.clone());
                         }
 
+                        // Create per-spawn connect channel (see auto_launch_kernel).
+                        let runtime_agent_connect_rx = {
+                            let (tx, rx) = oneshot::channel();
+                            let mut guard =
+                                room.pending_runtime_agent_connect_tx.lock().await;
+                            *guard = Some(tx);
+                            rx
+                        };
+
                         // Write "connecting" phase — fills the gap between spawn and connect
                         {
                             let mut sd = room.state_doc.write().await;
@@ -5350,18 +5380,22 @@ async fn handle_notebook_request(
                             }
                         }
 
-                        // Wait for runtime agent to connect back via socket
-                        match tokio::time::timeout(std::time::Duration::from_secs(30), async {
-                            room.runtime_agent_connected_tx
-                                .subscribe()
-                                .wait_for(|v| *v)
-                                .await
-                                .map(|_| ())
-                        })
+                        // Wait for THIS runtime agent to connect back via socket
+                        match tokio::time::timeout(
+                            std::time::Duration::from_secs(30),
+                            runtime_agent_connect_rx,
+                        )
                         .await
                         {
-                            Ok(Ok(_)) => {}
-                            Ok(Err(_)) | Err(_) => {
+                            Ok(Ok(())) => {}
+                            Ok(Err(_)) => {
+                                reset_starting_state(room).await;
+                                return NotebookResponse::Error {
+                                    error: "Runtime agent connect cancelled (superseded or died)"
+                                        .to_string(),
+                                };
+                            }
+                            Err(_) => {
                                 reset_starting_state(room).await;
                                 return NotebookResponse::Error {
                                     error: "Agent failed to connect within 30s".to_string(),
@@ -9406,10 +9440,7 @@ mod tests {
             runtime_agent_env_path: Arc::new(RwLock::new(None)),
             runtime_agent_launched_config: Arc::new(RwLock::new(None)),
             runtime_agent_request_tx: Arc::new(Mutex::new(None)),
-            runtime_agent_connected_tx: {
-                let (tx, _) = tokio::sync::watch::channel(false);
-                Arc::new(tx)
-            },
+            pending_runtime_agent_connect_tx: Arc::new(Mutex::new(None)),
             next_queue_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             current_runtime_agent_id: Arc::new(RwLock::new(None)),
         };
