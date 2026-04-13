@@ -6097,10 +6097,6 @@ async fn promote_inline_deps_to_project(
             .iter()
             .map(|d| d.split('=').next().unwrap_or(d).trim().to_lowercase())
             .collect();
-        let current_names: std::collections::HashSet<String> = current_deps
-            .iter()
-            .map(|d| notebook_doc::metadata::extract_package_name(d).to_lowercase())
-            .collect();
 
         let to_add: Vec<&str> = current_deps
             .iter()
@@ -6111,17 +6107,10 @@ async fn promote_inline_deps_to_project(
             .map(|d| d.as_str())
             .collect();
 
-        let to_remove: Vec<String> = launched_deps
-            .iter()
-            .filter_map(|d| {
-                let name = d.split('=').next().unwrap_or(d).trim().to_lowercase();
-                if !current_names.contains(&name) {
-                    Some(name)
-                } else {
-                    None
-                }
-            })
-            .collect();
+        // Note: we only ADD deps to the project file, never remove. The CRDT
+        // only tracks deps added through the notebook — it doesn't represent
+        // the full project dep set. Removing deps that are "in project but not
+        // in CRDT" would destroy project deps the notebook doesn't know about.
 
         let pixi_path = kernel_launch::tools::get_pixi_path()
             .await
@@ -6146,31 +6135,6 @@ async fn promote_inline_deps_to_project(
                 }
                 Err(e) => {
                     errors.push(format!("Failed to run pixi add {}: {}", dep, e));
-                }
-            }
-        }
-
-        for dep in &to_remove {
-            info!("[notebook-sync] Removing dep from pixi.toml: {}", dep);
-            match tokio::process::Command::new(&pixi_path)
-                .args(["remove", dep, "--manifest-path"])
-                .arg(pixi_toml_path)
-                .output()
-                .await
-            {
-                Ok(output) if output.status.success() => {
-                    promoted.push(format!("-{}", dep));
-                }
-                Ok(output) => {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    warn!(
-                        "[notebook-sync] pixi remove {} failed: {}",
-                        dep,
-                        stderr.trim()
-                    );
-                }
-                Err(e) => {
-                    warn!("[notebook-sync] Failed to run pixi remove {}: {}", dep, e);
                 }
             }
         }
@@ -6218,10 +6182,6 @@ async fn promote_inline_deps_to_project(
             .iter()
             .map(|d| notebook_doc::metadata::extract_package_name(d).to_lowercase())
             .collect();
-        let current_names: std::collections::HashSet<String> = current_deps
-            .iter()
-            .map(|d| notebook_doc::metadata::extract_package_name(d).to_lowercase())
-            .collect();
 
         let to_add: Vec<&str> = current_deps
             .iter()
@@ -6232,17 +6192,10 @@ async fn promote_inline_deps_to_project(
             .map(|d| d.as_str())
             .collect();
 
-        let to_remove: Vec<String> = launched_deps
-            .iter()
-            .filter_map(|d| {
-                let name = notebook_doc::metadata::extract_package_name(d).to_lowercase();
-                if !current_names.contains(&name) {
-                    Some(name)
-                } else {
-                    None
-                }
-            })
-            .collect();
+        // Note: we only ADD deps to the project file, never remove. The CRDT
+        // only tracks deps added through the notebook — it doesn't represent
+        // the full project dep set. Removing deps that are "in project but not
+        // in CRDT" would destroy project deps the notebook doesn't know about.
 
         let uv_path = kernel_launch::tools::get_uv_path()
             .await
@@ -6267,31 +6220,6 @@ async fn promote_inline_deps_to_project(
                 }
                 Err(e) => {
                     errors.push(format!("Failed to run uv add {}: {}", dep, e));
-                }
-            }
-        }
-
-        for dep in &to_remove {
-            info!("[notebook-sync] Removing dep from pyproject.toml: {}", dep);
-            match tokio::process::Command::new(&uv_path)
-                .args(["remove", dep, "--project"])
-                .arg(project_dir)
-                .output()
-                .await
-            {
-                Ok(output) if output.status.success() => {
-                    promoted.push(format!("-{}", dep));
-                }
-                Ok(output) => {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    warn!(
-                        "[notebook-sync] uv remove {} failed: {}",
-                        dep,
-                        stderr.trim()
-                    );
-                }
-                Err(e) => {
-                    warn!("[notebook-sync] Failed to run uv remove {}: {}", dep, e);
                 }
             }
         }
