@@ -663,6 +663,10 @@ pub async fn sync_dependencies(env: &CondaEnvironment, deps: &CondaDependencies)
 
     let match_spec_options = ParseMatchSpecOptions::strict();
 
+    // Read currently installed packages first — we need them both for the
+    // solver's locked_packages and to build preservation specs below.
+    let installed_packages = PrefixRecord::collect_from_prefix::<PrefixRecord>(&env.env_path)?;
+
     // Always include base runtime packages — the solver only returns packages
     // needed to satisfy specs, and locked_packages are "preferred" not "required".
     // Without these, the Installer will remove ipykernel etc from the env.
@@ -672,6 +676,26 @@ pub async fn sync_dependencies(env: &CondaEnvironment, deps: &CondaDependencies)
         MatchSpec::from_str("anywidget", match_spec_options)?,
         MatchSpec::from_str("nbformat", match_spec_options)?,
     ];
+
+    // Preserve all packages currently installed in the env. sync_dependencies
+    // is used for delta installs (adding new packages to an existing env).
+    // Without explicit specs for existing packages, the solver omits them
+    // from its solution and the Installer removes them — destroying
+    // prewarmed pool packages (e.g. pandas, matplotlib) that the user expects
+    // to survive a `add_dependency(after="restart")` cycle.
+    let base_names: std::collections::HashSet<&str> =
+        ["ipykernel", "ipywidgets", "anywidget", "nbformat"]
+            .iter()
+            .copied()
+            .collect();
+    for record in &installed_packages {
+        let name = record.repodata_record.package_record.name.as_normalized();
+        if !base_names.contains(name) {
+            if let Ok(spec) = MatchSpec::from_str(name, match_spec_options) {
+                specs.push(spec);
+            }
+        }
+    }
 
     for dep in &deps.dependencies {
         if dep != "ipykernel" && dep != "ipywidgets" && dep != "anywidget" && dep != "nbformat" {
@@ -708,8 +732,6 @@ pub async fn sync_dependencies(env: &CondaEnvironment, deps: &CondaDependencies)
     .iter()
     .map(|vpkg| GenericVirtualPackage::from(vpkg.clone()))
     .collect::<Vec<_>>();
-
-    let installed_packages = PrefixRecord::collect_from_prefix::<PrefixRecord>(&env.env_path)?;
 
     let solver_task = SolverTask {
         virtual_packages,
