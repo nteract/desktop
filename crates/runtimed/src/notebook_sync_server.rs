@@ -4164,6 +4164,22 @@ async fn auto_launch_kernel(
         let runtime_agent_id = format!("runtime-agent:{}", &uuid::Uuid::new_v4().to_string()[..8]);
         let socket_path = daemon.socket_path().clone();
 
+        // Set provenance BEFORE spawn so stale agents are rejected by the
+        // connect handler's provenance check. Then create the oneshot so it's
+        // ready before the subprocess can connect. This ordering satisfies both
+        // Edge Case 1 (oneshot ready before agent connects) and Edge Case 3
+        // (provenance blocks stale agents from taking the new sender).
+        {
+            let mut id = room.current_runtime_agent_id.write().await;
+            *id = Some(runtime_agent_id.clone());
+        }
+        let runtime_agent_connect_rx = {
+            let (tx, rx) = oneshot::channel();
+            let mut guard = room.pending_runtime_agent_connect_tx.lock().await;
+            *guard = Some(tx);
+            rx
+        };
+
         match crate::runtime_agent_handle::RuntimeAgentHandle::spawn(
             nb_id,
             runtime_agent_id.clone(),
@@ -4173,28 +4189,11 @@ async fn auto_launch_kernel(
         .await
         {
             Ok(ra) => {
-                // Store handle and set provenance.
-                // Scope each lock independently to avoid cross-lock ordering.
+                // Store handle after spawn succeeds.
                 {
                     let mut ra_guard = room.runtime_agent_handle.lock().await;
                     *ra_guard = Some(ra);
                 }
-                {
-                    let mut id = room.current_runtime_agent_id.write().await;
-                    *id = Some(runtime_agent_id.clone());
-                }
-
-                // Create per-spawn connect channel. Provenance is already set above,
-                // so any stale runtime agent checking provenance in the connect handler
-                // will be rejected before it can take() this sender.
-                // Replacing the sender drops the previous one, which resolves any
-                // stale receiver with Err (clean cancellation).
-                let runtime_agent_connect_rx = {
-                    let (tx, rx) = oneshot::channel();
-                    let mut guard = room.pending_runtime_agent_connect_tx.lock().await;
-                    *guard = Some(tx);
-                    rx
-                };
 
                 // Write "connecting" phase — fills the gap between spawn and connect
                 {
@@ -5379,6 +5378,18 @@ async fn handle_notebook_request(
                     format!("runtime-agent:{}", &uuid::Uuid::new_v4().to_string()[..8]);
                 let socket_path = daemon.socket_path().clone();
 
+                // Set provenance + create oneshot BEFORE spawn (see auto_launch_kernel).
+                {
+                    let mut id = room.current_runtime_agent_id.write().await;
+                    *id = Some(runtime_agent_id.clone());
+                }
+                let runtime_agent_connect_rx = {
+                    let (tx, rx) = oneshot::channel();
+                    let mut guard = room.pending_runtime_agent_connect_tx.lock().await;
+                    *guard = Some(tx);
+                    rx
+                };
+
                 match crate::runtime_agent_handle::RuntimeAgentHandle::spawn(
                     notebook_id,
                     runtime_agent_id.clone(),
@@ -5392,18 +5403,6 @@ async fn handle_notebook_request(
                             let mut ra_guard = room.runtime_agent_handle.lock().await;
                             *ra_guard = Some(ra);
                         }
-                        {
-                            let mut id = room.current_runtime_agent_id.write().await;
-                            *id = Some(runtime_agent_id.clone());
-                        }
-
-                        // Create per-spawn connect channel (see auto_launch_kernel).
-                        let runtime_agent_connect_rx = {
-                            let (tx, rx) = oneshot::channel();
-                            let mut guard = room.pending_runtime_agent_connect_tx.lock().await;
-                            *guard = Some(tx);
-                            rx
-                        };
 
                         // Write "connecting" phase — fills the gap between spawn and connect
                         {
