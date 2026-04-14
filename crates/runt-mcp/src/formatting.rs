@@ -335,7 +335,10 @@ pub fn outputs_to_content_items_with_images(outputs: &[Output]) -> Vec<rmcp::mod
 
 /// Walk structured content JSON and replace image blob URLs with base64 data URIs.
 ///
-/// The structured_content JSON has shape `{"cell": {"outputs": [{"data": {"image/png": "http://…/blob/HASH"}}]}}`.
+/// Handles two shapes:
+/// - Single cell: `{"cell": {"outputs": [...]}, "blob_base_url": "..."}`
+/// - Multi cell:  `{"cells": [{"outputs": [...]}, ...], "blob_base_url": "..."}`
+///
 /// For each image MIME key whose value is a blob URL, reads the blob file and replaces
 /// the URL with `data:{mime};base64,{b64}`.
 pub fn resolve_image_blobs_in_json(
@@ -346,14 +349,30 @@ pub fn resolve_image_blobs_in_json(
         Some(p) => p,
         None => return value,
     };
-    let outputs = match value
+
+    // Single-cell shape: {"cell": {"outputs": [...]}}
+    if let Some(arr) = value
         .get_mut("cell")
         .and_then(|c| c.get_mut("outputs"))
         .and_then(|o| o.as_array_mut())
     {
-        Some(arr) => arr,
-        None => return value,
-    };
+        resolve_image_blobs_in_outputs(arr, store);
+    }
+
+    // Multi-cell shape: {"cells": [{"outputs": [...]}, ...]}
+    if let Some(cells) = value.get_mut("cells").and_then(|c| c.as_array_mut()) {
+        for cell in cells {
+            if let Some(arr) = cell.get_mut("outputs").and_then(|o| o.as_array_mut()) {
+                resolve_image_blobs_in_outputs(arr, store);
+            }
+        }
+    }
+
+    value
+}
+
+/// Replace image blob URLs with base64 data URIs in an outputs array.
+fn resolve_image_blobs_in_outputs(outputs: &mut [serde_json::Value], store: &std::path::Path) {
     for output in outputs {
         let data = match output.get_mut("data").and_then(|d| d.as_object_mut()) {
             Some(d) => d,
@@ -393,5 +412,4 @@ pub fn resolve_image_blobs_in_json(
             }
         }
     }
-    value
 }
