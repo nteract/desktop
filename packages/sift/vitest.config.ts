@@ -3,10 +3,7 @@ import fs from "node:fs";
 import { defineConfig } from "vite-plus";
 
 // Use real WASM JS glue if built, otherwise fall back to mock
-const realWasmGlue = path.resolve(
-  __dirname,
-  "../../crates/nteract-predicate/pkg/nteract_predicate.js",
-);
+const realWasmGlue = path.resolve(__dirname, "../../crates/sift-wasm/pkg/nteract_predicate.js");
 const mockWasmGlue = path.resolve(
   __dirname,
   "src/__mocks__/nteract-predicate/nteract_predicate.js",

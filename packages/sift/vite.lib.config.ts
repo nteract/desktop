@@ -2,7 +2,7 @@ import { defineConfig } from "vite-plus";
 import { resolve } from "node:path";
 import tailwindcss from "@tailwindcss/vite";
 
-const wasmPkg = resolve(__dirname, "../../crates/nteract-predicate/pkg");
+const wasmPkg = resolve(__dirname, "../../crates/sift-wasm/pkg");
 
 /**
  * Library build config — produces ESM bundle + compiled CSS for npm consumers.

@@ -5,17 +5,16 @@ use arrow_cast::display::ArrayFormatter;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::Cursor;
-use wasm_bindgen::JsValue;
 
 use crate::utils::dict_key_at;
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug, Clone)]
 pub struct CategoryCount {
     pub label: String,
     pub count: u32,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug, Clone)]
 pub struct HistogramBin {
     pub x0: f64,
     pub x1: f64,
@@ -23,10 +22,10 @@ pub struct HistogramBin {
 }
 
 /// Compute value_counts for a string column from Arrow IPC bytes.
-pub fn value_counts_impl(
+pub fn value_counts(
     ipc_bytes: &[u8],
     column_index: usize,
-) -> Result<JsValue, Box<dyn std::error::Error>> {
+) -> Result<Vec<CategoryCount>, Box<dyn std::error::Error>> {
     let cursor = Cursor::new(ipc_bytes);
     let reader = StreamReader::try_new(cursor, None)?;
 
@@ -82,15 +81,15 @@ pub fn value_counts_impl(
         .collect();
     counts.sort_by(|a, b| b.count.cmp(&a.count));
 
-    Ok(serde_wasm_bindgen::to_value(&counts)?)
+    Ok(counts)
 }
 
 /// Compute histogram bins for a numeric column from Arrow IPC bytes.
-pub fn histogram_impl(
+pub fn histogram(
     ipc_bytes: &[u8],
     column_index: usize,
     num_bins: usize,
-) -> Result<JsValue, Box<dyn std::error::Error>> {
+) -> Result<Vec<HistogramBin>, Box<dyn std::error::Error>> {
     let cursor = Cursor::new(ipc_bytes);
     let reader = StreamReader::try_new(cursor, None)?;
 
@@ -138,7 +137,7 @@ pub fn histogram_impl(
     }
 
     if values.is_empty() {
-        return Ok(serde_wasm_bindgen::to_value(&Vec::<HistogramBin>::new())?);
+        return Ok(Vec::new());
     }
 
     let min = values.iter().cloned().fold(f64::INFINITY, f64::min);
@@ -172,5 +171,5 @@ pub fn histogram_impl(
         bins[idx].count += 1;
     }
 
-    Ok(serde_wasm_bindgen::to_value(&bins)?)
+    Ok(bins)
 }

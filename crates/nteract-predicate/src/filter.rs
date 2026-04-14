@@ -8,10 +8,7 @@ use std::io::Cursor;
 use crate::utils::dict_key_at;
 
 /// Filter rows by a boolean mask, return filtered Arrow IPC bytes.
-pub fn filter_rows_impl(
-    ipc_bytes: &[u8],
-    mask: &[u8],
-) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+pub fn filter_rows(ipc_bytes: &[u8], mask: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let cursor = Cursor::new(ipc_bytes);
     let reader = StreamReader::try_new(cursor, None)?;
     let schema = reader.schema();
@@ -48,7 +45,7 @@ pub fn filter_rows_impl(
 }
 
 /// Find row indices where a string column contains the given substring.
-pub fn string_contains_impl(
+pub fn string_contains(
     ipc_bytes: &[u8],
     column_index: usize,
     query: &str,
