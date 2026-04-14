@@ -144,9 +144,10 @@ Testing:
                              E2E testing (build, run, manage fixtures)
 
 Other:
-  wasm                       Rebuild runtimed-wasm (wasm-pack build)
-  wasm sift                  Rebuild sift-wasm (the WASM bindings for @nteract/sift)
-  wasm --all                 Rebuild all WASM targets
+  wasm                       Rebuild all WASM targets (runtimed-wasm + sift-wasm)
+  wasm runtimed              Rebuild only runtimed-wasm
+  wasm sift                  Rebuild only sift-wasm (bindings for @nteract/sift);
+                             also copies the binary to crates/runt-mcp/assets/plugins/
   renderer-plugins           Rebuild pre-built renderer plugins (notebook + MCP)
   icons [source.png]         Generate icon variants
   mcpb                       Package nteract as a Claude Desktop extension (.mcpb)
@@ -1115,16 +1116,16 @@ fn cmd_e2e_test_all() {
 fn cmd_wasm(target: Option<&str>) {
     require_tool("wasm-pack", WASM_PACK_INSTALL);
 
-    let build_runtimed = match target {
-        None => true,
-        Some("--all") => true,
-        Some("sift") => false,
+    // Default (no target) builds both. `sift` or `runtimed` pick just one.
+    let (build_runtimed, build_sift) = match target {
+        None | Some("--all") => (true, true),
+        Some("sift") => (false, true),
+        Some("runtimed") => (true, false),
         Some(other) => {
-            eprintln!("Unknown wasm target: {other}. Use 'sift' or '--all'.");
+            eprintln!("Unknown wasm target: {other}. Use 'sift', 'runtimed', or '--all'.");
             std::process::exit(1);
         }
     };
-    let build_sift = matches!(target, Some("sift") | Some("--all"));
 
     if build_runtimed {
         println!("Building runtimed-wasm...");
@@ -1144,9 +1145,6 @@ fn cmd_wasm(target: Option<&str>) {
 
     if build_sift {
         println!("Building sift-wasm...");
-        // --out-name keeps the JS/WASM filenames as `nteract_predicate.*` so sift's
-        // imports and the daemon's `/plugins/nteract-predicate.wasm` URL stay stable
-        // across the sift-wasm/nteract-predicate crate split.
         run_cmd(
             "wasm-pack",
             &[
@@ -1157,10 +1155,17 @@ fn cmd_wasm(target: Option<&str>) {
                 "--release",
                 "--out-dir",
                 "../../packages/sift/public/wasm",
-                "--out-name",
-                "nteract_predicate",
             ],
         );
+        // Copy the WASM binary to the daemon's embedded plugins directory so
+        // `/plugins/sift_wasm.wasm` serves the freshly-built binary.
+        let src = Path::new("packages/sift/public/wasm/sift_wasm_bg.wasm");
+        let dest = Path::new("crates/runt-mcp/assets/plugins/sift_wasm.wasm");
+        if let Err(e) = fs::copy(src, dest) {
+            eprintln!("Warning: failed to copy sift_wasm.wasm to daemon assets: {e}");
+        } else {
+            println!("Copied {} -> {}", src.display(), dest.display());
+        }
         println!("WASM build complete. Output: packages/sift/public/wasm/");
     }
 }

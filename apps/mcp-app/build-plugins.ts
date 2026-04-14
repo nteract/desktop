@@ -14,8 +14,8 @@ const outDir = path.resolve(repoRoot, "crates/runt-mcp/assets/plugins");
 async function main() {
   await fs.mkdir(outDir, { recursive: true });
 
-  // Exclude sift from MCP app plugin builds — it depends on the nteract-predicate
-  // WASM crate which may not be built in CI. Sift's MCP plugin is pre-built via
+  // Exclude sift from MCP app plugin builds — it depends on the sift-wasm
+  // crate which may not be built in CI. Sift's MCP plugin is pre-built via
   // `cargo xtask renderer-plugins` and committed directly.
   const pluginsToRebuild = RENDERER_PLUGINS.filter((p) => p.name !== "sift");
   const plugins = await buildAllRendererPlugins(pluginsToRebuild);
