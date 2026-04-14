@@ -255,8 +255,8 @@ jobs:
       - name: Set dev version
         run: |
           CURRENT_VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
-          MAJOR_MINOR=$(echo "$CURRENT_VERSION" | sed 's/\.[0-9]*$//')
-          PATCH=$(echo "$CURRENT_VERSION" | grep -o '[0-9]*$')
+          MAJOR_MINOR="${CURRENT_VERSION%.*}"
+          PATCH="${CURRENT_VERSION##*.}"
           NEXT_PATCH=$((PATCH + 1))
           TIMESTAMP=$(date -u +%Y%m%d%H%M)
           DEV_VERSION="${MAJOR_MINOR}.${NEXT_PATCH}a${TIMESTAMP}"

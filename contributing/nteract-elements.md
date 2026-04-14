@@ -106,7 +106,7 @@ Remove them after any shadcn install:
 grep -rl '"use client"' src/ | xargs -I {} sed -i '' '/^"use client";$/d' {}
 
 # Format to clean up empty lines
-npx @biomejs/biome check --fix src/
+vp check --fix src/
 ```
 
 ### Silence Dynamic Import Warnings

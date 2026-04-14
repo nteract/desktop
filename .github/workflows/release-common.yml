@@ -66,8 +66,8 @@ jobs:
           TIMESTAMP=$(date -u +%Y%m%d%H%M)
           VERSION="${CURRENT_VERSION}-${{ inputs.version_suffix }}.${TIMESTAMP}"
           echo "Setting version to: ${VERSION}"
-          echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
-          echo "TIMESTAMP=${TIMESTAMP}" >> $GITHUB_OUTPUT
+          echo "VERSION=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "TIMESTAMP=${TIMESTAMP}" >> "$GITHUB_OUTPUT"
 
   build-linux:
     name: Build Linux Executables
@@ -239,23 +239,23 @@ jobs:
             exit 0
           fi
 
-          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
           KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
 
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
-          echo "$APPLE_CERTIFICATE" | base64 --decode > $RUNNER_TEMP/certificate.p12
-          security import $RUNNER_TEMP/certificate.p12 \
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" \
             -P "$APPLE_CERTIFICATE_PASSWORD" \
             -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
 
           security list-keychain -d user -s "$KEYCHAIN_PATH"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          rm $RUNNER_TEMP/certificate.p12
+          rm "$RUNNER_TEMP/certificate.p12"
 
-          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> $GITHUB_ENV
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
 
       - name: Set version in tauri.conf.json
         run: |
@@ -615,8 +615,8 @@ jobs:
         if: inputs.github_release_prerelease
         run: |
           CURRENT_VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
-          MAJOR_MINOR=$(echo "$CURRENT_VERSION" | sed 's/\.[0-9]*$//')
-          PATCH=$(echo "$CURRENT_VERSION" | grep -o '[0-9]*$')
+          MAJOR_MINOR="${CURRENT_VERSION%.*}"
+          PATCH="${CURRENT_VERSION##*.}"
           NEXT_PATCH=$((PATCH + 1))
           TIMESTAMP="${{ needs.compute-version.outputs.timestamp }}"
           DEV_VERSION="${MAJOR_MINOR}.${NEXT_PATCH}a${TIMESTAMP}"
@@ -681,8 +681,8 @@ jobs:
         run: |
           CURRENT_VERSION=$(grep '^version' python/runtimed/pyproject.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
           # Bump patch and use alpha tag so it sorts after current stable (PEP 440)
-          MAJOR_MINOR=$(echo "$CURRENT_VERSION" | sed 's/\.[0-9]*$//')
-          PATCH=$(echo "$CURRENT_VERSION" | grep -o '[0-9]*$')
+          MAJOR_MINOR="${CURRENT_VERSION%.*}"
+          PATCH="${CURRENT_VERSION##*.}"
           NEXT_PATCH=$((PATCH + 1))
           TIMESTAMP="${{ needs.compute-version.outputs.timestamp }}"
           DEV_VERSION="${MAJOR_MINOR}.${NEXT_PATCH}a${TIMESTAMP}"
@@ -923,7 +923,7 @@ jobs:
           {
             echo "$RELEASE_INTRO"
             echo ''
-            echo '## What'\''s Changed'
+            echo "## What's Changed"
             echo ''
             cat changelog-section.md
             echo ''
@@ -948,7 +948,7 @@ jobs:
             echo ''
             echo '```bash'
             echo '# Add the nteract signing key'
-            echo 'curl -fsSL https://apt.runtimed.com/nteract-keyring.gpg \'
+            echo "curl -fsSL https://apt.runtimed.com/nteract-keyring.gpg \\"
             echo '  | sudo gpg --dearmor -o /usr/share/keyrings/nteract-keyring.gpg'
             echo ''
             echo '# Add the repository'

@@ -65,7 +65,7 @@
   },
   {
     "label": "Format",
-    "command": "cargo fmt && npx @biomejs/biome check --fix apps/notebook/src/ e2e/",
+    "command": "cargo xtask lint --fix",
     "use_new_terminal": false,
     "allow_concurrent_runs": false,
     "reveal": "always",

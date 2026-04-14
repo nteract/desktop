@@ -189,7 +189,7 @@ The repo includes `.zed/tasks.json` with pre-configured tasks (use cmd-shift-t):
 | Dev App | `cargo xtask notebook` with dev env vars and auto Vite port |
 | Daemon Status | `./target/debug/runt daemon status` |
 | Daemon Logs | `./target/debug/runt daemon logs -f` |
-| Format | `cargo fmt` + biome |
+| Format | `cargo xtask lint --fix` (Rust + JS/TS via vp + Python ruff) |
 | Setup | `pnpm install && cargo xtask build` |
 
 ## Common Gotchas

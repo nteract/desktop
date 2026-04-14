@@ -915,7 +915,7 @@ mod tests {
         let store = test_store(&dir);
 
         // Create output with data both above and below the threshold
-        let large_html = "<html>".to_string() + &"x".repeat(2000) + "</html>";
+        let large_html = format!("<html>{}</html>", "x".repeat(2000));
         let output = serde_json::json!({
             "output_type": "display_data",
             "data": {

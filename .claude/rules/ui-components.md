@@ -69,7 +69,7 @@ Registry components include `"use client"` for Next.js compatibility. These are 
 
 ```bash
 grep -rl '"use client"' src/ | xargs -I {} sed -i '' '/^"use client";$/d' {}
-npx @biomejs/biome check --fix src/
+vp check --fix src/
 ```
 
 ### Silence Dynamic Import Warnings
