@@ -140,6 +140,78 @@ def test_formatter_publishes_display_data_with_buffers_and_claims_display(monkey
     assert ref["size"] == len(parquet_bytes)
 
 
+def test_install_enables_altair_nteract_renderer_when_present(monkeypatch):
+    """If altair is importable, dx.install() flips its renderer registry to 'nteract'."""
+    _reset_installed(monkeypatch)
+    ip = FakeIPython()
+    monkeypatch.setattr("dx._format_install._get_ipython_for_format", lambda: ip)
+    monkeypatch.setattr("dx._format_install._kernel_session_and_socket", lambda: None)
+
+    import sys
+    import types
+
+    enabled = []
+
+    class FakeRegistry:
+        def enable(self, name):
+            enabled.append(name)
+
+    fake_alt = types.ModuleType("altair")
+    fake_alt.renderers = FakeRegistry()
+    monkeypatch.setitem(sys.modules, "altair", fake_alt)
+
+    import dx
+
+    dx.install()
+    assert enabled == ["nteract"], f"expected altair renderer flipped, got {enabled}"
+
+
+def test_install_sets_plotly_default_renderer_when_present(monkeypatch):
+    """If plotly.io is importable, dx.install() assigns the default to 'nteract'."""
+    _reset_installed(monkeypatch)
+    ip = FakeIPython()
+    monkeypatch.setattr("dx._format_install._get_ipython_for_format", lambda: ip)
+    monkeypatch.setattr("dx._format_install._kernel_session_and_socket", lambda: None)
+
+    import sys
+    import types
+
+    class FakeRenderers:
+        def __init__(self):
+            self.default = "plotly_mimetype"
+
+    fake_pio = types.ModuleType("plotly.io")
+    fake_pio.renderers = FakeRenderers()
+    fake_plotly = types.ModuleType("plotly")
+    fake_plotly.io = fake_pio
+    monkeypatch.setitem(sys.modules, "plotly", fake_plotly)
+    monkeypatch.setitem(sys.modules, "plotly.io", fake_pio)
+
+    import dx
+
+    dx.install()
+    assert fake_pio.renderers.default == "nteract"
+
+
+def test_install_third_party_renderer_activation_is_noop_when_absent(monkeypatch):
+    """Missing altair/plotly must not break install — guarded by ImportError."""
+    _reset_installed(monkeypatch)
+    ip = FakeIPython()
+    monkeypatch.setattr("dx._format_install._get_ipython_for_format", lambda: ip)
+    monkeypatch.setattr("dx._format_install._kernel_session_and_socket", lambda: None)
+
+    import sys
+
+    # Hide altair / plotly even if they're installed in the test env.
+    monkeypatch.setitem(sys.modules, "altair", None)
+    monkeypatch.setitem(sys.modules, "plotly", None)
+    monkeypatch.setitem(sys.modules, "plotly.io", None)
+
+    import dx
+
+    dx.install()  # must not raise
+
+
 def test_formatter_returns_none_when_no_ipykernel(monkeypatch):
     """No ipykernel: returning None lets IPython's default HTML/plain chain run."""
     _reset_installed(monkeypatch)

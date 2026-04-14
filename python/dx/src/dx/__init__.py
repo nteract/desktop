@@ -40,11 +40,22 @@ class DxError(Exception):
 
 
 def install() -> None:
-    """Install IPython formatters for pandas / polars DataFrames.
+    """Install the nteract data-experience integration.
 
-    Idempotent. Safe to call in vanilla Jupyter or plain Python — when no
-    ipykernel is reachable, formatters fall back to emitting raw-bytes
-    ``display_data`` bundles (today's pattern).
+    - Registers IPython formatters for ``pandas.DataFrame`` and
+      ``polars.DataFrame`` (if installed). Bare ``df`` on the last cell
+      line then rides the blob-store path via ``display_data`` + IOPub
+      buffers instead of shipping base64'd bytes.
+    - Flips third-party visualization libraries that ship an ``"nteract"``
+      renderer to use it:
+      - altair: ``alt.renderers.enable("nteract")``
+      - plotly: ``plotly.io.renderers.default = "nteract"``
+      Each is guarded by ``ImportError`` and is a no-op if the library
+      isn't present.
+
+    Idempotent. Safe to call in vanilla Jupyter or plain Python — when
+    no ipykernel is reachable, DataFrame formatters return ``None`` so
+    IPython's default display chain runs unchanged.
     """
     from dx._format_install import install_formatters
 

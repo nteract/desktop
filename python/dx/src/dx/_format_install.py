@@ -105,7 +105,42 @@ def install_formatters() -> None:
     except ImportError:
         pass
 
+    _enable_third_party_nteract_renderers()
+
     _INSTALLED = True
+
+
+def _enable_third_party_nteract_renderers() -> None:
+    """Flip visualization libraries that ship an 'nteract' renderer to it.
+
+    Each library is guarded by ImportError so install stays a no-op when
+    the library isn't present. Logs (debug) which switches fired so a
+    curious user can see what dx changed.
+    """
+    # altair: alt.renderers is a RendererRegistry; `enable("nteract")` makes
+    # Chart display produce an nteract-aware mime bundle.
+    try:
+        import altair as alt  # ty: ignore[unresolved-import]
+
+        alt.renderers.enable("nteract")
+        log.debug("dx: enabled altair 'nteract' renderer")
+    except ImportError:
+        pass
+    except Exception as exc:  # pragma: no cover — defensive
+        log.debug("dx: failed to enable altair 'nteract' renderer: %s", exc)
+
+    # plotly: `plotly.io.renderers.default` is a simple string assignment;
+    # "nteract" is a registered option that emits the plotly mime bundle
+    # the isolated parent iframe knows how to render.
+    try:
+        import plotly.io as pio
+
+        pio.renderers.default = "nteract"
+        log.debug("dx: set plotly default renderer to 'nteract'")
+    except ImportError:
+        pass
+    except Exception as exc:  # pragma: no cover — defensive
+        log.debug("dx: failed to set plotly 'nteract' renderer: %s", exc)
 
 
 def _pandas_ipython_display(df: Any) -> bool | None:
