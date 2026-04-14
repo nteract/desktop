@@ -521,6 +521,13 @@ pub struct Daemon {
     blob_port: Mutex<Option<u16>>,
     /// Per-notebook Automerge sync rooms.
     notebook_rooms: NotebookRooms,
+    /// Set to `true` the first time the GC loop observes a non-empty
+    /// `notebook_rooms` map. Used by the zero-room sweep-skip guard to
+    /// distinguish "post-restart, no client has reconnected yet" (skip,
+    /// we don't yet know what refs are needed) from "idle daemon whose
+    /// user closed every notebook" (sweep — refs legitimately empty,
+    /// persisted-doc walk still gathers anything the user might reopen).
+    rooms_ever_seen: std::sync::atomic::AtomicBool,
     /// Redirect map: old ephemeral UUID -> new canonical path after rekey.
     /// Used so peers reconnecting with the old UUID find the re-keyed room.
     pub(crate) redirect_map: std::sync::Mutex<HashMap<String, RedirectEntry>>,
@@ -608,6 +615,7 @@ impl Daemon {
             blob_store,
             blob_port: Mutex::new(None),
             notebook_rooms: Arc::new(Mutex::new(HashMap::new())),
+            rooms_ever_seen: std::sync::atomic::AtomicBool::new(false),
             redirect_map: std::sync::Mutex::new(HashMap::new()),
         }))
     }
@@ -2605,16 +2613,26 @@ impl Daemon {
                     rooms.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
                 };
 
-                // Zero-rooms fail-safe: a sweep with no active rooms is
-                // indistinguishable between "truly idle" and "daemon just
-                // restarted and hasn't loaded refs yet". Err toward keeping
-                // data — skip this cycle. On-disk persisted notebook-docs
-                // would still be walked below, but without an active room we
-                // can't be certain what the frontend is about to re-open, so
-                // abstain entirely. Cost: at most one extra GC cycle of
-                // staleness on a genuinely idle daemon.
-                if room_arcs.is_empty() {
-                    info!("[runtimed] GC: 0 active rooms; skipping blob sweep this cycle");
+                // Zero-rooms sweep-skip: ambiguous only right after a daemon
+                // restart before any client has reconnected. Once we've ever
+                // seen a non-empty rooms map, zero rooms means "user closed
+                // everything" and the sweep is safe to run (the persisted-doc
+                // walk below still gathers refs for anything they might
+                // reopen). Without this distinction, a daemon that stays
+                // open while idle would never GC again.
+                let rooms_empty = room_arcs.is_empty();
+                if !rooms_empty {
+                    self.rooms_ever_seen
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                if Self::should_skip_blob_sweep(
+                    rooms_empty,
+                    self.rooms_ever_seen
+                        .load(std::sync::atomic::Ordering::Relaxed),
+                ) {
+                    info!(
+                        "[runtimed] GC: 0 active rooms and no room has loaded since startup; skipping blob sweep this cycle"
+                    );
                 } else {
                     let blob_max_age = blob_gc_grace();
                     let referenced_hashes =
@@ -2780,6 +2798,18 @@ pub(crate) async fn collect_hashes_from_persisted_doc(
 }
 
 impl Daemon {
+    /// Decide whether the current GC cycle should skip the blob sweep.
+    ///
+    /// Skip only when the rooms map is empty **and** no room has ever been
+    /// loaded in this daemon process. That's the post-restart window where
+    /// zero refs mean "we don't know yet" rather than "nothing is needed."
+    /// Once any room has been observed, zero rooms thereafter means the user
+    /// legitimately closed everything and the sweep must run to eventually
+    /// reclaim the blobs whose notebooks are never reopened.
+    pub(crate) fn should_skip_blob_sweep(rooms_empty: bool, rooms_ever_seen: bool) -> bool {
+        rooms_empty && !rooms_ever_seen
+    }
+
     /// Collect every blob hash referenced by active rooms **and** persisted
     /// notebook-doc files the daemon owns.
     ///
@@ -5013,6 +5043,23 @@ mod tests {
     // ── Blob GC correctness (spec 1) ─────────────────────────────────
 
     use crate::blob_store::BlobStore;
+
+    #[test]
+    fn should_skip_blob_sweep_only_when_rooms_empty_and_never_seen() {
+        // Post-restart, no client has reconnected: skip — we don't know
+        // what's needed yet.
+        assert!(Daemon::should_skip_blob_sweep(true, false));
+
+        // Idle daemon whose user closed every notebook: run the sweep.
+        // Refs are legitimately empty (persisted-doc walk still runs to
+        // pick up refs for anything they might reopen).
+        assert!(!Daemon::should_skip_blob_sweep(true, true));
+
+        // Rooms populated: always run — `rooms_ever_seen` becomes true
+        // on the next cycle regardless.
+        assert!(!Daemon::should_skip_blob_sweep(false, false));
+        assert!(!Daemon::should_skip_blob_sweep(false, true));
+    }
 
     /// Build a persisted notebook-doc `.automerge` file with one markdown
     /// cell that references `blob_hash` via `resolved_assets`. Mirrors the
