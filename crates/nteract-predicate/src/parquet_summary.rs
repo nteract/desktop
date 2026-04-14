@@ -8,17 +8,15 @@
 //! a dataset without rendering it.
 
 use arrow::array::{
-    Array, AsArray, BooleanArray, Date32Array, Date64Array, Decimal128Array, Decimal256Array,
-    Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, Int8Array, LargeStringArray,
-    StringArray, TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray,
-    TimestampSecondArray, UInt16Array, UInt32Array, UInt64Array, UInt8Array,
+    Array, BooleanArray, Date32Array, Date64Array, Decimal128Array, Decimal256Array, Float32Array,
+    Float64Array, Int16Array, Int32Array, Int64Array, Int8Array, TimestampMicrosecondArray,
+    TimestampMillisecondArray, TimestampNanosecondArray, TimestampSecondArray, UInt16Array,
+    UInt32Array, UInt64Array, UInt8Array,
 };
 use arrow::datatypes::{DataType, TimeUnit};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde::Serialize;
 use std::collections::HashMap;
-
-use crate::utils::dict_key_at;
 
 /// Maximum number of distinct values to enumerate for categorical columns.
 const TOP_N_CATEGORIES: usize = 5;
@@ -312,41 +310,10 @@ fn accumulate_column_stats(
                 }
             }
         }
-        DataType::Utf8 => {
-            if let Some(arr) = col.as_any().downcast_ref::<StringArray>() {
-                for i in 0..arr.len() {
-                    if !arr.is_null(i) {
-                        bump_string(&mut string_accum[col_idx], arr.value(i));
-                    }
-                }
-            }
-        }
-        DataType::LargeUtf8 => {
-            if let Some(arr) = col.as_any().downcast_ref::<LargeStringArray>() {
-                for i in 0..arr.len() {
-                    if !arr.is_null(i) {
-                        bump_string(&mut string_accum[col_idx], arr.value(i));
-                    }
-                }
-            }
-        }
-        DataType::Dictionary(_, _) => {
-            let dict_arr = col.as_any_dictionary();
-            let keys = dict_arr.keys();
-            let values = dict_arr.values();
-            if let Some(str_values) = values.as_any().downcast_ref::<StringArray>() {
-                for i in 0..keys.len() {
-                    if let Some(key) = dict_key_at(keys, i) {
-                        bump_string(&mut string_accum[col_idx], str_values.value(key));
-                    }
-                }
-            } else if let Some(str_values) = values.as_any().downcast_ref::<LargeStringArray>() {
-                for i in 0..keys.len() {
-                    if let Some(key) = dict_key_at(keys, i) {
-                        bump_string(&mut string_accum[col_idx], str_values.value(key));
-                    }
-                }
-            }
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Dictionary(_, _) => {
+            crate::arrow_utils::for_each_string(col, |s| {
+                bump_string(&mut string_accum[col_idx], s);
+            });
         }
         DataType::Timestamp(unit, _) => {
             update_temporal(&mut temporal_accum[col_idx], col, *unit);
@@ -572,7 +539,7 @@ fn format_data_type(dt: &DataType) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{BooleanArray, Float64Array, Int64Array, StringArray};
+    use arrow::array::{BooleanArray, Float64Array, Int64Array, LargeStringArray, StringArray};
     use arrow::datatypes::{Field, Schema};
     use arrow::record_batch::RecordBatch;
     use parquet::arrow::ArrowWriter;
@@ -728,6 +695,153 @@ mod tests {
                 assert_eq!(top[0].0.len(), MAX_STRING_VALUE_LEN);
             }
             _ => panic!("expected string stats"),
+        }
+    }
+
+    // ── Regression tests inspired by Buckaroo's "dastardly dataframe" suite ──
+    // https://buckaroo-data.readthedocs.io/en/latest/articles/dastardly-dataframe-dataset.html
+
+    /// Pandas writes strings as LargeUtf8 by default via `df.to_parquet()`.
+    /// Our old `DataType::Utf8 | LargeUtf8 => downcast_ref::<StringArray>()`
+    /// silently failed for LargeUtf8 columns, producing 0-count categorical
+    /// summaries in sift and the MCP text/llm+plain repr. This test locks in
+    /// the fix (shared helper in nteract_predicate::arrow_utils).
+    #[test]
+    fn large_utf8_string_column_counts() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "s",
+            DataType::LargeUtf8,
+            true,
+        )]));
+        let arr = LargeStringArray::from(vec![
+            Some("alice"),
+            Some("bob"),
+            None,
+            Some("alice"),
+            Some("carol"),
+        ]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(arr)]).unwrap();
+        let bytes = batch_to_parquet_bytes(&batch);
+        let summary = summarize_parquet(&bytes).unwrap();
+
+        assert_eq!(summary.columns[0].name, "s");
+        assert_eq!(summary.columns[0].null_count, 1);
+        match &summary.columns[0].stats {
+            ColumnStats::String {
+                distinct_count,
+                top,
+                ..
+            } => {
+                assert_eq!(*distinct_count, 3);
+                assert_eq!(top[0], ("alice".to_string(), 2));
+            }
+            _ => panic!("expected string stats (LargeUtf8 must produce counts)"),
+        }
+    }
+
+    /// Unicode strings — emoji, combining accents, CJK, right-to-left.
+    /// Ensures we don't mis-truncate or mis-compare by naive byte slicing.
+    #[test]
+    fn unicode_strings_roundtrip() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "s",
+            DataType::LargeUtf8,
+            false,
+        )]));
+        let values = vec![
+            "café",          // combining accent
+            "🍕🍔🍟",        // emoji
+            "日本語テスト",  // CJK
+            "مرحبا بالعالم", // RTL (Arabic)
+            "café",          // duplicate to exercise counting
+        ];
+        let arr = LargeStringArray::from(values.clone());
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(arr)]).unwrap();
+        let bytes = batch_to_parquet_bytes(&batch);
+        let summary = summarize_parquet(&bytes).unwrap();
+
+        match &summary.columns[0].stats {
+            ColumnStats::String {
+                distinct_count,
+                top,
+                ..
+            } => {
+                assert_eq!(*distinct_count, 4);
+                assert_eq!(top[0], ("café".to_string(), 2));
+                // Make sure no emoji was silently dropped or corrupted.
+                let top_labels: Vec<&str> = top.iter().map(|(l, _)| l.as_str()).collect();
+                assert!(top_labels.iter().any(|s| s.contains("🍕")));
+            }
+            _ => panic!("expected string stats"),
+        }
+    }
+
+    /// All-null and all-same-value columns are degenerate cases that Buckaroo
+    /// specifically flags. Both should produce well-defined summaries rather
+    /// than divide-by-zero or empty stats.
+    #[test]
+    fn all_null_and_all_same_columns() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("all_null", DataType::LargeUtf8, true),
+            Field::new("all_same", DataType::LargeUtf8, false),
+        ]));
+        let nulls = LargeStringArray::from(vec![None::<&str>, None, None, None]);
+        let same = LargeStringArray::from(vec!["x", "x", "x", "x"]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(nulls), Arc::new(same)]).unwrap();
+        let bytes = batch_to_parquet_bytes(&batch);
+        let summary = summarize_parquet(&bytes).unwrap();
+
+        // all-null column: 4 nulls, 0 distinct
+        assert_eq!(summary.columns[0].null_count, 4);
+        match &summary.columns[0].stats {
+            ColumnStats::String {
+                distinct_count,
+                top,
+                ..
+            } => {
+                assert_eq!(*distinct_count, 0);
+                assert!(top.is_empty());
+            }
+            _ => panic!("expected string stats"),
+        }
+
+        // all-same column: 0 nulls, 1 distinct, "x" with count 4
+        assert_eq!(summary.columns[1].null_count, 0);
+        match &summary.columns[1].stats {
+            ColumnStats::String {
+                distinct_count,
+                top,
+                ..
+            } => {
+                assert_eq!(*distinct_count, 1);
+                assert_eq!(top[0], ("x".to_string(), 4));
+            }
+            _ => panic!("expected string stats"),
+        }
+    }
+
+    /// Non-finite floats should not be accumulated into min/max.
+    #[test]
+    fn nan_and_inf_floats() {
+        let schema = Arc::new(Schema::new(vec![Field::new("f", DataType::Float64, true)]));
+        let arr = Float64Array::from(vec![
+            Some(1.5),
+            Some(f64::NAN),
+            Some(f64::INFINITY),
+            Some(-f64::INFINITY),
+            Some(2.5),
+            None,
+        ]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(arr)]).unwrap();
+        let bytes = batch_to_parquet_bytes(&batch);
+        let summary = summarize_parquet(&bytes).unwrap();
+
+        match &summary.columns[0].stats {
+            ColumnStats::Numeric { min, max } => {
+                assert_eq!(*min, 1.5, "NaN/Inf should be excluded from min");
+                assert_eq!(*max, 2.5, "NaN/Inf should be excluded from max");
+            }
+            _ => panic!("expected numeric stats"),
         }
     }
 }

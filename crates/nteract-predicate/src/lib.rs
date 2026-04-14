@@ -7,6 +7,7 @@
 //! This crate is intentionally free of `wasm-bindgen` so it compiles as
 //! a plain `rlib` in native builds without pulling in JS interop code.
 
+pub mod arrow_utils;
 pub mod filter;
 pub mod parquet_summary;
 pub mod summary;
