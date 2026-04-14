@@ -12,22 +12,22 @@ Today, when a Python kernel wants to render a parquet dataset in nteract, it shi
 display({"application/vnd.apache.parquet": buf.getvalue()}, raw=True)
 ```
 
-Megabytes travel through ZMQ IOPub frames, base64-encoded inside a JSON bundle, then get decoded and re-hashed in the agent. The daemon has a blob store sitting right there with content-addressed storage and dedupe. The kernel is taking the long way around.
+Megabytes travel through ZMQ IOPub frames, base64-encoded inside a JSON bundle, then get decoded and re-hashed in the runtime agent. The daemon has a blob store sitting right there with content-addressed storage and dedupe. The kernel is taking the long way around.
 
 We already ship:
 
 - A blob store in the daemon (`crates/runtimed/src/blob_store.rs::put`), HTTP-served with content-addressed URLs.
-- Inline output manifests with `ContentRef` entries written to the CRDT via fork/merge by the agent (`crates/runtimed/src/output_store.rs::create_manifest` + `crates/runtimed/src/jupyter_kernel.rs` IOPub handlers).
+- Inline output manifests with `ContentRef` entries written to the CRDT via fork/merge by the runtime agent (`crates/runtimed/src/output_store.rs::create_manifest` + `crates/runtimed/src/jupyter_kernel.rs` IOPub handlers).
 - Frontend WASM that resolves ContentRefs to current blob URLs at render time.
 - A sift/parquet renderer with predicate pushdown (#1759) that pages and slices parquet client-side.
-- Agent subprocess architecture (#1333, #1431, #1433, #1449) with a kernel↔agent ZMQ channel and an agent↔daemon Automerge/notebook-protocol channel. Remote kernels (#1334) keep ZMQ local on the remote machine and tunnel the *agent↔daemon* socket — not ZMQ.
+- Runtime agent subprocess architecture (#1333, #1431, #1433, #1449) with a kernel↔runtime-agent ZMQ channel and an runtime-agent↔daemon Automerge/notebook-protocol channel. Remote kernels (#1334) keep ZMQ local on the remote machine and tunnel the *runtime-agent↔daemon* socket — not ZMQ.
 
 `nteract/dx` fills the missing piece: a Python library that lets a kernel hand bytes to the blob store **without** putting them on IOPub, plus a clean display surface on top.
 
 ## Goals
 
 1. Eliminate the "raw bytes in IOPub" pattern for parquet, Arrow, images, and arbitrary binary payloads.
-2. Ride the existing agent-in-the-loop architecture so remote kernels benefit without new transport.
+2. Ride the existing runtime-agent-in-the-loop architecture so remote kernels benefit without new transport.
 3. Ship a user-facing API (`dx.display`, `dx.put`) that feels as natural as `IPython.display`.
 4. Degrade gracefully in vanilla Jupyter and plain `python` — no superpowers, no exceptions.
 5. Forward-compatible with the planned ZMQ-less, in-process runtime agent.
@@ -39,7 +39,7 @@ We already ship:
 - Append-streaming Arrow batches. Protocol leaves room for it (see Future: Streaming).
 - `dx.attach(path)` convenience. Good idea, not v1. Listed under Future.
 - Authenticated HTTP write endpoint on the blob server.
-- A blob-write RPC on the agent↔daemon socket. Not needed for v1 (agent has filesystem access to the blob store). Documented under Dependencies below as a prerequisite for remote kernels.
+- A blob-write RPC on the runtime-agent↔daemon socket. Not needed for v1 (runtime agent has filesystem access to the blob store). Documented under Dependencies below as a prerequisite for remote kernels.
 - Automatic formatter registration on `import`. Explicit `dx.install()` only.
 
 ## Architecture
@@ -84,20 +84,20 @@ We already ship:
 
 ### Data path (remote kernel, #1334)
 
-Kernel↔agent ZMQ is **local to the remote machine**. The comm flow is unchanged. The agent, running remotely, currently has direct filesystem access to the blob store (`blob_root` passed at spawn, `runtime_agent.rs:67`). For a true SSH-tunneled remote setup where the agent runs on a different host from the daemon, a `PutBlob` frame on the agent↔daemon notebook-protocol socket is needed. That is a **dependency**, not part of this spec — see Dependencies.
+Kernel↔runtime-agent ZMQ is **local to the remote machine**. The comm flow is unchanged. The runtime agent, running remotely, currently has direct filesystem access to the blob store (`blob_root` passed at spawn, `runtime_agent.rs:67`). For a true SSH-tunneled remote setup where the runtime agent runs on a different host from the daemon, a `PutBlob` frame on the runtime-agent↔daemon notebook-protocol socket is needed. That is a **dependency**, not part of this spec — see Dependencies.
 
 ### Why a comm, not a new socket
 
-- Kernel↔agent ZMQ already exists, is HMAC-authenticated via Jupyter session, and already handles comm routing. Zero new transport.
+- Kernel↔runtime-agent ZMQ already exists, is HMAC-authenticated via Jupyter session, and already handles comm routing. Zero new transport.
 - Comms are the standard Jupyter mechanism for binary sidechannels (ipywidgets uses them).
-- Forward-compatible: when the agent moves in-process with IPython, the comm becomes a function call; `dx` does not change.
+- Forward-compatible: when the runtime agent moves in-process with IPython, the comm becomes a function call; `dx` does not change.
 - The protocol contract lives at the comm-message layer; a dedicated sidecar socket remains a drop-in replacement later.
 
 ### Keeping the blob comm off the CRDT
 
-The agent currently persists comm messages to the RuntimeStateDoc via `RuntimeStateDoc::put_comm` and `merge_comm_state_delta` (`crates/notebook-doc/src/runtime_state.rs`). That path exists for ipywidgets/anywidget state.
+The runtime agent currently persists comm messages to the RuntimeStateDoc via `RuntimeStateDoc::put_comm` and `merge_comm_state_delta` (`crates/notebook-doc/src/runtime_state.rs`). That path exists for ipywidgets/anywidget state.
 
-**The `nteract.dx.blob` comm must be excluded**, along with a **reserved namespace for future dx subsystems**. The agent's comm-open handler in `crates/runtimed/src/jupyter_kernel.rs` (~line 1240–1393) short-circuits for any target whose name matches the `nteract.dx.*` prefix (v1 uses `nteract.dx.blob`; reserved for later: `nteract.dx.query`, `nteract.dx.stream`). This keeps future dx subsystems off the CRDT by default — widget-state semantics stay untouched:
+**The `nteract.dx.blob` comm must be excluded**, along with a **reserved namespace for future dx subsystems**. The runtime agent's comm-open handler in `crates/runtimed/src/jupyter_kernel.rs` (~line 1240–1393) short-circuits for any target whose name matches the `nteract.dx.*` prefix (v1 uses `nteract.dx.blob`; reserved for later: `nteract.dx.query`, `nteract.dx.stream`). This keeps future dx subsystems off the CRDT by default — widget-state semantics stay untouched:
 
 - The comm is opened and routed to the dx blob handler.
 - It is **not** written into `CommDocEntry`.
@@ -121,7 +121,7 @@ The blob server port is dynamic. We do not stabilize it. Instead:
 
 Opened once per kernel session by `dx.install()`. All uploads multiplex on this comm.
 
-**Kernel → agent (comm_msg, buffers carry raw bytes):**
+**Kernel → runtime agent (comm_msg, buffers carry raw bytes):**
 
 ```json
 {
@@ -174,7 +174,7 @@ The optional `query` field is reserved for Future: Interactive Query Backend. Wh
 - `application/vnd.nteract.blob-ref+json` — the reference
 - `text/llm+plain` — computed Python-side (schema, dtypes, shape, head/tail samples, null counts) — cheap, iterable, and benefits from Python's type context
 
-The agent recognizes the ref MIME, composes a ContentRef under `content_type`, and also stores the `text/llm+plain` as a sibling entry in the manifest (existing path already handles non-binary MIMEs inline). `repr-llm` server-side synthesis remains the fallback when dx is not in the loop; when dx provides `text/llm+plain`, the agent uses it as-is.
+The runtime agent recognizes the ref MIME, composes a ContentRef under `content_type`, and also stores the `text/llm+plain` as a sibling entry in the manifest (existing path already handles non-binary MIMEs inline). `repr-llm` server-side synthesis remains the fallback when dx is not in the loop; when dx provides `text/llm+plain`, the runtime agent uses it as-is.
 
 ## API Surface (v1)
 
@@ -206,7 +206,7 @@ No `dx.attach(path)` in v1 (see Future).
 At `install()` time:
 
 1. ipykernel present? → try to open comm.
-2. Comm target acknowledged by agent within timeout? → superpowers on.
+2. Comm target acknowledged by the runtime agent within timeout? → superpowers on.
 3. Otherwise → fallback (raw-bytes display_data).
 
 Plain `python` with no ipykernel: `install()` is a no-op, `display(df)` returns `repr(df)`, `put(...)` raises `dx.DxNoAgentError`.
@@ -296,7 +296,7 @@ Output writes keep the fork/merge pattern used today at `jupyter_kernel.rs` ~937
 | Missing serialization libs (no pyarrow, no fastparquet for pandas) | `install()` logs a warning at register time. `dx.display(df)` falls back to CSV-bytes or `repr`. |
 | Unknown DataFrame type | Existing IPython formatter chain; dx does not interfere. |
 
-Staging-area fallback (local spool, agent drains async) is **not** in v1 — listed in Future.
+Staging-area fallback (local spool, runtime agent drains async) is **not** in v1 — listed in Future.
 
 ## Testing
 
@@ -305,11 +305,11 @@ Staging-area fallback (local spool, agent drains async) is **not** in v1 — lis
 - **CRDT filter test (Rust):** run a comm_open + comm_msg on `nteract.dx.blob`; assert `RuntimeStateDoc.comms` is empty after, blob exists, inline manifest composed correctly once the ref MIME arrives.
 - **Agent unit (Rust):** `output_store::create_manifest` recognizes ref MIME, composes ContentRef without calling `BlobStore::put`.
 - **End-to-end (WebdriverIO):** fixture notebook with `dx.display(df)`; assert sift/parquet renderer renders interactive table; assert IOPub capture contains no raw binary payload in the display_data bundle.
-- **Vanilla-Jupyter smoke:** pytest that imports `dx`, calls `install()` with no agent, calls `display(df)` — asserts fallback path emits a `display_data` with raw-bytes parquet and no exceptions.
+- **Vanilla-Jupyter smoke:** pytest that imports `dx`, calls `install()` with no runtime agent, calls `display(df)` — asserts fallback path emits a `display_data` with raw-bytes parquet and no exceptions.
 
 ## Dependencies (on other work)
 
-- **Remote kernels (#1334)** — when the agent runs on a separate host from the daemon, the agent's current direct-filesystem-access to the blob store no longer works. A `PutBlob` frame on the agent↔daemon notebook-protocol socket (new request variant in `notebook-protocol/src/protocol.rs`) is needed. That frame belongs to the #1334 design, not this one, but dx's architecture is forward-compatible: the dx comm handler calls `BlobStore::put` today and would call whatever abstraction the remote-agent work lands tomorrow. No dx-side changes expected.
+- **Remote kernels (#1334)** — when the runtime agent runs on a separate host from the daemon, the runtime agent's current direct-filesystem-access to the blob store no longer works. A `PutBlob` frame on the runtime-agent↔daemon notebook-protocol socket (new request variant in `notebook-protocol/src/protocol.rs`) is needed. That frame belongs to the #1334 design, not this one, but dx's architecture is forward-compatible: the dx comm handler calls `BlobStore::put` today and would call whatever abstraction the remote-agent work lands tomorrow. No dx-side changes expected.
 
 ## Future: Interactive Query Backend
 
@@ -342,8 +342,8 @@ The important property for **this** spec: nothing in v1 paints us into a corner.
 
 The comm protocol extends naturally to append-streaming Arrow batches (Arrow IPC streams, ADBC-style result handling):
 
-- `op: "stream_open" { stream_id, content_type }` → agent opens a streaming manifest in the CRDT (list of blob refs).
-- `op: "put" { stream_id, req_id, ... }` appends a blob; agent appends ContentRef to the stream's list.
+- `op: "stream_open" { stream_id, content_type }` → runtime agent opens a streaming manifest in the CRDT (list of blob refs).
+- `op: "put" { stream_id, req_id, ... }` appends a blob; runtime agent appends ContentRef to the stream's list.
 - `op: "stream_close" { stream_id }` marks the stream complete.
 - Renderer observes the list and appends rows as blobs arrive; shows a progress indicator until close.
 

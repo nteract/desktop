@@ -18,12 +18,13 @@ build-backend = "setuptools.build_meta"
 packages = []
 
 [tool.uv.workspace]
-members = ["python/runtimed", "python/nteract", "python/gremlin", "python/prewarm"]
+members = ["python/runtimed", "python/nteract", "python/gremlin", "python/prewarm", "python/dx"]
 
 [tool.uv.sources]
 runtimed = { workspace = true }
 nteract = { workspace = true }
 gremlin = { workspace = true }
+dx = { workspace = true }
 
 [tool.ruff]
 line-length = 100

@@ -88,7 +88,7 @@ Add near the top of `crates/notebook-doc/src/mime.rs` (after existing constants)
 ///
 /// Emitted by `dx.display(...)` in place of raw binary bytes. The payload is a
 /// small JSON object carrying a content hash and the target `content_type`;
-/// the agent composes a `ContentRef` in the inline output manifest from it.
+/// the runtime agent composes a `ContentRef` in the inline output manifest from it.
 ///
 /// Schema:
 /// ```json
@@ -179,7 +179,7 @@ packages = ["src/dx"]
 """nteract/dx — efficient Python → blob store display.
 
 Public API:
-- install(): register IPython formatters + open the agent comm channel
+- install(): register IPython formatters + open the runtime agent comm channel
 - display(obj): upgraded display routed through the blob store when possible
 - put(data, content_type): low-level upload primitive
 - display_blob_ref(ref): emit a display_data bundle referencing an existing blob
@@ -205,7 +205,7 @@ class DxTimeoutError(DxError):
 
 
 class DxPayloadTooLargeError(DxError):
-    """Raised when an upload exceeds the agent's MAX_BLOB_SIZE."""
+    """Raised when an upload exceeds the runtime agent's MAX_BLOB_SIZE."""
 
 
 def install() -> None:
@@ -914,7 +914,7 @@ class FakeComm:
     def close(self):
         self.closed = True
 
-    # test helper: simulate an incoming message from the agent
+    # test helper: simulate an incoming message from the runtime agent
     def incoming(self, data, buffers=None):
         assert self._handler is not None
         self._handler({"content": {"data": data}, "buffers": buffers or []})
@@ -1470,7 +1470,7 @@ git commit -m "feat(dx): install(), IPython formatters, display_blob_ref"
 
 ---
 
-## Task 9: Agent — `nteract.dx.*` namespace filter + blob comm handler
+## Task 9: Runtime agent — `nteract.dx.*` namespace filter + blob comm handler
 
 **Files:**
 - Modify: `crates/runtimed/src/jupyter_kernel.rs` (~lines 1240–1410 for comm_open/comm_msg)
@@ -1479,7 +1479,7 @@ git commit -m "feat(dx): install(), IPython formatters, display_blob_ref"
 
 Context: the comm_open handler currently writes to `RuntimeStateDoc::put_comm`. We need a prefix check BEFORE that so dx comms short-circuit. The handler then reads buffers from comm_msg and calls `BlobStore::put`.
 
-To reply to the kernel, the agent uses its existing shell-socket send path. Look for `SendComm` handling on `crates/runtimed/src/jupyter_kernel.rs` to find how to emit a comm_msg back to the kernel. Reuse that mechanism.
+To reply to the kernel, the runtime agent uses its existing shell-socket send path. Look for `SendComm` handling on `crates/runtimed/src/jupyter_kernel.rs` to find how to emit a comm_msg back to the kernel. Reuse that mechanism.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1507,7 +1507,7 @@ async fn dx_comm_open_does_not_write_comm_doc_entry() {
     // invoke the comm-open path for target="nteract.dx.blob", and assert
     // that state_doc.comms remains empty.
     //
-    // (Full wiring is in the agent's IOPub handler; here we test the filter
+    // (Full wiring is in the runtime agent's IOPub handler; here we test the filter
     // function directly and rely on Task 9 Step 3 to enforce it at the call
     // site.)
     let mut doc = RuntimeStateDoc::new();
@@ -1760,7 +1760,7 @@ git commit -m "feat(runtimed): nteract.dx.blob comm handler + namespace filter"
 
 ---
 
-## Task 10: Agent — recognize ref MIME in `create_manifest`
+## Task 10: Runtime agent — recognize ref MIME in `create_manifest`
 
 **Files:**
 - Modify: `crates/runtimed/src/output_store.rs`
@@ -1929,7 +1929,7 @@ runtimed = pytest.importorskip("runtimed")
 
 @pytest.mark.integration
 async def test_dx_display_writes_content_ref_not_raw_bytes(daemon_client, tmp_notebook):
-    """dx.display(df) should emit a blob-ref MIME; the agent should compose a ContentRef."""
+    """dx.display(df) should emit a blob-ref MIME; the runtime agent should compose a ContentRef."""
     notebook = await daemon_client.open_notebook(tmp_notebook)
     await notebook.add_dependency("pandas")
     await notebook.add_dependency("pyarrow")
@@ -2194,7 +2194,7 @@ git commit -m "docs(dx): add brief usage note"
 
 ## Follow-ups (not in scope)
 
-- `PutBlob` frame on the agent↔daemon notebook-protocol socket for remote agents (part of #1334).
+- `PutBlob` frame on the runtime-agent↔daemon notebook-protocol socket for remote agents (part of #1334).
 - Renderer UX for `summary` hints ("showing N of M rows" banner).
 - `dx.attach(path)` with chunked upload (likely arrives with streaming).
 - Interactive query backend (see spec Future section).

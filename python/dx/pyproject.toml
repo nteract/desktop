@@ -1,0 +1,32 @@
+[project]
+name = "dx"
+version = "0.1.0"
+description = "nteract/dx — efficient display and blob-store uploads from Python kernels"
+readme = "README.md"
+license = "BSD-3-Clause"
+authors = [
+    { name = "Kyle Kelley", email = "rgbkrk@gmail.com" }
+]
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+pandas = ["pandas>=2.0", "pyarrow>=14"]
+polars = ["polars>=0.20"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dx"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.9",
+    "pandas>=2.0",
+    "pyarrow>=14",
+    "polars>=0.20",
+    "ipykernel>=6.0",
+]
