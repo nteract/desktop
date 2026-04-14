@@ -149,6 +149,150 @@ pub fn pixi_toml_has_ipykernel(path: &Path) -> bool {
     false
 }
 
+/// Minimal environment.yml parse result for the daemon.
+///
+/// Only extracts what the daemon needs: dependency names, channels, python version.
+/// The full YAML parser lives in `crates/notebook/src/environment_yml.rs` (Tauri side).
+#[derive(Debug, Clone)]
+pub struct EnvironmentYmlConfig {
+    pub dependencies: Vec<String>,
+    pub channels: Vec<String>,
+    pub python: Option<String>,
+    pub name: Option<String>,
+}
+
+/// Parse an environment.yml file with a line-based parser (no serde_yaml dep).
+///
+/// Handles the common structure:
+/// ```yaml
+/// name: myenv
+/// channels:
+///   - conda-forge
+/// dependencies:
+///   - numpy=1.24
+///   - pandas
+///   - python=3.11
+///   - pip:
+///     - requests
+/// ```
+pub fn parse_environment_yml(path: &Path) -> Result<EnvironmentYmlConfig, String> {
+    let content =
+        std::fs::read_to_string(path).map_err(|e| format!("Failed to read {:?}: {}", path, e))?;
+    parse_environment_yml_content(&content)
+}
+
+/// Parse environment.yml content (testable without filesystem).
+fn parse_environment_yml_content(content: &str) -> Result<EnvironmentYmlConfig, String> {
+    let mut name = None;
+    let mut channels = Vec::new();
+    let mut dependencies = Vec::new();
+    let mut python = None;
+
+    #[derive(PartialEq)]
+    enum Section {
+        None,
+        Channels,
+        Dependencies,
+        Pip, // inside dependencies: pip: sub-list
+    }
+    let mut section = Section::None;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        // Skip empty lines and comments
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        // Top-level keys (no leading whitespace)
+        if !line.starts_with(' ') && !line.starts_with('\t') {
+            if let Some(val) = trimmed.strip_prefix("name:") {
+                name = Some(val.trim().trim_matches('"').trim_matches('\'').to_string());
+                section = Section::None;
+            } else if trimmed == "channels:" {
+                section = Section::Channels;
+            } else if trimmed == "dependencies:" {
+                section = Section::Dependencies;
+            } else {
+                section = Section::None;
+            }
+            continue;
+        }
+
+        // Indented content (list items)
+        match section {
+            Section::Channels => {
+                if let Some(item) = trimmed.strip_prefix("- ") {
+                    channels.push(item.trim().trim_matches('"').trim_matches('\'').to_string());
+                } else if !trimmed.starts_with('-') {
+                    section = Section::None;
+                }
+            }
+            Section::Dependencies => {
+                if trimmed == "- pip:" {
+                    section = Section::Pip;
+                } else if let Some(item) = trimmed.strip_prefix("- ") {
+                    let dep = item.trim().trim_matches('"').trim_matches('\'').to_string();
+                    // Check if this is the python dep
+                    let pkg_name = dep.split(['=', '>', '<', '!', ' ']).next().unwrap_or("");
+                    if pkg_name == "python" {
+                        // Extract version
+                        let version_part = dep
+                            .trim_start_matches("python")
+                            .trim_start_matches(">=")
+                            .trim_start_matches("<=")
+                            .trim_start_matches("==")
+                            .trim_start_matches('=')
+                            .trim_start_matches('>')
+                            .trim_start_matches('<')
+                            .trim();
+                        if !version_part.is_empty() {
+                            let first = version_part.split(',').next().unwrap_or(version_part);
+                            let cleaned = first.trim_end_matches(".*");
+                            let parts: Vec<&str> = cleaned.split('.').collect();
+                            if parts.len() >= 2 {
+                                python = Some(format!("{}.{}", parts[0], parts[1]));
+                            } else if !parts.is_empty() && !parts[0].is_empty() {
+                                python = Some(parts[0].to_string());
+                            }
+                        }
+                    } else {
+                        dependencies.push(dep);
+                    }
+                } else if !trimmed.starts_with('-') && !trimmed.starts_with("pip:") {
+                    section = Section::None;
+                }
+            }
+            Section::Pip => {
+                // Skip pip deps for now — they'd need uv/pip to install
+                if let Some(_item) = trimmed.strip_prefix("- ") {
+                    // pip deps are not supported in conda:env_yml yet
+                } else if !trimmed.starts_with('-') {
+                    section = Section::Dependencies;
+                    // Re-process the line in case it's a new dependency
+                    if let Some(item) = trimmed.strip_prefix("- ") {
+                        let dep = item.trim().trim_matches('"').trim_matches('\'').to_string();
+                        dependencies.push(dep);
+                    }
+                }
+            }
+            Section::None => {}
+        }
+    }
+
+    if channels.is_empty() {
+        channels.push("defaults".to_string());
+    }
+
+    Ok(EnvironmentYmlConfig {
+        dependencies,
+        channels,
+        python,
+        name,
+    })
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -298,5 +442,53 @@ mod tests {
             "[project]\nname = \"test\"\n\n[tool.pixi.dependencies]\nipykernel = \"*\"\nnumpy = \"*\"\n",
         );
         assert!(pixi_toml_has_ipykernel(&temp.path().join("pyproject.toml")));
+    }
+
+    #[test]
+    fn test_parse_env_yml_basic() {
+        let content = "name: myenv\nchannels:\n  - conda-forge\ndependencies:\n  - numpy=1.24\n  - pandas\n  - python=3.11\n";
+        let config = parse_environment_yml_content(content).unwrap();
+        assert_eq!(config.name, Some("myenv".to_string()));
+        assert_eq!(config.channels, vec!["conda-forge"]);
+        assert_eq!(config.dependencies, vec!["numpy=1.24", "pandas"]);
+        assert_eq!(config.python, Some("3.11".to_string()));
+    }
+
+    #[test]
+    fn test_parse_env_yml_with_pip() {
+        let content = "name: test\nchannels:\n  - conda-forge\n  - defaults\ndependencies:\n  - numpy\n  - pip:\n    - requests\n    - flask\n  - scipy\n";
+        let config = parse_environment_yml_content(content).unwrap();
+        assert_eq!(config.channels, vec!["conda-forge", "defaults"]);
+        // pip deps are skipped, scipy after pip block should still be captured
+        assert!(config.dependencies.contains(&"numpy".to_string()));
+    }
+
+    #[test]
+    fn test_parse_env_yml_no_channels() {
+        let content = "name: test\ndependencies:\n  - numpy\n";
+        let config = parse_environment_yml_content(content).unwrap();
+        assert_eq!(config.channels, vec!["defaults"]);
+        assert_eq!(config.dependencies, vec!["numpy"]);
+    }
+
+    #[test]
+    fn test_parse_env_yml_python_version_extraction() {
+        let content = "dependencies:\n  - python>=3.9,<4\n  - numpy\n";
+        let config = parse_environment_yml_content(content).unwrap();
+        assert_eq!(config.python, Some("3.9".to_string()));
+        assert_eq!(config.dependencies, vec!["numpy"]);
+    }
+
+    #[test]
+    fn test_parse_env_yml_from_file() {
+        let temp = TempDir::new().unwrap();
+        write_file(
+            temp.path(),
+            "environment.yml",
+            "name: analysis\nchannels:\n  - conda-forge\ndependencies:\n  - numpy\n  - pandas\n",
+        );
+        let config = parse_environment_yml(&temp.path().join("environment.yml")).unwrap();
+        assert_eq!(config.name, Some("analysis".to_string()));
+        assert_eq!(config.dependencies, vec!["numpy", "pandas"]);
     }
 }

@@ -235,6 +235,83 @@ impl KernelConnection for JupyterKernel {
                         cmd.stderr(Stdio::piped());
                         cmd
                     }
+                    "conda:env_yml" => {
+                        // Use the project's actual conda environment from environment.yml.
+                        // Rattler creates/syncs a prefix at {project_dir}/.conda-env/.
+                        let env_yml_path = notebook_path.as_deref().and_then(|p| {
+                            crate::project_file::detect_project_file(p)
+                                .filter(|d| {
+                                    d.kind == crate::project_file::ProjectFileKind::EnvironmentYml
+                                })
+                                .map(|d| d.path)
+                        });
+
+                        if let Some(ref yml_path) = env_yml_path {
+                            let project_dir = yml_path
+                                .parent()
+                                .unwrap_or_else(|| std::path::Path::new("."));
+                            let conda_prefix = project_dir.join(".conda-env");
+
+                            #[cfg(target_os = "windows")]
+                            let python = conda_prefix.join("python.exe");
+                            #[cfg(not(target_os = "windows"))]
+                            let python = conda_prefix.join("bin").join("python");
+
+                            if python.exists() {
+                                info!(
+                                    "[jupyter-kernel] Starting Python kernel from conda:env_yml prefix ({})",
+                                    python.display()
+                                );
+                                let mut cmd = tokio::process::Command::new(&python);
+                                cmd.env("CONDA_PREFIX", &conda_prefix);
+                                cmd.current_dir(project_dir);
+                                cmd.args([
+                                    "-Xfrozen_modules=off",
+                                    "-m",
+                                    "ipykernel_launcher",
+                                    "-f",
+                                ]);
+                                cmd.arg(&connection_file_path);
+                                cmd.stdout(Stdio::null());
+                                cmd.stderr(Stdio::piped());
+                                cmd
+                            } else {
+                                warn!(
+                                    "[jupyter-kernel] conda:env_yml prefix exists but python not found at {}, falling back to pooled env",
+                                    python.display()
+                                );
+                                let pooled_env = env.ok_or_else(|| {
+                                    anyhow::anyhow!(
+                                        "conda:env_yml has no prepared environment (prefix missing python)"
+                                    )
+                                })?;
+                                let mut cmd = tokio::process::Command::new(&pooled_env.python_path);
+                                cmd.args([
+                                    "-Xfrozen_modules=off",
+                                    "-m",
+                                    "ipykernel_launcher",
+                                    "-f",
+                                ]);
+                                cmd.arg(&connection_file_path);
+                                cmd.stdout(Stdio::null());
+                                cmd.stderr(Stdio::piped());
+                                cmd
+                            }
+                        } else {
+                            warn!("[jupyter-kernel] conda:env_yml but no environment.yml found, falling back to pooled env");
+                            let pooled_env = env.ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "conda:env_yml has no environment.yml and no pooled environment"
+                                )
+                            })?;
+                            let mut cmd = tokio::process::Command::new(&pooled_env.python_path);
+                            cmd.args(["-Xfrozen_modules=off", "-m", "ipykernel_launcher", "-f"]);
+                            cmd.arg(&connection_file_path);
+                            cmd.stdout(Stdio::null());
+                            cmd.stderr(Stdio::piped());
+                            cmd
+                        }
+                    }
                     "pixi:toml" => {
                         let manifest_path = notebook_path.as_deref().and_then(|p| {
                             crate::project_file::detect_project_file(p)

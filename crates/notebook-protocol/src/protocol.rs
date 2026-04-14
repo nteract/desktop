@@ -42,6 +42,15 @@ pub struct LaunchedEnvConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pyproject_path: Option<PathBuf>,
 
+    /// Path to environment.yml (conda:env_yml only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub environment_yml_path: Option<PathBuf>,
+
+    /// Conda deps snapshot from environment.yml for drift detection (conda:env_yml only).
+    /// Combined sorted list of conda dependency names from environment.yml.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub environment_yml_deps: Option<Vec<String>>,
+
     /// Deno config (if kernel_type is "deno")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deno_config: Option<DenoLaunchedConfig>,
