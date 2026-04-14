@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import Enum
+from typing import Any
 
 
 class Environment(str, Enum):
@@ -11,7 +12,7 @@ class Environment(str, Enum):
     IPYKERNEL = "ipykernel"
 
 
-def _get_ipython() -> object | None:
+def _get_ipython() -> Any | None:
     """Return the active IPython instance, or ``None``.
 
     Extracted for test monkeypatching.

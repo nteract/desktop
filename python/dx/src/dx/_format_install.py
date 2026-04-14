@@ -33,8 +33,13 @@ _INSTALLED = False
 _MAX_PAYLOAD_BYTES = int(os.environ.get("DX_MAX_PAYLOAD_BYTES", str(90 * 1024 * 1024)))
 
 
-def _get_ipython_for_format() -> object | None:
-    """Extracted for test monkeypatching."""
+def _get_ipython_for_format() -> Any | None:
+    """Extracted for test monkeypatching.
+
+    Return type is ``Any`` because IPython's ``InteractiveShell`` has a
+    dynamic ``display_formatter`` attribute we poke directly; a strictly
+    typed return would need an IPython type stub we don't depend on.
+    """
     try:
         from IPython import get_ipython as _gi
     except ImportError:
@@ -42,7 +47,7 @@ def _get_ipython_for_format() -> object | None:
     return _gi()
 
 
-def _kernel_session_and_socket() -> tuple[object, object] | None:
+def _kernel_session_and_socket() -> tuple[Any, Any] | None:
     """Return ``(session, iopub_socket)`` if we're under ipykernel.
 
     Returns ``None`` in plain IPython or plain python — caller falls back to

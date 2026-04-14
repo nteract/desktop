@@ -77,6 +77,11 @@ extra-paths = [
     "python/nteract/src",
     "python/gremlin/src",
     "python/prewarm/src",
+    "python/dx/src",
+    # Integration tests sit side-by-side under tests/ and share fixtures
+    # via direct import (sys.path injection at runtime). Add the dir so
+    # ty can resolve the cross-file fixture imports.
+    "python/runtimed/tests",
 ]
 
 [tool.ty.rules]
