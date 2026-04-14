@@ -144,8 +144,9 @@ const LINE_HEIGHT = 20;
 const CELL_PAD_H = 24; // 12px each side
 const CELL_PAD_V = 16; // 8px top + 8px bottom
 const MIN_COL_WIDTH = 60;
-const OVERSCAN = 20; // extra rows above/below viewport
-const OVERSCAN_VELOCITY = 40; // additional rows in scroll direction when scrolling fast
+const OVERSCAN = 40; // base buffer rows above/below viewport
+const OVERSCAN_VELOCITY_SCALE = 3; // extra rows per 10px of scroll delta
+const MAX_OVERSCAN = 120; // cap total overscan per side
 
 // --- Table Engine ---
 
@@ -1161,14 +1162,17 @@ export function createTable(
     const visFirst = rowAtOffset(scrollTop);
     const visLast = Math.min(rowAtOffset(scrollTop + viewportH), filteredCount - 1);
 
-    // Scroll velocity: extra overscan in the direction of travel
+    // Scroll velocity: proportional overscan in the direction of travel
     const scrollDelta = scrollTop - lastScrollTop;
     const scrollingDown = scrollDelta > 0;
-    const scrollingFast = Math.abs(scrollDelta) > 100;
-    const extraOverscan = scrollingFast ? OVERSCAN_VELOCITY : 0;
+    const absDelta = Math.abs(scrollDelta);
+    const velocityOverscan = Math.min(
+      Math.round((absDelta / 10) * OVERSCAN_VELOCITY_SCALE),
+      MAX_OVERSCAN,
+    );
 
-    const overscanBefore = OVERSCAN + (scrollingDown ? 0 : extraOverscan);
-    const overscanAfter = OVERSCAN + (scrollingDown ? extraOverscan : 0);
+    const overscanBefore = OVERSCAN + (scrollingDown ? 0 : velocityOverscan);
+    const overscanAfter = OVERSCAN + (scrollingDown ? velocityOverscan : 0);
 
     const first = Math.max(0, visFirst - overscanBefore);
     const last = Math.min(visLast + overscanAfter, filteredCount - 1);
