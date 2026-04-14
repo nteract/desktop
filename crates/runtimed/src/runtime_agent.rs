@@ -327,6 +327,72 @@ pub async fn run_runtime_agent(
     Ok(())
 }
 
+/// Maximum wall-clock time allowed for a single `JupyterKernel::launch()` call.
+/// This prevents the runtime agent from hanging indefinitely if the kernel
+/// process starts but never becomes responsive (e.g., partial ZMQ bind failure).
+const KERNEL_LAUNCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Maximum number of launch attempts before giving up. Retries handle transient
+/// port collisions under high concurrency (TOCTOU race in port allocation).
+const KERNEL_LAUNCH_MAX_ATTEMPTS: usize = 3;
+
+/// Launch a kernel with timeout and retry. Returns the launched kernel and its
+/// command receiver, or an error if all attempts fail.
+///
+/// Each attempt gets a fresh `KernelLaunchConfig` (cloned from the template)
+/// so that port allocation starts from scratch on retry.
+async fn launch_kernel_with_retry(
+    config_template: &KernelLaunchConfig,
+    shared_template: &KernelSharedRefs,
+) -> Result<(JupyterKernel, mpsc::Receiver<QueueCommand>), String> {
+    let mut last_error = String::new();
+
+    for attempt in 1..=KERNEL_LAUNCH_MAX_ATTEMPTS {
+        let config = config_template.clone();
+        let shared = shared_template.clone();
+
+        match tokio::time::timeout(KERNEL_LAUNCH_TIMEOUT, JupyterKernel::launch(config, shared))
+            .await
+        {
+            Ok(Ok((k, rx))) => return Ok((k, rx)),
+            Ok(Err(e)) => {
+                last_error = format!("{}", e);
+                if attempt < KERNEL_LAUNCH_MAX_ATTEMPTS {
+                    warn!(
+                        "[runtime-agent] Kernel launch attempt {}/{} failed: {} — retrying with fresh ports",
+                        attempt, KERNEL_LAUNCH_MAX_ATTEMPTS, last_error
+                    );
+                    // Small backoff before retry to let ports settle
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                } else {
+                    error!(
+                        "[runtime-agent] Kernel launch failed after {} attempts: {}",
+                        KERNEL_LAUNCH_MAX_ATTEMPTS, last_error
+                    );
+                }
+            }
+            Err(_) => {
+                last_error = format!(
+                    "Kernel launch timed out after {}s (attempt {}/{})",
+                    KERNEL_LAUNCH_TIMEOUT.as_secs(),
+                    attempt,
+                    KERNEL_LAUNCH_MAX_ATTEMPTS
+                );
+                if attempt < KERNEL_LAUNCH_MAX_ATTEMPTS {
+                    warn!(
+                        "[runtime-agent] {} — retrying with fresh ports",
+                        last_error
+                    );
+                } else {
+                    error!("[runtime-agent] {}", last_error);
+                }
+            }
+        }
+    }
+
+    Err(format!("Failed to launch kernel: {}", last_error))
+}
+
 /// Handle a `RuntimeAgentRequest` and return a `RuntimeAgentResponse`.
 ///
 /// Also returns an optional `cmd_rx` when a kernel is launched/restarted
@@ -388,7 +454,7 @@ async fn handle_runtime_agent_request(
                 pooled_env,
             };
 
-            match JupyterKernel::launch(config, shared).await {
+            match launch_kernel_with_retry(&config, &shared).await {
                 Ok((k, rx)) => {
                     let es = k.env_source().to_string();
                     *kernel = Some(k);
@@ -399,12 +465,7 @@ async fn handle_runtime_agent_request(
                         Some(rx),
                     )
                 }
-                Err(e) => (
-                    RuntimeAgentResponse::Error {
-                        error: format!("Failed to launch kernel: {}", e),
-                    },
-                    None,
-                ),
+                Err(e) => (RuntimeAgentResponse::Error { error: e }, None),
             }
         }
 
@@ -495,7 +556,7 @@ async fn handle_runtime_agent_request(
                 let _ = ctx.state_changed_tx.send(());
             }
 
-            match JupyterKernel::launch(config, shared).await {
+            match launch_kernel_with_retry(&config, &shared).await {
                 Ok((k, rx)) => {
                     let es = k.env_source().to_string();
                     *kernel = Some(k);
@@ -506,12 +567,7 @@ async fn handle_runtime_agent_request(
                         Some(rx),
                     )
                 }
-                Err(e) => (
-                    RuntimeAgentResponse::Error {
-                        error: format!("Failed to restart kernel: {}", e),
-                    },
-                    None,
-                ),
+                Err(e) => (RuntimeAgentResponse::Error { error: e }, None),
             }
         }
 

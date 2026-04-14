@@ -1573,48 +1573,71 @@ impl KernelConnection for JupyterKernel {
             let _ = iopub_cmd_tx.try_send(QueueCommand::KernelDied);
         });
 
-        // ── Shell connection ─────────────────────────────────────────────
+        // ── Shell connection + kernel alive check ─────────────────────────
+        //
+        // Wrap the entire shell-connect + kernel_info_reply exchange in a hard
+        // wall-clock deadline. The inner `select!` races shell.read() against
+        // died_rx for fast-path detection, but neither may fire if the kernel
+        // is alive-but-broken (e.g., partial ZMQ bind failure). The outer
+        // timeout guarantees we never hang indefinitely.
+        //
+        // See: https://github.com/nteract/desktop/issues/1770
 
-        let identity = runtimelib::peer_identity_for_session(&session_id)?;
-        let mut shell = runtimelib::create_client_shell_connection_with_identity(
-            &connection_info,
-            &session_id,
-            identity,
-        )
-        .await?;
+        let alive_check = async {
+            let identity = runtimelib::peer_identity_for_session(&session_id)?;
+            let mut shell = runtimelib::create_client_shell_connection_with_identity(
+                &connection_info,
+                &session_id,
+                identity,
+            )
+            .await?;
 
-        // Verify kernel is alive — race kernel_info_reply against process death
-        let request: JupyterMessage = KernelInfoRequest::default().into();
-        shell.send(request).await?;
+            let request: JupyterMessage = KernelInfoRequest::default().into();
+            shell.send(request).await?;
 
-        let reply = tokio::select! {
-            result = tokio::time::timeout(std::time::Duration::from_secs(30), shell.read()) => {
-                match result {
-                    Ok(Ok(msg)) => Ok(msg),
-                    Ok(Err(e)) => Err(anyhow::anyhow!("Kernel did not respond: {}", e)),
-                    Err(_) => Err(anyhow::anyhow!("Kernel did not respond within 30s")),
+            let reply = tokio::select! {
+                result = tokio::time::timeout(std::time::Duration::from_secs(30), shell.read()) => {
+                    match result {
+                        Ok(Ok(msg)) => Ok(msg),
+                        Ok(Err(e)) => Err(anyhow::anyhow!("Kernel did not respond: {}", e)),
+                        Err(_) => Err(anyhow::anyhow!("Kernel did not respond within 30s")),
+                    }
                 }
-            }
-            died_msg = died_rx => {
-                let msg = died_msg.unwrap_or_else(|_| "unknown".to_string());
-                Err(anyhow::anyhow!("Kernel process died before responding: {}", msg))
-            }
+                died_msg = died_rx => {
+                    let msg = died_msg.unwrap_or_else(|_| "unknown".to_string());
+                    Err(anyhow::anyhow!("Kernel process died before responding: {}", msg))
+                }
+            };
+            reply.map(|msg| (msg, shell))
         };
 
-        match reply {
-            Ok(msg) => {
-                info!(
-                    "[jupyter-kernel] Kernel alive: got {} reply",
-                    msg.header.msg_type
-                );
-            }
-            Err(e) => {
-                error!("[jupyter-kernel] {}", e);
-                // Abort process watcher to clean up orphaned kernel
-                process_watcher_task.abort();
-                return Err(e);
-            }
-        }
+        let (reply_msg, shell) =
+            match tokio::time::timeout(std::time::Duration::from_secs(45), alive_check).await {
+                Ok(Ok((msg, shell))) => {
+                    info!(
+                        "[jupyter-kernel] Kernel alive: got {} reply",
+                        msg.header.msg_type
+                    );
+                    (msg, shell)
+                }
+                Ok(Err(e)) => {
+                    error!("[jupyter-kernel] {}", e);
+                    process_watcher_task.abort();
+                    return Err(e);
+                }
+                Err(_) => {
+                    error!(
+                        "[jupyter-kernel] Hard launch deadline exceeded (45s) — \
+                         kernel may be alive but unresponsive (kernel_id={})",
+                        kernel_id
+                    );
+                    process_watcher_task.abort();
+                    return Err(anyhow::anyhow!(
+                        "Kernel launch deadline exceeded (45s): kernel alive but not responding"
+                    ));
+                }
+            };
+        let _ = reply_msg; // consumed above for the info! log
 
         // Split shell into reader/writer
         let (shell_writer, mut shell_reader) = shell.split();

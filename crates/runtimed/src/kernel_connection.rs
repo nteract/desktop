@@ -29,6 +29,7 @@ use notebook_protocol::protocol::LaunchedEnvConfig;
 /// Bundles the parameters that `KernelConnection::launch` needs beyond the
 /// shared references. Extracted so callers don't have to pass 6+ positional
 /// arguments.
+#[derive(Clone)]
 pub struct KernelLaunchConfig {
     /// Kernel type identifier (e.g., "python", "deno").
     pub kernel_type: String,
@@ -49,6 +50,7 @@ pub struct KernelLaunchConfig {
 /// These are `Arc`/`broadcast` handles held by the runtime agent and passed
 /// into the kernel at launch time. Grouped here so `launch()` takes two
 /// structs instead of a dozen parameters.
+#[derive(Clone)]
 pub struct KernelSharedRefs {
     /// Per-notebook runtime state document (daemon-authoritative).
     pub state_doc: Arc<RwLock<RuntimeStateDoc>>,
