@@ -369,6 +369,34 @@ fn build_launched_config(
                 }
             }
         }
+        "conda:env_yml" => {
+            // Store environment.yml path and deps baseline for drift detection.
+            // CRDT-only conda deps go into conda_deps for sync diff tracking.
+            config.conda_deps = metadata_snapshot.and_then(get_inline_conda_deps);
+            config.conda_channels = metadata_snapshot.map(get_inline_conda_channels);
+            // Pass venv/python paths so runtime agent can reconstruct PooledEnv
+            config.venv_path = venv_path;
+            config.python_path = python_path;
+            if let Some(pkgs) = prewarmed_packages {
+                config.prewarmed_packages = pkgs.to_vec();
+            }
+            if let Some(nb_path) = notebook_path {
+                if let Some(detected) = crate::project_file::find_nearest_project_file(
+                    nb_path,
+                    &[crate::project_file::ProjectFileKind::EnvironmentYml],
+                ) {
+                    // Parse environment.yml to snapshot deps at launch time
+                    if let Ok(env_config) =
+                        crate::project_file::parse_environment_yml(&detected.path)
+                    {
+                        let mut deps = env_config.dependencies.clone();
+                        deps.sort();
+                        config.environment_yml_deps = Some(deps);
+                    }
+                    config.environment_yml_path = Some(detected.path);
+                }
+            }
+        }
         "pixi:inline" => {
             // Store pixi deps for drift detection
             config.pixi_deps = inline_deps.map(|d| d.to_vec());
@@ -386,8 +414,8 @@ fn build_launched_config(
             }
         }
         _ => {
-            // All other Python env sources (conda:env_yml, etc.)
-            // use pooled environments — store paths so the runtime agent can reconstruct.
+            // All other Python env sources use pooled environments
+            // — store paths so the runtime agent can reconstruct.
             config.venv_path = venv_path;
             config.python_path = python_path;
             if let Some(pkgs) = prewarmed_packages {
@@ -529,6 +557,29 @@ fn compute_env_sync_diff(
                             .next()
                             .map(|n| n.trim().to_string())
                             .unwrap_or_else(|| dep.clone());
+                        removed.push(name);
+                    }
+                }
+            }
+        }
+    }
+
+    // Check conda:env_yml deps (file-based drift)
+    if let Some(ref launched_yml_deps) = launched.environment_yml_deps {
+        if let Some(ref yml_path) = launched.environment_yml_path {
+            if let Ok(env_config) = crate::project_file::parse_environment_yml(yml_path) {
+                let mut current_deps = env_config.dependencies;
+                current_deps.sort();
+
+                for dep in &current_deps {
+                    if !launched_yml_deps.contains(dep) {
+                        let name = notebook_doc::metadata::extract_package_name(dep).to_string();
+                        added.push(name);
+                    }
+                }
+                for dep in launched_yml_deps {
+                    if !current_deps.contains(dep) {
+                        let name = notebook_doc::metadata::extract_package_name(dep).to_string();
                         removed.push(name);
                     }
                 }
@@ -4892,7 +4943,10 @@ async fn handle_notebook_request(
             // For project-backed envs, promote any inline deps to the project
             // file before launching. This handles the case where add_dependency
             // wrote to CRDT metadata and then triggered a restart.
-            if resolved_env_source == "pixi:toml" || resolved_env_source == "uv:pyproject" {
+            if resolved_env_source == "pixi:toml"
+                || resolved_env_source == "uv:pyproject"
+                || resolved_env_source == "conda:env_yml"
+            {
                 if let Some(ref snap) = metadata_snapshot {
                     let has_inline = match resolved_env_source.as_str() {
                         "pixi:toml" => snap
@@ -4905,6 +4959,11 @@ async fn handle_notebook_request(
                             .uv
                             .as_ref()
                             .is_some_and(|u| !u.dependencies.is_empty()),
+                        "conda:env_yml" => snap
+                            .runt
+                            .conda
+                            .as_ref()
+                            .is_some_and(|c| !c.dependencies.is_empty()),
                         _ => false,
                     };
                     if has_inline {
@@ -4924,6 +4983,25 @@ async fn handle_notebook_request(
                                 if let Ok(content) = std::fs::read_to_string(path) {
                                     promo_config.pixi_toml_deps =
                                         Some(extract_pixi_toml_deps(&content));
+                                }
+                            }
+                        } else if resolved_env_source == "conda:env_yml" {
+                            promo_config.environment_yml_path =
+                                notebook_path.as_ref().and_then(|p| {
+                                    crate::project_file::find_nearest_project_file(
+                                        p,
+                                        &[crate::project_file::ProjectFileKind::EnvironmentYml],
+                                    )
+                                    .map(|d| d.path)
+                                });
+                            // Launched baseline = current env.yml deps (before promotion)
+                            if let Some(ref path) = promo_config.environment_yml_path {
+                                if let Ok(env_config) =
+                                    crate::project_file::parse_environment_yml(path)
+                                {
+                                    let mut deps = env_config.dependencies;
+                                    deps.sort();
+                                    promo_config.environment_yml_deps = Some(deps);
                                 }
                             }
                         } else {
@@ -5006,8 +5084,8 @@ async fn handle_notebook_request(
                             };
                         }
                     },
-                    "uv:pyproject" | "uv:inline" | "uv:pep723" | "conda:inline" | "pixi:toml"
-                    | "pixi:inline" | "pixi:pep723" => {
+                    "uv:pyproject" | "uv:inline" | "uv:pep723" | "conda:inline"
+                    | "conda:env_yml" | "pixi:toml" | "pixi:inline" | "pixi:pep723" => {
                         // These sources prepare their own environments, no pooled env needed
                         info!(
                             "[notebook-sync] LaunchKernel: {} prepares its own env, no pool env",
@@ -5282,6 +5360,215 @@ async fn handle_notebook_request(
                         }
                     }
                 } else {
+                    (pooled_env, None)
+                }
+            } else if resolved_env_source == "conda:env_yml" {
+                // conda:env_yml: find or create a named conda env from environment.yml.
+                // Uses standard conda env discovery: name: field → search conda env dirs,
+                // prefix: field → use that path directly. Falls back to creating via rattler.
+                let yml_path = notebook_path.as_ref().and_then(|p| {
+                    crate::project_file::find_nearest_project_file(
+                        p,
+                        &[crate::project_file::ProjectFileKind::EnvironmentYml],
+                    )
+                    .map(|d| d.path)
+                });
+
+                if let Some(ref yml) = yml_path {
+                    match crate::project_file::parse_environment_yml(yml) {
+                        Ok(env_config) => {
+                            // Resolve the conda prefix: prefix: → direct path,
+                            // name: → search standard dirs, create if not found.
+                            let conda_prefix = if let Some(ref prefix) = env_config.prefix {
+                                // Explicit prefix: path from environment.yml
+                                prefix.clone()
+                            } else if let Some(ref name) = env_config.name {
+                                // Named env — search for existing, or determine creation path
+                                crate::project_file::find_named_conda_env(name).unwrap_or_else(
+                                    || {
+                                        // Will create at default location
+                                        crate::project_file::default_conda_envs_dir().join(name)
+                                    },
+                                )
+                            } else {
+                                // No name or prefix — use a hash-based env in cache
+                                let cache_dir = crate::default_cache_dir().join("conda-envs");
+                                let conda_deps_tmp = kernel_env::CondaDependencies {
+                                    dependencies: env_config.dependencies.clone(),
+                                    channels: env_config.channels.clone(),
+                                    python: env_config.python.clone(),
+                                    env_id: None,
+                                };
+                                cache_dir.join(kernel_env::conda::compute_env_hash(&conda_deps_tmp))
+                            };
+
+                            // Merge env.yml deps with any CRDT notebook deps (additive)
+                            let mut all_deps = env_config.dependencies.clone();
+                            if let Some(crdt_deps) =
+                                metadata_snapshot.as_ref().and_then(get_inline_conda_deps)
+                            {
+                                let base_names: std::collections::HashSet<String> = all_deps
+                                    .iter()
+                                    .map(|d| {
+                                        notebook_doc::metadata::extract_package_name(d)
+                                            .to_lowercase()
+                                    })
+                                    .collect();
+                                for dep in &crdt_deps {
+                                    let name = notebook_doc::metadata::extract_package_name(dep)
+                                        .to_lowercase();
+                                    if !base_names.contains(&name) {
+                                        all_deps.push(dep.clone());
+                                    }
+                                }
+                            }
+
+                            // Always include ipykernel
+                            let base_names: std::collections::HashSet<String> = all_deps
+                                .iter()
+                                .map(|d| {
+                                    notebook_doc::metadata::extract_package_name(d).to_lowercase()
+                                })
+                                .collect();
+                            if !base_names.contains("ipykernel") {
+                                all_deps.push("ipykernel".to_string());
+                            }
+
+                            let channels = if env_config.channels.is_empty() {
+                                vec!["conda-forge".to_string()]
+                            } else {
+                                env_config.channels.clone()
+                            };
+
+                            let env_name_display =
+                                env_config.name.as_deref().unwrap_or("<unnamed>");
+                            info!(
+                                "[notebook-sync] conda:env_yml: env '{}' at {:?} with {} deps",
+                                env_name_display,
+                                conda_prefix,
+                                all_deps.len()
+                            );
+
+                            let conda_deps = kernel_env::CondaDependencies {
+                                dependencies: all_deps,
+                                channels,
+                                python: env_config.python.clone(),
+                                env_id: None,
+                            };
+
+                            let python_path = crate::project_file::conda_python_path(&conda_prefix);
+
+                            if python_path.exists() {
+                                // Existing env — sync deps into it
+                                let conda_env = kernel_env::CondaEnvironment {
+                                    env_path: conda_prefix.clone(),
+                                    python_path: python_path.clone(),
+                                };
+                                launch_progress_handler.on_progress(
+                                    "conda",
+                                    kernel_env::EnvProgressPhase::Installing {
+                                        total: conda_deps.dependencies.len(),
+                                    },
+                                );
+                                if let Err(e) =
+                                    kernel_env::conda::sync_dependencies(&conda_env, &conda_deps)
+                                        .await
+                                {
+                                    warn!(
+                                        "[notebook-sync] conda:env_yml sync into existing env failed: {}, continuing with existing env",
+                                        e
+                                    );
+                                }
+                                let env = Some(crate::PooledEnv {
+                                    env_type: crate::EnvType::Conda,
+                                    venv_path: conda_prefix,
+                                    python_path,
+                                    prewarmed_packages: vec![],
+                                });
+                                (
+                                    env,
+                                    metadata_snapshot.as_ref().and_then(get_inline_conda_deps),
+                                )
+                            } else {
+                                // No existing env — create it via rattler at the target path.
+                                // prepare_environment_in creates {cache_dir}/{hash}/, so we
+                                // pass the parent and then rename to the target name.
+                                let parent = conda_prefix
+                                    .parent()
+                                    .unwrap_or_else(|| std::path::Path::new("/tmp"));
+                                if let Err(e) = tokio::fs::create_dir_all(parent).await {
+                                    reset_starting_state(room, None).await;
+                                    return NotebookResponse::Error {
+                                        error: format!(
+                                            "Failed to create conda envs directory {:?}: {}",
+                                            parent, e
+                                        ),
+                                    };
+                                }
+                                match kernel_env::conda::prepare_environment_in(
+                                    &conda_deps,
+                                    parent,
+                                    launch_progress_handler.clone(),
+                                )
+                                .await
+                                {
+                                    Ok(prepared) => {
+                                        // Rename hash-based dir to the target env name
+                                        let final_prefix = if prepared.env_path != conda_prefix {
+                                            match tokio::fs::rename(
+                                                &prepared.env_path,
+                                                &conda_prefix,
+                                            )
+                                            .await
+                                            {
+                                                Ok(()) => conda_prefix.clone(),
+                                                Err(e) => {
+                                                    warn!(
+                                                        "[notebook-sync] Failed to rename {:?} -> {:?}: {}, using hash path",
+                                                        prepared.env_path, conda_prefix, e
+                                                    );
+                                                    prepared.env_path
+                                                }
+                                            }
+                                        } else {
+                                            prepared.env_path
+                                        };
+                                        let python =
+                                            crate::project_file::conda_python_path(&final_prefix);
+                                        let env = Some(crate::PooledEnv {
+                                            env_type: crate::EnvType::Conda,
+                                            venv_path: final_prefix,
+                                            python_path: python,
+                                            prewarmed_packages: vec![],
+                                        });
+                                        (
+                                            env,
+                                            metadata_snapshot
+                                                .as_ref()
+                                                .and_then(get_inline_conda_deps),
+                                        )
+                                    }
+                                    Err(e) => {
+                                        reset_starting_state(room, None).await;
+                                        return NotebookResponse::Error {
+                                            error: format!(
+                                                "Failed to create conda env '{}' from environment.yml: {}",
+                                                env_name_display, e
+                                            ),
+                                        };
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            reset_starting_state(room, None).await;
+                            return NotebookResponse::Error {
+                                error: format!("Failed to parse environment.yml: {}", e),
+                            };
+                        }
+                    }
+                } else {
+                    warn!("[notebook-sync] conda:env_yml but no environment.yml found");
                     (pooled_env, None)
                 }
             } else if resolved_env_source == "pixi:inline" {
@@ -6193,6 +6480,38 @@ async fn handle_notebook_request(
 /// them to the project file via `pixi add` / `uv add`, then clears the inline
 /// section from the CRDT.
 ///
+/// Find the byte offset in an environment.yml string where new dependencies
+/// should be inserted (end of the `dependencies:` list, before the next
+/// top-level key or EOF).
+fn find_env_yml_deps_insertion_point(content: &str) -> Option<usize> {
+    let mut in_deps = false;
+    let mut last_dep_end = None;
+
+    for (i, line) in content.lines().enumerate() {
+        let trimmed = line.trim();
+
+        if !line.starts_with(' ') && !line.starts_with('\t') {
+            if trimmed == "dependencies:" {
+                in_deps = true;
+                // Position after this line (clamped for files without trailing newline)
+                let offset: usize = content.lines().take(i + 1).map(|l| l.len() + 1).sum();
+                last_dep_end = Some(offset.min(content.len()));
+                continue;
+            } else if in_deps && !trimmed.is_empty() && !trimmed.starts_with('#') {
+                // Hit a new top-level key — insert before it
+                return last_dep_end;
+            }
+        }
+
+        if in_deps && trimmed.starts_with("- ") {
+            let offset: usize = content.lines().take(i + 1).map(|l| l.len() + 1).sum();
+            last_dep_end = Some(offset.min(content.len()));
+        }
+    }
+
+    last_dep_end
+}
+
 /// For removals, compares CRDT deps against launched baseline and runs
 /// `pixi remove` / `uv remove` for any deps that were removed.
 ///
@@ -6285,6 +6604,101 @@ async fn promote_inline_deps_to_project(
                     let mut snap = fork.get_metadata_snapshot().unwrap_or_default();
                     let pixi = snap.pixi_section_or_default();
                     pixi.dependencies = deps;
+                    let _ = fork.set_metadata_snapshot(&snap);
+                });
+            }
+        }
+        if !errors.is_empty() {
+            return Err(errors.join("; "));
+        }
+    } else if env_source == "conda:env_yml" {
+        let yml_path = launched_config
+            .environment_yml_path
+            .as_ref()
+            .ok_or_else(|| {
+                "conda:env_yml kernel has no environment_yml_path in launched config".to_string()
+            })?;
+
+        let current_deps: Vec<String> = current_metadata
+            .runt
+            .conda
+            .as_ref()
+            .map(|c| c.dependencies.clone())
+            .unwrap_or_default();
+        // Launched baseline = environment.yml deps snapshot at launch time
+        let launched_deps = launched_config
+            .environment_yml_deps
+            .clone()
+            .unwrap_or_default();
+
+        let launched_names: std::collections::HashSet<String> = launched_deps
+            .iter()
+            .map(|d| notebook_doc::metadata::extract_package_name(d).to_lowercase())
+            .collect();
+
+        let to_add: Vec<&str> = current_deps
+            .iter()
+            .filter(|d| {
+                let name = notebook_doc::metadata::extract_package_name(d).to_lowercase();
+                !launched_names.contains(&name)
+            })
+            .map(|d| d.as_str())
+            .collect();
+
+        // For conda:env_yml, we append new deps to environment.yml directly.
+        // This is a simple text-based approach — append to the dependencies: section.
+        let mut errors = Vec::new();
+
+        if !to_add.is_empty() {
+            match std::fs::read_to_string(yml_path) {
+                Ok(content) => {
+                    let mut new_content = content.clone();
+                    // Find the end of the dependencies: section to insert new deps
+                    let insertion_point = find_env_yml_deps_insertion_point(&content);
+                    if let Some(pos) = insertion_point {
+                        let mut insert_str = String::new();
+                        for dep in &to_add {
+                            insert_str.push_str(&format!("  - {}\n", dep));
+                            promoted.push(format!("+{}", dep));
+                        }
+                        new_content.insert_str(pos, &insert_str);
+                        if let Err(e) = std::fs::write(yml_path, &new_content) {
+                            errors.push(format!("Failed to write environment.yml: {}", e));
+                        }
+                    } else {
+                        // No dependencies: section found — append one
+                        let mut append_str = String::from("\ndependencies:\n");
+                        for dep in &to_add {
+                            append_str.push_str(&format!("  - {}\n", dep));
+                            promoted.push(format!("+{}", dep));
+                        }
+                        new_content.push_str(&append_str);
+                        if let Err(e) = std::fs::write(yml_path, &new_content) {
+                            errors.push(format!("Failed to write environment.yml: {}", e));
+                        }
+                    }
+                }
+                Err(e) => {
+                    errors.push(format!("Failed to read environment.yml: {}", e));
+                }
+            }
+        }
+
+        // Re-bootstrap CRDT from environment.yml after changes
+        if !promoted.is_empty() || !errors.is_empty() {
+            if let Ok(env_config) = crate::project_file::parse_environment_yml(yml_path) {
+                let deps = env_config.dependencies;
+                let mut doc = room.doc.write().await;
+                doc.fork_and_merge(|fork| {
+                    let mut snap = fork.get_metadata_snapshot().unwrap_or_default();
+                    let conda = snap.runt.conda.get_or_insert_with(|| {
+                        notebook_doc::metadata::CondaInlineMetadata {
+                            dependencies: Vec::new(),
+                            channels: Vec::new(),
+                            python: None,
+                        }
+                    });
+                    conda.dependencies = deps;
                     let _ = fork.set_metadata_snapshot(&snap);
                 });
             }
@@ -6412,7 +6826,7 @@ async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResponse {
         let sd = room.state_doc.read().await;
         sd.read_state().kernel.env_source.clone()
     };
-    if env_source == "pixi:toml" || env_source == "uv:pyproject" {
+    if env_source == "pixi:toml" || env_source == "uv:pyproject" || env_source == "conda:env_yml" {
         match promote_inline_deps_to_project(room, &env_source, &launched).await {
             Ok(promoted) if promoted.is_empty() => {
                 return NotebookResponse::SyncEnvironmentComplete {
@@ -11089,6 +11503,8 @@ mod tests {
             pixi_toml_deps: None,
             pixi_toml_path: None,
             pyproject_path: None,
+            environment_yml_path: None,
+            environment_yml_deps: None,
             deno_config: None,
             venv_path: None,
             python_path: None,
@@ -11112,6 +11528,8 @@ mod tests {
             pixi_toml_deps: None,
             pixi_toml_path: None,
             pyproject_path: None,
+            environment_yml_path: None,
+            environment_yml_deps: None,
             deno_config: None,
             venv_path: None,
             python_path: None,
@@ -11135,6 +11553,8 @@ mod tests {
             pixi_toml_deps: None,
             pixi_toml_path: None,
             pyproject_path: None,
+            environment_yml_path: None,
+            environment_yml_deps: None,
             deno_config: None,
             venv_path: None,
             python_path: None,
@@ -11157,6 +11577,8 @@ mod tests {
             pixi_toml_deps: None,
             pixi_toml_path: None,
             pyproject_path: None,
+            environment_yml_path: None,
+            environment_yml_deps: None,
             deno_config: None,
             venv_path: None,
             python_path: None,
@@ -11179,6 +11601,8 @@ mod tests {
             pixi_toml_deps: None,
             pixi_toml_path: None,
             pyproject_path: None,
+            environment_yml_path: None,
+            environment_yml_deps: None,
             deno_config: None,
             venv_path: None,
             python_path: None,
@@ -11906,5 +12330,29 @@ mod tests {
             1,
             "generation should be 1 after concurrent spawn"
         );
+    }
+
+    #[test]
+    fn test_env_yml_insertion_point_no_trailing_newline() {
+        // File without trailing newline — must not panic or return out-of-bounds offset
+        let content = "dependencies:\n  - numpy";
+        let point = find_env_yml_deps_insertion_point(content);
+        assert!(point.is_some());
+        assert!(point.unwrap() <= content.len());
+    }
+
+    #[test]
+    fn test_env_yml_insertion_point_with_trailing_newline() {
+        let content = "dependencies:\n  - numpy\n  - pandas\n";
+        let point = find_env_yml_deps_insertion_point(content);
+        assert_eq!(point, Some(content.len()));
+    }
+
+    #[test]
+    fn test_env_yml_insertion_point_before_next_key() {
+        let content = "dependencies:\n  - numpy\nchannels:\n  - conda-forge\n";
+        let point = find_env_yml_deps_insertion_point(content);
+        // Should insert after "  - numpy\n", before "channels:"
+        assert_eq!(point, Some("dependencies:\n  - numpy\n".len()));
     }
 }

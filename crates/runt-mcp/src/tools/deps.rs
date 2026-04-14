@@ -399,7 +399,7 @@ pub async fn get_dependencies(
         .ok()
         .map(|s| s.kernel.env_source.clone());
     let mode = match env_source.as_deref() {
-        Some("pixi:toml") | Some("uv:pyproject") => "project",
+        Some("pixi:toml") | Some("uv:pyproject") | Some("conda:env_yml") => "project",
         _ => "inline",
     };
 
@@ -408,6 +408,9 @@ pub async fn get_dependencies(
         "package_manager": manager,
         "mode": mode,
     });
+    if let Some(ref source) = env_source {
+        result["env_source"] = serde_json::json!(source);
+    }
     if !prewarmed.is_empty() {
         result["available_packages"] = serde_json::json!(prewarmed);
     }

@@ -235,6 +235,60 @@ impl KernelConnection for JupyterKernel {
                         cmd.stderr(Stdio::piped());
                         cmd
                     }
+                    "conda:env_yml" => {
+                        // Use the project's named conda environment from environment.yml.
+                        // The env prefix was resolved during launch preparation (named env
+                        // lookup or creation via rattler) and passed as the pooled_env.
+                        let conda_prefix =
+                            env.as_ref().map(|e| e.venv_path.clone()).or_else(|| {
+                                // Fallback: look up the named env from environment.yml
+                                notebook_path.as_deref().and_then(|p| {
+                                    crate::project_file::find_nearest_project_file(
+                                        p,
+                                        &[crate::project_file::ProjectFileKind::EnvironmentYml],
+                                    )
+                                    .and_then(|d| {
+                                        crate::project_file::resolve_conda_env_prefix(&d.path)
+                                    })
+                                })
+                            });
+
+                        if let Some(ref prefix) = conda_prefix {
+                            let python = crate::project_file::conda_python_path(prefix);
+                            if python.exists() {
+                                info!(
+                                    "[jupyter-kernel] Starting Python kernel from conda:env_yml env ({})",
+                                    python.display()
+                                );
+                                let mut cmd = tokio::process::Command::new(&python);
+                                cmd.env("CONDA_PREFIX", prefix);
+                                if let Some(ref nb_path) = notebook_path {
+                                    if let Some(parent) = nb_path.parent() {
+                                        cmd.current_dir(parent);
+                                    }
+                                }
+                                cmd.args([
+                                    "-Xfrozen_modules=off",
+                                    "-m",
+                                    "ipykernel_launcher",
+                                    "-f",
+                                ]);
+                                cmd.arg(&connection_file_path);
+                                cmd.stdout(Stdio::null());
+                                cmd.stderr(Stdio::piped());
+                                cmd
+                            } else {
+                                return Err(anyhow::anyhow!(
+                                    "conda:env_yml env at {:?} has no python binary",
+                                    prefix
+                                ));
+                            }
+                        } else {
+                            return Err(anyhow::anyhow!(
+                                "conda:env_yml could not resolve conda environment prefix"
+                            ));
+                        }
+                    }
                     "pixi:toml" => {
                         let manifest_path = notebook_path.as_deref().and_then(|p| {
                             crate::project_file::detect_project_file(p)

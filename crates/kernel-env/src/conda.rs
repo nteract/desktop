@@ -711,11 +711,30 @@ pub async fn sync_dependencies(env: &CondaEnvironment, deps: &CondaDependencies)
 
     let installed_packages = PrefixRecord::collect_from_prefix::<PrefixRecord>(&env.env_path)?;
 
+    // Collect package names that have explicit version constraints in specs.
+    // Exclude these from locked_packages so the solver doesn't favor installed
+    // versions that violate the requested constraints (e.g., scikit-learn==1.8.0
+    // locked when spec says <1.6).
+    let constrained_names: std::collections::HashSet<String> = specs
+        .iter()
+        .filter(|s| s.version.is_some())
+        .filter_map(|s| match &s.name {
+            rattler_conda_types::PackageNameMatcher::Exact(name) => {
+                Some(name.as_normalized().to_string())
+            }
+            _ => None,
+        })
+        .collect();
+
     let solver_task = SolverTask {
         virtual_packages,
         specs,
         locked_packages: installed_packages
             .iter()
+            .filter(|r| {
+                let name = r.repodata_record.package_record.name.as_normalized();
+                !constrained_names.contains(name)
+            })
             .map(|r| r.repodata_record.clone())
             .collect(),
         ..SolverTask::from_iter(&repo_data)

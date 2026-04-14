@@ -149,6 +149,226 @@ pub fn pixi_toml_has_ipykernel(path: &Path) -> bool {
     false
 }
 
+/// Minimal environment.yml parse result for the daemon.
+///
+/// Only extracts what the daemon needs: dependency names, channels, python version.
+/// The full YAML parser lives in `crates/notebook/src/environment_yml.rs` (Tauri side).
+#[derive(Debug, Clone)]
+pub struct EnvironmentYmlConfig {
+    pub dependencies: Vec<String>,
+    pub channels: Vec<String>,
+    pub python: Option<String>,
+    pub name: Option<String>,
+    /// Explicit prefix path from `prefix:` field (alternative to `name:`).
+    pub prefix: Option<PathBuf>,
+}
+
+/// Search standard conda env directories for an existing named environment.
+///
+/// Checks `$CONDA_ENVS_DIRS`, `$CONDA_PREFIX/envs/`, `$MAMBA_ROOT_PREFIX/envs/`,
+/// common install locations (`~/miniconda3`, `~/anaconda3`, `~/miniforge3`),
+/// `~/.conda/envs/`, `~/.local/share/mamba/envs/` (micromamba default),
+/// and any parent dirs from `~/.conda/environments.txt` (conda env registry).
+///
+/// Returns the first directory that contains `{dir}/{name}/bin/python` (or
+/// `{dir}/{name}/python.exe` on Windows).
+pub fn find_named_conda_env(name: &str) -> Option<PathBuf> {
+    let candidates = conda_env_search_dirs();
+    for dir in &candidates {
+        let env_path = dir.join(name);
+        let python = conda_python_path(&env_path);
+        if python.exists() {
+            return Some(env_path);
+        }
+    }
+    None
+}
+
+/// Return the default directory for creating new named conda environments.
+///
+/// Uses the first writable directory from the search order. Falls back to
+/// `~/.conda/envs/` if nothing else is available.
+pub fn default_conda_envs_dir() -> PathBuf {
+    let candidates = conda_env_search_dirs();
+    for dir in &candidates {
+        if dir.exists() && dir.is_dir() {
+            // Check if writable by attempting to read dir
+            if std::fs::read_dir(dir).is_ok() {
+                return dir.clone();
+            }
+        }
+    }
+    // Fallback: ~/.conda/envs/
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join(".conda")
+        .join("envs")
+}
+
+/// Get the python path within a conda prefix.
+pub fn conda_python_path(prefix: &Path) -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        prefix.join("python.exe")
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        prefix.join("bin").join("python")
+    }
+}
+
+/// Resolve the conda prefix for an environment.yml file.
+///
+/// If the yaml has `prefix:` → use that path directly.
+/// If the yaml has `name:` → search standard conda env dirs for it.
+/// Returns `None` if neither is set or no matching env is found.
+pub fn resolve_conda_env_prefix(yml_path: &Path) -> Option<PathBuf> {
+    let config = parse_environment_yml(yml_path).ok()?;
+
+    // prefix: takes precedence — it's an explicit path
+    if let Some(ref prefix) = config.prefix {
+        return Some(prefix.clone());
+    }
+
+    // name: — search standard conda env directories
+    if let Some(ref name) = config.name {
+        return find_named_conda_env(name);
+    }
+
+    None
+}
+
+/// Standard conda environment search directories.
+fn conda_env_search_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+
+    let mut push_unique = |p: PathBuf| {
+        if !dirs.contains(&p) {
+            dirs.push(p);
+        }
+    };
+
+    // $CONDA_ENVS_DIRS (colon-separated on Unix, semicolon on Windows)
+    if let Ok(envs_dirs) = std::env::var("CONDA_ENVS_DIRS") {
+        let sep = if cfg!(windows) { ';' } else { ':' };
+        for dir in envs_dirs.split(sep) {
+            let p = PathBuf::from(dir.trim());
+            if !p.as_os_str().is_empty() {
+                push_unique(p);
+            }
+        }
+    }
+
+    // $CONDA_PREFIX/envs/
+    if let Ok(prefix) = std::env::var("CONDA_PREFIX") {
+        push_unique(PathBuf::from(prefix).join("envs"));
+    }
+
+    // $MAMBA_ROOT_PREFIX/envs/ (micromamba)
+    if let Ok(prefix) = std::env::var("MAMBA_ROOT_PREFIX") {
+        push_unique(PathBuf::from(prefix).join("envs"));
+    }
+
+    // Common conda/mamba installations
+    if let Some(home) = dirs::home_dir() {
+        for name in ["miniconda3", "anaconda3", "miniforge3"] {
+            push_unique(home.join(name).join("envs"));
+        }
+        push_unique(home.join(".conda").join("envs"));
+        // micromamba default location
+        push_unique(home.join(".local").join("share").join("mamba").join("envs"));
+    }
+
+    // ~/.conda/environments.txt — conda's env registry, lists full paths to envs.
+    // Extract parent dirs (the "envs/" directories) from each registered env path.
+    if let Some(home) = dirs::home_dir() {
+        let registry = home.join(".conda").join("environments.txt");
+        if let Ok(content) = std::fs::read_to_string(&registry) {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    let env_path = PathBuf::from(trimmed);
+                    if let Some(parent) = env_path.parent() {
+                        push_unique(parent.to_path_buf());
+                    }
+                }
+            }
+        }
+    }
+
+    dirs
+}
+
+/// Parse an environment.yml file using rattler's serde_yaml parser.
+///
+/// Handles the full environment.yml spec including pip subsections, proper
+/// YAML syntax validation, and MatchSpec parsing.
+pub fn parse_environment_yml(path: &Path) -> Result<EnvironmentYmlConfig, String> {
+    let content =
+        std::fs::read_to_string(path).map_err(|e| format!("Failed to read {:?}: {}", path, e))?;
+    parse_environment_yml_content(&content)
+}
+
+/// Parse environment.yml content (testable without filesystem).
+fn parse_environment_yml_content(content: &str) -> Result<EnvironmentYmlConfig, String> {
+    use rattler_conda_types::EnvironmentYaml;
+
+    let env = EnvironmentYaml::from_yaml_str(content)
+        .map_err(|e| format!("Failed to parse environment.yml: {}", e))?;
+
+    let mut dependencies = Vec::new();
+    let mut python = None;
+
+    for spec in env.match_specs() {
+        let name = match &spec.name {
+            rattler_conda_types::PackageNameMatcher::Exact(name) => {
+                name.as_normalized().to_string()
+            }
+            _ => String::new(),
+        };
+
+        if name == "python" {
+            // Extract major.minor version from the version spec
+            if let Some(ref version_spec) = spec.version {
+                let v = version_spec.to_string();
+                // Parse first version bound (e.g. ">=3.9,<4" → "3.9")
+                let cleaned = v
+                    .trim_start_matches(">=")
+                    .trim_start_matches("<=")
+                    .trim_start_matches("==")
+                    .trim_start_matches('=')
+                    .trim_start_matches('>')
+                    .trim_start_matches('<');
+                let first = cleaned.split(',').next().unwrap_or(cleaned);
+                let first = first.trim_end_matches(".*");
+                let parts: Vec<&str> = first.split('.').collect();
+                if parts.len() >= 2 {
+                    python = Some(format!("{}.{}", parts[0], parts[1]));
+                } else if !parts.is_empty() && !parts[0].is_empty() {
+                    python = Some(parts[0].to_string());
+                }
+            }
+        } else if !name.is_empty() {
+            // Convert MatchSpec back to the original string form for downstream consumers
+            dependencies.push(spec.to_string());
+        }
+    }
+
+    let channels: Vec<String> = if env.channels.is_empty() {
+        vec!["defaults".to_string()]
+    } else {
+        env.channels.iter().map(|c| c.to_string()).collect()
+    };
+
+    Ok(EnvironmentYmlConfig {
+        dependencies,
+        channels,
+        python,
+        name: env.name,
+        prefix: env.prefix,
+    })
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -298,5 +518,106 @@ mod tests {
             "[project]\nname = \"test\"\n\n[tool.pixi.dependencies]\nipykernel = \"*\"\nnumpy = \"*\"\n",
         );
         assert!(pixi_toml_has_ipykernel(&temp.path().join("pyproject.toml")));
+    }
+
+    #[test]
+    fn test_parse_env_yml_basic() {
+        let content = "name: myenv\nchannels:\n  - conda-forge\ndependencies:\n  - numpy=1.24\n  - pandas\n  - python=3.11\n";
+        let config = parse_environment_yml_content(content).unwrap();
+        assert_eq!(config.name, Some("myenv".to_string()));
+        assert_eq!(config.channels, vec!["conda-forge"]);
+        // rattler normalizes conda `=` pin: numpy=1.24 → numpy 1.24.*
+        assert_eq!(config.dependencies, vec!["numpy 1.24.*", "pandas"]);
+        assert_eq!(config.python, Some("3.11".to_string()));
+    }
+
+    #[test]
+    fn test_parse_env_yml_with_pip() {
+        let content = "name: test\nchannels:\n  - conda-forge\n  - defaults\ndependencies:\n  - numpy\n  - pip:\n    - requests\n    - flask\n  - scipy\n";
+        let config = parse_environment_yml_content(content).unwrap();
+        assert_eq!(config.channels, vec!["conda-forge", "defaults"]);
+        // pip deps are skipped, conda deps after pip block must still be captured
+        assert_eq!(config.dependencies, vec!["numpy", "scipy"]);
+    }
+
+    #[test]
+    fn test_parse_env_yml_pip_then_multiple_conda_deps() {
+        let content = "name: test\ndependencies:\n  - numpy\n  - pip:\n    - requests\n    - flask\n  - scipy\n  - matplotlib\n  - python=3.11\n";
+        let config = parse_environment_yml_content(content).unwrap();
+        assert_eq!(config.dependencies, vec!["numpy", "scipy", "matplotlib"]);
+        assert_eq!(config.python, Some("3.11".to_string()));
+    }
+
+    #[test]
+    fn test_parse_env_yml_no_channels() {
+        let content = "name: test\ndependencies:\n  - numpy\n";
+        let config = parse_environment_yml_content(content).unwrap();
+        assert_eq!(config.channels, vec!["defaults"]);
+        assert_eq!(config.dependencies, vec!["numpy"]);
+    }
+
+    #[test]
+    fn test_parse_env_yml_python_version_extraction() {
+        let content = "dependencies:\n  - python>=3.9,<4\n  - numpy\n";
+        let config = parse_environment_yml_content(content).unwrap();
+        assert_eq!(config.python, Some("3.9".to_string()));
+        assert_eq!(config.dependencies, vec!["numpy"]);
+    }
+
+    #[test]
+    fn test_parse_env_yml_from_file() {
+        let temp = TempDir::new().unwrap();
+        write_file(
+            temp.path(),
+            "environment.yml",
+            "name: analysis\nchannels:\n  - conda-forge\ndependencies:\n  - numpy\n  - pandas\n",
+        );
+        let config = parse_environment_yml(&temp.path().join("environment.yml")).unwrap();
+        assert_eq!(config.name, Some("analysis".to_string()));
+        assert_eq!(config.dependencies, vec!["numpy", "pandas"]);
+    }
+
+    #[test]
+    fn test_parse_env_yml_with_prefix() {
+        let content = "prefix: /opt/conda/envs/myproject\nchannels:\n  - conda-forge\ndependencies:\n  - numpy\n";
+        let config = parse_environment_yml_content(content).unwrap();
+        assert_eq!(
+            config.prefix,
+            Some(PathBuf::from("/opt/conda/envs/myproject"))
+        );
+        assert!(config.name.is_none());
+        assert_eq!(config.dependencies, vec!["numpy"]);
+    }
+
+    #[test]
+    fn test_parse_env_yml_name_and_prefix() {
+        // When both are present, both should be parsed (prefix takes precedence at resolution)
+        let content = "name: myenv\nprefix: /custom/path\ndependencies:\n  - scipy\n";
+        let config = parse_environment_yml_content(content).unwrap();
+        assert_eq!(config.name, Some("myenv".to_string()));
+        assert_eq!(config.prefix, Some(PathBuf::from("/custom/path")));
+    }
+
+    #[test]
+    fn test_parse_env_yml_rejects_malformed_yaml() {
+        // Malformed YAML must return Err, not silently produce an empty config
+        let content = "dependencies:\n  - numpy\n  invalid: [yaml: {{broken";
+        assert!(parse_environment_yml_content(content).is_err());
+    }
+
+    #[test]
+    fn test_find_named_conda_env_not_found() {
+        // A nonsense name should not be found
+        assert!(find_named_conda_env("__nonexistent_env_abc123__").is_none());
+    }
+
+    #[test]
+    fn test_conda_python_path() {
+        let prefix = PathBuf::from("/opt/conda/envs/test");
+        let python = conda_python_path(&prefix);
+        #[cfg(not(target_os = "windows"))]
+        assert_eq!(python, PathBuf::from("/opt/conda/envs/test/bin/python"));
+        #[cfg(target_os = "windows")]
+        assert_eq!(python, PathBuf::from("/opt/conda/envs/test/python.exe"));
     }
 }
