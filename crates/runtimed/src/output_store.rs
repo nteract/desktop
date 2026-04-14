@@ -48,11 +48,40 @@ use std::io;
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 
-use notebook_doc::mime::is_binary_mime;
+use notebook_doc::mime::{is_binary_mime, BLOB_REF_MIME};
 
 use crate::blob_store::BlobStore;
+
+/// MIME types whose `ContentRef::Blob` outputs are externalized as
+/// [`BLOB_REF_MIME`] entries in saved `.ipynb` files instead of being
+/// re-inlined as base64.
+///
+/// Tightly scoped on purpose. Images / PDFs / HTML keep their existing
+/// base64-inline behavior regardless of size — those are well-understood
+/// in `.ipynb` files and have no vanilla-Jupyter fallback path if we
+/// replaced them. We only externalize MIMEs that:
+///
+/// 1. Are nteract-specific and have a reasonable fallback elsewhere in
+///    the bundle (parquet ships alongside pandas `text/html` + `text/plain`).
+/// 2. Would otherwise blow up `.ipynb` size catastrophically (parquet
+///    exports can hit tens or hundreds of MiB).
+///
+/// Because this whitelist holds at most one entry per output bundle in
+/// practice (dx emits exactly one parquet ref per display), we can write
+/// the ref as a single `{hash, content_type, size}` object under the
+/// [`BLOB_REF_MIME`] key. nbformat's schema wouldn't accept an array
+/// there, so a whitelist-of-one is the right shape.
+///
+/// See `docs/superpowers/specs/2026-04-14-ipynb-save-blob-refs-design.md`.
+const REF_MIME_SAVE_WHITELIST: &[&str] = &["application/vnd.apache.parquet"];
+
+/// Returns true if a binary MIME type should be externalized as a
+/// [`BLOB_REF_MIME`] entry on save instead of base64-inlined.
+fn should_externalize_mime_on_save(mime_type: &str) -> bool {
+    REF_MIME_SAVE_WHITELIST.contains(&mime_type)
+}
 
 /// Default inlining threshold: 1 KB.
 ///
@@ -701,6 +730,14 @@ async fn convert_data_bundle(
 /// Binary MIME types are resolved via `resolve_binary_as_base64` which
 /// reads raw bytes from the blob store and base64-encodes them for the
 /// Jupyter nbformat representation (used when saving .ipynb to disk).
+///
+/// Whitelisted MIMEs ([`REF_MIME_SAVE_WHITELIST`] — currently parquet)
+/// are externalized as [`BLOB_REF_MIME`] entries instead of being
+/// re-inlined as base64. The original binary MIME key is dropped and
+/// replaced by a `BLOB_REF_MIME` → `{hash, content_type, size}` entry.
+/// See `docs/superpowers/specs/2026-04-14-ipynb-save-blob-refs-design.md`.
+/// The reverse transform is handled by `convert_data_bundle`'s
+/// existing `BLOB_REF_MIME` branch on load.
 async fn resolve_data_bundle(
     data: &HashMap<String, ContentRef>,
     blob_store: &BlobStore,
@@ -708,6 +745,22 @@ async fn resolve_data_bundle(
     let mut result = HashMap::new();
 
     for (mime_type, content_ref) in data {
+        // Spec 2: externalize whitelisted binary blobs as a BLOB_REF_MIME
+        // entry instead of re-inlining them as base64 in the .ipynb.
+        // Non-whitelisted MIMEs (images, PDFs, HTML, audio, video) keep
+        // the legacy path so vanilla Jupyter renders them unchanged.
+        if should_externalize_mime_on_save(mime_type) {
+            if let ContentRef::Blob { blob: hash, size } = content_ref {
+                let ref_body = json!({
+                    "hash": hash,
+                    "content_type": mime_type,
+                    "size": size,
+                });
+                result.insert(BLOB_REF_MIME.to_string(), ref_body);
+                continue;
+            }
+        }
+
         let value = if is_binary_mime(mime_type) {
             // Binary: read raw bytes from blob → base64-encode for nbformat
             let base64_str = content_ref.resolve_binary_as_base64(blob_store).await?;
@@ -1454,5 +1507,169 @@ mod tests {
         assert!(!is_binary_mime("text/plain"));
         assert!(!is_binary_mime("text/html"));
         assert!(!is_binary_mime("text/latex"));
+    }
+
+    // ── Ref-MIME save whitelist (Spec 2) ────────────────────────────
+
+    #[tokio::test]
+    async fn test_resolve_data_bundle_emits_blob_ref_for_whitelisted_mime() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+
+        let raw = b"PAR1-parquet-payload-bytes";
+        let hash = store
+            .put(raw, "application/vnd.apache.parquet")
+            .await
+            .unwrap();
+
+        let mut data = HashMap::new();
+        data.insert(
+            "application/vnd.apache.parquet".to_string(),
+            ContentRef::Blob {
+                blob: hash.clone(),
+                size: raw.len() as u64,
+            },
+        );
+        data.insert(
+            "text/plain".to_string(),
+            ContentRef::Inline {
+                inline: "DataFrame (pandas): 3 rows × 2 columns".to_string(),
+            },
+        );
+
+        let resolved = resolve_data_bundle(&data, &store).await.unwrap();
+
+        // Original whitelisted MIME key is absent; BLOB_REF_MIME took its place.
+        assert!(
+            !resolved.contains_key("application/vnd.apache.parquet"),
+            "whitelisted MIME should be rewritten, not kept: {:?}",
+            resolved.keys().collect::<Vec<_>>()
+        );
+        let ref_entry = resolved
+            .get(BLOB_REF_MIME)
+            .expect("BLOB_REF_MIME entry present");
+        assert_eq!(ref_entry["hash"], hash);
+        assert_eq!(ref_entry["content_type"], "application/vnd.apache.parquet");
+        assert_eq!(ref_entry["size"], raw.len());
+
+        // Non-binary siblings are untouched.
+        assert_eq!(
+            resolved.get("text/plain").and_then(|v| v.as_str()),
+            Some("DataFrame (pandas): 3 rows × 2 columns")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_resolve_data_bundle_non_whitelisted_binary_stays_base64() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+
+        // A "large" image blob — whitelist-based externalization only
+        // applies to parquet, so images keep the classic base64 path
+        // regardless of size.
+        let raw = vec![0xAAu8; 64 * 1024];
+        let content_ref = ContentRef::from_binary(&raw, "image/png", &store)
+            .await
+            .unwrap();
+
+        let mut data = HashMap::new();
+        data.insert("image/png".to_string(), content_ref);
+
+        let resolved = resolve_data_bundle(&data, &store).await.unwrap();
+
+        assert!(
+            !resolved.contains_key(BLOB_REF_MIME),
+            "non-whitelisted binary must NOT emit BLOB_REF_MIME"
+        );
+        let b64 = resolved
+            .get("image/png")
+            .and_then(|v| v.as_str())
+            .expect("image/png should be present as base64 string");
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .unwrap();
+        assert_eq!(decoded, raw);
+    }
+
+    #[tokio::test]
+    async fn test_resolve_data_bundle_round_trip_blob_ref() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+
+        // Pre-populate a blob that will become a blob-ref on save.
+        let raw = b"PAR1-this-payload-is-larger-than-sixteen-bytes-for-sure";
+        let hash = store
+            .put(raw, "application/vnd.apache.parquet")
+            .await
+            .unwrap();
+
+        // Initial manifest: a display_data holding a parquet ContentRef::Blob
+        // directly (mimics dx.display having already uploaded the payload).
+        let mut data = HashMap::new();
+        data.insert(
+            "application/vnd.apache.parquet".to_string(),
+            ContentRef::Blob {
+                blob: hash.clone(),
+                size: raw.len() as u64,
+            },
+        );
+        data.insert(
+            "text/html".to_string(),
+            ContentRef::Inline {
+                inline: "<table/>".to_string(),
+            },
+        );
+        let manifest_a = OutputManifest::DisplayData {
+            data,
+            metadata: HashMap::new(),
+            transient: TransientData::default(),
+        };
+
+        // Resolve → save-shape JSON (ref-MIME appears).
+        let saved = resolve_manifest(&manifest_a, &store).await.unwrap();
+        assert!(saved["data"].get(BLOB_REF_MIME).is_some());
+        assert!(saved["data"]
+            .get("application/vnd.apache.parquet")
+            .is_none());
+
+        // Load that JSON back via create_manifest → ContentRef::Blob composed
+        // under the original content_type. Round-trip should land on an
+        // equivalent manifest shape.
+        let reloaded = create_manifest(&saved, &store, DEFAULT_INLINE_THRESHOLD)
+            .await
+            .unwrap();
+        match reloaded {
+            OutputManifest::DisplayData { data, .. } => {
+                assert!(!data.contains_key(BLOB_REF_MIME));
+                let parquet = data
+                    .get("application/vnd.apache.parquet")
+                    .expect("parquet key restored on load");
+                match parquet {
+                    ContentRef::Blob { blob, size } => {
+                        assert_eq!(blob, &hash);
+                        assert_eq!(*size, raw.len() as u64);
+                    }
+                    other => panic!("expected ContentRef::Blob, got {other:?}"),
+                }
+                // Sibling HTML survived as well.
+                assert!(data.contains_key("text/html"));
+            }
+            other => panic!("expected DisplayData, got {other:?}"),
+        }
+
+        // And saving the reloaded manifest again gives the same shape
+        // (idempotent under repeated save/load cycles).
+        let saved_again = resolve_manifest(
+            &create_manifest(&saved, &store, DEFAULT_INLINE_THRESHOLD)
+                .await
+                .unwrap(),
+            &store,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            saved_again["data"][BLOB_REF_MIME],
+            saved["data"][BLOB_REF_MIME]
+        );
     }
 }
