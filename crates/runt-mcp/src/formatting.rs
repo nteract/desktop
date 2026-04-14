@@ -332,3 +332,66 @@ pub fn outputs_to_content_items_with_images(outputs: &[Output]) -> Vec<rmcp::mod
 
     items
 }
+
+/// Walk structured content JSON and replace image blob URLs with base64 data URIs.
+///
+/// The structured_content JSON has shape `{"cell": {"outputs": [{"data": {"image/png": "http://…/blob/HASH"}}]}}`.
+/// For each image MIME key whose value is a blob URL, reads the blob file and replaces
+/// the URL with `data:{mime};base64,{b64}`.
+pub fn resolve_image_blobs_in_json(
+    mut value: serde_json::Value,
+    blob_store_path: &Option<std::path::PathBuf>,
+) -> serde_json::Value {
+    let store = match blob_store_path {
+        Some(p) => p,
+        None => return value,
+    };
+    let outputs = match value
+        .get_mut("cell")
+        .and_then(|c| c.get_mut("outputs"))
+        .and_then(|o| o.as_array_mut())
+    {
+        Some(arr) => arr,
+        None => return value,
+    };
+    for output in outputs {
+        let data = match output.get_mut("data").and_then(|d| d.as_object_mut()) {
+            Some(d) => d,
+            None => continue,
+        };
+        let image_mimes: Vec<String> = data
+            .keys()
+            .filter(|k| is_inlinable_image_mime(k))
+            .cloned()
+            .collect();
+        for mime in image_mimes {
+            let url = match data.get(&mime).and_then(|v| v.as_str()) {
+                Some(u) => u.to_string(),
+                None => continue,
+            };
+            let hash = match url.rsplit_once("/blob/") {
+                Some((_, h)) => h,
+                None => continue,
+            };
+            if hash.len() < 2 {
+                continue;
+            }
+            let path = store.join(&hash[..2]).join(&hash[2..]);
+            let metadata = match std::fs::metadata(&path) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            if metadata.len() > MAX_INLINE_IMAGE_BYTES {
+                continue;
+            }
+            if let Ok(bytes) = std::fs::read(&path) {
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                data.insert(
+                    mime.clone(),
+                    serde_json::Value::String(format!("data:{mime};base64,{b64}")),
+                );
+            }
+        }
+    }
+    value
+}
