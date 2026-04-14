@@ -58,11 +58,6 @@ def _try_open_comm() -> BlobClient | None:
     return BlobClient(comm)
 
 
-def _resolve_blob_base_url() -> str:
-    # The agent supplies this via RUNTIMED_BLOB_BASE_URL at kernel spawn.
-    return os.environ.get("RUNTIMED_BLOB_BASE_URL", "http://127.0.0.1")
-
-
 def install_formatters() -> None:
     global _INSTALLED
     if _INSTALLED:
@@ -72,7 +67,7 @@ def install_formatters() -> None:
     if client is None:
         log.debug("dx: no runtime agent comm — using fallback (raw-bytes display).")
         client = FallbackClient()
-    set_client(client, blob_base_url=_resolve_blob_base_url())
+    set_client(client)
 
     ip = _get_ipython_for_format()
     if ip is None:

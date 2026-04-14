@@ -76,7 +76,7 @@ def test_display_blob_ref_emits_blob_ref_mime(monkeypatch):
 
     import dx
 
-    ref = BlobRef(hash="sha256:abc", url="http://x/blob/sha256/abc", size=42)
+    ref = BlobRef(hash="sha256:abc", size=42)
     dx.display_blob_ref(ref, content_type="image/png", summary={"total_rows": 100})
 
     assert len(published) == 1

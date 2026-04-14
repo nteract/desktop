@@ -311,6 +311,10 @@ cargo run -p runt-cli -- notebooks            # List open notebooks with kernel 
 
 The `runtimed-py` crate provides Python bindings for interacting with the daemon programmatically. This is used by the [nteract MCP server](../python/nteract/) and can be used for testing.
 
+### Related: `dx` (kernel-side display library)
+
+`python/dx/` is a separate Python package that kernels import to push bytes directly to the blob store via a `nteract.dx.blob` Jupyter comm, bypassing IOPub for binary payloads. Unlike `runtimed-py` (which is a client talking to the daemon), `dx` runs inside the kernel process and talks to the runtime agent over the existing kernel↔runtime-agent ZMQ. See `docs/superpowers/specs/2026-04-13-nteract-dx-design.md` for the protocol.
+
 ### Installation
 
 There are **two Python virtual environments** in the repo:

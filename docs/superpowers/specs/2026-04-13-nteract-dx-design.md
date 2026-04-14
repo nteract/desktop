@@ -113,7 +113,7 @@ The blob server port is dynamic. We do not stabilize it. Instead:
 - The ref MIME carries **hash + content_type (+ optional summary hints)**. No URL.
 - The CRDT stores a ContentRef (hash-based) — same shape used today for inline binary outputs.
 - Frontend WASM derives the current blob URL at render time.
-- `dx.put()` returns `BlobRef(hash, url)` for *current-session* use. The URL is never persisted.
+- `dx.put()` returns `BlobRef(hash, size)`. Kernel-side code never needs a blob URL — the ref MIME carries only the hash, and the frontend derives the current URL at render time via `ContentRef` resolution. External tooling that genuinely needs a URL should call `runt daemon status --json` explicitly.
 
 ## Protocol
 
@@ -187,7 +187,7 @@ dx.display(df)                    # pandas / polars → parquet → ref + llm su
 
 # Low-level primitive
 ref = dx.put(some_bytes, content_type="image/png")
-# ref.hash, ref.url, ref.size
+# ref.hash, ref.size
 
 # Emit a ref as a display bundle directly (e.g. user already has bytes in hand)
 dx.display_blob_ref(ref, summary=None)

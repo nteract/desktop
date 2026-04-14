@@ -3,6 +3,10 @@
 Handles request/response multiplexing by ``req_id`` and timeout behavior.
 The underlying :class:`ipykernel.comm.Comm` is injected so this module is
 testable without any Jupyter runtime.
+
+Blob URLs are never constructed kernel-side — the frontend resolves
+``ContentRef`` entries to URLs at render time, so the protocol carries
+only the content hash.
 """
 
 from __future__ import annotations
@@ -37,7 +41,6 @@ class BlobClient:
         data: bytes,
         content_type: str,
         *,
-        blob_base_url: str,
         timeout: float | None = None,
     ) -> BlobRef:
         req_id = str(uuid.uuid4())
@@ -64,11 +67,7 @@ class BlobClient:
 
         op = response.get("op")
         if op == "ack":
-            return BlobRef(
-                hash=response["hash"],
-                url=f"{blob_base_url.rstrip('/')}/blob/{response['hash']}",
-                size=int(response["size"]),
-            )
+            return BlobRef(hash=response["hash"], size=int(response["size"]))
         if op == "err":
             code = response.get("code", "unknown")
             message = response.get("message", "")
@@ -103,7 +102,6 @@ class FallbackClient:
         data: bytes,
         content_type: str,
         *,
-        blob_base_url: str,
         timeout: float | None = None,
     ) -> BlobRef:
         from dx import DxNoAgentError
@@ -112,14 +110,12 @@ class FallbackClient:
 
 
 _client: object | None = None
-_blob_base_url: str = "http://127.0.0.1"
 
 
-def set_client(client, *, blob_base_url: str) -> None:
+def set_client(client) -> None:
     """Install the module-level client. Used by :func:`dx.install`."""
-    global _client, _blob_base_url
+    global _client
     _client = client
-    _blob_base_url = blob_base_url
 
 
 def get_client():
@@ -130,4 +126,4 @@ def get_client():
 
 
 def put_blob(data: bytes, content_type: str) -> BlobRef:
-    return get_client().put(data, content_type, blob_base_url=_blob_base_url)
+    return get_client().put(data, content_type)

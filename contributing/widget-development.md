@@ -35,6 +35,16 @@ WidgetStore and proxies Jupyter comm messages through the CommBridgeManager.
 Across the iframe boundary, widget traffic now uses JSON-RPC 2.0 over
 `postMessage` via `jsonrpc-transport.ts` and `rpc-methods.ts`.
 
+### Reserved comm namespace: `nteract.dx.*`
+
+The `nteract.dx.*` target-name prefix is reserved for nteract's own
+kernel-side protocols (dx uses `nteract.dx.blob`; future subsystems may use
+`nteract.dx.query`, `nteract.dx.stream`). Comms in this namespace are
+**filtered out of `RuntimeStateDoc::comms` by the runtime agent** — they are
+not widget state, do not sync to the frontend, and do not reach the
+WidgetStore. Do not register widget targets under this prefix. See
+`docs/superpowers/specs/2026-04-13-nteract-dx-design.md` for the protocol.
+
 ## Key Files
 
 | File | Role |

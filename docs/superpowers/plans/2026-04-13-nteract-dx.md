@@ -10,6 +10,14 @@
 
 **Spec:** `docs/superpowers/specs/2026-04-13-nteract-dx-design.md`
 
+### Plan revision — 2026-04-14
+
+Earlier drafts of this plan threaded a `blob_base_url` through `BlobRef` and `BlobClient.put(...)`, and sourced it from `RUNTIMED_BLOB_BASE_URL` in the kernel env. This has been **removed**. Kernel-side code never needs a blob URL — the ref MIME carries only the hash, and the frontend WASM derives the current URL at render time via `ContentRef` resolution. `BlobRef` now has only `hash: str` and `size: int`. Code samples below that still reference `url=...` / `blob_base_url=...` predate this simplification; follow the committed code in `python/dx/` (already updated).
+
+Task 12 has been reworked from "kernel bootstrap" to a publishing-prep checklist — auto-install of `dx` is deferred to v1.1. v1 UX is an explicit `import dx; dx.install()` in the first cell.
+
+Task 9 has been filled in with concrete paths (shell outbound mpsc, local comm_id→target_name map, `send_comm_message` at `jupyter_kernel.rs:1959`) after code exploration.
+
 ---
 
 ## File Structure
@@ -1477,9 +1485,19 @@ git commit -m "feat(dx): install(), IPython formatters, display_blob_ref"
 - Create: `crates/runtimed/src/dx_blob_comm.rs` — handler module
 - Modify: `crates/runtimed/src/lib.rs` — `mod dx_blob_comm;`
 
-Context: the comm_open handler currently writes to `RuntimeStateDoc::put_comm`. We need a prefix check BEFORE that so dx comms short-circuit. The handler then reads buffers from comm_msg and calls `BlobStore::put`.
+Context: the comm_open handler at `crates/runtimed/src/jupyter_kernel.rs:1244` currently runs `store_widget_buffers`, `blob_store_large_state_values`, then `put_comm` into `RuntimeStateDoc`. We need a **prefix check at the very top** so dx comms short-circuit before any widget-buffer processing. The `CommMsg` arm at ~1335 needs the same filter, looked up via a new local `comm_id → target_name` map.
 
-To reply to the kernel, the runtime agent uses its existing shell-socket send path. Look for `SendComm` handling on `crates/runtimed/src/jupyter_kernel.rs` to find how to emit a comm_msg back to the kernel. Reuse that mechanism.
+### Outbound reply path (concrete)
+
+The kernel's shell socket is owned by `JupyterKernel::send_comm_message` (`jupyter_kernel.rs:1959`), which takes a raw JSON message and writes on `shell: DealerSendConnection`. That method holds `&mut self`, so the IOPub task (spawned elsewhere) can't call it directly.
+
+**Minimal addition:** introduce a new `tokio::sync::mpsc::UnboundedSender<serde_json::Value>` — name it `shell_comm_tx` — that the IOPub task holds a clone of. The kernel's main `select!` loop drains the receiver and forwards each message to `send_comm_message`. This reuses the existing serialization path (`send_comm_message` already knows how to reconstruct a `JupyterMessage` from raw JSON) and does not touch `SendComm` or the daemon ↔ agent protocol.
+
+The existing `comm_coalesce_tx` (line 525) is **not** a fit — it writes to `RuntimeStateDoc` via `merge_comm_state_delta`, which is the exact CRDT path dx must avoid.
+
+### comm_id → target_name map (concrete)
+
+`RuntimeStateDoc` already tracks target_name in `CommDocEntry` (`notebook-doc/src/runtime_state.rs:192`), but reading from the CRDT inside the hot IOPub path would be heavy. Add a local `HashMap<String, String>` owned by the IOPub task (same scope as `capture_cache`), populated on `comm_open` before the short-circuit and cleared on `comm_close`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1669,70 +1687,112 @@ Add to `crates/runtimed/src/lib.rs` (next to existing `pub mod ...;` declaration
 pub mod dx_blob_comm;
 ```
 
-- [ ] **Step 5: Wire the filter into the existing comm_open handler**
+- [ ] **Step 5: Add the shell outbound mpsc + kernel main-loop drainer**
 
-In `crates/runtimed/src/jupyter_kernel.rs`, locate the `JupyterMessageContent::CommOpen(open)` arm (~line 1230). At the very top of that arm, insert:
+In `crates/runtimed/src/jupyter_kernel.rs`, near where `comm_coalesce_tx` is created (line 525):
+
+```rust
+let (shell_comm_tx, mut shell_comm_rx) =
+    tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
+```
+
+Clone `shell_comm_tx` into the IOPub task's moved captures (alongside `comm_coalesce_tx`).
+
+In the kernel's main `select!` loop — the same one that dispatches `RuntimeAgentRequest::SendComm` to `self.send_comm_message(...)` — add a branch:
+
+```rust
+Some(msg) = shell_comm_rx.recv() => {
+    if let Err(e) = self.send_comm_message(msg).await {
+        warn!("[dx] shell comm_msg send failed: {e}");
+    }
+}
+```
+
+This reuses `send_comm_message` (line 1959) — which already knows how to build a `JupyterMessage` from raw JSON and write it on the shell socket — without adding a second serialization path.
+
+- [ ] **Step 6: Add the local comm_id → target_name map in the IOPub task**
+
+Near `capture_cache` in the IOPub task scope, add:
+
+```rust
+let mut comm_targets: std::collections::HashMap<String, String> =
+    std::collections::HashMap::new();
+```
+
+Populate on `comm_open` (before any other processing):
+
+```rust
+comm_targets.insert(open.comm_id.0.clone(), open.target_name.clone());
+```
+
+Remove on `comm_close`:
+
+```rust
+comm_targets.remove(&close.comm_id.0);
+```
+
+- [ ] **Step 7: Wire the filter into `CommOpen`**
+
+At the very top of the `JupyterMessageContent::CommOpen(open)` arm (~line 1230) — before `store_widget_buffers`, before any CRDT writes:
 
 ```rust
 use crate::dx_blob_comm::is_dx_target;
+comm_targets.insert(open.comm_id.0.clone(), open.target_name.clone());
 if is_dx_target(&open.target_name) {
-    // dx-namespace comms are consumed by dx handlers; do NOT persist to
-    // RuntimeStateDoc. Blob handling lives in the CommMsg branch below.
-    debug!("[comm_open] dx-target {} (not persisted)", open.target_name);
+    debug!("[dx] comm_open {} target={} (not persisted)", open.comm_id.0, open.target_name);
     continue;
 }
 ```
 
-Also add the matching filter to `JupyterMessageContent::CommMsg(msg)` (~line 1335). Between the `msg` binding and the existing `put_comm` call, resolve the target_name via the comm_id→target_name map that the existing code maintains (check nearby code for `comm_id_to_target` or similar), then:
+- [ ] **Step 8: Wire the filter into `CommMsg`**
+
+In `JupyterMessageContent::CommMsg(msg)` (~line 1335), after the existing `msg` binding but before the widget-update coalesce logic:
 
 ```rust
-let target_name = resolve_target_for_comm_id(&msg.comm_id.0); // whatever helper exists
-if let Some(target) = target_name.as_deref() {
+if let Some(target) = comm_targets.get(&msg.comm_id.0) {
     if is_dx_target(target) {
-        // route to dx handler instead of persisting
-        handle_dx_comm_msg(&blob_store, &msg, &buffers).await;
+        let request_value = serde_json::to_value(&msg.data).unwrap_or_default();
+        let request: crate::dx_blob_comm::DxBlobRequest =
+            match serde_json::from_value(request_value) {
+                Ok(r) => r,
+                Err(e) => {
+                    warn!("[dx] bad request on {}: {}", msg.comm_id.0, e);
+                    continue;
+                }
+            };
+        let buffer = buffers.first().cloned().unwrap_or_default();
+        let response = crate::dx_blob_comm::handle_blob_msg(
+            &blob_store, request, &buffer,
+        ).await;
+        let response_data = serde_json::to_value(&response).unwrap_or_default();
+        // Build a raw Jupyter comm_msg envelope for send_comm_message.
+        let envelope = serde_json::json!({
+            "header": {"msg_type": "comm_msg"},
+            "content": {"comm_id": msg.comm_id.0, "data": response_data},
+            "buffers": [],
+        });
+        let _ = shell_comm_tx.send(envelope);
         continue;
     }
 }
 ```
 
-If no comm_id→target_name map exists today, add one: populate it from `comm_open` (before the `is_dx_target` short-circuit stores the mapping) and remove it from `comm_close`. A `HashMap<String, String>` guarded by the existing I/O task's state is sufficient.
+Confirm the envelope shape matches what `send_comm_message` expects at line 1959 (header/parent_header/metadata/content/buffers). Adapt field names if the actual parser is stricter.
 
-Implementation sketch for `handle_dx_comm_msg`:
+- [ ] **Step 9: Wire `CommClose` cleanup**
+
+In `JupyterMessageContent::CommClose(close)` (~line 1409), at the top:
 
 ```rust
-async fn handle_dx_comm_msg(
-    blob_store: &Arc<BlobStore>,
-    msg: &jupyter_protocol::CommMsg,
-    buffers: &[Vec<u8>],
-    shell_tx: &tokio::sync::mpsc::Sender<ShellSend>, // pass in the existing shell send channel
-    comm_id: &str,
-) {
-    let request: crate::dx_blob_comm::DxBlobRequest = match serde_json::from_value(
-        serde_json::to_value(&msg.data).unwrap_or_default(),
-    ) {
-        Ok(r) => r,
-        Err(e) => {
-            warn!("[dx] bad request: {}", e);
-            return;
-        }
-    };
-    let buffer = buffers.first().cloned().unwrap_or_default();
-    let response = crate::dx_blob_comm::handle_blob_msg(blob_store, request, &buffer).await;
-
-    // Emit a comm_msg on the kernel's shell socket addressed to the same comm_id.
-    let response_json = serde_json::to_value(&response).unwrap_or_default();
-    let _ = shell_tx.send(ShellSend::CommMsg {
-        comm_id: comm_id.to_string(),
-        data: response_json,
-        buffers: vec![],
-    }).await;
+if let Some(target) = comm_targets.remove(&close.comm_id.0) {
+    if is_dx_target(&target) {
+        debug!("[dx] comm_close {} target={}", close.comm_id.0, target);
+        continue;
+    }
 }
 ```
 
-The precise `ShellSend` type / channel name needs to be looked up in the existing code — find where `SendComm` requests from the daemon are handled, and reuse that outbound path. Typical pattern: an enum variant on the kernel I/O task's request channel.
-
-- [ ] **Step 6: Run filter tests**
+- [ ] **Step 10: Run filter tests**
 
 ```bash
 cargo test -p runtimed --test dx_comm_filter
@@ -1741,7 +1801,7 @@ cargo test -p runtimed dx_blob_comm
 
 Expected: all green.
 
-- [ ] **Step 7: Lint + full build**
+- [ ] **Step 11: Lint + full build**
 
 ```bash
 cargo xtask lint --fix
@@ -1750,7 +1810,7 @@ cargo build -p runtimed
 
 Expected: clean.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 12: Commit**
 
 ```bash
 git add crates/runtimed/src/dx_blob_comm.rs crates/runtimed/src/lib.rs \
@@ -1765,15 +1825,26 @@ git commit -m "feat(runtimed): nteract.dx.blob comm handler + namespace filter"
 **Files:**
 - Modify: `crates/runtimed/src/output_store.rs`
 
-Goal: when a display_data bundle contains `application/vnd.nteract.blob-ref+json`, compose a `ContentRef` for the wrapped `content_type` directly, skipping `BlobStore::put` (the blob is already stored, addressed by hash).
+Goal: when a display_data bundle contains `application/vnd.nteract.blob-ref+json`, compose a `ContentRef::Blob` for the wrapped `content_type` directly, skipping `BlobStore::put` (the blob is already stored by the dx blob-comm handler).
 
-- [ ] **Step 1: Read the current `create_manifest` impl**
+### Current shape (reference)
 
-```bash
-sed -n '250,400p' crates/runtimed/src/output_store.rs
+- `crates/runtimed/src/output_store.rs:276` — `pub async fn create_manifest(output: &Value, blob_store: &BlobStore, threshold: usize) -> io::Result<OutputManifest>`. Takes an immutable `&Value` for the outer output envelope; walks its `data` bundle entries internally and builds MIME → `ContentRef` entries in the returned `OutputManifest` variant (DisplayData / ExecuteResult / etc.).
+- `crates/runtimed/src/jupyter_kernel.rs:131` — `ContentRef::from_binary(data: &[u8], media_type: &str, blob_store: &BlobStore) -> io::Result<Self>` hashes + writes + returns `ContentRef::Blob { blob: hash, size }`.
+- `crates/runtimed/src/blob_store.rs:194` — `BlobStore::exists(&self, hash: &str) -> bool` (sync).
+
+For dx we already have the hash, so we want a sibling constructor — no bytes, no write, just the variant:
+
+```rust
+// In whichever module ContentRef lives (same file as from_binary):
+impl ContentRef {
+    pub fn from_hash(hash: String, size: u64) -> Self {
+        ContentRef::Blob { blob: hash, size }
+    }
+}
 ```
 
-Identify where the function iterates bundle entries and calls `BlobStore::put` for binary MIMEs.
+This is a thin wrapper over the existing enum variant. No refactor of `from_binary` needed.
 
 - [ ] **Step 2: Write the failing test**
 
@@ -1833,7 +1904,7 @@ mod dx_ref_tests {
 }
 ```
 
-Note: `create_manifest`'s signature in the current code may differ (it takes more args — state_doc handle, etc.). Adapt the test shape to match the real signature. The assertion substance is what matters.
+The test calls `create_manifest(&output_envelope, &blob_store, threshold)` where `output_envelope` wraps the bundle in a `data` field matching what IOPub delivers. Adapt the exact shape to `OutputManifest`'s variant (DisplayData vs. ExecuteResult). Assertions target the composed `ContentRef` for the wrapped content_type and the absence of any `BLOB_REF_MIME` entry in the result.
 
 - [ ] **Step 3: Run test to verify failure**
 
@@ -1845,24 +1916,24 @@ Expected: logic error — the bundle with BLOB_REF_MIME is not recognized; resul
 
 - [ ] **Step 4: Implement**
 
-In `crates/runtimed/src/output_store.rs::create_manifest`, before the main loop that processes each bundle entry, add a pre-pass that detects `BLOB_REF_MIME` entries and replaces them:
+Inside `create_manifest`, during (or immediately after) the bundle walk, detect `BLOB_REF_MIME` entries and substitute them:
 
 ```rust
 use notebook_doc::mime::BLOB_REF_MIME;
 
-// If the bundle contains a blob-ref MIME, consume it and emit a ContentRef
-// under the wrapped content_type without re-uploading.
-if let Some(ref_val) = bundle.get(BLOB_REF_MIME) {
-    let hash = ref_val.get("hash").and_then(|v| v.as_str());
-    let target_ct = ref_val.get("content_type").and_then(|v| v.as_str());
-    let size = ref_val.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
+// When a ref MIME is encountered, compose a ContentRef for the wrapped
+// content_type without re-uploading. The underlying blob was stored by the
+// dx blob-comm handler (crates/runtimed/src/dx_blob_comm.rs).
+if mime == BLOB_REF_MIME {
+    let hash = value.get("hash").and_then(|v| v.as_str());
+    let target_ct = value.get("content_type").and_then(|v| v.as_str());
+    let size = value.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
 
     match (hash, target_ct) {
         (Some(h), Some(ct)) => {
-            // Confirm the blob exists; if not, warn and skip. Do NOT error out.
-            if blob_store.exists(h).await {
-                let content_ref = ContentRef::from_hash(h.to_string(), ct.to_string(), size);
-                manifest.insert(ct.to_string(), content_ref.to_json());
+            if blob_store.exists(h) {
+                let content_ref = ContentRef::from_hash(h.to_string(), size);
+                entries.insert(ct.to_string(), content_ref);
             } else {
                 warn!("[dx] ref MIME points at missing blob {}", h);
             }
@@ -1871,12 +1942,13 @@ if let Some(ref_val) = bundle.get(BLOB_REF_MIME) {
             warn!("[dx] ref MIME missing hash or content_type");
         }
     }
-    // Remove the ref MIME so the main loop doesn't double-process it.
-    bundle.remove(BLOB_REF_MIME);
+    // Do not emit an entry under BLOB_REF_MIME — the target_ct entry is what
+    // consumers read. The ref MIME is only a transport detail.
+    continue;
 }
 ```
 
-If `BlobStore::exists` doesn't exist, add it (a thin `metadata(...)` or `tokio::fs::try_exists` on the sharded path). If `ContentRef::from_hash` doesn't exist in the current code, wrap the existing `ContentRef::from_binary` construction to accept a pre-computed hash (refactor `from_binary` to call a shared `from_hash` helper).
+`BlobStore::exists(&str)` is already present at `crates/runtimed/src/blob_store.rs:194` (synchronous file check). `ContentRef::from_hash(hash, size)` is the trivial wrapper shown earlier — add it next to `from_binary`.
 
 - [ ] **Step 5: Run tests to verify they pass**
 
@@ -1991,70 +2063,37 @@ git commit -m "test(dx): end-to-end integration against dev daemon"
 
 ---
 
-## Task 12: Kernel bootstrap — ship dx + call install()
+## Task 12: Publishing `dx` and deferred kernel bootstrap
 
-**Files:**
-- Modify: `crates/kernel-launch/src/lib.rs` (or the equivalent that composes ipykernel startup)
-- Modify: the managed Python environment bootstrap dep list
+Kernel bootstrap auto-installation of `dx` is **deferred**. Rationale:
 
-- [ ] **Step 1: Locate the ipykernel exec_lines config**
+- Today, the kernel-launch path does not inject any ipykernel startup lines — adding that plumbing is net-new surface area that doesn't need to ship with v1.
+- Before auto-bootstrap, `dx` needs to exist somewhere a managed Python environment can install it from. The workspace path works locally but is fragile across machines; publishing `dx` to PyPI is a prerequisite.
 
-```bash
-grep -rn "exec_lines\|IPKernelApp\|kernel_main" crates/kernel-launch/src crates/runtimed/src | head -20
+### v1 UX
+
+Users (or us, in notebooks) call:
+
+```python
+import dx
+dx.install()
 ```
 
-Find where `ipykernel` is launched (likely a CLI invocation with `-c` or a startup file path).
+as the first cell in a notebook. `dx.install()` opens the `nteract.dx.blob` comm and registers the IPython formatters; subsequent cells get the upgraded display automatically. In vanilla Jupyter the same two lines are a safe no-op (raw-bytes display fallback).
 
-- [ ] **Step 2: Add `dx` to bootstrap deps**
+### Publishing prep checklist (land before v1.1 auto-bootstrap)
 
-In the kernel-launch bootstrap pip list (look for `ipykernel`, `uv`, etc. in the same region):
+- [ ] Claim the PyPI project name `dx` (or, if unavailable, rename to `nteract-dx` and update all references).
+- [ ] Add `dx` to the release workflow that publishes the nteract Python packages.
+- [ ] Cut a 0.1.0 release once the agent-side work (Tasks 1, 9, 10) has landed and is tested.
 
-```rust
-const BOOTSTRAP_DEPS: &[&str] = &[
-    "ipykernel",
-    // ... existing ...
-    "dx",  // nteract/dx
-];
-```
+### v1.1 auto-bootstrap (future task, out of scope for this plan)
 
-If `dx` is not yet published to PyPI, install from the workspace path during development. Document a `DX_BOOTSTRAP_SOURCE` env var that selects between `pip install dx` and `pip install -e /path/to/python/dx`.
+When we circle back, the design is:
 
-- [ ] **Step 3: Add the startup exec line**
-
-Wherever ipykernel startup code is assembled, include:
-
-```rust
-let startup = r#"
-try:
-    import dx
-    dx.install()
-except Exception as _e:
-    import sys
-    print(f'[dx] install failed: {_e!r}', file=sys.stderr)
-"#;
-```
-
-And pass it via `--IPKernelApp.exec_lines` or write it to a startup `.py` file referenced by the kernel spec.
-
-- [ ] **Step 4: Set `RUNTIMED_BLOB_BASE_URL` in the kernel env**
-
-When spawning the kernel, add `RUNTIMED_BLOB_BASE_URL=http://127.0.0.1:<port>` to the kernel process env (using the blob server's bound port from the existing blob-server startup).
-
-- [ ] **Step 5: Smoke test**
-
-```bash
-supervisor_restart target="daemon"
-# Open a notebook, create a code cell:
-#   import dx; print(dx.__version__)
-# Expected output: 0.1.0 without any stderr install-failed notices.
-```
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add crates/kernel-launch crates/runtimed
-git commit -m "feat(kernel-launch): install dx in managed envs, auto-call dx.install()"
-```
+- Add `dx` to the managed Python environment's dep list (wherever `ipykernel`, `uv`, etc. are pinned during environment setup).
+- Inject `import dx; dx.install()` via `--IPKernelApp.exec_lines` or a startup `.py` in the managed profile directory.
+- No env var plumbing needed — the kernel discovers the comm target via ipykernel; the runtime agent is already on the other end. We ruled out `RUNTIMED_BLOB_BASE_URL`: kernel-side code never needs the URL, and the ref MIME carries only the hash.
 
 ---
 

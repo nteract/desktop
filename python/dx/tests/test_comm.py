@@ -23,7 +23,7 @@ class FakeComm:
     def close(self):
         self.closed = True
 
-    # Test helper: simulate an incoming message from the agent.
+    # Test helper: simulate an incoming message from the runtime agent.
     def incoming(self, data, buffers=None):
         assert self._handler is not None
         self._handler({"content": {"data": data}, "buffers": buffers or []})
@@ -56,12 +56,11 @@ def test_put_blob_sends_comm_msg_with_buffer():
     t = threading.Thread(target=ack_on_send, daemon=True)
     t.start()
 
-    ref = client.put(b"abc", "image/png", blob_base_url="http://localhost:9999")
+    ref = client.put(b"abc", "image/png")
     t.join(timeout=2)
     assert isinstance(ref, BlobRef)
     assert ref.hash == "sha256:abc"
     assert ref.size == 3
-    assert ref.url == "http://localhost:9999/blob/sha256:abc"
 
     data, buffers = comm.sent[0]
     assert data["op"] == "put"
@@ -73,7 +72,7 @@ def test_put_blob_timeout_raises():
     comm = FakeComm()
     client = BlobClient(comm, default_timeout=0.05)
     with pytest.raises(DxTimeoutError):
-        client.put(b"abc", "image/png", blob_base_url="http://localhost:9999")
+        client.put(b"abc", "image/png")
 
 
 def test_put_blob_error_response_too_large():
@@ -95,22 +94,22 @@ def test_put_blob_error_response_too_large():
     threading.Thread(target=err_on_send, daemon=True).start()
 
     with pytest.raises(DxPayloadTooLargeError):
-        client.put(b"abc", "image/png", blob_base_url="http://localhost:9999")
+        client.put(b"abc", "image/png")
 
 
 def test_put_blob_stale_req_id_ignored():
-    """A late ack for a timed-out request should not break subsequent calls."""
+    """A late ack for a timed-out request must not break subsequent calls."""
     comm = FakeComm()
     client = BlobClient(comm, default_timeout=0.05)
 
     with pytest.raises(DxTimeoutError):
-        client.put(b"abc", "image/png", blob_base_url="http://x")
+        client.put(b"abc", "image/png")
 
-    # Now deliver the stale ack — should be ignored silently.
+    # Deliver the stale ack — should be ignored silently.
     req_id = comm.sent[0][0]["req_id"]
     comm.incoming({"op": "ack", "req_id": req_id, "hash": "sha256:abc", "size": 3})
 
-    # And a fresh call should still work.
+    # A fresh call on a new client should still work.
     def ack_on_second():
         _wait_for_send(comm, timeout=2.0)
         while len(comm.sent) < 2:
@@ -120,11 +119,11 @@ def test_put_blob_stale_req_id_ignored():
 
     client2 = BlobClient(comm, default_timeout=2.0)
     threading.Thread(target=ack_on_second, daemon=True).start()
-    ref = client2.put(b"def", "image/png", blob_base_url="http://x")
+    ref = client2.put(b"def", "image/png")
     assert ref.hash == "sha256:def"
 
 
 def test_fallback_client_raises_no_agent():
     client = FallbackClient()
     with pytest.raises(DxNoAgentError):
-        client.put(b"abc", "image/png", blob_base_url="http://localhost:9999")
+        client.put(b"abc", "image/png")

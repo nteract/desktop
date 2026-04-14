@@ -138,6 +138,10 @@ Per-cell WASM accessors (O(1) Automerge map lookups): `get_cell_source(id)`, `ge
 
 Settings (theme, default_runtime, etc.) sync via a **separate Automerge document** on the same Unix socket. Any window can write; all others receive changes. Frontend falls back to local `settings.json` if daemon is unavailable.
 
+## Reserved Comm Namespace: `nteract.dx.*`
+
+The `nteract.dx.*` target-name prefix is reserved for nteract's own kernel-side protocols (`nteract.dx.blob` for kernel → blob-store uploads; `nteract.dx.query` / `nteract.dx.stream` reserved for future use). Comms in this namespace are **filtered out of `RuntimeStateDoc::comms` by the runtime agent** — they never sync to the frontend as widget state or as `NotebookBroadcast::Comm` events, and their buffers go directly to the blob store. Do not register widget targets under this prefix. See `docs/superpowers/specs/2026-04-13-nteract-dx-design.md` for the protocol.
+
 ## Widget State (Current Architecture)
 
 Widget state lives in **RuntimeStateDoc** (`doc.comms/` Automerge map):

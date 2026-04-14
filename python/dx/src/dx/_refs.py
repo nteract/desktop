@@ -12,12 +12,17 @@ class BlobRef:
     """A content-addressed reference to a blob in the daemon's blob store.
 
     ``hash`` is the persistent identity (e.g. ``"sha256:abc123..."``).
-    ``url`` is a current-session URL; it is NOT persisted in the CRDT and
-    should not be stored anywhere durable.
+    ``size`` is the blob's byte length as reported by the runtime agent.
+
+    No URL is stored. The frontend derives the blob-server URL from the hash
+    at render time (``ContentRef`` resolution in WASM), which keeps outputs
+    durable across blob-server port changes. Kernel-side code that wants a
+    URL for external tooling should call into the daemon explicitly (e.g.
+    ``runt daemon status --json``); URLs are not part of dx's persistent
+    protocol.
     """
 
     hash: str
-    url: str
     size: int
 
 
