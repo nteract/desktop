@@ -335,6 +335,7 @@ fn parse_environment_yml_content(content: &str) -> Result<EnvironmentYmlConfig, 
         Pip, // inside dependencies: pip: sub-list
     }
     let mut section = Section::None;
+    let mut pip_indent = 0usize;
 
     for line in content.lines() {
         let trimmed = line.trim();
@@ -365,6 +366,14 @@ fn parse_environment_yml_content(content: &str) -> Result<EnvironmentYmlConfig, 
             continue;
         }
 
+        // Exit pip subsection when indent returns to dependency level
+        if section == Section::Pip {
+            let indent = line.len() - line.trim_start().len();
+            if indent <= pip_indent {
+                section = Section::Dependencies;
+            }
+        }
+
         // Indented content (list items)
         match section {
             Section::Channels => {
@@ -376,6 +385,7 @@ fn parse_environment_yml_content(content: &str) -> Result<EnvironmentYmlConfig, 
             }
             Section::Dependencies => {
                 if trimmed == "- pip:" {
+                    pip_indent = line.len() - line.trim_start().len();
                     section = Section::Pip;
                 } else if let Some(item) = trimmed.strip_prefix("- ") {
                     let dep = item.trim().trim_matches('"').trim_matches('\'').to_string();
@@ -410,17 +420,7 @@ fn parse_environment_yml_content(content: &str) -> Result<EnvironmentYmlConfig, 
                 }
             }
             Section::Pip => {
-                // Skip pip deps for now — they'd need uv/pip to install
-                if let Some(_item) = trimmed.strip_prefix("- ") {
-                    // pip deps are not supported in conda:env_yml yet
-                } else if !trimmed.starts_with('-') {
-                    section = Section::Dependencies;
-                    // Re-process the line in case it's a new dependency
-                    if let Some(item) = trimmed.strip_prefix("- ") {
-                        let dep = item.trim().trim_matches('"').trim_matches('\'').to_string();
-                        dependencies.push(dep);
-                    }
-                }
+                // Pip sub-items at deeper indent — skip (not supported in conda:env_yml yet)
             }
             Section::None => {}
         }
@@ -605,8 +605,16 @@ mod tests {
         let content = "name: test\nchannels:\n  - conda-forge\n  - defaults\ndependencies:\n  - numpy\n  - pip:\n    - requests\n    - flask\n  - scipy\n";
         let config = parse_environment_yml_content(content).unwrap();
         assert_eq!(config.channels, vec!["conda-forge", "defaults"]);
-        // pip deps are skipped, scipy after pip block should still be captured
-        assert!(config.dependencies.contains(&"numpy".to_string()));
+        // pip deps are skipped, conda deps after pip block must still be captured
+        assert_eq!(config.dependencies, vec!["numpy", "scipy"]);
+    }
+
+    #[test]
+    fn test_parse_env_yml_pip_then_multiple_conda_deps() {
+        let content = "name: test\ndependencies:\n  - numpy\n  - pip:\n    - requests\n    - flask\n  - scipy\n  - matplotlib\n  - python=3.11\n";
+        let config = parse_environment_yml_content(content).unwrap();
+        assert_eq!(config.dependencies, vec!["numpy", "scipy", "matplotlib"]);
+        assert_eq!(config.python, Some("3.11".to_string()));
     }
 
     #[test]

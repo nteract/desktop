@@ -6493,9 +6493,9 @@ fn find_env_yml_deps_insertion_point(content: &str) -> Option<usize> {
         if !line.starts_with(' ') && !line.starts_with('\t') {
             if trimmed == "dependencies:" {
                 in_deps = true;
-                // Position after this line
+                // Position after this line (clamped for files without trailing newline)
                 let offset: usize = content.lines().take(i + 1).map(|l| l.len() + 1).sum();
-                last_dep_end = Some(offset);
+                last_dep_end = Some(offset.min(content.len()));
                 continue;
             } else if in_deps && !trimmed.is_empty() && !trimmed.starts_with('#') {
                 // Hit a new top-level key — insert before it
@@ -6505,7 +6505,7 @@ fn find_env_yml_deps_insertion_point(content: &str) -> Option<usize> {
 
         if in_deps && trimmed.starts_with("- ") {
             let offset: usize = content.lines().take(i + 1).map(|l| l.len() + 1).sum();
-            last_dep_end = Some(offset);
+            last_dep_end = Some(offset.min(content.len()));
         }
     }
 
@@ -12330,5 +12330,29 @@ mod tests {
             1,
             "generation should be 1 after concurrent spawn"
         );
+    }
+
+    #[test]
+    fn test_env_yml_insertion_point_no_trailing_newline() {
+        // File without trailing newline — must not panic or return out-of-bounds offset
+        let content = "dependencies:\n  - numpy";
+        let point = find_env_yml_deps_insertion_point(content);
+        assert!(point.is_some());
+        assert!(point.unwrap() <= content.len());
+    }
+
+    #[test]
+    fn test_env_yml_insertion_point_with_trailing_newline() {
+        let content = "dependencies:\n  - numpy\n  - pandas\n";
+        let point = find_env_yml_deps_insertion_point(content);
+        assert_eq!(point, Some(content.len()));
+    }
+
+    #[test]
+    fn test_env_yml_insertion_point_before_next_key() {
+        let content = "dependencies:\n  - numpy\nchannels:\n  - conda-forge\n";
+        let point = find_env_yml_deps_insertion_point(content);
+        // Should insert after "  - numpy\n", before "channels:"
+        assert_eq!(point, Some("dependencies:\n  - numpy\n".len()));
     }
 }
