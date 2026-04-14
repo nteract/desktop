@@ -16,11 +16,16 @@ class FakeDisplayFormatter:
 
 
 class FakeIPython:
-    def __init__(self) -> None:
-        self._formatter = FakeDisplayFormatter()
+    """Minimal stand-in matching IPython's ``InteractiveShell`` API.
 
-    def display_formatter(self):
-        return self._formatter
+    ``display_formatter`` is an *attribute*, not a method. Regression
+    guard: dx.install() must access it as ``ip.display_formatter``
+    (not ``ip.display_formatter()``), otherwise it raises TypeError
+    against a real IPython shell.
+    """
+
+    def __init__(self) -> None:
+        self.display_formatter = FakeDisplayFormatter()
 
 
 def _reset_installed(monkeypatch):
@@ -39,7 +44,7 @@ def test_install_registers_pandas_formatter(monkeypatch):
     import dx
 
     dx.install()
-    assert pd.DataFrame in ip._formatter.mimebundle_formatter.registrations
+    assert pd.DataFrame in ip.display_formatter.mimebundle_formatter.registrations
 
 
 def test_install_is_idempotent(monkeypatch):
@@ -52,7 +57,41 @@ def test_install_is_idempotent(monkeypatch):
 
     dx.install()
     dx.install()
-    assert len(ip._formatter.mimebundle_formatter.registrations) <= 2  # pandas + optionally polars
+    assert (
+        len(ip.display_formatter.mimebundle_formatter.registrations) <= 2
+    )  # pandas + optionally polars
+
+
+def test_install_treats_display_formatter_as_attribute_not_method(monkeypatch):
+    """Regression guard: against real IPython, display_formatter is an
+    attribute — calling it would raise TypeError.
+
+    Real IPython's ``InteractiveShell.display_formatter`` is a
+    ``DisplayFormatter`` instance (not a bound method). Prior versions of
+    dx.install() accessed it as ``ip.display_formatter()`` which works
+    against a callable test fake but crashes in a real shell.
+    """
+    _reset_installed(monkeypatch)
+
+    class NonCallableFormatter:
+        def __init__(self):
+            self.mimebundle_formatter = FakeMimebundleFormatter()
+
+        def __call__(self, *a, **kw):
+            raise TypeError("real IPython's display_formatter is not callable — this would crash")
+
+    class StrictFakeIPython:
+        def __init__(self):
+            self.display_formatter = NonCallableFormatter()
+
+    ip = StrictFakeIPython()
+    monkeypatch.setattr("dx._format_install._get_ipython_for_format", lambda: ip)
+    monkeypatch.setattr("dx._format_install._try_open_comm", lambda: None)
+
+    import dx
+
+    dx.install()
+    assert pd.DataFrame in ip.display_formatter.mimebundle_formatter.registrations
 
 
 def test_install_noop_when_no_ipython(monkeypatch):
@@ -100,7 +139,7 @@ def test_pandas_formatter_falls_back_when_no_agent(monkeypatch):
     import dx
 
     dx.install()
-    formatter = ip._formatter.mimebundle_formatter.registrations[pd.DataFrame]
+    formatter = ip.display_formatter.mimebundle_formatter.registrations[pd.DataFrame]
 
     df = pd.DataFrame({"a": [1, 2, 3]})
     bundle = formatter(df)

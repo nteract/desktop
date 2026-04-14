@@ -74,7 +74,9 @@ def install_formatters() -> None:
         _INSTALLED = True
         return
 
-    formatter = ip.display_formatter().mimebundle_formatter
+    # IPython's InteractiveShell exposes DisplayFormatter as an attribute,
+    # not a method — do not call it.
+    formatter = ip.display_formatter.mimebundle_formatter
 
     try:
         import pandas as pd

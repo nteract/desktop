@@ -1368,49 +1368,111 @@ impl KernelConnection for JupyterKernel {
                                 let method = data.get("method").and_then(|m| m.as_str());
 
                                 // dx-namespace comms short-circuit before any widget
-                                // state handling. The blob handler writes bytes to the
-                                // blob store and schedules an ack back to the kernel on
-                                // the shell socket; none of this touches RuntimeStateDoc.
-                                if let Some(target) = comm_targets.get(&msg.comm_id.0) {
-                                    if crate::dx_blob_comm::is_dx_target(target)
-                                        && target == crate::dx_blob_comm::DX_BLOB_TARGET
+                                // state handling. ALL reserved nteract.dx.* targets are
+                                // filtered from RuntimeStateDoc; an unhandled reserved
+                                // target (e.g. a future nteract.dx.query from a newer
+                                // kernel) is dropped with a warn so the mismatch is
+                                // observable.
+                                if let Some(target) = comm_targets.get(&msg.comm_id.0).cloned() {
+                                    if let Some(kind) =
+                                        crate::dx_blob_comm::classify_dx_target(&target)
                                     {
-                                        let request: crate::dx_blob_comm::DxBlobRequest =
-                                            match serde_json::from_value(data.clone()) {
-                                                Ok(r) => r,
-                                                Err(e) => {
-                                                    warn!(
-                                                        "[dx] bad request on {}: {}",
-                                                        msg.comm_id.0, e
+                                        match kind {
+                                            crate::dx_blob_comm::DxTarget::Blob => {
+                                                let request: crate::dx_blob_comm::DxBlobRequest =
+                                                    match serde_json::from_value(data.clone()) {
+                                                        Ok(r) => r,
+                                                        Err(e) => {
+                                                            warn!(
+                                                                "[dx] bad blob request on {}: {}",
+                                                                msg.comm_id.0, e
+                                                            );
+                                                            continue;
+                                                        }
+                                                    };
+
+                                                // Extract the request's req_id up front so
+                                                // we can error-reply without a buffer if
+                                                // needed — this avoids a client-side
+                                                // timeout for a request we know is
+                                                // unrecoverable.
+                                                let req_id = match &request {
+                                                    crate::dx_blob_comm::DxBlobRequest::Put {
+                                                        req_id,
+                                                        ..
+                                                    } => req_id.clone(),
+                                                };
+
+                                                let Some(buffer) = buffers.first().cloned() else {
+                                                    error!(
+                                                        "[dx] blob Put request on {} arrived with no ZMQ buffer frames; not storing",
+                                                        msg.comm_id.0
                                                     );
+                                                    let response =
+                                                        crate::dx_blob_comm::DxBlobResponse::Err {
+                                                            req_id,
+                                                            code: "no_buffer".to_string(),
+                                                            message:
+                                                                "dx Put request arrived with no buffer frames"
+                                                                    .to_string(),
+                                                        };
+                                                    let response_data =
+                                                        serde_json::to_value(&response)
+                                                            .unwrap_or_default();
+                                                    if let Err(e) = iopub_cmd_tx
+                                                        .send(QueueCommand::SendDxCommAck {
+                                                            comm_id: msg.comm_id.0.clone(),
+                                                            data: response_data,
+                                                        })
+                                                        .await
+                                                    {
+                                                        warn!(
+                                                            "[dx] failed to enqueue no_buffer err: {}",
+                                                            e
+                                                        );
+                                                    }
                                                     continue;
-                                                }
-                                            };
-                                        let buffer = buffers.first().cloned().unwrap_or_default();
-                                        let blob_store = blob_store.clone();
-                                        let iopub_cmd_tx = iopub_cmd_tx.clone();
-                                        let comm_id = msg.comm_id.0.clone();
-                                        // Off-task so we don't block the iopub loop on
-                                        // a slow blob write.
-                                        tokio::spawn(async move {
-                                            let response = crate::dx_blob_comm::handle_blob_msg(
-                                                &blob_store,
-                                                request,
-                                                &buffer,
-                                            )
-                                            .await;
-                                            let response_data =
-                                                serde_json::to_value(&response).unwrap_or_default();
-                                            if let Err(e) = iopub_cmd_tx
-                                                .send(QueueCommand::SendDxCommAck {
-                                                    comm_id,
-                                                    data: response_data,
-                                                })
-                                                .await
-                                            {
-                                                warn!("[dx] failed to enqueue comm ack: {}", e);
+                                                };
+
+                                                let blob_store = blob_store.clone();
+                                                let iopub_cmd_tx = iopub_cmd_tx.clone();
+                                                let comm_id = msg.comm_id.0.clone();
+                                                // Off-task so we don't block the iopub
+                                                // loop on a slow blob write.
+                                                tokio::spawn(async move {
+                                                    let response =
+                                                        crate::dx_blob_comm::handle_blob_msg(
+                                                            &blob_store,
+                                                            request,
+                                                            &buffer,
+                                                        )
+                                                        .await;
+                                                    let response_data =
+                                                        serde_json::to_value(&response)
+                                                            .unwrap_or_default();
+                                                    if let Err(e) = iopub_cmd_tx
+                                                        .send(QueueCommand::SendDxCommAck {
+                                                            comm_id,
+                                                            data: response_data,
+                                                        })
+                                                        .await
+                                                    {
+                                                        warn!(
+                                                            "[dx] failed to enqueue comm ack: {}",
+                                                            e
+                                                        );
+                                                    }
+                                                });
                                             }
-                                        });
+                                            crate::dx_blob_comm::DxTarget::Unknown(
+                                                unknown_target,
+                                            ) => {
+                                                warn!(
+                                                    "[dx] comm_msg on unhandled reserved target {} from future kernel (dropped; filtered from RuntimeStateDoc)",
+                                                    unknown_target
+                                                );
+                                            }
+                                        }
                                         continue;
                                     }
                                 }

@@ -38,6 +38,43 @@ pub fn is_dx_target(target_name: &str) -> bool {
     target_name.starts_with(DX_NAMESPACE_PREFIX) && target_name.len() > DX_NAMESPACE_PREFIX.len()
 }
 
+/// Classification of a comm target within the reserved `nteract.dx.*`
+/// namespace.
+///
+/// Callers first check [`is_dx_target`] to decide whether the target belongs
+/// to dx at all; [`classify_dx_target`] then selects the dispatch path.
+///
+/// All dx targets are excluded from [`RuntimeStateDoc::comms`] persistence
+/// and from the widget broadcast path — [`DxTarget::Unknown`] exists so
+/// forward-compatibility is graceful: a newer kernel opening a reserved
+/// target we haven't implemented yet still gets proper isolation instead of
+/// silently leaking into widget state, and the warn log surfaces the
+/// mismatch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DxTarget {
+    /// `nteract.dx.blob` — v1 blob uploads.
+    Blob,
+    /// A reserved dx target we don't handle yet (e.g. a future
+    /// `nteract.dx.query` from a newer kernel). Carries the raw target
+    /// name so observability logs can record *which* future target came
+    /// in. Always filtered out of widget state; the caller should log a
+    /// `warn!` for the mismatch.
+    Unknown(String),
+}
+
+/// Classify a `target_name` that has already passed [`is_dx_target`].
+///
+/// Returns `None` if `target_name` is not in the dx namespace at all.
+pub fn classify_dx_target(target_name: &str) -> Option<DxTarget> {
+    if !is_dx_target(target_name) {
+        return None;
+    }
+    Some(match target_name {
+        DX_BLOB_TARGET => DxTarget::Blob,
+        other => DxTarget::Unknown(other.to_string()),
+    })
+}
+
 /// Request envelope received on the `nteract.dx.blob` comm.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -119,6 +156,27 @@ pub async fn handle_blob_msg(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn classify_dispatches_blob_and_falls_back_to_unknown() {
+        assert_eq!(classify_dx_target("nteract.dx.blob"), Some(DxTarget::Blob));
+        assert_eq!(
+            classify_dx_target("nteract.dx.query"),
+            Some(DxTarget::Unknown("nteract.dx.query".to_string()))
+        );
+        assert_eq!(
+            classify_dx_target("nteract.dx.stream"),
+            Some(DxTarget::Unknown("nteract.dx.stream".to_string()))
+        );
+        assert_eq!(
+            classify_dx_target("nteract.dx.future"),
+            Some(DxTarget::Unknown("nteract.dx.future".to_string()))
+        );
+        // Non-dx targets don't classify at all.
+        assert_eq!(classify_dx_target("jupyter.widget"), None);
+        assert_eq!(classify_dx_target("nteract.dx"), None);
+        assert_eq!(classify_dx_target("nteract.dx."), None);
+    }
 
     #[test]
     fn namespace_prefix_check() {
