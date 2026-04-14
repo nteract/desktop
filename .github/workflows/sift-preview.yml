@@ -41,9 +41,7 @@ jobs:
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
       - name: Build sift-wasm
-        # --out-name keeps the JS/WASM filenames as `nteract_predicate.*` so
-        # sift's imports stay stable across the nteract-predicate / sift-wasm split.
-        run: wasm-pack build crates/sift-wasm --target web --release --out-name nteract_predicate
+        run: wasm-pack build crates/sift-wasm --target web --release
 
       - uses: voidzero-dev/setup-vp@v1
         with:

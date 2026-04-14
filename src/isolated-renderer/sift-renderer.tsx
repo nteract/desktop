@@ -32,7 +32,7 @@ function configureWasm(blobUrl: string): void {
   if (wasmConfigured) return;
   try {
     const parsed = new URL(blobUrl);
-    const wasmUrl = `${parsed.protocol}//${parsed.host}/plugins/nteract-predicate.wasm`;
+    const wasmUrl = `${parsed.protocol}//${parsed.host}/plugins/sift_wasm.wasm`;
     setWasmUrl(wasmUrl);
     wasmConfigured = true;
   } catch {

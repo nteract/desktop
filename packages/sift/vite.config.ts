@@ -9,7 +9,7 @@ export default defineConfig({
   plugins: [tailwindcss()],
   resolve: {
     alias: {
-      "nteract-predicate": wasmPkg,
+      "sift-wasm": wasmPkg,
     },
   },
   build: {

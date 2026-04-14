@@ -1,5 +1,5 @@
 /**
- * Lazy-loading wrapper for the nteract-predicate WASM module.
+ * Lazy-loading wrapper for the sift-wasm module.
  *
  * The WASM binary is loaded on first use, so it doesn't affect
  * initial page load for users who don't need compute operations.
@@ -85,7 +85,7 @@ export function setWasmUrl(url: string): void {
 
 export async function ensureModule(): Promise<PredicateModule> {
   if (mod) return mod;
-  const wasm = await import("nteract-predicate/nteract_predicate.js");
+  const wasm = await import("sift-wasm/sift_wasm.js");
   await wasm.default(configuredWasmUrl);
   mod = wasm as unknown as PredicateModule;
   return mod;
@@ -220,6 +220,6 @@ export async function isNull(handle: number, row: number, col: number): Promise<
  * Call ensureModule() first during your async setup phase.
  */
 export function getModuleSync(): PredicateModule {
-  if (!mod) throw new Error("nteract-predicate WASM not initialized. Call ensureModule() first.");
+  if (!mod) throw new Error("sift-wasm not initialized. Call ensureModule() first.");
   return mod;
 }

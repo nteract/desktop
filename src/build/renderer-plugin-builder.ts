@@ -58,15 +58,12 @@ export const RENDERER_PLUGINS: RendererPluginDef[] = [
 ];
 
 /**
- * Resolve the WASM JS glue for nteract-predicate.
+ * Resolve the WASM JS glue for sift-wasm.
  * Falls back to a stub if the WASM crate hasn't been built.
  */
 function resolveWasmGlue(): string {
-  const realPath = path.resolve(srcDir, "../crates/sift-wasm/pkg/nteract_predicate.js");
-  const mockPath = path.resolve(
-    srcDir,
-    "../packages/sift/src/__mocks__/nteract-predicate/nteract_predicate.js",
-  );
+  const realPath = path.resolve(srcDir, "../crates/sift-wasm/pkg/sift_wasm.js");
+  const mockPath = path.resolve(srcDir, "../packages/sift/src/__mocks__/sift-wasm/sift_wasm.js");
   return fs.existsSync(realPath) ? realPath : mockPath;
 }
 
@@ -134,7 +131,7 @@ export async function buildRendererPlugin(
         // Sift plugin needs workspace package resolution + WASM glue
         "@nteract/sift/style.css": path.resolve(srcDir, "../packages/sift/src/style.css"),
         "@nteract/sift": path.resolve(srcDir, "../packages/sift/src/index.ts"),
-        "nteract-predicate/nteract_predicate.js": resolveWasmGlue(),
+        "sift-wasm/sift_wasm.js": resolveWasmGlue(),
       },
     },
     build: {
