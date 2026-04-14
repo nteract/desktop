@@ -92,9 +92,12 @@ jobs:
         # Install the binary directly rather than via raven-actions/actionlint@v2,
         # which falls back to `npm install` in the repo root on cache miss and
         # chokes on the pnpm `catalog:` protocol in package.json.
+        # -shellcheck= disables shellcheck (matches the previous `shellcheck: false`
+        # setting on raven-actions/actionlint@v2). Fix shellcheck warnings in a
+        # separate cleanup PR.
         run: |
           bash <(curl https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
-          ./actionlint -color
+          ./actionlint -color -shellcheck=
 
   windows-clippy:
     name: Windows (clippy)
