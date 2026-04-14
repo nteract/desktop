@@ -379,10 +379,7 @@ async fn launch_kernel_with_retry(
                     KERNEL_LAUNCH_MAX_ATTEMPTS
                 );
                 if attempt < KERNEL_LAUNCH_MAX_ATTEMPTS {
-                    warn!(
-                        "[runtime-agent] {} — retrying with fresh ports",
-                        last_error
-                    );
+                    warn!("[runtime-agent] {} — retrying with fresh ports", last_error);
                 } else {
                     error!("[runtime-agent] {}", last_error);
                 }

@@ -43,6 +43,84 @@ use notebook_protocol::protocol::LaunchedEnvConfig;
 type PendingCompletions =
     Arc<StdMutex<HashMap<String, oneshot::Sender<(Vec<CompletionItem>, usize, usize)>>>>;
 
+/// RAII guard for resources spawned during `JupyterKernel::launch()`.
+///
+/// Holds the kernel PID and abort handles for all spawned background tasks.
+/// If `launch()` fails — either via an explicit error return **or** because the
+/// outer timeout in `launch_kernel_with_retry` drops the future — the guard's
+/// `Drop` kills the child process and aborts every background task, preventing
+/// orphan kernels.
+///
+/// On success, call [`LaunchGuard::disarm`] so the guard's `Drop` becomes a
+/// no-op (the `JupyterKernel` struct takes ownership of the resources via its
+/// own `Drop` impl).
+struct LaunchGuard {
+    /// Kernel PID for SIGKILL on cleanup (Unix only).
+    #[cfg(unix)]
+    kernel_pid: Option<i32>,
+    /// Abort handles for spawned tasks — invoked on drop.
+    abort_handles: Vec<tokio::task::AbortHandle>,
+    /// Whether the guard has been disarmed (resources transferred to JupyterKernel).
+    disarmed: bool,
+}
+
+impl LaunchGuard {
+    #[cfg(unix)]
+    fn new(kernel_pid: Option<i32>) -> Self {
+        Self {
+            kernel_pid,
+            abort_handles: Vec::new(),
+            disarmed: false,
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn new() -> Self {
+        Self {
+            abort_handles: Vec::new(),
+            disarmed: false,
+        }
+    }
+
+    /// Register a spawned task's abort handle so it will be aborted on cleanup.
+    fn track(&mut self, handle: &JoinHandle<()>) {
+        self.abort_handles.push(handle.abort_handle());
+    }
+
+    /// Disarm the guard — caller takes ownership of the resources.
+    /// The guard's `Drop` becomes a no-op.
+    fn disarm(mut self) {
+        self.disarmed = true;
+    }
+}
+
+impl Drop for LaunchGuard {
+    fn drop(&mut self) {
+        if self.disarmed {
+            return;
+        }
+        // Kill the child process directly via SIGKILL.  We do this before
+        // aborting the process watcher task because the watcher owns the
+        // `Child` handle (which has `kill_on_drop`).  Tokio task abort is
+        // asynchronous — the Drop may not run immediately — so an explicit
+        // SIGKILL via PID is the only reliable synchronous cleanup.
+        #[cfg(unix)]
+        if let Some(pid) = self.kernel_pid.take() {
+            use nix::sys::signal::{kill, Signal};
+            use nix::unistd::Pid;
+            warn!(
+                "[jupyter-kernel] LaunchGuard cleanup: killing kernel pid {}",
+                pid
+            );
+            let _ = kill(Pid::from_raw(pid), Signal::SIGKILL);
+        }
+        for handle in self.abort_handles.drain(..) {
+            handle.abort();
+        }
+        warn!("[jupyter-kernel] LaunchGuard cleanup: aborted spawned tasks");
+    }
+}
+
 /// A Jupyter kernel connection that implements `KernelConnection`.
 ///
 /// Holds the IO-bound parts of a kernel connection: ZeroMQ sockets, spawned
@@ -470,10 +548,23 @@ impl KernelConnection for JupyterKernel {
         let mut process = cmd.kill_on_drop(true).spawn()?;
         drop(listeners);
 
+        #[cfg(unix)]
+        let kernel_pid = process.id().map(|pid| pid as i32);
+
+        // ── Launch guard ────────────────────────────────────────────────
+        // Created immediately after spawn so that any subsequent error or
+        // future cancellation (outer timeout) will kill the child and
+        // abort all spawned tasks.  Disarmed at the end of launch() once
+        // the JupyterKernel struct takes ownership.
+        #[cfg(unix)]
+        let mut launch_guard = LaunchGuard::new(kernel_pid);
+        #[cfg(not(unix))]
+        let mut launch_guard = LaunchGuard::new();
+
         // Capture kernel stderr for diagnostics
         if let Some(stderr) = process.stderr.take() {
             let kid = kernel_id.clone();
-            tokio::spawn(async move {
+            let stderr_task = tokio::spawn(async move {
                 use tokio::io::{AsyncBufReadExt, BufReader};
                 let mut lines = BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
@@ -485,10 +576,8 @@ impl KernelConnection for JupyterKernel {
                     }
                 }
             });
+            launch_guard.track(&stderr_task);
         }
-
-        #[cfg(unix)]
-        let kernel_pid = process.id().map(|pid| pid as i32);
 
         info!(
             "[jupyter-kernel] Spawned kernel process (pid={:?}, kernel_id={})",
@@ -562,6 +651,7 @@ impl KernelConnection for JupyterKernel {
             let _ = died_tx.send(msg);
             let _ = process_cmd_tx.try_send(QueueCommand::KernelDied);
         });
+        launch_guard.track(&process_watcher_task);
 
         // ── IOPub listener task ──────────────────────────────────────────
 
@@ -1572,6 +1662,7 @@ impl KernelConnection for JupyterKernel {
             warn!("[jupyter-kernel] iopub loop exited, signaling KernelDied");
             let _ = iopub_cmd_tx.try_send(QueueCommand::KernelDied);
         });
+        launch_guard.track(&iopub_task);
 
         // ── Shell connection + kernel alive check ─────────────────────────
         //
@@ -1622,7 +1713,7 @@ impl KernelConnection for JupyterKernel {
                 }
                 Ok(Err(e)) => {
                     error!("[jupyter-kernel] {}", e);
-                    process_watcher_task.abort();
+                    // launch_guard Drop will kill process + abort tasks
                     return Err(e);
                 }
                 Err(_) => {
@@ -1631,7 +1722,7 @@ impl KernelConnection for JupyterKernel {
                          kernel may be alive but unresponsive (kernel_id={})",
                         kernel_id
                     );
-                    process_watcher_task.abort();
+                    // launch_guard Drop will kill process + abort tasks
                     return Err(anyhow::anyhow!(
                         "Kernel launch deadline exceeded (45s): kernel alive but not responding"
                     ));
@@ -1838,6 +1929,7 @@ impl KernelConnection for JupyterKernel {
                 }
             }
         });
+        launch_guard.track(&shell_reader_task);
 
         // ── Heartbeat monitor ────────────────────────────────────────────
 
@@ -1872,6 +1964,7 @@ impl KernelConnection for JupyterKernel {
                 }
             }
         });
+        launch_guard.track(&heartbeat_task);
 
         // ── Coalesced comm state writer ──────────────────────────────────
 
@@ -1924,8 +2017,14 @@ impl KernelConnection for JupyterKernel {
                 }
             }
         });
+        launch_guard.track(&comm_coalesce_task);
 
         // ── Construct the kernel struct ──────────────────────────────────
+        //
+        // All resources are now owned by the kernel. Disarm the guard so
+        // its Drop becomes a no-op — JupyterKernel::Drop handles cleanup
+        // from here on.
+        launch_guard.disarm();
 
         let kernel = Self {
             kernel_type,
