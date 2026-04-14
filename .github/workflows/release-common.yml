@@ -673,7 +673,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: dx-dist
-          path: python/dx/dist
+          # uv build in a workspace writes to repo-root dist/, not
+          # python/dx/dist — same as the nteract job above.
+          path: dist/dx-*
           if-no-files-found: error
 
   build-python-wheels:
