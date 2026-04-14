@@ -3373,6 +3373,13 @@ async fn try_uv_pool_for_inline_deps(
                         "[notebook-sync] Installed {} delta packages into pool env",
                         delta.len()
                     );
+                    progress_handler.on_progress(
+                        "uv",
+                        kernel_env::EnvProgressPhase::Ready {
+                            env_path: env.venv_path.to_string_lossy().to_string(),
+                            python_path: env.python_path.to_string_lossy().to_string(),
+                        },
+                    );
                     Ok((env, actual_packages))
                 }
                 Err(e) => {
@@ -3487,6 +3494,13 @@ async fn try_conda_pool_for_inline_deps(
                     info!(
                         "[notebook-sync] Installed {} delta packages into Conda pool env",
                         delta.len()
+                    );
+                    progress_handler.on_progress(
+                        "conda",
+                        kernel_env::EnvProgressPhase::Ready {
+                            env_path: env.venv_path.to_string_lossy().to_string(),
+                            python_path: env.python_path.to_string_lossy().to_string(),
+                        },
                     );
                     Ok((env, actual_packages))
                 }
