@@ -446,7 +446,7 @@ The repo includes `.zed/tasks.json` with pre-configured tasks that set the corre
 | **Dev App** | `cargo xtask notebook` with dev env vars and auto-assigned Vite port |
 | **Daemon Status** | `./target/debug/runt daemon status` pointed at the worktree daemon |
 | **Daemon Logs** | `./target/debug/runt daemon logs -f` with live tail |
-| **Format** | `cargo fmt` + biome in one step |
+| **Format** | `cargo xtask lint --fix` (Rust + JS/TS via vp + Python ruff) |
 | **Setup** | `pnpm install && cargo xtask build` for first-time setup |
 
 The tasks use `$ZED_WORKTREE_ROOT` for `RUNTIMED_WORKSPACE_PATH`, giving each Zed worktree its own isolated daemon — no conflicts when working across branches.

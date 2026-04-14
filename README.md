@@ -181,7 +181,7 @@ pnpm build                          # Build notebook UI
 cargo test                          # Run Rust tests
 pnpm test:run                       # Run JS tests
 cargo fmt                           # Format Rust
-npx @biomejs/biome check --fix apps/notebook/src/ e2e/  # Lint + format JS/TS
+vp check --fix                      # Lint + format JS/TS
 cargo clippy --all-targets -- -D warnings               # Lint Rust
 ```
 

@@ -92,12 +92,9 @@ jobs:
         # Install the binary directly rather than via raven-actions/actionlint@v2,
         # which falls back to `npm install` in the repo root on cache miss and
         # chokes on the pnpm `catalog:` protocol in package.json.
-        # -shellcheck= disables shellcheck (matches the previous `shellcheck: false`
-        # setting on raven-actions/actionlint@v2). Fix shellcheck warnings in a
-        # separate cleanup PR.
         run: |
           bash <(curl https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
-          ./actionlint -color -shellcheck=
+          ./actionlint -color
 
   windows-clippy:
     name: Windows (clippy)
@@ -609,10 +606,10 @@ jobs:
           # Start daemon with pool configuration.
           # Unset UV_CACHE_DIR/UV_PYTHON_INSTALL_DIR so the daemon uses its own
           # env paths (runtimed-uv-*) instead of the CI uv action's temp cache.
-          TARGET=$(ls target/release/binaries/ | grep runtimed | head -1)
+          TARGET=$(find target/release/binaries -maxdepth 1 -name 'runtimed*' -print -quit)
           env -u UV_CACHE_DIR -u UV_PYTHON_INSTALL_DIR \
             RUNTIMED_WORKSPACE_PATH="${GITHUB_WORKSPACE}" \
-            ./target/release/binaries/$TARGET --dev run \
+            "$TARGET" --dev run \
             --uv-pool-size ${{ matrix.uv_pool }} --conda-pool-size ${{ matrix.conda_pool }} \
             > e2e-logs/daemon.log 2>&1 &
           DAEMON_PID=$!
@@ -641,9 +638,9 @@ jobs:
           APP_PID=$!
 
           # Wait for WebDriver server
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             curl -s http://localhost:4445/status >/dev/null 2>&1 && break
-            kill -0 $APP_PID 2>/dev/null || { echo "App died"; cat e2e-logs/app.log; exit 1; }
+            kill -0 "$APP_PID" 2>/dev/null || { echo "App died"; cat e2e-logs/app.log; exit 1; }
             sleep 1
           done
           echo "WebDriver ready"
@@ -742,7 +739,7 @@ jobs:
           # Run tests (daemon is spawned by the test fixture)
           uv run pytest tests/test_daemon_integration.py -v --tb=short 2>&1 | tee integration-logs/test-output.log || FAIL=1
 
-          exit ${FAIL:-0}
+          exit "${FAIL:-0}"
 
       - name: Upload test logs
         if: always()
