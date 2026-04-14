@@ -1,6 +1,6 @@
 use arrow::array::{
-    Array, AsArray, BooleanArray, Float64Array, Int32Array, Int64Array, StringArray, UInt32Array,
-    UInt64Array,
+    Array, BooleanArray, Float64Array, Int32Array, Int64Array, LargeStringArray, StringArray,
+    UInt32Array, UInt64Array,
 };
 use arrow::datatypes::{DataType, TimeUnit};
 use arrow::ipc::reader::StreamReader;
@@ -10,7 +10,6 @@ use arrow_cast::display::ArrayFormatter;
 use arrow_ord::sort::{sort_to_indices, SortOptions};
 use arrow_select::concat::concat;
 use nteract_predicate::summary::{CategoryCount, HistogramBin};
-use nteract_predicate::utils::dict_key_at;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -234,12 +233,13 @@ pub fn get_cell_string(handle: u32, row: usize, col: usize) -> Result<String, Js
             return String::new();
         }
 
+        // Strings (Utf8 / LargeUtf8 / Utf8View / Dict<string>) route through
+        // the shared helper so all variants dispatch correctly.
+        if let Some(s) = nteract_predicate::arrow_utils::string_at(column.as_ref(), local_row) {
+            return s;
+        }
+
         match column.data_type() {
-            DataType::Utf8 | DataType::LargeUtf8 => column
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .map(|a| a.value(local_row).to_string())
-                .unwrap_or_default(),
             DataType::Boolean => column
                 .as_any()
                 .downcast_ref::<BooleanArray>()
@@ -266,17 +266,6 @@ pub fn get_cell_string(handle: u32, row: usize, col: usize) -> Result<String, Js
                 .downcast_ref::<Float64Array>()
                 .map(|a| format!("{}", a.value(local_row)))
                 .unwrap_or_default(),
-            DataType::Dictionary(_, _) => {
-                let dict_arr = column.as_any_dictionary();
-                let keys = dict_arr.keys();
-                let values = dict_arr.values();
-                if let Some(str_values) = values.as_any().downcast_ref::<StringArray>() {
-                    if let Some(key) = dict_key_at(keys, local_row) {
-                        return str_values.value(key).to_string();
-                    }
-                }
-                String::new()
-            }
             _ => ArrayFormatter::try_new(column.as_ref(), &Default::default())
                 .ok()
                 .map(|f| f.value(local_row).to_string())
@@ -329,34 +318,18 @@ pub fn store_value_counts(handle: u32, col: usize) -> Result<JsValue, JsValue> {
         let mut freq: HashMap<String, u32> = HashMap::new();
         for batch in &s.batches {
             let column = batch.column(col);
+            if nteract_predicate::arrow_utils::for_each_string(column.as_ref(), |s| {
+                *freq.entry(s.to_string()).or_insert(0) += 1;
+            }) {
+                continue;
+            }
             match column.data_type() {
-                DataType::Utf8 | DataType::LargeUtf8 => {
-                    if let Some(arr) = column.as_any().downcast_ref::<StringArray>() {
-                        for i in 0..arr.len() {
-                            if !arr.is_null(i) {
-                                *freq.entry(arr.value(i).to_string()).or_insert(0) += 1;
-                            }
-                        }
-                    }
-                }
                 DataType::Boolean => {
                     if let Some(arr) = column.as_any().downcast_ref::<BooleanArray>() {
                         for i in 0..arr.len() {
                             if !arr.is_null(i) {
                                 let key = if arr.value(i) { "Yes" } else { "No" };
                                 *freq.entry(key.to_string()).or_insert(0) += 1;
-                            }
-                        }
-                    }
-                }
-                DataType::Dictionary(_, _) => {
-                    let dict_arr = column.as_any_dictionary();
-                    let keys = dict_arr.keys();
-                    let values = dict_arr.values();
-                    if let Some(str_values) = values.as_any().downcast_ref::<StringArray>() {
-                        for i in 0..keys.len() {
-                            if let Some(key) = dict_key_at(keys, i) {
-                                *freq.entry(str_values.value(key).to_string()).or_insert(0) += 1;
                             }
                         }
                     }
@@ -758,34 +731,19 @@ pub fn store_filtered_value_counts(
         for batch in &s.batches {
             let column = batch.column(col);
             let n = column.len();
+            // String-like columns: iterate via shared helper, applying the
+            // filter mask per row (global_row + i maps into the full mask).
+            let applied =
+                nteract_predicate::arrow_utils::for_each_string_indexed(column.as_ref(), |i, s| {
+                    if global_row + i < mask.len() && mask[global_row + i] != 0 {
+                        *freq.entry(s.to_string()).or_insert(0) += 1;
+                    }
+                });
+            if applied {
+                global_row += n;
+                continue;
+            }
             match column.data_type() {
-                DataType::Utf8 | DataType::LargeUtf8 => {
-                    if let Some(arr) = column.as_any().downcast_ref::<StringArray>() {
-                        for i in 0..n {
-                            if global_row + i < mask.len()
-                                && mask[global_row + i] != 0
-                                && !arr.is_null(i)
-                            {
-                                *freq.entry(arr.value(i).to_string()).or_insert(0) += 1;
-                            }
-                        }
-                    }
-                }
-                DataType::Dictionary(_, _) => {
-                    let dict_arr = column.as_any_dictionary();
-                    let keys = dict_arr.keys();
-                    let values = dict_arr.values();
-                    if let Some(str_values) = values.as_any().downcast_ref::<StringArray>() {
-                        for i in 0..n {
-                            if global_row + i < mask.len() && mask[global_row + i] != 0 {
-                                if let Some(key) = dict_key_at(keys, i) {
-                                    *freq.entry(str_values.value(key).to_string()).or_insert(0) +=
-                                        1;
-                                }
-                            }
-                        }
-                    }
-                }
                 DataType::Boolean => {
                     if let Some(arr) = column.as_any().downcast_ref::<BooleanArray>() {
                         for i in 0..n {
@@ -1210,33 +1168,62 @@ pub fn cast_column(handle: u32, col: usize, target_type: &str) -> Result<(), JsV
             } else if target_type == "timestamp"
                 && matches!(source_dt, DataType::Utf8 | DataType::LargeUtf8)
             {
-                // String → Timestamp: parse ISO date strings manually
-                let str_arr = column
-                    .as_any()
-                    .downcast_ref::<StringArray>()
-                    .ok_or_else(|| {
-                        JsValue::from_str("expected StringArray for Utf8 column during cast")
-                    })?;
+                // String → Timestamp: parse ISO date strings manually.
+                // Accept both StringArray (Utf8) and LargeStringArray (LargeUtf8).
+                let str_arr: &dyn Array = match source_dt {
+                    DataType::Utf8 => {
+                        column
+                            .as_any()
+                            .downcast_ref::<StringArray>()
+                            .ok_or_else(|| {
+                                JsValue::from_str(
+                                    "expected StringArray for Utf8 column during cast",
+                                )
+                            })? as &dyn Array
+                    }
+                    DataType::LargeUtf8 => column
+                        .as_any()
+                        .downcast_ref::<LargeStringArray>()
+                        .ok_or_else(|| {
+                            JsValue::from_str(
+                                "expected LargeStringArray for LargeUtf8 column during cast",
+                            )
+                        })? as &dyn Array,
+                    _ => unreachable!(),
+                };
                 let mut builder = arrow::array::TimestampMillisecondArray::builder(str_arr.len());
-                for i in 0..str_arr.len() {
+                let parse_value = |i: usize| -> Option<&str> {
                     if str_arr.is_null(i) {
-                        builder.append_null();
+                        return None;
+                    }
+                    if let Some(a) = str_arr.as_any().downcast_ref::<StringArray>() {
+                        Some(a.value(i))
                     } else {
-                        let s = str_arr.value(i);
-                        if let Ok(dt) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
-                            // and_hms_opt(0,0,0) only fails for invalid h/m/s, which are hardcoded valid
-                            let ts = dt
-                                .and_hms_opt(0, 0, 0)
-                                .unwrap()
-                                .and_utc()
-                                .timestamp_millis();
-                            builder.append_value(ts);
-                        } else if let Ok(dt) =
-                            chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
-                        {
-                            builder.append_value(dt.and_utc().timestamp_millis());
-                        } else {
-                            builder.append_null();
+                        str_arr
+                            .as_any()
+                            .downcast_ref::<LargeStringArray>()
+                            .map(|a| a.value(i))
+                    }
+                };
+                for i in 0..str_arr.len() {
+                    match parse_value(i) {
+                        None => builder.append_null(),
+                        Some(s) => {
+                            if let Ok(dt) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+                                // and_hms_opt(0,0,0) only fails for invalid h/m/s, which are hardcoded valid
+                                let ts = dt
+                                    .and_hms_opt(0, 0, 0)
+                                    .unwrap()
+                                    .and_utc()
+                                    .timestamp_millis();
+                                builder.append_value(ts);
+                            } else if let Ok(dt) =
+                                chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+                            {
+                                builder.append_value(dt.and_utc().timestamp_millis());
+                            } else {
+                                builder.append_null();
+                            }
                         }
                     }
                 }
@@ -1495,30 +1482,17 @@ fn get_f64_value(arr: &dyn Array, row: usize) -> f64 {
     }
 }
 
-/// Extract a string value from any string or dictionary-encoded column.
+/// Extract a string value from any string, boolean, or dictionary-encoded column.
 fn get_string_value(arr: &dyn Array, row: usize) -> String {
+    // String-like types (Utf8 / LargeUtf8 / Utf8View / Dict<string>) via the
+    // shared helper. Handles null internally.
+    if let Some(s) = nteract_predicate::arrow_utils::string_at(arr, row) {
+        return s;
+    }
     if arr.is_null(row) {
         return String::new();
     }
     match arr.data_type() {
-        DataType::Utf8 | DataType::LargeUtf8 => arr
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .map(|a| a.value(row).to_string())
-            .unwrap_or_default(),
-        DataType::Dictionary(_, _) => {
-            let dict_arr = arr.as_any_dictionary();
-            let keys = dict_arr.keys();
-            let values = dict_arr.values();
-            if let Some(str_values) = values.as_any().downcast_ref::<StringArray>() {
-                if let Some(key) = dict_key_at(keys, row) {
-                    if key < str_values.len() {
-                        return str_values.value(key).to_string();
-                    }
-                }
-            }
-            String::new()
-        }
         DataType::Boolean => arr
             .as_any()
             .downcast_ref::<BooleanArray>()
