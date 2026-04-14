@@ -2,7 +2,7 @@ import { defineConfig } from "vite-plus";
 import tailwindcss from "@tailwindcss/vite";
 import { resolve } from "node:path";
 
-const wasmPkg = resolve(__dirname, "../../crates/nteract-predicate/pkg");
+const wasmPkg = resolve(__dirname, "../../crates/sift-wasm/pkg");
 
 export default defineConfig({
   base: "/",

@@ -45,7 +45,7 @@ const SYNTHESIS_PREFIXES: &[&str] = &[
 ];
 
 /// Exact MIME matches that have dedicated synthesizers.
-const SYNTHESIS_EXACT: &[&str] = &["application/geo+json"];
+const SYNTHESIS_EXACT: &[&str] = &["application/geo+json", "application/vnd.apache.parquet"];
 
 /// When `text/plain` exceeds this size, synthesize a truncated `text/llm+plain`.
 const LLM_TEXT_MAX_SIZE: usize = 4 * 1024;
@@ -181,6 +181,7 @@ pub fn json_data_to_datavalues(
     // both exist (e.g. Altair emits png fallback + vegalite+json).
     synthesize_llm_plain_for_viz(&mut output_data);
     synthesize_llm_plain_for_heavy_types(&mut output_data);
+    synthesize_llm_plain_for_parquet(&mut output_data);
     synthesize_llm_plain_for_binary_media(&mut output_data);
 
     output_data
@@ -236,11 +237,12 @@ pub async fn output_from_manifest(
                 }
             }
 
-            // Synthesis priority: viz > heavy types > binary media.
+            // Synthesis priority: viz > heavy types > parquet > binary media.
             // Viz summaries are more useful than "Image output (image/png, X KB)" when
             // both exist (e.g. Altair emits png fallback + vegalite+json).
             synthesize_llm_plain_for_viz(&mut output_data);
             synthesize_llm_plain_for_heavy_types(&mut output_data);
+            synthesize_llm_plain_for_parquet(&mut output_data);
             synthesize_llm_plain_for_binary_media_with_urls(
                 &mut output_data,
                 &blob_urls_map,
@@ -568,6 +570,24 @@ async fn resolve_display_for_llm(
         }
         synthesize_llm_plain_for_viz(&mut output_data);
 
+        // Resolve parquet bytes transiently for summarization, then drop them
+        // so we don't ship raw parquet bytes back through MCP. The summary
+        // ends up in text/llm+plain.
+        if let Some(pq_ref) = data_map.get("application/vnd.apache.parquet") {
+            if let Some(content) = resolve_content_ref(
+                pq_ref,
+                blob_base_url,
+                blob_store_path,
+                Some("application/vnd.apache.parquet"),
+            )
+            .await
+            {
+                output_data.insert("application/vnd.apache.parquet".to_string(), content);
+                synthesize_llm_plain_for_parquet(&mut output_data);
+                output_data.remove("application/vnd.apache.parquet");
+            }
+        }
+
         // 1b: Widget synthesis (if viz didn't produce text/llm+plain).
         if !output_data.contains_key("text/llm+plain") {
             if let Some(widget_ref) = data_map.get(WIDGET_VIEW_MIME) {
@@ -747,6 +767,35 @@ fn synthesize_llm_plain_for_viz(output_data: &mut HashMap<String, DataValue>) {
             DataValue::Text(parts.join("\n")),
         );
     }
+}
+
+/// Synthesize `text/llm+plain` for `application/vnd.apache.parquet` outputs.
+///
+/// Reads the parquet bytes and produces a schema + per-column stats summary,
+/// so agents can understand dataframe shape without rendering the table.
+/// Skips if `text/llm+plain` already exists.
+fn synthesize_llm_plain_for_parquet(output_data: &mut HashMap<String, DataValue>) {
+    if output_data.contains_key("text/llm+plain") {
+        return;
+    }
+    let Some(DataValue::Binary(bytes)) = output_data.get("application/vnd.apache.parquet") else {
+        return;
+    };
+    let summary = match repr_llm::summarize_parquet(bytes) {
+        Ok(s) => s,
+        Err(_) => return, // Fall through to the generic binary fallback.
+    };
+    let formatted = repr_llm::summarize_parquet_summary(&summary);
+
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(DataValue::Text(ref plain)) = output_data.get("text/plain") {
+        parts.push(plain.clone());
+    }
+    parts.push(formatted);
+    output_data.insert(
+        "text/llm+plain".to_string(),
+        DataValue::Text(parts.join("\n")),
+    );
 }
 
 /// Synthesize `text/llm+plain` for heavy non-viz media types.

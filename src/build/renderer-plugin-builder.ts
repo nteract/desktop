@@ -62,7 +62,7 @@ export const RENDERER_PLUGINS: RendererPluginDef[] = [
  * Falls back to a stub if the WASM crate hasn't been built.
  */
 function resolveWasmGlue(): string {
-  const realPath = path.resolve(srcDir, "../crates/nteract-predicate/pkg/nteract_predicate.js");
+  const realPath = path.resolve(srcDir, "../crates/sift-wasm/pkg/nteract_predicate.js");
   const mockPath = path.resolve(
     srcDir,
     "../packages/sift/src/__mocks__/nteract-predicate/nteract_predicate.js",

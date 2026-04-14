@@ -1,25 +1,27 @@
 [package]
-name = "nteract-predicate"
+name = "sift-wasm"
 version = "0.1.0"
 edition = "2021"
-description = "Pure-Rust compute kernels for dataframe/Arrow analysis (summary, filter, histogram)"
+description = "WASM bindings for nteract-predicate — used by @nteract/sift"
 
 [lib]
-crate-type = ["rlib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+nteract-predicate = { path = "../nteract-predicate" }
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+console_error_panic_hook = "0.1"
 serde = { workspace = true }
+serde-wasm-bindgen = "0.6"
 bytes = { workspace = true }
 chrono = { version = "0.4", default-features = false }
 
-# Arrow with compute kernels
 arrow = { version = "54", default-features = false, features = ["ipc", "ffi"] }
-arrow-array = { version = "54", default-features = false }
-arrow-buffer = { version = "54", default-features = false }
 arrow-cast = { version = "54", default-features = false }
 arrow-ord = { version = "54", default-features = false }
 arrow-select = { version = "54", default-features = false }
-arrow-string = { version = "54", default-features = false }
-
-# Parquet reader
 parquet = { version = "54", default-features = false, features = ["arrow", "snap", "flate2", "zstd"] }
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false

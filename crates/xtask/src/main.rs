@@ -145,7 +145,7 @@ Testing:
 
 Other:
   wasm                       Rebuild runtimed-wasm (wasm-pack build)
-  wasm sift                  Rebuild nteract-predicate WASM for sift
+  wasm sift                  Rebuild sift-wasm (the WASM bindings for @nteract/sift)
   wasm --all                 Rebuild all WASM targets
   renderer-plugins           Rebuild pre-built renderer plugins (notebook + MCP)
   icons [source.png]         Generate icon variants
@@ -1143,17 +1143,22 @@ fn cmd_wasm(target: Option<&str>) {
     }
 
     if build_sift {
-        println!("Building nteract-predicate WASM for sift...");
+        println!("Building sift-wasm...");
+        // --out-name keeps the JS/WASM filenames as `nteract_predicate.*` so sift's
+        // imports and the daemon's `/plugins/nteract-predicate.wasm` URL stay stable
+        // across the sift-wasm/nteract-predicate crate split.
         run_cmd(
             "wasm-pack",
             &[
                 "build",
-                "crates/nteract-predicate",
+                "crates/sift-wasm",
                 "--target",
                 "web",
                 "--release",
                 "--out-dir",
                 "../../packages/sift/public/wasm",
+                "--out-name",
+                "nteract_predicate",
             ],
         );
         println!("WASM build complete. Output: packages/sift/public/wasm/");

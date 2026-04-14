@@ -1,0 +1,69 @@
+//! WASM bindings for `nteract-predicate`, used by @nteract/sift.
+//!
+//! This crate wraps the pure-Rust compute kernels in `nteract-predicate`
+//! with `#[wasm_bindgen]` so they're callable from the sift frontend.
+//! The stateful dataset store (`DataStore`) lives here because it only
+//! makes sense in a WASM context (JS holds handles via keep-alive).
+
+use wasm_bindgen::prelude::wasm_bindgen;
+use wasm_bindgen::JsValue;
+
+mod store;
+
+/// Initialize the WASM module. Call once before using other functions.
+/// Sets up panic hook so Rust panics show readable messages in the browser console.
+#[wasm_bindgen(start)]
+pub fn init() {
+    console_error_panic_hook::set_once();
+}
+
+/// Compute a frequency table (value_counts) for a string column
+/// passed as Arrow IPC bytes.
+///
+/// Takes: Arrow IPC bytes containing a single string/dictionary column
+/// Returns: JSON array of { label, count } sorted by count descending
+#[wasm_bindgen]
+pub fn value_counts(ipc_bytes: &[u8], column_index: usize) -> Result<JsValue, JsValue> {
+    let counts = nteract_predicate::value_counts(ipc_bytes, column_index)
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    serde_wasm_bindgen::to_value(&counts).map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+/// Compute a histogram (binned counts) for a numeric column.
+///
+/// Takes: Arrow IPC bytes, column index, number of bins
+/// Returns: JSON array of { x0, x1, count }
+#[wasm_bindgen]
+pub fn histogram(
+    ipc_bytes: &[u8],
+    column_index: usize,
+    num_bins: usize,
+) -> Result<JsValue, JsValue> {
+    let bins = nteract_predicate::histogram(ipc_bytes, column_index, num_bins)
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    serde_wasm_bindgen::to_value(&bins).map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+/// Filter rows by a boolean mask and return filtered Arrow IPC bytes.
+///
+/// Takes: Arrow IPC bytes, boolean mask as Uint8Array (0/1 per row)
+/// Returns: Filtered Arrow IPC bytes
+#[wasm_bindgen]
+pub fn filter_rows(ipc_bytes: &[u8], mask: &[u8]) -> Result<Vec<u8>, JsValue> {
+    nteract_predicate::filter_rows(ipc_bytes, mask).map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+/// Search a string column for values containing a substring.
+/// Returns indices of matching rows as a Uint32Array.
+///
+/// Takes: Arrow IPC bytes, column index, search query
+/// Returns: Array of matching row indices
+#[wasm_bindgen]
+pub fn string_contains(
+    ipc_bytes: &[u8],
+    column_index: usize,
+    query: &str,
+) -> Result<Vec<u32>, JsValue> {
+    nteract_predicate::string_contains(ipc_bytes, column_index, query)
+        .map_err(|e| JsValue::from_str(&e.to_string()))
+}

@@ -12,3 +12,4 @@ workspace = true
 [dependencies]
 base64 = { workspace = true }
 serde_json = { workspace = true }
+nteract-predicate = { path = "../nteract-predicate" }

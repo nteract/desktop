@@ -3,7 +3,7 @@ use arrow::datatypes::DataType;
 
 /// Extract a dictionary key at index `i` as `usize`, handling all integer key types
 /// (Int8/16/32/64, UInt8/16/32/64). Returns `None` if the key is null or unsupported.
-pub(crate) fn dict_key_at(keys: &dyn Array, i: usize) -> Option<usize> {
+pub fn dict_key_at(keys: &dyn Array, i: usize) -> Option<usize> {
     if keys.is_null(i) {
         return None;
     }

@@ -89,9 +89,15 @@ jobs:
           }
 
       - name: Lint GitHub Actions workflows
-        uses: raven-actions/actionlint@v2
-        with:
-          shellcheck: false
+        # Install the binary directly rather than via raven-actions/actionlint@v2,
+        # which falls back to `npm install` in the repo root on cache miss and
+        # chokes on the pnpm `catalog:` protocol in package.json.
+        # -shellcheck= disables shellcheck (matches the previous `shellcheck: false`
+        # setting on raven-actions/actionlint@v2). Fix shellcheck warnings in a
+        # separate cleanup PR.
+        run: |
+          bash <(curl https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          ./actionlint -color -shellcheck=
 
   windows-clippy:
     name: Windows (clippy)
@@ -126,7 +132,7 @@ jobs:
       - run: pnpm --filter nteract-mcp-app install && vp run nteract-mcp-app#build
 
       - name: Clippy (Windows cross-check)
-        run: cargo clippy --target x86_64-pc-windows-gnu --workspace --exclude notebook --exclude runtimed-wasm --exclude nteract-predicate --exclude runtimed-py --all-targets -- -D warnings
+        run: cargo clippy --target x86_64-pc-windows-gnu --workspace --exclude notebook --exclude runtimed-wasm --exclude sift-wasm --exclude runtimed-py --all-targets -- -D warnings
 
   wasm-deno:
     name: WASM + Deno Tests
@@ -366,10 +372,10 @@ jobs:
       # runtimed-wasm (needs wasm-pack, tested in wasm-deno),
       # runtimed-py (needs Python/maturin, tested in runtimed-py-integration).
       - name: Clippy
-        run: cargo clippy --workspace --exclude notebook --exclude runtimed-wasm --exclude nteract-predicate --exclude runtimed-py --all-targets -- -D warnings
+        run: cargo clippy --workspace --exclude notebook --exclude runtimed-wasm --exclude sift-wasm --exclude runtimed-py --all-targets -- -D warnings
 
       - name: Run tests
-        run: cargo test --workspace --exclude notebook --exclude runtimed-wasm --exclude nteract-predicate --exclude runtimed-py --verbose
+        run: cargo test --workspace --exclude notebook --exclude runtimed-wasm --exclude sift-wasm --exclude runtimed-py --verbose
 
   build:
     name: ${{ matrix.platform.name }}

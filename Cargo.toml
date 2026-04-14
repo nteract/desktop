@@ -20,6 +20,7 @@ members = [
     "crates/mcpb-runt",
     "crates/repr-llm",
     "crates/nteract-predicate",
+    "crates/sift-wasm",
 ]
 default-members = ["crates/notebook"]
 resolver = "2"

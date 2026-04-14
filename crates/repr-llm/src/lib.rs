@@ -22,6 +22,7 @@
 
 pub mod geojson;
 pub mod json;
+pub mod parquet;
 pub mod plotly;
 pub(crate) mod stats;
 pub mod vega;
@@ -30,6 +31,10 @@ pub mod vegalite;
 use serde_json::Value;
 
 pub use json::summarize_json;
+pub use parquet::summarize as summarize_parquet_summary;
+
+// Re-export the core types so callers don't need a separate dep on nteract-predicate.
+pub use nteract_predicate::{summarize_parquet, ColumnStats, ColumnSummary, ParquetSummary};
 
 /// Attempt to produce an LLM-friendly text summary from a visualization spec.
 ///

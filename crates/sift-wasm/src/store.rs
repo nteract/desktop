@@ -1,5 +1,3 @@
-use crate::summary::{CategoryCount, HistogramBin};
-use crate::utils::dict_key_at;
 use arrow::array::{
     Array, AsArray, BooleanArray, Float64Array, Int32Array, Int64Array, StringArray, UInt32Array,
     UInt64Array,
@@ -11,6 +9,8 @@ use arrow::record_batch::RecordBatch;
 use arrow_cast::display::ArrayFormatter;
 use arrow_ord::sort::{sort_to_indices, SortOptions};
 use arrow_select::concat::concat;
+use nteract_predicate::summary::{CategoryCount, HistogramBin};
+use nteract_predicate::utils::dict_key_at;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
