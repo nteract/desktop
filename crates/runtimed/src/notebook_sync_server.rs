@@ -374,19 +374,26 @@ fn build_launched_config(
             // CRDT-only conda deps go into conda_deps for sync diff tracking.
             config.conda_deps = metadata_snapshot.and_then(get_inline_conda_deps);
             config.conda_channels = metadata_snapshot.map(get_inline_conda_channels);
+            // Pass venv/python paths so runtime agent can reconstruct PooledEnv
+            config.venv_path = venv_path;
+            config.python_path = python_path;
+            if let Some(pkgs) = prewarmed_packages {
+                config.prewarmed_packages = pkgs.to_vec();
+            }
             if let Some(nb_path) = notebook_path {
-                if let Some(detected) = crate::project_file::detect_project_file(nb_path) {
-                    if detected.kind == crate::project_file::ProjectFileKind::EnvironmentYml {
-                        // Parse environment.yml to snapshot deps at launch time
-                        if let Ok(env_config) =
-                            crate::project_file::parse_environment_yml(&detected.path)
-                        {
-                            let mut deps = env_config.dependencies.clone();
-                            deps.sort();
-                            config.environment_yml_deps = Some(deps);
-                        }
-                        config.environment_yml_path = Some(detected.path);
+                if let Some(detected) = crate::project_file::find_nearest_project_file(
+                    nb_path,
+                    &[crate::project_file::ProjectFileKind::EnvironmentYml],
+                ) {
+                    // Parse environment.yml to snapshot deps at launch time
+                    if let Ok(env_config) =
+                        crate::project_file::parse_environment_yml(&detected.path)
+                    {
+                        let mut deps = env_config.dependencies.clone();
+                        deps.sort();
+                        config.environment_yml_deps = Some(deps);
                     }
+                    config.environment_yml_path = Some(detected.path);
                 }
             }
         }
@@ -407,8 +414,8 @@ fn build_launched_config(
             }
         }
         _ => {
-            // All other Python env sources (conda:env_yml, etc.)
-            // use pooled environments — store paths so the runtime agent can reconstruct.
+            // All other Python env sources use pooled environments
+            // — store paths so the runtime agent can reconstruct.
             config.venv_path = venv_path;
             config.python_path = python_path;
             if let Some(pkgs) = prewarmed_packages {
@@ -4981,12 +4988,11 @@ async fn handle_notebook_request(
                         } else if resolved_env_source == "conda:env_yml" {
                             promo_config.environment_yml_path =
                                 notebook_path.as_ref().and_then(|p| {
-                                    crate::project_file::detect_project_file(p)
-                                        .filter(|d| {
-                                            d.kind
-                                                == crate::project_file::ProjectFileKind::EnvironmentYml
-                                        })
-                                        .map(|d| d.path)
+                                    crate::project_file::find_nearest_project_file(
+                                        p,
+                                        &[crate::project_file::ProjectFileKind::EnvironmentYml],
+                                    )
+                                    .map(|d| d.path)
                                 });
                             // Launched baseline = current env.yml deps (before promotion)
                             if let Some(ref path) = promo_config.environment_yml_path {
@@ -5361,9 +5367,11 @@ async fn handle_notebook_request(
                 // Uses standard conda env discovery: name: field → search conda env dirs,
                 // prefix: field → use that path directly. Falls back to creating via rattler.
                 let yml_path = notebook_path.as_ref().and_then(|p| {
-                    crate::project_file::detect_project_file(p)
-                        .filter(|d| d.kind == crate::project_file::ProjectFileKind::EnvironmentYml)
-                        .map(|d| d.path)
+                    crate::project_file::find_nearest_project_file(
+                        p,
+                        &[crate::project_file::ProjectFileKind::EnvironmentYml],
+                    )
+                    .map(|d| d.path)
                 });
 
                 if let Some(ref yml) = yml_path {

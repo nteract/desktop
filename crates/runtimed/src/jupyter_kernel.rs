@@ -239,20 +239,17 @@ impl KernelConnection for JupyterKernel {
                         // Use the project's named conda environment from environment.yml.
                         // The env prefix was resolved during launch preparation (named env
                         // lookup or creation via rattler) and passed as the pooled_env.
-                        let conda_prefix = env
-                            .as_ref()
-                            .map(|e| e.venv_path.clone())
-                            .or_else(|| {
+                        let conda_prefix =
+                            env.as_ref().map(|e| e.venv_path.clone()).or_else(|| {
                                 // Fallback: look up the named env from environment.yml
                                 notebook_path.as_deref().and_then(|p| {
-                                    crate::project_file::detect_project_file(p)
-                                        .filter(|d| {
-                                            d.kind
-                                                == crate::project_file::ProjectFileKind::EnvironmentYml
-                                        })
-                                        .and_then(|d| {
-                                            crate::project_file::resolve_conda_env_prefix(&d.path)
-                                        })
+                                    crate::project_file::find_nearest_project_file(
+                                        p,
+                                        &[crate::project_file::ProjectFileKind::EnvironmentYml],
+                                    )
+                                    .and_then(|d| {
+                                        crate::project_file::resolve_conda_env_prefix(&d.path)
+                                    })
                                 })
                             });
 
