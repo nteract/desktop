@@ -201,7 +201,7 @@ test.describe("Performance Benchmarks (100k rows)", () => {
                 bubbles: true,
               }),
             );
-            document.body.offsetHeight;
+            void document.body.offsetHeight;
             results.push(performance.now() - t0);
             step++;
             if (step < 20) requestAnimationFrame(tick);

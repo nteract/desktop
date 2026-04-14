@@ -335,7 +335,8 @@ function drawPolygonOrLineSegments(
     }
     start = stop;
     if (close) ctx.closePath();
-    fill ? ctx.fill() : ctx.stroke();
+    if (fill) ctx.fill();
+    else ctx.stroke();
   }
 }
 
@@ -478,7 +479,8 @@ function drawStyledPolygonOrLineSegments(
     }
     start = stop;
     if (close) ctx.closePath();
-    fill ? ctx.fill() : ctx.stroke();
+    if (fill) ctx.fill();
+    else ctx.stroke();
   }
   ctx.restore();
 }

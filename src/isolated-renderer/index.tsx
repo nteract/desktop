@@ -23,10 +23,8 @@ import {
   NTERACT_CLEAR_OUTPUTS,
   NTERACT_INSTALL_RENDERER,
   NTERACT_RENDER_BATCH,
-  NTERACT_RENDER_COMPLETE,
   NTERACT_RENDER_OUTPUT,
   NTERACT_RENDERER_READY,
-  NTERACT_RESIZE,
   NTERACT_THEME,
 } from "@/components/isolated/rpc-methods";
 // Import output components directly (not through MediaRouter's lazy loading)

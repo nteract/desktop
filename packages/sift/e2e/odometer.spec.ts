@@ -36,7 +36,7 @@ test.describe("Odometer", () => {
     await expect(stats).toHaveAttribute("data-value", /100,000/, {
       timeout: 10_000,
     });
-    const beforeFilter = await stats.getAttribute("data-value");
+    const _beforeFilter = await stats.getAttribute("data-value");
     await page.screenshot({ path: "test-results/odometer-before-filter.png" });
 
     // Apply a range filter on Score column via brush

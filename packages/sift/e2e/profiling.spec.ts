@@ -25,7 +25,7 @@ test.describe("Column Profiling", () => {
   test("profiling stats survive filter application", async ({ page }) => {
     // Find a profile element before filtering
     const profileEls = page.locator(".sift-th-profile");
-    const countBefore = await profileEls.count();
+    const _countBefore = await profileEls.count();
 
     // Apply a filter via the Score histogram
     const scoreTh = page.locator(".sift-th", { hasText: "SCORE" });

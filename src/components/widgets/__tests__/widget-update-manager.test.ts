@@ -3,7 +3,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { createWidgetStore, type WidgetStore } from "../widget-store";
+import { createWidgetStore } from "../widget-store";
 import { WidgetUpdateManager } from "../widget-update-manager";
 
 // ── Helpers ──────────────────────────────────────────────────────────

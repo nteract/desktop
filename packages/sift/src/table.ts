@@ -217,7 +217,7 @@ export function createTable(
   const cellCaches: (CellCache[] | null)[] = [];
 
   function prepareCellRow(r: number): CellCache[] {
-    const row = new Array<CellCache>(columns.length);
+    const row = Array.from<CellCache>({ length: columns.length });
     for (let c = 0; c < columns.length; c++) {
       row[c] = {
         prepared: prepare(data.getCell(r, c), FONT),
@@ -1027,7 +1027,7 @@ export function createTable(
       if (!summary || (summary.kind !== "numeric" && summary.kind !== "timestamp")) continue;
 
       const bins = summary.bins;
-      const visibleBins = new Array<number>(bins.length).fill(0);
+      const visibleBins = Array.from<number>({ length: bins.length }).fill(0);
       const binWidth = (summary.max - summary.min) / bins.length || 1;
 
       for (let r = visFirst; r <= visLast; r++) {
@@ -2042,7 +2042,7 @@ export function createTable(
   // Precompute cumulative left offsets for pinned columns
   let pinnedLeftOffsets: number[] = [];
   function recomputePinnedOffsets() {
-    pinnedLeftOffsets = new Array(columns.length).fill(-1);
+    pinnedLeftOffsets = Array.from<number>({ length: columns.length }).fill(-1);
     let cumLeft = 0;
     for (let c = 0; c < columns.length; c++) {
       if (pinnedColumns.has(c)) {

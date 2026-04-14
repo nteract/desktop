@@ -7,7 +7,7 @@
  * Time-dependent tests use RxJS VirtualTimeScheduler instead of vi.useFakeTimers.
  */
 
-import { describe, expect, it, vi, beforeEach, afterEach } from "vite-plus/test";
+import { describe, expect, it, vi, beforeEach } from "vite-plus/test";
 import { VirtualTimeScheduler, VirtualAction } from "rxjs";
 import { SyncEngine } from "../src/sync-engine";
 import { DirectTransport } from "../src/direct-transport";
@@ -101,13 +101,6 @@ function makeRuntimeState(
     executions: executions as RuntimeState["executions"],
   };
 }
-
-const EMPTY_CHANGESET: CellChangeset = {
-  changed: [],
-  added: [],
-  removed: [],
-  order_changed: false,
-};
 
 // ── Helper: advance scheduler to a given time ───────────────────────
 
@@ -855,9 +848,7 @@ describe("SyncEngine", () => {
     });
 
     it("does not emit cellChanges$ during initial sync phase", () => {
-      let callCount = 0;
       (handle.receive_frame as ReturnType<typeof vi.fn>).mockImplementation(() => {
-        callCount++;
         return [
           syncAppliedEvent({
             changed: true,
