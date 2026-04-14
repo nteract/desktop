@@ -258,8 +258,7 @@ pub async fn run_all_cells(
         if let Some(base) = &server.blob_base_url {
             wrapper["blob_base_url"] = serde_json::Value::String(base.clone());
         }
-        let wrapper =
-            crate::formatting::resolve_image_blobs_in_json(wrapper, &server.blob_store_path);
+        let wrapper = crate::formatting::strip_images_from_structured_json(wrapper);
         call_result.structured_content = Some(wrapper);
     }
 

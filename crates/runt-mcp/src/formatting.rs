@@ -333,37 +333,31 @@ pub fn outputs_to_content_items_with_images(outputs: &[Output]) -> Vec<rmcp::mod
     items
 }
 
-/// Walk structured content JSON and replace image blob URLs with base64 data URIs.
+/// Strip image MIME keys from structured content JSON.
+///
+/// Images are delivered as `Content::image()` items in the `content` array.
+/// Leaving blob URLs or base64 data in the structured content JSON is wasteful:
+/// blob URLs are opaque to agents, and base64 bloats the JSON text. This function
+/// removes image MIME keys entirely so the structured JSON stays compact.
 ///
 /// Handles two shapes:
 /// - Single cell: `{"cell": {"outputs": [...]}, "blob_base_url": "..."}`
 /// - Multi cell:  `{"cells": [{"outputs": [...]}, ...], "blob_base_url": "..."}`
-///
-/// For each image MIME key whose value is a blob URL, reads the blob file and replaces
-/// the URL with `data:{mime};base64,{b64}`.
-pub fn resolve_image_blobs_in_json(
-    mut value: serde_json::Value,
-    blob_store_path: &Option<std::path::PathBuf>,
-) -> serde_json::Value {
-    let store = match blob_store_path {
-        Some(p) => p,
-        None => return value,
-    };
-
+pub fn strip_images_from_structured_json(mut value: serde_json::Value) -> serde_json::Value {
     // Single-cell shape: {"cell": {"outputs": [...]}}
     if let Some(arr) = value
         .get_mut("cell")
         .and_then(|c| c.get_mut("outputs"))
         .and_then(|o| o.as_array_mut())
     {
-        resolve_image_blobs_in_outputs(arr, store);
+        strip_images_from_outputs(arr);
     }
 
     // Multi-cell shape: {"cells": [{"outputs": [...]}, ...]}
     if let Some(cells) = value.get_mut("cells").and_then(|c| c.as_array_mut()) {
         for cell in cells {
             if let Some(arr) = cell.get_mut("outputs").and_then(|o| o.as_array_mut()) {
-                resolve_image_blobs_in_outputs(arr, store);
+                strip_images_from_outputs(arr);
             }
         }
     }
@@ -371,8 +365,8 @@ pub fn resolve_image_blobs_in_json(
     value
 }
 
-/// Replace image blob URLs with base64 data URIs in an outputs array.
-fn resolve_image_blobs_in_outputs(outputs: &mut [serde_json::Value], store: &std::path::Path) {
+/// Remove image MIME keys from output data objects.
+fn strip_images_from_outputs(outputs: &mut [serde_json::Value]) {
     for output in outputs {
         let data = match output.get_mut("data").and_then(|d| d.as_object_mut()) {
             Some(d) => d,
@@ -384,32 +378,7 @@ fn resolve_image_blobs_in_outputs(outputs: &mut [serde_json::Value], store: &std
             .cloned()
             .collect();
         for mime in image_mimes {
-            let url = match data.get(&mime).and_then(|v| v.as_str()) {
-                Some(u) => u.to_string(),
-                None => continue,
-            };
-            let hash = match url.rsplit_once("/blob/") {
-                Some((_, h)) => h,
-                None => continue,
-            };
-            if hash.len() < 2 {
-                continue;
-            }
-            let path = store.join(&hash[..2]).join(&hash[2..]);
-            let metadata = match std::fs::metadata(&path) {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
-            if metadata.len() > MAX_INLINE_IMAGE_BYTES {
-                continue;
-            }
-            if let Ok(bytes) = std::fs::read(&path) {
-                let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                data.insert(
-                    mime.clone(),
-                    serde_json::Value::String(format!("data:{mime};base64,{b64}")),
-                );
-            }
+            data.remove(&mime);
         }
     }
 }

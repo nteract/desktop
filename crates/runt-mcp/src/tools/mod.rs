@@ -485,11 +485,11 @@ pub async fn build_execution_result(
         None
     };
 
-    // Post-process structured content: resolve image blob URLs to base64
-    // data URIs so MCP clients that render structured_content (e.g. Claude Code)
-    // show inline images instead of opaque blob URLs.
-    let structured_content = structured_content
-        .map(|sc| crate::formatting::resolve_image_blobs_in_json(sc, &server.blob_store_path));
+    // Strip image MIME keys from structured content — images are delivered
+    // as Content::image() items in the content array. Keeping blob URLs or
+    // base64 in the JSON wastes tokens and confuses agents.
+    let structured_content =
+        structured_content.map(crate::formatting::strip_images_from_structured_json);
 
     let mut call_result = CallToolResult::success(items);
     call_result.structured_content = structured_content;
