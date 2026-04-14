@@ -5357,7 +5357,9 @@ async fn handle_notebook_request(
                     (pooled_env, None)
                 }
             } else if resolved_env_source == "conda:env_yml" {
-                // conda:env_yml: create/sync a project-local conda prefix from environment.yml
+                // conda:env_yml: find or create a named conda env from environment.yml.
+                // Uses standard conda env discovery: name: field → search conda env dirs,
+                // prefix: field → use that path directly. Falls back to creating via rattler.
                 let yml_path = notebook_path.as_ref().and_then(|p| {
                     crate::project_file::detect_project_file(p)
                         .filter(|d| d.kind == crate::project_file::ProjectFileKind::EnvironmentYml)
@@ -5367,9 +5369,30 @@ async fn handle_notebook_request(
                 if let Some(ref yml) = yml_path {
                     match crate::project_file::parse_environment_yml(yml) {
                         Ok(env_config) => {
-                            let project_dir =
-                                yml.parent().unwrap_or_else(|| std::path::Path::new("."));
-                            let conda_prefix = project_dir.join(".conda-env");
+                            // Resolve the conda prefix: prefix: → direct path,
+                            // name: → search standard dirs, create if not found.
+                            let conda_prefix = if let Some(ref prefix) = env_config.prefix {
+                                // Explicit prefix: path from environment.yml
+                                prefix.clone()
+                            } else if let Some(ref name) = env_config.name {
+                                // Named env — search for existing, or determine creation path
+                                crate::project_file::find_named_conda_env(name).unwrap_or_else(
+                                    || {
+                                        // Will create at default location
+                                        crate::project_file::default_conda_envs_dir().join(name)
+                                    },
+                                )
+                            } else {
+                                // No name or prefix — use a hash-based env in cache
+                                let cache_dir = crate::default_cache_dir().join("conda-envs");
+                                let conda_deps_tmp = kernel_env::CondaDependencies {
+                                    dependencies: env_config.dependencies.clone(),
+                                    channels: env_config.channels.clone(),
+                                    python: env_config.python.clone(),
+                                    env_id: None,
+                                };
+                                cache_dir.join(kernel_env::conda::compute_env_hash(&conda_deps_tmp))
+                            };
 
                             // Merge env.yml deps with any CRDT notebook deps (additive)
                             let mut all_deps = env_config.dependencies.clone();
@@ -5409,8 +5432,11 @@ async fn handle_notebook_request(
                                 env_config.channels.clone()
                             };
 
+                            let env_name_display =
+                                env_config.name.as_deref().unwrap_or("<unnamed>");
                             info!(
-                                "[notebook-sync] conda:env_yml: preparing prefix at {:?} with {} deps",
+                                "[notebook-sync] conda:env_yml: env '{}' at {:?} with {} deps",
+                                env_name_display,
                                 conda_prefix,
                                 all_deps.len()
                             );
@@ -5422,16 +5448,10 @@ async fn handle_notebook_request(
                                 env_id: None,
                             };
 
-                            // Use prepare_environment_in with the project-local prefix as cache_dir.
-                            // But prepare_environment_in creates a hash-based subdir, which is not
-                            // what we want. Instead, use sync_dependencies on the prefix directly.
-                            #[cfg(target_os = "windows")]
-                            let python_path = conda_prefix.join("python.exe");
-                            #[cfg(not(target_os = "windows"))]
-                            let python_path = conda_prefix.join("bin").join("python");
+                            let python_path = crate::project_file::conda_python_path(&conda_prefix);
 
                             if python_path.exists() {
-                                // Prefix exists — sync deps into it
+                                // Existing env — sync deps into it
                                 let conda_env = kernel_env::CondaEnvironment {
                                     env_path: conda_prefix.clone(),
                                     python_path: python_path.clone(),
@@ -5447,7 +5467,7 @@ async fn handle_notebook_request(
                                         .await
                                 {
                                     warn!(
-                                        "[notebook-sync] conda:env_yml sync failed: {}, continuing with existing prefix",
+                                        "[notebook-sync] conda:env_yml sync into existing env failed: {}, continuing with existing env",
                                         e
                                     );
                                 }
@@ -5462,82 +5482,70 @@ async fn handle_notebook_request(
                                     metadata_snapshot.as_ref().and_then(get_inline_conda_deps),
                                 )
                             } else {
-                                // No prefix yet — create it via rattler
-                                // Use the project dir as the cache_dir parent so the env lives at
-                                // {project_dir}/.conda-env/{hash}. But for project envs we want a
-                                // fixed path. Use prepare_environment_in with a temp approach, then
-                                // create at the exact prefix path.
+                                // No existing env — create it via rattler at the target path.
+                                // prepare_environment_in creates {cache_dir}/{hash}/, so we
+                                // pass the parent and then rename to the target name.
+                                let parent = conda_prefix
+                                    .parent()
+                                    .unwrap_or_else(|| std::path::Path::new("/tmp"));
+                                if let Err(e) = tokio::fs::create_dir_all(parent).await {
+                                    reset_starting_state(room, None).await;
+                                    return NotebookResponse::Error {
+                                        error: format!(
+                                            "Failed to create conda envs directory {:?}: {}",
+                                            parent, e
+                                        ),
+                                    };
+                                }
                                 match kernel_env::conda::prepare_environment_in(
                                     &conda_deps,
-                                    project_dir,
+                                    parent,
                                     launch_progress_handler.clone(),
                                 )
                                 .await
                                 {
                                     Ok(prepared) => {
-                                        // Rename the hash-based dir to the canonical .conda-env
-                                        if prepared.env_path != conda_prefix {
-                                            if let Err(e) =
-                                                tokio::fs::rename(&prepared.env_path, &conda_prefix)
-                                                    .await
+                                        // Rename hash-based dir to the target env name
+                                        let final_prefix = if prepared.env_path != conda_prefix {
+                                            match tokio::fs::rename(
+                                                &prepared.env_path,
+                                                &conda_prefix,
+                                            )
+                                            .await
                                             {
-                                                warn!(
-                                                    "[notebook-sync] Failed to rename conda prefix {:?} -> {:?}: {}",
-                                                    prepared.env_path, conda_prefix, e
-                                                );
-                                                // Use it where it was created
-                                                let env = Some(crate::PooledEnv {
-                                                    env_type: crate::EnvType::Conda,
-                                                    venv_path: prepared.env_path,
-                                                    python_path: prepared.python_path,
-                                                    prewarmed_packages: vec![],
-                                                });
-                                                (
-                                                    env,
-                                                    metadata_snapshot
-                                                        .as_ref()
-                                                        .and_then(get_inline_conda_deps),
-                                                )
-                                            } else {
-                                                #[cfg(target_os = "windows")]
-                                                let python_path = conda_prefix.join("python.exe");
-                                                #[cfg(not(target_os = "windows"))]
-                                                let python_path =
-                                                    conda_prefix.join("bin").join("python");
-                                                let env = Some(crate::PooledEnv {
-                                                    env_type: crate::EnvType::Conda,
-                                                    venv_path: conda_prefix,
-                                                    python_path,
-                                                    prewarmed_packages: vec![],
-                                                });
-                                                (
-                                                    env,
-                                                    metadata_snapshot
-                                                        .as_ref()
-                                                        .and_then(get_inline_conda_deps),
-                                                )
+                                                Ok(()) => conda_prefix.clone(),
+                                                Err(e) => {
+                                                    warn!(
+                                                        "[notebook-sync] Failed to rename {:?} -> {:?}: {}, using hash path",
+                                                        prepared.env_path, conda_prefix, e
+                                                    );
+                                                    prepared.env_path
+                                                }
                                             }
                                         } else {
-                                            let env = Some(crate::PooledEnv {
-                                                env_type: crate::EnvType::Conda,
-                                                venv_path: prepared.env_path,
-                                                python_path: prepared.python_path,
-                                                prewarmed_packages: vec![],
-                                            });
-                                            (
-                                                env,
-                                                metadata_snapshot
-                                                    .as_ref()
-                                                    .and_then(get_inline_conda_deps),
-                                            )
-                                        }
+                                            prepared.env_path
+                                        };
+                                        let python =
+                                            crate::project_file::conda_python_path(&final_prefix);
+                                        let env = Some(crate::PooledEnv {
+                                            env_type: crate::EnvType::Conda,
+                                            venv_path: final_prefix,
+                                            python_path: python,
+                                            prewarmed_packages: vec![],
+                                        });
+                                        (
+                                            env,
+                                            metadata_snapshot
+                                                .as_ref()
+                                                .and_then(get_inline_conda_deps),
+                                        )
                                     }
                                     Err(e) => {
                                         reset_starting_state(room, None).await;
                                         return NotebookResponse::Error {
                                             error: format!(
-                                                "Failed to create conda env from environment.yml: {}",
-                                                e
+                                                "Failed to create conda env '{}' from environment.yml: {}",
+                                                env_name_display, e
                                             ),
                                         };
                                     }
