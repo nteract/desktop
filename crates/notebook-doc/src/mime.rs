@@ -13,6 +13,19 @@
 
 use serde::{Deserialize, Serialize};
 
+/// MIME type for a blob reference bundle.
+///
+/// Emitted by `dx.display(...)` in place of raw binary bytes. The payload is a
+/// small JSON object carrying a content hash and the target `content_type`;
+/// the agent composes a [`ContentRef`] in the inline output manifest from it.
+///
+/// Schema:
+/// ```json
+/// { "hash": "sha256:...", "content_type": "application/vnd.apache.parquet",
+///   "size": 104857600, "summary": {...}?, "query": null }
+/// ```
+pub const BLOB_REF_MIME: &str = "application/vnd.nteract.blob-ref+json";
+
 /// Three-way classification of a MIME type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MimeKind {
@@ -247,6 +260,18 @@ mod tests {
         };
         let json = serde_json::to_value(&r).unwrap();
         assert_eq!(json, serde_json::json!({"blob": "abc123", "size": 4200}));
+    }
+
+    #[test]
+    fn blob_ref_mime_constant_value() {
+        assert_eq!(BLOB_REF_MIME, "application/vnd.nteract.blob-ref+json");
+    }
+
+    #[test]
+    fn blob_ref_mime_is_json_not_binary() {
+        // The ref MIME is a tiny JSON bundle, not binary.
+        assert!(!is_binary_mime(BLOB_REF_MIME));
+        assert_eq!(mime_kind(BLOB_REF_MIME), MimeKind::Json);
     }
 
     #[test]
