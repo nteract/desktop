@@ -8,13 +8,12 @@
 //! a dataset without rendering it.
 
 use arrow::array::{
-    Array, AsArray, BooleanArray, Date32Array, Date64Array, Float32Array, Float64Array, Int16Array,
-    Int32Array, Int64Array, Int8Array, LargeStringArray, StringArray, TimestampMicrosecondArray,
-    TimestampMillisecondArray, TimestampNanosecondArray, TimestampSecondArray, UInt16Array,
-    UInt32Array, UInt64Array, UInt8Array,
+    Array, AsArray, BooleanArray, Date32Array, Date64Array, Decimal128Array, Decimal256Array,
+    Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, Int8Array, LargeStringArray,
+    StringArray, TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray,
+    TimestampSecondArray, UInt16Array, UInt32Array, UInt64Array, UInt8Array,
 };
 use arrow::datatypes::{DataType, TimeUnit};
-use arrow::record_batch::RecordBatch;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -23,6 +22,16 @@ use crate::utils::dict_key_at;
 
 /// Maximum number of distinct values to enumerate for categorical columns.
 const TOP_N_CATEGORIES: usize = 5;
+
+/// Cap on distinct string values kept per column. Once a column's accumulator
+/// reaches this size, new distinct values are dropped (existing values still
+/// increment). Prevents OOM on high-cardinality columns (e.g., UUIDs, free text).
+const MAX_DISTINCT_STRINGS_PER_COLUMN: usize = 10_000;
+
+/// Maximum length of a single string value kept in the accumulator. Values
+/// longer than this are truncated for stats only (does not affect the parquet
+/// file itself). Protects against blob-in-a-column cases.
+const MAX_STRING_VALUE_LEN: usize = 256;
 
 /// Top-level summary of a Parquet dataset.
 #[derive(Serialize, Debug, Clone)]
@@ -57,6 +66,10 @@ pub enum ColumnStats {
     /// String/categorical: top N values plus total distinct count.
     String {
         distinct_count: u64,
+        /// True if the accumulator hit its per-column cardinality cap during
+        /// ingestion. When set, `distinct_count` is a lower bound and some
+        /// rare values may be absent from `top`.
+        distinct_count_capped: bool,
         top: Vec<(String, u64)>,
     },
     /// Temporal: min/max formatted as ISO strings.
@@ -66,7 +79,16 @@ pub enum ColumnStats {
 }
 
 /// Summarize a Parquet file from its raw bytes.
-pub fn summarize_parquet(bytes: &[u8]) -> Result<ParquetSummary, Box<dyn std::error::Error>> {
+///
+/// Currently this does a full scan through all row groups. A future optimization
+/// could read just the file footer (`parquet::file::reader::FileReader::metadata`)
+/// for cheap stats (row count, per-column min/max/null_count via `Statistics`)
+/// and fall back to full scan only when values need to be enumerated (top-N,
+/// distinct count). This matters when the daemon needs to summarize large
+/// (~100MB+) parquet outputs that might otherwise take seconds to scan.
+pub fn summarize_parquet(
+    bytes: &[u8],
+) -> Result<ParquetSummary, Box<dyn std::error::Error + Send + Sync>> {
     let bytes_vec = bytes.to_vec();
     let builder = ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::from(bytes_vec))?;
     let schema = builder.schema().clone();
@@ -95,19 +117,6 @@ pub fn summarize_parquet(bytes: &[u8]) -> Result<ParquetSummary, Box<dyn std::er
                 &mut string_accum,
                 &mut temporal_accum,
             );
-        }
-        // Keep heavy string accums bounded — if we've already seen many distinct values,
-        // we don't need to keep collecting (top-N is what matters).
-        if total_rows > 100_000 {
-            for map in string_accum.iter_mut() {
-                if map.len() > 1_000 {
-                    // Keep the top 50 by count; drop the rest to bound memory.
-                    let mut pairs: Vec<_> = map.drain().collect();
-                    pairs.sort_unstable_by(|a, b| b.1.cmp(&a.1));
-                    pairs.truncate(50);
-                    map.extend(pairs);
-                }
-            }
         }
     }
 
@@ -140,70 +149,31 @@ pub fn summarize_parquet(bytes: &[u8]) -> Result<ParquetSummary, Box<dyn std::er
     })
 }
 
-/// Summarize an already-loaded RecordBatch iterator.
-/// Useful for tests and for cases where callers already have Arrow data.
-pub fn summarize_record_batches(
-    batches: &[RecordBatch],
-) -> Result<ParquetSummary, Box<dyn std::error::Error>> {
-    if batches.is_empty() {
-        return Ok(ParquetSummary {
-            num_rows: 0,
-            num_bytes: 0,
-            columns: Vec::new(),
-        });
-    }
-    let schema = batches[0].schema();
-    let num_cols = schema.fields().len();
-    let mut null_counts: Vec<u64> = vec![0; num_cols];
-    let mut numeric_accum: Vec<Option<(f64, f64)>> = vec![None; num_cols];
-    let mut bool_accum: Vec<(u64, u64)> = vec![(0, 0); num_cols];
-    let mut string_accum: Vec<HashMap<String, u64>> =
-        (0..num_cols).map(|_| HashMap::new()).collect();
-    let mut temporal_accum: Vec<Option<(i64, i64, TimeUnit)>> = vec![None; num_cols];
-    let mut total_rows: u64 = 0;
-
-    for batch in batches {
-        total_rows += batch.num_rows() as u64;
-        for (col_idx, col) in batch.columns().iter().enumerate() {
-            null_counts[col_idx] += col.null_count() as u64;
-            accumulate_column_stats(
-                col.as_ref(),
-                col_idx,
-                &mut numeric_accum,
-                &mut bool_accum,
-                &mut string_accum,
-                &mut temporal_accum,
-            );
+/// Increment the count for a string value in a column's accumulator, bounded
+/// by [`MAX_DISTINCT_STRINGS_PER_COLUMN`] and [`MAX_STRING_VALUE_LEN`].
+/// Once the accumulator is full, new distinct values are dropped but existing
+/// entries continue to accumulate counts.
+fn bump_string(acc: &mut HashMap<String, u64>, raw: &str) {
+    // Truncate on char boundary to stay within byte cap.
+    let val: &str = if raw.len() > MAX_STRING_VALUE_LEN {
+        let mut end = MAX_STRING_VALUE_LEN;
+        while end > 0 && !raw.is_char_boundary(end) {
+            end -= 1;
+        }
+        &raw[..end]
+    } else {
+        raw
+    };
+    match acc.get_mut(val) {
+        Some(v) => *v += 1,
+        None => {
+            if acc.len() < MAX_DISTINCT_STRINGS_PER_COLUMN {
+                acc.insert(val.to_string(), 1);
+            }
+            // else: cardinality cap reached — drop this distinct value but
+            // continue counting future occurrences of already-seen values.
         }
     }
-
-    let columns: Vec<ColumnSummary> = schema
-        .fields()
-        .iter()
-        .enumerate()
-        .map(|(i, field)| {
-            let dt = field.data_type();
-            let stats = finalize_column_stats(
-                dt,
-                &numeric_accum[i],
-                &bool_accum[i],
-                &string_accum[i],
-                &temporal_accum[i],
-            );
-            ColumnSummary {
-                name: field.name().clone(),
-                data_type: format_data_type(dt),
-                null_count: null_counts[i],
-                stats,
-            }
-        })
-        .collect();
-
-    Ok(ParquetSummary {
-        num_rows: total_rows,
-        num_bytes: 0, // unknown for already-decoded batches
-        columns,
-    })
 }
 
 fn accumulate_column_stats(
@@ -305,6 +275,30 @@ fn accumulate_column_stats(
                 }
             }
         }
+        DataType::Decimal128(_, scale) => {
+            if let Some(arr) = col.as_any().downcast_ref::<Decimal128Array>() {
+                let divisor = 10f64.powi(*scale as i32);
+                for i in 0..arr.len() {
+                    if !arr.is_null(i) {
+                        update_numeric(&mut numeric_accum[col_idx], arr.value(i) as f64 / divisor);
+                    }
+                }
+            }
+        }
+        DataType::Decimal256(_, scale) => {
+            if let Some(arr) = col.as_any().downcast_ref::<Decimal256Array>() {
+                let divisor = 10f64.powi(*scale as i32);
+                for i in 0..arr.len() {
+                    if !arr.is_null(i) {
+                        // i256 → f64 via Display; lossy for very large values but
+                        // fine for summary min/max bounds.
+                        if let Ok(v) = arr.value(i).to_string().parse::<f64>() {
+                            update_numeric(&mut numeric_accum[col_idx], v / divisor);
+                        }
+                    }
+                }
+            }
+        }
         DataType::Boolean => {
             if let Some(arr) = col.as_any().downcast_ref::<BooleanArray>() {
                 for i in 0..arr.len() {
@@ -322,9 +316,7 @@ fn accumulate_column_stats(
             if let Some(arr) = col.as_any().downcast_ref::<StringArray>() {
                 for i in 0..arr.len() {
                     if !arr.is_null(i) {
-                        *string_accum[col_idx]
-                            .entry(arr.value(i).to_string())
-                            .or_insert(0) += 1;
+                        bump_string(&mut string_accum[col_idx], arr.value(i));
                     }
                 }
             }
@@ -333,9 +325,7 @@ fn accumulate_column_stats(
             if let Some(arr) = col.as_any().downcast_ref::<LargeStringArray>() {
                 for i in 0..arr.len() {
                     if !arr.is_null(i) {
-                        *string_accum[col_idx]
-                            .entry(arr.value(i).to_string())
-                            .or_insert(0) += 1;
+                        bump_string(&mut string_accum[col_idx], arr.value(i));
                     }
                 }
             }
@@ -347,17 +337,13 @@ fn accumulate_column_stats(
             if let Some(str_values) = values.as_any().downcast_ref::<StringArray>() {
                 for i in 0..keys.len() {
                     if let Some(key) = dict_key_at(keys, i) {
-                        *string_accum[col_idx]
-                            .entry(str_values.value(key).to_string())
-                            .or_insert(0) += 1;
+                        bump_string(&mut string_accum[col_idx], str_values.value(key));
                     }
                 }
             } else if let Some(str_values) = values.as_any().downcast_ref::<LargeStringArray>() {
                 for i in 0..keys.len() {
                     if let Some(key) = dict_key_at(keys, i) {
-                        *string_accum[col_idx]
-                            .entry(str_values.value(key).to_string())
-                            .or_insert(0) += 1;
+                        bump_string(&mut string_accum[col_idx], str_values.value(key));
                     }
                 }
             }
@@ -485,7 +471,9 @@ fn finalize_column_stats(
         | DataType::UInt8
         | DataType::UInt16
         | DataType::UInt32
-        | DataType::UInt64 => match numeric {
+        | DataType::UInt64
+        | DataType::Decimal128(_, _)
+        | DataType::Decimal256(_, _) => match numeric {
             Some((min, max)) => ColumnStats::Numeric {
                 min: *min,
                 max: *max,
@@ -504,8 +492,12 @@ fn finalize_column_stats(
                 string_counts.iter().map(|(k, v)| (k.clone(), *v)).collect();
             pairs.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
             let top: Vec<(String, u64)> = pairs.iter().take(TOP_N_CATEGORIES).cloned().collect();
+            // If the accumulator is saturated, we stopped admitting new distinct
+            // values partway through. Flag this so callers can note "≥N distinct".
+            let distinct_count_capped = string_counts.len() >= MAX_DISTINCT_STRINGS_PER_COLUMN;
             ColumnStats::String {
                 distinct_count: string_counts.len() as u64,
+                distinct_count_capped,
                 top,
             }
         }
@@ -557,6 +549,18 @@ fn format_data_type(dt: &DataType) -> String {
         DataType::UInt64 => "uint64".to_string(),
         DataType::Float32 => "float32".to_string(),
         DataType::Float64 => "float64".to_string(),
+        DataType::Decimal128(p, s) => format!("decimal128({p},{s})"),
+        DataType::Decimal256(p, s) => format!("decimal256({p},{s})"),
+        DataType::Binary | DataType::LargeBinary => "binary".to_string(),
+        DataType::FixedSizeBinary(n) => format!("binary[{n}]"),
+        DataType::List(f) | DataType::LargeList(f) => {
+            format!("list<{}>", format_data_type(f.data_type()))
+        }
+        DataType::FixedSizeList(f, n) => {
+            format!("list<{}>[{n}]", format_data_type(f.data_type()))
+        }
+        DataType::Struct(fields) => format!("struct<{} fields>", fields.len()),
+        DataType::Map(_, _) => "map".to_string(),
         DataType::Timestamp(unit, _) => format!("timestamp[{unit:?}]").to_lowercase(),
         DataType::Date32 => "date32".to_string(),
         DataType::Date64 => "date64".to_string(),
@@ -638,9 +642,11 @@ mod tests {
         match &summary.columns[1].stats {
             ColumnStats::String {
                 distinct_count,
+                distinct_count_capped,
                 top,
             } => {
                 assert_eq!(*distinct_count, 3);
+                assert!(!distinct_count_capped);
                 assert_eq!(top[0], ("alice".to_string(), 2));
             }
             _ => panic!("expected string stats"),
@@ -659,9 +665,69 @@ mod tests {
     }
 
     #[test]
-    fn summarize_record_batches_empty() {
-        let summary = summarize_record_batches(&[]).unwrap();
+    fn summarize_parquet_empty_ok() {
+        // Zero batches = error (parquet file needs at least a schema), but
+        // a schema-only parquet should produce 0 rows with column metadata.
+        let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int64, true)]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int64Array::from(Vec::<Option<i64>>::new()))],
+        )
+        .unwrap();
+        let bytes = batch_to_parquet_bytes(&batch);
+        let summary = summarize_parquet(&bytes).unwrap();
         assert_eq!(summary.num_rows, 0);
-        assert_eq!(summary.columns.len(), 0);
+        assert_eq!(summary.columns.len(), 1);
+        assert_eq!(summary.columns[0].name, "x");
+    }
+
+    #[test]
+    fn string_cardinality_cap() {
+        // More than MAX_DISTINCT_STRINGS_PER_COLUMN distinct values: the cap
+        // kicks in and we retain only the first N we saw.
+        let mut values: Vec<Option<&str>> = Vec::new();
+        let strings: Vec<String> = (0..(MAX_DISTINCT_STRINGS_PER_COLUMN + 100))
+            .map(|i| format!("v{i}"))
+            .collect();
+        for s in &strings {
+            values.push(Some(s.as_str()));
+        }
+        let schema = Arc::new(Schema::new(vec![Field::new("s", DataType::Utf8, true)]));
+        let arr = StringArray::from(values);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(arr)]).unwrap();
+        let bytes = batch_to_parquet_bytes(&batch);
+        let summary = summarize_parquet(&bytes).unwrap();
+        match &summary.columns[0].stats {
+            ColumnStats::String {
+                distinct_count,
+                distinct_count_capped,
+                ..
+            } => {
+                assert!(
+                    *distinct_count <= MAX_DISTINCT_STRINGS_PER_COLUMN as u64,
+                    "cap exceeded: {}",
+                    distinct_count
+                );
+                assert!(*distinct_count_capped, "should be flagged as capped");
+            }
+            _ => panic!("expected string stats"),
+        }
+    }
+
+    #[test]
+    fn string_value_truncation() {
+        // A string longer than MAX_STRING_VALUE_LEN is truncated in the accumulator.
+        let long = "x".repeat(MAX_STRING_VALUE_LEN * 2);
+        let schema = Arc::new(Schema::new(vec![Field::new("s", DataType::Utf8, false)]));
+        let arr = StringArray::from(vec![long.as_str()]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(arr)]).unwrap();
+        let bytes = batch_to_parquet_bytes(&batch);
+        let summary = summarize_parquet(&bytes).unwrap();
+        match &summary.columns[0].stats {
+            ColumnStats::String { top, .. } => {
+                assert_eq!(top[0].0.len(), MAX_STRING_VALUE_LEN);
+            }
+            _ => panic!("expected string stats"),
+        }
     }
 }

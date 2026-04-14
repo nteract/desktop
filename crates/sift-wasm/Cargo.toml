@@ -18,12 +18,9 @@ bytes = { workspace = true }
 chrono = { version = "0.4", default-features = false }
 
 arrow = { version = "54", default-features = false, features = ["ipc", "ffi"] }
-arrow-array = { version = "54", default-features = false }
-arrow-buffer = { version = "54", default-features = false }
 arrow-cast = { version = "54", default-features = false }
 arrow-ord = { version = "54", default-features = false }
 arrow-select = { version = "54", default-features = false }
-arrow-string = { version = "54", default-features = false }
 parquet = { version = "54", default-features = false, features = ["arrow", "snap", "flate2", "zstd"] }
 
 [package.metadata.wasm-pack.profile.release]

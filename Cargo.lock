@@ -7434,12 +7434,9 @@ name = "sift-wasm"
 version = "0.1.0"
 dependencies = [
  "arrow",
- "arrow-array",
- "arrow-buffer",
  "arrow-cast",
  "arrow-ord",
  "arrow-select",
- "arrow-string",
  "bytes",
  "chrono",
  "console_error_panic_hook",

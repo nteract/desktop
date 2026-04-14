@@ -80,9 +80,14 @@ fn format_column(col: &ColumnSummary, total_rows: u64) -> String {
         }
         ColumnStats::String {
             distinct_count,
+            distinct_count_capped,
             top,
         } => {
-            let mut s = format!(" · {} distinct", format_number(*distinct_count));
+            let prefix = if *distinct_count_capped { "≥" } else { "" };
+            let mut s = format!(" · {}{} distinct", prefix, format_number(*distinct_count));
+            if *distinct_count_capped {
+                s.push_str(" (sampled)");
+            }
             if !top.is_empty() {
                 let top_str: Vec<String> = top
                     .iter()
@@ -203,6 +208,7 @@ mod tests {
                     null_count: 12,
                     stats: ColumnStats::String {
                         distinct_count: 500,
+                        distinct_count_capped: false,
                         top: vec![("alice".to_string(), 200), ("bob".to_string(), 150)],
                     },
                 },

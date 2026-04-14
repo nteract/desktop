@@ -13,7 +13,5 @@ pub mod summary;
 pub mod utils;
 
 pub use filter::{filter_rows, string_contains};
-pub use parquet_summary::{
-    summarize_parquet, summarize_record_batches, ColumnStats, ColumnSummary, ParquetSummary,
-};
+pub use parquet_summary::{summarize_parquet, ColumnStats, ColumnSummary, ParquetSummary};
 pub use summary::{histogram, value_counts, CategoryCount, HistogramBin};
