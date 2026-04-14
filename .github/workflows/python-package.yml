@@ -1,9 +1,10 @@
-# Build and publish Python packages (runtimed + nteract).
+# Build and publish Python packages (runtimed + nteract + dx).
 #
 # runtimed: PyO3 bindings for the daemon client, bundles the runtimed binary.
 # nteract: Pure-Python MCP server that depends on runtimed.
+# dx:      Pure-Python data-experience library (kernel-side display helpers).
 #
-# To publish: push a tag matching `python-v*` (e.g. `python-v0.1.0`).
+# To publish: push a tag matching `python-v*` (e.g. `python-v2.2.0`).
 
 name: Python Package
 
@@ -44,6 +45,7 @@ jobs:
               - 'pyproject.toml'
               - 'python/runtimed/**'
               - 'python/nteract/**'
+              - 'python/dx/**'
               - 'python/gremlin/**'
               - 'python/prewarm/**'
               - 'crates/runtimed-py/**'
@@ -83,10 +85,10 @@ jobs:
         run: uv sync
 
       - name: Ruff check
-        run: uv run ruff check --config pyproject.toml python/nteract/src/ python/runtimed/src/ python/runtimed/tests/ python/prewarm/src/ python/prewarm/tests/
+        run: uv run ruff check --config pyproject.toml python/nteract/src/ python/runtimed/src/ python/runtimed/tests/ python/dx/src/ python/dx/tests/ python/prewarm/src/ python/prewarm/tests/
 
       - name: Ruff format check
-        run: uv run ruff format --check --config pyproject.toml python/nteract/src/ python/runtimed/src/ python/runtimed/tests/ python/prewarm/src/ python/prewarm/tests/
+        run: uv run ruff format --check --config pyproject.toml python/nteract/src/ python/runtimed/src/ python/runtimed/tests/ python/dx/src/ python/dx/tests/ python/prewarm/src/ python/prewarm/tests/
 
       - name: Type check
         run: uv run ty check python/
@@ -94,6 +96,9 @@ jobs:
       - name: Run runtimed-py unit tests
         working-directory: python/runtimed
         run: uv run pytest tests/test_session_unit.py tests/test_binary.py tests/test_ipython_bridge.py -v --tb=short
+
+      - name: Run dx unit tests
+        run: uv run pytest python/dx/tests/ -v --tb=short
 
       - name: Run prewarm unit tests
         run: |
@@ -276,11 +281,48 @@ jobs:
           name: nteract-dist
           path: dist
 
+  dx-build:
+    name: Build dx sdist + wheel
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          lfs: true
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Set dev version
+        run: |
+          CURRENT_VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          MAJOR_MINOR="${CURRENT_VERSION%.*}"
+          PATCH="${CURRENT_VERSION##*.}"
+          NEXT_PATCH=$((PATCH + 1))
+          TIMESTAMP=$(date -u +%Y%m%d%H%M)
+          DEV_VERSION="${MAJOR_MINOR}.${NEXT_PATCH}a${TIMESTAMP}"
+          echo "Setting dx version to: ${DEV_VERSION}"
+          sed -i "s/^version = .*/version = \"${DEV_VERSION}\"/" pyproject.toml
+        working-directory: python/dx
+
+      - name: Build
+        run: uv build --no-sources
+        working-directory: python/dx
+
+      - name: Upload dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: dx-dist
+          path: dist
+
   release:
     name: Release
     runs-on: blacksmith-4vcpu-ubuntu-2404
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [macos, linux, nteract-build]
+    needs: [macos, linux, nteract-build, dx-build]
     permissions:
       id-token: write
       contents: write
@@ -302,6 +344,9 @@ jobs:
       - name: Publish nteract to PyPI
         run: uv publish --trusted-publishing always --check-url https://pypi.org/simple/nteract/ 'nteract-dist/*'
 
+      - name: Publish dx to PyPI
+        run: uv publish --trusted-publishing always --check-url https://pypi.org/simple/dx/ 'dx-dist/*'
+
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -310,5 +355,6 @@ jobs:
           files: |
             wheels-*/*
             nteract-dist/*
+            dx-dist/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
