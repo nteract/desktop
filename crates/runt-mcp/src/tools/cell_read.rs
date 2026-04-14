@@ -113,8 +113,8 @@ pub async fn get_cell(
         items.push(Content::text(header_with_tags));
     }
 
-    // Each output as a separate Content item (matches Python _cell_to_content)
-    items.extend(formatting::outputs_to_content_items(&outputs));
+    // Each output as a separate Content item, with images inlined from blob store
+    items.extend(formatting::outputs_to_content_items_with_images(&outputs));
 
     Ok(CallToolResult::success(items))
 }

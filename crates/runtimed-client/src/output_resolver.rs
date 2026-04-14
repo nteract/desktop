@@ -681,13 +681,38 @@ async fn resolve_display_for_llm(
         }
     }
 
-    // Build the output.
-    if output_type == "execute_result" {
-        let execution_count = manifest.get("execution_count").and_then(|v| v.as_i64())?;
-        Some(Output::execute_result(output_data, execution_count))
-    } else {
-        Some(Output::display_data(output_data))
+    // Build blob metadata maps so callers can resolve binary content.
+    let mut blob_urls_map: HashMap<String, String> = HashMap::new();
+    let mut blob_paths_map: HashMap<String, String> = HashMap::new();
+    for (mime, content_ref) in data_map {
+        let meta = content_ref_meta(content_ref);
+        if let Some(hash) = meta.blob_hash {
+            if hash.len() >= 2 {
+                if let Some(base_url) = blob_base_url {
+                    blob_urls_map.insert(mime.clone(), format!("{}/blob/{}", base_url, hash));
+                }
+                if let Some(store_path) = blob_store_path {
+                    let path = store_path.join(&hash[..2]).join(&hash[2..]);
+                    blob_paths_map.insert(mime.clone(), path.to_string_lossy().to_string());
+                }
+            }
+        }
     }
+
+    // Build the output.
+    let mut output = if output_type == "execute_result" {
+        let execution_count = manifest.get("execution_count").and_then(|v| v.as_i64())?;
+        Output::execute_result(output_data, execution_count)
+    } else {
+        Output::display_data(output_data)
+    };
+    if !blob_urls_map.is_empty() {
+        output.blob_urls = Some(blob_urls_map);
+    }
+    if !blob_paths_map.is_empty() {
+        output.blob_paths = Some(blob_paths_map);
+    }
+    Some(output)
 }
 
 /// Truncate text keeping head and tail, since errors and results tend to

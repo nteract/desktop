@@ -3,6 +3,7 @@
 //! Converts notebook outputs to text for LLM consumption, with ANSI stripping
 //! and MIME type priority. Matches the Python MCP server's formatting behavior.
 
+use base64::Engine;
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -239,4 +240,95 @@ pub fn format_cell_header(
 
     parts.push("━━━".to_string());
     parts.join(" ")
+}
+
+/// Maximum image file size to inline as base64 in MCP responses (10 MB).
+const MAX_INLINE_IMAGE_BYTES: u64 = 10 * 1024 * 1024;
+
+/// Image MIME types that MCP clients can render natively.
+fn is_inlinable_image_mime(mime: &str) -> bool {
+    matches!(
+        mime,
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+    )
+}
+
+/// Read image blobs from an output's `blob_paths` and return `Content::image` items.
+fn inline_image_items(output: &Output) -> Vec<rmcp::model::Content> {
+    let blob_paths = match &output.blob_paths {
+        Some(paths) => paths,
+        None => return Vec::new(),
+    };
+
+    let mut items = Vec::new();
+    for (mime, path_str) in blob_paths {
+        if !is_inlinable_image_mime(mime) {
+            continue;
+        }
+        let path = std::path::Path::new(path_str);
+        let metadata = match std::fs::metadata(path) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if metadata.len() > MAX_INLINE_IMAGE_BYTES {
+            continue;
+        }
+        if let Ok(bytes) = std::fs::read(path) {
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+            items.push(rmcp::model::Content::image(b64, mime.clone()));
+        }
+    }
+    items
+}
+
+/// Convert outputs to Content items, inlining images from the blob store.
+///
+/// Like [`outputs_to_content_items`] but also reads image blobs referenced
+/// by `blob_paths` and returns them as `Content::image()`. Used by `get_cell()`
+/// where agents want to see output images without extra tool calls.
+pub fn outputs_to_content_items_with_images(outputs: &[Output]) -> Vec<rmcp::model::Content> {
+    let mut items: Vec<rmcp::model::Content> = Vec::new();
+    let mut omitted_count = 0usize;
+    let mut omitted_mimes: Vec<String> = Vec::new();
+
+    for output in outputs {
+        let text = format_output_text(output);
+        let images = inline_image_items(output);
+
+        if let Some(text) = text {
+            items.push(rmcp::model::Content::text(text));
+        }
+
+        if !images.is_empty() {
+            items.extend(images);
+        } else if output.output_type == "display_data" || output.output_type == "execute_result" {
+            // Count as omitted only if we got neither text nor images
+            if format_output_text(output).is_none() {
+                omitted_count += 1;
+                if let Some(data) = &output.data {
+                    let mimes: Vec<&str> = data
+                        .keys()
+                        .map(|k| k.as_str())
+                        .filter(|k| !k.starts_with("text/llm"))
+                        .collect();
+                    if !mimes.is_empty() {
+                        omitted_mimes.push(mimes.join(", "));
+                    }
+                }
+            }
+        }
+    }
+
+    if omitted_count > 0 {
+        let detail = if omitted_mimes.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", omitted_mimes.join("; "))
+        };
+        items.push(rmcp::model::Content::text(format!(
+            "[{omitted_count} output(s) with non-text content{detail} — visible in the notebook UI]"
+        )));
+    }
+
+    items
 }
