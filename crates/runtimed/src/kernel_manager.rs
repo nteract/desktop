@@ -401,15 +401,6 @@ pub enum QueueCommand {
         comm_id: String,
         state: serde_json::Value,
     },
-    /// Send a raw comm_msg to the kernel via the shell channel, addressed
-    /// to `comm_id`. Used by the dx blob handler to ack an upload request.
-    ///
-    /// Unlike [`SendCommUpdate`], `data` is passed through verbatim as the
-    /// message `data` field (no `method: "update"` wrapper).
-    SendDxCommAck {
-        comm_id: String,
-        data: serde_json::Value,
-    },
 }
 
 /// Escape a search pattern for IPython's fnmatch-based history search.

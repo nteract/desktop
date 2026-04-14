@@ -115,17 +115,6 @@ pub trait KernelConnection: Send {
         state: serde_json::Value,
     ) -> impl std::future::Future<Output = Result<()>> + Send;
 
-    /// Send a raw comm_msg to the kernel, passing `data` through verbatim.
-    ///
-    /// Used by the dx blob handler to ack upload requests that arrived on
-    /// the `nteract.dx.blob` comm without wrapping `data` in a `method:
-    /// "update"` envelope.
-    fn send_comm_msg_data(
-        &mut self,
-        comm_id: &str,
-        data: serde_json::Value,
-    ) -> impl std::future::Future<Output = Result<()>> + Send;
-
     /// Request code completions from the kernel.
     ///
     /// Takes `&mut self` because it sends via the primary shell connection.

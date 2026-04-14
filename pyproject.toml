@@ -8,6 +8,7 @@ dependencies = [
     "gremlin ; sys_platform == 'darwin'",
     "pandas",
     "polars",
+    "pyarrow>=14",
 ]
 
 [build-system]

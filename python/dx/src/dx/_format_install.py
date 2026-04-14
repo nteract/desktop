@@ -1,17 +1,24 @@
-"""Install-time wiring: open the comm, register IPython formatters, emit displays.
+"""Install-time wiring: IPython formatters + fire-and-forget display_data+buffers.
 
-This module glues together :mod:`dx._env`, :mod:`dx._comm`, :mod:`dx._format`,
-:mod:`dx._summary`, and :mod:`dx._refs` into the public ``dx.install()`` entry
-point.
+v1 upload path uses the Jupyter messaging envelope's ``buffers`` field directly
+on an ``IOPub`` ``display_data`` message (the same mechanism ipywidgets uses for
+binary state). Python hashes the bytes locally and emits one message carrying
+the ref-MIME entry plus the raw bytes as a trailing ZMQ frame. The runtime
+agent, reading IOPub sequentially, writes the buffer to the blob store and
+composes a ``ContentRef`` under the target content_type.
+
+No comm, no ack, no round-trip — the hash is content-addressed and derivable
+on both sides. The ``nteract.dx.*`` comm namespace stays reserved for future
+bidirectional uses (push-down predicates, streaming Arrow, ``dx.attach``).
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 from typing import Any
 
-from dx._comm import COMM_TARGET, BlobClient, FallbackClient, get_client, set_client
 from dx._env import Environment, detect_environment
 from dx._format import serialize_dataframe
 from dx._refs import BLOB_REF_MIME, BlobRef, build_ref_bundle
@@ -35,27 +42,23 @@ def _get_ipython_for_format() -> object | None:
     return _gi()
 
 
-def _publish_display_data(data: dict, metadata: dict | None = None) -> None:
-    """Indirection over :func:`IPython.display.publish_display_data` for tests."""
-    from IPython.display import publish_display_data
+def _kernel_session_and_socket() -> tuple[object, object] | None:
+    """Return ``(session, iopub_socket)`` if we're under ipykernel.
 
-    publish_display_data(data, metadata or {})
-
-
-def _try_open_comm() -> BlobClient | None:
-    """Open the ``nteract.dx.blob`` comm if we're under ipykernel."""
-    if detect_environment() != Environment.IPYKERNEL:
+    Returns ``None`` in plain IPython or plain python — caller falls back to
+    emitting raw bytes in the mimebundle.
+    """
+    ip = _get_ipython_for_format()
+    if ip is None:
         return None
-    try:
-        from ipykernel.comm import Comm
-    except ImportError:
+    kernel = getattr(ip, "kernel", None)
+    if kernel is None:
         return None
-    try:
-        comm = Comm(target_name=COMM_TARGET, data={})
-    except Exception as exc:  # pragma: no cover — defensive
-        log.debug("dx: failed to open %s comm: %s", COMM_TARGET, exc)
+    session = getattr(kernel, "session", None)
+    iopub_socket = getattr(kernel, "iopub_socket", None)
+    if session is None or iopub_socket is None:
         return None
-    return BlobClient(comm)
+    return session, iopub_socket
 
 
 def install_formatters() -> None:
@@ -63,11 +66,8 @@ def install_formatters() -> None:
     if _INSTALLED:
         return
 
-    client = _try_open_comm()
-    if client is None:
-        log.debug("dx: no runtime agent comm — using fallback (raw-bytes display).")
-        client = FallbackClient()
-    set_client(client)
+    if detect_environment() != Environment.IPYKERNEL:
+        log.debug("dx: not running under ipykernel — formatters will fall back to raw bytes.")
 
     ip = _get_ipython_for_format()
     if ip is None:
@@ -76,44 +76,63 @@ def install_formatters() -> None:
 
     # IPython's InteractiveShell exposes DisplayFormatter as an attribute,
     # not a method — do not call it.
-    formatter = ip.display_formatter.mimebundle_formatter
+    #
+    # We register on `ipython_display_formatter` rather than the bundle
+    # formatter because (a) we publish the display via `session.send`
+    # ourselves (to carry buffers on the envelope) and (b) returning True
+    # from an ipython_display formatter tells IPython's display chain to
+    # skip every other formatter for this object. That prevents the default
+    # pandas HTML/plain repr from being published alongside our own output
+    # for a bare `df` on the last cell line.
+    formatter = ip.display_formatter.ipython_display_formatter
 
     try:
         import pandas as pd
 
-        formatter.for_type(pd.DataFrame, _pandas_formatter)
+        formatter.for_type(pd.DataFrame, _pandas_ipython_display)
     except ImportError:
         pass
 
     try:
         import polars as pl
 
-        formatter.for_type(pl.DataFrame, _polars_formatter)
+        formatter.for_type(pl.DataFrame, _polars_ipython_display)
     except ImportError:
         pass
 
     _INSTALLED = True
 
 
-def _pandas_formatter(df: Any) -> dict:
-    return _df_to_bundle(df, total_rows=len(df))
+def _pandas_ipython_display(df: Any) -> bool | None:
+    """IPython display formatter for pandas DataFrames.
+
+    Returns ``True`` when we've taken over display (and no other formatter
+    should run), ``None`` otherwise (so IPython falls back to the default
+    pandas HTML/plain formatters — e.g. when we're not under ipykernel).
+    """
+    return _emit_dataframe(df, total_rows=len(df))
 
 
-def _polars_formatter(df: Any) -> dict:
-    return _df_to_bundle(df, total_rows=df.height)
+def _polars_ipython_display(df: Any) -> bool | None:
+    """IPython display formatter for polars DataFrames."""
+    return _emit_dataframe(df, total_rows=df.height)
 
 
-def _df_to_bundle(df: Any, *, total_rows: int) -> dict:
-    """Serialize, upload, and build the display bundle. Falls back on failure."""
+def _emit_dataframe(df: Any, *, total_rows: int) -> bool | None:
+    """Serialize, publish a display_data with buffers, return True.
+
+    Returns ``None`` when we fall back to the default repr — in that case
+    IPython runs the rest of the formatter chain as if dx weren't there.
+    """
     try:
         data, content_type = serialize_dataframe(df, max_bytes=_MAX_PAYLOAD_BYTES)
     except Exception as exc:
-        log.debug("dx: serialize failed: %s — falling back to repr", exc)
-        return {"text/plain": repr(df)}
+        log.debug("dx: serialize failed: %s — falling back to default repr", exc)
+        return None
 
+    # Detect whether the serializer downsampled by reading parquet metadata.
     sampled = False
     included = total_rows
-    # Read parquet metadata to detect downsampling (cheap — footer only).
     try:
         import io
 
@@ -126,25 +145,83 @@ def _df_to_bundle(df: Any, *, total_rows: int) -> dict:
     except Exception:
         pass
 
-    client = get_client()
-    try:
-        ref = client.put(data, content_type)
-    except Exception as exc:
-        log.debug("dx: upload failed: %s — falling back to raw-bytes display", exc)
-        llm = summarize_dataframe(
-            df, total_rows=total_rows, included_rows=included, sampled=sampled
-        )
-        return {content_type: data, "text/llm+plain": llm}
-
-    summary = {
+    h = hashlib.sha256(data).hexdigest()
+    ref = BlobRef(hash=h, size=len(data))
+    summary_hints = {
         "total_rows": total_rows,
         "included_rows": included,
         "sampled": sampled,
         "sample_strategy": "head" if sampled else "none",
     }
-    bundle = build_ref_bundle(ref, content_type=content_type, summary=summary)
+    ref_bundle = build_ref_bundle(ref, content_type=content_type, summary=summary_hints)
+    # Convention: exactly one BLOB_REF_MIME entry per display_data, referencing
+    # buffers[0]. Future work may extend to multiple refs via a buffer_index
+    # field.
+    ref_bundle["buffer_index"] = 0
+
     llm = summarize_dataframe(df, total_rows=total_rows, included_rows=included, sampled=sampled)
-    return {BLOB_REF_MIME: bundle, "text/llm+plain": llm}
+
+    session_info = _kernel_session_and_socket()
+    if session_info is None:
+        # Plain IPython / plain Python: no buffer path available. Let the
+        # default formatter chain run (HTML / plain / etc) by returning None.
+        return None
+
+    session, iopub_socket = session_info
+    try:
+        _send_display_data_with_buffers(
+            session=session,
+            iopub_socket=iopub_socket,
+            data={BLOB_REF_MIME: ref_bundle, "text/llm+plain": llm},
+            buffers=[data],
+        )
+    except Exception as exc:
+        log.debug("dx: session.send failed: %s — falling back to default repr", exc)
+        return None
+
+    # We've already published the display_data ourselves; tell IPython to
+    # skip every other formatter for this object (no duplicate HTML/plain).
+    return True
+
+
+def _send_display_data_with_buffers(
+    *,
+    session,
+    iopub_socket,
+    data: dict,
+    buffers: list[bytes],
+) -> None:
+    """Publish a ``display_data`` message on IOPub with trailing binary buffers.
+
+    Mirrors how ipykernel's own ``publish_display_data`` calls
+    ``Session.send`` — ``ident`` is the IOPub topic (bytes, e.g.
+    ``b"display_data"``), ``parent`` is the parent header dict. Extracted
+    for test monkeypatching.
+    """
+    from IPython import get_ipython
+
+    ip = get_ipython()
+    kernel = ip.kernel
+    parent = None
+    try:
+        parent = kernel.get_parent("shell")
+    except Exception:
+        try:
+            parent = kernel._parent_header
+        except Exception:
+            parent = None
+    try:
+        ident = kernel.topic("display_data")
+    except Exception:
+        ident = None
+    session.send(
+        iopub_socket,
+        "display_data",
+        content={"data": data, "metadata": {}, "transient": {}},
+        parent=parent,
+        ident=ident,
+        buffers=buffers,
+    )
 
 
 def dx_display(obj: Any) -> None:
@@ -152,13 +229,3 @@ def dx_display(obj: Any) -> None:
     from IPython.display import display
 
     display(obj)
-
-
-def publish_ref_with_type(
-    ref: BlobRef,
-    *,
-    content_type: str,
-    summary: dict | None = None,
-) -> None:
-    bundle = build_ref_bundle(ref, content_type=content_type, summary=summary)
-    _publish_display_data({BLOB_REF_MIME: bundle})

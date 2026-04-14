@@ -373,6 +373,82 @@ pub async fn create_manifest(
     Ok(manifest)
 }
 
+/// Preflight dx blob-ref MIME buffers in an IOPub message envelope.
+///
+/// When a kernel emits ``display_data`` (or ``execute_result``) carrying a
+/// [`BLOB_REF_MIME`](notebook_doc::mime::BLOB_REF_MIME) entry alongside raw
+/// bytes in the message's trailing ``buffers`` frames, this function writes
+/// each referenced buffer to the blob store **before** the manifest is built.
+/// [`create_manifest`] then resolves the ref MIME against a blob that is
+/// already present.
+///
+/// Convention: each blob-ref entry may carry a ``buffer_index: N`` integer
+/// pointing into the ``buffers`` list. Missing ``buffer_index`` is treated
+/// as 0. Out-of-range indices are logged and skipped.
+///
+/// Sanity check: the hash computed from the buffer bytes must match the
+/// hash declared in the ref. Mismatches log a warn; [`create_manifest`]
+/// still composes the ContentRef against the declared hash (the blob was
+/// stored at the computed hash; the declared hash will fail
+/// [`BlobStore::exists`] and the entry will drop).
+///
+/// Called from the IOPub task before routing output to either the Output
+/// widget capture path or the normal cell-output path.
+pub async fn preflight_ref_buffers(
+    nbformat: &serde_json::Value,
+    buffers: &[Vec<u8>],
+    blob_store: &BlobStore,
+) {
+    if buffers.is_empty() {
+        return;
+    }
+    let Some(data) = nbformat.get("data").and_then(|v| v.as_object()) else {
+        return;
+    };
+    for (mime, body) in data {
+        if mime != notebook_doc::mime::BLOB_REF_MIME {
+            continue;
+        }
+        let declared_hash = body.get("hash").and_then(|v| v.as_str()).unwrap_or("");
+        let target_ct = body
+            .get("content_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let buf_idx = body
+            .get("buffer_index")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as usize;
+        if target_ct.is_empty() || declared_hash.is_empty() {
+            tracing::warn!(
+                "[dx] blob-ref MIME missing hash or content_type (skipping buffer preflight)"
+            );
+            continue;
+        }
+        let Some(buf) = buffers.get(buf_idx) else {
+            tracing::warn!(
+                "[dx] blob-ref buffer_index {} out of range ({} buffers); skipping",
+                buf_idx,
+                buffers.len()
+            );
+            continue;
+        };
+        match blob_store.put(buf, target_ct).await {
+            Ok(computed) => {
+                if computed != declared_hash {
+                    tracing::warn!(
+                        "[dx] blob-ref hash mismatch: declared={} computed={} — ContentRef will drop",
+                        declared_hash,
+                        computed
+                    );
+                }
+            }
+            Err(err) => {
+                tracing::warn!("[dx] blob-ref buffer put failed: {}", err);
+            }
+        }
+    }
+}
+
 /// Get the display_id from an OutputManifest, if present.
 ///
 /// Used by UpdateDisplayData to find the output to update.
@@ -761,6 +837,67 @@ mod tests {
             }
             other => panic!("expected blob ref, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn preflight_ref_buffers_writes_blob_when_present() {
+        use sha2::Digest;
+        let dir = tempfile::tempdir().unwrap();
+        let blob_store = test_store(&dir);
+
+        let raw = b"PAR1-fake-parquet-body";
+        let declared_hash = hex::encode(sha2::Sha256::digest(raw));
+
+        let nbformat = serde_json::json!({
+            "output_type": "display_data",
+            "data": {
+                notebook_doc::mime::BLOB_REF_MIME: {
+                    "hash": declared_hash.clone(),
+                    "content_type": "application/vnd.apache.parquet",
+                    "size": raw.len(),
+                    "buffer_index": 0,
+                },
+                "text/llm+plain": "DataFrame (pandas): 3 rows × 2 columns"
+            },
+        });
+
+        preflight_ref_buffers(&nbformat, &[raw.to_vec()], &blob_store).await;
+        assert!(blob_store.exists(&declared_hash));
+
+        // And the subsequent create_manifest composes a ContentRef from it.
+        let manifest = create_manifest(&nbformat, &blob_store, 1024).await.unwrap();
+        let data = match manifest {
+            OutputManifest::DisplayData { data, .. } => data,
+            other => panic!("expected DisplayData, got {other:?}"),
+        };
+        match data.get("application/vnd.apache.parquet").unwrap() {
+            ContentRef::Blob { blob, size } => {
+                assert_eq!(blob, &declared_hash);
+                assert_eq!(*size, raw.len() as u64);
+            }
+            other => panic!("expected blob ref, got {other:?}"),
+        }
+        assert!(!data.contains_key(notebook_doc::mime::BLOB_REF_MIME));
+    }
+
+    #[tokio::test]
+    async fn preflight_ref_buffers_with_no_buffers_is_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        let blob_store = test_store(&dir);
+
+        let nbformat = serde_json::json!({
+            "output_type": "display_data",
+            "data": {
+                notebook_doc::mime::BLOB_REF_MIME: {
+                    "hash": "abc",
+                    "content_type": "image/png",
+                    "size": 0,
+                    "buffer_index": 0,
+                },
+            },
+        });
+        preflight_ref_buffers(&nbformat, &[], &blob_store).await;
+        assert!(!blob_store.exists("abc"));
     }
 
     #[tokio::test]

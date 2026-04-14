@@ -1,8 +1,10 @@
+import hashlib
+
 import pandas as pd
-from dx._refs import BLOB_REF_MIME, BlobRef
+from dx._refs import BLOB_REF_MIME
 
 
-class FakeMimebundleFormatter:
+class FakeTypeFormatter:
     def __init__(self) -> None:
         self.registrations: dict = {}
 
@@ -12,16 +14,13 @@ class FakeMimebundleFormatter:
 
 class FakeDisplayFormatter:
     def __init__(self) -> None:
-        self.mimebundle_formatter = FakeMimebundleFormatter()
+        self.ipython_display_formatter = FakeTypeFormatter()
 
 
 class FakeIPython:
     """Minimal stand-in matching IPython's ``InteractiveShell`` API.
 
-    ``display_formatter`` is an *attribute*, not a method. Regression
-    guard: dx.install() must access it as ``ip.display_formatter``
-    (not ``ip.display_formatter()``), otherwise it raises TypeError
-    against a real IPython shell.
+    Regression guard: ``display_formatter`` is an attribute, not a method.
     """
 
     def __init__(self) -> None:
@@ -39,46 +38,38 @@ def test_install_registers_pandas_formatter(monkeypatch):
     _reset_installed(monkeypatch)
     ip = FakeIPython()
     monkeypatch.setattr("dx._format_install._get_ipython_for_format", lambda: ip)
-    monkeypatch.setattr("dx._format_install._try_open_comm", lambda: None)
+    monkeypatch.setattr("dx._format_install._kernel_session_and_socket", lambda: None)
 
     import dx
 
     dx.install()
-    assert pd.DataFrame in ip.display_formatter.mimebundle_formatter.registrations
+    assert pd.DataFrame in ip.display_formatter.ipython_display_formatter.registrations
 
 
 def test_install_is_idempotent(monkeypatch):
     _reset_installed(monkeypatch)
     ip = FakeIPython()
     monkeypatch.setattr("dx._format_install._get_ipython_for_format", lambda: ip)
-    monkeypatch.setattr("dx._format_install._try_open_comm", lambda: None)
+    monkeypatch.setattr("dx._format_install._kernel_session_and_socket", lambda: None)
 
     import dx
 
     dx.install()
     dx.install()
-    assert (
-        len(ip.display_formatter.mimebundle_formatter.registrations) <= 2
-    )  # pandas + optionally polars
+    # pandas + optionally polars — but no double registration.
+    assert len(ip.display_formatter.ipython_display_formatter.registrations) <= 2
 
 
 def test_install_treats_display_formatter_as_attribute_not_method(monkeypatch):
-    """Regression guard: against real IPython, display_formatter is an
-    attribute — calling it would raise TypeError.
-
-    Real IPython's ``InteractiveShell.display_formatter`` is a
-    ``DisplayFormatter`` instance (not a bound method). Prior versions of
-    dx.install() accessed it as ``ip.display_formatter()`` which works
-    against a callable test fake but crashes in a real shell.
-    """
+    """Regression: real IPython exposes display_formatter as attribute."""
     _reset_installed(monkeypatch)
 
     class NonCallableFormatter:
         def __init__(self):
-            self.mimebundle_formatter = FakeMimebundleFormatter()
+            self.ipython_display_formatter = FakeTypeFormatter()
 
         def __call__(self, *a, **kw):
-            raise TypeError("real IPython's display_formatter is not callable — this would crash")
+            raise TypeError("real IPython's display_formatter is not callable")
 
     class StrictFakeIPython:
         def __init__(self):
@@ -86,65 +77,82 @@ def test_install_treats_display_formatter_as_attribute_not_method(monkeypatch):
 
     ip = StrictFakeIPython()
     monkeypatch.setattr("dx._format_install._get_ipython_for_format", lambda: ip)
-    monkeypatch.setattr("dx._format_install._try_open_comm", lambda: None)
+    monkeypatch.setattr("dx._format_install._kernel_session_and_socket", lambda: None)
 
     import dx
 
     dx.install()
-    assert pd.DataFrame in ip.display_formatter.mimebundle_formatter.registrations
+    assert pd.DataFrame in ip.display_formatter.ipython_display_formatter.registrations
 
 
 def test_install_noop_when_no_ipython(monkeypatch):
     _reset_installed(monkeypatch)
     monkeypatch.setattr("dx._format_install._get_ipython_for_format", lambda: None)
-    monkeypatch.setattr("dx._format_install._try_open_comm", lambda: None)
+    monkeypatch.setattr("dx._format_install._kernel_session_and_socket", lambda: None)
 
     import dx
 
-    dx.install()  # should not raise
+    dx.install()  # must not raise
 
 
-def test_display_blob_ref_emits_blob_ref_mime(monkeypatch):
-    _reset_installed(monkeypatch)
-    published = []
-
-    def fake_publish(data, metadata=None):
-        published.append(data)
-
-    monkeypatch.setattr("dx._format_install._publish_display_data", fake_publish)
-
-    import dx
-
-    ref = BlobRef(hash="sha256:abc", size=42)
-    dx.display_blob_ref(ref, content_type="image/png", summary={"total_rows": 100})
-
-    assert len(published) == 1
-    bundle = published[0]
-    assert BLOB_REF_MIME in bundle
-    body = bundle[BLOB_REF_MIME]
-    assert body["hash"] == "sha256:abc"
-    assert body["content_type"] == "image/png"
-    assert body["summary"] == {"total_rows": 100}
-    assert body["query"] is None
-    assert "url" not in body
-
-
-def test_pandas_formatter_falls_back_when_no_agent(monkeypatch):
-    """No agent → bundle carries raw parquet bytes + summary, not ref MIME."""
+def test_formatter_publishes_display_data_with_buffers_and_claims_display(monkeypatch):
+    """Under ipykernel: formatter fires session.send with buffers=[parquet_bytes]
+    and returns True so IPython skips every other formatter for the DataFrame."""
     _reset_installed(monkeypatch)
     ip = FakeIPython()
     monkeypatch.setattr("dx._format_install._get_ipython_for_format", lambda: ip)
-    monkeypatch.setattr("dx._format_install._try_open_comm", lambda: None)
+
+    captured: dict = {}
+
+    def fake_send(*, session, iopub_socket, data, buffers):
+        captured["data"] = data
+        captured["buffers"] = buffers
+
+    # Pretend we're under ipykernel by stubbing the helper that probes for it.
+    monkeypatch.setattr(
+        "dx._format_install._kernel_session_and_socket",
+        lambda: (object(), object()),
+    )
+    monkeypatch.setattr("dx._format_install._send_display_data_with_buffers", fake_send)
 
     import dx
 
     dx.install()
-    formatter = ip.display_formatter.mimebundle_formatter.registrations[pd.DataFrame]
+    formatter = ip.display_formatter.ipython_display_formatter.registrations[pd.DataFrame]
 
     df = pd.DataFrame({"a": [1, 2, 3]})
-    bundle = formatter(df)
+    result = formatter(df)
 
-    assert "application/vnd.apache.parquet" in bundle
-    assert isinstance(bundle["application/vnd.apache.parquet"], bytes)
-    assert "text/llm+plain" in bundle
-    assert BLOB_REF_MIME not in bundle
+    # True means "we took over display"; IPython skips the rest of the chain.
+    assert result is True
+
+    # The published message has the ref MIME + llm summary, and one buffer.
+    assert BLOB_REF_MIME in captured["data"]
+    assert "text/llm+plain" in captured["data"]
+    ref = captured["data"][BLOB_REF_MIME]
+    assert ref["content_type"] == "application/vnd.apache.parquet"
+    assert ref["buffer_index"] == 0
+    assert len(captured["buffers"]) == 1
+    parquet_bytes = captured["buffers"][0]
+    assert parquet_bytes[:4] == b"PAR1"
+    # Hash in the ref matches the buffer bytes — content-addressed.
+    assert ref["hash"] == hashlib.sha256(parquet_bytes).hexdigest()
+    assert ref["size"] == len(parquet_bytes)
+
+
+def test_formatter_returns_none_when_no_ipykernel(monkeypatch):
+    """No ipykernel: returning None lets IPython's default HTML/plain chain run."""
+    _reset_installed(monkeypatch)
+    ip = FakeIPython()
+    monkeypatch.setattr("dx._format_install._get_ipython_for_format", lambda: ip)
+    monkeypatch.setattr("dx._format_install._kernel_session_and_socket", lambda: None)
+
+    import dx
+
+    dx.install()
+    formatter = ip.display_formatter.ipython_display_formatter.registrations[pd.DataFrame]
+
+    df = pd.DataFrame({"a": [1, 2, 3]})
+    result = formatter(df)
+    # None => IPython's default formatter chain proceeds.
+    assert result is None
