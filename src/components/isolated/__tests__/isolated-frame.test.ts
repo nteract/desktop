@@ -18,7 +18,6 @@ const EXPECTED_SANDBOX_ATTRS = [
   "allow-downloads",
   "allow-forms",
   "allow-pointer-lock",
-  "allow-fullscreen",
 ].join(" ");
 
 describe("iframe sandbox security", () => {
@@ -38,10 +37,6 @@ describe("iframe sandbox security", () => {
 
   it("sandbox includes allow-scripts (required for widgets)", () => {
     expect(EXPECTED_SANDBOX_ATTRS).toContain("allow-scripts");
-  });
-
-  it("sandbox includes allow-fullscreen (required for sift maximize)", () => {
-    expect(EXPECTED_SANDBOX_ATTRS).toContain("allow-fullscreen");
   });
 
   it("sandbox does NOT include allow-popups", () => {

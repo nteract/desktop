@@ -27,10 +27,12 @@ Untrusted content renders inside iframes with `blob:` URLs. Blob URLs have a uni
 ### Sandbox Attributes
 
 ```
-allow-scripts, allow-downloads, allow-forms, allow-pointer-lock, allow-fullscreen
+allow-scripts, allow-downloads, allow-forms, allow-pointer-lock
 ```
 
 No `allow-same-origin`. Ever. No `allow-popups` or `allow-modals` — these were removed to reduce phishing surface.
+
+Fullscreen (for sift maximize, maps, 3D) is enabled via the separate `allowFullScreen` iframe attribute, not a sandbox flag.
 
 ### Content Security Policy
 
