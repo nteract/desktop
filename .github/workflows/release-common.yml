@@ -637,6 +637,45 @@ jobs:
           path: dist
           if-no-files-found: error
 
+  build-dx-package:
+    name: Build dx Package
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    needs: compute-version
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          lfs: true
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Set dev version
+        if: inputs.github_release_prerelease
+        run: |
+          CURRENT_VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          MAJOR_MINOR="${CURRENT_VERSION%.*}"
+          PATCH="${CURRENT_VERSION##*.}"
+          NEXT_PATCH=$((PATCH + 1))
+          TIMESTAMP="${{ needs.compute-version.outputs.timestamp }}"
+          DEV_VERSION="${MAJOR_MINOR}.${NEXT_PATCH}a${TIMESTAMP}"
+          echo "Setting dx version to: ${DEV_VERSION}"
+          sed -i "s/^version = .*/version = \"${DEV_VERSION}\"/" pyproject.toml
+        working-directory: python/dx
+
+      - name: Build sdist + wheel
+        run: uv build --no-sources
+        working-directory: python/dx
+
+      - name: Upload dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: dx-dist
+          path: python/dx/dist
+          if-no-files-found: error
+
   build-python-wheels:
     name: Build Python Wheels (${{ matrix.platform.target }})
     runs-on: ${{ matrix.platform.runner }}
@@ -738,6 +777,7 @@ jobs:
         build-notebook-linux-x64,
         build-python-wheels,
         build-nteract-package,
+        build-dx-package,
       ]
     steps:
       - name: Checkout
@@ -899,6 +939,12 @@ jobs:
           name: nteract-dist
           path: ./nteract-dist
 
+      - name: Download dx dist
+        uses: actions/download-artifact@v4
+        with:
+          name: dx-dist
+          path: ./dx-dist
+
       - name: Install uv
         uses: astral-sh/setup-uv@v7
 
@@ -909,6 +955,10 @@ jobs:
       - name: Publish nteract to PyPI
         continue-on-error: true
         run: uv publish --trusted-publishing always ./nteract-dist/*
+
+      - name: Publish dx to PyPI
+        continue-on-error: true
+        run: uv publish --trusted-publishing always ./dx-dist/*
 
       - name: Generate release body
         env:
@@ -972,6 +1022,12 @@ jobs:
             echo '```bash'
             echo 'pip install runtimed --pre'
             echo '```'
+            echo ''
+            echo '## dx (Python kernel-side helpers)'
+            echo ''
+            echo '```bash'
+            echo 'pip install dx --pre'
+            echo '```'
           } > release-body.md
 
       - name: Create GitHub Release
@@ -998,6 +1054,7 @@ jobs:
             ./release-assets/latest.json
             ./wheels/*.whl
             ./nteract-dist/*
+            ./dx-dist/*
 
       - name: Update ${{ inputs.updater_channel_tag }} updater channel
         env:
