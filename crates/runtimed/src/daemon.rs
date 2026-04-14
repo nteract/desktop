@@ -521,12 +521,18 @@ pub struct Daemon {
     blob_port: Mutex<Option<u16>>,
     /// Per-notebook Automerge sync rooms.
     notebook_rooms: NotebookRooms,
-    /// Set to `true` the first time the GC loop observes a non-empty
-    /// `notebook_rooms` map. Used by the zero-room sweep-skip guard to
-    /// distinguish "post-restart, no client has reconnected yet" (skip,
-    /// we don't yet know what refs are needed) from "idle daemon whose
-    /// user closed every notebook" (sweep — refs legitimately empty,
-    /// persisted-doc walk still gathers anything the user might reopen).
+    /// Set to `true` the first time any client causes a room to be
+    /// acquired in `notebook_rooms` (via `get_or_create_room`). Used by
+    /// the zero-room sweep-skip guard to distinguish "post-restart, no
+    /// client has reconnected yet" (skip, we don't yet know what refs
+    /// are needed) from "idle daemon whose user closed every notebook"
+    /// (sweep — refs legitimately empty, persisted-doc walk still
+    /// gathers anything the user might reopen).
+    ///
+    /// Flipped at acquisition, not at GC sample time, because rooms can
+    /// open and close between 30-minute GC cycles. Sampling in the GC
+    /// loop would miss short-lived sessions and pin the daemon back in
+    /// the post-restart state forever.
     rooms_ever_seen: std::sync::atomic::AtomicBool,
     /// Redirect map: old ephemeral UUID -> new canonical path after rekey.
     /// Used so peers reconnecting with the old UUID find the re-keyed room.
@@ -1375,6 +1381,7 @@ impl Daemon {
                         false, // NotebookSync handshake is always persistent
                     )
                 };
+                self.mark_rooms_ever_seen();
                 let (reader, writer) = tokio::io::split(stream);
                 // Get user's default runtime and Python env preference for auto-launch
                 let settings = self.settings.read().await.get_all();
@@ -1615,6 +1622,7 @@ impl Daemon {
                 )
             }
         };
+        self.mark_rooms_ever_seen();
 
         // Get settings for sync and auto-launch (needed for both new and existing notebooks)
         let settings = self.settings.read().await.get_all();
@@ -1800,6 +1808,7 @@ impl Daemon {
                 ephemeral,
             )
         };
+        self.mark_rooms_ever_seen();
 
         // Populate the room's doc with the empty notebook content — but only if the
         // room is empty. If a persisted doc was loaded (session restore with notebook_id
@@ -2614,17 +2623,15 @@ impl Daemon {
                 };
 
                 // Zero-rooms sweep-skip: ambiguous only right after a daemon
-                // restart before any client has reconnected. Once we've ever
-                // seen a non-empty rooms map, zero rooms means "user closed
-                // everything" and the sweep is safe to run (the persisted-doc
-                // walk below still gathers refs for anything they might
-                // reopen). Without this distinction, a daemon that stays
-                // open while idle would never GC again.
+                // restart before any client has reconnected. `rooms_ever_seen`
+                // flips the first time a room is acquired (see
+                // `mark_rooms_ever_seen`), so a user who opens and closes a
+                // notebook between GC ticks still arms the flag. Once armed,
+                // zero rooms means "user closed everything" and the sweep is
+                // safe (the persisted-doc walk below still gathers refs for
+                // anything they might reopen). Without this distinction, a
+                // daemon that stays open while idle would never GC again.
                 let rooms_empty = room_arcs.is_empty();
-                if !rooms_empty {
-                    self.rooms_ever_seen
-                        .store(true, std::sync::atomic::Ordering::Relaxed);
-                }
                 if Self::should_skip_blob_sweep(
                     rooms_empty,
                     self.rooms_ever_seen
@@ -2808,6 +2815,18 @@ impl Daemon {
     /// reclaim the blobs whose notebooks are never reopened.
     pub(crate) fn should_skip_blob_sweep(rooms_empty: bool, rooms_ever_seen: bool) -> bool {
         rooms_empty && !rooms_ever_seen
+    }
+
+    /// Mark that at least one room has been acquired in this daemon
+    /// process. Call from every code path that inserts into or fetches
+    /// from `notebook_rooms` (typically right after `get_or_create_room`).
+    ///
+    /// This arms the zero-room GC skip guard. Flipping on acquisition
+    /// (instead of on GC sampling) ensures short-lived sessions that
+    /// open and close between 30-minute GC ticks still count.
+    fn mark_rooms_ever_seen(&self) {
+        self.rooms_ever_seen
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Collect every blob hash referenced by active rooms **and** persisted
@@ -5055,8 +5074,10 @@ mod tests {
         // pick up refs for anything they might reopen).
         assert!(!Daemon::should_skip_blob_sweep(true, true));
 
-        // Rooms populated: always run — `rooms_ever_seen` becomes true
-        // on the next cycle regardless.
+        // Rooms populated: always run. Acquisition sites call
+        // `mark_rooms_ever_seen` before the next GC tick, so the
+        // `(false, false)` state is transient — but `should_skip_blob_sweep`
+        // must still return false for it since rooms are present.
         assert!(!Daemon::should_skip_blob_sweep(false, false));
         assert!(!Daemon::should_skip_blob_sweep(false, true));
     }
