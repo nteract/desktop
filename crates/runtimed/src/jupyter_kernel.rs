@@ -108,7 +108,7 @@ impl Drop for LaunchGuard {
         if let Some(pid) = self.kernel_pid.take() {
             use nix::sys::signal::{kill, Signal};
             use nix::unistd::Pid;
-            warn!(
+            debug!(
                 "[jupyter-kernel] LaunchGuard cleanup: killing kernel pid {}",
                 pid
             );
@@ -117,7 +117,7 @@ impl Drop for LaunchGuard {
         for handle in self.abort_handles.drain(..) {
             handle.abort();
         }
-        warn!("[jupyter-kernel] LaunchGuard cleanup: aborted spawned tasks");
+        debug!("[jupyter-kernel] LaunchGuard cleanup: aborted spawned tasks");
     }
 }
 

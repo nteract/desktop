@@ -336,11 +336,46 @@ const KERNEL_LAUNCH_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 /// port collisions under high concurrency (TOCTOU race in port allocation).
 const KERNEL_LAUNCH_MAX_ATTEMPTS: usize = 3;
 
+/// Determine whether a launch error is likely transient (worth retrying with
+/// fresh ports) or terminal (will fail again immediately).
+///
+/// Terminal errors include missing binaries, broken environments, unsupported
+/// kernel types, and early process crashes — none of which are fixed by fresh
+/// port allocation.  Retryable errors include timeouts, ZMQ connection
+/// failures, and the port-collision scenarios this retry loop targets.
+fn is_retryable_launch_error(error_msg: &str) -> bool {
+    // Known terminal error patterns from JupyterKernel::launch():
+    const TERMINAL_PATTERNS: &[&str] = &[
+        // Environment / config errors
+        "requires a prepared environment",
+        "has no python binary",
+        "could not resolve conda environment prefix",
+        "Unsupported kernel type",
+        // Process crashed on startup — binary or env is broken
+        "Kernel process exited immediately",
+        "Kernel process died before responding",
+    ];
+
+    for pattern in TERMINAL_PATTERNS {
+        if error_msg.contains(pattern) {
+            return false;
+        }
+    }
+
+    // Everything else (timeouts, ZMQ connect failures, port allocation
+    // failures, partial bind) is worth retrying with fresh ports.
+    true
+}
+
 /// Launch a kernel with timeout and retry. Returns the launched kernel and its
 /// command receiver, or an error if all attempts fail.
 ///
 /// Each attempt gets a fresh `KernelLaunchConfig` (cloned from the template)
 /// so that port allocation starts from scratch on retry.
+///
+/// Only transient errors (timeouts, connection failures, port collisions) are
+/// retried.  Terminal errors (missing binary, broken env, unsupported kernel
+/// type, early crash) fail fast on the first attempt.
 async fn launch_kernel_with_retry(
     config_template: &KernelLaunchConfig,
     shared_template: &KernelSharedRefs,
@@ -357,6 +392,16 @@ async fn launch_kernel_with_retry(
             Ok(Ok((k, rx))) => return Ok((k, rx)),
             Ok(Err(e)) => {
                 last_error = format!("{}", e);
+
+                // Fail fast on terminal errors — retrying won't help.
+                if !is_retryable_launch_error(&last_error) {
+                    error!(
+                        "[runtime-agent] Kernel launch failed (terminal, not retrying): {}",
+                        last_error
+                    );
+                    return Err(format!("Failed to launch kernel: {}", last_error));
+                }
+
                 if attempt < KERNEL_LAUNCH_MAX_ATTEMPTS {
                     warn!(
                         "[runtime-agent] Kernel launch attempt {}/{} failed: {} — retrying with fresh ports",
@@ -371,6 +416,9 @@ async fn launch_kernel_with_retry(
                     );
                 }
             }
+            // Timeouts are always retryable — this is the primary scenario
+            // the retry loop was designed to handle (kernel alive but
+            // unresponsive due to partial ZMQ bind failure).
             Err(_) => {
                 last_error = format!(
                     "Kernel launch timed out after {}s (attempt {}/{})",
