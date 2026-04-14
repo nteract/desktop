@@ -1,39 +1,25 @@
-"""Install-time wiring: IPython formatters + fire-and-forget display_data+buffers.
+"""DataFrame display wiring for ``dx.install()``.
 
-v1 upload path uses the Jupyter messaging envelope's ``buffers`` field
-directly on an ``IOPub`` ``display_data`` (or ``update_display_data``)
-message — the same mechanism ipywidgets uses for binary widget state.
-Python hashes the bytes locally and emits one message carrying the
-ref-MIME entry plus the raw bytes as a trailing ZMQ frame. The runtime
-agent, reading IOPub sequentially, writes the buffer to the blob store
-and composes a ``ContentRef`` under the target content_type.
+Two IPython extension points, one for the bundle and one for the bytes:
 
-No comm, no ack, no round-trip — the hash is content-addressed and
-derivable on both sides. The ``nteract.dx.*`` comm namespace stays
-reserved for future bidirectional uses (push-down predicates, streaming
-Arrow, ``dx.attach``).
+1. A ``mimebundle_formatter`` for pandas / polars DataFrames serializes
+   the frame to parquet, hashes locally, stashes the bytes in a
+   thread-local keyed by hash, and returns
+   ``{BLOB_REF_MIME: {...}, "text/llm+plain": ...}``. IPython's default
+   chain then merges pandas' ``text/html`` and ``text/plain`` so hosts
+   that don't understand the ref MIME still render normally.
 
-Display pipeline wiring:
+2. A ``ZMQDisplayPublisher.register_hook`` callback attaches the
+   stashed bytes to every outgoing ``display_data`` / ``update_display_data``
+   message whose bundle carries the ref MIME. The hook pops the bytes
+   by hash and calls ``session.send(..., buffers=[parquet])`` directly,
+   returning ``None`` so the default (buffer-less) send is skipped.
+   This is why ``h.update(df2)`` on a ``DisplayHandle`` works — the
+   hook fires on updates just like initial displays, with
+   ``transient.display_id`` already populated on the message.
 
-- ``dx.install()`` registers a ``mimebundle_formatter`` for pandas /
-  polars DataFrames that serializes to parquet, stashes the bytes in a
-  thread-local keyed by the content hash, and returns a bundle with the
-  blob-ref MIME + Python-side ``text/llm+plain`` summary.
-- IPython's ``DisplayFormatter.format`` merges that bundle with the
-  default pandas HTML / plain formatters — hosts that don't understand
-  the ref MIME still have a fallback to render.
-- ``dx.install()`` also registers a ``display_pub.register_hook(...)``
-  hook on the kernel's ``ZMQDisplayPublisher``. The hook runs for every
-  ``display_data`` and ``update_display_data`` message; when it sees
-  our ref MIME, it looks up the stashed parquet bytes and calls
-  ``session.send`` directly with ``buffers=[parquet]``, returning
-  ``None`` to suppress the default (buffer-less) send.
-- This means ``h.update(df2)`` on a ``DisplayHandle`` Just Works — the
-  hook fires on ``update_display_data`` messages too, the msg already
-  has ``transient={"display_id": ...}``, no monkey-patching needed.
-
-``display_pub.register_hook`` is documented public API on
-``ipykernel.zmqshell.ZMQDisplayPublisher`` (ipykernel ≥ 6.0).
+``register_hook`` is documented public API on
+``ipykernel.zmqshell.ZMQDisplayPublisher``.
 """
 
 from __future__ import annotations
@@ -208,7 +194,7 @@ def _dx_display_pub_hook(msg: dict) -> dict | None:
         return msg
 
 
-_dx_display_pub_hook._dx_installed = True  # type: ignore[attr-defined]
+_dx_display_pub_hook._dx_installed = True  # ty: ignore[unresolved-attribute]
 
 
 def _pandas_mimebundle(df: Any, include=None, exclude=None) -> dict | None:

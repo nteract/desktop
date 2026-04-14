@@ -140,14 +140,8 @@ impl ContentRef {
         })
     }
 
-    /// Build a [`ContentRef::Blob`] from a hash already known to be in the
-    /// blob store.
-    ///
-    /// Used by the `application/vnd.nteract.blob-ref+json` resolution path
-    /// in [`create_manifest`]: when the kernel's `dx` library has already
-    /// uploaded a blob via the `nteract.dx.blob` comm and emits a reference
-    /// MIME in the display bundle, we compose the [`ContentRef`] directly
-    /// without re-uploading the bytes.
+    /// Build a [`ContentRef::Blob`] from a hash already present in the
+    /// blob store (e.g. just written by [`preflight_ref_buffers`]).
     pub fn from_hash(hash: String, size: u64) -> Self {
         ContentRef::Blob { blob: hash, size }
     }
@@ -373,27 +367,21 @@ pub async fn create_manifest(
     Ok(manifest)
 }
 
-/// Preflight dx blob-ref MIME buffers in an IOPub message envelope.
+/// Write ref-MIME buffers to the blob store before the manifest is built.
 ///
-/// When a kernel emits ``display_data`` (or ``execute_result``) carrying a
-/// [`BLOB_REF_MIME`](notebook_doc::mime::BLOB_REF_MIME) entry alongside raw
-/// bytes in the message's trailing ``buffers`` frames, this function writes
-/// each referenced buffer to the blob store **before** the manifest is built.
-/// [`create_manifest`] then resolves the ref MIME against a blob that is
-/// already present.
+/// When a `display_data` / `execute_result` carries
+/// [`BLOB_REF_MIME`](notebook_doc::mime::BLOB_REF_MIME) + trailing ZMQ
+/// `buffers` frames, each blob-ref entry's `buffer_index` points into
+/// the `buffers` list. We hash + store those bytes so the subsequent
+/// [`create_manifest`] call resolves the ref against an existing blob.
 ///
-/// Convention: each blob-ref entry may carry a ``buffer_index: N`` integer
-/// pointing into the ``buffers`` list. Missing ``buffer_index`` is treated
-/// as 0. Out-of-range indices are logged and skipped.
+/// Missing `buffer_index` defaults to 0. Out-of-range indices, missing
+/// `hash` / `content_type`, computed-vs-declared hash mismatches, and
+/// blob-store errors all log a `warn!` and skip the entry —
+/// [`create_manifest`] then drops the ref because [`BlobStore::exists`]
+/// fails on the declared hash.
 ///
-/// Sanity check: the hash computed from the buffer bytes must match the
-/// hash declared in the ref. Mismatches log a warn; [`create_manifest`]
-/// still composes the ContentRef against the declared hash (the blob was
-/// stored at the computed hash; the declared hash will fail
-/// [`BlobStore::exists`] and the entry will drop).
-///
-/// Called from the IOPub task before routing output to either the Output
-/// widget capture path or the normal cell-output path.
+/// Call from the IOPub task before [`create_manifest`].
 pub async fn preflight_ref_buffers(
     nbformat: &serde_json::Value,
     buffers: &[Vec<u8>],

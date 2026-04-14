@@ -1,59 +1,39 @@
 //! Reserved `nteract.dx.*` comm-target namespace.
 //!
-//! **v1 does not use a comm for blob uploads.** The upload path runs on the
-//! Jupyter messaging envelope's ``buffers`` field, attached directly to the
-//! kernel's ``display_data`` IOPub message — see [`preflight_ref_buffers`]
-//! in `crate::output_store`. That avoids the synchronous round-trip deadlock
-//! that would happen if a cell blocked on an ack while the kernel's shell
-//! dispatcher (same asyncio loop) was busy executing the cell.
+//! Every `comm_open` / `comm_msg` / `comm_close` whose `target_name` starts
+//! with `nteract.dx.` is filtered out of [`RuntimeStateDoc::comms`] and
+//! [`NotebookBroadcast::Comm`], and dropped with a `warn!` log carrying
+//! the raw target name.
 //!
-//! The comm namespace stays reserved. Any `comm_open`, `comm_msg`, or
-//! `comm_close` on a `nteract.dx.*` target:
-//!
-//! - is **not** persisted to [`RuntimeStateDoc::comms`]
-//! - is **not** broadcast on `NotebookBroadcast::Comm`
-//! - is dropped with a `warn!` log carrying the raw target name, so a future
-//!   kernel that opens a reserved target we haven't implemented yet is visible
-//!   in logs rather than silently leaking into widget state.
-//!
-//! Future interactive dx subsystems (push-down predicates, streaming Arrow,
-//! `dx.attach` for chunked uploads) will grow variants on [`DxTarget`] and
-//! live dispatch handlers. Those patterns run while the kernel is idle
-//! (between cell executions) or on the control channel, so the v1 deadlock
-//! does not apply to them.
+//! v1 has no live handlers — the blob upload path rides IOPub `display_data`
+//! buffers instead (see [`output_store::preflight_ref_buffers`]). The
+//! namespace stays reserved for future bidirectional subsystems
+//! (push-down predicates, streaming Arrow, `dx.attach`); when those
+//! ship, they grow named variants on [`DxTarget`] with dispatch handlers.
 
-/// Reserved comm-target namespace prefix. All targets starting with this
-/// prefix are handled by dx subsystems and excluded from [`RuntimeStateDoc`]
-/// persistence.
+/// Reserved comm-target namespace prefix.
 pub const DX_NAMESPACE_PREFIX: &str = "nteract.dx.";
 
-/// Reserved target name: kernel → runtime-agent blob uploads.
+/// Reserved target name for kernel-initiated blob uploads.
 ///
-/// **Not used in v1** — blob bytes travel as IOPub ``display_data`` buffers.
-/// Reserved for a potential future bidirectional blob protocol (e.g. receiving
-/// pre-signed upload instructions).
+/// Not used in v1. Blob bytes ride IOPub `display_data` buffers.
 pub const DX_BLOB_TARGET: &str = "nteract.dx.blob";
 
-/// Returns true if `target_name` is part of the reserved dx namespace.
-///
-/// Requires at least one character after the prefix so the literal strings
-/// `"nteract.dx"` and `"nteract.dx."` do not match (reserving the ability
-/// to define an explicit namespace root without accidentally matching it).
+/// Returns true if `target_name` starts with `nteract.dx.` and has at least
+/// one character after the prefix (so `"nteract.dx"` and `"nteract.dx."`
+/// don't match — those stay reservable as explicit namespace-root names).
 pub fn is_dx_target(target_name: &str) -> bool {
     target_name.starts_with(DX_NAMESPACE_PREFIX) && target_name.len() > DX_NAMESPACE_PREFIX.len()
 }
 
-/// Classification of a comm target within the reserved `nteract.dx.*`
-/// namespace.
+/// Classification of a comm target in the reserved namespace.
 ///
-/// v1 has no live-dispatch handlers — [`DxTarget::Unknown`] is the only
-/// variant returned. Future work (query / stream / attach) will grow
-/// named variants that branch into dedicated handlers.
+/// v1 returns only [`DxTarget::Unknown`]; future subsystems grow named
+/// variants (e.g. `Query`, `Stream`) with their own dispatch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DxTarget {
-    /// A reserved dx target with no v1 handler. Carries the raw target name
-    /// so observability logs can record *which* target came in. Always
-    /// filtered out of widget state; the caller should log a `warn!`.
+    /// Reserved dx target with no handler in this version. Carries the raw
+    /// target name for log observability.
     Unknown(String),
 }
 
