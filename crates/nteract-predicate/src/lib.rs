@@ -8,8 +8,12 @@
 //! a plain `rlib` in native builds without pulling in JS interop code.
 
 pub mod filter;
+pub mod parquet_summary;
 pub mod summary;
 pub mod utils;
 
 pub use filter::{filter_rows, string_contains};
+pub use parquet_summary::{
+    summarize_parquet, summarize_record_batches, ColumnStats, ColumnSummary, ParquetSummary,
+};
 pub use summary::{histogram, value_counts, CategoryCount, HistogramBin};
