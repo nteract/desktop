@@ -930,7 +930,9 @@ h1 {
 /* --- Fullscreen state --- */
 
 .sift-table-container:fullscreen {
-  background: var(--sift-bg);
+  width: 100vw;
+  height: 100vh;
+  background: var(--sift-panel);
 }
 
 .sift-table-container:fullscreen .sift-viewport {

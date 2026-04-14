@@ -227,7 +227,8 @@ const SANDBOX_ATTRS = [
   "allow-downloads", // Allow file downloads (e.g., from widgets)
   "allow-forms", // Allow form submissions
   "allow-pointer-lock", // For interactive visualizations
-  "allow-fullscreen", // For sift maximize, interactive visualizations (e.g., maps, 3D)
+  // Fullscreen for sift maximize, maps, 3D, etc. is enabled via the
+  // separate `allowFullScreen` iframe attribute (not a sandbox flag).
 ].join(" ");
 
 /**
@@ -770,6 +771,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
         src={blobUrl}
         sandbox={SANDBOX_ATTRS}
         allowFullScreen
+        allow="fullscreen *"
         className={className}
         data-slot="isolated-frame"
         style={{

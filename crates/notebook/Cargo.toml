@@ -21,6 +21,10 @@ path = "src/main.rs"
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 tauri = { version = "2", features = ["devtools"] }
+# Activate wry's `fullscreen` feature (Cargo feature unification) so WKWebView
+# enables the HTML5 Fullscreen API. Required for sift's fullscreen button and
+# any embedded visualizations (maps, 3D) that call requestFullscreen().
+wry = { version = "0.54", features = ["fullscreen"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-process = "2"
 tauri-plugin-shell = "2"

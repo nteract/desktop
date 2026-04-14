@@ -808,11 +808,19 @@ export function createTable(
   }
   updateRowCountDisplay();
 
-  // Fullscreen toggle
+  // Fullscreen toggle — only shown if the Fullscreen API is available AND
+  // permitted in the current context (not the case in some embeddings like
+  // MCP App iframes without the right Permissions Policy).
+  const fullscreenSupported =
+    (document.fullscreenEnabled ?? (document as any).webkitFullscreenEnabled ?? false) &&
+    !!(container.requestFullscreen ?? (container as any).webkitRequestFullscreen);
   const fullscreenBtn = document.createElement("button");
   fullscreenBtn.className = "sift-fullscreen-btn";
   fullscreenBtn.title = "Toggle fullscreen";
   fullscreenBtn.textContent = "⛶";
+  if (!fullscreenSupported) {
+    fullscreenBtn.style.display = "none";
+  }
   fullscreenBtn.addEventListener("click", () => {
     const fsElement =
       document.fullscreenElement ?? (document as any).webkitFullscreenElement ?? null;
