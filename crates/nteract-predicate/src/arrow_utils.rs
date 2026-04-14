@@ -7,7 +7,7 @@
 //! `StringArray` silently drops those columns. These helpers do the right
 //! dispatch once so callers don't each have to remember it.
 
-use arrow::array::{Array, AsArray, LargeStringArray, StringArray};
+use arrow::array::{Array, AsArray, LargeStringArray, StringArray, StringViewArray};
 use arrow::datatypes::DataType;
 
 use crate::utils::dict_key_at;
@@ -54,6 +54,20 @@ where
             }
             true
         }
+        DataType::Utf8View => {
+            // Arrow 53+ view arrays; emitted by DuckDB, Polars, and newer
+            // parquet writers. Same shape as Utf8 but with inlined short
+            // strings — we just iterate values like the other string types.
+            let Some(arr) = column.as_any().downcast_ref::<StringViewArray>() else {
+                return false;
+            };
+            for i in 0..arr.len() {
+                if !arr.is_null(i) {
+                    f(i, arr.value(i));
+                }
+            }
+            true
+        }
         DataType::Dictionary(_, _) => {
             let dict_arr = column.as_any_dictionary();
             let keys = dict_arr.keys();
@@ -66,6 +80,13 @@ where
                 }
                 true
             } else if let Some(str_values) = values.as_any().downcast_ref::<LargeStringArray>() {
+                for i in 0..keys.len() {
+                    if let Some(key) = dict_key_at(keys, i) {
+                        f(i, str_values.value(key));
+                    }
+                }
+                true
+            } else if let Some(str_values) = values.as_any().downcast_ref::<StringViewArray>() {
                 for i in 0..keys.len() {
                     if let Some(key) = dict_key_at(keys, i) {
                         f(i, str_values.value(key));
@@ -96,6 +117,10 @@ pub fn string_at(column: &dyn Array, row: usize) -> Option<String> {
             .as_any()
             .downcast_ref::<LargeStringArray>()
             .map(|a| a.value(row).to_string()),
+        DataType::Utf8View => column
+            .as_any()
+            .downcast_ref::<StringViewArray>()
+            .map(|a| a.value(row).to_string()),
         DataType::Dictionary(_, _) => {
             let dict_arr = column.as_any_dictionary();
             let keys = dict_arr.keys();
@@ -106,6 +131,10 @@ pub fn string_at(column: &dyn Array, row: usize) -> Option<String> {
                     return Some(str_values.value(key).to_string());
                 }
             } else if let Some(str_values) = values.as_any().downcast_ref::<LargeStringArray>() {
+                if key < str_values.len() {
+                    return Some(str_values.value(key).to_string());
+                }
+            } else if let Some(str_values) = values.as_any().downcast_ref::<StringViewArray>() {
                 if key < str_values.len() {
                     return Some(str_values.value(key).to_string());
                 }
@@ -149,6 +178,32 @@ mod tests {
         let handled = for_each_string(&dict, |s| collected.push(s.to_string()));
         assert!(handled);
         assert_eq!(collected, vec!["foo", "bar", "foo"]);
+    }
+
+    #[test]
+    fn iterates_dictionary_with_int64_keys_and_large_string_values() {
+        // Polars/pandas often emit DictionaryArray<Int64, LargeUtf8>. Both the
+        // key-width dispatch (via dict_key_at) and the LargeStringArray value
+        // downcast need to work.
+        use arrow::array::Int64Array;
+        let keys = Int64Array::from(vec![Some(1_i64), Some(0), Some(1)]);
+        let values = Arc::new(LargeStringArray::from(vec!["apple", "banana"])) as _;
+        let dict = DictionaryArray::try_new(keys, values).unwrap();
+        let mut collected = Vec::new();
+        let handled = for_each_string(&dict, |s| collected.push(s.to_string()));
+        assert!(handled);
+        assert_eq!(collected, vec!["banana", "apple", "banana"]);
+    }
+
+    #[test]
+    fn iterates_utf8_view() {
+        // Arrow 53+ view array — emitted by DuckDB and newer parquet writers.
+        use arrow::array::StringViewArray;
+        let arr = StringViewArray::from(vec![Some("short"), None, Some("also-short")]);
+        let mut collected = Vec::new();
+        let handled = for_each_string(&arr, |s| collected.push(s.to_string()));
+        assert!(handled);
+        assert_eq!(collected, vec!["short", "also-short"]);
     }
 
     #[test]

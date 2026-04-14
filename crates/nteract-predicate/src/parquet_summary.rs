@@ -310,7 +310,12 @@ fn accumulate_column_stats(
                 }
             }
         }
-        DataType::Utf8 | DataType::LargeUtf8 | DataType::Dictionary(_, _) => {
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View | DataType::Dictionary(_, _) => {
+            // for_each_string dispatches to Utf8/LargeUtf8/Utf8View/Dict<string>.
+            // Non-string-valued dictionaries (e.g. Dict<Int32, Int64>) return
+            // `false` and contribute no string stats, which is correct — the
+            // column is classified as String at the schema level (via
+            // finalize_column_stats) but has no categorical meaning here.
             crate::arrow_utils::for_each_string(col, |s| {
                 bump_string(&mut string_accum[col_idx], s);
             });
@@ -454,7 +459,7 @@ fn finalize_column_stats(
             true_count: bool_counts.0,
             false_count: bool_counts.1,
         },
-        DataType::Utf8 | DataType::LargeUtf8 | DataType::Dictionary(_, _) => {
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View | DataType::Dictionary(_, _) => {
             let mut pairs: Vec<(String, u64)> =
                 string_counts.iter().map(|(k, v)| (k.clone(), *v)).collect();
             pairs.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
@@ -504,7 +509,7 @@ fn format_temporal(value: i64, unit: TimeUnit, dt: &DataType) -> String {
 
 fn format_data_type(dt: &DataType) -> String {
     match dt {
-        DataType::Utf8 | DataType::LargeUtf8 => "string".to_string(),
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => "string".to_string(),
         DataType::Boolean => "bool".to_string(),
         DataType::Int8 => "int8".to_string(),
         DataType::Int16 => "int16".to_string(),

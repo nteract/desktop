@@ -1,6 +1,6 @@
 use arrow::array::{
-    Array, AsArray, BooleanArray, Float64Array, Int32Array, Int64Array, LargeStringArray,
-    StringArray, UInt32Array, UInt64Array,
+    Array, BooleanArray, Float64Array, Int32Array, Int64Array, LargeStringArray, StringArray,
+    UInt32Array, UInt64Array,
 };
 use arrow::datatypes::{DataType, TimeUnit};
 use arrow::ipc::reader::StreamReader;
@@ -10,7 +10,6 @@ use arrow_cast::display::ArrayFormatter;
 use arrow_ord::sort::{sort_to_indices, SortOptions};
 use arrow_select::concat::concat;
 use nteract_predicate::summary::{CategoryCount, HistogramBin};
-use nteract_predicate::utils::dict_key_at;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -234,17 +233,13 @@ pub fn get_cell_string(handle: u32, row: usize, col: usize) -> Result<String, Js
             return String::new();
         }
 
+        // Strings (Utf8 / LargeUtf8 / Utf8View / Dict<string>) route through
+        // the shared helper so all variants dispatch correctly.
+        if let Some(s) = nteract_predicate::arrow_utils::string_at(column.as_ref(), local_row) {
+            return s;
+        }
+
         match column.data_type() {
-            DataType::Utf8 => column
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .map(|a| a.value(local_row).to_string())
-                .unwrap_or_default(),
-            DataType::LargeUtf8 => column
-                .as_any()
-                .downcast_ref::<LargeStringArray>()
-                .map(|a| a.value(local_row).to_string())
-                .unwrap_or_default(),
             DataType::Boolean => column
                 .as_any()
                 .downcast_ref::<BooleanArray>()
@@ -271,22 +266,6 @@ pub fn get_cell_string(handle: u32, row: usize, col: usize) -> Result<String, Js
                 .downcast_ref::<Float64Array>()
                 .map(|a| format!("{}", a.value(local_row)))
                 .unwrap_or_default(),
-            DataType::Dictionary(_, _) => {
-                let dict_arr = column.as_any_dictionary();
-                let keys = dict_arr.keys();
-                let values = dict_arr.values();
-                if let Some(str_values) = values.as_any().downcast_ref::<StringArray>() {
-                    if let Some(key) = dict_key_at(keys, local_row) {
-                        return str_values.value(key).to_string();
-                    }
-                } else if let Some(str_values) = values.as_any().downcast_ref::<LargeStringArray>()
-                {
-                    if let Some(key) = dict_key_at(keys, local_row) {
-                        return str_values.value(key).to_string();
-                    }
-                }
-                String::new()
-            }
             _ => ArrayFormatter::try_new(column.as_ref(), &Default::default())
                 .ok()
                 .map(|f| f.value(local_row).to_string())
@@ -1503,41 +1482,17 @@ fn get_f64_value(arr: &dyn Array, row: usize) -> f64 {
     }
 }
 
-/// Extract a string value from any string or dictionary-encoded column.
+/// Extract a string value from any string, boolean, or dictionary-encoded column.
 fn get_string_value(arr: &dyn Array, row: usize) -> String {
+    // String-like types (Utf8 / LargeUtf8 / Utf8View / Dict<string>) via the
+    // shared helper. Handles null internally.
+    if let Some(s) = nteract_predicate::arrow_utils::string_at(arr, row) {
+        return s;
+    }
     if arr.is_null(row) {
         return String::new();
     }
     match arr.data_type() {
-        DataType::Utf8 => arr
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .map(|a| a.value(row).to_string())
-            .unwrap_or_default(),
-        DataType::LargeUtf8 => arr
-            .as_any()
-            .downcast_ref::<LargeStringArray>()
-            .map(|a| a.value(row).to_string())
-            .unwrap_or_default(),
-        DataType::Dictionary(_, _) => {
-            let dict_arr = arr.as_any_dictionary();
-            let keys = dict_arr.keys();
-            let values = dict_arr.values();
-            if let Some(str_values) = values.as_any().downcast_ref::<StringArray>() {
-                if let Some(key) = dict_key_at(keys, row) {
-                    if key < str_values.len() {
-                        return str_values.value(key).to_string();
-                    }
-                }
-            } else if let Some(str_values) = values.as_any().downcast_ref::<LargeStringArray>() {
-                if let Some(key) = dict_key_at(keys, row) {
-                    if key < str_values.len() {
-                        return str_values.value(key).to_string();
-                    }
-                }
-            }
-            String::new()
-        }
         DataType::Boolean => arr
             .as_any()
             .downcast_ref::<BooleanArray>()
