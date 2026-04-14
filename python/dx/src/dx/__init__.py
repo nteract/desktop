@@ -42,20 +42,44 @@ class DxError(Exception):
 def install() -> None:
     """Install the nteract data-experience integration.
 
-    - Registers IPython formatters for ``pandas.DataFrame`` and
-      ``polars.DataFrame`` (if installed). Bare ``df`` on the last cell
-      line then rides the blob-store path via ``display_data`` + IOPub
-      buffers instead of shipping base64'd bytes.
-    - Flips third-party visualization libraries that ship an ``"nteract"``
-      renderer to use it:
-      - altair: ``alt.renderers.enable("nteract")``
-      - plotly: ``plotly.io.renderers.default = "nteract"``
-      Each is guarded by ``ImportError`` and is a no-op if the library
-      isn't present.
+    This is an **opt-in** call that mutates kernel-wide display behavior.
+    Two extension points are wired up:
 
-    Idempotent. Safe to call in vanilla Jupyter or plain Python — when
-    no ipykernel is reachable, DataFrame formatters return ``None`` so
-    IPython's default display chain runs unchanged.
+    1. **IPython ``mimebundle_formatter`` for pandas / polars DataFrames.**
+       The formatter serializes to parquet, hashes locally, stashes the
+       bytes in a thread-local buffer map keyed by hash, and returns a
+       bundle with ``application/vnd.nteract.blob-ref+json`` +
+       ``text/llm+plain``. IPython merges this with the default pandas
+       HTML / plain formatters, so vanilla hosts still have a fallback
+       to render.
+
+    2. **ipykernel ``display_pub.register_hook`` hook** on the kernel's
+       ``ZMQDisplayPublisher``. Fires for every ``display_data`` and
+       ``update_display_data`` message. When the hook sees our ref MIME,
+       it pops the stashed parquet bytes by hash and calls
+       ``session.send(..., buffers=[parquet])`` directly — the parquet
+       rides the Jupyter messaging envelope's ``buffers`` field (same
+       mechanism ipywidgets uses), not a base64 string inside the JSON
+       content. ``h.update(df)`` on a ``DisplayHandle`` works natively
+       because ``update_display_data`` goes through the hook too, with
+       ``transient.display_id`` already populated.
+
+    Also flips third-party visualization libraries that ship an
+    ``"nteract"`` renderer:
+
+    - ``altair``: ``alt.renderers.enable("nteract")``
+    - ``plotly``: ``plotly.io.renderers.default = "nteract"``
+
+    Each is guarded by ``ImportError``. Plotly's nteract renderer emits
+    only ``application/vnd.plotly.v1+json``, dropping the terminal /
+    browser fallback — plotly figures stop rendering in plain-IPython
+    sessions after install.
+
+    Idempotent. Safe to call without ipykernel (formatters register but
+    the display publisher hook is skipped; the DataFrame formatter
+    still returns a bundle that renders via the default chain).
+
+    See ``docs/superpowers/specs/2026-04-13-nteract-dx-design.md``.
     """
     from dx._format_install import install_formatters
 

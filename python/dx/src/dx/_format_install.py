@@ -1,15 +1,39 @@
 """Install-time wiring: IPython formatters + fire-and-forget display_data+buffers.
 
-v1 upload path uses the Jupyter messaging envelope's ``buffers`` field directly
-on an ``IOPub`` ``display_data`` message (the same mechanism ipywidgets uses for
-binary state). Python hashes the bytes locally and emits one message carrying
-the ref-MIME entry plus the raw bytes as a trailing ZMQ frame. The runtime
-agent, reading IOPub sequentially, writes the buffer to the blob store and
-composes a ``ContentRef`` under the target content_type.
+v1 upload path uses the Jupyter messaging envelope's ``buffers`` field
+directly on an ``IOPub`` ``display_data`` (or ``update_display_data``)
+message — the same mechanism ipywidgets uses for binary widget state.
+Python hashes the bytes locally and emits one message carrying the
+ref-MIME entry plus the raw bytes as a trailing ZMQ frame. The runtime
+agent, reading IOPub sequentially, writes the buffer to the blob store
+and composes a ``ContentRef`` under the target content_type.
 
-No comm, no ack, no round-trip — the hash is content-addressed and derivable
-on both sides. The ``nteract.dx.*`` comm namespace stays reserved for future
-bidirectional uses (push-down predicates, streaming Arrow, ``dx.attach``).
+No comm, no ack, no round-trip — the hash is content-addressed and
+derivable on both sides. The ``nteract.dx.*`` comm namespace stays
+reserved for future bidirectional uses (push-down predicates, streaming
+Arrow, ``dx.attach``).
+
+Display pipeline wiring:
+
+- ``dx.install()`` registers a ``mimebundle_formatter`` for pandas /
+  polars DataFrames that serializes to parquet, stashes the bytes in a
+  thread-local keyed by the content hash, and returns a bundle with the
+  blob-ref MIME + Python-side ``text/llm+plain`` summary.
+- IPython's ``DisplayFormatter.format`` merges that bundle with the
+  default pandas HTML / plain formatters — hosts that don't understand
+  the ref MIME still have a fallback to render.
+- ``dx.install()`` also registers a ``display_pub.register_hook(...)``
+  hook on the kernel's ``ZMQDisplayPublisher``. The hook runs for every
+  ``display_data`` and ``update_display_data`` message; when it sees
+  our ref MIME, it looks up the stashed parquet bytes and calls
+  ``session.send`` directly with ``buffers=[parquet]``, returning
+  ``None`` to suppress the default (buffer-less) send.
+- This means ``h.update(df2)`` on a ``DisplayHandle`` Just Works — the
+  hook fires on ``update_display_data`` messages too, the msg already
+  has ``transient={"display_id": ...}``, no monkey-patching needed.
+
+``display_pub.register_hook`` is documented public API on
+``ipykernel.zmqshell.ZMQDisplayPublisher`` (ipykernel ≥ 6.0).
 """
 
 from __future__ import annotations
@@ -17,6 +41,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import threading
 from typing import Any
 
 from dx._env import Environment, detect_environment
@@ -32,14 +57,21 @@ _INSTALLED = False
 # 100 MiB; leave ~10 MiB for overhead and safety.
 _MAX_PAYLOAD_BYTES = int(os.environ.get("DX_MAX_PAYLOAD_BYTES", str(90 * 1024 * 1024)))
 
+# Pending parquet bytes waiting to be attached to the next IOPub message
+# that references them. Keyed by content hash (hex SHA-256) so lookups
+# match the ref MIME's ``hash`` field. Thread-local: each execution
+# context owns its own pending slot.
+_pending = threading.local()
+
+
+def _pending_buffers() -> dict[str, bytes]:
+    if not hasattr(_pending, "buffers"):
+        _pending.buffers = {}
+    return _pending.buffers
+
 
 def _get_ipython_for_format() -> Any | None:
-    """Extracted for test monkeypatching.
-
-    Return type is ``Any`` because IPython's ``InteractiveShell`` has a
-    dynamic ``display_formatter`` attribute we poke directly; a strictly
-    typed return would need an IPython type stub we don't depend on.
-    """
+    """Extracted for test monkeypatching."""
     try:
         from IPython import get_ipython as _gi
     except ImportError:
@@ -47,23 +79,22 @@ def _get_ipython_for_format() -> Any | None:
     return _gi()
 
 
-def _kernel_session_and_socket() -> tuple[Any, Any] | None:
-    """Return ``(session, iopub_socket)`` if we're under ipykernel.
-
-    Returns ``None`` in plain IPython or plain python — caller falls back to
-    emitting raw bytes in the mimebundle.
-    """
+def _display_pub() -> Any | None:
+    """Return the kernel's ``ZMQDisplayPublisher`` instance if we're in a
+    kernel, else ``None``. The publisher has ``register_hook`` and
+    ``session`` / ``pub_socket`` / ``topic`` attributes we need."""
     ip = _get_ipython_for_format()
     if ip is None:
         return None
-    kernel = getattr(ip, "kernel", None)
-    if kernel is None:
+    pub = getattr(ip, "display_pub", None)
+    if pub is None:
         return None
-    session = getattr(kernel, "session", None)
-    iopub_socket = getattr(kernel, "iopub_socket", None)
-    if session is None or iopub_socket is None:
+    # The in-process (plain IPython) DisplayPublisher doesn't have
+    # ``register_hook`` or ``session`` / ``pub_socket`` — only the kernel
+    # subclass does. Probe for the kernel-specific surface.
+    if not all(hasattr(pub, attr) for attr in ("register_hook", "session", "pub_socket")):
         return None
-    return session, iopub_socket
+    return pub
 
 
 def install_formatters() -> None:
@@ -72,7 +103,7 @@ def install_formatters() -> None:
         return
 
     if detect_environment() != Environment.IPYKERNEL:
-        log.debug("dx: not running under ipykernel — formatters will fall back to raw bytes.")
+        log.debug("dx: not running under ipykernel — formatters fall back to default chain.")
 
     ip = _get_ipython_for_format()
     if ip is None:
@@ -81,88 +112,123 @@ def install_formatters() -> None:
 
     # IPython's InteractiveShell exposes DisplayFormatter as an attribute,
     # not a method — do not call it.
-    #
-    # We register on `ipython_display_formatter` rather than the bundle
-    # formatter because (a) we publish the display via `session.send`
-    # ourselves (to carry buffers on the envelope) and (b) returning True
-    # from an ipython_display formatter tells IPython's display chain to
-    # skip every other formatter for this object. That prevents the default
-    # pandas HTML/plain repr from being published alongside our own output
-    # for a bare `df` on the last cell line.
-    formatter = ip.display_formatter.ipython_display_formatter
+    mimebundle = ip.display_formatter.mimebundle_formatter
 
     try:
         import pandas as pd
 
-        formatter.for_type(pd.DataFrame, _pandas_ipython_display)
+        mimebundle.for_type(pd.DataFrame, _pandas_mimebundle)
     except ImportError:
         pass
 
     try:
         import polars as pl
 
-        formatter.for_type(pl.DataFrame, _polars_ipython_display)
+        mimebundle.for_type(pl.DataFrame, _polars_mimebundle)
     except ImportError:
         pass
 
+    _install_display_pub_hook()
     _enable_third_party_nteract_renderers()
 
     _INSTALLED = True
 
 
-def _enable_third_party_nteract_renderers() -> None:
-    """Flip visualization libraries that ship an 'nteract' renderer to it.
+def _install_display_pub_hook() -> None:
+    """Install ``_dx_display_pub_hook`` on the kernel's display publisher.
 
-    Each library is guarded by ImportError so install stays a no-op when
-    the library isn't present. Logs (debug) which switches fired so a
-    curious user can see what dx changed.
+    The hook fires for every ``display_data`` and ``update_display_data``
+    message right before ``session.send`` is called — it's a documented
+    public extension point on ``ipykernel.zmqshell.ZMQDisplayPublisher``.
+
+    Idempotent: the hook function is tagged with ``_dx_installed`` so
+    repeat ``install()`` calls don't stack duplicates.
     """
-    # altair: alt.renderers is a RendererRegistry; `enable("nteract")` makes
-    # Chart display produce an nteract-aware mime bundle.
-    try:
-        import altair as alt  # ty: ignore[unresolved-import]
-
-        alt.renderers.enable("nteract")
-        log.debug("dx: enabled altair 'nteract' renderer")
-    except ImportError:
-        pass
-    except Exception as exc:  # pragma: no cover — defensive
-        log.debug("dx: failed to enable altair 'nteract' renderer: %s", exc)
-
-    # plotly: `plotly.io.renderers.default` is a simple string assignment;
-    # "nteract" is a registered option that emits the plotly mime bundle
-    # the isolated parent iframe knows how to render.
-    try:
-        import plotly.io as pio
-
-        pio.renderers.default = "nteract"
-        log.debug("dx: set plotly default renderer to 'nteract'")
-    except ImportError:
-        pass
-    except Exception as exc:  # pragma: no cover — defensive
-        log.debug("dx: failed to set plotly 'nteract' renderer: %s", exc)
+    pub = _display_pub()
+    if pub is None:
+        return
+    for existing in getattr(pub, "_hooks", []):
+        if getattr(existing, "_dx_installed", False):
+            return
+    pub.register_hook(_dx_display_pub_hook)
 
 
-def _pandas_ipython_display(df: Any) -> bool | None:
-    """IPython display formatter for pandas DataFrames.
+def _dx_display_pub_hook(msg: dict) -> dict | None:
+    """Attach buffers to ``display_data`` / ``update_display_data`` messages
+    whose data bundle carries our blob-ref MIME.
 
-    Returns ``True`` when we've taken over display (and no other formatter
-    should run), ``None`` otherwise (so IPython falls back to the default
-    pandas HTML/plain formatters — e.g. when we're not under ipykernel).
+    Returns:
+        - ``msg`` unchanged if the message isn't one of ours (pass-through).
+        - ``None`` if we sent the message ourselves with buffers (tells
+          ``ZMQDisplayPublisher.publish`` to skip the default send).
     """
+    try:
+        msg_type = msg.get("header", {}).get("msg_type", "")
+        if msg_type not in ("display_data", "update_display_data"):
+            return msg
+        data = msg.get("content", {}).get("data") or {}
+        ref_raw = data.get(BLOB_REF_MIME)
+        if ref_raw is None:
+            return msg
+
+        # `data` values are JSON-cleaned at this point; the ref MIME
+        # is a dict.
+        if isinstance(ref_raw, dict):
+            ref = ref_raw
+        else:
+            import json
+
+            ref = json.loads(ref_raw) if isinstance(ref_raw, str) else None
+        if not isinstance(ref, dict):
+            return msg
+        h = ref.get("hash")
+        if not isinstance(h, str):
+            return msg
+
+        buffers = _pending_buffers().pop(h, None)
+        if buffers is None:
+            # No stashed payload for this hash — maybe re-publish of a
+            # historical message, or a ref emitted by something other
+            # than our formatter. Pass through unchanged; the agent can
+            # still resolve via BlobStore::exists on the hash.
+            return msg
+
+        pub = _display_pub()
+        if pub is None:
+            return msg
+        pub.session.send(
+            pub.pub_socket,
+            msg,
+            ident=pub.topic,
+            buffers=[buffers],
+        )
+        return None
+    except Exception as exc:
+        log.debug("dx: display_pub hook error: %s — letting default send run", exc)
+        return msg
+
+
+_dx_display_pub_hook._dx_installed = True  # type: ignore[attr-defined]
+
+
+def _pandas_mimebundle(df: Any, include=None, exclude=None) -> dict | None:
     return _emit_dataframe(df, total_rows=len(df))
 
 
-def _polars_ipython_display(df: Any) -> bool | None:
-    """IPython display formatter for polars DataFrames."""
+def _polars_mimebundle(df: Any, include=None, exclude=None) -> dict | None:
     return _emit_dataframe(df, total_rows=df.height)
 
 
-def _emit_dataframe(df: Any, *, total_rows: int) -> bool | None:
-    """Serialize, publish a display_data with buffers, return True.
+def _emit_dataframe(df: Any, *, total_rows: int) -> dict | None:
+    """Serialize df → parquet, stash bytes in the pending buffer map, and
+    return a mimebundle containing the ref MIME + text/llm+plain.
 
-    Returns ``None`` when we fall back to the default repr — in that case
-    IPython runs the rest of the formatter chain as if dx weren't there.
+    IPython's default formatter chain fills in text/html / text/plain
+    as a fallback bundle for hosts that don't understand the ref MIME;
+    nteract frontends pick the parquet renderer via the ref MIME.
+
+    Returns ``None`` when serialization fails — lets IPython's default
+    chain render unchanged.
     """
     try:
         data, content_type = serialize_dataframe(df, max_bytes=_MAX_PAYLOAD_BYTES)
@@ -170,7 +236,7 @@ def _emit_dataframe(df: Any, *, total_rows: int) -> bool | None:
         log.debug("dx: serialize failed: %s — falling back to default repr", exc)
         return None
 
-    # Detect whether the serializer downsampled by reading parquet metadata.
+    # Detect downsampling by reading parquet metadata (cheap — footer only).
     sampled = False
     included = total_rows
     try:
@@ -194,74 +260,43 @@ def _emit_dataframe(df: Any, *, total_rows: int) -> bool | None:
         "sample_strategy": "head" if sampled else "none",
     }
     ref_bundle = build_ref_bundle(ref, content_type=content_type, summary=summary_hints)
-    # Convention: exactly one BLOB_REF_MIME entry per display_data, referencing
-    # buffers[0]. Future work may extend to multiple refs via a buffer_index
-    # field.
     ref_bundle["buffer_index"] = 0
 
     llm = summarize_dataframe(df, total_rows=total_rows, included_rows=included, sampled=sampled)
 
-    session_info = _kernel_session_and_socket()
-    if session_info is None:
-        # Plain IPython / plain Python: no buffer path available. Let the
-        # default formatter chain run (HTML / plain / etc) by returning None.
-        return None
+    # Stash the parquet bytes for the display_pub hook to pick up on
+    # the upcoming publish. Keyed by hash so the hook can match exactly.
+    _pending_buffers()[h] = data
 
-    session, iopub_socket = session_info
-    try:
-        _send_display_data_with_buffers(
-            session=session,
-            iopub_socket=iopub_socket,
-            data={BLOB_REF_MIME: ref_bundle, "text/llm+plain": llm},
-            buffers=[data],
-        )
-    except Exception as exc:
-        log.debug("dx: session.send failed: %s — falling back to default repr", exc)
-        return None
-
-    # We've already published the display_data ourselves; tell IPython to
-    # skip every other formatter for this object (no duplicate HTML/plain).
-    return True
+    return {BLOB_REF_MIME: ref_bundle, "text/llm+plain": llm}
 
 
-def _send_display_data_with_buffers(
-    *,
-    session,
-    iopub_socket,
-    data: dict,
-    buffers: list[bytes],
-) -> None:
-    """Publish a ``display_data`` message on IOPub with trailing binary buffers.
+def _enable_third_party_nteract_renderers() -> None:
+    """Flip visualization libraries that ship an 'nteract' renderer to it.
 
-    Mirrors how ipykernel's own ``publish_display_data`` calls
-    ``Session.send`` — ``ident`` is the IOPub topic (bytes, e.g.
-    ``b"display_data"``), ``parent`` is the parent header dict. Extracted
-    for test monkeypatching.
+    Each library is guarded by ImportError so install stays a no-op when
+    the library isn't present. Logs (debug) which switches fired so a
+    curious user can see what dx changed.
     """
-    from IPython import get_ipython
+    try:
+        import altair as alt  # ty: ignore[unresolved-import]
 
-    ip = get_ipython()
-    kernel = ip.kernel
-    parent = None
+        alt.renderers.enable("nteract")
+        log.debug("dx: enabled altair 'nteract' renderer")
+    except ImportError:
+        pass
+    except Exception as exc:  # pragma: no cover — defensive
+        log.debug("dx: failed to enable altair 'nteract' renderer: %s", exc)
+
     try:
-        parent = kernel.get_parent("shell")
-    except Exception:
-        try:
-            parent = kernel._parent_header
-        except Exception:
-            parent = None
-    try:
-        ident = kernel.topic("display_data")
-    except Exception:
-        ident = None
-    session.send(
-        iopub_socket,
-        "display_data",
-        content={"data": data, "metadata": {}, "transient": {}},
-        parent=parent,
-        ident=ident,
-        buffers=buffers,
-    )
+        import plotly.io as pio
+
+        pio.renderers.default = "nteract"
+        log.debug("dx: set plotly default renderer to 'nteract'")
+    except ImportError:
+        pass
+    except Exception as exc:  # pragma: no cover — defensive
+        log.debug("dx: failed to set plotly 'nteract' renderer: %s", exc)
 
 
 def dx_display(obj: Any) -> None:

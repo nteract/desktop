@@ -216,6 +216,75 @@ Everything else (`dx.put`, `dx.attach`, `dx.display_blob_ref`) is deferred — t
 - `dx.BLOB_REF_MIME` — the MIME constant.
 - `dx.DxError` — base exception.
 
+### Display pipeline: two-stage `mimebundle_formatter` + `display_pub` hook
+
+`dx.install()` wires into two documented IPython / ipykernel extension
+points:
+
+1. **`ip.display_formatter.mimebundle_formatter.for_type(pd.DataFrame, fn)`** —
+   the formatter serializes the DataFrame to parquet, hashes locally,
+   stashes the bytes in a thread-local buffer map keyed by the hash,
+   and returns a mimebundle with `application/vnd.nteract.blob-ref+json`
+   + Python-side `text/llm+plain`. IPython's `DisplayFormatter.format`
+   then merges that bundle with the default pandas formatters, so the
+   final publish carries our ref MIME **plus** fallback `text/html` /
+   `text/plain` for hosts that don't understand the ref MIME.
+
+2. **`ip.display_pub.register_hook(hook)`** (on `ipykernel.zmqshell.ZMQDisplayPublisher`, documented public API) — the hook runs on
+   every outgoing `display_data` and `update_display_data` message
+   right before `session.send` would emit it. When the hook sees our
+   ref MIME in the message, it pops the stashed parquet bytes by hash
+   and calls `session.send(pub_socket, msg, ident=topic, buffers=[parquet])`
+   directly, returning `None` to suppress the default (buffer-less)
+   send. For messages that don't carry the ref MIME, the hook returns
+   the message unchanged and `session.send` fires normally.
+
+**Why this shape.** An earlier draft used `ipython_display_formatter`
+returning `True` to claim exclusive display, and published via
+`session.send` inside the formatter. That blocked the default
+pandas HTML/plain fallback (which broke display in vanilla IPython)
+and had no access to `display_id` / `update=True`, which broke
+`h.update(df)` on a display handle — the `update_display_data` message
+was never emitted and the handle orphaned. Hook-based attachment fixes
+both: the fallback chain runs, so vanilla IPython still renders, and
+the hook fires on `update_display_data` with the `display_id` already
+populated in `msg.content.transient`, so updates Just Work with the
+buffer path attached.
+
+### Behavior that `dx.install()` changes globally
+
+`dx.install()` is an explicit opt-in that mutates kernel-wide display
+behavior:
+
+1. **DataFrame display carries the nteract ref MIME + parquet buffer.**
+   Hosts that understand the ref MIME (nteract runtime agent) resolve
+   to a blob URL and render via the sift parquet renderer. Hosts that
+   don't understand it (vanilla JupyterLab, plain IPython) fall back
+   to the text/html output in the same bundle. No rendering is lost.
+
+2. **Altair and plotly default renderers get flipped to `"nteract"`.**
+   Plotly's `nteract` renderer emits only
+   `application/vnd.plotly.v1+json`, dropping the terminal / browser
+   fallback. In plain-IPython sessions this means plotly figures stop
+   rendering outside nteract. (The nteract frontend has a plotly
+   renderer plugin that handles this MIME correctly.)
+
+This is an acceptable tradeoff for the intended use case — kernels
+managed by the nteract runtime agent always have matching consumers.
+For DataFrame display the HTML fallback keeps vanilla hosts working;
+for altair/plotly the third-party switch is the bigger opt-in.
+
+### Update-display semantics
+
+`h = display(df, display_id=True); h.update(df2)` works natively
+through the hook. IPython's `update_display_data` path runs unchanged:
+the formatter returns a bundle (including the ref MIME), the buffer
+bytes are stashed, the display publisher emits an
+`update_display_data` message with `transient={"display_id": X}`, and
+the hook attaches buffers to that message just like it does for
+initial displays. The frontend receives the update with parquet
+buffers attached and updates the existing output in place.
+
 ### Display ownership
 
 `dx.install()` registers on IPython's `ipython_display_formatter` (not `mimebundle_formatter`) and the registered callback returns `True` when it publishes a display. This tells IPython's display chain to skip every other formatter for the object — bare `df` on the last cell line emits exactly one `display_data`, not our upgrade *plus* pandas' default HTML/plain.
