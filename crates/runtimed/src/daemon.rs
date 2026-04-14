@@ -521,6 +521,19 @@ pub struct Daemon {
     blob_port: Mutex<Option<u16>>,
     /// Per-notebook Automerge sync rooms.
     notebook_rooms: NotebookRooms,
+    /// Set to `true` the first time any client causes a room to be
+    /// acquired in `notebook_rooms` (via `get_or_create_room`). Used by
+    /// the zero-room sweep-skip guard to distinguish "post-restart, no
+    /// client has reconnected yet" (skip, we don't yet know what refs
+    /// are needed) from "idle daemon whose user closed every notebook"
+    /// (sweep — refs legitimately empty, persisted-doc walk still
+    /// gathers anything the user might reopen).
+    ///
+    /// Flipped at acquisition, not at GC sample time, because rooms can
+    /// open and close between 30-minute GC cycles. Sampling in the GC
+    /// loop would miss short-lived sessions and pin the daemon back in
+    /// the post-restart state forever.
+    rooms_ever_seen: std::sync::atomic::AtomicBool,
     /// Redirect map: old ephemeral UUID -> new canonical path after rekey.
     /// Used so peers reconnecting with the old UUID find the re-keyed room.
     pub(crate) redirect_map: std::sync::Mutex<HashMap<String, RedirectEntry>>,
@@ -608,6 +621,7 @@ impl Daemon {
             blob_store,
             blob_port: Mutex::new(None),
             notebook_rooms: Arc::new(Mutex::new(HashMap::new())),
+            rooms_ever_seen: std::sync::atomic::AtomicBool::new(false),
             redirect_map: std::sync::Mutex::new(HashMap::new()),
         }))
     }
@@ -1367,6 +1381,7 @@ impl Daemon {
                         false, // NotebookSync handshake is always persistent
                     )
                 };
+                self.mark_rooms_ever_seen();
                 let (reader, writer) = tokio::io::split(stream);
                 // Get user's default runtime and Python env preference for auto-launch
                 let settings = self.settings.read().await.get_all();
@@ -1607,6 +1622,7 @@ impl Daemon {
                 )
             }
         };
+        self.mark_rooms_ever_seen();
 
         // Get settings for sync and auto-launch (needed for both new and existing notebooks)
         let settings = self.settings.read().await.get_all();
@@ -1792,6 +1808,7 @@ impl Daemon {
                 ephemeral,
             )
         };
+        self.mark_rooms_ever_seen();
 
         // Populate the room's doc with the empty notebook content — but only if the
         // room is empty. If a persisted doc was loaded (session restore with notebook_id
@@ -2588,108 +2605,48 @@ impl Daemon {
                 }
             }
 
-            // Clean up orphaned blobs — mark-and-sweep across all active rooms.
-            // Blobs are content-addressed, so the same hash may be referenced by
-            // multiple rooms. We must scan ALL rooms before deleting anything.
+            // Clean up orphaned blobs — mark-and-sweep across all active rooms
+            // plus the persisted notebook-docs on disk. Blobs are
+            // content-addressed, so the same hash may be referenced by multiple
+            // rooms or persisted docs. We must scan ALL sources before
+            // deleting anything.
             //
             // Batched: collect refs from rooms in batches of 10, yield between
             // batches to avoid starving other daemon tasks. Deletions are also
             // batched with yields between chunks.
             {
-                let blob_max_age = std::time::Duration::from_secs(3600); // 1 hour grace period
-                const ROOM_BATCH_SIZE: usize = 10;
-                const DELETE_BATCH_SIZE: usize = 50;
-
-                // Collect room Arcs under the rooms lock, then drop it before
-                // any async state_doc reads (deadlock prevention).
-                let room_arcs: Vec<_> = {
+                // Collect (id, Arc<room>) pairs under the rooms lock, then drop
+                // it before any async state_doc reads (deadlock prevention).
+                let room_arcs: Vec<(String, _)> = {
                     let rooms = self.notebook_rooms.lock().await;
-                    rooms.values().cloned().collect()
+                    rooms.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
                 };
 
-                // Mark phase: collect referenced hashes in batches of rooms.
-                // Scans three sources of blob refs per room:
-                //   1. Execution outputs (RuntimeStateDoc) — images, rich text, tracebacks
-                //   2. Comm state (RuntimeStateDoc) — externalized widget state (_esm, buffers)
-                //   3. Resolved assets (notebook doc) — markdown image refs
-                let mut referenced_hashes = std::collections::HashSet::new();
-                for batch in room_arcs.chunks(ROOM_BATCH_SIZE) {
-                    for room in batch {
-                        // 1 & 2: RuntimeStateDoc — execution outputs + comm state
-                        {
-                            let sd = room.state_doc.read().await;
-                            let state = sd.read_state();
-                            for exec in state.executions.values() {
-                                for output in &exec.outputs {
-                                    collect_blob_hashes(output, &mut referenced_hashes);
-                                }
-                            }
-                            for comm in state.comms.values() {
-                                for output in &comm.outputs {
-                                    collect_blob_hashes(output, &mut referenced_hashes);
-                                }
-                                // Comm state may contain externalized blob refs
-                                // (widget _esm, _css, binary buffers, large JSON values)
-                                collect_blob_hashes_recursive(&comm.state, &mut referenced_hashes);
-                            }
-                        }
-                        // 3: Notebook doc — markdown resolved_assets
-                        {
-                            let doc = room.doc.read().await;
-                            for cell in doc.get_cells() {
-                                for hash in cell.resolved_assets.values() {
-                                    referenced_hashes.insert(hash.clone());
-                                }
-                            }
-                        }
-                    }
-                    // Yield between room batches to avoid starving other tasks
-                    tokio::task::yield_now().await;
-                }
-
-                // Sweep phase: delete orphaned blobs in batches
-                match self.blob_store.list().await {
-                    Ok(all_blobs) => {
-                        let mut blobs_deleted = 0;
-                        let total_blobs = all_blobs.len();
-                        for chunk in all_blobs.chunks(DELETE_BATCH_SIZE) {
-                            for hash in chunk {
-                                if referenced_hashes.contains(hash) {
-                                    continue;
-                                }
-                                let is_stale = self
-                                    .blob_store
-                                    .get_meta(hash)
-                                    .await
-                                    .ok()
-                                    .flatten()
-                                    .is_some_and(|m| {
-                                        let age_secs = chrono::Utc::now()
-                                            .signed_duration_since(m.created_at)
-                                            .num_seconds();
-                                        // Guard against clock skew (negative age wraps to
-                                        // huge u64, causing incorrect deletion)
-                                        age_secs > 0 && age_secs as u64 > blob_max_age.as_secs()
-                                    });
-                                if is_stale && self.blob_store.delete(hash).await.unwrap_or(false) {
-                                    blobs_deleted += 1;
-                                }
-                            }
-                            // Yield between delete batches
-                            tokio::task::yield_now().await;
-                        }
-                        if blobs_deleted > 0 {
-                            info!(
-                                "[runtimed] GC: cleaned up {} orphaned blobs ({} total, {} referenced)",
-                                blobs_deleted,
-                                total_blobs,
-                                referenced_hashes.len()
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        warn!("[runtimed] GC: failed to list blobs: {}", e);
-                    }
+                // Zero-rooms sweep-skip: ambiguous only right after a daemon
+                // restart before any client has reconnected. `rooms_ever_seen`
+                // flips the first time a room is acquired (see
+                // `mark_rooms_ever_seen`), so a user who opens and closes a
+                // notebook between GC ticks still arms the flag. Once armed,
+                // zero rooms means "user closed everything" and the sweep is
+                // safe (the persisted-doc walk below still gathers refs for
+                // anything they might reopen). Without this distinction, a
+                // daemon that stays open while idle would never GC again.
+                let rooms_empty = room_arcs.is_empty();
+                if Self::should_skip_blob_sweep(
+                    rooms_empty,
+                    self.rooms_ever_seen
+                        .load(std::sync::atomic::Ordering::Relaxed),
+                ) {
+                    info!(
+                        "[runtimed] GC: 0 active rooms and no room has loaded since startup; skipping blob sweep this cycle"
+                    );
+                } else {
+                    let blob_max_age = blob_gc_grace();
+                    let referenced_hashes =
+                        Self::collect_blob_refs_for_gc(&room_arcs, &self.config.notebook_docs_dir)
+                            .await;
+                    Self::sweep_orphaned_blobs(&self.blob_store, &referenced_hashes, blob_max_age)
+                        .await;
                 }
             }
 
@@ -2767,7 +2724,262 @@ fn collect_blob_hashes_recursive(
     }
 }
 
+/// Default grace period before an unreferenced blob is swept (30 days).
+///
+/// Rationale: after `.ipynb` save switches to external blob refs, a
+/// saved-and-closed notebook relies on the blob store surviving until it
+/// is re-opened. A week-long vacation shouldn't eat someone's rich outputs.
+/// Disk is cheap; data loss isn't.
+pub(crate) const BLOB_GC_GRACE_SECS: u64 = 30 * 24 * 3600;
+
+/// Environment variable that overrides [`BLOB_GC_GRACE_SECS`].
+///
+/// Primarily for development and tests that want a short grace period to
+/// exercise the sweep path without waiting 30 days.
+pub(crate) const BLOB_GC_GRACE_ENV: &str = "RUNTIMED_BLOB_GC_GRACE_SECS";
+
+/// Effective blob GC grace period.
+///
+/// Reads [`BLOB_GC_GRACE_ENV`] on each call so tests can flip it per scenario.
+/// Invalid values fall back to the compiled default with a warning.
+pub(crate) fn blob_gc_grace() -> std::time::Duration {
+    match std::env::var(BLOB_GC_GRACE_ENV) {
+        Ok(val) => match val.parse::<u64>() {
+            Ok(secs) => std::time::Duration::from_secs(secs),
+            Err(_) => {
+                warn!(
+                    "[runtimed] GC: ignoring invalid {}={:?}, using default",
+                    BLOB_GC_GRACE_ENV, val
+                );
+                std::time::Duration::from_secs(BLOB_GC_GRACE_SECS)
+            }
+        },
+        Err(_) => std::time::Duration::from_secs(BLOB_GC_GRACE_SECS),
+    }
+}
+
+/// Walk a persisted notebook-doc `.automerge` file and collect blob refs.
+///
+/// Mirrors the in-memory mark phase: we load the saved document, read its
+/// cells, and pull blob refs from `cell.outputs` (inline manifests) and
+/// `cell.resolved_assets` (markdown image refs). Returns `None` if the
+/// file cannot be read or decoded — the caller logs and moves on.
+///
+/// Note: `RuntimeStateDoc` is not persisted to disk separately; the
+/// notebook doc's `cell.outputs` (legacy pre-v3 layout, plus future
+/// `.ipynb`-backed outputs from spec 2) is the on-disk record of blob
+/// references for a closed room.
+pub(crate) async fn collect_hashes_from_persisted_doc(
+    path: &Path,
+    hashes: &mut std::collections::HashSet<String>,
+) -> bool {
+    let bytes = match tokio::fs::read(path).await {
+        Ok(b) => b,
+        Err(e) => {
+            warn!(
+                "[runtimed] GC: failed to read persisted notebook doc {:?}: {}",
+                path, e
+            );
+            return false;
+        }
+    };
+    let doc = match notebook_doc::NotebookDoc::load(&bytes) {
+        Ok(d) => d,
+        Err(e) => {
+            warn!(
+                "[runtimed] GC: failed to decode persisted notebook doc {:?}: {}",
+                path, e
+            );
+            return false;
+        }
+    };
+    for cell in doc.get_cells() {
+        for output in &cell.outputs {
+            collect_blob_hashes(output, hashes);
+        }
+        for hash in cell.resolved_assets.values() {
+            hashes.insert(hash.clone());
+        }
+    }
+    true
+}
+
 impl Daemon {
+    /// Decide whether the current GC cycle should skip the blob sweep.
+    ///
+    /// Skip only when the rooms map is empty **and** no room has ever been
+    /// loaded in this daemon process. That's the post-restart window where
+    /// zero refs mean "we don't know yet" rather than "nothing is needed."
+    /// Once any room has been observed, zero rooms thereafter means the user
+    /// legitimately closed everything and the sweep must run to eventually
+    /// reclaim the blobs whose notebooks are never reopened.
+    pub(crate) fn should_skip_blob_sweep(rooms_empty: bool, rooms_ever_seen: bool) -> bool {
+        rooms_empty && !rooms_ever_seen
+    }
+
+    /// Mark that at least one room has been acquired in this daemon
+    /// process. Call from every code path that inserts into or fetches
+    /// from `notebook_rooms` (typically right after `get_or_create_room`).
+    ///
+    /// This arms the zero-room GC skip guard. Flipping on acquisition
+    /// (instead of on GC sampling) ensures short-lived sessions that
+    /// open and close between 30-minute GC ticks still count.
+    fn mark_rooms_ever_seen(&self) {
+        self.rooms_ever_seen
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Collect every blob hash referenced by active rooms **and** persisted
+    /// notebook-doc files the daemon owns.
+    ///
+    /// Scans three sources per active room (RuntimeStateDoc executions,
+    /// RuntimeStateDoc comms, notebook doc resolved assets), then walks
+    /// `notebook_docs_dir/*.automerge` for closed notebooks to protect their
+    /// refs through the close/reopen window. Persisted docs already
+    /// represented by an active room are skipped — their refs are covered
+    /// by the in-memory pass.
+    pub(crate) async fn collect_blob_refs_for_gc(
+        rooms: &[(String, Arc<crate::notebook_sync_server::NotebookRoom>)],
+        notebook_docs_dir: &Path,
+    ) -> std::collections::HashSet<String> {
+        /// Rooms are scanned in batches so the sweep yields back to other
+        /// daemon tasks; keeping the constant local keeps it near the loop.
+        const ROOM_BATCH_SIZE: usize = 10;
+        /// Reading `.automerge` files is I/O-bound; yield between batches.
+        const DOC_BATCH_SIZE: usize = 10;
+
+        let mut referenced_hashes = std::collections::HashSet::new();
+
+        // 1. In-memory: active rooms (RuntimeStateDoc + notebook doc).
+        for batch in rooms.chunks(ROOM_BATCH_SIZE) {
+            for (_id, room) in batch {
+                {
+                    let sd = room.state_doc.read().await;
+                    let state = sd.read_state();
+                    for exec in state.executions.values() {
+                        for output in &exec.outputs {
+                            collect_blob_hashes(output, &mut referenced_hashes);
+                        }
+                    }
+                    for comm in state.comms.values() {
+                        for output in &comm.outputs {
+                            collect_blob_hashes(output, &mut referenced_hashes);
+                        }
+                        collect_blob_hashes_recursive(&comm.state, &mut referenced_hashes);
+                    }
+                }
+                {
+                    let doc = room.doc.read().await;
+                    for cell in doc.get_cells() {
+                        for hash in cell.resolved_assets.values() {
+                            referenced_hashes.insert(hash.clone());
+                        }
+                    }
+                }
+            }
+            tokio::task::yield_now().await;
+        }
+
+        // 2. On-disk: persisted notebook-doc files for closed notebooks.
+        // Skip files that correspond to an active room (their refs were
+        // already collected above).
+        if notebook_docs_dir.exists() {
+            let active_filenames: std::collections::HashSet<String> = rooms
+                .iter()
+                .map(|(id, _)| notebook_doc::notebook_doc_filename(id))
+                .collect();
+
+            let mut persisted_paths: Vec<PathBuf> = Vec::new();
+            match tokio::fs::read_dir(notebook_docs_dir).await {
+                Ok(mut entries) => {
+                    while let Ok(Some(entry)) = entries.next_entry().await {
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        if !name.ends_with(".automerge") {
+                            continue;
+                        }
+                        if active_filenames.contains(&name) {
+                            continue;
+                        }
+                        persisted_paths.push(entry.path());
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        "[runtimed] GC: failed to read notebook-docs dir {:?}: {}",
+                        notebook_docs_dir, e
+                    );
+                }
+            }
+
+            if !persisted_paths.is_empty() {
+                debug!(
+                    "[runtimed] GC: walking {} persisted notebook-doc files for blob refs",
+                    persisted_paths.len()
+                );
+                for batch in persisted_paths.chunks(DOC_BATCH_SIZE) {
+                    for path in batch {
+                        collect_hashes_from_persisted_doc(path, &mut referenced_hashes).await;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            }
+        }
+
+        referenced_hashes
+    }
+
+    /// Sweep the blob store, deleting blobs that are not in
+    /// `referenced_hashes` and are older than `blob_max_age`.
+    pub(crate) async fn sweep_orphaned_blobs(
+        blob_store: &BlobStore,
+        referenced_hashes: &std::collections::HashSet<String>,
+        blob_max_age: std::time::Duration,
+    ) {
+        const DELETE_BATCH_SIZE: usize = 50;
+        match blob_store.list().await {
+            Ok(all_blobs) => {
+                let mut blobs_deleted = 0usize;
+                let total_blobs = all_blobs.len();
+                for chunk in all_blobs.chunks(DELETE_BATCH_SIZE) {
+                    for hash in chunk {
+                        if referenced_hashes.contains(hash) {
+                            continue;
+                        }
+                        let is_stale =
+                            blob_store
+                                .get_meta(hash)
+                                .await
+                                .ok()
+                                .flatten()
+                                .is_some_and(|m| {
+                                    let age_secs = chrono::Utc::now()
+                                        .signed_duration_since(m.created_at)
+                                        .num_seconds();
+                                    // Guard against clock skew (negative age
+                                    // wraps to huge u64 otherwise).
+                                    age_secs > 0 && age_secs as u64 > blob_max_age.as_secs()
+                                });
+                        if is_stale && blob_store.delete(hash).await.unwrap_or(false) {
+                            blobs_deleted += 1;
+                        }
+                    }
+                    tokio::task::yield_now().await;
+                }
+                if blobs_deleted > 0 {
+                    info!(
+                        "[runtimed] GC: cleaned up {} orphaned blobs ({} total, {} referenced)",
+                        blobs_deleted,
+                        total_blobs,
+                        referenced_hashes.len()
+                    );
+                }
+            }
+            Err(e) => {
+                warn!("[runtimed] GC: failed to list blobs: {}", e);
+            }
+        }
+    }
+
     /// Clean up worktree state directories where the original git worktree
     /// path no longer exists and the daemon.json is older than 7 days.
     async fn cleanup_stale_worktrees(worktrees_dir: &std::path::Path) -> anyhow::Result<usize> {
@@ -4845,5 +5057,195 @@ mod tests {
         pool.warming_failed_for_path(&path1, None);
         assert_eq!(pool.warming_paths.len(), 1);
         assert!(pool.warming_paths.contains(&path3));
+    }
+
+    // ── Blob GC correctness (spec 1) ─────────────────────────────────
+
+    use crate::blob_store::BlobStore;
+
+    #[test]
+    fn should_skip_blob_sweep_only_when_rooms_empty_and_never_seen() {
+        // Post-restart, no client has reconnected: skip — we don't know
+        // what's needed yet.
+        assert!(Daemon::should_skip_blob_sweep(true, false));
+
+        // Idle daemon whose user closed every notebook: run the sweep.
+        // Refs are legitimately empty (persisted-doc walk still runs to
+        // pick up refs for anything they might reopen).
+        assert!(!Daemon::should_skip_blob_sweep(true, true));
+
+        // Rooms populated: always run. Acquisition sites call
+        // `mark_rooms_ever_seen` before the next GC tick, so the
+        // `(false, false)` state is transient — but `should_skip_blob_sweep`
+        // must still return false for it since rooms are present.
+        assert!(!Daemon::should_skip_blob_sweep(false, false));
+        assert!(!Daemon::should_skip_blob_sweep(false, true));
+    }
+
+    /// Build a persisted notebook-doc `.automerge` file with one markdown
+    /// cell that references `blob_hash` via `resolved_assets`. Mirrors the
+    /// real shape of a persisted untitled-notebook doc for GC purposes.
+    fn write_persisted_doc_with_blob(
+        docs_dir: &Path,
+        notebook_id: &str,
+        blob_hash: &str,
+    ) -> PathBuf {
+        use notebook_doc::NotebookDoc;
+        let mut doc = NotebookDoc::new_with_actor(notebook_id, "test");
+        // Add a markdown cell and mark a resolved asset pointing at blob_hash.
+        let cell_id = "cell-gc-test";
+        doc.add_cell(0, cell_id, "markdown").unwrap();
+        let mut assets = std::collections::HashMap::new();
+        assets.insert("image.png".to_string(), blob_hash.to_string());
+        doc.set_cell_resolved_assets(cell_id, &assets).unwrap();
+
+        let filename = notebook_doc::notebook_doc_filename(notebook_id);
+        let path = docs_dir.join(filename);
+        std::fs::create_dir_all(docs_dir).unwrap();
+        std::fs::write(&path, doc.save()).unwrap();
+        path
+    }
+
+    #[tokio::test]
+    async fn blob_gc_grace_respects_env_override() {
+        // Scoped env var: set → read → unset to avoid polluting other tests.
+        // Tests in the same process share env, so these asserts check
+        // behavior at the time of the call, not global state.
+        std::env::set_var(BLOB_GC_GRACE_ENV, "7");
+        assert_eq!(blob_gc_grace(), std::time::Duration::from_secs(7));
+
+        std::env::set_var(BLOB_GC_GRACE_ENV, "not-a-number");
+        assert_eq!(
+            blob_gc_grace(),
+            std::time::Duration::from_secs(BLOB_GC_GRACE_SECS)
+        );
+
+        std::env::remove_var(BLOB_GC_GRACE_ENV);
+        assert_eq!(
+            blob_gc_grace(),
+            std::time::Duration::from_secs(BLOB_GC_GRACE_SECS)
+        );
+    }
+
+    #[tokio::test]
+    async fn blob_gc_default_grace_is_thirty_days() {
+        // Guard constant — changing it silently would undo spec 1.
+        assert_eq!(BLOB_GC_GRACE_SECS, 30 * 24 * 3600);
+    }
+
+    #[tokio::test]
+    async fn collect_hashes_walks_persisted_doc_resolved_assets() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let docs_dir = tmp.path().to_path_buf();
+        let path = write_persisted_doc_with_blob(&docs_dir, "untitled-abc", "deadbeef");
+
+        let mut hashes = std::collections::HashSet::new();
+        let ok = collect_hashes_from_persisted_doc(&path, &mut hashes).await;
+        assert!(ok, "expected to decode persisted doc");
+        assert!(
+            hashes.contains("deadbeef"),
+            "resolved_assets blob hash should be collected, got {:?}",
+            hashes
+        );
+    }
+
+    #[tokio::test]
+    async fn collect_hashes_skips_corrupt_persisted_doc() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("corrupt.automerge");
+        std::fs::write(&path, b"not an automerge document").unwrap();
+
+        let mut hashes = std::collections::HashSet::new();
+        let ok = collect_hashes_from_persisted_doc(&path, &mut hashes).await;
+        assert!(!ok, "corrupt doc should return false, not panic");
+        assert!(hashes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn collect_blob_refs_for_gc_reads_persisted_docs() {
+        // No active rooms, but a persisted doc on disk carries a blob ref.
+        // The mark phase must still surface it.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let docs_dir = tmp.path().join("notebook-docs");
+        write_persisted_doc_with_blob(&docs_dir, "untitled-xyz", "cafebabe");
+
+        let rooms: Vec<(String, Arc<crate::notebook_sync_server::NotebookRoom>)> = vec![];
+        let refs = Daemon::collect_blob_refs_for_gc(&rooms, &docs_dir).await;
+        assert!(
+            refs.contains("cafebabe"),
+            "persisted-doc blob ref should be collected, got {:?}",
+            refs
+        );
+    }
+
+    #[tokio::test]
+    async fn sweep_preserves_referenced_blob() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let blob_store = BlobStore::new(tmp.path().join("blobs"));
+        let hash = blob_store
+            .put(b"referenced-content", "application/octet-stream")
+            .await
+            .unwrap();
+
+        let mut referenced = std::collections::HashSet::new();
+        referenced.insert(hash.clone());
+
+        // Short grace so "older than grace" is easy to trigger if the blob
+        // were unreferenced — but since it IS referenced, it should survive.
+        Daemon::sweep_orphaned_blobs(&blob_store, &referenced, std::time::Duration::from_secs(0))
+            .await;
+
+        assert!(
+            blob_store.get(&hash).await.unwrap().is_some(),
+            "referenced blob should survive sweep"
+        );
+    }
+
+    #[tokio::test]
+    async fn sweep_deletes_unreferenced_blob_past_grace() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let blob_store = BlobStore::new(tmp.path().join("blobs"));
+        let hash = blob_store
+            .put(b"orphan-content", "application/octet-stream")
+            .await
+            .unwrap();
+
+        // Let wall-clock advance past the zero-second grace window before
+        // sweeping. `num_seconds()` truncates, so we need >1 full second of
+        // elapsed time to satisfy `age_secs > 0` when grace is 0.
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+
+        let referenced = std::collections::HashSet::new();
+        Daemon::sweep_orphaned_blobs(&blob_store, &referenced, std::time::Duration::from_secs(0))
+            .await;
+
+        assert!(
+            blob_store.get(&hash).await.unwrap().is_none(),
+            "unreferenced blob past grace should be deleted"
+        );
+    }
+
+    #[tokio::test]
+    async fn sweep_preserves_unreferenced_blob_within_grace() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let blob_store = BlobStore::new(tmp.path().join("blobs"));
+        let hash = blob_store
+            .put(b"recent-orphan", "application/octet-stream")
+            .await
+            .unwrap();
+
+        let referenced = std::collections::HashSet::new();
+        // 30-day grace — blob just written is well within it.
+        Daemon::sweep_orphaned_blobs(
+            &blob_store,
+            &referenced,
+            std::time::Duration::from_secs(BLOB_GC_GRACE_SECS),
+        )
+        .await;
+
+        assert!(
+            blob_store.get(&hash).await.unwrap().is_some(),
+            "unreferenced blob within grace should survive"
+        );
     }
 }

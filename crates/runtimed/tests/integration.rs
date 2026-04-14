@@ -100,6 +100,36 @@ async fn wait_for_daemon(client: &PoolClient, timeout: Duration) -> bool {
     false
 }
 
+/// Wait until initial Automerge sync has delivered the daemon-created
+/// `cells` map to this client.
+///
+/// Per architecture rules (see `.claude/rules/architecture.md` § "No
+/// Independent `put_object` on Shared Keys"), only the daemon creates
+/// the `cells` / `metadata` maps at room creation — client peers receive
+/// them via sync. Mutations like `add_cell_after` panic with
+/// `InvalidObjId("cells map not found")` if called before that sync
+/// frame arrives, which is a flaky race under loaded CI. Poll the
+/// client's local Automerge doc until the cells map object is visible.
+async fn wait_for_cells_map(handle: &notebook_sync::DocHandle, timeout: Duration) -> bool {
+    let start = std::time::Instant::now();
+    while start.elapsed() < timeout {
+        let has_map = handle
+            .with_doc(|doc| {
+                use automerge::ReadDoc;
+                matches!(
+                    doc.get(automerge::ROOT, "cells").ok().flatten(),
+                    Some((automerge::Value::Object(automerge::ObjType::Map), _))
+                )
+            })
+            .unwrap_or(false);
+        if has_map {
+            return true;
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+    false
+}
+
 #[cfg(unix)]
 type LegacyPoolStream = tokio::net::UnixStream;
 
@@ -1067,6 +1097,13 @@ async fn test_pipe_mode_forwards_sync_frames() {
     .await
     .unwrap()
     .handle;
+    // Initial sync must deliver the daemon's cells map before we can
+    // mutate it. Otherwise `add_cell_after` panics with
+    // `InvalidObjId("cells map not found")` — a flake under loaded CI.
+    assert!(
+        wait_for_cells_map(&client2, Duration::from_secs(2)).await,
+        "initial sync did not deliver the cells map within 2s"
+    );
     client2.add_cell_after("cell-1", "code", None).unwrap();
     client2
         .update_source("cell-1", "print('hello from pipe test')")
@@ -1284,6 +1321,13 @@ async fn test_pipe_mode_preserves_frame_order() {
     .await
     .unwrap()
     .handle;
+    // Initial sync must deliver the daemon's cells map before we can
+    // mutate it. Otherwise `add_cell_after` panics with
+    // `InvalidObjId("cells map not found")` — a flake under loaded CI.
+    assert!(
+        wait_for_cells_map(&client2, Duration::from_secs(2)).await,
+        "initial sync did not deliver the cells map within 2s"
+    );
     client2.add_cell_after("cell-1", "code", None).unwrap();
     client2
         .add_cell_after("cell-2", "code", Some("cell-1"))
