@@ -8,15 +8,61 @@
 
 **Tech Stack:** Python (pyarrow, polars-optional, ipykernel), Rust (runtimed, notebook-doc, notebook-protocol), pytest, `cargo test`, WebdriverIO for E2E, uv workspace.
 
-**Spec:** `docs/superpowers/specs/2026-04-13-nteract-dx-design.md`
+**Spec:** `docs/superpowers/specs/2026-04-13-nteract-dx-design.md` *(revised 2026-04-14; see top of spec)*
 
-### Plan revision — 2026-04-14
+### Plan status — SUPERSEDED in part
 
-Earlier drafts of this plan threaded a `blob_base_url` through `BlobRef` and `BlobClient.put(...)`, and sourced it from `RUNTIMED_BLOB_BASE_URL` in the kernel env. This has been **removed**. Kernel-side code never needs a blob URL — the ref MIME carries only the hash, and the frontend WASM derives the current URL at render time via `ContentRef` resolution. `BlobRef` now has only `hash: str` and `size: int`. Code samples below that still reference `url=...` / `blob_base_url=...` predate this simplification; follow the committed code in `python/dx/` (already updated).
+Tasks 1–8 (MIME constant, python/dx scaffold, refs, env, summary, format, install) landed as originally planned.
 
-Task 12 has been reworked from "kernel bootstrap" to a publishing-prep checklist — auto-install of `dx` is deferred to v1.1. v1 UX is an explicit `import dx; dx.install()` in the first cell.
+Tasks 9–10 were redesigned mid-implementation after smoke-testing revealed a deadlock:
+the original comm-with-ack upload path cannot work because ipykernel dispatches shell
+`comm_msg`s on the same asyncio loop that runs cells, so `dx.put()` blocking on an ack
+event starves the dispatcher and the ack never arrives. Details in the spec under
+"Why fire-and-forget".
 
-Task 9 has been filled in with concrete paths (shell outbound mpsc, local comm_id→target_name map, `send_comm_message` at `jupyter_kernel.rs:1959`) after code exploration.
+**What actually shipped for Tasks 9–10:**
+
+- Upload rides the Jupyter messaging envelope's `buffers` field attached to `display_data`,
+  not a comm. Python calls `kernel.session.send(...)` directly with `buffers=[parquet_bytes]`.
+- Agent adds `preflight_ref_buffers` in `crates/runtimed/src/output_store.rs` — called
+  from the IOPub DisplayData/ExecuteResult arms before `create_manifest`. Walks the data
+  bundle for `BLOB_REF_MIME` entries with `buffer_index`, writes each to `BlobStore::put`,
+  verifies hash.
+- `create_manifest`'s ref-MIME branch (still present) composes `ContentRef::from_hash` under
+  the target content_type. Ref MIME does not appear in the inline manifest.
+- `nteract.dx.*` comm namespace filter stays in the IOPub handler — all dx comm targets log
+  a `warn!` and drop. `DxTarget` enum collapsed to `Unknown(String)` only; future query /
+  stream / attach variants will grow back live-dispatch branches.
+- Python `dx._comm` module + `BlobClient` / `FallbackClient` / `_Pending` plumbing:
+  **deleted**. Exceptions reduced to `DxError`. Public API: `install`, `display`, `BlobRef`,
+  `BLOB_REF_MIME`, `DxError`.
+- Display ownership: dx registers on `ipython_display_formatter` (not `mimebundle_formatter`)
+  and returns `True` when it publishes a `display_data`. This tells IPython to skip every
+  other formatter for the DataFrame, so bare `df` on the last cell line emits one output,
+  not a duplicate HTML/plain alongside.
+
+Earlier drafts threaded a `blob_base_url` through `BlobRef` and used a `RUNTIMED_BLOB_BASE_URL`
+env var. Both removed. `BlobRef` is `(hash, size)`. Kernel-side never needs a URL; frontend
+WASM derives the current blob URL from the hash at render time.
+
+Task 11 (Python integration test) and Task 13 (WebdriverIO E2E) are still pending and now
+target the new buffers-on-display path.
+
+Task 12 reworked to a publishing-prep checklist — auto-install of `dx` is deferred to v1.1.
+v1 UX is an explicit `import dx; dx.install()` in the first cell (or in the bootstrap
+startup once dx ships on PyPI).
+
+**Manual smoke test completed 2026-04-14**: bare `df` on last cell line emits exactly
+one `display_data` with `application/vnd.apache.parquet` resolved to a blob URL +
+`text/llm+plain` Python-side summary. Verified by intercepting `session.send` to confirm
+the actual wire payload carries `BLOB_REF_MIME` + `buffers=[parquet_bytes]` (not raw
+bytes inside JSON). 50,000-row DataFrame follows the same path with no IOPub JSON
+carrying the megabytes.
+
+The rest of this document describes the original task decomposition with the
+pre-redesign transport; it is retained as historical context. For the current
+implementation, refer to the spec and the commits listed under "Implementation trail"
+at the bottom of the spec.
 
 ---
 
