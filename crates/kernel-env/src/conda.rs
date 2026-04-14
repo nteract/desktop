@@ -726,17 +726,33 @@ pub async fn sync_dependencies(env: &CondaEnvironment, deps: &CondaDependencies)
         })
         .collect();
 
+    if !constrained_names.is_empty() {
+        info!(
+            "Constrained specs (excluded from locked): {:?}",
+            constrained_names
+        );
+    }
+
+    let locked: Vec<_> = installed_packages
+        .iter()
+        .filter(|r| {
+            let name = r.repodata_record.package_record.name.as_normalized();
+            !constrained_names.contains(name)
+        })
+        .map(|r| r.repodata_record.clone())
+        .collect();
+
+    info!(
+        "Solver input: {} specs, {} locked (from {} installed)",
+        specs.len(),
+        locked.len(),
+        installed_packages.len()
+    );
+
     let solver_task = SolverTask {
         virtual_packages,
         specs,
-        locked_packages: installed_packages
-            .iter()
-            .filter(|r| {
-                let name = r.repodata_record.package_record.name.as_normalized();
-                !constrained_names.contains(name)
-            })
-            .map(|r| r.repodata_record.clone())
-            .collect(),
+        locked_packages: locked,
         ..SolverTask::from_iter(&repo_data)
     };
 
