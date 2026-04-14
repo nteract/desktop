@@ -769,9 +769,6 @@ fn synthesize_llm_plain_for_viz(output_data: &mut HashMap<String, DataValue>) {
     }
 }
 
-/// Synthesize `text/llm+plain` for heavy non-viz media types.
-///
-/// Handles:
 /// Synthesize `text/llm+plain` for `application/vnd.apache.parquet` outputs.
 ///
 /// Reads the parquet bytes and produces a schema + per-column stats summary,
@@ -801,6 +798,9 @@ fn synthesize_llm_plain_for_parquet(output_data: &mut HashMap<String, DataValue>
     );
 }
 
+/// Synthesize `text/llm+plain` for heavy non-viz media types.
+///
+/// Handles:
 /// - `image/svg+xml` — always summarize (raw XML is never useful to LLMs)
 /// - `text/html` — summarize only when `text/plain` also exists
 /// - `application/json` — structural summary for large (> 2KB) values
