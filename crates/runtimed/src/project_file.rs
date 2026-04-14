@@ -299,20 +299,10 @@ fn conda_env_search_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-/// Parse an environment.yml file with a line-based parser (no serde_yaml dep).
+/// Parse an environment.yml file using rattler's serde_yaml parser.
 ///
-/// Handles the common structure:
-/// ```yaml
-/// name: myenv
-/// channels:
-///   - conda-forge
-/// dependencies:
-///   - numpy=1.24
-///   - pandas
-///   - python=3.11
-///   - pip:
-///     - requests
-/// ```
+/// Handles the full environment.yml spec including pip subsections, proper
+/// YAML syntax validation, and MatchSpec parsing.
 pub fn parse_environment_yml(path: &Path) -> Result<EnvironmentYmlConfig, String> {
     let content =
         std::fs::read_to_string(path).map_err(|e| format!("Failed to read {:?}: {}", path, e))?;
@@ -321,121 +311,61 @@ pub fn parse_environment_yml(path: &Path) -> Result<EnvironmentYmlConfig, String
 
 /// Parse environment.yml content (testable without filesystem).
 fn parse_environment_yml_content(content: &str) -> Result<EnvironmentYmlConfig, String> {
-    let mut name = None;
-    let mut prefix = None;
-    let mut channels = Vec::new();
+    use rattler_conda_types::EnvironmentYaml;
+
+    let env = EnvironmentYaml::from_yaml_str(content)
+        .map_err(|e| format!("Failed to parse environment.yml: {}", e))?;
+
     let mut dependencies = Vec::new();
     let mut python = None;
 
-    #[derive(PartialEq)]
-    enum Section {
-        None,
-        Channels,
-        Dependencies,
-        Pip, // inside dependencies: pip: sub-list
-    }
-    let mut section = Section::None;
-    let mut pip_indent = 0usize;
-
-    for line in content.lines() {
-        let trimmed = line.trim();
-
-        // Skip empty lines and comments
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-
-        // Top-level keys (no leading whitespace)
-        if !line.starts_with(' ') && !line.starts_with('\t') {
-            if let Some(val) = trimmed.strip_prefix("name:") {
-                name = Some(val.trim().trim_matches('"').trim_matches('\'').to_string());
-                section = Section::None;
-            } else if let Some(val) = trimmed.strip_prefix("prefix:") {
-                let p = val.trim().trim_matches('"').trim_matches('\'');
-                if !p.is_empty() {
-                    prefix = Some(PathBuf::from(p));
-                }
-                section = Section::None;
-            } else if trimmed == "channels:" {
-                section = Section::Channels;
-            } else if trimmed == "dependencies:" {
-                section = Section::Dependencies;
-            } else {
-                section = Section::None;
+    for spec in env.match_specs() {
+        let name = match &spec.name {
+            rattler_conda_types::PackageNameMatcher::Exact(name) => {
+                name.as_normalized().to_string()
             }
-            continue;
-        }
+            _ => String::new(),
+        };
 
-        // Exit pip subsection when indent returns to dependency level
-        if section == Section::Pip {
-            let indent = line.len() - line.trim_start().len();
-            if indent <= pip_indent {
-                section = Section::Dependencies;
-            }
-        }
-
-        // Indented content (list items)
-        match section {
-            Section::Channels => {
-                if let Some(item) = trimmed.strip_prefix("- ") {
-                    channels.push(item.trim().trim_matches('"').trim_matches('\'').to_string());
-                } else if !trimmed.starts_with('-') {
-                    section = Section::None;
+        if name == "python" {
+            // Extract major.minor version from the version spec
+            if let Some(ref version_spec) = spec.version {
+                let v = version_spec.to_string();
+                // Parse first version bound (e.g. ">=3.9,<4" → "3.9")
+                let cleaned = v
+                    .trim_start_matches(">=")
+                    .trim_start_matches("<=")
+                    .trim_start_matches("==")
+                    .trim_start_matches('=')
+                    .trim_start_matches('>')
+                    .trim_start_matches('<');
+                let first = cleaned.split(',').next().unwrap_or(cleaned);
+                let first = first.trim_end_matches(".*");
+                let parts: Vec<&str> = first.split('.').collect();
+                if parts.len() >= 2 {
+                    python = Some(format!("{}.{}", parts[0], parts[1]));
+                } else if !parts.is_empty() && !parts[0].is_empty() {
+                    python = Some(parts[0].to_string());
                 }
             }
-            Section::Dependencies => {
-                if trimmed == "- pip:" {
-                    pip_indent = line.len() - line.trim_start().len();
-                    section = Section::Pip;
-                } else if let Some(item) = trimmed.strip_prefix("- ") {
-                    let dep = item.trim().trim_matches('"').trim_matches('\'').to_string();
-                    // Check if this is the python dep
-                    let pkg_name = dep.split(['=', '>', '<', '!', ' ']).next().unwrap_or("");
-                    if pkg_name == "python" {
-                        // Extract version
-                        let version_part = dep
-                            .trim_start_matches("python")
-                            .trim_start_matches(">=")
-                            .trim_start_matches("<=")
-                            .trim_start_matches("==")
-                            .trim_start_matches('=')
-                            .trim_start_matches('>')
-                            .trim_start_matches('<')
-                            .trim();
-                        if !version_part.is_empty() {
-                            let first = version_part.split(',').next().unwrap_or(version_part);
-                            let cleaned = first.trim_end_matches(".*");
-                            let parts: Vec<&str> = cleaned.split('.').collect();
-                            if parts.len() >= 2 {
-                                python = Some(format!("{}.{}", parts[0], parts[1]));
-                            } else if !parts.is_empty() && !parts[0].is_empty() {
-                                python = Some(parts[0].to_string());
-                            }
-                        }
-                    } else {
-                        dependencies.push(dep);
-                    }
-                } else if !trimmed.starts_with('-') && !trimmed.starts_with("pip:") {
-                    section = Section::None;
-                }
-            }
-            Section::Pip => {
-                // Pip sub-items at deeper indent — skip (not supported in conda:env_yml yet)
-            }
-            Section::None => {}
+        } else if !name.is_empty() {
+            // Convert MatchSpec back to the original string form for downstream consumers
+            dependencies.push(spec.to_string());
         }
     }
 
-    if channels.is_empty() {
-        channels.push("defaults".to_string());
-    }
+    let channels: Vec<String> = if env.channels.is_empty() {
+        vec!["defaults".to_string()]
+    } else {
+        env.channels.iter().map(|c| c.to_string()).collect()
+    };
 
     Ok(EnvironmentYmlConfig {
         dependencies,
         channels,
         python,
-        name,
-        prefix,
+        name: env.name,
+        prefix: env.prefix,
     })
 }
 
@@ -596,7 +526,8 @@ mod tests {
         let config = parse_environment_yml_content(content).unwrap();
         assert_eq!(config.name, Some("myenv".to_string()));
         assert_eq!(config.channels, vec!["conda-forge"]);
-        assert_eq!(config.dependencies, vec!["numpy=1.24", "pandas"]);
+        // rattler normalizes conda `=` pin: numpy=1.24 → numpy 1.24.*
+        assert_eq!(config.dependencies, vec!["numpy 1.24.*", "pandas"]);
         assert_eq!(config.python, Some("3.11".to_string()));
     }
 
@@ -665,6 +596,13 @@ mod tests {
         let config = parse_environment_yml_content(content).unwrap();
         assert_eq!(config.name, Some("myenv".to_string()));
         assert_eq!(config.prefix, Some(PathBuf::from("/custom/path")));
+    }
+
+    #[test]
+    fn test_parse_env_yml_rejects_malformed_yaml() {
+        // Malformed YAML must return Err, not silently produce an empty config
+        let content = "dependencies:\n  - numpy\n  invalid: [yaml: {{broken";
+        assert!(parse_environment_yml_content(content).is_err());
     }
 
     #[test]
