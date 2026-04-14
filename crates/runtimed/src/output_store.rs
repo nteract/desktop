@@ -45,8 +45,6 @@
 
 use std::collections::HashMap;
 use std::io;
-#[cfg(not(test))]
-use std::sync::OnceLock;
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
@@ -56,38 +54,33 @@ use notebook_doc::mime::{is_binary_mime, BLOB_REF_MIME};
 
 use crate::blob_store::BlobStore;
 
-/// Default size threshold above which binary blobs are externalized as
+/// MIME types whose `ContentRef::Blob` outputs are externalized as
 /// [`BLOB_REF_MIME`] entries in saved `.ipynb` files instead of being
-/// re-inlined as base64. See the
-/// `2026-04-14-ipynb-save-blob-refs-design.md` spec for context.
-pub const DEFAULT_REF_MIME_SAVE_THRESHOLD: u64 = 1024 * 1024;
-
-/// Returns the threshold (in bytes) above which a binary `ContentRef::Blob`
-/// is rewritten as a [`BLOB_REF_MIME`] entry during save rather than
-/// base64-inlined.
+/// re-inlined as base64.
 ///
-/// Honors the `RUNTIMED_REF_MIME_SAVE_THRESHOLD` environment variable (for
-/// dev tuning + tests); otherwise defaults to
-/// [`DEFAULT_REF_MIME_SAVE_THRESHOLD`]. The parsed value is cached in a
-/// [`OnceLock`] on the first call in release builds — repeated reads are
-/// free. Tests (`cfg(test)`) skip the cache so the env var can be flipped
-/// between cases.
-fn ref_mime_save_threshold() -> u64 {
-    fn parse_env() -> u64 {
-        std::env::var("RUNTIMED_REF_MIME_SAVE_THRESHOLD")
-            .ok()
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(DEFAULT_REF_MIME_SAVE_THRESHOLD)
-    }
-    #[cfg(test)]
-    {
-        parse_env()
-    }
-    #[cfg(not(test))]
-    {
-        static CACHED: OnceLock<u64> = OnceLock::new();
-        *CACHED.get_or_init(parse_env)
-    }
+/// Tightly scoped on purpose. Images / PDFs / HTML keep their existing
+/// base64-inline behavior regardless of size — those are well-understood
+/// in `.ipynb` files and have no vanilla-Jupyter fallback path if we
+/// replaced them. We only externalize MIMEs that:
+///
+/// 1. Are nteract-specific and have a reasonable fallback elsewhere in
+///    the bundle (parquet ships alongside pandas `text/html` + `text/plain`).
+/// 2. Would otherwise blow up `.ipynb` size catastrophically (parquet
+///    exports can hit tens or hundreds of MiB).
+///
+/// Because this whitelist holds at most one entry per output bundle in
+/// practice (dx emits exactly one parquet ref per display), we can write
+/// the ref as a single `{hash, content_type, size}` object under the
+/// [`BLOB_REF_MIME`] key. nbformat's schema wouldn't accept an array
+/// there, so a whitelist-of-one is the right shape.
+///
+/// See `docs/superpowers/specs/2026-04-14-ipynb-save-blob-refs-design.md`.
+const REF_MIME_SAVE_WHITELIST: &[&str] = &["application/vnd.apache.parquet"];
+
+/// Returns true if a binary MIME type should be externalized as a
+/// [`BLOB_REF_MIME`] entry on save instead of base64-inlined.
+fn should_externalize_mime_on_save(mime_type: &str) -> bool {
+    REF_MIME_SAVE_WHITELIST.contains(&mime_type)
 }
 
 /// Default inlining threshold: 1 KB.
@@ -738,8 +731,8 @@ async fn convert_data_bundle(
 /// reads raw bytes from the blob store and base64-encodes them for the
 /// Jupyter nbformat representation (used when saving .ipynb to disk).
 ///
-/// Large binary blobs (size >= [`ref_mime_save_threshold`]) are
-/// externalized as [`BLOB_REF_MIME`] entries instead of being
+/// Whitelisted MIMEs ([`REF_MIME_SAVE_WHITELIST`] — currently parquet)
+/// are externalized as [`BLOB_REF_MIME`] entries instead of being
 /// re-inlined as base64. The original binary MIME key is dropped and
 /// replaced by a `BLOB_REF_MIME` → `{hash, content_type, size}` entry.
 /// See `docs/superpowers/specs/2026-04-14-ipynb-save-blob-refs-design.md`.
@@ -750,24 +743,21 @@ async fn resolve_data_bundle(
     blob_store: &BlobStore,
 ) -> io::Result<HashMap<String, Value>> {
     let mut result = HashMap::new();
-    let ref_threshold = ref_mime_save_threshold();
 
     for (mime_type, content_ref) in data {
-        // Spec 2: externalize large binary blobs as a BLOB_REF_MIME entry
-        // instead of re-inlining them as base64 in the .ipynb. Small
-        // binaries (plot thumbnails, icons) keep the legacy path for
-        // vanilla-Jupyter compatibility.
-        if is_binary_mime(mime_type) {
+        // Spec 2: externalize whitelisted binary blobs as a BLOB_REF_MIME
+        // entry instead of re-inlining them as base64 in the .ipynb.
+        // Non-whitelisted MIMEs (images, PDFs, HTML, audio, video) keep
+        // the legacy path so vanilla Jupyter renders them unchanged.
+        if should_externalize_mime_on_save(mime_type) {
             if let ContentRef::Blob { blob: hash, size } = content_ref {
-                if *size >= ref_threshold {
-                    let ref_body = json!({
-                        "hash": hash,
-                        "content_type": mime_type,
-                        "size": size,
-                    });
-                    result.insert(BLOB_REF_MIME.to_string(), ref_body);
-                    continue;
-                }
+                let ref_body = json!({
+                    "hash": hash,
+                    "content_type": mime_type,
+                    "size": size,
+                });
+                result.insert(BLOB_REF_MIME.to_string(), ref_body);
+                continue;
             }
         }
 
@@ -1519,49 +1509,14 @@ mod tests {
         assert!(!is_binary_mime("text/latex"));
     }
 
-    // ── Ref-MIME save threshold (Spec 2) ────────────────────────────
-    //
-    // These tests mutate the process env var, so they must run serially.
-
-    /// Guard that sets `RUNTIMED_REF_MIME_SAVE_THRESHOLD` for the
-    /// duration of a test and restores it on drop.
-    struct EnvGuard {
-        key: &'static str,
-        prev: Option<String>,
-    }
-
-    impl EnvGuard {
-        fn set(key: &'static str, value: &str) -> Self {
-            let prev = std::env::var(key).ok();
-            // SAFETY: set_var is unsafe in edition 2024. The surrounding
-            // test is serialized via `#[serial]`, so no other thread
-            // reads this env var concurrently.
-            unsafe { std::env::set_var(key, value) };
-            EnvGuard { key, prev }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            // SAFETY: same serialization guarantee as `set`.
-            unsafe {
-                match &self.prev {
-                    Some(v) => std::env::set_var(self.key, v),
-                    None => std::env::remove_var(self.key),
-                }
-            }
-        }
-    }
+    // ── Ref-MIME save whitelist (Spec 2) ────────────────────────────
 
     #[tokio::test]
-    #[serial_test::serial]
-    async fn test_resolve_data_bundle_emits_blob_ref_for_large_binary() {
+    async fn test_resolve_data_bundle_emits_blob_ref_for_whitelisted_mime() {
         let dir = TempDir::new().unwrap();
         let store = test_store(&dir);
-        // Tiny threshold forces the ref-MIME path without allocating MBs.
-        let _guard = EnvGuard::set("RUNTIMED_REF_MIME_SAVE_THRESHOLD", "16");
 
-        let raw = b"PAR1-this-payload-is-larger-than-sixteen-bytes-for-sure";
+        let raw = b"PAR1-parquet-payload-bytes";
         let hash = store
             .put(raw, "application/vnd.apache.parquet")
             .await
@@ -1584,10 +1539,10 @@ mod tests {
 
         let resolved = resolve_data_bundle(&data, &store).await.unwrap();
 
-        // Original binary MIME key is absent; BLOB_REF_MIME took its place.
+        // Original whitelisted MIME key is absent; BLOB_REF_MIME took its place.
         assert!(
             !resolved.contains_key("application/vnd.apache.parquet"),
-            "large binary MIME should be rewritten, not kept: {:?}",
+            "whitelisted MIME should be rewritten, not kept: {:?}",
             resolved.keys().collect::<Vec<_>>()
         );
         let ref_entry = resolved
@@ -1605,16 +1560,15 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial_test::serial]
-    async fn test_resolve_data_bundle_inlines_small_binary() {
+    async fn test_resolve_data_bundle_non_whitelisted_binary_stays_base64() {
         let dir = TempDir::new().unwrap();
         let store = test_store(&dir);
-        // Ensure the default 1 MiB threshold is in effect.
-        let _guard = EnvGuard::set("RUNTIMED_REF_MIME_SAVE_THRESHOLD", "1048576");
 
-        // Small PNG-like blob, well under 1 MiB.
-        let tiny = b"\x89PNG\r\n\x1a\nfake-png";
-        let content_ref = ContentRef::from_binary(tiny, "image/png", &store)
+        // A "large" image blob — whitelist-based externalization only
+        // applies to parquet, so images keep the classic base64 path
+        // regardless of size.
+        let raw = vec![0xAAu8; 64 * 1024];
+        let content_ref = ContentRef::from_binary(&raw, "image/png", &store)
             .await
             .unwrap();
 
@@ -1623,10 +1577,9 @@ mod tests {
 
         let resolved = resolve_data_bundle(&data, &store).await.unwrap();
 
-        // Below-threshold binary keeps the classic base64 path.
         assert!(
             !resolved.contains_key(BLOB_REF_MIME),
-            "small binary should NOT emit BLOB_REF_MIME"
+            "non-whitelisted binary must NOT emit BLOB_REF_MIME"
         );
         let b64 = resolved
             .get("image/png")
@@ -1635,36 +1588,13 @@ mod tests {
         let decoded = base64::engine::general_purpose::STANDARD
             .decode(b64)
             .unwrap();
-        assert_eq!(decoded, tiny);
+        assert_eq!(decoded, raw);
     }
 
     #[tokio::test]
-    #[serial_test::serial]
-    async fn test_resolve_data_bundle_env_override_below_default() {
-        let dir = TempDir::new().unwrap();
-        let store = test_store(&dir);
-        // Default would keep this inline, but env var forces the ref path.
-        let _guard = EnvGuard::set("RUNTIMED_REF_MIME_SAVE_THRESHOLD", "4");
-
-        let tiny = b"\x89PNG\r\n\x1a\n"; // 8 bytes >= 4
-        let content_ref = ContentRef::from_binary(tiny, "image/png", &store)
-            .await
-            .unwrap();
-        let mut data = HashMap::new();
-        data.insert("image/png".to_string(), content_ref);
-
-        let resolved = resolve_data_bundle(&data, &store).await.unwrap();
-
-        assert!(!resolved.contains_key("image/png"));
-        assert!(resolved.contains_key(BLOB_REF_MIME));
-    }
-
-    #[tokio::test]
-    #[serial_test::serial]
     async fn test_resolve_data_bundle_round_trip_blob_ref() {
         let dir = TempDir::new().unwrap();
         let store = test_store(&dir);
-        let _guard = EnvGuard::set("RUNTIMED_REF_MIME_SAVE_THRESHOLD", "16");
 
         // Pre-populate a blob that will become a blob-ref on save.
         let raw = b"PAR1-this-payload-is-larger-than-sixteen-bytes-for-sure";
