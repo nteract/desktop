@@ -534,6 +534,13 @@ impl KernelConnection for JupyterKernel {
             let mut capture_cache: std::collections::HashMap<String, String> =
                 std::collections::HashMap::new();
 
+            // Local comm_id -> target_name map, populated on comm_open and
+            // removed on comm_close. Used by the dx comm filter in CommMsg
+            // and CommClose arms so we can route without a CRDT read on the
+            // hot path.
+            let mut comm_targets: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
+
             let comm_coalesce_tx = comm_coalesce_tx_for_iopub;
 
             loop {
@@ -1236,6 +1243,25 @@ impl KernelConnection for JupyterKernel {
                             }
 
                             JupyterMessageContent::CommOpen(open) => {
+                                // Record the comm_id -> target_name mapping early so
+                                // subsequent CommMsg / CommClose arms can route without
+                                // reading the CRDT.
+                                comm_targets
+                                    .insert(open.comm_id.0.clone(), open.target_name.clone());
+
+                                // Short-circuit reserved nteract.dx.* comms: they carry
+                                // kernel-side protocol traffic (dx blob uploads, future
+                                // dx.query / dx.stream) that must NOT land in
+                                // RuntimeStateDoc::comms. The payload is handled in the
+                                // CommMsg arm below.
+                                if crate::dx_blob_comm::is_dx_target(&open.target_name) {
+                                    debug!(
+                                        "[dx] comm_open comm_id={} target={} (not persisted)",
+                                        open.comm_id.0, open.target_name
+                                    );
+                                    continue;
+                                }
+
                                 let buffers: Vec<Vec<u8>> =
                                     message.buffers.iter().map(|b| b.to_vec()).collect();
 
@@ -1341,6 +1367,54 @@ impl KernelConnection for JupyterKernel {
                                 let data = serde_json::to_value(&msg.data).unwrap_or_default();
                                 let method = data.get("method").and_then(|m| m.as_str());
 
+                                // dx-namespace comms short-circuit before any widget
+                                // state handling. The blob handler writes bytes to the
+                                // blob store and schedules an ack back to the kernel on
+                                // the shell socket; none of this touches RuntimeStateDoc.
+                                if let Some(target) = comm_targets.get(&msg.comm_id.0) {
+                                    if crate::dx_blob_comm::is_dx_target(target)
+                                        && target == crate::dx_blob_comm::DX_BLOB_TARGET
+                                    {
+                                        let request: crate::dx_blob_comm::DxBlobRequest =
+                                            match serde_json::from_value(data.clone()) {
+                                                Ok(r) => r,
+                                                Err(e) => {
+                                                    warn!(
+                                                        "[dx] bad request on {}: {}",
+                                                        msg.comm_id.0, e
+                                                    );
+                                                    continue;
+                                                }
+                                            };
+                                        let buffer = buffers.first().cloned().unwrap_or_default();
+                                        let blob_store = blob_store.clone();
+                                        let iopub_cmd_tx = iopub_cmd_tx.clone();
+                                        let comm_id = msg.comm_id.0.clone();
+                                        // Off-task so we don't block the iopub loop on
+                                        // a slow blob write.
+                                        tokio::spawn(async move {
+                                            let response = crate::dx_blob_comm::handle_blob_msg(
+                                                &blob_store,
+                                                request,
+                                                &buffer,
+                                            )
+                                            .await;
+                                            let response_data =
+                                                serde_json::to_value(&response).unwrap_or_default();
+                                            if let Err(e) = iopub_cmd_tx
+                                                .send(QueueCommand::SendDxCommAck {
+                                                    comm_id,
+                                                    data: response_data,
+                                                })
+                                                .await
+                                            {
+                                                warn!("[dx] failed to enqueue comm ack: {}", e);
+                                            }
+                                        });
+                                        continue;
+                                    }
+                                }
+
                                 let comm_msg_start = std::time::Instant::now();
                                 debug!("[comm_msg] comm_id={} method={:?}", msg.comm_id.0, method);
                                 if method == Some("update") {
@@ -1415,6 +1489,16 @@ impl KernelConnection for JupyterKernel {
                                         "[iopub-timing] message type={} took {:?} total",
                                         msg_type, iopub_elapsed
                                     );
+                                }
+
+                                // Drop the comm_id -> target_name mapping. If this was
+                                // a dx-namespace comm, skip the RuntimeStateDoc write.
+                                let was_dx_target = comm_targets
+                                    .remove(&close.comm_id.0)
+                                    .map(|t| crate::dx_blob_comm::is_dx_target(&t))
+                                    .unwrap_or(false);
+                                if was_dx_target {
+                                    continue;
                                 }
 
                                 capture_cache.retain(|_, cid| cid != &close.comm_id.0);
@@ -2052,6 +2136,36 @@ impl KernelConnection for JupyterKernel {
             "[jupyter-kernel] Sent comm_msg(update) to kernel: comm_id={}",
             comm_id
         );
+        Ok(())
+    }
+
+    /// Send a raw `comm_msg` to the kernel on the shell channel, passing
+    /// `data` through verbatim (no `method: "update"` wrapper).
+    ///
+    /// Used by the dx blob handler to reply with an ack/err to an upload
+    /// request that arrived on the `nteract.dx.blob` comm.
+    async fn send_comm_msg_data(&mut self, comm_id: &str, data: serde_json::Value) -> Result<()> {
+        let shell = self
+            .shell_writer
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("shell_writer not available"))?;
+
+        let data_map = match data {
+            serde_json::Value::Object(m) => m,
+            other => {
+                let mut m = serde_json::Map::new();
+                m.insert("value".to_string(), other);
+                m
+            }
+        };
+
+        let comm_msg = jupyter_protocol::CommMsg {
+            comm_id: jupyter_protocol::CommId(comm_id.to_string()),
+            data: data_map,
+        };
+        let message: jupyter_protocol::JupyterMessage = comm_msg.into();
+        shell.send(message).await?;
+        debug!("[dx] sent comm_msg to kernel: comm_id={}", comm_id);
         Ok(())
     }
 

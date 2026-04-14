@@ -821,6 +821,14 @@ async fn handle_queue_command(
                 }
             }
         }
+
+        QueueCommand::SendDxCommAck { comm_id, data } => {
+            if let Some(ref mut k) = kernel {
+                if let Err(e) = k.send_comm_msg_data(&comm_id, data).await {
+                    warn!("[runtime-agent] Failed to send dx comm ack: {}", e);
+                }
+            }
+        }
     }
 
     Ok(())
@@ -893,6 +901,9 @@ mod tests {
             Ok(())
         }
         async fn send_comm_update(&mut self, _: &str, _: serde_json::Value) -> Result<()> {
+            Ok(())
+        }
+        async fn send_comm_msg_data(&mut self, _: &str, _: serde_json::Value) -> Result<()> {
             Ok(())
         }
         async fn complete(

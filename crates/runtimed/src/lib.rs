@@ -21,6 +21,7 @@ pub use runtimed_client::*;
 pub mod blob_server;
 pub mod blob_store;
 pub mod daemon;
+pub mod dx_blob_comm;
 pub mod embedded_plugins;
 pub mod inline_env;
 pub mod jupyter_kernel;
