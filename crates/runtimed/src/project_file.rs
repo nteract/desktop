@@ -165,13 +165,10 @@ pub struct EnvironmentYmlConfig {
 
 /// Search standard conda env directories for an existing named environment.
 ///
-/// Checks in order:
-/// 1. `$CONDA_ENVS_DIRS` (colon-separated on Unix, semicolon on Windows)
-/// 2. `$CONDA_PREFIX/envs/`
-/// 3. `~/miniconda3/envs/`
-/// 4. `~/anaconda3/envs/`
-/// 5. `~/miniforge3/envs/`
-/// 6. `~/.conda/envs/`
+/// Checks `$CONDA_ENVS_DIRS`, `$CONDA_PREFIX/envs/`, `$MAMBA_ROOT_PREFIX/envs/`,
+/// common install locations (`~/miniconda3`, `~/anaconda3`, `~/miniforge3`),
+/// `~/.conda/envs/`, `~/.local/share/mamba/envs/` (micromamba default),
+/// and any parent dirs from `~/.conda/environments.txt` (conda env registry).
 ///
 /// Returns the first directory that contains `{dir}/{name}/bin/python` (or
 /// `{dir}/{name}/python.exe` on Windows).
@@ -245,36 +242,57 @@ pub fn resolve_conda_env_prefix(yml_path: &Path) -> Option<PathBuf> {
 fn conda_env_search_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
 
+    let mut push_unique = |p: PathBuf| {
+        if !dirs.contains(&p) {
+            dirs.push(p);
+        }
+    };
+
     // $CONDA_ENVS_DIRS (colon-separated on Unix, semicolon on Windows)
     if let Ok(envs_dirs) = std::env::var("CONDA_ENVS_DIRS") {
         let sep = if cfg!(windows) { ';' } else { ':' };
         for dir in envs_dirs.split(sep) {
             let p = PathBuf::from(dir.trim());
             if !p.as_os_str().is_empty() {
-                dirs.push(p);
+                push_unique(p);
             }
         }
     }
 
     // $CONDA_PREFIX/envs/
     if let Ok(prefix) = std::env::var("CONDA_PREFIX") {
-        let p = PathBuf::from(prefix).join("envs");
-        if !dirs.contains(&p) {
-            dirs.push(p);
-        }
+        push_unique(PathBuf::from(prefix).join("envs"));
     }
 
-    // Common conda installations
+    // $MAMBA_ROOT_PREFIX/envs/ (micromamba)
+    if let Ok(prefix) = std::env::var("MAMBA_ROOT_PREFIX") {
+        push_unique(PathBuf::from(prefix).join("envs"));
+    }
+
+    // Common conda/mamba installations
     if let Some(home) = dirs::home_dir() {
         for name in ["miniconda3", "anaconda3", "miniforge3"] {
-            let p = home.join(name).join("envs");
-            if !dirs.contains(&p) {
-                dirs.push(p);
-            }
+            push_unique(home.join(name).join("envs"));
         }
-        let dotconda = home.join(".conda").join("envs");
-        if !dirs.contains(&dotconda) {
-            dirs.push(dotconda);
+        push_unique(home.join(".conda").join("envs"));
+        // micromamba default location
+        push_unique(home.join(".local").join("share").join("mamba").join("envs"));
+    }
+
+    // ~/.conda/environments.txt — conda's env registry, lists full paths to envs.
+    // Extract parent dirs (the "envs/" directories) from each registered env path.
+    if let Some(home) = dirs::home_dir() {
+        let registry = home.join(".conda").join("environments.txt");
+        if let Ok(content) = std::fs::read_to_string(&registry) {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    let env_path = PathBuf::from(trimmed);
+                    if let Some(parent) = env_path.parent() {
+                        push_unique(parent.to_path_buf());
+                    }
+                }
+            }
         }
     }
 
