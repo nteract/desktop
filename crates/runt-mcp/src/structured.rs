@@ -12,6 +12,14 @@
 use runtimed_client::output_resolver;
 use serde_json::{json, Value};
 
+/// Image MIME types that agents can view via the Read tool.
+fn is_agent_viewable_image(mime: &str) -> bool {
+    matches!(
+        mime,
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+    )
+}
+
 /// Check if a MIME type is a visualization spec (Plotly, Vega-Lite, Vega).
 fn is_viz_mime(mime: &str) -> bool {
     mime == "application/vnd.plotly.v1+json"
@@ -27,6 +35,7 @@ fn is_viz_mime(mime: &str) -> bool {
 /// Unlike [`cell_structured_content`] which requires fully-resolved outputs,
 /// this function reads inline content directly from ContentRef entries and
 /// emits blob URLs for anything stored in the blob store. Zero blob fetches.
+#[allow(clippy::too_many_arguments)]
 pub fn cell_structured_content_from_manifests(
     cell_id: &str,
     cell_type: &str,
@@ -35,13 +44,14 @@ pub fn cell_structured_content_from_manifests(
     execution_count: Option<i64>,
     status: &str,
     blob_base_url: &Option<String>,
+    blob_store_path: &Option<std::path::PathBuf>,
 ) -> Value {
     let mut content = json!({
         "cell": {
             "cell_id": cell_id,
             "source": source,
             "cell_type": cell_type,
-            "outputs": output_manifests.iter().map(|m| manifest_output_to_structured(m, blob_base_url)).collect::<Vec<_>>(),
+            "outputs": output_manifests.iter().map(|m| manifest_output_to_structured(m, blob_base_url, blob_store_path)).collect::<Vec<_>>(),
             "execution_count": execution_count,
             "status": status,
         }
@@ -58,7 +68,11 @@ pub fn cell_structured_content_from_manifests(
 ///
 /// Reads inline content directly from ContentRef entries and emits blob URLs
 /// for blob-stored content. No blob fetches are performed.
-fn manifest_output_to_structured(manifest: &Value, blob_base_url: &Option<String>) -> Value {
+fn manifest_output_to_structured(
+    manifest: &Value,
+    blob_base_url: &Option<String>,
+    blob_store_path: &Option<std::path::PathBuf>,
+) -> Value {
     let output_type = manifest
         .get("output_type")
         .and_then(|v| v.as_str())
@@ -154,10 +168,23 @@ fn manifest_output_to_structured(manifest: &Value, blob_base_url: &Option<String
                         // Inline content — extract the value directly
                         content_ref.get("inline").cloned()
                     } else if let Some(hash) = meta.blob_hash {
-                        // Blob-stored content — emit blob URL
-                        blob_base_url
-                            .as_ref()
-                            .map(|base| Value::String(format!("{}/blob/{}", base, hash)))
+                        if is_agent_viewable_image(mime) && hash.len() >= 2 {
+                            // Image blobs — prefer file path so agents can Read the file.
+                            // Fall back to blob URL when blob_store_path is unavailable.
+                            if let Some(store) = blob_store_path.as_ref() {
+                                let path = store.join(&hash[..2]).join(&hash[2..]);
+                                Some(Value::String(path.to_string_lossy().to_string()))
+                            } else {
+                                blob_base_url
+                                    .as_ref()
+                                    .map(|base| Value::String(format!("{}/blob/{}", base, hash)))
+                            }
+                        } else {
+                            // Non-image blobs — emit blob URL for app rendering
+                            blob_base_url
+                                .as_ref()
+                                .map(|base| Value::String(format!("{}/blob/{}", base, hash)))
+                        }
                     } else {
                         None
                     };
@@ -242,7 +269,7 @@ mod tests {
             },
         });
         let blob_base = Some("http://localhost:9999".to_string());
-        let result = manifest_output_to_structured(&manifest, &blob_base);
+        let result = manifest_output_to_structured(&manifest, &blob_base, &None);
         let Some(data) = result["data"].as_object() else {
             panic!("data should be an object");
         };
@@ -258,7 +285,7 @@ mod tests {
             },
         });
         let blob_base = Some("http://localhost:9999".to_string());
-        let result = manifest_output_to_structured(&manifest, &blob_base);
+        let result = manifest_output_to_structured(&manifest, &blob_base, &None);
         let Some(data) = result["data"].as_object() else {
             panic!("data should be an object");
         };
@@ -274,7 +301,7 @@ mod tests {
                 "text/plain": inline_ref("fallback"),
             },
         });
-        let result = manifest_output_to_structured(&manifest, &None);
+        let result = manifest_output_to_structured(&manifest, &None, &None);
         let Some(data) = result["data"].as_object() else {
             panic!("data should be an object");
         };
@@ -298,7 +325,7 @@ mod tests {
             },
         });
         let blob_base = Some("http://localhost:9999".to_string());
-        let result = manifest_output_to_structured(&manifest, &blob_base);
+        let result = manifest_output_to_structured(&manifest, &blob_base, &None);
         let Some(data) = result["data"].as_object() else {
             panic!("data should be an object");
         };
@@ -317,7 +344,7 @@ mod tests {
             },
         });
         let blob_base = Some("http://localhost:9999".to_string());
-        let result = manifest_output_to_structured(&manifest, &blob_base);
+        let result = manifest_output_to_structured(&manifest, &blob_base, &None);
         let Some(data) = result["data"].as_object() else {
             panic!("data should be an object");
         };
@@ -335,7 +362,7 @@ mod tests {
             },
         });
         let blob_base = Some("http://localhost:9999".to_string());
-        let result = manifest_output_to_structured(&manifest, &blob_base);
+        let result = manifest_output_to_structured(&manifest, &blob_base, &None);
         let Some(data) = result["data"].as_object() else {
             panic!("data should be an object");
         };
@@ -353,7 +380,7 @@ mod tests {
             },
         });
         let blob_base = Some("http://localhost:9999".to_string());
-        let result = manifest_output_to_structured(&manifest, &blob_base);
+        let result = manifest_output_to_structured(&manifest, &blob_base, &None);
         let Some(data) = result["data"].as_object() else {
             panic!("data should be an object");
         };
@@ -367,7 +394,7 @@ mod tests {
             "name": "stdout",
             "text": inline_ref("hello"),
         });
-        let result = manifest_output_to_structured(&manifest, &None);
+        let result = manifest_output_to_structured(&manifest, &None, &None);
         assert_eq!(result["output_type"], "stream");
         assert_eq!(result["name"], "stdout");
         assert_eq!(result["text"], "hello");
@@ -381,7 +408,7 @@ mod tests {
             "text": blob_ref("stream_hash", 5_000),
         });
         let blob_base = Some("http://localhost:9999".to_string());
-        let result = manifest_output_to_structured(&manifest, &blob_base);
+        let result = manifest_output_to_structured(&manifest, &blob_base, &None);
         assert_eq!(result["text"], "http://localhost:9999/blob/stream_hash");
     }
 
@@ -394,7 +421,7 @@ mod tests {
             "evalue": "bad",
             "traceback": inline_ref(r#"["line 1", "line 2"]"#),
         });
-        let result = manifest_output_to_structured(&manifest, &None);
+        let result = manifest_output_to_structured(&manifest, &None, &None);
         assert_eq!(result["output_type"], "error");
         assert_eq!(result["ename"], "ValueError");
         // Traceback should be a parsed JSON array, not the raw ContentRef
@@ -415,7 +442,7 @@ mod tests {
             "traceback": blob_ref("tb_hash_123", 8_000),
         });
         let blob_base = Some("http://localhost:9999".to_string());
-        let result = manifest_output_to_structured(&manifest, &blob_base);
+        let result = manifest_output_to_structured(&manifest, &blob_base, &None);
         assert_eq!(
             result["traceback"],
             "http://localhost:9999/blob/tb_hash_123"
@@ -431,7 +458,7 @@ mod tests {
             "evalue": "oops",
             "traceback": ["line 1", "line 2"],
         });
-        let result = manifest_output_to_structured(&manifest, &None);
+        let result = manifest_output_to_structured(&manifest, &None, &None);
         let Some(tb) = result["traceback"].as_array() else {
             panic!("legacy array should pass through");
         };
@@ -447,7 +474,7 @@ mod tests {
             },
             "execution_count": 7,
         });
-        let result = manifest_output_to_structured(&manifest, &None);
+        let result = manifest_output_to_structured(&manifest, &None, &None);
         assert_eq!(result["execution_count"], 7);
     }
 
@@ -467,6 +494,7 @@ mod tests {
             Some(3),
             "done",
             &blob_base,
+            &None,
         );
         assert_eq!(result["cell"]["cell_id"], "cell-123");
         assert_eq!(result["cell"]["cell_type"], "code");

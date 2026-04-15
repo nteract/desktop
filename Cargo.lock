@@ -6819,7 +6819,6 @@ dependencies = [
 name = "runt-mcp"
 version = "0.2.0"
 dependencies = [
- "base64 0.22.1",
  "chrono",
  "dirs",
  "fancy-regex 0.14.0",

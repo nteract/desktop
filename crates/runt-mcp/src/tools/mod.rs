@@ -454,9 +454,7 @@ pub async fn build_execution_result(
     );
 
     let mut items = vec![Content::text(header)];
-    items.extend(crate::formatting::outputs_to_content_items_with_images(
-        &result.outputs,
-    ));
+    items.extend(crate::formatting::outputs_to_content_items(&result.outputs));
 
     // Build structured content directly from manifest Values + blob URLs.
     // No blob fetches — inline ContentRefs pass through, blobs become URLs.
@@ -479,6 +477,7 @@ pub async fn build_execution_result(
                 ec,
                 &result.status,
                 &server.blob_base_url,
+                &server.blob_store_path,
             ))
         }
     } else {

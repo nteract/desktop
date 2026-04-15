@@ -222,7 +222,7 @@ pub async fn run_all_cells(
             Some(display_status),
         );
         content_items.push(rmcp::model::Content::text(cell_header));
-        content_items.extend(formatting::outputs_to_content_items_with_images(&outputs));
+        content_items.extend(formatting::outputs_to_content_items(&outputs));
 
         // Structured content for MCP Apps: use manifests from the cell snapshot
         // (which include ContentRef entries needed for structured rendering).
@@ -240,6 +240,7 @@ pub async fn run_all_cells(
                     exec.execution_count,
                     display_status,
                     &server.blob_base_url,
+                    &server.blob_store_path,
                 );
                 if let Some(cell_data) = wrapped.get("cell").cloned() {
                     structured_cells.push(cell_data);
