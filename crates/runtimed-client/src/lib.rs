@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 pub mod client;
+pub mod daemon_connection;
 pub mod daemon_paths;
 pub mod output_resolver;
 pub mod resolved_output;
