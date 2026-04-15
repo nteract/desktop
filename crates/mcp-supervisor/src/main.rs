@@ -2547,3 +2547,120 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    fn root() -> PathBuf {
+        PathBuf::from("/repo")
+    }
+
+    // Path-classification: maps a touched file under the project root to
+    // the kind of restart action needed. Pure logic, easy to test.
+
+    #[test]
+    fn classify_python_change_only() {
+        for rel in [
+            "python/nteract/src/__init__.py",
+            "python/nteract/src/sub/dir/file.py",
+            "python/runtimed/src/foo.py",
+        ] {
+            assert_eq!(
+                classify_change(&root().join(rel), &root()),
+                Some(ChangeKind::PythonOnly),
+                "{rel} should be PythonOnly",
+            );
+        }
+    }
+
+    #[test]
+    fn classify_rust_bindings_change() {
+        for rel in [
+            "crates/runtimed-py/src/lib.rs",
+            "crates/runtimed/src/lib.rs",
+            "crates/runtimed-client/src/lib.rs",
+        ] {
+            assert_eq!(
+                classify_change(&root().join(rel), &root()),
+                Some(ChangeKind::RustChanged),
+                "{rel} should be RustChanged",
+            );
+        }
+    }
+
+    #[test]
+    fn classify_runt_mcp_change() {
+        // runt-mcp-only changes don't need maturin develop — just cargo
+        // build + child restart.
+        assert_eq!(
+            classify_change(&root().join("crates/runt-mcp/src/main.rs"), &root()),
+            Some(ChangeKind::RustMcpChanged),
+        );
+    }
+
+    #[test]
+    fn classify_ignores_pyi_stub_files() {
+        // .pyi is a type stub — no runtime impact, no need to reload.
+        assert_eq!(
+            classify_change(&root().join("python/runtimed/src/_internals.pyi"), &root()),
+            None,
+        );
+    }
+
+    #[test]
+    fn classify_ignores_non_source_files() {
+        for rel in [
+            "crates/runtimed/Cargo.toml",
+            "crates/runtimed/src/lib.md",
+            "crates/runtimed/README.md",
+            "python/nteract/pyproject.toml",
+            "python/runtimed/src/foo.txt",
+            "docs/something.md",
+            "README.md",
+        ] {
+            assert_eq!(
+                classify_change(&root().join(rel), &root()),
+                None,
+                "{rel} should not trigger any restart",
+            );
+        }
+    }
+
+    #[test]
+    fn classify_ignores_paths_outside_project_root() {
+        // strip_prefix returns Err → classify_change returns None.
+        let outside = PathBuf::from("/somewhere/else/crates/runtimed/src/lib.rs");
+        assert_eq!(classify_change(&outside, &root()), None);
+    }
+
+    #[test]
+    fn classify_ignores_test_dirs_outside_src() {
+        // crates/{name}/tests/ is not under .../src/ — should not match.
+        assert_eq!(
+            classify_change(
+                &root().join("crates/runtimed/tests/integration.rs"),
+                &root(),
+            ),
+            None,
+        );
+    }
+
+    #[test]
+    fn classify_ignores_python_outside_known_packages() {
+        // python/dx/src/ isn't in the watcher's matrix — dx changes
+        // don't trigger child restart by design (dx is kernel-side).
+        assert_eq!(
+            classify_change(&root().join("python/dx/src/foo.py"), &root()),
+            None,
+        );
+    }
+
+    #[test]
+    fn should_skip_blob_sweep_helpers_have_sane_defaults() {
+        // Sanity guards on the small accessor functions the dispatcher reads.
+        assert_eq!(default_restart_target(), "child");
+        assert_eq!(default_log_lines(), 50);
+    }
+}
