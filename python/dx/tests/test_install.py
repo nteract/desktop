@@ -184,9 +184,9 @@ def test_mimebundle_returns_ref_mime_and_stashes_bytes(monkeypatch):
     assert hashlib.sha256(buf).hexdigest() == ref["hash"]
 
 
-def test_mimebundle_returns_none_on_serialize_failure(monkeypatch):
-    """When parquet serialization raises, formatter returns None so the
-    default HTML/plain chain runs."""
+def test_mimebundle_returns_summary_only_on_serialize_failure(monkeypatch):
+    """When parquet serialization raises, formatter returns a summary-only
+    bundle (text/llm+plain without blob ref) instead of None."""
     _reset_installed(monkeypatch)
     ip = FakeIPython()
     monkeypatch.setattr("dx._format_install._get_ipython_for_format", lambda: ip)
@@ -201,7 +201,10 @@ def test_mimebundle_returns_none_on_serialize_failure(monkeypatch):
     formatter = ip.display_formatter.mimebundle_formatter.registrations[pd.DataFrame]
 
     df = pd.DataFrame({"a": [1]})
-    assert formatter(df) is None
+    result = formatter(df)
+    assert result is not None
+    assert "text/llm+plain" in result
+    assert BLOB_REF_MIME not in result
 
 
 def test_display_pub_hook_attaches_buffers_on_display_data(monkeypatch):

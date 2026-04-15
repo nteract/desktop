@@ -55,7 +55,7 @@ from typing import Any
 from dx._env import Environment, detect_environment
 from dx._format import serialize_dataframe
 from dx._refs import BLOB_REF_MIME, BlobRef, build_ref_bundle
-from dx._summary import summarize_dataframe
+from dx._summary import summarize_dataframe, summarize_dataset
 
 log = logging.getLogger("dx")
 
@@ -153,6 +153,14 @@ def install_formatters() -> None:
         ipython_display.for_type(nw.DataFrame, _narwhals_ipython_display)
     except ImportError:
         pass
+
+    try:
+        import datasets  # noqa: PLC0415  # ty: ignore[unresolved-import]
+
+        mimebundle.for_type(datasets.Dataset, _dataset_mimebundle)
+        ipython_display.for_type(datasets.Dataset, _dataset_ipython_display)
+    except ImportError:
+        log.debug("dx: datasets not installed, skipping handler")
 
     _install_display_pub_hook()
     _enable_third_party_nteract_renderers()
@@ -375,14 +383,24 @@ def _emit_dataframe(df: Any, *, total_rows: int) -> dict | None:
     as a fallback bundle for hosts that don't understand the ref MIME;
     nteract frontends pick the parquet renderer via the ref MIME.
 
-    Returns ``None`` when serialization fails — lets IPython's default
-    chain render unchanged.
+    Returns ``None`` only when both parquet serialization and summary
+    generation fail. When parquet fails but the summary succeeds
+    (e.g. pyarrow missing), returns a summary-only bundle.
     """
     try:
         data, content_type = serialize_dataframe(df, max_bytes=_MAX_PAYLOAD_BYTES)
     except Exception as exc:
-        log.debug("dx: serialize failed: %s — falling back to default repr", exc)
-        return None
+        log.debug("dx: serialize failed: %s — emitting summary-only bundle", exc)
+        # Parquet serialization failed (e.g. pyarrow missing), but the
+        # summary is pure Python — still emit text/llm+plain so the agent
+        # gets column stats instead of a raw repr.
+        try:
+            llm = summarize_dataframe(
+                df, total_rows=total_rows, included_rows=total_rows, sampled=False
+            )
+            return {"text/llm+plain": llm}
+        except Exception:
+            return None
 
     # Detect downsampling by reading parquet metadata (cheap — footer only).
     sampled = False
@@ -445,6 +463,44 @@ def _enable_third_party_nteract_renderers() -> None:
         pass
     except Exception as exc:  # pragma: no cover — defensive
         log.debug("dx: failed to set plotly 'nteract' renderer: %s", exc)
+
+
+def _dataset_mimebundle(ds: Any, include=None, exclude=None) -> dict | None:
+    """`mimebundle_formatter` handler for `datasets.Dataset`.
+
+    Returns a bundle with only `text/llm+plain` — no parquet ref. Keeps the
+    dataset lazy and lets IPython fill in `text/plain` from the dataset's
+    own repr.
+    """
+    try:
+        summary = summarize_dataset(ds)
+        return {"text/llm+plain": summary}
+    except Exception as exc:
+        log.debug("dx: dataset mimebundle failed: %s", exc)
+        return None
+
+
+def _dataset_ipython_display(ds: Any) -> None:
+    """`ipython_display_formatter` handler for `datasets.Dataset`.
+
+    Publishes a `display_data` message with `text/llm+plain`, consistent
+    with the DataFrame path.
+    """
+    try:
+        from IPython.display import publish_display_data
+    except ImportError:
+        return
+
+    try:
+        bundle = _dataset_mimebundle(ds)
+    except Exception as exc:
+        log.debug("dx: dataset display failed: %s — falling back to repr", exc)
+        bundle = None
+
+    if bundle:
+        publish_display_data(data=bundle, metadata={})
+    else:
+        print(repr(ds))
 
 
 def dx_display(obj: Any) -> None:
