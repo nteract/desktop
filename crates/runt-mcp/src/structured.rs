@@ -72,11 +72,15 @@ fn manifest_output_to_structured(manifest: &Value, blob_base_url: &Option<String
                 .get("text")
                 .and_then(|cr| resolve_text_content_ref(cr, blob_base_url))
                 .unwrap_or(Value::Null);
-            json!({
+            let mut out = json!({
                 "output_type": "stream",
                 "name": name,
                 "text": text,
-            })
+            });
+            if let Some(preview) = manifest.get("llm_preview") {
+                out["llm_preview"] = preview.clone();
+            }
+            out
         }
         "error" => {
             // traceback is a ContentRef (inline JSON string or blob), not a
@@ -102,12 +106,16 @@ fn manifest_output_to_structured(manifest: &Value, blob_base_url: &Option<String
                     }
                 })
                 .unwrap_or(Value::Null);
-            json!({
+            let mut out = json!({
                 "output_type": "error",
                 "ename": manifest.get("ename").cloned().unwrap_or(Value::Null),
                 "evalue": manifest.get("evalue").cloned().unwrap_or(Value::Null),
                 "traceback": traceback,
-            })
+            });
+            if let Some(preview) = manifest.get("llm_preview") {
+                out["llm_preview"] = preview.clone();
+            }
+            out
         }
         "display_data" | "execute_result" => {
             let mut data = serde_json::Map::new();
@@ -449,6 +457,60 @@ mod tests {
         });
         let result = manifest_output_to_structured(&manifest, &None);
         assert_eq!(result["execution_count"], 7);
+    }
+
+    #[test]
+    fn structured_stream_includes_preview_when_blob() {
+        let manifest = json!({
+            "output_type": "stream",
+            "name": "stdout",
+            "text": blob_ref("stream_hash", 50_000),
+            "llm_preview": {
+                "head": "line 0\n",
+                "tail": "line 99\n",
+                "total_bytes": 50_000u64,
+                "total_lines": 100u64,
+            },
+        });
+        let blob_base = Some("http://localhost:9999".to_string());
+        let result = manifest_output_to_structured(&manifest, &blob_base);
+        assert_eq!(result["text"], "http://localhost:9999/blob/stream_hash");
+        assert_eq!(result["llm_preview"]["total_lines"], 100);
+        assert_eq!(result["llm_preview"]["head"], "line 0\n");
+    }
+
+    #[test]
+    fn structured_error_includes_preview_when_blob() {
+        let manifest = json!({
+            "output_type": "error",
+            "ename": "RecursionError",
+            "evalue": "too deep",
+            "traceback": blob_ref("tb_hash", 8_000),
+            "llm_preview": {
+                "last_frame": "RecursionError: too deep",
+                "total_bytes": 8_000u64,
+                "frames": 200u32,
+            },
+        });
+        let blob_base = Some("http://localhost:9999".to_string());
+        let result = manifest_output_to_structured(&manifest, &blob_base);
+        assert_eq!(result["traceback"], "http://localhost:9999/blob/tb_hash");
+        assert_eq!(result["llm_preview"]["frames"], 200);
+        assert_eq!(
+            result["llm_preview"]["last_frame"],
+            "RecursionError: too deep"
+        );
+    }
+
+    #[test]
+    fn structured_stream_no_preview_for_inline() {
+        let manifest = json!({
+            "output_type": "stream",
+            "name": "stdout",
+            "text": inline_ref("hello"),
+        });
+        let result = manifest_output_to_structured(&manifest, &None);
+        assert!(result.get("llm_preview").is_none());
     }
 
     #[test]
