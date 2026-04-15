@@ -485,12 +485,6 @@ pub async fn build_execution_result(
         None
     };
 
-    // Strip image MIME keys from structured content — images are delivered
-    // as Content::image() items in the content array. Keeping blob URLs or
-    // base64 in the JSON wastes tokens and confuses agents.
-    let structured_content =
-        structured_content.map(crate::formatting::strip_images_from_structured_json);
-
     let mut call_result = CallToolResult::success(items);
     call_result.structured_content = structured_content;
     Ok(call_result)
