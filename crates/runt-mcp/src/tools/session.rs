@@ -393,7 +393,6 @@ pub async fn create_notebook(
     let working_dir = arg_str(request, "working_dir")
         .map(|s| PathBuf::from(resolve_path(s)))
         .or_else(|| std::env::current_dir().ok());
-    let working_dir_for_detection = working_dir.clone();
     let ephemeral = arg_bool(request, "ephemeral").unwrap_or(true);
 
     let prev = previous_notebook_id(server).await;
@@ -440,17 +439,9 @@ pub async fn create_notebook(
                 // Only override metadata when the user explicitly requested a
                 // package manager. When omitted, the daemon already set the
                 // correct metadata from default_python_env.
-                // Skip when a matching project file exists — the daemon already
-                // detected it and will bootstrap deps into CRDT.
                 if let Some(pm) = explicit_pkg_manager {
-                    let project_matches = working_dir_for_detection
-                        .as_ref()
-                        .and_then(|wd| crate::project_file::detect_project_file(wd))
-                        .is_some_and(|d| d.manager() == pm);
-                    if !project_matches {
-                        metadata_changed =
-                            super::deps::ensure_package_manager_metadata(&result.handle, pm);
-                    }
+                    metadata_changed =
+                        super::deps::ensure_package_manager_metadata(&result.handle, pm);
                 }
             }
 
@@ -529,10 +520,31 @@ pub async fn create_notebook(
                 }
             }
 
+            // Collect resolved runtime info for the response (env_source,
+            // kernel status, etc.) so agents know what environment they got.
+            let runtime_info = {
+                let guard = server.session.read().await;
+                if let Some(s) = guard.as_ref() {
+                    collect_runtime_info(&s.handle).await
+                } else {
+                    serde_json::json!({ "language": runtime })
+                }
+            };
+
+            // Read back the full dependency list (may include project deps
+            // that were already present before the agent's deps were added).
+            let all_deps = {
+                let guard = server.session.read().await;
+                guard.as_ref().map_or_else(Vec::new, |s| {
+                    super::deps::get_deps_for_manager_pub(&s.handle, &pkg_manager)
+                })
+            };
+
             let mut info = serde_json::json!({
                 "notebook_id": notebook_id,
-                "runtime": { "language": runtime },
-                "dependencies": deps,
+                "runtime": runtime_info,
+                "dependencies": all_deps,
+                "added_dependencies": deps,
                 "package_manager": pkg_manager,
                 "ephemeral": ephemeral,
             });

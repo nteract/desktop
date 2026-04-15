@@ -474,6 +474,14 @@ pub async fn sync_environment(
     }
 }
 
+/// Read dependencies for the detected package manager (pub for session.rs).
+pub(crate) fn get_deps_for_manager_pub(
+    handle: &notebook_sync::handle::DocHandle,
+    manager: &str,
+) -> Vec<String> {
+    get_deps_for_manager(handle, manager)
+}
+
 /// Read dependencies for the detected package manager.
 fn get_deps_for_manager(handle: &notebook_sync::handle::DocHandle, manager: &str) -> Vec<String> {
     handle
