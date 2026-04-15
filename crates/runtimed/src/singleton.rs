@@ -191,3 +191,91 @@ impl Drop for DaemonLock {
         info!("[singleton] Released daemon lock");
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn try_acquire_succeeds_in_empty_dir() -> TestResult {
+        // Fresh directory with no existing daemon → we should be the singleton.
+        let tmp = TempDir::new()?;
+        let dir = tmp.path().to_path_buf();
+        let lock = DaemonLock::try_acquire(Some(&dir)).map_err(|_| "should acquire empty dir")?;
+        assert_eq!(lock.info_path(), &dir.join("daemon.json"));
+        Ok(())
+    }
+
+    #[test]
+    fn try_acquire_conflicts_when_lock_held() -> TestResult {
+        // Second acquire on the same directory must fail while the first
+        // lock is alive. This is the whole point of the singleton —
+        // regressing it would allow concurrent daemons stomping on each
+        // other's sockets.
+        let tmp = TempDir::new()?;
+        let dir = tmp.path().to_path_buf();
+        let first = DaemonLock::try_acquire(Some(&dir)).map_err(|_| "first acquire")?;
+        first.write_info("unix:/tmp/sock", Some(12345))?;
+
+        let Err(info) = DaemonLock::try_acquire(Some(&dir)) else {
+            return Err("second acquire should have failed".into());
+        };
+        // Second acquirer reads the on-disk info so callers can surface a
+        // useful message ("endpoint X, pid Y is already running").
+        assert_eq!(info.endpoint, "unix:/tmp/sock");
+        assert_eq!(info.blob_port, Some(12345));
+        Ok(())
+    }
+
+    #[test]
+    fn drop_releases_lock_and_removes_info() -> TestResult {
+        // After the first lock drops, a second acquire must succeed AND
+        // the stale daemon.json must be gone (so clients don't connect
+        // to a dead endpoint).
+        let tmp = TempDir::new()?;
+        let dir = tmp.path().to_path_buf();
+        {
+            let lock = DaemonLock::try_acquire(Some(&dir)).map_err(|_| "first acquire")?;
+            lock.write_info("unix:/tmp/old", None)?;
+            assert!(dir.join("daemon.json").exists());
+        }
+        // After drop, info file gone.
+        assert!(!dir.join("daemon.json").exists());
+        // And we can re-acquire.
+        let _second = DaemonLock::try_acquire(Some(&dir)).map_err(|_| "re-acquire after drop")?;
+        Ok(())
+    }
+
+    #[test]
+    fn write_info_roundtrips_through_read_daemon_info() -> TestResult {
+        let tmp = TempDir::new()?;
+        let dir = tmp.path().to_path_buf();
+        let lock = DaemonLock::try_acquire(Some(&dir)).map_err(|_| "acquire")?;
+        lock.write_info("unix:/tmp/rt.sock", Some(4242))?;
+
+        let info =
+            client_singleton::read_daemon_info(&dir.join("daemon.json")).ok_or("read back info")?;
+        assert_eq!(info.endpoint, "unix:/tmp/rt.sock");
+        assert_eq!(info.blob_port, Some(4242));
+        assert_eq!(info.pid, std::process::id());
+        assert!(!info.version.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn try_acquire_creates_parent_dir() -> TestResult {
+        // The daemon base dir may not exist yet on first run. Acquire
+        // must create it rather than failing with ENOENT.
+        let tmp = TempDir::new()?;
+        let nested = tmp.path().join("deep/nested/dir");
+        assert!(!nested.exists());
+        let _lock =
+            DaemonLock::try_acquire(Some(&nested)).map_err(|_| "acquire in nonexistent dir")?;
+        assert!(nested.exists());
+        assert!(nested.join("daemon.lock").exists());
+        Ok(())
+    }
+}
