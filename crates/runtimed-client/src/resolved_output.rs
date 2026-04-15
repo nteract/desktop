@@ -223,3 +223,134 @@ impl ResolvedCell {
             .unwrap_or_default()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use notebook_doc::CellSnapshot;
+    use std::collections::HashMap;
+
+    fn snapshot_with_metadata(metadata: serde_json::Value) -> CellSnapshot {
+        CellSnapshot {
+            id: "cell-1".into(),
+            cell_type: "code".into(),
+            position: "80".into(),
+            source: "print('hi')".into(),
+            execution_count: "null".into(),
+            outputs: vec![],
+            metadata,
+            resolved_assets: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn from_snapshot_parses_execution_count() {
+        // `execution_count` is stored as a JSON-ish string ("5", "null") for
+        // CRDT-friendly scalar conflict resolution. ResolvedCell converts to
+        // Option<i64> for the public API — "null" / non-numeric must become
+        // None, not 0.
+        let mut snap = snapshot_with_metadata(serde_json::json!({}));
+        snap.execution_count = "5".into();
+        let resolved = ResolvedCell::from_snapshot(snap);
+        assert_eq!(resolved.execution_count, Some(5));
+
+        let mut snap = snapshot_with_metadata(serde_json::json!({}));
+        snap.execution_count = "null".into();
+        let resolved = ResolvedCell::from_snapshot(snap);
+        assert_eq!(resolved.execution_count, None);
+
+        let mut snap = snapshot_with_metadata(serde_json::json!({}));
+        snap.execution_count = "".into();
+        let resolved = ResolvedCell::from_snapshot(snap);
+        assert_eq!(resolved.execution_count, None);
+    }
+
+    #[test]
+    fn from_snapshot_has_no_outputs() {
+        // The base `from_snapshot` path is used when outputs aren't resolved
+        // yet (e.g. during initial load). Must produce an empty vec, not a
+        // default-placeholder with garbage.
+        let resolved = ResolvedCell::from_snapshot(snapshot_with_metadata(serde_json::json!({})));
+        assert!(resolved.outputs.is_empty());
+    }
+
+    #[test]
+    fn from_snapshot_with_outputs_threads_them_through() {
+        let outputs = vec![Output::stream("stdout", "hi")];
+        let resolved = ResolvedCell::from_snapshot_with_outputs(
+            snapshot_with_metadata(serde_json::json!({})),
+            outputs.clone(),
+        );
+        assert_eq!(resolved.outputs.len(), 1);
+        assert_eq!(resolved.outputs[0].output_type, "stream");
+    }
+
+    #[test]
+    fn is_source_hidden_reads_jupyterlab_convention() {
+        // JupyterLab stores this at `metadata.jupyter.source_hidden`. The
+        // frontend depends on this to render collapsed code cells — regressing
+        // would make every cell look expanded on load.
+        let hidden = ResolvedCell::from_snapshot(snapshot_with_metadata(
+            serde_json::json!({"jupyter": {"source_hidden": true}}),
+        ));
+        assert!(hidden.is_source_hidden());
+
+        let shown = ResolvedCell::from_snapshot(snapshot_with_metadata(serde_json::json!({})));
+        assert!(!shown.is_source_hidden());
+
+        // Wrong type — must default to false, not panic.
+        let bogus = ResolvedCell::from_snapshot(snapshot_with_metadata(
+            serde_json::json!({"jupyter": {"source_hidden": "yes"}}),
+        ));
+        assert!(!bogus.is_source_hidden());
+    }
+
+    #[test]
+    fn is_outputs_hidden_reads_jupyterlab_convention() {
+        let hidden = ResolvedCell::from_snapshot(snapshot_with_metadata(
+            serde_json::json!({"jupyter": {"outputs_hidden": true}}),
+        ));
+        assert!(hidden.is_outputs_hidden());
+
+        let shown = ResolvedCell::from_snapshot(snapshot_with_metadata(
+            serde_json::json!({"jupyter": {"outputs_hidden": false}}),
+        ));
+        assert!(!shown.is_outputs_hidden());
+
+        let missing = ResolvedCell::from_snapshot(snapshot_with_metadata(serde_json::json!({})));
+        assert!(!missing.is_outputs_hidden());
+    }
+
+    #[test]
+    fn tags_reads_string_array_and_ignores_garbage() {
+        // Tags is `metadata.tags`, an array of strings. A round-trip through a
+        // .ipynb file may encounter non-string entries (malformed notebooks);
+        // drop them rather than panicking.
+        let cell = ResolvedCell::from_snapshot(snapshot_with_metadata(serde_json::json!({
+            "tags": ["data", "slow", 42, null, "flaky"]
+        })));
+        assert_eq!(cell.tags(), vec!["data", "slow", "flaky"]);
+    }
+
+    #[test]
+    fn tags_returns_empty_when_missing_or_wrong_type() {
+        let missing = ResolvedCell::from_snapshot(snapshot_with_metadata(serde_json::json!({})));
+        assert!(missing.tags().is_empty());
+
+        let wrong =
+            ResolvedCell::from_snapshot(snapshot_with_metadata(serde_json::json!({"tags": "x"})));
+        assert!(wrong.tags().is_empty());
+    }
+
+    #[test]
+    fn parsed_metadata_returns_none_for_invalid_json() {
+        let mut cell = ResolvedCell::from_snapshot(snapshot_with_metadata(serde_json::json!({})));
+        // Defend the parsing path — if metadata_json is ever overwritten
+        // with junk (from an older schema), downstream consumers should
+        // see None, not panic.
+        cell.metadata_json = "{not json".into();
+        assert!(cell.parsed_metadata().is_none());
+        assert!(!cell.is_source_hidden());
+        assert!(cell.tags().is_empty());
+    }
+}
