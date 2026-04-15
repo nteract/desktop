@@ -416,12 +416,19 @@ pub enum OutputManifest {
         transient: TransientData,
     },
     #[serde(rename = "stream")]
-    Stream { name: String, text: ContentRef },
+    Stream {
+        name: String,
+        text: ContentRef,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        llm_preview: Option<StreamPreview>,
+    },
     #[serde(rename = "error")]
     Error {
         ename: String,
         evalue: String,
         traceback: ContentRef,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        llm_preview: Option<ErrorPreview>,
     },
 }
 
@@ -495,7 +502,15 @@ pub async fn create_manifest(
             let text_str = normalize_text(&text_value);
             let text =
                 ContentRef::from_data(&text_str, "text/plain", blob_store, threshold).await?;
-            OutputManifest::Stream { name, text }
+            let llm_preview = match &text {
+                ContentRef::Blob { .. } => Some(StreamPreview::from_text(&text_str)),
+                ContentRef::Inline { .. } => None,
+            };
+            OutputManifest::Stream {
+                name,
+                text,
+                llm_preview,
+            }
         }
         "error" => {
             let ename = output
@@ -517,10 +532,17 @@ pub async fn create_manifest(
             let traceback =
                 ContentRef::from_data(&traceback_json, "application/json", blob_store, threshold)
                     .await?;
+            let llm_preview = match &traceback {
+                ContentRef::Blob { .. } => {
+                    Some(ErrorPreview::from_traceback_value(&traceback_value))
+                }
+                ContentRef::Inline { .. } => None,
+            };
             OutputManifest::Error {
                 ename,
                 evalue,
                 traceback,
+                llm_preview,
             }
         }
         _ => {
@@ -762,7 +784,7 @@ pub async fn resolve_manifest(
             }
             Ok(output)
         }
-        OutputManifest::Stream { name, text } => {
+        OutputManifest::Stream { name, text, .. } => {
             let resolved_text = text.resolve(blob_store).await?;
             Ok(serde_json::json!({
                 "output_type": "stream",
@@ -774,6 +796,7 @@ pub async fn resolve_manifest(
             ename,
             evalue,
             traceback,
+            ..
         } => {
             let traceback_json = traceback.resolve(blob_store).await?;
             let traceback_array: Value = serde_json::from_str(&traceback_json)
@@ -1899,5 +1922,121 @@ mod tests {
             saved_again["data"][BLOB_REF_MIME],
             saved["data"][BLOB_REF_MIME]
         );
+    }
+
+    #[tokio::test]
+    async fn small_stream_has_no_preview() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+        let out = serde_json::json!({
+            "output_type": "stream",
+            "name": "stdout",
+            "text": "hello\n",
+        });
+        let m = create_manifest(&out, &store, DEFAULT_INLINE_THRESHOLD)
+            .await
+            .unwrap();
+        let OutputManifest::Stream {
+            text, llm_preview, ..
+        } = m
+        else {
+            panic!("expected Stream");
+        };
+        assert!(matches!(text, ContentRef::Inline { .. }));
+        assert!(llm_preview.is_none());
+    }
+
+    #[tokio::test]
+    async fn large_stream_has_preview() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+        let big = (0..500).map(|i| format!("line {i}\n")).collect::<String>();
+        let out = serde_json::json!({
+            "output_type": "stream",
+            "name": "stdout",
+            "text": big.clone(),
+        });
+        let m = create_manifest(&out, &store, DEFAULT_INLINE_THRESHOLD)
+            .await
+            .unwrap();
+        let OutputManifest::Stream {
+            text, llm_preview, ..
+        } = m
+        else {
+            panic!("expected Stream");
+        };
+        assert!(matches!(text, ContentRef::Blob { .. }));
+        let p = llm_preview.expect("preview when blob-stored");
+        assert_eq!(p.total_lines, 500);
+        assert_eq!(p.total_bytes, big.len() as u64);
+        assert!(p.head.starts_with("line 0\n"));
+        assert!(p.tail.trim_end().ends_with("line 499"));
+    }
+
+    #[tokio::test]
+    async fn small_error_has_no_preview() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+        let out = serde_json::json!({
+            "output_type": "error",
+            "ename": "NameError",
+            "evalue": "x",
+            "traceback": ["frame 1", "frame 2"],
+        });
+        let m = create_manifest(&out, &store, DEFAULT_INLINE_THRESHOLD)
+            .await
+            .unwrap();
+        let OutputManifest::Error {
+            traceback,
+            llm_preview,
+            ..
+        } = m
+        else {
+            panic!("expected Error");
+        };
+        assert!(matches!(traceback, ContentRef::Inline { .. }));
+        assert!(llm_preview.is_none());
+    }
+
+    #[tokio::test]
+    async fn large_error_has_preview_with_last_frame() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+        let frames: Vec<String> = (0..200).map(|i| format!("frame line {i}")).collect();
+        let out = serde_json::json!({
+            "output_type": "error",
+            "ename": "RecursionError",
+            "evalue": "maximum recursion depth",
+            "traceback": frames,
+        });
+        let m = create_manifest(&out, &store, DEFAULT_INLINE_THRESHOLD)
+            .await
+            .unwrap();
+        let OutputManifest::Error {
+            traceback,
+            llm_preview,
+            ..
+        } = m
+        else {
+            panic!("expected Error");
+        };
+        assert!(matches!(traceback, ContentRef::Blob { .. }));
+        let p = llm_preview.expect("preview when blob-stored");
+        assert_eq!(p.frames, 200);
+        assert_eq!(p.last_frame, "frame line 199");
+    }
+
+    #[test]
+    fn manifest_without_preview_field_deserializes_to_none() {
+        let legacy = serde_json::json!({
+            "output_type": "stream",
+            "name": "stdout",
+            "text": {"inline": "hello"},
+        });
+        let m: OutputManifest = serde_json::from_value(legacy).unwrap();
+        let OutputManifest::Stream { llm_preview, .. } = m else {
+            panic!("expected Stream");
+        };
+        assert!(llm_preview.is_none());
     }
 }
