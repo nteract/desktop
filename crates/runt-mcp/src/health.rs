@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use runtimed_client::client::PoolClient;
-use runtimed_client::singleton::{daemon_info_path, read_daemon_info, DaemonInfo};
+use runtimed_client::singleton::{query_daemon_info, DaemonInfo};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
@@ -73,7 +73,6 @@ pub async fn daemon_health_monitor(
     peer_label: Arc<RwLock<String>>,
 ) -> i32 {
     let client = PoolClient::new(socket_path.clone());
-    let info_path = daemon_info_path();
 
     loop {
         // Determine sleep duration based on current state
@@ -89,10 +88,16 @@ pub async fn daemon_health_monitor(
 
         match client.ping().await {
             Ok(()) => {
+                // Fetch daemon info BEFORE acquiring the state lock — every
+                // MCP tool call reads daemon_state in its hot path, and
+                // holding the write lock across an awaited IPC would block
+                // the tool surface whenever a GetDaemonInfo query is slow.
+                let current_info = query_daemon_info(socket_path.clone()).await;
+
                 let mut state = daemon_state.write().await;
                 match &*state {
                     DaemonState::Connected { info } => {
-                        if let Some(current) = read_daemon_info(&info_path) {
+                        if let Some(current) = current_info {
                             if current.version != info.version {
                                 // Version changed — genuine upgrade, exit for new binary
                                 info!(
@@ -122,9 +127,7 @@ pub async fn daemon_health_monitor(
                         attempt,
                         last_info,
                     } => {
-                        // Daemon is back — check if it's the same version or an upgrade
                         let elapsed = since.elapsed();
-                        let current_info = read_daemon_info(&info_path);
 
                         if let (Some(ref current), Some(ref last)) = (&current_info, last_info) {
                             if current.version != last.version {

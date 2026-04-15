@@ -761,21 +761,25 @@ async fn run_mcp_server(no_show: bool) -> Result<()> {
     let (blob_base_url, blob_store_path) =
         runtimed_client::daemon_paths::get_blob_paths_async(&socket_path).await;
 
-    // Capture initial daemon info for health monitoring
-    let info_path = runtimed_client::singleton::daemon_info_path();
-    let initial_state = match runtimed_client::singleton::read_daemon_info(&info_path) {
-        Some(info) => runt_mcp::health::DaemonState::Connected { info },
-        None => {
-            // Daemon not yet available — start in reconnecting mode with no
-            // prior version info. The health monitor will treat the first
-            // successful connection as a fresh connect (not an upgrade).
-            runt_mcp::health::DaemonState::Reconnecting {
-                since: std::time::Instant::now(),
-                attempt: 0,
-                last_info: None,
+    // Capture initial daemon info for health monitoring.
+    // Must query the SAME socket the health monitor will poll — otherwise
+    // a non-default RUNTIMED_SOCKET_PATH seeds state from the wrong daemon
+    // and the first successful ping flags a phantom version-mismatch
+    // "upgrade" (EXIT_DAEMON_UPGRADED).
+    let initial_state =
+        match runtimed_client::singleton::query_daemon_info(socket_path.clone()).await {
+            Some(info) => runt_mcp::health::DaemonState::Connected { info },
+            None => {
+                // Daemon not yet available — start in reconnecting mode with no
+                // prior version info. The health monitor will treat the first
+                // successful connection as a fresh connect (not an upgrade).
+                runt_mcp::health::DaemonState::Reconnecting {
+                    since: std::time::Instant::now(),
+                    attempt: 0,
+                    last_info: None,
+                }
             }
-        }
-    };
+        };
 
     use rmcp::service::ServiceExt;
     let server = if no_show {

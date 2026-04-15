@@ -958,20 +958,27 @@ where
                 .to_string_lossy()
                 .to_string();
 
-            // Verify the running daemon version matches what we intended to install
-            if let Some(info) = runtimed::singleton::get_running_daemon_info() {
-                let running_commit = extract_commit_hash(&info.version);
+            // Verify the running daemon version matches what we intended to install.
+            // Prefer the socket (source of truth); fall back to the legacy
+            // daemon.json for one release while older daemons haven't
+            // learned the GetDaemonInfo request.
+            let running_version = match client.daemon_info().await {
+                Ok(info) => Some(info.daemon_version),
+                Err(_) => runtimed::singleton::get_running_daemon_info().map(|i| i.version),
+            };
+            if let Some(version) = running_version {
+                let running_commit = extract_commit_hash(&version);
                 let bundled_commit = extract_commit_hash(&bundled);
                 if running_commit == bundled_commit {
                     log::info!(
                         "[startup] Upgraded daemon version confirmed: {} (attempt {})",
-                        info.version,
+                        version,
                         attempt
                     );
                 } else {
                     log::warn!(
                         "[startup] Daemon version mismatch after upgrade! running={}, bundled={}",
-                        info.version,
+                        version,
                         bundled
                     );
                 }
@@ -1369,18 +1376,25 @@ where
     // Check if daemon is already running
     let client = PoolClient::default();
     if let Ok(()) = client.ping().await {
-        // Daemon is running - check version alignment (production only)
+        // Daemon is running - check version alignment (production only).
+        // Prefer socket-sourced daemon info; fall back to the legacy
+        // daemon.json file for one release window while older daemons
+        // haven't learned GetDaemonInfo.
         if !runt_workspace::is_dev_mode() {
-            if let Some(info) = runtimed::singleton::get_running_daemon_info() {
+            let running_version = match client.daemon_info().await {
+                Ok(info) => Some(info.daemon_version),
+                Err(_) => runtimed::singleton::get_running_daemon_info().map(|i| i.version),
+            };
+            if let Some(version) = running_version {
                 // Compare commit hashes only - CI appends "+{git_sha}" to the version
                 // at build time, so commit hash is the precise compatibility check.
-                let running_commit = extract_commit_hash(&info.version);
+                let running_commit = extract_commit_hash(&version);
                 let bundled_commit = extract_commit_hash(&bundled_version);
 
                 if running_commit != bundled_commit {
                     log::info!(
                         "[startup] Daemon commit mismatch — will upgrade: running={}, bundled={}",
-                        info.version,
+                        version,
                         bundled_version
                     );
                     // Upgrade daemon to match bundled version
@@ -1388,12 +1402,13 @@ where
                 }
                 log::info!(
                     "[startup] Daemon version aligned: running={}, bundled={}",
-                    info.version,
+                    version,
                     bundled_version
                 );
             } else {
                 log::warn!(
-                    "[startup] Daemon responded to ping but info file missing (bundled={})",
+                    "[startup] Daemon responded to ping but version unavailable via \
+                     socket or daemon.json (bundled={})",
                     bundled_version
                 );
             }
@@ -1663,26 +1678,14 @@ async fn get_feedback_system_info() -> FeedbackSystemInfo {
 
 /// Get the blob server port from the running daemon.
 ///
-/// Primary path: query the daemon directly via the singleton Unix socket
-/// (`GetDaemonInfo` request). The daemon is the source of truth — this
-/// fixes the "output void" bug when `daemon.json` is missing but the
-/// daemon is alive.
-///
-/// Upgrade-window fallback: if the request fails (old daemon that doesn't
-/// recognize `GetDaemonInfo` and drops the connection), fall back to
-/// reading the on-disk `daemon.json` written by the old daemon. This
-/// fallback can be removed after one release cycle.
+/// Uses `query_daemon_info`, which prefers the socket-based
+/// `GetDaemonInfo` request (daemon is the source of truth — fixes the
+/// "output void" bug when `daemon.json` disappears) and falls back to
+/// the on-disk sidecar for the upgrade window against older daemons.
 #[tauri::command]
 async fn get_blob_port() -> Result<u16, String> {
-    let client = runtimed::client::PoolClient::new(runtimed_client::default_socket_path());
-    if let Ok(info) = client.daemon_info().await {
-        return info
-            .blob_port
-            .ok_or_else(|| "Blob server not available".to_string());
-    }
-    // Socket path failed — try the legacy sidecar. Only reachable when
-    // the daemon is a pre-GetDaemonInfo build.
-    let info = runtimed::singleton::get_running_daemon_info()
+    let info = runtimed::singleton::query_daemon_info(runtimed_client::default_socket_path())
+        .await
         .ok_or_else(|| "Daemon not running".to_string())?;
     info.blob_port
         .ok_or_else(|| "Blob server not available".to_string())
