@@ -240,3 +240,234 @@ pub fn format_cell_header(
     parts.push("━━━".to_string());
     parts.join(" ")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use runtimed_client::resolved_output::{DataValue, Output};
+    use std::collections::HashMap;
+
+    fn data(pairs: &[(&str, DataValue)]) -> HashMap<String, DataValue> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn strip_ansi_removes_color_codes() {
+        assert_eq!(strip_ansi("\x1b[31mred\x1b[0m"), "red");
+        assert_eq!(strip_ansi("\x1b[1;32mbold green\x1b[0m"), "bold green");
+        assert_eq!(strip_ansi("plain"), "plain");
+    }
+
+    #[test]
+    fn strip_ansi_removes_osc_sequence() {
+        // OSC: ESC ] ... BEL — used for window titles, hyperlinks. Must not
+        // leak through to the LLM as cruft.
+        assert_eq!(strip_ansi("\x1b]0;title\x07after"), "after");
+    }
+
+    #[test]
+    fn best_text_picks_highest_priority_mime() {
+        // `text/llm+plain` is synthesized by repr-llm and is the preferred
+        // representation for LLM consumption — must beat text/plain even
+        // when both are present.
+        let d = data(&[
+            ("text/plain", DataValue::Text("fallback".into())),
+            ("text/llm+plain", DataValue::Text("llm-optimized".into())),
+        ]);
+        assert_eq!(best_text_from_data(&d).as_deref(), Some("llm-optimized"));
+    }
+
+    #[test]
+    fn best_text_falls_back_to_application_json() {
+        let d = data(&[(
+            "application/json",
+            DataValue::Json(serde_json::json!({"a": 1})),
+        )]);
+        let Some(text) = best_text_from_data(&d) else {
+            panic!("json should render");
+        };
+        assert!(text.contains("\"a\""));
+        assert!(text.contains('1'));
+    }
+
+    #[test]
+    fn best_text_ignores_binary_only_data() {
+        let d = data(&[("image/png", DataValue::Binary(vec![0x89, 0x50]))]);
+        assert_eq!(best_text_from_data(&d), None);
+    }
+
+    #[test]
+    fn best_text_truncates_oversize_payloads() {
+        // Safety net for heavy types with no text/llm+plain synthesis.
+        // Truncation must include the size hint so the LLM sees that
+        // content was dropped.
+        let big = "a".repeat(16 * 1024);
+        let d = data(&[("text/plain", DataValue::Text(big))]);
+        let Some(text) = best_text_from_data(&d) else {
+            panic!("should return truncated");
+        };
+        assert!(text.contains("[truncated"));
+        assert!(text.contains("16 KB total"));
+    }
+
+    #[test]
+    fn truncate_text_respects_char_boundaries() {
+        // 4-byte characters (e.g. emoji) right at the boundary must not
+        // cut mid-codepoint and produce invalid UTF-8.
+        let emoji = "🚀".repeat(3000); // 4 bytes each = 12 KB
+        let d = data(&[("text/plain", DataValue::Text(emoji))]);
+        let Some(text) = best_text_from_data(&d) else {
+            panic!("should return truncated");
+        };
+        assert!(text.contains("[truncated"));
+        // If we cut mid-codepoint, the format! would have panicked already.
+    }
+
+    #[test]
+    fn format_stream_output_strips_ansi() {
+        let o = Output::stream("stdout", "\x1b[31merror\x1b[0m in the output");
+        assert_eq!(
+            format_output_text(&o).as_deref(),
+            Some("error in the output")
+        );
+    }
+
+    #[test]
+    fn format_empty_stream_output_is_none() {
+        let o = Output::stream("stdout", "");
+        assert_eq!(format_output_text(&o), None);
+    }
+
+    #[test]
+    fn format_error_output_joins_ename_evalue_and_traceback() {
+        let o = Output::error(
+            "NameError",
+            "name 'x' is not defined",
+            vec![
+                "\x1b[31mTraceback (most recent call last):\x1b[0m".into(),
+                "  File \"<stdin>\", line 1, in <module>".into(),
+            ],
+        );
+        let Some(text) = format_output_text(&o) else {
+            panic!("error output should format");
+        };
+        assert!(text.contains("NameError: name 'x' is not defined"));
+        assert!(text.contains("Traceback"));
+        // ANSI codes in traceback must be stripped too.
+        assert!(!text.contains('\x1b'));
+    }
+
+    #[test]
+    fn format_unknown_output_type_is_none() {
+        let o = Output {
+            output_type: "weird-future-type".into(),
+            ..Output::stream("stdout", "")
+        };
+        assert_eq!(format_output_text(&o), None);
+    }
+
+    #[test]
+    fn format_outputs_text_joins_with_blank_line() {
+        let outputs = vec![
+            Output::stream("stdout", "first"),
+            Output::stream("stdout", "second"),
+        ];
+        assert_eq!(format_outputs_text(&outputs), "first\n\nsecond");
+    }
+
+    #[test]
+    fn outputs_to_content_items_summarizes_image_only() {
+        // A bare image output has no text rep; the agent needs to know
+        // something was produced, hence the "[N output(s) with non-text
+        // content]" footer.
+        let outputs = vec![Output::display_data(data(&[(
+            "image/png",
+            DataValue::Binary(vec![0; 10]),
+        )]))];
+        let items = outputs_to_content_items(&outputs);
+        assert_eq!(items.len(), 1);
+        let rendered = format!("{:?}", items[0]);
+        assert!(rendered.contains("1 output"));
+        assert!(rendered.contains("image/png"));
+    }
+
+    #[test]
+    fn outputs_to_content_items_excludes_llm_mimes_from_summary() {
+        // `text/llm+plain` is an LLM synthesis artifact — if it exists we'd
+        // already have rendered the output as text, so we should never be
+        // in the omitted branch. But if we were, the summary should not
+        // leak the llm+plain mime type to the agent.
+        let outputs = vec![Output::display_data(data(&[
+            ("image/png", DataValue::Binary(vec![0; 10])),
+            ("text/llm+plain", DataValue::Text("hidden".into())),
+        ]))];
+        let items = outputs_to_content_items(&outputs);
+        // Rendered as text via text/llm+plain — no omitted footer.
+        assert_eq!(items.len(), 1);
+        let rendered = format!("{:?}", items[0]);
+        assert!(rendered.contains("hidden"));
+    }
+
+    #[test]
+    fn format_cell_summary_truncates_long_source() {
+        let summary = format_cell_summary(
+            3,
+            "cell-abc",
+            "code",
+            "import numpy as np\nimport pandas as pd",
+            Some("5"),
+            Some("idle"),
+            15,
+        );
+        assert!(summary.starts_with("3 | code | idle | id=cell-abc | exec=5 | "));
+        assert!(summary.contains("…[+"));
+        assert!(summary.contains(" chars]"));
+    }
+
+    #[test]
+    fn format_cell_summary_skips_exec_for_markdown() {
+        // Markdown cells don't have execution counts; the exec= field
+        // must not appear even if a value was threaded through.
+        let summary = format_cell_summary(0, "cell-md", "markdown", "# Hello", Some("1"), None, 50);
+        assert!(!summary.contains("exec="));
+        assert!(summary.contains("# Hello"));
+    }
+
+    #[test]
+    fn format_cell_summary_collapses_whitespace() {
+        // Multi-line or multi-space source must render on a single line.
+        let summary = format_cell_summary(
+            0,
+            "cell-x",
+            "code",
+            "x = 1\n\n\n  y   =    2",
+            None,
+            None,
+            100,
+        );
+        assert!(summary.contains("x = 1 y = 2"));
+        assert!(!summary.contains('\n'));
+    }
+
+    #[test]
+    fn format_cell_header_chooses_icon_by_status() {
+        let idle = format_cell_header("cell-a", "code", Some("3"), Some("idle"));
+        assert!(idle.contains("✓ idle"));
+        assert!(idle.contains("[3]"));
+
+        let err = format_cell_header("cell-b", "code", None, Some("error"));
+        assert!(err.contains("✗ error"));
+
+        let running = format_cell_header("cell-c", "code", None, Some("running"));
+        assert!(running.contains("◐ running"));
+
+        let queued = format_cell_header("cell-d", "code", None, Some("queued"));
+        assert!(queued.contains("⧗ queued"));
+
+        let unknown = format_cell_header("cell-e", "code", None, Some("bogus"));
+        assert!(unknown.contains("? bogus"));
+    }
+}
