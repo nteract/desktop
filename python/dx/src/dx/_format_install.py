@@ -99,11 +99,13 @@ def install_formatters() -> None:
     # IPython's InteractiveShell exposes DisplayFormatter as an attribute,
     # not a method — do not call it.
     mimebundle = ip.display_formatter.mimebundle_formatter
+    ipython_display = ip.display_formatter.ipython_display_formatter
 
     try:
         import pandas as pd
 
         mimebundle.for_type(pd.DataFrame, _pandas_mimebundle)
+        ipython_display.for_type(pd.DataFrame, _pandas_ipython_display)
     except ImportError:
         pass
 
@@ -111,6 +113,7 @@ def install_formatters() -> None:
         import polars as pl
 
         mimebundle.for_type(pl.DataFrame, _polars_mimebundle)
+        ipython_display.for_type(pl.DataFrame, _polars_ipython_display)
     except ImportError:
         pass
 
@@ -203,6 +206,54 @@ def _pandas_mimebundle(df: Any, include=None, exclude=None) -> dict | None:
 
 def _polars_mimebundle(df: Any, include=None, exclude=None) -> dict | None:
     return _emit_dataframe(df, total_rows=df.height)
+
+
+def _pandas_ipython_display(df: Any) -> None:
+    """`ipython_display_formatter` handler for `pd.DataFrame`.
+
+    IPython's `DisplayFormatter.format()` checks `ipython_display_formatter`
+    before walking mimebundle/per-MIME formatters. If our handler matches,
+    `format()` returns `({}, {})` and the displayhook's send is suppressed.
+    We publish our own `display_data` message via `publish_display_data`,
+    which flows through `ZMQDisplayPublisher.publish` → the existing
+    `_dx_display_pub_hook`, which attaches parquet buffers.
+
+    Net effect for a last-expression `df`: one `display_data` message goes
+    on the wire (with buffers). No `execute_result` is emitted — the saved
+    `.ipynb` records the output as `display_data`, which is valid nbformat.
+    `_`, `__`, `___` and `ExecutionResult` bookkeeping still update because
+    they run at steps 4–5 of `DisplayHook.__call__`, independently of the
+    message send.
+    """
+    _publish_via_ipython_display(df, total_rows=len(df))
+
+
+def _polars_ipython_display(df: Any) -> None:
+    """`ipython_display_formatter` handler for `pl.DataFrame`."""
+    _publish_via_ipython_display(df, total_rows=df.height)
+
+
+def _publish_via_ipython_display(df: Any, *, total_rows: int) -> None:
+    """Shared body for the pandas / polars `ipython_display` handlers."""
+    # Lazy import so dx.install() doesn't hard-depend on IPython being
+    # importable from the install site (it already is under ipykernel,
+    # but stay symmetrical with _emit_dataframe).
+    try:
+        from IPython.display import publish_display_data
+    except ImportError:
+        return
+
+    try:
+        bundle = _emit_dataframe(df, total_rows=total_rows)
+    except Exception as exc:
+        log.debug("dx: _emit_dataframe failed: %s — falling back to repr", exc)
+        bundle = None
+
+    if bundle:
+        publish_display_data(data=bundle, metadata={})
+    else:
+        # Fallback so a failed formatter doesn't silently eat the output.
+        print(repr(df))
 
 
 def _emit_dataframe(df: Any, *, total_rows: int) -> dict | None:

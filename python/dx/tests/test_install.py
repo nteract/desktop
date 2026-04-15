@@ -15,6 +15,7 @@ class FakeMimebundleFormatter:
 class FakeDisplayFormatter:
     def __init__(self) -> None:
         self.mimebundle_formatter = FakeMimebundleFormatter()
+        self.ipython_display_formatter = FakeMimebundleFormatter()
 
 
 class FakeSession:
@@ -93,6 +94,7 @@ def test_install_treats_display_formatter_as_attribute_not_method(monkeypatch):
     class NonCallableFormatter:
         def __init__(self):
             self.mimebundle_formatter = FakeMimebundleFormatter()
+            self.ipython_display_formatter = FakeMimebundleFormatter()
 
         def __call__(self, *a, **kw):
             raise TypeError("real IPython's display_formatter is not callable")
@@ -407,3 +409,60 @@ def test_install_third_party_renderer_activation_is_noop_when_absent(monkeypatch
     import dx
 
     dx.install()  # must not raise
+
+
+def test_install_registers_ipython_display_handler_for_pandas(monkeypatch):
+    """dx.install() must register a handler on ipython_display_formatter
+    alongside the existing mimebundle_formatter registration, so last-
+    expression `df` short-circuits the execute_result path."""
+    _reset_installed(monkeypatch)
+    ip = FakeIPython()
+    monkeypatch.setattr("dx._format_install._get_ipython_for_format", lambda: ip)
+
+    import dx
+
+    dx.install()
+    assert pd.DataFrame in ip.display_formatter.ipython_display_formatter.registrations
+
+
+def test_ipython_display_handler_publishes_and_stashes_buffers(monkeypatch):
+    """The handler builds a mimebundle via _emit_dataframe (which stashes
+    parquet bytes in _pending_buffers keyed by hash) and publishes a
+    display_data message carrying BLOB_REF_MIME. The publisher hook is
+    the piece that later attaches the buffers — this test covers just
+    the formatter side."""
+    _reset_installed(monkeypatch)
+    ip = FakeIPython()
+    monkeypatch.setattr("dx._format_install._get_ipython_for_format", lambda: ip)
+
+    import dx
+    import dx._format_install as fi
+
+    dx.install()
+    handler = ip.display_formatter.ipython_display_formatter.registrations[pd.DataFrame]
+
+    published: list[dict] = []
+
+    def fake_publish_display_data(data, metadata=None, **kwargs):
+        published.append({"data": data, "metadata": metadata})
+
+    # Patch the real publish_display_data *inside* the function scope where
+    # the handler imports it. The handler does `from IPython.display import
+    # publish_display_data` lazily, so patch IPython.display.
+    import IPython.display as ipd
+
+    monkeypatch.setattr(ipd, "publish_display_data", fake_publish_display_data)
+
+    df = pd.DataFrame({"a": [1, 2, 3], "b": ["x", "y", "z"]})
+    handler(df)
+
+    assert len(published) == 1, f"expected one publish call, got {len(published)}"
+    bundle = published[0]["data"]
+    assert BLOB_REF_MIME in bundle, f"expected BLOB_REF_MIME in bundle keys: {list(bundle)}"
+    ref = bundle[BLOB_REF_MIME]
+    assert ref["content_type"] == "application/vnd.apache.parquet"
+    assert isinstance(ref["hash"], str) and len(ref["hash"]) == 64  # sha256 hex
+
+    # The parquet bytes must be in the pending stash so the publisher hook
+    # can pop them on the subsequent IOPub send.
+    assert ref["hash"] in fi._pending_buffers(), "buffer not stashed for hash"
