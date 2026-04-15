@@ -83,8 +83,8 @@ def test_install_is_idempotent(monkeypatch):
     dx.install()
     dx.install()
     assert (
-        len(ip.display_formatter.mimebundle_formatter.registrations) <= 3
-    )  # pandas + optional polars + optional narwhals
+        len(ip.display_formatter.mimebundle_formatter.registrations) <= 4
+    )  # pandas + optional polars + optional narwhals + optional datasets
 
 
 def test_install_treats_display_formatter_as_attribute_not_method(monkeypatch):

@@ -219,7 +219,7 @@ class TestDatasetSummary:
         pytest.importorskip("datasets")
 
     def test_dataset_summary_from_features_only(self):
-        from datasets import Dataset  # ty: ignore[unresolved-import]
+        from datasets import Dataset
 
         ds = Dataset.from_dict({"text": ["hello", "world"], "label": [0, 1]})
         out = summarize_dataset(ds)
@@ -230,7 +230,7 @@ class TestDatasetSummary:
         assert "label" in out
 
     def test_dataset_summary_includes_sample_row(self):
-        from datasets import Dataset  # ty: ignore[unresolved-import]
+        from datasets import Dataset
 
         ds = Dataset.from_dict({"name": ["alice"], "score": [0.95]})
         out = summarize_dataset(ds)
@@ -238,7 +238,7 @@ class TestDatasetSummary:
         assert "alice" in out
 
     def test_dataset_summary_empty(self):
-        from datasets import Dataset  # ty: ignore[unresolved-import]
+        from datasets import Dataset
 
         ds = Dataset.from_dict({"a": [], "b": []})
         out = summarize_dataset(ds)
@@ -247,7 +247,7 @@ class TestDatasetSummary:
         assert "Sample" not in out
 
     def test_dataset_summary_truncates_long_values(self):
-        from datasets import Dataset  # ty: ignore[unresolved-import]
+        from datasets import Dataset
 
         ds = Dataset.from_dict({"bio": ["x" * 200]})
         out = summarize_dataset(ds)

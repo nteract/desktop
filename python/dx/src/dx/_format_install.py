@@ -155,7 +155,7 @@ def install_formatters() -> None:
         pass
 
     try:
-        import datasets  # noqa: PLC0415  # ty: ignore[unresolved-import]
+        import datasets  # noqa: PLC0415
 
         mimebundle.for_type(datasets.Dataset, _dataset_mimebundle)
         ipython_display.for_type(datasets.Dataset, _dataset_ipython_display)
