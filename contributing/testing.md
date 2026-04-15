@@ -195,6 +195,7 @@ Configuration in `conftest.py` defines markers and daemon detection.
 |------|------|-----------------|
 | `test_session_unit.py` | Unit | No |
 | `test_daemon_integration.py` | Integration | Yes |
+| `test_dx_integration.py` | Integration (dx — parquet round-trip via daemon) | Yes (+ workspace venv) |
 | `test_ipython_bridge.py` | Unit-style bridge test | No |
 | `test_binary.py` | Binary/CLI | No |
 
@@ -217,6 +218,53 @@ RUNTIMED_SOCKET_PATH="$(
 # CI mode (spawns its own daemon)
 RUNTIMED_INTEGRATION_TEST=1 pytest python/runtimed/tests/ -v
 ```
+
+#### dx integration tests (`test_dx_integration.py`)
+
+These exercise the full dx parquet round-trip — kernel formatter → IOPub
+buffers → daemon blob store → resolved bytes — against a real daemon and
+a real ipykernel.
+
+The dx suite needs the **workspace venv**, not `python/runtimed/.venv`,
+because the test process must `import dx` (and pandas / pyarrow / polars)
+and the kernel started by the test must also resolve those via
+`uv:pyproject` against the repo-root `pyproject.toml`. Run from
+`python/runtimed/` so its `tool.pytest.ini_options` (asyncio_mode,
+timeout) apply, but pin `VIRTUAL_ENV` at the workspace `.venv`:
+
+```bash
+# Run from the repo root throughout — the subshells below isolate any
+# directory changes so the next command always runs from the root.
+
+REPO="$(git rev-parse --show-toplevel)"
+cd "$REPO"
+
+# One-time: populate the workspace venv with all members + deps
+uv sync
+
+# One-time: install runtimed-py into the workspace venv
+# (NOT python/runtimed/.venv, which is a separate test-only venv)
+( cd crates/runtimed-py && \
+  VIRTUAL_ENV="$REPO/.venv" \
+  uv run --directory ../../python/runtimed maturin develop )
+
+# Resolve the dev daemon socket
+SOCK="$( RUNTIMED_DEV=1 RUNTIMED_WORKSPACE_PATH="$REPO" \
+  "$REPO/target/debug/runt" daemon status --json \
+  | python3 -c 'import sys,json; print(json.load(sys.stdin)["socket_path"])')"
+
+# Run dx integration tests from python/runtimed/ so its
+# tool.pytest.ini_options apply (asyncio_mode, timeout)
+( cd python/runtimed && \
+  VIRTUAL_ENV="$REPO/.venv" \
+  RUNTIMED_SOCKET_PATH="$SOCK" \
+  uv run pytest tests/test_dx_integration.py -v )
+```
+
+> The same workspace-venv pattern is what PR #1787 introduces in
+> `build.yml`'s "Run integration tests" step (it wires
+> `test_dx_integration.py` into the CI gate). Until that merges, only
+> `test_daemon_integration.py` runs in CI and the dx suite is local-only.
 
 When Python code should honor that exported socket, use `default_socket_path()`. Use `socket_path_for_channel("stable"|"nightly")` only for tests that intentionally target a specific release channel.
 
