@@ -243,17 +243,14 @@ df
     # Parquet bytes resolved from the blob store.
     parquet_bytes = output.data.get("application/vnd.apache.parquet")
     assert parquet_bytes is not None, (
-        f"parquet MIME missing — polars encoder may not have run. keys: "
-        f"{list(output.data.keys())}"
+        f"parquet MIME missing — polars encoder may not have run. keys: {list(output.data.keys())}"
     )
     assert isinstance(parquet_bytes, (bytes, bytearray))
     assert parquet_bytes[:4] == b"PAR1", "not a parquet file (bad magic)"
 
     # Python-side llm summary identifies polars specifically.
     llm = output.data.get("text/llm+plain", "")
-    assert llm.startswith("DataFrame (polars)"), (
-        f"expected polars summary, got: {llm[:80]!r}"
-    )
+    assert llm.startswith("DataFrame (polars)"), f"expected polars summary, got: {llm[:80]!r}"
 
     # Round-trip via pyarrow to verify the bytes are valid parquet AND
     # contain the columns we sent.
