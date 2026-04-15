@@ -519,6 +519,8 @@ pub struct Daemon {
     blob_store: Arc<BlobStore>,
     /// HTTP port for the blob server (set after startup).
     blob_port: Mutex<Option<u16>>,
+    /// When the daemon process began. Reported via Ping for diagnostics.
+    started_at: chrono::DateTime<chrono::Utc>,
     /// Per-notebook Automerge sync rooms.
     notebook_rooms: NotebookRooms,
     /// Set to `true` the first time any client causes a room to be
@@ -620,6 +622,7 @@ impl Daemon {
             pool_doc_changed,
             blob_store,
             blob_port: Mutex::new(None),
+            started_at: chrono::Utc::now(),
             notebook_rooms: Arc::new(Mutex::new(HashMap::new())),
             rooms_ever_seen: std::sync::atomic::AtomicBool::new(false),
             redirect_map: std::sync::Mutex::new(HashMap::new()),
@@ -633,6 +636,36 @@ impl Daemon {
     pub async fn trigger_shutdown(&self) {
         *self.shutdown.lock().await = true;
         self.shutdown_notify.notify_waiters();
+    }
+
+    /// Build the `DaemonInfo` response from live daemon state.
+    ///
+    /// This carries every field that `daemon.json` used to — `pid`,
+    /// `version`, `started_at`, `blob_port`, plus the dev-mode worktree
+    /// fields — so clients can query the daemon directly over the socket
+    /// instead of reading a sidecar file. Keeping it in its own message
+    /// (not overloaded onto `Pong`) means the frequent liveness-check
+    /// path stays tiny and the one-shot discovery path carries the full
+    /// payload.
+    async fn build_daemon_info(&self) -> Response {
+        let blob_port = *self.blob_port.lock().await;
+        let (worktree_path, workspace_description) = if crate::is_dev_mode() {
+            (
+                crate::get_workspace_path().map(|p| p.to_string_lossy().to_string()),
+                crate::get_workspace_name(),
+            )
+        } else {
+            (None, None)
+        };
+        Response::DaemonInfo {
+            protocol_version: notebook_protocol::connection::PROTOCOL_VERSION,
+            daemon_version: crate::daemon_version().to_string(),
+            pid: std::process::id(),
+            started_at: self.started_at,
+            blob_port,
+            worktree_path,
+            workspace_description,
+        }
     }
 
     /// Get the room eviction delay.
@@ -2226,6 +2259,8 @@ impl Daemon {
                 protocol_version: Some(notebook_protocol::connection::PROTOCOL_VERSION),
                 daemon_version: Some(crate::daemon_version().to_string()),
             },
+
+            Request::GetDaemonInfo => self.build_daemon_info().await,
 
             Request::Shutdown => {
                 self.trigger_shutdown().await;

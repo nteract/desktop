@@ -69,6 +69,27 @@ pub struct PongInfo {
     pub daemon_version: Option<String>,
 }
 
+/// Rich daemon metadata. Replaces the `daemon.json` sidecar file —
+/// query this from the daemon directly via `PoolClient::daemon_info()`.
+#[derive(Debug, Clone)]
+pub struct DaemonInfo {
+    /// Numeric protocol version.
+    pub protocol_version: u32,
+    /// Daemon version string (e.g., "2.0.0+abc123").
+    pub daemon_version: String,
+    /// Daemon process ID.
+    pub pid: u32,
+    /// When the daemon process began.
+    pub started_at: chrono::DateTime<chrono::Utc>,
+    /// HTTP port for the content-addressed blob server. `None` if the
+    /// blob server hasn't finished binding yet.
+    pub blob_port: Option<u16>,
+    /// Path to the git worktree this dev daemon is pinned to.
+    pub worktree_path: Option<String>,
+    /// Human-readable workspace description (dev mode only).
+    pub workspace_description: Option<String>,
+}
+
 impl PongInfo {
     /// Check whether the daemon's protocol version is compatible with this client.
     ///
@@ -167,6 +188,41 @@ impl PoolClient {
             } => Ok(PongInfo {
                 protocol_version,
                 daemon_version,
+            }),
+            Response::Error { message } => Err(ClientError::DaemonError(message)),
+            _ => Err(ClientError::ProtocolError(
+                "Unexpected response".to_string(),
+            )),
+        }
+    }
+
+    /// Query rich daemon metadata (pid, blob port, worktree info, etc.).
+    ///
+    /// This is the socket-based replacement for reading `daemon.json`.
+    /// Returns `Err` with `DaemonError("Unknown request")` on daemons too
+    /// old to know this request — callers can either treat that as
+    /// "metadata unavailable" or fall back to the file (we don't bake in
+    /// a file fallback here because the whole point is to stop relying
+    /// on the file).
+    pub async fn daemon_info(&self) -> Result<DaemonInfo, ClientError> {
+        let response = self.send_request(Request::GetDaemonInfo).await?;
+        match response {
+            Response::DaemonInfo {
+                protocol_version,
+                daemon_version,
+                pid,
+                started_at,
+                blob_port,
+                worktree_path,
+                workspace_description,
+            } => Ok(DaemonInfo {
+                protocol_version,
+                daemon_version,
+                pid,
+                started_at,
+                blob_port,
+                worktree_path,
+                workspace_description,
             }),
             Response::Error { message } => Err(ClientError::DaemonError(message)),
             _ => Err(ClientError::ProtocolError(

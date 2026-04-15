@@ -7,6 +7,7 @@
 //! Daemon-internal types (Request, Response, BlobRequest,
 //! BlobResponse) are defined here.
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -59,6 +60,13 @@ pub enum Request {
     /// Get environment paths currently in use by running kernels.
     /// Used by `runt env clean` to avoid evicting active environments.
     ActiveEnvPaths,
+
+    /// Get rich daemon metadata (pid, version, start time, blob server
+    /// port, dev-mode worktree). Supersedes reading the on-disk
+    /// `daemon.json` sidecar, which can go stale when the daemon crashes
+    /// or is forcibly killed. Clients should prefer this request and
+    /// fall back to `Ping` if they only need the version.
+    GetDaemonInfo,
 }
 
 /// Responses from the daemon to clients.
@@ -90,6 +98,37 @@ pub enum Response {
         /// Daemon version string (e.g., "2.0.0+abc123").
         #[serde(default, skip_serializing_if = "Option::is_none")]
         daemon_version: Option<String>,
+    },
+
+    /// Rich daemon metadata — replaces the `daemon.json` sidecar file.
+    ///
+    /// Returned from `Request::GetDaemonInfo`. Carries everything the
+    /// pre-socket `get_running_daemon_info()` used to read out of the
+    /// file: pid, version, start time, blob server port, and the dev-mode
+    /// worktree fields. Fields are `Option` for backward compatibility —
+    /// older daemons that don't know this request will respond with
+    /// `Response::Error { message: "Unknown request" }` (the client should
+    /// treat that as "metadata unavailable").
+    DaemonInfo {
+        /// Numeric protocol version (matches `PROTOCOL_VERSION`).
+        protocol_version: u32,
+        /// Daemon version string (e.g., "2.0.0+abc123").
+        daemon_version: String,
+        /// Daemon process ID.
+        pid: u32,
+        /// When the daemon started.
+        started_at: DateTime<Utc>,
+        /// HTTP port for the content-addressed blob server. `None` if the
+        /// blob server hasn't finished binding yet.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        blob_port: Option<u16>,
+        /// Path to the git worktree this dev daemon is pinned to.
+        /// Non-dev daemons return None.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        worktree_path: Option<String>,
+        /// Human-readable workspace description (dev mode only).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace_description: Option<String>,
     },
 
     /// Shutdown acknowledged.

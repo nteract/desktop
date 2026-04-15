@@ -1662,9 +1662,26 @@ async fn get_feedback_system_info() -> FeedbackSystemInfo {
 }
 
 /// Get the blob server port from the running daemon.
-/// Used by the frontend to resolve manifest hashes to outputs.
+///
+/// Primary path: query the daemon directly via the singleton Unix socket
+/// (`GetDaemonInfo` request). The daemon is the source of truth — this
+/// fixes the "output void" bug when `daemon.json` is missing but the
+/// daemon is alive.
+///
+/// Upgrade-window fallback: if the request fails (old daemon that doesn't
+/// recognize `GetDaemonInfo` and drops the connection), fall back to
+/// reading the on-disk `daemon.json` written by the old daemon. This
+/// fallback can be removed after one release cycle.
 #[tauri::command]
 async fn get_blob_port() -> Result<u16, String> {
+    let client = runtimed::client::PoolClient::new(runtimed_client::default_socket_path());
+    if let Ok(info) = client.daemon_info().await {
+        return info
+            .blob_port
+            .ok_or_else(|| "Blob server not available".to_string());
+    }
+    // Socket path failed — try the legacy sidecar. Only reachable when
+    // the daemon is a pre-GetDaemonInfo build.
     let info = runtimed::singleton::get_running_daemon_info()
         .ok_or_else(|| "Daemon not running".to_string())?;
     info.blob_port
