@@ -231,7 +231,8 @@ crates/runtimed/
 │   ├── notebook_sync_server.rs  # NotebookRoom, room lifecycle, autosave, re-keying, sync loop
 │   ├── runtime_agent.rs         # Runtime agent subprocess: Unix socket peer, CRDT queue watching, kernel ownership
 │   ├── runtime_agent_handle.rs  # Coordinator-side runtime agent process management (spawn + monitor)
-│   ├── kernel_manager.rs        # RoomKernel: kernel lifecycle, execution queue, IOPub output routing
+│   ├── jupyter_kernel.rs        # JupyterKernel: process spawn, ZMQ socket wiring, IOPub output routing
+│   ├── kernel_manager.rs        # Shared kernel plumbing: QueueCommand, KernelStatus, QueuedCell, output conversion, widget buffers
 │   ├── kernel_pids.rs           # Kernel PID tracking and orphan reaping
 │   ├── singleton.rs             # Daemon locking/singleton management
 │   ├── sync_server.rs           # Settings Automerge sync handler

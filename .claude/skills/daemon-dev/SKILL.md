@@ -162,7 +162,8 @@ crates/runtimed/src/
   main.rs                  — CLI entry point
   daemon.rs                — Daemon state, pool management, connection routing
   notebook_sync_server.rs  — NotebookRoom, room lifecycle, autosave, re-keying
-  kernel_manager.rs        — RoomKernel: lifecycle, execution queue, IOPub routing
+  jupyter_kernel.rs        — JupyterKernel: process spawn, ZMQ socket wiring, IOPub output routing
+  kernel_manager.rs        — Shared kernel plumbing: QueueCommand, KernelStatus, QueuedCell, output conversion, widget buffers
   runtime_agent.rs         — Process-isolated runtime agent: kernel lifecycle, IOPub, RuntimeStateDoc writes
   runtime_agent_handle.rs  — Coordinator-side runtime agent process management
   output_store.rs          — Output manifest creation, blob inlining threshold
