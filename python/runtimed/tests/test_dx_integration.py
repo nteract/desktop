@@ -201,7 +201,12 @@ async def test_dx_polars_display_emits_blob_ref_with_buffers(session):  # noqa: 
     """Same content-addressed round-trip as the pandas test, but exercising
     the polars encoder path in `_format._serialize_polars`. Polars writes
     parquet via its own native encoder (not pyarrow), so this is a real
-    end-to-end check that the polars side hashes/uploads/resolves correctly."""
+    end-to-end check that the polars side hashes/uploads/resolves correctly.
+
+    Skipped if polars isn't installed — dx ships with polars as an optional
+    extra (`dx[polars]`), and minimal environments may not have it.
+    """
+    pytest.importorskip("polars")
     await async_start_kernel_with_retry(session, env_source="uv:pyproject")
 
     bootstrap_id = await async_create_cell_and_wait_for_sync(session, _BOOTSTRAP)
@@ -266,6 +271,8 @@ async def test_dx_polars_last_expression_uses_polars_encoder(session):  # noqa: 
     """Belt-and-suspenders for the polars path: confirm the parquet payload
     was actually written by polars's native writer, not pyarrow.
 
+    Skipped if polars isn't installed.
+
     The `text/llm+plain` summary alone isn't a reliable proof — it's
     derived from `type(df).__module__` in `summarize_dataframe`, so it
     would still say `(polars)` if `_serialize_polars` accidentally fell
@@ -273,6 +280,7 @@ async def test_dx_polars_last_expression_uses_polars_encoder(session):  # noqa: 
     instead: polars writes `created_by = "Polars"`, while pyarrow writes
     `created_by = "parquet-cpp-arrow ..."`. This catches an encoder
     swap that the summary text would miss."""
+    pytest.importorskip("polars")
     await async_start_kernel_with_retry(session, env_source="uv:pyproject")
 
     bootstrap_id = await async_create_cell_and_wait_for_sync(session, _BOOTSTRAP)
