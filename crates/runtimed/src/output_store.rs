@@ -1036,6 +1036,33 @@ mod tests {
         assert_eq!(p.frames, 0);
     }
 
+    #[test]
+    fn stream_preview_caps_tail_on_long_single_line() {
+        // A single multi-KB line should cap the tail too. The tail walks
+        // forward to the next char boundary, so allow a small overrun on
+        // the advertised byte cap (≤ 3 bytes of slack for UTF-8).
+        let text = "y".repeat(10_000);
+        let p = StreamPreview::from_text(&text);
+        assert_eq!(p.total_bytes, 10_000);
+        assert!(p.tail.len() <= 1024 + 3);
+        // Head plus tail together should still sample both ends of the stream.
+        assert!(p.head.starts_with('y'));
+    }
+
+    #[test]
+    fn stream_preview_respects_utf8_boundaries() {
+        // Three-byte code point repeated past the cap — must not panic and
+        // must produce valid UTF-8. Allow a few bytes of slack because
+        // safe_byte_slice rounds to char boundaries.
+        let text = "日".repeat(1_000); // 3 bytes each = 3_000 bytes
+        let p = StreamPreview::from_text(&text);
+        assert_eq!(p.total_bytes, 3_000);
+        assert!(p.head.chars().all(|c| c == '日'));
+        assert!(p.tail.chars().all(|c| c == '日'));
+        assert!(p.head.len() <= 1024 + 3);
+        assert!(p.tail.len() <= 1024 + 3);
+    }
+
     #[tokio::test]
     async fn dx_ref_mime_composes_content_ref_under_target_type() {
         let dir = tempfile::tempdir().unwrap();
