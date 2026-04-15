@@ -2058,15 +2058,19 @@ mod tests {
                 "total_lines": 100u64,
             },
         });
-        let out = resolve_output_for_llm(
+        let Some(out) = resolve_output_for_llm(
             &manifest,
             &Some("http://localhost:9999".to_string()),
             &None,
             None,
         )
         .await
-        .expect("output");
-        let text = out.text.expect("stream text");
+        else {
+            panic!("resolve should succeed");
+        };
+        let Some(text) = out.text else {
+            panic!("stream output should have text");
+        };
         assert!(text.starts_with("line 0\nline 1\n"));
         assert!(text.trim_end().ends_with("line 99"));
         assert!(text.contains("50000 bytes"));
@@ -2087,10 +2091,12 @@ mod tests {
                 "total_lines": 10u64,
             },
         });
-        let out = resolve_output_for_llm(&manifest, &None, &None, None)
-            .await
-            .expect("output");
-        let text = out.text.expect("stream text");
+        let Some(out) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+            panic!("resolve should succeed");
+        };
+        let Some(text) = out.text else {
+            panic!("stream output should have text");
+        };
         assert!(text.contains("head text"));
         assert!(text.contains("tail text"));
         assert!(!text.contains("http://"));
@@ -2110,17 +2116,21 @@ mod tests {
                 "frames": 200u32,
             },
         });
-        let out = resolve_output_for_llm(
+        let Some(out) = resolve_output_for_llm(
             &manifest,
             &Some("http://localhost:9999".to_string()),
             &None,
             None,
         )
         .await
-        .expect("output");
+        else {
+            panic!("resolve should succeed");
+        };
         assert_eq!(out.ename.as_deref(), Some("RecursionError"));
         assert_eq!(out.evalue.as_deref(), Some("oops"));
-        let tb = out.traceback.expect("traceback");
+        let Some(tb) = out.traceback else {
+            panic!("error output should have traceback");
+        };
         assert_eq!(tb[0], "RecursionError: maximum recursion depth");
         assert!(tb[1].contains("200"));
         assert!(tb[1].contains("http://localhost:9999/blob/tb_hash"));
@@ -2130,20 +2140,27 @@ mod tests {
     async fn llm_stream_without_preview_still_fetches_blob() {
         // Backwards compat: pre-change manifests have no llm_preview.
         // The resolver falls back to reading the blob from disk.
-        let dir = tempfile::tempdir().unwrap();
+        let Ok(dir) = tempfile::tempdir() else {
+            panic!("tempdir should succeed");
+        };
         let store_path = dir.path().to_path_buf();
         let hash = "abc1234567890def";
         let subdir = store_path.join(&hash[..2]);
-        std::fs::create_dir_all(&subdir).unwrap();
-        std::fs::write(subdir.join(&hash[2..]), "full stream text\n").unwrap();
+        let Ok(()) = std::fs::create_dir_all(&subdir) else {
+            panic!("create blob subdir");
+        };
+        let Ok(()) = std::fs::write(subdir.join(&hash[2..]), "full stream text\n") else {
+            panic!("write blob");
+        };
         let manifest = serde_json::json!({
             "output_type": "stream",
             "name": "stdout",
             "text": {"blob": hash, "size": 18},
         });
-        let out = resolve_output_for_llm(&manifest, &None, &Some(store_path), None)
-            .await
-            .expect("output");
+        let Some(out) = resolve_output_for_llm(&manifest, &None, &Some(store_path), None).await
+        else {
+            panic!("resolve should succeed");
+        };
         assert_eq!(out.text.as_deref(), Some("full stream text\n"));
     }
 }
