@@ -1511,3 +1511,82 @@ async fn test_pool_size_config_honored() {
         "apply_json_changes should return false when values don't change"
     );
 }
+
+#[tokio::test]
+async fn stream_blob_spill_is_renderable_by_llm_resolver() {
+    use runtimed::blob_store::BlobStore;
+    use runtimed::output_store::{create_manifest, DEFAULT_INLINE_THRESHOLD};
+    use runtimed_client::output_resolver::resolve_cell_outputs_for_llm;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = BlobStore::new(dir.path().to_path_buf());
+
+    let big: String = (0..2_000).map(|i| format!("stdout line {i}\n")).collect();
+
+    let raw = serde_json::json!({
+        "output_type": "stream",
+        "name": "stdout",
+        "text": big.clone(),
+    });
+
+    let manifest = create_manifest(&raw, &store, DEFAULT_INLINE_THRESHOLD)
+        .await
+        .unwrap();
+    let manifest_json = manifest.to_json();
+
+    let outputs = resolve_cell_outputs_for_llm(
+        &[manifest_json],
+        &Some("http://127.0.0.1:1234".to_string()),
+        &Some(dir.path().to_path_buf()),
+        None,
+    )
+    .await;
+
+    assert_eq!(outputs.len(), 1);
+    let text = outputs[0].text.as_ref().expect("stream text");
+    assert!(text.contains("stdout line 0"));
+    assert!(text.contains("stdout line 1999"));
+    assert!(text.contains("bytes total"));
+}
+
+#[tokio::test]
+async fn error_blob_spill_is_renderable_by_llm_resolver() {
+    use runtimed::blob_store::BlobStore;
+    use runtimed::output_store::{create_manifest, DEFAULT_INLINE_THRESHOLD};
+    use runtimed_client::output_resolver::resolve_cell_outputs_for_llm;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = BlobStore::new(dir.path().to_path_buf());
+
+    let frames: Vec<String> = (0..500)
+        .map(|i| format!("  frame {i} \u{2014} file.py:{i}"))
+        .collect();
+
+    let raw = serde_json::json!({
+        "output_type": "error",
+        "ename": "RecursionError",
+        "evalue": "maximum recursion depth exceeded",
+        "traceback": frames,
+    });
+
+    let manifest = create_manifest(&raw, &store, DEFAULT_INLINE_THRESHOLD)
+        .await
+        .unwrap();
+    let manifest_json = manifest.to_json();
+
+    let outputs = resolve_cell_outputs_for_llm(
+        &[manifest_json],
+        &Some("http://127.0.0.1:1234".to_string()),
+        &Some(dir.path().to_path_buf()),
+        None,
+    )
+    .await;
+
+    assert_eq!(outputs.len(), 1);
+    let out = &outputs[0];
+    assert_eq!(out.ename.as_deref(), Some("RecursionError"));
+    let tb = out.traceback.as_ref().expect("traceback");
+    assert!(tb[0].contains("frame 499"));
+    assert!(tb[1].contains("500"));
+    assert!(tb[1].contains("traceback frames"));
+}
