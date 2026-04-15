@@ -383,8 +383,9 @@ def _emit_dataframe(df: Any, *, total_rows: int) -> dict | None:
     as a fallback bundle for hosts that don't understand the ref MIME;
     nteract frontends pick the parquet renderer via the ref MIME.
 
-    Returns ``None`` when serialization fails — lets IPython's default
-    chain render unchanged.
+    Returns ``None`` only when both parquet serialization and summary
+    generation fail. When parquet fails but the summary succeeds
+    (e.g. pyarrow missing), returns a summary-only bundle.
     """
     try:
         data, content_type = serialize_dataframe(df, max_bytes=_MAX_PAYLOAD_BYTES)

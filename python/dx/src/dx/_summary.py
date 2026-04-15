@@ -23,13 +23,10 @@ def _truncate_cell(value: Any, max_chars: int = 80) -> str:
     s = str(value)
     if len(s) <= max_chars:
         return s
-    keep = max_chars - 1  # room for the ellipsis char
-    suffix = f"…[+{len(s) - keep} chars]"
-    # Adjust: we need the prefix + suffix to fit reasonably
-    prefix_len = max_chars - len(suffix)
-    if prefix_len < 1:
-        prefix_len = 1
-        suffix = f"…[+{len(s) - prefix_len} chars]"
+    # Upper-bound suffix length to size the prefix, then compute the true suffix.
+    suffix_upper = f"…[+{len(s)} chars]"
+    prefix_len = max(max_chars - len(suffix_upper), 1)
+    suffix = f"…[+{len(s) - prefix_len} chars]"
     return s[:prefix_len] + suffix
 
 
