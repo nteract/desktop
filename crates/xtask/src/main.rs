@@ -1173,10 +1173,16 @@ fn cmd_wasm(target: Option<&str>) {
         } else {
             for entry in fs::read_dir(pkg_dir).into_iter().flatten().flatten() {
                 let src = entry.path();
-                let Some(name) = src.file_name() else { continue };
+                let Some(name) = src.file_name() else {
+                    continue;
+                };
                 let dest = public_dir.join(name);
                 if let Err(e) = fs::copy(&src, &dest) {
-                    eprintln!("Warning: failed to copy {} → {}: {e}", src.display(), dest.display());
+                    eprintln!(
+                        "Warning: failed to copy {} → {}: {e}",
+                        src.display(),
+                        dest.display()
+                    );
                 }
             }
         }
