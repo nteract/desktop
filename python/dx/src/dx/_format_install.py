@@ -1,6 +1,7 @@
 """DataFrame display wiring for ``dx.install()``.
 
-Two IPython extension points, one for the bundle and one for the bytes:
+Three IPython extension points, each via documented public ``for_type``
+registration or hook API — no internals are patched:
 
 1. A ``mimebundle_formatter`` for pandas / polars DataFrames serializes
    the frame to parquet, hashes locally, stashes the bytes in a
@@ -18,8 +19,29 @@ Two IPython extension points, one for the bundle and one for the bytes:
    hook fires on updates just like initial displays, with
    ``transient.display_id`` already populated on the message.
 
-``register_hook`` is documented public API on
-``ipykernel.zmqshell.ZMQDisplayPublisher``.
+3. An ``ipython_display_formatter`` handler for pandas / polars
+   DataFrames handles the **last-expression** case (``df`` at the end
+   of a cell, not wrapped in ``display()``). That path goes through
+   ``ZMQShellDisplayHook``, which has no ``register_hook`` equivalent —
+   the publisher hook alone can't attach buffers to the resulting
+   ``execute_result`` message, and the daemon would drop the
+   ``BLOB_REF_MIME`` as an unresolvable ref.
+
+   ``IPythonDisplayFormatter`` gets checked first inside
+   ``DisplayFormatter.format()`` — if our handler returns truthy,
+   ``format()`` short-circuits to ``({}, {})`` and the displayhook's
+   send is skipped (guarded by ``if format_dict:`` in ``write_format_data``
+   and ``if msg["content"]["data"]:`` in ``finish_displayhook``). Our
+   handler then calls ``publish_display_data`` directly, which flows
+   through ``display_pub.publish`` → the publisher hook (step 2) →
+   buffers attached. **Net result: a single ``display_data`` message
+   instead of a bufferless ``execute_result``.** The cell's ``_`` /
+   ``__`` / ``___`` and ``ExecutionResult`` bookkeeping still update
+   normally — they happen at separate steps of ``DisplayHook.__call__``.
+
+All three extension points are documented public API
+(``ipython_display_formatter.for_type``, ``mimebundle_formatter.for_type``,
+``ZMQDisplayPublisher.register_hook``).
 """
 
 from __future__ import annotations
