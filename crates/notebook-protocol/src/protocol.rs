@@ -701,4 +701,74 @@ mod tests {
             _ => panic!("wrong variant"),
         }
     }
+
+    #[test]
+    fn env_kind_packages_returns_inner_uv_slice() {
+        // Both variants share a packages() accessor — make sure each one
+        // returns its own packages, not e.g. an empty slice or the wrong
+        // variant's data.
+        let uv = EnvKind::Uv {
+            packages: vec!["pandas".into(), "polars".into()],
+        };
+        assert_eq!(uv.packages(), &["pandas".to_string(), "polars".to_string()]);
+    }
+
+    #[test]
+    fn env_kind_packages_returns_inner_conda_slice() {
+        let conda = EnvKind::Conda {
+            packages: vec!["scipy".into(), "numpy".into()],
+            channels: vec!["conda-forge".into()],
+        };
+        assert_eq!(
+            conda.packages(),
+            &["scipy".to_string(), "numpy".to_string()]
+        );
+    }
+
+    #[test]
+    fn env_kind_uv_packages_can_be_empty() {
+        // Empty package list is a real case (e.g. a prewarmed env that
+        // is later reused with no extra installs). packages() must
+        // return an empty slice without panicking.
+        let uv = EnvKind::Uv { packages: vec![] };
+        assert!(uv.packages().is_empty());
+    }
+
+    #[test]
+    fn deno_launched_config_serde_default_keeps_flexible_npm_imports_on() {
+        // The real guarantee: a JSON object missing `flexible_npm_imports`
+        // must deserialize to true. If a future refactor accidentally flips
+        // the serde default to false, every legacy notebook that doesn't
+        // carry the field would silently lose `npm:` autoinstall on kernel
+        // restore. (Note: `derive(Default)` gives false because bool's
+        // Default is false; the serde default is what fires during
+        // deserialization, and that's the load-bearing path.)
+        let parsed: DenoLaunchedConfig =
+            serde_json::from_str("{}").expect("DenoLaunchedConfig deserializes from {{}}");
+        assert!(parsed.flexible_npm_imports);
+    }
+
+    #[test]
+    fn deno_launched_config_round_trip_preserves_all_fields() {
+        let cfg = DenoLaunchedConfig {
+            permissions: vec!["--allow-net".into(), "--allow-read=./data".into()],
+            import_map: Some("./import_map.json".into()),
+            config: Some("./deno.json".into()),
+            flexible_npm_imports: false,
+        };
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        let parsed: DenoLaunchedConfig = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(cfg, parsed);
+    }
+
+    #[test]
+    fn queue_entry_round_trip_preserves_ids() {
+        let entry = QueueEntry {
+            cell_id: "cell-abc".to_string(),
+            execution_id: "exec-123-uuid".to_string(),
+        };
+        let json = serde_json::to_string(&entry).expect("serialize");
+        let parsed: QueueEntry = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(entry, parsed);
+    }
 }
