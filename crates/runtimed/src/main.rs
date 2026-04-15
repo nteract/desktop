@@ -520,10 +520,9 @@ async fn status(json: bool) -> anyhow::Result<()> {
     let manager = ServiceManager::default();
     let installed = manager.is_installed();
 
-    // Check if daemon is running — prefer the socket, fall back to
-    // `daemon.json` for the one-release compat window.
-    let daemon_info =
-        runtimed_client::singleton::query_daemon_info(runt_workspace::default_socket_path()).await;
+    // Check if daemon is running — socket-first with `daemon.json`
+    // fallback so custom `--socket` daemons stay discoverable.
+    let daemon_info = runtimed_client::singleton::query_running_daemon_info().await;
     let running = if daemon_info.is_some() {
         // Try to ping to confirm it's actually responding
         let client = PoolClient::default();
