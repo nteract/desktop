@@ -54,7 +54,7 @@ known-first-party = ["runtimed", "nteract", "prewarm"]
 
 [dependency-groups]
 dev = [
-    "ruff>=0.15",
+    "ruff==0.15.10",
     "ty>=0.0.22",
     "pytest>=8.0",
     "pyzmq>=26.0",
