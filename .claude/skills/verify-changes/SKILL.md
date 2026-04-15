@@ -23,7 +23,7 @@ Run `git diff --name-only` to see changed files and match them to the table belo
 | `crates/kernel-launch/src/**` | `cargo test -p kernel-launch` |
 | `crates/runt/src/**` | `cargo test -p runt` |
 | `crates/runt-workspace/src/**` | `cargo test -p runt-workspace` |
-| `crates/runtimed-py/src/**` | `supervisor_rebuild` (rebuilds Python bindings) |
+| `crates/runtimed-py/src/**` | `up rebuild=true` (rebuilds Python bindings) |
 | `python/nteract/src/**` | Supervisor auto-restarts; no explicit test needed |
 | `python/runtimed/src/**` | Supervisor auto-restarts; run `pytest python/runtimed/tests/test_session_unit.py -v` |
 | `apps/notebook/src/**` | `pnpm test:run` |
@@ -33,11 +33,11 @@ If multiple crates changed, run tests for each: `cargo test -p runtimed -p noteb
 
 ## Step 3: MCP Live Verification (when supervisor tools are available)
 
-If narrow tests pass and you have `supervisor_*` and `open_notebook`/`execute_cell` tools, do a live check:
+If narrow tests pass and you have the nteract-dev supervisor (`up`/`down`/`status`) and `open_notebook`/`execute_cell` tools, do a live check:
 
 ### For daemon/kernel changes (`crates/runtimed/`, `crates/runtimed-py/`):
 
-1. `supervisor_rebuild` (if Rust changed)
+1. `up rebuild=true` (if Rust changed)
 2. `create_notebook` with runtime "python"
 3. `create_cell` with source `1 + 1`
 4. `execute_cell` on that cell
@@ -60,7 +60,7 @@ If narrow tests pass and you have `supervisor_*` and `open_notebook`/`execute_ce
 
 ### For kernel environment changes (`crates/kernel-env/`, `crates/kernel-launch/`):
 
-1. `supervisor_rebuild` (if Rust changed)
+1. `up rebuild=true` (if Rust changed)
 2. `create_notebook`
 3. `create_cell` with source `import sys; print(sys.executable)`
 4. `execute_cell` — verify output shows a Python path

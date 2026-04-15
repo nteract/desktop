@@ -28,7 +28,7 @@ Consolidated around two verbs plus three read-only tools:
 | Tool | Purpose |
 |------|---------|
 | `up` | Idempotent "bring the dev environment to a working state." Sweeps zombie Vite processes, ensures the daemon is running, ensures the MCP child is healthy. Optional args: `vite=true` to also start Vite, `rebuild=true` to rebuild daemon + Python bindings first, `mode='debug'\|'release'` to switch build mode. Safe to call repeatedly — this is the first thing to reach for when things feel off. |
-| `down` | Stop managed processes (Vite + child). Leaves the daemon running by default (launchd / the installed app may own it). Pass `daemon=true` to also stop the managed daemon process. |
+| `down` | Stop the managed Vite dev server. Leaves the daemon running by default (launchd / the installed app may own it). Pass `daemon=true` to also stop the managed daemon process. |
 | `status` | Read-only report of supervisor, child, daemon, and managed-process state. |
 | `logs` | Tail the daemon log. Arg: `lines` (default 50). |
 | `vite_logs` | Tail the Vite dev server log. Arg: `lines` (default 50). |

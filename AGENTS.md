@@ -82,21 +82,24 @@ which runt                      # Should be repo/bin/runt (not /usr/local/bin/ru
 
 ## Quick Recipes (Common Dev Tasks)
 
-### If you have `supervisor_*` tools — use them
+### If you have `up` / `down` / `status` tools — use them
 
-If your MCP client provides `supervisor_status`, `supervisor_restart`, `supervisor_rebuild`, etc., **prefer those over manual terminal commands**. The supervisor manages the dev daemon lifecycle for you — no env vars, no extra terminals.
+If your MCP client provides `up`, `down`, `status`, `logs`, `vite_logs` (the nteract-dev supervisor surface), **prefer those over manual terminal commands**. The supervisor manages the dev daemon lifecycle for you — no env vars, no extra terminals.
 
-**Claude Code has nteract-dev locally** — the local dev environment connects Claude Code to the repo-local `nteract-dev` MCP entry via `cargo xtask run-mcp`. Codex app/CLI can use the same server when this repo's project-scoped `.codex/config.toml` is enabled in a trusted workspace. If your current environment does not expose the supervisor tools, use the manual `cargo xtask` commands below.
+**Claude Code has nteract-dev locally** — the local dev environment connects Claude Code to the repo-local `nteract-dev` MCP entry via `cargo xtask run-mcp`. Codex app/CLI can use the same server when this repo's project-scoped `.codex/config.toml` is enabled in a trusted workspace. If your current environment does not expose these tools, use the manual `cargo xtask` commands below.
 
 | Instead of… | Use… |
 |-------------|------|
-| `cargo xtask dev-daemon` (in a terminal) | `supervisor_restart(target="daemon")` |
-| `maturin develop` (rebuild bindings) | `supervisor_rebuild` |
-| `runt daemon status` (with env vars) | `supervisor_status` |
-| `runt daemon logs` | `supervisor_logs` |
-| `cargo xtask vite` | `supervisor_start_vite` |
+| `cargo xtask dev-daemon` (in a terminal) | `up` (idempotent: ensures daemon + child are healthy) |
+| `maturin develop` (rebuild bindings) | `up rebuild=true` |
+| `runt daemon status` (with env vars) | `status` |
+| `runt daemon logs` | `logs` |
+| `cargo xtask vite` | `up vite=true` |
+| `cargo xtask notebook` (stop dev processes) | `down` (stops Vite; `daemon=true` also stops daemon) |
 
-The supervisor automatically handles per-worktree isolation, env var plumbing, and daemon restarts. You only need the manual commands below when the supervisor isn't available (e.g. cloud sessions, CI).
+The supervisor automatically handles per-worktree isolation, env var plumbing, zombie Vite cleanup, health probes, and lockfile-drift re-installs. You only need the manual commands below when the supervisor isn't available (e.g. cloud sessions, CI).
+
+The older `supervisor_*` names (`supervisor_restart`, `supervisor_rebuild`, `supervisor_start_vite`, `supervisor_stop`, `supervisor_set_mode`, `supervisor_status`, `supervisor_logs`, `supervisor_vite_logs`) still work as aliases — prefer the new ones.
 
 ### Manual commands (when supervisor is not available)
 
@@ -131,7 +134,7 @@ There are **two venvs** that matter:
 | `python/runtimed/.venv` | Test-only venv — has `runtimed` + `maturin` + test deps | `pytest` integration tests |
 
 ```bash
-# For the MCP server (most common — this is what supervisor_rebuild does):
+# For the MCP server (most common — this is what `up rebuild=true` does):
 cd crates/runtimed-py && VIRTUAL_ENV=../../.venv uv run --directory ../../python/runtimed maturin develop
 
 # For integration tests only:
@@ -317,16 +320,17 @@ For the installed app, `runt mcp` ships as a sidecar binary alongside `runtimed`
 
 ### Supervisor Tools (from nteract-dev / `mcp-supervisor`)
 
+Consolidated around two verbs plus three read-only tools:
+
 | Tool | Purpose |
 |------|---------|
-| `supervisor_status` | Check child process, daemon, build mode, restart count, last error |
-| `supervisor_restart` | Restart child (`target="child"`) or daemon (`target="daemon"`) |
-| `supervisor_rebuild` | Rebuild the daemon binary and Rust Python bindings, restart the daemon, then restart the MCP child |
-| `supervisor_logs` | Tail the daemon log file |
-| `supervisor_vite_logs` | Tail the Vite dev server log file |
-| `supervisor_start_vite` | Start the Vite dev server for hot-reload frontend development |
-| `supervisor_stop` | Stop a managed process by name (e.g. `"vite"`) |
-| `supervisor_set_mode` | Switch the managed daemon between `debug` and `release` builds and restart it |
+| `up` | Idempotent "bring the dev environment to a working state". Sweeps zombie Vite processes, ensures daemon is running, ensures the MCP child is healthy. Args: `vite=true` to also start Vite (health-probed), `rebuild=true` to rebuild daemon + Python bindings first, `mode="debug"\|"release"` to switch build mode. Safe to call repeatedly. |
+| `down` | Stop the managed Vite dev server. Leaves the daemon alone by default (launchd / installed app may own it). Pass `daemon=true` to also stop the managed daemon. |
+| `status` | Read-only report of supervisor, child, daemon, and managed-process state. |
+| `logs` | Tail the daemon log file. |
+| `vite_logs` | Tail the Vite dev server log file. |
+
+The older `supervisor_*` names (`supervisor_status`, `supervisor_restart`, `supervisor_rebuild`, `supervisor_logs`, `supervisor_vite_logs`, `supervisor_start_vite`, `supervisor_stop`, `supervisor_set_mode`) still work as aliases.
 
 ### nteract MCP Tools (27 tools for notebook interaction)
 
@@ -354,11 +358,11 @@ The supervisor watches source directories and auto-restarts the child on changes
 
 ### Tool availability
 
-- **Local Claude Code / Zed / Codex app/CLI with MCP configured** → Configure the repo-local MCP entry as `nteract-dev`. nteract-dev exposes all `supervisor_*` tools plus the proxied nteract notebook tools. **Prefer supervisor tools for daemon lifecycle** — they handle env vars and isolation automatically.
+- **Local Claude Code / Zed / Codex app/CLI with MCP configured** → Configure the repo-local MCP entry as `nteract-dev`. nteract-dev exposes `up` / `down` / `status` / `logs` / `vite_logs` (plus the older `supervisor_*` aliases) and the proxied nteract notebook tools. **Prefer these for daemon lifecycle** — they handle env vars and isolation automatically.
 - **Environments without supervisor tools** → use `cargo xtask` commands directly for build, daemon, and testing.
-- **nteract MCP only** → The global/system `nteract` server exposes notebook tools only, with no `supervisor_*`. Use manual terminal commands for daemon management.
+- **nteract MCP only** → The global/system `nteract` server exposes notebook tools only, with no supervisor surface. Use manual terminal commands for daemon management.
 - **No MCP server** → use `cargo xtask run-mcp` to set one up
-- **Dev daemon not running** → nteract-dev starts it automatically via `supervisor_restart(target="daemon")`
+- **Dev daemon not running** → call `up` — nteract-dev starts it if missing
 
 ## Workspace Crates (17)
 
@@ -431,7 +435,7 @@ Use instead:
 
 ### Per-Worktree Daemon Isolation
 
-Each git worktree runs its own isolated daemon in dev mode. If you have supervisor tools, the daemon is managed for you — use `supervisor_restart(target="daemon")` to start or restart it, and `supervisor_status` to check it.
+Each git worktree runs its own isolated daemon in dev mode. If you have supervisor tools, the daemon is managed for you — use `up` to start it (idempotent), and `status` to check it.
 
 Without supervisor (manual two-terminal workflow):
 
@@ -443,7 +447,7 @@ cargo xtask dev-daemon
 cargo xtask notebook
 ```
 
-Use `./target/debug/runt` to interact with the worktree daemon (or `supervisor_status`/`supervisor_logs` if available):
+Use `./target/debug/runt` to interact with the worktree daemon (or `status`/`logs` if available):
 
 ```bash
 ./target/debug/runt daemon status
