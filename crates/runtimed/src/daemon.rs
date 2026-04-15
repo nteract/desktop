@@ -753,7 +753,11 @@ impl Daemon {
             listener
         };
 
-        // Write daemon info so clients can discover us
+        // Write `daemon.json` so older clients can still discover us.
+        // Retained as a one-release compatibility shim for stale
+        // `runt-mcp` / `mcpb-runt` proxies that predate `GetDaemonInfo`.
+        // New consumers go through the socket (see
+        // `runtimed_client::daemon_connection`). Target v2.4 for removal.
         if let Err(e) = self
             ._lock
             .write_info(&self.config.socket_path.to_string_lossy(), blob_port)

@@ -959,13 +959,13 @@ where
                 .to_string();
 
             // Verify the running daemon version matches what we intended to install.
-            // Prefer the socket (source of truth); fall back to the legacy
-            // daemon.json for one release while older daemons haven't
-            // learned the GetDaemonInfo request.
-            let running_version = match client.daemon_info().await {
-                Ok(info) => Some(info.daemon_version),
-                Err(_) => runtimed::singleton::get_running_daemon_info().map(|i| i.version),
-            };
+            // `query_daemon_info` is socket-first with a `daemon.json`
+            // fallback for the one-release compat window.
+            let running_version = runtimed_client::singleton::query_daemon_info(
+                runt_workspace::default_socket_path(),
+            )
+            .await
+            .map(|i| i.version);
             if let Some(version) = running_version {
                 let running_commit = extract_commit_hash(&version);
                 let bundled_commit = extract_commit_hash(&bundled);
@@ -1377,14 +1377,14 @@ where
     let client = PoolClient::default();
     if let Ok(()) = client.ping().await {
         // Daemon is running - check version alignment (production only).
-        // Prefer socket-sourced daemon info; fall back to the legacy
-        // daemon.json file for one release window while older daemons
-        // haven't learned GetDaemonInfo.
+        // `query_daemon_info` is socket-first with a `daemon.json`
+        // fallback for the one-release compat window.
         if !runt_workspace::is_dev_mode() {
-            let running_version = match client.daemon_info().await {
-                Ok(info) => Some(info.daemon_version),
-                Err(_) => runtimed::singleton::get_running_daemon_info().map(|i| i.version),
-            };
+            let running_version = runtimed_client::singleton::query_daemon_info(
+                runt_workspace::default_socket_path(),
+            )
+            .await
+            .map(|i| i.version);
             if let Some(version) = running_version {
                 // Compare commit hashes only - CI appends "+{git_sha}" to the version
                 // at build time, so commit hash is the precise compatibility check.

@@ -9,7 +9,6 @@ use clap::{Parser, Subcommand};
 use runtimed::client::PoolClient;
 use runtimed::daemon::{Daemon, DaemonConfig};
 use runtimed::service::ServiceManager;
-use runtimed::singleton::get_running_daemon_info;
 use tracing::info;
 
 #[derive(Parser, Debug)]
@@ -521,8 +520,10 @@ async fn status(json: bool) -> anyhow::Result<()> {
     let manager = ServiceManager::default();
     let installed = manager.is_installed();
 
-    // Check if daemon is running
-    let daemon_info = get_running_daemon_info();
+    // Check if daemon is running — prefer the socket, fall back to
+    // `daemon.json` for the one-release compat window.
+    let daemon_info =
+        runtimed_client::singleton::query_daemon_info(runt_workspace::default_socket_path()).await;
     let running = if daemon_info.is_some() {
         // Try to ping to confirm it's actually responding
         let client = PoolClient::default();

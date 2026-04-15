@@ -518,7 +518,7 @@ where
     F: Fn(DaemonProgress),
 {
     use crate::service::ServiceManager;
-    use crate::singleton::get_running_daemon_info;
+    use crate::singleton::query_daemon_info;
 
     // Helper to emit progress if callback is provided
     let emit = |progress: DaemonProgress| {
@@ -542,7 +542,7 @@ where
             if let Some(ref ver) = pong.daemon_version {
                 info!("[pool-client] Dev daemon version: {}", ver);
             }
-            if let Some(info) = get_running_daemon_info() {
+            if let Some(info) = query_daemon_info(crate::default_socket_path()).await {
                 emit(DaemonProgress::Ready {
                     endpoint: info.endpoint.clone(),
                 });
@@ -571,7 +571,7 @@ where
 
     // First, try to ping the daemon
     if client.ping().await.is_ok() {
-        if let Some(info) = get_running_daemon_info() {
+        if let Some(info) = query_daemon_info(crate::default_socket_path()).await {
             // Check if we need to upgrade
             if info.version != bundled_version {
                 info!(
@@ -674,7 +674,7 @@ async fn wait_for_daemon_ready<F>(
 where
     F: Fn(DaemonProgress),
 {
-    use crate::singleton::get_running_daemon_info;
+    use crate::singleton::query_daemon_info;
 
     const MAX_ATTEMPTS: u32 = 20;
 
@@ -688,7 +688,7 @@ where
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         if client.ping().await.is_ok() {
-            if let Some(info) = get_running_daemon_info() {
+            if let Some(info) = query_daemon_info(crate::default_socket_path()).await {
                 emit(DaemonProgress::Ready {
                     endpoint: info.endpoint.clone(),
                 });
