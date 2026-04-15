@@ -665,15 +665,34 @@ impl Supervisor {
             .and_then(|p| p.parse::<u16>().ok())
             .unwrap_or_else(|| runt_workspace::vite_port_for_workspace(&project_root));
 
-        // Ensure pnpm install has been run (use spawn_blocking to avoid
-        // stalling the tokio runtime during a potentially long install)
-        let node_modules = project_root.join("node_modules/.modules.yaml");
-        if !node_modules.exists() {
-            info!("Running pnpm install...");
+        // Ensure pnpm install is in sync with the lockfile. Previously this
+        // only ran when node_modules was completely missing, which missed
+        // the common case of `git pull` adding a new dep (Rolldown then
+        // fails at Vite startup with "failed to resolve import X"). Now:
+        //
+        //   - if node_modules doesn't exist → install
+        //   - if pnpm-lock.yaml is newer than node_modules/.modules.yaml
+        //     → install (lockfile drift after a pull)
+        //   - otherwise → skip
+        let modules_stamp = project_root.join("node_modules/.modules.yaml");
+        let lockfile = project_root.join("pnpm-lock.yaml");
+        let needs_install = match (modules_stamp.exists(), lockfile.exists()) {
+            (false, _) => true, // never installed
+            (true, true) => {
+                let lock_mtime = std::fs::metadata(&lockfile).and_then(|m| m.modified()).ok();
+                let stamp_mtime = std::fs::metadata(&modules_stamp)
+                    .and_then(|m| m.modified())
+                    .ok();
+                matches!((lock_mtime, stamp_mtime), (Some(l), Some(s)) if l > s)
+            }
+            _ => false,
+        };
+        if needs_install {
+            info!("[supervisor] Running pnpm install (lockfile drift or fresh checkout)");
             let pr = project_root.clone();
             let status = tokio::task::spawn_blocking(move || {
                 std::process::Command::new("pnpm")
-                    .args(["install"])
+                    .args(["install", "--prefer-offline"])
                     .current_dir(&pr)
                     .env("PATH", augmented_path())
                     .stdin(Stdio::null())
@@ -708,7 +727,7 @@ impl Supervisor {
         info!("Starting Vite dev server on port {port}...");
         info!("Vite logs: {}", vite_log_path.display());
         let pr = project_root.clone();
-        let child = tokio::task::spawn_blocking(move || {
+        let mut child = tokio::task::spawn_blocking(move || {
             std::process::Command::new("pnpm")
                 .args([
                     "--dir",
@@ -731,7 +750,22 @@ impl Supervisor {
 
         info!("Vite dev server started (PID {}, port {port})", child.id());
 
-        // Phase 3: Re-acquire lock to store the process
+        // Phase 3: Health probe — wait until Vite is actually serving, or
+        // fail loudly. Without this, `start_vite` returns Ok as soon as the
+        // `pnpm dev` process spawns, even if it crashes milliseconds later
+        // (e.g. a broken import in renderer-plugin build). Callers would
+        // then tell the user "Vite is running on :PORT" and the notebook
+        // window would come up blank. See vite_logs for the failure.
+        if let Err(e) = await_vite_ready(&mut child, port).await {
+            // Kill whatever the (possibly zombied) child is doing and
+            // propagate. No managed entry is stored — caller's report
+            // should say "vite: FAILED — …".
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(e);
+        }
+
+        // Phase 4: Re-acquire lock to store the process
         let mut state = self.state.write().await;
         state.managed.insert(
             "vite".into(),
@@ -1933,6 +1967,78 @@ impl ServerHandler for Supervisor {
 // ---------------------------------------------------------------------------
 
 /// Read the last N lines of a log file (caps at 64KB to avoid huge reads).
+/// Maximum time to wait for Vite to start accepting connections.
+const VITE_READY_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// After first successful TCP connect, wait this long to see whether
+/// Vite crashes on its initial build. The renderer-plugin build phase
+/// is an async promise — Vite prints "Local: http://…" *before* the
+/// build resolves, so a port-bind alone isn't proof of health.
+const VITE_POST_CONNECT_STABILIZE: Duration = Duration::from_millis(1500);
+
+/// Wait for a freshly-spawned Vite child to be actually serving, or
+/// return a specific failure. Polls two signals in a loop:
+///
+/// 1. Did the child process die? → fail with exit status.
+/// 2. Can we connect a TCP socket to the port? → call it ready, then
+///    wait `VITE_POST_CONNECT_STABILIZE` to catch a crash-on-first-build
+///    (re-check process death after).
+///
+/// Returns Ok only when both the port is accepting connections and the
+/// process is still alive after the stabilize window.
+async fn await_vite_ready(child: &mut std::process::Child, port: u16) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + VITE_READY_TIMEOUT;
+    let addr = format!("127.0.0.1:{port}");
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return Err(format!(
+                    "Vite exited during startup (status: {status}). \
+                     Run the `vite_logs` tool for the error."
+                ));
+            }
+            Ok(None) => {}
+            Err(e) => return Err(format!("Failed to poll Vite process: {e}")),
+        }
+
+        let connect = tokio::time::timeout(
+            Duration::from_millis(250),
+            tokio::net::TcpStream::connect(&addr),
+        )
+        .await;
+
+        if let Ok(Ok(_stream)) = connect {
+            // Port is accepting — stabilize, then re-check the process.
+            tokio::time::sleep(VITE_POST_CONNECT_STABILIZE).await;
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    return Err(format!(
+                        "Vite accepted a connection then crashed (status: {status}). \
+                         The dev server announces its URL before Rolldown finishes \
+                         building — a plugin build failure shows up here. Run \
+                         `vite_logs` for the stack trace."
+                    ));
+                }
+                Ok(None) => {
+                    info!("[supervisor] Vite health probe passed on port {port}");
+                    return Ok(());
+                }
+                Err(e) => return Err(format!("Failed to poll Vite process: {e}")),
+            }
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!(
+                "Vite did not accept connections on port {port} within {}s. \
+                 Run `vite_logs` for startup output.",
+                VITE_READY_TIMEOUT.as_secs()
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
 fn tail_file(path: &Path, lines: usize) -> String {
     use std::io::{Read, Seek, SeekFrom};
     match std::fs::File::open(path) {
