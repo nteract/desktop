@@ -417,6 +417,87 @@ pub async fn resolve_content_ref(
     None
 }
 
+/// Render a stream preview as a single text string for LLM consumption.
+///
+/// Shape:
+///   <head>
+///   … [{elided_lines} lines elided, {total_bytes} bytes total — full text at {url}] …
+///   <tail>
+///
+/// When `tail` is empty (preview covered the whole text), drops the
+/// elision marker and the tail section.
+fn render_stream_preview(
+    preview: &serde_json::Value,
+    blob_hash: &str,
+    blob_base_url: &Option<String>,
+) -> String {
+    let head = preview.get("head").and_then(|v| v.as_str()).unwrap_or("");
+    let tail = preview.get("tail").and_then(|v| v.as_str()).unwrap_or("");
+    let total_bytes = preview
+        .get("total_bytes")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let total_lines = preview
+        .get("total_lines")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    if tail.is_empty() {
+        return head.to_string();
+    }
+
+    let head_lines = head.lines().count() as u64;
+    let tail_lines = tail.lines().count() as u64;
+    let elided_lines = total_lines.saturating_sub(head_lines + tail_lines);
+    let url_clause = blob_base_url
+        .as_ref()
+        .map(|b| format!(" — full text at {}/blob/{}", b, blob_hash))
+        .unwrap_or_default();
+
+    let marker = format!(
+        "… [{} lines elided, {} bytes total{}] …",
+        elided_lines, total_bytes, url_clause
+    );
+
+    let mut out = String::with_capacity(head.len() + tail.len() + marker.len() + 2);
+    out.push_str(head);
+    if !head.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(&marker);
+    out.push('\n');
+    out.push_str(tail);
+    out
+}
+
+/// Render an error preview as a traceback array for `Output::error`.
+/// First element is the preserved last frame; second is the elision marker.
+fn render_error_preview(
+    preview: &serde_json::Value,
+    blob_hash: &str,
+    blob_base_url: &Option<String>,
+) -> Vec<String> {
+    let last_frame = preview
+        .get("last_frame")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let total_bytes = preview
+        .get("total_bytes")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let frames = preview.get("frames").and_then(|v| v.as_u64()).unwrap_or(0);
+    let url_clause = blob_base_url
+        .as_ref()
+        .map(|b| format!(" — full traceback at {}/blob/{}", b, blob_hash))
+        .unwrap_or_default();
+    let marker = format!(
+        "… [{} traceback frames, {} bytes total{}] …",
+        frames, total_bytes, url_clause
+    );
+    vec![last_frame, marker]
+}
+
 /// Convenience wrapper: resolve a content ref that is always text.
 async fn resolve_text_ref(
     content_ref: &serde_json::Value,
@@ -505,6 +586,13 @@ pub async fn resolve_output_for_llm(
         "stream" => {
             let name = manifest.get("name")?.as_str()?;
             let text_ref = manifest.get("text")?;
+            // Fast path: Blob + preview → render without fetching.
+            if let Some(blob_hash) = text_ref.get("blob").and_then(|v| v.as_str()) {
+                if let Some(preview) = manifest.get("llm_preview") {
+                    let text = render_stream_preview(preview, blob_hash, blob_base_url);
+                    return Some(Output::stream(name, &text));
+                }
+            }
             let text = resolve_text_ref(text_ref, blob_base_url, blob_store_path).await?;
             Some(Output::stream(name, &text))
         }
@@ -512,6 +600,13 @@ pub async fn resolve_output_for_llm(
             let ename = manifest.get("ename")?.as_str()?.to_string();
             let evalue = manifest.get("evalue")?.as_str()?.to_string();
             let traceback_val = manifest.get("traceback")?;
+            // Fast path: Blob + preview → render without fetching.
+            if let Some(blob_hash) = traceback_val.get("blob").and_then(|v| v.as_str()) {
+                if let Some(preview) = manifest.get("llm_preview") {
+                    let tb = render_error_preview(preview, blob_hash, blob_base_url);
+                    return Some(Output::error(&ename, &evalue, tb));
+                }
+            }
             let traceback = if let Some(arr) = traceback_val.as_array() {
                 arr.iter()
                     .filter_map(|v| v.as_str().map(|s| s.to_string()))
@@ -1946,5 +2041,109 @@ mod tests {
         };
         assert!(data.contains_key("text/plain"));
         assert!(!data.contains_key("image/png"));
+    }
+
+    // ── llm_preview rendering ───────────────────────────────────
+
+    #[tokio::test]
+    async fn llm_stream_with_blob_preview_renders_head_tail_marker() {
+        let manifest = serde_json::json!({
+            "output_type": "stream",
+            "name": "stdout",
+            "text": {"blob": "abc123", "size": 50000},
+            "llm_preview": {
+                "head": "line 0\nline 1\n",
+                "tail": "line 98\nline 99\n",
+                "total_bytes": 50000u64,
+                "total_lines": 100u64,
+            },
+        });
+        let out = resolve_output_for_llm(
+            &manifest,
+            &Some("http://localhost:9999".to_string()),
+            &None,
+            None,
+        )
+        .await
+        .expect("output");
+        let text = out.text.expect("stream text");
+        assert!(text.starts_with("line 0\nline 1\n"));
+        assert!(text.trim_end().ends_with("line 99"));
+        assert!(text.contains("50000 bytes"));
+        assert!(text.contains("http://localhost:9999/blob/abc123"));
+        assert!(text.contains("elided") || text.contains("truncated"));
+    }
+
+    #[tokio::test]
+    async fn llm_stream_with_preview_no_base_url_still_renders() {
+        let manifest = serde_json::json!({
+            "output_type": "stream",
+            "name": "stdout",
+            "text": {"blob": "abc123", "size": 5000},
+            "llm_preview": {
+                "head": "head text\n",
+                "tail": "tail text\n",
+                "total_bytes": 5000u64,
+                "total_lines": 10u64,
+            },
+        });
+        let out = resolve_output_for_llm(&manifest, &None, &None, None)
+            .await
+            .expect("output");
+        let text = out.text.expect("stream text");
+        assert!(text.contains("head text"));
+        assert!(text.contains("tail text"));
+        assert!(!text.contains("http://"));
+        assert!(text.contains("5000 bytes"));
+    }
+
+    #[tokio::test]
+    async fn llm_error_with_blob_preview_renders_last_frame() {
+        let manifest = serde_json::json!({
+            "output_type": "error",
+            "ename": "RecursionError",
+            "evalue": "oops",
+            "traceback": {"blob": "tb_hash", "size": 8000},
+            "llm_preview": {
+                "last_frame": "RecursionError: maximum recursion depth",
+                "total_bytes": 8000u64,
+                "frames": 200u32,
+            },
+        });
+        let out = resolve_output_for_llm(
+            &manifest,
+            &Some("http://localhost:9999".to_string()),
+            &None,
+            None,
+        )
+        .await
+        .expect("output");
+        assert_eq!(out.ename.as_deref(), Some("RecursionError"));
+        assert_eq!(out.evalue.as_deref(), Some("oops"));
+        let tb = out.traceback.expect("traceback");
+        assert_eq!(tb[0], "RecursionError: maximum recursion depth");
+        assert!(tb[1].contains("200"));
+        assert!(tb[1].contains("http://localhost:9999/blob/tb_hash"));
+    }
+
+    #[tokio::test]
+    async fn llm_stream_without_preview_still_fetches_blob() {
+        // Backwards compat: pre-change manifests have no llm_preview.
+        // The resolver falls back to reading the blob from disk.
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().to_path_buf();
+        let hash = "abc1234567890def";
+        let subdir = store_path.join(&hash[..2]);
+        std::fs::create_dir_all(&subdir).unwrap();
+        std::fs::write(subdir.join(&hash[2..]), "full stream text\n").unwrap();
+        let manifest = serde_json::json!({
+            "output_type": "stream",
+            "name": "stdout",
+            "text": {"blob": hash, "size": 18},
+        });
+        let out = resolve_output_for_llm(&manifest, &None, &Some(store_path), None)
+            .await
+            .expect("output");
+        assert_eq!(out.text.as_deref(), Some("full stream text\n"));
     }
 }
