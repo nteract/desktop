@@ -232,4 +232,222 @@ mod tests {
         assert_eq!(format_bytes(1500), "1.5 kB");
         assert_eq!(format_bytes(5_000_000), "4.8 MB");
     }
+
+    #[test]
+    fn format_bytes_gb_scale() {
+        // Large parquet datasets cross the GB threshold in real usage.
+        // Precision bumps to 2 decimals at that scale.
+        assert_eq!(format_bytes(2_500_000_000), "2.33 GB");
+    }
+
+    #[test]
+    fn format_number_adds_thousands_separators() {
+        assert_eq!(format_number(0), "0");
+        assert_eq!(format_number(999), "999");
+        assert_eq!(format_number(1_000), "1,000");
+        assert_eq!(format_number(1_234_567), "1,234,567");
+        assert_eq!(format_number(1_000_000_000), "1,000,000,000");
+    }
+
+    #[test]
+    fn format_number_f64_keeps_integers_clean_and_rounds_floats() {
+        // Integer-valued floats render as integers with separators, so row
+        // counts or column indices don't leak ".0" into LLM output.
+        assert_eq!(format_number_f64(0.0), "0");
+        assert_eq!(format_number_f64(1_200.0), "1,200");
+        // Fractional values keep 3-decimal precision.
+        assert_eq!(format_number_f64(1.23456), "1.235");
+        // Very large floats that exceed the integer cast window fall back
+        // to fixed precision instead of overflowing.
+        assert_eq!(format_number_f64(1e16), "10000000000000000.000");
+    }
+
+    #[test]
+    fn truncate_respects_char_boundary_with_ellipsis() {
+        // 32-char cap includes the ellipsis character. Multi-byte chars
+        // (emoji, CJK) must not be cut mid-codepoint.
+        assert_eq!(truncate("short", 10), "short");
+        assert_eq!(truncate("abcdefghij", 10), "abcdefghij");
+        let out = truncate("abcdefghijklmnopqrstuvwxyz", 10);
+        assert_eq!(out, "abcdefghi…");
+        // Emoji stress: 4-byte chars at the cut point.
+        let emoji = "🚀".repeat(20);
+        let out = truncate(&emoji, 5);
+        assert!(out.ends_with('…'));
+        assert_eq!(out.chars().count(), 5);
+    }
+
+    #[test]
+    fn summarize_formats_numeric_nan_as_no_stats() {
+        // NaN min means the column had no valid numeric values (e.g. all
+        // nulls). Rendering "range NaN – NaN" would be useless noise.
+        let summary = ParquetSummary {
+            num_rows: 100,
+            num_bytes: 0,
+            columns: vec![ColumnSummary {
+                name: "score".to_string(),
+                data_type: "float64".to_string(),
+                null_count: 100,
+                stats: ColumnStats::Numeric {
+                    min: f64::NAN,
+                    max: f64::NAN,
+                },
+            }],
+        };
+        let s = summarize(&summary);
+        assert!(s.contains("score (float64)"));
+        assert!(s.contains("100 nulls (100%)"));
+        assert!(!s.contains("range"));
+        assert!(!s.contains("NaN"));
+    }
+
+    #[test]
+    fn summarize_handles_capped_distinct_count() {
+        // Big cardinality columns report `distinct_count_capped = true` —
+        // the sampled flag must be surfaced so the LLM treats the number
+        // as a lower bound.
+        let summary = ParquetSummary {
+            num_rows: 1_000_000,
+            num_bytes: 0,
+            columns: vec![ColumnSummary {
+                name: "uuid".to_string(),
+                data_type: "string".to_string(),
+                null_count: 0,
+                stats: ColumnStats::String {
+                    distinct_count: 100_000,
+                    distinct_count_capped: true,
+                    top: vec![],
+                },
+            }],
+        };
+        let s = summarize(&summary);
+        assert!(s.contains("≥100,000 distinct"));
+        assert!(s.contains("(sampled)"));
+    }
+
+    #[test]
+    fn summarize_renders_temporal_range() {
+        let summary = ParquetSummary {
+            num_rows: 500,
+            num_bytes: 0,
+            columns: vec![ColumnSummary {
+                name: "ts".to_string(),
+                data_type: "timestamp[us]".to_string(),
+                null_count: 0,
+                stats: ColumnStats::Temporal {
+                    min: "2024-01-01T00:00:00".to_string(),
+                    max: "2024-12-31T23:59:59".to_string(),
+                },
+            }],
+        };
+        let s = summarize(&summary);
+        assert!(s.contains("2024-01-01T00:00:00 to 2024-12-31T23:59:59"));
+    }
+
+    #[test]
+    fn summarize_temporal_empty_min_means_no_stats() {
+        // Empty min string signals "no stats available" (e.g. ZSTD
+        // decoded metadata was absent). Do not render " to " with empty
+        // endpoints.
+        let summary = ParquetSummary {
+            num_rows: 1,
+            num_bytes: 0,
+            columns: vec![ColumnSummary {
+                name: "ts".to_string(),
+                data_type: "timestamp[us]".to_string(),
+                null_count: 0,
+                stats: ColumnStats::Temporal {
+                    min: String::new(),
+                    max: String::new(),
+                },
+            }],
+        };
+        let s = summarize(&summary);
+        assert!(s.contains("ts (timestamp[us])"));
+        assert!(!s.contains(" to "));
+    }
+
+    #[test]
+    fn summarize_other_stats_render_just_the_header() {
+        // Columns with unsupported stats (binary, struct, list) fall back
+        // to `ColumnStats::Other`. Rendering must still include the
+        // column name + type so the LLM knows the column exists.
+        let summary = ParquetSummary {
+            num_rows: 10,
+            num_bytes: 0,
+            columns: vec![ColumnSummary {
+                name: "payload".to_string(),
+                data_type: "binary".to_string(),
+                null_count: 0,
+                stats: ColumnStats::Other,
+            }],
+        };
+        let s = summarize(&summary);
+        assert!(s.contains("payload (binary)"));
+    }
+
+    #[test]
+    fn summarize_null_count_without_total_rows() {
+        // A degenerate zero-row summary can still carry null counts
+        // (columns exist, just no rows). Avoid dividing by zero;
+        // fall back to raw null count without a percent.
+        let summary = ParquetSummary {
+            num_rows: 0,
+            num_bytes: 0,
+            columns: vec![ColumnSummary {
+                name: "x".to_string(),
+                data_type: "int64".to_string(),
+                null_count: 5,
+                stats: ColumnStats::Other,
+            }],
+        };
+        let s = summarize(&summary);
+        assert!(s.contains("5 nulls"));
+        assert!(!s.contains('%'));
+    }
+
+    #[test]
+    fn summarize_all_false_boolean_renders_zero_percent_true() {
+        // Edge case for the boolean percent math: with true_count = 0 and
+        // false_count > 0, the "true X%" should be 0, not arithmetic error.
+        let summary = ParquetSummary {
+            num_rows: 100,
+            num_bytes: 0,
+            columns: vec![ColumnSummary {
+                name: "flag".to_string(),
+                data_type: "bool".to_string(),
+                null_count: 0,
+                stats: ColumnStats::Boolean {
+                    true_count: 0,
+                    false_count: 100,
+                },
+            }],
+        };
+        let s = summarize(&summary);
+        assert!(s.contains("true 0% / false 100%"));
+    }
+
+    #[test]
+    fn summarize_truncates_long_top_values() {
+        // A very long top-K label (common for URLs, UUIDs embedded in
+        // string columns) must be truncated so the LLM output stays
+        // compact.
+        let long_label = "x".repeat(100);
+        let summary = ParquetSummary {
+            num_rows: 50,
+            num_bytes: 0,
+            columns: vec![ColumnSummary {
+                name: "url".to_string(),
+                data_type: "string".to_string(),
+                null_count: 0,
+                stats: ColumnStats::String {
+                    distinct_count: 2,
+                    distinct_count_capped: false,
+                    top: vec![(long_label, 30)],
+                },
+            }],
+        };
+        let s = summarize(&summary);
+        assert!(s.contains('…'));
+    }
 }
