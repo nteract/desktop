@@ -927,14 +927,13 @@ impl Supervisor {
     /// surfaces the conflict, and the user can clear it manually.
     ///
     /// Returns the list of PIDs killed, for the `up` status report.
-    async fn sweep_zombie_vites(&self, port: u16) -> Vec<u32> {
-        #[cfg(not(unix))]
-        {
-            let _ = port;
-            return Vec::new();
-        }
+    #[cfg(not(unix))]
+    async fn sweep_zombie_vites(&self, _port: u16) -> Vec<u32> {
+        Vec::new()
+    }
 
-        #[cfg(unix)]
+    #[cfg(unix)]
+    async fn sweep_zombie_vites(&self, port: u16) -> Vec<u32> {
         {
             let managed_pid: Option<u32> = {
                 let mut state = self.state.write().await;
