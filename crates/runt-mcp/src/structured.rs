@@ -20,6 +20,17 @@ fn is_agent_viewable_image(mime: &str) -> bool {
     )
 }
 
+/// Map an image MIME type to its conventional file extension.
+fn mime_to_extension(mime: &str) -> &'static str {
+    match mime {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        _ => "bin",
+    }
+}
+
 /// Check if a MIME type is a visualization spec (Plotly, Vega-Lite, Vega).
 fn is_viz_mime(mime: &str) -> bool {
     mime == "application/vnd.plotly.v1+json"
@@ -169,11 +180,16 @@ fn manifest_output_to_structured(
                         content_ref.get("inline").cloned()
                     } else if let Some(hash) = meta.blob_hash {
                         if is_agent_viewable_image(mime) && hash.len() >= 2 {
-                            // Image blobs — prefer file path so agents can Read the file.
-                            // Fall back to blob URL when blob_store_path is unavailable.
+                            // Image blobs — emit a symlink with file extension so the
+                            // agent's Read tool detects the image format. Falls back
+                            // to blob URL when blob_store_path is unavailable.
                             if let Some(store) = blob_store_path.as_ref() {
-                                let path = store.join(&hash[..2]).join(&hash[2..]);
-                                Some(Value::String(path.to_string_lossy().to_string()))
+                                let blob_path = store.join(&hash[..2]).join(&hash[2..]);
+                                let ext = mime_to_extension(mime);
+                                let link = blob_path.with_extension(ext);
+                                // Idempotent: ignores AlreadyExists on repeat calls.
+                                let _ = std::os::unix::fs::symlink(&blob_path, &link);
+                                Some(Value::String(link.to_string_lossy().to_string()))
                             } else {
                                 blob_base_url
                                     .as_ref()
@@ -505,5 +521,69 @@ mod tests {
             panic!("outputs should be an array");
         };
         assert_eq!(outputs.len(), 1);
+    }
+
+    #[test]
+    fn structured_image_blob_gets_extension_symlink() {
+        let tmp = std::env::temp_dir().join(format!("runt-mcp-test-{}", std::process::id()));
+        let blob_dir = tmp.join("ab");
+        std::fs::create_dir_all(&blob_dir).unwrap();
+        let blob_file = blob_dir.join("cdef1234567890");
+        std::fs::write(&blob_file, b"fake png data").unwrap();
+
+        let manifest = json!({
+            "output_type": "display_data",
+            "data": {
+                "image/png": blob_ref("abcdef1234567890", 50_000),
+            },
+        });
+        let blob_base = Some("http://localhost:9999".to_string());
+        let store = Some(tmp.clone());
+        let result = manifest_output_to_structured(&manifest, &blob_base, &store);
+        let data = result["data"].as_object().unwrap();
+        let path_str = data["image/png"].as_str().unwrap();
+
+        // Should end with .png extension
+        assert!(
+            path_str.ends_with(".png"),
+            "path should have .png extension: {path_str}"
+        );
+
+        // Symlink should exist and point to the blob file
+        let link_path = std::path::Path::new(path_str);
+        assert!(
+            link_path.symlink_metadata().is_ok(),
+            "symlink should exist at {path_str}"
+        );
+        assert!(link_path.is_symlink(), "should be a symlink");
+        assert_eq!(std::fs::read(link_path).unwrap(), b"fake png data");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn structured_jpeg_blob_gets_jpg_extension() {
+        let tmp = std::env::temp_dir().join(format!("runt-mcp-test-jpg-{}", std::process::id()));
+        let blob_dir = tmp.join("ab");
+        std::fs::create_dir_all(&blob_dir).unwrap();
+        std::fs::write(blob_dir.join("cdef1234567890"), b"fake jpeg").unwrap();
+
+        let manifest = json!({
+            "output_type": "display_data",
+            "data": {
+                "image/jpeg": blob_ref("abcdef1234567890", 30_000),
+            },
+        });
+        let store = Some(tmp.clone());
+        let result =
+            manifest_output_to_structured(&manifest, &Some("http://localhost:9999".into()), &store);
+        let data = result["data"].as_object().unwrap();
+        let path_str = data["image/jpeg"].as_str().unwrap();
+        assert!(
+            path_str.ends_with(".jpg"),
+            "path should have .jpg extension: {path_str}"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
