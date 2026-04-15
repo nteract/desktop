@@ -232,6 +232,144 @@ pub struct DisplayDataManifest {
     pub execution_count: Option<i32>,
 }
 
+/// Maximum head/tail size per side in bytes.
+const PREVIEW_BYTE_CAP: usize = 1024;
+/// Maximum head/tail size per side in lines.
+const PREVIEW_LINE_CAP: usize = 40;
+
+/// LLM-friendly summary of a spilled stream text blob. Populated at
+/// manifest-creation time so readers never need to fetch the blob just
+/// to describe it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamPreview {
+    pub head: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub tail: String,
+    pub total_bytes: u64,
+    pub total_lines: u64,
+}
+
+impl StreamPreview {
+    pub fn from_text(text: &str) -> Self {
+        let total_bytes = text.len() as u64;
+        let total_lines = text.lines().count() as u64;
+        let head = take_head(text, PREVIEW_LINE_CAP, PREVIEW_BYTE_CAP);
+        let tail = if head.len() as u64 >= total_bytes {
+            String::new()
+        } else {
+            take_tail(text, PREVIEW_LINE_CAP, PREVIEW_BYTE_CAP)
+        };
+        Self {
+            head,
+            tail,
+            total_bytes,
+            total_lines,
+        }
+    }
+}
+
+/// LLM-friendly summary of a spilled traceback blob.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ErrorPreview {
+    pub last_frame: String,
+    pub total_bytes: u64,
+    pub frames: u32,
+}
+
+impl ErrorPreview {
+    pub fn from_traceback_value(tb: &Value) -> Self {
+        let frames_arr: Vec<&str> = tb
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+        let frames = frames_arr.len() as u32;
+        let total_bytes = serde_json::to_string(tb)
+            .map(|s| s.len() as u64)
+            .unwrap_or(0);
+        let raw_last = frames_arr
+            .iter()
+            .rev()
+            .find(|s| !s.trim().is_empty())
+            .copied()
+            .unwrap_or("");
+        let stripped = strip_ansi(raw_last);
+        let last_frame = truncate_bytes(&stripped, PREVIEW_BYTE_CAP);
+        Self {
+            last_frame,
+            total_bytes,
+            frames,
+        }
+    }
+}
+
+fn take_head(text: &str, line_cap: usize, byte_cap: usize) -> String {
+    let mut out = String::new();
+    for (i, line) in text.split_inclusive('\n').enumerate() {
+        if i >= line_cap {
+            break;
+        }
+        if out.len() + line.len() > byte_cap {
+            let remaining = byte_cap.saturating_sub(out.len());
+            if remaining > 0 {
+                out.push_str(&safe_byte_slice(line, 0, remaining));
+            }
+            break;
+        }
+        out.push_str(line);
+    }
+    if out.is_empty() && !text.is_empty() {
+        out.push_str(&safe_byte_slice(text, 0, byte_cap));
+    }
+    out
+}
+
+fn take_tail(text: &str, line_cap: usize, byte_cap: usize) -> String {
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let start = lines.len().saturating_sub(line_cap);
+    let mut out = String::new();
+    for line in &lines[start..] {
+        if out.len() + line.len() > byte_cap {
+            let remaining = byte_cap.saturating_sub(out.len());
+            if remaining > 0 {
+                let start_byte = line.len() - remaining;
+                out.push_str(&safe_byte_slice(line, start_byte, line.len()));
+            }
+            break;
+        }
+        out.push_str(line);
+    }
+    out
+}
+
+fn safe_byte_slice(s: &str, start: usize, end: usize) -> String {
+    let mut lo = start.min(s.len());
+    while lo > 0 && !s.is_char_boundary(lo) {
+        lo -= 1;
+    }
+    let mut hi = end.min(s.len());
+    while hi < s.len() && !s.is_char_boundary(hi) {
+        hi += 1;
+    }
+    s[lo..hi].to_string()
+}
+
+fn truncate_bytes(s: &str, cap: usize) -> String {
+    if s.len() <= cap {
+        return s.to_string();
+    }
+    safe_byte_slice(s, 0, cap)
+}
+
+/// ANSI escape code stripper. Mirrors `runt-mcp::formatting::strip_ansi`.
+fn strip_ansi(text: &str) -> String {
+    use std::sync::LazyLock;
+    static ANSI_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+        #[allow(clippy::expect_used)]
+        regex::Regex::new(r"\x1b\[[0-9;]*[A-Za-z]|\x1b\].*?\x07|\x1b\(B").expect("valid ANSI regex")
+    });
+    ANSI_RE.replace_all(text, "").to_string()
+}
+
 /// Manifest for stream outputs (stdout/stderr).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamManifest {
@@ -833,6 +971,69 @@ mod tests {
 
     fn test_store(dir: &TempDir) -> BlobStore {
         BlobStore::new(dir.path().join("blobs"))
+    }
+
+    #[test]
+    fn stream_preview_short_text_is_head_only() {
+        let text = "line 1\nline 2\nline 3\n";
+        let p = StreamPreview::from_text(text);
+        assert_eq!(p.head, text);
+        assert_eq!(p.tail, "");
+        assert_eq!(p.total_bytes, text.len() as u64);
+        assert_eq!(p.total_lines, 3);
+    }
+
+    #[test]
+    fn stream_preview_long_text_has_head_and_tail() {
+        let text = (0..200)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let p = StreamPreview::from_text(&text);
+        assert!(p.head.starts_with("line 0\n"));
+        assert!(p.tail.ends_with("line 199"));
+        assert!(p.head.len() <= 1024);
+        assert!(p.head.lines().count() <= 40);
+        assert!(p.tail.len() <= 1024);
+        assert!(p.tail.lines().count() <= 40);
+        assert_eq!(p.total_bytes, text.len() as u64);
+        assert_eq!(p.total_lines, 200);
+    }
+
+    #[test]
+    fn stream_preview_caps_head_at_byte_limit_mid_line() {
+        let text = "x".repeat(10_000);
+        let p = StreamPreview::from_text(&text);
+        assert!(p.head.len() <= 1024);
+        assert_eq!(p.total_bytes, 10_000);
+    }
+
+    #[test]
+    fn error_preview_keeps_last_frame() {
+        let tb = serde_json::json!([
+            "Traceback (most recent call last):",
+            "  File \"<stdin>\", line 1",
+            "ZeroDivisionError: division by zero",
+        ]);
+        let p = ErrorPreview::from_traceback_value(&tb);
+        assert_eq!(p.last_frame, "ZeroDivisionError: division by zero");
+        assert_eq!(p.frames, 3);
+        assert!(p.total_bytes > 0);
+    }
+
+    #[test]
+    fn error_preview_strips_ansi_in_last_frame() {
+        let tb = serde_json::json!(["Traceback…", "\x1b[31mValueError: bad input\x1b[0m",]);
+        let p = ErrorPreview::from_traceback_value(&tb);
+        assert_eq!(p.last_frame, "ValueError: bad input");
+    }
+
+    #[test]
+    fn error_preview_empty_traceback() {
+        let tb = serde_json::json!([]);
+        let p = ErrorPreview::from_traceback_value(&tb);
+        assert_eq!(p.last_frame, "");
+        assert_eq!(p.frames, 0);
     }
 
     #[tokio::test]
