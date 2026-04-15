@@ -452,11 +452,16 @@ pub async fn create_notebook(
                 .unwrap_or_else(|| super::deps::detect_package_manager(&result.handle));
 
             if runtime != "deno" && !deps.is_empty() {
-                // When explicit deps are provided, **replace** the dependency list
-                // rather than appending. The auto-launch may have bootstrapped deps
-                // from an unrelated project file (e.g. pyproject.toml in the MCP
-                // server's working directory), and we want only the user's deps.
-                super::deps::set_deps_for_manager(&result.handle, &deps, &pkg_manager);
+                // Add agent-requested deps on top of whatever the daemon already
+                // resolved (e.g. project pyproject.toml deps). This respects the
+                // user's project environment while layering explicit deps on top.
+                for dep in &deps {
+                    if let Err(e) =
+                        super::deps::add_dep_for_manager(&result.handle, dep, &pkg_manager)
+                    {
+                        tracing::warn!("Failed to add dependency '{}': {}", dep, e);
+                    }
+                }
             }
 
             let session = NotebookSession {
@@ -479,24 +484,15 @@ pub async fn create_notebook(
                         tracing::warn!("confirm_sync failed before create_notebook relaunch: {e}");
                     }
 
-                    // Determine the env_source for the relaunch.
-                    // When deps were explicitly added, use the exact inline source
-                    // to skip project-file detection (which can pick up an unrelated
-                    // pyproject.toml from the MCP server's working directory).
-                    // When only the package manager metadata was changed (no deps),
-                    // use scoped auto-detect so the daemon re-resolves correctly.
-                    let scoped_env_source = if !deps.is_empty() {
-                        match pkg_manager.as_str() {
-                            "pixi" => "pixi:inline",
-                            "conda" => "conda:inline",
-                            _ => "uv:inline",
-                        }
-                    } else {
-                        match pkg_manager.as_str() {
-                            "pixi" => "auto:pixi",
-                            "conda" => "auto:conda",
-                            _ => "auto:uv",
-                        }
+                    // Use auto-detect so the daemon resolves the right
+                    // environment: project file (pyproject.toml, pixi.toml,
+                    // environment.yml) if present, inline deps otherwise.
+                    // Agent-requested deps were already added to metadata above
+                    // and will be picked up by whichever env resolution path wins.
+                    let scoped_env_source = match pkg_manager.as_str() {
+                        "pixi" => "auto:pixi",
+                        "conda" => "auto:conda",
+                        _ => "auto:uv",
                     };
                     let _ = s
                         .handle
@@ -532,10 +528,31 @@ pub async fn create_notebook(
                 }
             }
 
+            // Collect resolved runtime info for the response (env_source,
+            // kernel status, etc.) so agents know what environment they got.
+            let runtime_info = {
+                let guard = server.session.read().await;
+                if let Some(s) = guard.as_ref() {
+                    collect_runtime_info(&s.handle).await
+                } else {
+                    serde_json::json!({ "language": runtime })
+                }
+            };
+
+            // Read back the full dependency list (may include project deps
+            // that were already present before the agent's deps were added).
+            let all_deps = {
+                let guard = server.session.read().await;
+                guard.as_ref().map_or_else(Vec::new, |s| {
+                    super::deps::get_deps_for_manager_pub(&s.handle, &pkg_manager)
+                })
+            };
+
             let mut info = serde_json::json!({
                 "notebook_id": notebook_id,
-                "runtime": { "language": runtime },
-                "dependencies": deps,
+                "runtime": runtime_info,
+                "dependencies": all_deps,
+                "added_dependencies": deps,
                 "package_manager": pkg_manager,
                 "ephemeral": ephemeral,
             });

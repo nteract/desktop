@@ -175,54 +175,6 @@ pub(crate) fn ensure_package_manager_metadata(
     true
 }
 
-/// Replace the dependency list with the given deps for the specified package manager.
-/// Used by `create_notebook` to set exact deps, overriding any auto-bootstrapped deps.
-pub(crate) fn set_deps_for_manager(
-    handle: &notebook_sync::handle::DocHandle,
-    deps: &[String],
-    manager: &str,
-) {
-    let mut snapshot = handle.get_notebook_metadata().unwrap_or_default();
-    match manager {
-        "conda" => {
-            let conda = snapshot.runt.conda.get_or_insert_with(|| {
-                notebook_doc::metadata::CondaInlineMetadata {
-                    dependencies: Vec::new(),
-                    channels: vec!["conda-forge".to_string()],
-                    python: None,
-                }
-            });
-            conda.dependencies = deps.to_vec();
-        }
-        "pixi" => {
-            let pixi = snapshot.runt.pixi.get_or_insert_with(|| {
-                notebook_doc::metadata::PixiInlineMetadata {
-                    dependencies: Vec::new(),
-                    pypi_dependencies: Vec::new(),
-                    channels: vec!["conda-forge".to_string()],
-                    python: None,
-                }
-            });
-            pixi.dependencies = deps.to_vec();
-        }
-        _ => {
-            let uv =
-                snapshot
-                    .runt
-                    .uv
-                    .get_or_insert_with(|| notebook_doc::metadata::UvInlineMetadata {
-                        dependencies: Vec::new(),
-                        requires_python: None,
-                        prerelease: None,
-                    });
-            uv.dependencies = deps.to_vec();
-        }
-    }
-    if let Err(e) = handle.set_metadata_snapshot(&snapshot) {
-        tracing::warn!("Failed to set dependency list: {e}");
-    }
-}
-
 /// Add a dependency using the appropriate package manager, return error string on failure.
 pub(crate) fn add_dep_for_manager(
     handle: &notebook_sync::handle::DocHandle,
@@ -353,11 +305,10 @@ pub async fn add_dependency(
         }
         "restart" => {
             // Shutdown + relaunch after adding a dependency.
-            // Since we just added an inline dep, use the exact inline source
-            // to skip project-file detection (which can pick up an unrelated
-            // pyproject.toml from the MCP server's working directory).
-            // For non-prewarmed sources that already have the right env_source
-            // (e.g. uv:inline, conda:inline), keep as-is.
+            // For prewarmed envs, switch to inline since prewarmed means
+            // no project file was found. For project-backed envs (uv:pyproject,
+            // pixi:toml, etc.), keep the same source. For unknown/empty,
+            // use auto-detect so the daemon resolves project files if present.
             let restart_env_source = match handle
                 .get_runtime_state()
                 .ok()
@@ -368,12 +319,13 @@ pub async fn add_dependency(
                 Some("conda:prewarmed") => "conda:inline".to_string(),
                 Some("pixi:prewarmed") => "pixi:inline".to_string(),
                 Some("") | None => {
-                    // No previous env_source — detect from metadata
+                    // No previous env_source — use auto-detect so the daemon
+                    // resolves project files if present.
                     let detected = detect_package_manager(&handle);
                     match detected.as_str() {
-                        "conda" => "conda:inline".to_string(),
-                        "pixi" => "pixi:inline".to_string(),
-                        _ => "uv:inline".to_string(),
+                        "conda" => "auto:conda".to_string(),
+                        "pixi" => "auto:pixi".to_string(),
+                        _ => "auto:uv".to_string(),
                     }
                 }
                 Some(s) => s.to_string(),
@@ -550,6 +502,14 @@ pub async fn sync_environment(
         Ok(_) => tool_success(&serde_json::json!({ "success": true }).to_string()),
         Err(e) => tool_error(&format!("Failed to sync environment: {e}")),
     }
+}
+
+/// Read dependencies for the detected package manager (pub for session.rs).
+pub(crate) fn get_deps_for_manager_pub(
+    handle: &notebook_sync::handle::DocHandle,
+    manager: &str,
+) -> Vec<String> {
+    get_deps_for_manager(handle, manager)
 }
 
 /// Read dependencies for the detected package manager.

@@ -110,24 +110,15 @@ pub async fn restart_kernel(
             }
             Some(s) if !s.is_empty() => s.to_string(),
             _ => {
-                // No previous env_source — fall back to metadata-based detection.
-                // Use inline source when deps exist to avoid project-file detection.
+                // No previous env_source — use auto-detect so the daemon
+                // resolves project files (pyproject.toml, pixi.toml, etc.)
+                // if present. Inline deps in metadata will be picked up
+                // by the daemon's resolution pipeline regardless.
                 let detected_manager = super::deps::detect_package_manager(&handle);
-                let has_inline_deps = handle
-                    .get_notebook_metadata()
-                    .is_some_and(|m| super::deps::has_any_inline_deps(&m));
-                if has_inline_deps {
-                    match detected_manager.as_str() {
-                        "pixi" => "pixi:inline".to_string(),
-                        "conda" => "conda:inline".to_string(),
-                        _ => "uv:inline".to_string(),
-                    }
-                } else {
-                    match detected_manager.as_str() {
-                        "pixi" => "auto:pixi".to_string(),
-                        "conda" => "auto:conda".to_string(),
-                        _ => "auto:uv".to_string(),
-                    }
+                match detected_manager.as_str() {
+                    "pixi" => "auto:pixi".to_string(),
+                    "conda" => "auto:conda".to_string(),
+                    _ => "auto:uv".to_string(),
                 }
             }
         };
