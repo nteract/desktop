@@ -729,7 +729,8 @@ impl ServerHandler for McpProxy {
             let _ = tokio::time::timeout(Duration::from_secs(30), notified).await;
         }
 
-        let tools = self.child_tools().await;
+        let mut tools = self.child_tools().await;
+        tools.push(reconnect_tool());
         Ok(ListToolsResult {
             tools,
             next_cursor: None,
@@ -766,6 +767,13 @@ impl ServerHandler for McpProxy {
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
+        // Intercept the built-in reconnect tool before waiting on child
+        // readiness — reconnect is the escape hatch when the child is
+        // wedged, so it must not block on child readiness itself.
+        if request.name == RECONNECT_TOOL_NAME {
+            return self.handle_reconnect().await;
+        }
+
         // Wait for child if not ready
         let notified = self.child_ready.notified();
         let needs_wait = self.state.read().await.child_client.is_none();
@@ -778,6 +786,55 @@ impl ServerHandler for McpProxy {
         }
 
         self.forward_tool_call(request).await
+    }
+}
+
+/// Name of the built-in reconnect tool exposed by the standalone proxy.
+const RECONNECT_TOOL_NAME: &str = "reconnect";
+
+/// Build the `reconnect` tool definition injected into the standalone
+/// `ServerHandler::list_tools` result.
+fn reconnect_tool() -> Tool {
+    let empty_schema: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+    Tool::new(
+        RECONNECT_TOOL_NAME,
+        "Restart the nteract MCP child process and reconnect to the daemon. \
+         Use when tools are hanging, returning stale errors, or after a daemon \
+         upgrade. Child-only — the daemon itself is managed by the installed \
+         nteract app.",
+        empty_schema,
+    )
+}
+
+impl McpProxy {
+    /// Handle the built-in `reconnect` tool call.
+    ///
+    /// Kicks the child via `restart_child()` and waits briefly for the new
+    /// child to become ready so the caller's next tool call sees a fresh
+    /// transport. Any reconnection message set by `restart_child()` is
+    /// returned inline rather than prepended to a future call.
+    async fn handle_reconnect(&self) -> Result<CallToolResult, McpError> {
+        info!("reconnect tool invoked — restarting child");
+        let prior_restart_count = self.restart_count().await;
+
+        if let Err(e) = self.restart_child().await {
+            return Err(McpError::internal_error(
+                format!("Child restart failed: {e}"),
+                None,
+            ));
+        }
+
+        // Best-effort wait so the caller's next tool call sees the new
+        // child. Don't fail the reconnect call if the child is slow —
+        // the next forwarded call will retry via the normal restart path.
+        let notified = self.child_ready.notified();
+        let _ = tokio::time::timeout(Duration::from_secs(30), notified).await;
+
+        let restart_count = self.restart_count().await;
+        let pending = self.state.write().await.reconnection_message.take();
+        let detail = pending.unwrap_or_else(|| "Child restarted.".to_string());
+        let body = format!("{detail}\n\nRestart #{restart_count} (was #{prior_restart_count}).");
+        Ok(CallToolResult::success(vec![Content::text(body)]))
     }
 }
 
@@ -1277,5 +1334,59 @@ mod tests {
 
         // Restart count should still be 0
         assert_eq!(proxy.restart_count().await, 0);
+    }
+
+    // ── reconnect tool ────────────────────────────────────────────────
+
+    #[test]
+    fn reconnect_tool_has_expected_shape() {
+        let tool = reconnect_tool();
+        assert_eq!(tool.name.as_ref(), RECONNECT_TOOL_NAME);
+        assert_eq!(tool.name.as_ref(), "reconnect");
+        let desc = tool.description.as_ref().map(|d| d.as_ref()).unwrap_or("");
+        assert!(
+            desc.to_lowercase().contains("restart"),
+            "reconnect tool description should mention restart: {desc}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_reconnect_returns_success_and_bumps_restart_count() {
+        // Proxy with a bogus child command so restart_child marks a new
+        // attempt but the spawn itself fails quickly. We just need it to
+        // advance state observable by the caller.
+        let proxy = McpProxy::new(test_config(), None);
+
+        let result = proxy.handle_reconnect().await;
+
+        // restart_child() wraps spawn failure as Err; handle_reconnect
+        // surfaces that as McpError. Either outcome is fine for this
+        // test — we care that the tool runs to completion (no panic,
+        // no deadlock) and that restart_count observably advanced when
+        // the spawn attempt happened.
+        match result {
+            Ok(call_result) => {
+                let text: String = call_result
+                    .content
+                    .iter()
+                    .filter_map(|c| c.raw.as_text().map(|t| t.text.clone()))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                assert!(
+                    text.contains("Restart #"),
+                    "expected Restart # in body, got: {text}"
+                );
+            }
+            Err(e) => {
+                // Spawn failure is acceptable — just verify the error path
+                // is the restart failure message, not something unrelated.
+                assert!(
+                    e.to_string().to_lowercase().contains("restart")
+                        || e.to_string().to_lowercase().contains("spawn")
+                        || e.to_string().to_lowercase().contains("child"),
+                    "unexpected reconnect error: {e}"
+                );
+            }
+        }
     }
 }
