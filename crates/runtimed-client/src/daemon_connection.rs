@@ -246,6 +246,27 @@ impl DaemonConnection {
     }
 }
 
+/// Process-global `DaemonConnection`, lazy-initialized on first call.
+///
+/// The spec called out "process-level sharing" as an open question;
+/// this is the simple answer for callers that don't want to thread a
+/// connection through their own state. The `OnceCell` ensures only one
+/// supervisor task exists per process, regardless of how many call
+/// sites reach for it.
+///
+/// The singleton is pinned to `default_socket_path()` at first-init
+/// time. Tests that need a different socket path should construct a
+/// local `DaemonConnection::spawn(...)` instead.
+///
+/// Never calls `close()` on the singleton — it lives for the lifetime
+/// of the process. `Drop` on the underlying task doesn't run because
+/// the OnceCell is static, but that's fine: the OS reaps the
+/// supervisor task when the process exits.
+pub fn shared() -> &'static DaemonConnection {
+    static SHARED: std::sync::OnceLock<DaemonConnection> = std::sync::OnceLock::new();
+    SHARED.get_or_init(|| DaemonConnection::spawn(crate::default_socket_path()))
+}
+
 impl Drop for DaemonConnection {
     fn drop(&mut self) {
         // Latch the flag AND wake sleeps, then abort outright — Drop is

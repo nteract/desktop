@@ -1570,21 +1570,20 @@ pub struct DaemonInfoForBanner {
 async fn get_daemon_info() -> Option<DaemonInfoForBanner> {
     #[cfg(debug_assertions)]
     {
-        // Query the daemon directly via the socket. Falls back to the
-        // legacy daemon.json during the one-release transition window
-        // against older daemons that don't know GetDaemonInfo.
-        let socket_path = runtimed_client::default_socket_path();
-        let info = runtimed::singleton::query_daemon_info(socket_path.clone()).await?;
+        // Read from the process-shared DaemonConnection cache. The
+        // banner is a passive display, so `last_known_info` is
+        // preferable to `wait_connected` — it'll show the previous
+        // daemon's version while a reconnect is in flight rather than
+        // blanking out.
+        let conn = runtimed_client::daemon_connection::shared();
+        let info = conn.last_known_info().await?;
         let version = info.version;
-        // Endpoint: prefer what the daemon reports, fall back to the
-        // queried socket path if the daemon didn't set it (e.g. old
-        // daemon-via-file where the endpoint comes from the JSON).
+        let socket_path = runtimed_client::default_socket_path();
         let socket_path_full = if info.endpoint.is_empty() {
             socket_path.to_string_lossy().to_string()
         } else {
             info.endpoint
         };
-        // Replace home directory with ~ for shorter display
         let socket_path_display = if let Some(home) = dirs::home_dir() {
             let home_str = home.to_string_lossy();
             if socket_path_full.starts_with(home_str.as_ref()) {
@@ -1677,13 +1676,20 @@ async fn get_feedback_system_info() -> FeedbackSystemInfo {
 
 /// Get the blob server port from the running daemon.
 ///
-/// Uses `query_daemon_info`, which prefers the socket-based
-/// `GetDaemonInfo` request (daemon is the source of truth — fixes the
-/// "output void" bug when `daemon.json` disappears) and falls back to
-/// the on-disk sidecar for the upgrade window against older daemons.
+/// Reads from the process-shared `DaemonConnection`, which holds a
+/// long-lived socket and caches the daemon's `DaemonInfo` for the life
+/// of that connection. First call lazy-spawns the supervisor; later
+/// calls are hot-path cache reads.
+///
+/// The supervisor refetches on reconnect, so a daemon restart with a
+/// new blob port is reflected automatically — no per-lookup polling.
 #[tauri::command]
 async fn get_blob_port() -> Result<u16, String> {
-    let info = runtimed::singleton::query_daemon_info(runtimed_client::default_socket_path())
+    let conn = runtimed_client::daemon_connection::shared();
+    // First call: wait briefly for the supervisor's initial fetch.
+    // Steady-state: cache is already populated, returns immediately.
+    let info = conn
+        .wait_connected(std::time::Duration::from_secs(3))
         .await
         .ok_or_else(|| "Daemon not running".to_string())?;
     info.blob_port
