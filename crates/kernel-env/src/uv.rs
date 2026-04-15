@@ -166,6 +166,9 @@ pub async fn prepare_environment_in(
 
     let mut venv_cmd = tokio::process::Command::new(&uv_path);
     venv_cmd.arg("venv").arg(&venv_path);
+    // Set explicit cwd so `uv` doesn't fail when the daemon's inherited cwd
+    // has been deleted (e.g. a cleaned-up gremlin temp directory).
+    venv_cmd.current_dir(cache_dir);
 
     if let Some(ref py_version) = deps.requires_python {
         let version = py_version
@@ -234,6 +237,7 @@ pub async fn prepare_environment_in(
 
     let offline_output = tokio::process::Command::new(&uv_path)
         .args(&offline_args)
+        .current_dir(cache_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -268,6 +272,7 @@ pub async fn prepare_environment_in(
 
     let install_output = tokio::process::Command::new(&uv_path)
         .args(&install_args)
+        .current_dir(cache_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -287,6 +292,7 @@ pub async fn prepare_environment_in(
         retry_args.insert(2, "--refresh".to_string());
         tokio::process::Command::new(&uv_path)
             .args(&retry_args)
+            .current_dir(cache_dir)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -352,8 +358,13 @@ pub async fn sync_dependencies(env: &UvEnvironment, deps: &[String]) -> Result<(
     // Insert --offline after "pip install" (index 2)
     offline_args.insert(2, "--offline".to_string());
 
+    // Use the venv's parent directory as cwd so `uv` doesn't fail when the
+    // daemon's inherited cwd has been deleted.
+    let cwd = env.venv_path.parent().unwrap_or_else(|| Path::new("/tmp"));
+
     let offline_output = tokio::process::Command::new(&uv_path)
         .args(&offline_args)
+        .current_dir(cwd)
         .output()
         .await?;
 
@@ -370,6 +381,7 @@ pub async fn sync_dependencies(env: &UvEnvironment, deps: &[String]) -> Result<(
 
     let output = tokio::process::Command::new(&uv_path)
         .args(&install_args)
+        .current_dir(cwd)
         .output()
         .await?;
 
@@ -422,6 +434,9 @@ pub async fn create_prewarmed_environment_in(
     let venv_output = tokio::process::Command::new(&uv_path)
         .arg("venv")
         .arg(&venv_path)
+        // Set explicit cwd so `uv` doesn't fail when the daemon's inherited cwd
+        // has been deleted (e.g. a cleaned-up gremlin temp directory).
+        .current_dir(cache_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -467,6 +482,7 @@ pub async fn create_prewarmed_environment_in(
 
     let offline_output = tokio::process::Command::new(&uv_path)
         .args(&offline_args)
+        .current_dir(cache_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -504,6 +520,7 @@ pub async fn create_prewarmed_environment_in(
 
     let install_output = tokio::process::Command::new(&uv_path)
         .args(&install_args)
+        .current_dir(cache_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
