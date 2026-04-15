@@ -194,3 +194,97 @@ big
     llm = display.data["text/llm+plain"]
     assert "sampled" in llm.lower(), f"summary did not mention sampling: {llm!r}"
     assert "200,000" in llm, f"summary did not include total row count: {llm!r}"
+
+
+@pytest.mark.integration
+async def test_dx_polars_display_emits_blob_ref_with_buffers(session):  # noqa: F811
+    """Same content-addressed round-trip as the pandas test, but exercising
+    the polars encoder path in `_format._serialize_polars`. Polars writes
+    parquet via its own native encoder (not pyarrow), so this is a real
+    end-to-end check that the polars side hashes/uploads/resolves correctly."""
+    await async_start_kernel_with_retry(session, env_source="uv:pyproject")
+
+    bootstrap_id = await async_create_cell_and_wait_for_sync(session, _BOOTSTRAP)
+    assert (await session.execute_cell(bootstrap_id)).success
+
+    display_id = await async_create_cell_and_wait_for_sync(
+        session,
+        """
+import polars as pl
+df = pl.DataFrame({"a": [1, 2, 3], "b": ["x", "y", "z"]})
+df
+""",
+    )
+    result = await session.execute_cell(display_id)
+    assert result.success, f"polars display failed: {result.error}"
+
+    rich_outputs = [
+        o for o in result.outputs if o.output_type in ("display_data", "execute_result")
+    ]
+    assert len(rich_outputs) == 1, (
+        f"expected one rich output, got {len(rich_outputs)}: "
+        f"{[(o.output_type, list(o.data.keys())) for o in rich_outputs]}"
+    )
+    output = rich_outputs[0]
+    # As of #1780 last-expression DataFrames flow through display_data.
+    assert output.output_type == "display_data"
+
+    # The transport ref MIME is consumed by the agent, never surfaces.
+    assert "application/vnd.nteract.blob-ref+json" not in output.data, (
+        "BLOB_REF_MIME leaked into the inline manifest — the ref-MIME branch "
+        "in create_manifest should have consumed it."
+    )
+
+    # Parquet bytes resolved from the blob store.
+    parquet_bytes = output.data.get("application/vnd.apache.parquet")
+    assert parquet_bytes is not None, (
+        f"parquet MIME missing — polars encoder may not have run. keys: "
+        f"{list(output.data.keys())}"
+    )
+    assert isinstance(parquet_bytes, (bytes, bytearray))
+    assert parquet_bytes[:4] == b"PAR1", "not a parquet file (bad magic)"
+
+    # Python-side llm summary identifies polars specifically.
+    llm = output.data.get("text/llm+plain", "")
+    assert llm.startswith("DataFrame (polars)"), (
+        f"expected polars summary, got: {llm[:80]!r}"
+    )
+
+    # Round-trip via pyarrow to verify the bytes are valid parquet AND
+    # contain the columns we sent.
+    import io
+
+    import pyarrow.parquet as pq  # noqa: PLC0415
+
+    table = pq.read_table(io.BytesIO(bytes(parquet_bytes)))
+    assert table.num_rows == 3
+    assert set(table.column_names) == {"a", "b"}
+
+
+@pytest.mark.integration
+async def test_dx_polars_last_expression_uses_polars_encoder(session):  # noqa: F811
+    """Belt-and-suspenders for the polars path: confirm the parquet payload
+    encodes via polars's native writer (not pyarrow's pandas adapter). The
+    Python-side `text/llm+plain` summary is the canonical signal — it says
+    `(polars)` only when `_serialize_polars` ran."""
+    await async_start_kernel_with_retry(session, env_source="uv:pyproject")
+
+    bootstrap_id = await async_create_cell_and_wait_for_sync(session, _BOOTSTRAP)
+    assert (await session.execute_cell(bootstrap_id)).success
+
+    display_id = await async_create_cell_and_wait_for_sync(
+        session,
+        """
+import polars as pl
+pl.DataFrame({"id": list(range(100)), "name": [f"row-{i}" for i in range(100)]})
+""",
+    )
+    result = await session.execute_cell(display_id)
+    assert result.success
+
+    rich = [o for o in result.outputs if o.output_type == "display_data"]
+    assert len(rich) == 1
+    llm = rich[0].data.get("text/llm+plain", "")
+    assert "(polars)" in llm, f"expected (polars) marker in summary, got: {llm[:120]!r}"
+    assert "100 rows" in llm
+    assert "2 columns" in llm
