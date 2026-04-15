@@ -55,7 +55,7 @@ from typing import Any
 from dx._env import Environment, detect_environment
 from dx._format import serialize_dataframe
 from dx._refs import BLOB_REF_MIME, BlobRef, build_ref_bundle
-from dx._summary import summarize_dataframe
+from dx._summary import summarize_dataframe, summarize_dataset
 
 log = logging.getLogger("dx")
 
@@ -153,6 +153,14 @@ def install_formatters() -> None:
         ipython_display.for_type(nw.DataFrame, _narwhals_ipython_display)
     except ImportError:
         pass
+
+    try:
+        import datasets  # noqa: PLC0415  # ty: ignore[unresolved-import]
+
+        mimebundle.for_type(datasets.Dataset, _dataset_mimebundle)
+        ipython_display.for_type(datasets.Dataset, _dataset_ipython_display)
+    except ImportError:
+        log.debug("dx: datasets not installed, skipping handler")
 
     _install_display_pub_hook()
     _enable_third_party_nteract_renderers()
@@ -445,6 +453,44 @@ def _enable_third_party_nteract_renderers() -> None:
         pass
     except Exception as exc:  # pragma: no cover — defensive
         log.debug("dx: failed to set plotly 'nteract' renderer: %s", exc)
+
+
+def _dataset_mimebundle(ds: Any, include=None, exclude=None) -> dict | None:
+    """`mimebundle_formatter` handler for `datasets.Dataset`.
+
+    Returns a bundle with only `text/llm+plain` — no parquet ref. Keeps the
+    dataset lazy and lets IPython fill in `text/plain` from the dataset's
+    own repr.
+    """
+    try:
+        summary = summarize_dataset(ds)
+        return {"text/llm+plain": summary}
+    except Exception as exc:
+        log.debug("dx: dataset mimebundle failed: %s", exc)
+        return None
+
+
+def _dataset_ipython_display(ds: Any) -> None:
+    """`ipython_display_formatter` handler for `datasets.Dataset`.
+
+    Publishes a `display_data` message with `text/llm+plain`, consistent
+    with the DataFrame path.
+    """
+    try:
+        from IPython.display import publish_display_data
+    except ImportError:
+        return
+
+    try:
+        bundle = _dataset_mimebundle(ds)
+    except Exception as exc:
+        log.debug("dx: dataset display failed: %s — falling back to repr", exc)
+        bundle = None
+
+    if bundle:
+        publish_display_data(data=bundle, metadata={})
+    else:
+        print(repr(ds))
 
 
 def dx_display(obj: Any) -> None:
