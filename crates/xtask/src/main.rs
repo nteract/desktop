@@ -2166,8 +2166,22 @@ fn cmd_lint(fix: bool) {
                 failed = true;
             }
             println!();
+
+            // ty type-check. ty is a dev-dep at the workspace root; the
+            // python-package workflow already gates PRs on it, so we run
+            // the same command here to give local `cargo xtask lint` the
+            // same coverage. `ty check` is read-only — the --fix flag has
+            // no effect on it.
+            println!("=== Python (ty) ===");
+            let ty_status = Command::new("uv")
+                .args(["run", "ty", "check", "python/"])
+                .status();
+            if !ty_status.map(|s| s.success()).unwrap_or(false) {
+                failed = true;
+            }
+            println!();
         } else {
-            println!("=== Python (ruff) ===");
+            println!("=== Python (ruff + ty) ===");
             println!("Skipping: uv not found in PATH");
             println!();
         }
