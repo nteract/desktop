@@ -33,17 +33,19 @@ function configureWasm(blobUrl: string): void {
   try {
     const parsed = new URL(blobUrl);
     const wasmUrl = `${parsed.protocol}//${parsed.host}/plugins/sift_wasm.wasm`;
+    console.debug("[sift-renderer] setWasmUrl:", wasmUrl);
     setWasmUrl(wasmUrl);
     wasmConfigured = true;
-  } catch {
-    // Fall back to default WASM resolution
+  } catch (err) {
+    console.warn("[sift-renderer] configureWasm failed, using defaults:", err);
   }
 }
 
 // --- SiftRenderer component ---
 
-function SiftRenderer({ data }: RendererProps) {
+function SiftRenderer({ data, mimeType }: RendererProps) {
   const url = String(data);
+  console.debug("[sift-renderer] render", { mimeType, url: url.slice(0, 120) });
   configureWasm(url);
 
   return (
@@ -58,5 +60,6 @@ function SiftRenderer({ data }: RendererProps) {
 export function install(ctx: {
   register: (mimeTypes: string[], component: React.ComponentType<RendererProps>) => void;
 }) {
+  console.debug("[sift-renderer] plugin installed for application/vnd.apache.parquet");
   ctx.register(["application/vnd.apache.parquet"], SiftRenderer);
 }

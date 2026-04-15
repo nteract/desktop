@@ -1145,6 +1145,14 @@ fn cmd_wasm(target: Option<&str>) {
 
     if build_sift {
         println!("Building sift-wasm...");
+        // Build to the canonical wasm-pack output location
+        // (crates/sift-wasm/pkg/) — this is where
+        //   - packages/sift/vite.config.ts aliases `sift-wasm`
+        //   - packages/sift/vitest.config.ts looks for real glue
+        //   - src/build/renderer-plugin-builder.ts::resolveWasmGlue()
+        //     looks for real glue (falls back to __mocks__ stub otherwise)
+        // expect it. If this path is empty, the renderer plugin bundles
+        // the mock stub and sift renders "sift-wasm not built" at runtime.
         run_cmd(
             "wasm-pack",
             &[
@@ -1153,20 +1161,37 @@ fn cmd_wasm(target: Option<&str>) {
                 "--target",
                 "web",
                 "--release",
-                "--out-dir",
-                "../../packages/sift/public/wasm",
+                // Default --out-dir (./pkg) is what all consumers expect.
             ],
         );
+        // Mirror the pkg to packages/sift/public/wasm/ for the sift demo
+        // app's runtime fetch (vite base=/, served as static asset).
+        let pkg_dir = Path::new("crates/sift-wasm/pkg");
+        let public_dir = Path::new("packages/sift/public/wasm");
+        if let Err(e) = fs::create_dir_all(public_dir) {
+            eprintln!("Warning: failed to create {}: {e}", public_dir.display());
+        } else {
+            for entry in fs::read_dir(pkg_dir).into_iter().flatten().flatten() {
+                let src = entry.path();
+                let Some(name) = src.file_name() else { continue };
+                let dest = public_dir.join(name);
+                if let Err(e) = fs::copy(&src, &dest) {
+                    eprintln!("Warning: failed to copy {} → {}: {e}", src.display(), dest.display());
+                }
+            }
+        }
         // Copy the WASM binary to the daemon's embedded plugins directory so
         // `/plugins/sift_wasm.wasm` serves the freshly-built binary.
-        let src = Path::new("packages/sift/public/wasm/sift_wasm_bg.wasm");
+        let src = Path::new("crates/sift-wasm/pkg/sift_wasm_bg.wasm");
         let dest = Path::new("crates/runt-mcp/assets/plugins/sift_wasm.wasm");
         if let Err(e) = fs::copy(src, dest) {
             eprintln!("Warning: failed to copy sift_wasm.wasm to daemon assets: {e}");
         } else {
             println!("Copied {} -> {}", src.display(), dest.display());
         }
-        println!("WASM build complete. Output: packages/sift/public/wasm/");
+        println!(
+            "WASM build complete. Output: crates/sift-wasm/pkg/ (mirrored to packages/sift/public/wasm/)"
+        );
     }
 }
 
