@@ -5681,13 +5681,11 @@ async fn handle_notebook_request(
                                 }
                             }
 
-                            // Fresh kernel is in sync with its launched config
-                            {
-                                let mut sd = room.state_doc.write().await;
-                                if sd.set_env_sync(true, &[], &[], false, false) {
-                                    let _ = room.state_changed_tx.send(());
-                                }
-                            }
+                            // Compute env sync state against the freshly
+                            // stored launched_config (updated above).
+                            // Covers both inline-dep drift and the
+                            // prewarmed-with-added-inline-deps case.
+                            check_and_broadcast_sync_state(room).await;
 
                             return NotebookResponse::KernelLaunched {
                                 kernel_type: resolved_kernel_type,
@@ -5845,13 +5843,9 @@ async fn handle_notebook_request(
                                     }
                                 }
 
-                                // Fresh kernel is in sync with its launched config
-                                {
-                                    let mut sd = room.state_doc.write().await;
-                                    if sd.set_env_sync(true, &[], &[], false, false) {
-                                        let _ = room.state_changed_tx.send(());
-                                    }
-                                }
+                                // Compute env sync state against the freshly
+                                // stored launched_config (updated above).
+                                check_and_broadcast_sync_state(room).await;
 
                                 NotebookResponse::KernelLaunched {
                                     kernel_type: resolved_kernel_type,
