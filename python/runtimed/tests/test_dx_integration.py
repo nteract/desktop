@@ -243,17 +243,14 @@ df
     # Parquet bytes resolved from the blob store.
     parquet_bytes = output.data.get("application/vnd.apache.parquet")
     assert parquet_bytes is not None, (
-        f"parquet MIME missing — polars encoder may not have run. keys: "
-        f"{list(output.data.keys())}"
+        f"parquet MIME missing — polars encoder may not have run. keys: {list(output.data.keys())}"
     )
     assert isinstance(parquet_bytes, (bytes, bytearray))
     assert parquet_bytes[:4] == b"PAR1", "not a parquet file (bad magic)"
 
     # Python-side llm summary identifies polars specifically.
     llm = output.data.get("text/llm+plain", "")
-    assert llm.startswith("DataFrame (polars)"), (
-        f"expected polars summary, got: {llm[:80]!r}"
-    )
+    assert llm.startswith("DataFrame (polars)"), f"expected polars summary, got: {llm[:80]!r}"
 
     # Round-trip via pyarrow to verify the bytes are valid parquet AND
     # contain the columns we sent.
@@ -321,3 +318,92 @@ pl.DataFrame({"id": list(range(100)), "name": [f"row-{i}" for i in range(100)]})
         f"created_by={created_by!r}. If this says 'parquet-cpp-arrow ...', "
         f"`_serialize_polars` was bypassed and pyarrow ran instead."
     )
+
+
+@pytest.mark.integration
+async def test_dx_last_expression_emits_display_data_not_execute_result(session):  # noqa: F811
+    """Regression test for #1780: last-expression `df` (bare ``df`` on the
+    last line of a cell) must produce an ``output_type: display_data``
+    output, not ``execute_result``.
+
+    Why this matters: dx registers a handler on
+    ``ip.display_formatter.ipython_display_formatter`` for ``pd.DataFrame``.
+    When IPython's ``DisplayFormatter.format()`` runs, it short-circuits to
+    ``({}, {})`` once our handler fires, which causes ``finish_displayhook``
+    to skip its guarded send — no ``execute_result`` message is published.
+    Our handler publishes a ``display_data`` directly via
+    ``publish_display_data``, which the publisher hook augments with parquet
+    buffers.
+
+    The lumped ``ExecutionResult.display_data`` accessor in the Python
+    bindings returns BOTH display_data AND execute_result outputs, so the
+    `test_dx_display_emits_blob_ref_with_buffers` test would still pass even
+    if ipython_display_formatter regressed back to mimebundle_formatter
+    only. This test pins the actual ``output_type`` so a regression is
+    visible.
+    """
+    await async_start_kernel_with_retry(session, env_source="uv:pyproject")
+
+    bootstrap_id = await async_create_cell_and_wait_for_sync(session, _BOOTSTRAP)
+    assert (await session.execute_cell(bootstrap_id)).success
+
+    display_id = await async_create_cell_and_wait_for_sync(
+        session,
+        """
+import pandas as pd
+df = pd.DataFrame({"a": [1, 2, 3], "b": ["x", "y", "z"]})
+df
+""",
+    )
+    result = await session.execute_cell(display_id)
+    assert result.success, f"display cell failed: {result.error}"
+
+    # Find display/execute outputs in the raw outputs list (preserves output_type).
+    rich_outputs = [
+        o for o in result.outputs if o.output_type in ("display_data", "execute_result")
+    ]
+    assert len(rich_outputs) == 1, (
+        f"expected one rich output, got {len(rich_outputs)}: "
+        f"{[(o.output_type, list(o.data.keys())) for o in rich_outputs]}"
+    )
+    output = rich_outputs[0]
+    assert output.output_type == "display_data", (
+        f"expected display_data (ipython_display_formatter short-circuits the "
+        f"execute_result path), got {output.output_type!r}. The "
+        f"ipython_display_formatter registration in dx._format_install may have "
+        f"regressed."
+    )
+    assert "application/vnd.apache.parquet" in output.data, (
+        f"parquet MIME missing — bytes did not ride through to the daemon: "
+        f"{list(output.data.keys())}"
+    )
+
+
+@pytest.mark.integration
+async def test_dx_non_dataframe_last_expression_still_emits_execute_result(session):  # noqa: F811
+    """Negative regression: a non-DataFrame last expression (e.g. an int)
+    must NOT trigger our ipython_display_formatter handler — it should
+    follow the normal IPython path and produce an ``execute_result`` with a
+    ``text/plain`` repr. If our handler ever started intercepting non-df
+    types, every cell with a bare last expression would lose its ``Out[N]:``
+    prompt and become a ``display_data``."""
+    await async_start_kernel_with_retry(session, env_source="uv:pyproject")
+
+    bootstrap_id = await async_create_cell_and_wait_for_sync(session, _BOOTSTRAP)
+    assert (await session.execute_cell(bootstrap_id)).success
+
+    display_id = await async_create_cell_and_wait_for_sync(session, "42 + 8\n")
+    result = await session.execute_cell(display_id)
+    assert result.success
+
+    rich_outputs = [
+        o for o in result.outputs if o.output_type in ("display_data", "execute_result")
+    ]
+    assert len(rich_outputs) == 1
+    output = rich_outputs[0]
+    assert output.output_type == "execute_result", (
+        f"non-DataFrame last expression must remain execute_result, got "
+        f"{output.output_type!r}. dx's ipython_display_formatter handler "
+        f"should only fire for registered DataFrame types."
+    )
+    assert output.data.get("text/plain") == "50"
