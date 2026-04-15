@@ -52,35 +52,6 @@ pub fn get_running_daemon_info() -> Option<DaemonInfo> {
     read_daemon_info(&daemon_info_path())
 }
 
-/// Discover the currently-running daemon and return its info.
-///
-/// Reads `daemon.json` to pick up whatever endpoint it recorded (so
-/// daemons started with `runtimed run --socket /custom/path.sock`
-/// remain discoverable without `RUNTIMED_SOCKET_PATH` exported), then
-/// queries that socket via `GetDaemonInfo` for freshness. Falls back
-/// to the raw file contents if the socket doesn't respond.
-///
-/// This is the right default for "tell me about the running daemon"
-/// from CLI contexts where the caller doesn't know the socket path up
-/// front. Long-running processes should use
-/// [`crate::daemon_connection::DaemonConnection`] instead.
-pub async fn query_running_daemon_info() -> Option<DaemonInfo> {
-    let file_info = get_running_daemon_info();
-
-    // If `daemon.json` records a non-default endpoint (custom --socket),
-    // query that endpoint — it's the only way to reach the live daemon.
-    // Otherwise use the default socket.
-    let socket = file_info
-        .as_ref()
-        .map(|i| std::path::PathBuf::from(&i.endpoint))
-        .unwrap_or_else(crate::default_socket_path);
-
-    match query_daemon_info(socket).await {
-        Some(info) => Some(info),
-        None => file_info,
-    }
-}
-
 /// Get daemon info, preferring the socket-based `GetDaemonInfo` request
 /// and falling back to the on-disk `daemon.json` sidecar.
 ///

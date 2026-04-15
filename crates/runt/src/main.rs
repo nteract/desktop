@@ -1609,9 +1609,9 @@ async fn pool_command(command: PoolCommands) -> Result<()> {
             }
         },
         PoolCommands::Info { json } => {
-            use runtimed_client::singleton::query_running_daemon_info;
+            use runtimed_client::singleton::query_daemon_info;
 
-            match query_running_daemon_info().await {
+            match query_daemon_info(runt_workspace::default_socket_path()).await {
                 Some(info) => {
                     // Ping the daemon at the endpoint recorded in daemon.json,
                     // not the default socket path — the daemon may have been
@@ -1942,7 +1942,7 @@ async fn stop_daemon_smart(
 async fn daemon_command(command: DaemonCommands) -> Result<()> {
     use runtimed::client::PoolClient;
     use runtimed::service::ServiceManager;
-    use runtimed_client::singleton::query_running_daemon_info;
+    use runtimed_client::singleton::query_daemon_info;
 
     let mut manager = ServiceManager::default();
 
@@ -1951,7 +1951,7 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
     // sidecar — the daemon answers from live state, so a response is
     // proof the daemon is alive. `query_daemon_info` retains the
     // file-read fallback for the one-release compat window.
-    let daemon_info = query_running_daemon_info().await;
+    let daemon_info = query_daemon_info(runt_workspace::default_socket_path()).await;
 
     // Create client using daemon's actual endpoint if available, otherwise default
     let client = match &daemon_info {
@@ -3228,7 +3228,7 @@ async fn doctor_command(
     let daemon_info_after = if fix && !actions_taken.is_empty() {
         // Give daemon time to start and bind its socket.
         tokio::time::sleep(Duration::from_millis(500)).await;
-        runtimed_client::singleton::query_running_daemon_info().await
+        runtimed_client::singleton::query_daemon_info(runt_workspace::default_socket_path()).await
     } else {
         daemon_info.cloned()
     };
@@ -4824,9 +4824,9 @@ async fn env_clean(
 /// Returns an empty set if the daemon isn't running or unreachable.
 async fn query_active_env_paths() -> std::collections::HashSet<PathBuf> {
     use runtimed::client::PoolClient;
-    use runtimed_client::singleton::query_running_daemon_info;
+    use runtimed_client::singleton::query_daemon_info;
 
-    let info = match query_running_daemon_info().await {
+    let info = match query_daemon_info(runt_workspace::default_socket_path()).await {
         Some(info) => info,
         None => return std::collections::HashSet::new(),
     };
@@ -4882,10 +4882,10 @@ struct NotebookTableRow {
 
 async fn list_notebooks(json_output: bool) -> Result<()> {
     use runtimed::client::PoolClient;
-    use runtimed_client::singleton::query_running_daemon_info;
+    use runtimed_client::singleton::query_daemon_info;
 
     // Use daemon's actual endpoint if available
-    let client = match query_running_daemon_info().await {
+    let client = match query_daemon_info(runt_workspace::default_socket_path()).await {
         Some(info) => PoolClient::new(PathBuf::from(&info.endpoint)),
         None => PoolClient::default(),
     };
@@ -4925,7 +4925,7 @@ async fn list_notebooks(json_output: bool) -> Result<()> {
 /// Shutdown a notebook's kernel and evict its room from the daemon.
 async fn shutdown_notebook(path: &PathBuf) -> Result<()> {
     use runtimed::client::PoolClient;
-    use runtimed_client::singleton::query_running_daemon_info;
+    use runtimed_client::singleton::query_daemon_info;
 
     let path_str = path.to_string_lossy();
 
@@ -4946,7 +4946,7 @@ async fn shutdown_notebook(path: &PathBuf) -> Result<()> {
     };
 
     // Use daemon's actual endpoint if available
-    let client = match query_running_daemon_info().await {
+    let client = match query_daemon_info(runt_workspace::default_socket_path()).await {
         Some(info) => PoolClient::new(PathBuf::from(&info.endpoint)),
         None => PoolClient::default(),
     };

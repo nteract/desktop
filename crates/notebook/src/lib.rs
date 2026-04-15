@@ -959,11 +959,13 @@ where
                 .to_string();
 
             // Verify the running daemon version matches what we intended to install.
-            // Socket-first (via `query_running_daemon_info`) with a
-            // `daemon.json` fallback for the one-release compat window.
-            let running_version = runtimed_client::singleton::query_running_daemon_info()
-                .await
-                .map(|i| i.version);
+            // `query_daemon_info` is socket-first with a `daemon.json`
+            // fallback for the one-release compat window.
+            let running_version = runtimed_client::singleton::query_daemon_info(
+                runt_workspace::default_socket_path(),
+            )
+            .await
+            .map(|i| i.version);
             if let Some(version) = running_version {
                 let running_commit = extract_commit_hash(&version);
                 let bundled_commit = extract_commit_hash(&bundled);
@@ -1375,12 +1377,14 @@ where
     let client = PoolClient::default();
     if let Ok(()) = client.ping().await {
         // Daemon is running - check version alignment (production only).
-        // Socket-first (via `query_running_daemon_info`) with a
-        // `daemon.json` fallback for the one-release compat window.
+        // `query_daemon_info` is socket-first with a `daemon.json`
+        // fallback for the one-release compat window.
         if !runt_workspace::is_dev_mode() {
-            let running_version = runtimed_client::singleton::query_running_daemon_info()
-                .await
-                .map(|i| i.version);
+            let running_version = runtimed_client::singleton::query_daemon_info(
+                runt_workspace::default_socket_path(),
+            )
+            .await
+            .map(|i| i.version);
             if let Some(version) = running_version {
                 // Compare commit hashes only - CI appends "+{git_sha}" to the version
                 // at build time, so commit hash is the precise compatibility check.

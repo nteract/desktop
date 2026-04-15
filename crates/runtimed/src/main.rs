@@ -522,7 +522,8 @@ async fn status(json: bool) -> anyhow::Result<()> {
 
     // Check if daemon is running — socket-first with `daemon.json`
     // fallback so custom `--socket` daemons stay discoverable.
-    let daemon_info = runtimed_client::singleton::query_running_daemon_info().await;
+    let daemon_info =
+        runtimed_client::singleton::query_daemon_info(runt_workspace::default_socket_path()).await;
     let running = if daemon_info.is_some() {
         // Try to ping to confirm it's actually responding
         let client = PoolClient::default();
