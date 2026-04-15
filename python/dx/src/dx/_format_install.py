@@ -117,6 +117,21 @@ def install_formatters() -> None:
     except ImportError:
         pass
 
+    # Narwhals wraps pandas/polars/pyarrow/modin/dask/cudf behind a common
+    # DataFrame API. Users may type an nw.DataFrame as a last expression
+    # without thinking about the underlying flavor. We unwrap via
+    # `.to_native()` and dispatch through the pandas/polars paths, with
+    # a `.to_pandas()` fallback for other narwhals-supported backends.
+    # LazyFrame is deliberately not handled here — displaying a lazy
+    # query would force `.collect()`, which has side effects.
+    try:
+        import narwhals as nw
+
+        mimebundle.for_type(nw.DataFrame, _narwhals_mimebundle)
+        ipython_display.for_type(nw.DataFrame, _narwhals_ipython_display)
+    except ImportError:
+        pass
+
     _install_display_pub_hook()
     _enable_third_party_nteract_renderers()
 
@@ -208,6 +223,21 @@ def _polars_mimebundle(df: Any, include=None, exclude=None) -> dict | None:
     return _emit_dataframe(df, total_rows=df.height)
 
 
+def _narwhals_mimebundle(df: Any, include=None, exclude=None) -> dict | None:
+    """`mimebundle_formatter` handler for `narwhals.DataFrame`.
+
+    Mirrors the display-formatter path below: unwrap via `.to_native()`
+    and delegate to the flavor-specific emitter. Kept alongside its
+    pandas/polars siblings so any tooling that bypasses the
+    `ipython_display_formatter` short-circuit still gets a parquet
+    bundle from a narwhals wrapper.
+    """
+    native, total_rows = _unwrap_narwhals(df)
+    if native is None:
+        return None
+    return _emit_dataframe(native, total_rows=total_rows)
+
+
 def _pandas_ipython_display(df: Any) -> None:
     """`ipython_display_formatter` handler for `pd.DataFrame`.
 
@@ -231,6 +261,65 @@ def _pandas_ipython_display(df: Any) -> None:
 def _polars_ipython_display(df: Any) -> None:
     """`ipython_display_formatter` handler for `pl.DataFrame`."""
     _publish_via_ipython_display(df, total_rows=df.height)
+
+
+def _narwhals_ipython_display(nw_df: Any) -> None:
+    """`ipython_display_formatter` handler for `narwhals.DataFrame`.
+
+    Unwrap via `.to_native()` and dispatch through the native-type path.
+    Falls back to `.to_pandas()` for backends `serialize_dataframe` doesn't
+    natively encode (modin, pyarrow Table, dask, cudf).
+    """
+    native, total_rows = _unwrap_narwhals(nw_df)
+    if native is None:
+        # Couldn't unwrap — surface a best-effort repr instead of silently
+        # dropping the output.
+        print(repr(nw_df))
+        return
+    _publish_via_ipython_display(native, total_rows=total_rows)
+
+
+def _unwrap_narwhals(nw_df: Any) -> tuple[Any, int] | tuple[None, int]:
+    """Return ``(native_df, row_count)`` for a ``narwhals.DataFrame``.
+
+    - If the underlying native is pandas or polars, return it directly so
+      ``serialize_dataframe`` hits its fast path.
+    - Otherwise, convert to pandas via narwhals's own adapter. This may
+      materialize a potentially-expensive frame (modin/dask/cudf), which
+      is the expected cost of "show me this DataFrame."
+    - On any unexpected error, return ``(None, 0)`` and let the caller
+      decide on a fallback.
+    """
+    try:
+        native = nw_df.to_native()
+    except Exception as exc:
+        log.debug("dx: narwhals to_native failed: %s", exc)
+        return None, 0
+
+    # Fast path: the native is pandas or polars — use their row counts directly.
+    try:
+        import pandas as pd
+
+        if isinstance(native, pd.DataFrame):
+            return native, len(native)
+    except ImportError:
+        pass
+    try:
+        import polars as pl
+
+        if isinstance(native, pl.DataFrame):
+            return native, native.height
+    except ImportError:
+        pass
+
+    # Fallback: round-trip through narwhals's to_pandas. Works for pyarrow,
+    # modin, dask, cudf, etc. — anything narwhals understands.
+    try:
+        as_pandas = nw_df.to_pandas()
+        return as_pandas, len(as_pandas)
+    except Exception as exc:
+        log.debug("dx: narwhals to_pandas failed: %s", exc)
+        return None, 0
 
 
 def _publish_via_ipython_display(df: Any, *, total_rows: int) -> None:

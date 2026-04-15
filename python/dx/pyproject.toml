@@ -29,4 +29,5 @@ dev = [
     "pyarrow>=14",
     "polars>=0.20",
     "ipykernel>=6.0",
+    "narwhals>=1.0",
 ]

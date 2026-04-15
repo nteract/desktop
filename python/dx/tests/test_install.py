@@ -83,8 +83,8 @@ def test_install_is_idempotent(monkeypatch):
     dx.install()
     dx.install()
     assert (
-        len(ip.display_formatter.mimebundle_formatter.registrations) <= 2
-    )  # pandas + optional polars
+        len(ip.display_formatter.mimebundle_formatter.registrations) <= 3
+    )  # pandas + optional polars + optional narwhals
 
 
 def test_install_treats_display_formatter_as_attribute_not_method(monkeypatch):
@@ -466,3 +466,124 @@ def test_ipython_display_handler_publishes_and_stashes_buffers(monkeypatch):
     # The parquet bytes must be in the pending stash so the publisher hook
     # can pop them on the subsequent IOPub send.
     assert ref["hash"] in fi._pending_buffers(), "buffer not stashed for hash"
+
+
+# ── Narwhals wrapping ──────────────────────────────────────────────
+
+
+def test_install_registers_ipython_display_handler_for_narwhals(monkeypatch):
+    """narwhals.DataFrame wraps pandas/polars/pyarrow/modin/dask/cudf.
+    dx.install() should register for the wrapper type too so a
+    last-expression nw.DataFrame doesn't fall back to narwhals's own repr."""
+    _reset_installed(monkeypatch)
+    ip = FakeIPython()
+    monkeypatch.setattr("dx._format_install._get_ipython_for_format", lambda: ip)
+
+    import dx
+    import narwhals as nw
+
+    dx.install()
+    assert nw.DataFrame in ip.display_formatter.ipython_display_formatter.registrations
+
+
+def test_narwhals_handler_unwraps_pandas_and_publishes(monkeypatch):
+    """Fast path: nw.DataFrame backed by pandas — unwrap via to_native()
+    and emit via the pandas encoder directly (no to_pandas() round-trip)."""
+    _reset_installed(monkeypatch)
+    ip = FakeIPython()
+    monkeypatch.setattr("dx._format_install._get_ipython_for_format", lambda: ip)
+
+    import dx
+    import dx._format_install as fi
+    import narwhals as nw
+
+    dx.install()
+    handler = ip.display_formatter.ipython_display_formatter.registrations[nw.DataFrame]
+
+    published: list[dict] = []
+
+    def fake_publish_display_data(data, metadata=None, **kwargs):
+        published.append({"data": data})
+
+    import IPython.display as ipd
+
+    monkeypatch.setattr(ipd, "publish_display_data", fake_publish_display_data)
+
+    df = pd.DataFrame({"a": [1, 2, 3], "b": ["x", "y", "z"]})
+    nw_df = nw.from_native(df)
+    handler(nw_df)
+
+    assert len(published) == 1
+    bundle = published[0]["data"]
+    assert BLOB_REF_MIME in bundle
+    ref = bundle[BLOB_REF_MIME]
+    assert ref["content_type"] == "application/vnd.apache.parquet"
+    assert ref["hash"] in fi._pending_buffers()
+
+
+def test_narwhals_handler_unwraps_polars_and_publishes(monkeypatch):
+    """Fast path: nw.DataFrame backed by polars — unwrap + polars encoder."""
+    _reset_installed(monkeypatch)
+    ip = FakeIPython()
+    monkeypatch.setattr("dx._format_install._get_ipython_for_format", lambda: ip)
+
+    import dx
+    import dx._format_install as fi
+    import narwhals as nw
+    import polars as pl
+
+    dx.install()
+    handler = ip.display_formatter.ipython_display_formatter.registrations[nw.DataFrame]
+
+    published: list[dict] = []
+
+    def fake_publish_display_data(data, metadata=None, **kwargs):
+        published.append({"data": data})
+
+    import IPython.display as ipd
+
+    monkeypatch.setattr(ipd, "publish_display_data", fake_publish_display_data)
+
+    df = pl.DataFrame({"a": [1, 2, 3], "b": ["x", "y", "z"]})
+    nw_df = nw.from_native(df)
+    handler(nw_df)
+
+    assert len(published) == 1
+    bundle = published[0]["data"]
+    assert BLOB_REF_MIME in bundle
+    assert bundle[BLOB_REF_MIME]["hash"] in fi._pending_buffers()
+
+
+def test_narwhals_handler_falls_back_to_pandas_for_pyarrow_table(monkeypatch):
+    """pyarrow Table isn't supported by serialize_dataframe directly.
+    The narwhals handler should round-trip via .to_pandas() so the fast
+    path in _emit_dataframe still hits the pandas encoder."""
+    _reset_installed(monkeypatch)
+    ip = FakeIPython()
+    monkeypatch.setattr("dx._format_install._get_ipython_for_format", lambda: ip)
+
+    import dx
+    import dx._format_install as fi
+    import narwhals as nw
+    import pyarrow as pa
+
+    dx.install()
+    handler = ip.display_formatter.ipython_display_formatter.registrations[nw.DataFrame]
+
+    published: list[dict] = []
+
+    def fake_publish_display_data(data, metadata=None, **kwargs):
+        published.append({"data": data})
+
+    import IPython.display as ipd
+
+    monkeypatch.setattr(ipd, "publish_display_data", fake_publish_display_data)
+
+    table = pa.table({"a": [1, 2, 3], "b": ["x", "y", "z"]})
+    nw_df = nw.from_native(table, eager_only=True)
+    handler(nw_df)
+
+    assert len(published) == 1
+    bundle = published[0]["data"]
+    assert BLOB_REF_MIME in bundle
+    assert bundle[BLOB_REF_MIME]["hash"] in fi._pending_buffers()

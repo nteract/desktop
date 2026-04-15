@@ -11,6 +11,7 @@ dependencies = [
     "polars",
     "pyarrow>=14",
     "numpy>=2.2.6",
+    "narwhals>=1.0",
 ]
 
 [build-system]
