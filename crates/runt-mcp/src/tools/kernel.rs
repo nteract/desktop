@@ -64,10 +64,16 @@ pub async fn restart_kernel(
     }
 
     // Step 2: Determine kernel type and env_source.
-    // Use metadata-based detection (not RuntimeState env_source) to scope the
-    // auto-detect. This ensures the correct package manager pool is used even
-    // if the previous kernel was launched with a different env (e.g., UV default
-    // when the notebook metadata says pixi). See #1605.
+    // Re-use the previous env_source from RuntimeState so we restart into the
+    // same environment.  Non-prewarmed sources (uv:inline, uv:pyproject, etc.)
+    // are kept as-is to avoid the daemon re-resolving to a different source
+    // based on working_dir project files (which caused "Kernel process exited
+    // immediately" when the working_dir had an unrelated/broken pyproject.toml).
+    //
+    // Prewarmed sources need special handling: if inline deps were added since
+    // launch (via add_dependency), re-detect so the daemon picks them up.
+    // Otherwise keep the exact prewarmed source to avoid project-file
+    // mis-resolution.
     let (kernel_type, env_source) = {
         let state = handle.get_runtime_state().ok();
         let kernel_type = state
@@ -81,12 +87,49 @@ pub async fn restart_kernel(
                 }
             })
             .unwrap_or_else(|| "python".to_string());
-        // Scope auto-detect based on notebook metadata, not stale env_source
-        let detected_manager = super::deps::detect_package_manager(&handle);
-        let env_source = match detected_manager.as_str() {
-            "pixi" => "auto:pixi".to_string(),
-            "conda" => "auto:conda".to_string(),
-            _ => "auto:uv".to_string(),
+        let prev_env_source = state.as_ref().map(|s| s.kernel.env_source.as_str());
+        let env_source = match prev_env_source {
+            Some(s @ ("uv:prewarmed" | "conda:prewarmed" | "pixi:prewarmed")) => {
+                // Check if inline deps were added since the prewarmed kernel launched.
+                // If so, use the exact inline source to skip project-file detection
+                // (which can pick up an unrelated pyproject.toml from the MCP server's
+                // working directory). Otherwise keep the exact prewarmed source.
+                let has_inline_deps = handle
+                    .get_notebook_metadata()
+                    .is_some_and(|m| super::deps::has_any_inline_deps(&m));
+                if has_inline_deps {
+                    match s {
+                        "uv:prewarmed" => "uv:inline",
+                        "conda:prewarmed" => "conda:inline",
+                        _ => "pixi:inline",
+                    }
+                    .to_string()
+                } else {
+                    s.to_string()
+                }
+            }
+            Some(s) if !s.is_empty() => s.to_string(),
+            _ => {
+                // No previous env_source — fall back to metadata-based detection.
+                // Use inline source when deps exist to avoid project-file detection.
+                let detected_manager = super::deps::detect_package_manager(&handle);
+                let has_inline_deps = handle
+                    .get_notebook_metadata()
+                    .is_some_and(|m| super::deps::has_any_inline_deps(&m));
+                if has_inline_deps {
+                    match detected_manager.as_str() {
+                        "pixi" => "pixi:inline".to_string(),
+                        "conda" => "conda:inline".to_string(),
+                        _ => "uv:inline".to_string(),
+                    }
+                } else {
+                    match detected_manager.as_str() {
+                        "pixi" => "auto:pixi".to_string(),
+                        "conda" => "auto:conda".to_string(),
+                        _ => "auto:uv".to_string(),
+                    }
+                }
+            }
         };
         (kernel_type, env_source)
     };

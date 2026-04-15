@@ -393,7 +393,6 @@ pub async fn create_notebook(
     let working_dir = arg_str(request, "working_dir")
         .map(|s| PathBuf::from(resolve_path(s)))
         .or_else(|| std::env::current_dir().ok());
-    let working_dir_for_detection = working_dir.clone();
     let ephemeral = arg_bool(request, "ephemeral").unwrap_or(true);
 
     let prev = previous_notebook_id(server).await;
@@ -440,17 +439,9 @@ pub async fn create_notebook(
                 // Only override metadata when the user explicitly requested a
                 // package manager. When omitted, the daemon already set the
                 // correct metadata from default_python_env.
-                // Skip when a matching project file exists — the daemon already
-                // detected it and will bootstrap deps into CRDT.
                 if let Some(pm) = explicit_pkg_manager {
-                    let project_matches = working_dir_for_detection
-                        .as_ref()
-                        .and_then(|wd| crate::project_file::detect_project_file(wd))
-                        .is_some_and(|d| d.manager() == pm);
-                    if !project_matches {
-                        metadata_changed =
-                            super::deps::ensure_package_manager_metadata(&result.handle, pm);
-                    }
+                    metadata_changed =
+                        super::deps::ensure_package_manager_metadata(&result.handle, pm);
                 }
             }
 
@@ -460,10 +451,12 @@ pub async fn create_notebook(
                 .map(String::from)
                 .unwrap_or_else(|| super::deps::detect_package_manager(&result.handle));
 
-            if runtime != "deno" {
-                for dep in &deps {
-                    let _ = super::deps::add_dep_for_manager(&result.handle, dep, &pkg_manager);
-                }
+            if runtime != "deno" && !deps.is_empty() {
+                // When explicit deps are provided, **replace** the dependency list
+                // rather than appending. The auto-launch may have bootstrapped deps
+                // from an unrelated project file (e.g. pyproject.toml in the MCP
+                // server's working directory), and we want only the user's deps.
+                super::deps::set_deps_for_manager(&result.handle, &deps, &pkg_manager);
             }
 
             let session = NotebookSession {
@@ -486,14 +479,24 @@ pub async fn create_notebook(
                         tracing::warn!("confirm_sync failed before create_notebook relaunch: {e}");
                     }
 
-                    // Shutdown and relaunch with scoped auto-detect so the daemon
-                    // uses the correct package manager pool (not the system default).
-                    // "auto:pixi" → pixi pool/inline, "auto:conda" → conda pool/inline,
-                    // "auto" → follows default_python_env (which may differ from requested).
-                    let scoped_env_source = match pkg_manager.as_str() {
-                        "pixi" => "auto:pixi",
-                        "conda" => "auto:conda",
-                        _ => "auto:uv",
+                    // Determine the env_source for the relaunch.
+                    // When deps were explicitly added, use the exact inline source
+                    // to skip project-file detection (which can pick up an unrelated
+                    // pyproject.toml from the MCP server's working directory).
+                    // When only the package manager metadata was changed (no deps),
+                    // use scoped auto-detect so the daemon re-resolves correctly.
+                    let scoped_env_source = if !deps.is_empty() {
+                        match pkg_manager.as_str() {
+                            "pixi" => "pixi:inline",
+                            "conda" => "conda:inline",
+                            _ => "uv:inline",
+                        }
+                    } else {
+                        match pkg_manager.as_str() {
+                            "pixi" => "auto:pixi",
+                            "conda" => "auto:conda",
+                            _ => "auto:uv",
+                        }
                     };
                     let _ = s
                         .handle
