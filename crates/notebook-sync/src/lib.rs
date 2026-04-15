@@ -50,6 +50,7 @@
 pub mod broadcast;
 pub mod connect;
 pub mod error;
+pub mod execution_wait;
 pub mod handle;
 pub mod relay;
 pub mod relay_task;
@@ -59,6 +60,10 @@ pub mod sync_task;
 
 pub use broadcast::BroadcastReceiver;
 pub use error::SyncError;
+pub use execution_wait::{
+    await_execution_terminal, ExecutionTerminalError, ExecutionTerminalState,
+    DEFAULT_OUTPUT_SYNC_GRACE,
+};
 pub use handle::DocHandle;
 pub use relay::RelayHandle;
 pub use shared::SharedDocState;

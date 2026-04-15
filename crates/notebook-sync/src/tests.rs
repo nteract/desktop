@@ -582,6 +582,215 @@ mod tests {
         // Actor should still be the same
         assert_eq!(handle.get_actor_id().unwrap(), "agent:test:session1");
     }
+
+    // ── execution_wait ────────────────────────────────────────────────
+
+    /// Like [`test_handle`] but also returns the shared doc state so tests
+    /// can simulate daemon writes into the `RuntimeStateDoc`.
+    fn test_handle_with_shared() -> (
+        DocHandle,
+        Arc<Mutex<SharedDocState>>,
+        mpsc::UnboundedReceiver<()>,
+        mpsc::Receiver<crate::sync_task::SyncCommand>,
+    ) {
+        let nd = notebook_doc::NotebookDoc::new("test-notebook");
+        let doc = nd.into_inner();
+        let mut st = SharedDocState::new(doc, "test-notebook".into());
+        // Replace the unscaffolded RuntimeStateDoc with a fully initialized
+        // one so tests can write into the `executions` map directly.
+        st.state_doc =
+            notebook_doc::runtime_state::RuntimeStateDoc::new_with_actor("runtimed-sync-test");
+        let shared = Arc::new(Mutex::new(st));
+
+        let initial_snapshot = NotebookSnapshot::empty();
+        let (snapshot_tx, snapshot_rx) = watch::channel(initial_snapshot);
+        let snapshot_tx = Arc::new(snapshot_tx);
+        let (changed_tx, changed_rx) = mpsc::unbounded_channel();
+        let (cmd_tx, cmd_rx) = mpsc::channel(32);
+
+        let handle = DocHandle::new(
+            shared.clone(),
+            changed_tx,
+            cmd_tx,
+            snapshot_tx,
+            snapshot_rx,
+            "test-notebook".into(),
+        );
+
+        (handle, shared, changed_rx, cmd_rx)
+    }
+
+    /// Simulate the daemon writing an execution into the RuntimeStateDoc.
+    fn set_execution(
+        shared: &Arc<Mutex<SharedDocState>>,
+        execution_id: &str,
+        cell_id: &str,
+        status: &str,
+        outputs: &[serde_json::Value],
+        execution_count: Option<i64>,
+    ) {
+        let mut st = shared.lock().unwrap();
+        st.state_doc
+            .create_execution_with_source(execution_id, cell_id, "x = 1", 0);
+        st.state_doc.set_execution_running(execution_id);
+        if let Some(count) = execution_count {
+            st.state_doc.set_execution_count(execution_id, count);
+        }
+        for output in outputs {
+            st.state_doc.append_output(execution_id, output).unwrap();
+        }
+        if status == "done" {
+            st.state_doc.set_execution_done(execution_id, true);
+        } else if status == "error" {
+            st.state_doc.set_execution_done(execution_id, false);
+        }
+    }
+
+    #[tokio::test]
+    async fn await_execution_terminal_returns_once_status_done() {
+        use crate::execution_wait::{await_execution_terminal, ExecutionTerminalState};
+
+        let (handle, shared, _rx, _cmd_rx) = test_handle_with_shared();
+        let outputs = vec![serde_json::json!({
+            "output_type": "stream",
+            "name": "stdout",
+            "text": {"inline": "hello"},
+        })];
+
+        set_execution(&shared, "exec-1", "cell-1", "done", &outputs, Some(5));
+
+        let result =
+            await_execution_terminal(&handle, "exec-1", std::time::Duration::from_secs(1), None)
+                .await;
+
+        let ExecutionTerminalState {
+            status,
+            success,
+            output_manifests,
+            execution_count,
+        } = result.expect("terminal state");
+
+        assert_eq!(status, "done");
+        assert!(success);
+        assert_eq!(execution_count, Some(5));
+        assert_eq!(output_manifests.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn await_execution_terminal_waits_for_transition() {
+        use crate::execution_wait::await_execution_terminal;
+
+        let (handle, shared, _rx, _cmd_rx) = test_handle_with_shared();
+        set_execution(&shared, "exec-1", "cell-1", "running", &[], None);
+
+        let shared_for_task = shared.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            let outputs = vec![serde_json::json!({
+                "output_type": "stream",
+                "name": "stdout",
+                "text": {"inline": "ok"},
+            })];
+            set_execution(
+                &shared_for_task,
+                "exec-1",
+                "cell-1",
+                "done",
+                &outputs,
+                Some(3),
+            );
+        });
+
+        let state =
+            await_execution_terminal(&handle, "exec-1", std::time::Duration::from_secs(5), None)
+                .await
+                .expect("terminal state");
+
+        assert_eq!(state.status, "done");
+        assert_eq!(state.output_manifests.len(), 1);
+        assert_eq!(state.execution_count, Some(3));
+    }
+
+    #[tokio::test]
+    async fn await_execution_terminal_times_out_when_never_done() {
+        use crate::execution_wait::{await_execution_terminal, ExecutionTerminalError};
+
+        let (handle, shared, _rx, _cmd_rx) = test_handle_with_shared();
+        set_execution(&shared, "exec-1", "cell-1", "running", &[], None);
+
+        let err = await_execution_terminal(
+            &handle,
+            "exec-1",
+            std::time::Duration::from_millis(300),
+            None,
+        )
+        .await
+        .expect_err("should time out");
+
+        assert_eq!(err, ExecutionTerminalError::Timeout);
+    }
+
+    #[tokio::test]
+    async fn await_execution_terminal_surfaces_kernel_error() {
+        use crate::execution_wait::{await_execution_terminal, ExecutionTerminalError};
+
+        let (handle, shared, _rx, _cmd_rx) = test_handle_with_shared();
+        set_execution(&shared, "exec-1", "cell-1", "running", &[], None);
+        {
+            let mut st = shared.lock().unwrap();
+            st.state_doc.set_kernel_status("error");
+        }
+
+        let err =
+            await_execution_terminal(&handle, "exec-1", std::time::Duration::from_secs(5), None)
+                .await
+                .expect_err("should fail");
+
+        assert!(matches!(err, ExecutionTerminalError::KernelFailed { .. }));
+    }
+
+    #[tokio::test]
+    async fn await_execution_terminal_grace_catches_late_outputs() {
+        // Simulates the failing CI pattern: execution transitions to done
+        // with empty outputs on our replica, then output manifests land a
+        // few sync ticks later. The grace period must catch them.
+        use crate::execution_wait::await_execution_terminal;
+
+        let (handle, shared, _rx, _cmd_rx) = test_handle_with_shared();
+        set_execution(&shared, "exec-1", "cell-1", "done", &[], Some(7));
+
+        let shared_for_task = shared.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+            let mut st = shared_for_task.lock().unwrap();
+            st.state_doc
+                .append_output(
+                    "exec-1",
+                    &serde_json::json!({
+                        "output_type": "stream",
+                        "name": "stdout",
+                        "text": {"inline": "late-arriving"},
+                    }),
+                )
+                .unwrap();
+        });
+
+        let state = await_execution_terminal(
+            &handle,
+            "exec-1",
+            std::time::Duration::from_secs(5),
+            Some(std::time::Duration::from_millis(500)),
+        )
+        .await
+        .expect("terminal state");
+
+        assert_eq!(state.status, "done");
+        assert_eq!(state.output_manifests.len(), 1);
+        let text = state.output_manifests[0]["text"]["inline"]
+            .as_str()
+            .unwrap();
+        assert_eq!(text, "late-arriving");
+    }
 }
 
 // =========================================================================
