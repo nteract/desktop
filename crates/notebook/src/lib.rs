@@ -1570,13 +1570,22 @@ pub struct DaemonInfoForBanner {
 async fn get_daemon_info() -> Option<DaemonInfoForBanner> {
     #[cfg(debug_assertions)]
     {
-        // Read from the process-shared DaemonConnection cache. The
-        // banner is a passive display, so `last_known_info` is
-        // preferable to `wait_connected` — it'll show the previous
-        // daemon's version while a reconnect is in flight rather than
-        // blanking out.
+        // Read from the process-shared DaemonConnection. The frontend
+        // invokes this command once on mount, so we have to handle
+        // startup: if the supervisor hasn't finished its first fetch
+        // yet, `last_known_info` returns None and the hook caches that
+        // null for the session. Block briefly on `wait_connected` so
+        // the very first mount sees real data; after that, subsequent
+        // calls hit the cache via the `last_known_info` fallback (which
+        // keeps the banner stable across brief reconnects).
         let conn = runtimed_client::daemon_connection::shared();
-        let info = conn.last_known_info().await?;
+        let info = match conn.last_known_info().await {
+            Some(info) => info,
+            None => {
+                conn.wait_connected(std::time::Duration::from_secs(2))
+                    .await?
+            }
+        };
         let version = info.version;
         let socket_path = runtimed_client::default_socket_path();
         let socket_path_full = if info.endpoint.is_empty() {

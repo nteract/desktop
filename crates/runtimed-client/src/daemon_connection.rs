@@ -354,6 +354,12 @@ async fn run_supervisor(
         emit_transition(&state, &events, &info).await;
         backoff = INITIAL_BACKOFF;
 
+        // Track the most recently observed daemon info so we can stash
+        // it as `last_info` on disconnect. If we just used `info` (the
+        // outer variable) we'd roll `last_known_info()` back to the
+        // pre-heartbeat value after a daemon upgrade + subsequent drop.
+        let mut latest = info.clone();
+
         // Connected. Heartbeat by re-running GetDaemonInfo so we catch
         // both hard disconnects AND fast daemon restarts (same socket
         // path, new pid/started_at — a bare Ping can't distinguish
@@ -386,13 +392,14 @@ async fn run_supervisor(
                     // full disconnect/reconnect cycle. emit_transition
                     // handles the compare internally.
                     emit_transition(&state, &events, &fresh_info).await;
+                    latest = fresh_info;
                 }
                 None => {
                     warn!("[daemon-connection] heartbeat failed; transitioning to reconnecting");
                     {
                         let mut state = state.write().await;
                         *state = ConnectionState::Reconnecting {
-                            last_info: Some(info.clone()),
+                            last_info: Some(latest.clone()),
                         };
                     }
                     let _ = events.send(DaemonEvent::Disconnected);

@@ -121,10 +121,11 @@ impl McpProxy {
         // Spawn a long-lived daemon connection for version tracking.
         // Replaces the old pattern of reading daemon.json on a timer.
         // `None` is valid for tests and minimal-mode builds.
-        let daemon_connection = config
-            .daemon_socket_path
-            .as_ref()
-            .map(|p| Arc::new(runtimed_client::daemon_connection::DaemonConnection::spawn(p.clone())));
+        let daemon_connection = config.daemon_socket_path.as_ref().map(|p| {
+            Arc::new(runtimed_client::daemon_connection::DaemonConnection::spawn(
+                p.clone(),
+            ))
+        });
 
         // Initial version: None at startup. The first version becomes
         // known when the daemon connection fires its first `Connected`
@@ -353,11 +354,13 @@ impl McpProxy {
                 state.last_daemon_version = new_version.clone();
 
                 let reconnection_event = match (old_version.as_deref(), new_version.as_deref()) {
-                    (Some(old), Some(new)) if old != new => Some(ReconnectionEvent::DaemonUpgrade {
-                        old_version: old.to_string(),
-                        new_version: new.to_string(),
-                        session_rejoined: false,
-                    }),
+                    (Some(old), Some(new)) if old != new => {
+                        Some(ReconnectionEvent::DaemonUpgrade {
+                            old_version: old.to_string(),
+                            new_version: new.to_string(),
+                            session_rejoined: false,
+                        })
+                    }
                     _ => Some(ReconnectionEvent::ChildRestart {
                         session_rejoined: false,
                     }),
