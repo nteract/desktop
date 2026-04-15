@@ -10,6 +10,7 @@ dependencies = [
     "pandas",
     "polars",
     "pyarrow>=14",
+    "numpy>=2.2.6",
 ]
 
 [build-system]

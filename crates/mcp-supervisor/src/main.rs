@@ -921,6 +921,304 @@ impl Supervisor {
             }
         }
     }
+
+    /// Kill any non-managed process holding our Vite port. Skipped on
+    /// Windows (no `lsof`) — on Windows, Vite's `--strictPort` failure
+    /// surfaces the conflict, and the user can clear it manually.
+    ///
+    /// Returns the list of PIDs killed, for the `up` status report.
+    #[cfg(not(unix))]
+    async fn sweep_zombie_vites(&self, _port: u16) -> Vec<u32> {
+        Vec::new()
+    }
+
+    #[cfg(unix)]
+    async fn sweep_zombie_vites(&self, port: u16) -> Vec<u32> {
+        {
+            let managed_pid: Option<u32> = {
+                let mut state = self.state.write().await;
+                let proc = state.managed.get_mut("vite");
+                match proc {
+                    Some(p) => {
+                        if p.is_alive() {
+                            Some(p.child.id())
+                        } else {
+                            None
+                        }
+                    }
+                    None => None,
+                }
+            };
+
+            let output = match tokio::task::spawn_blocking(move || {
+                std::process::Command::new("lsof")
+                    .args(["-t", "-i", &format!("tcp:{port}"), "-sTCP:LISTEN"])
+                    .output()
+            })
+            .await
+            {
+                Ok(Ok(out)) => out,
+                _ => return Vec::new(),
+            };
+
+            if !output.status.success() {
+                return Vec::new();
+            }
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let mut killed = Vec::new();
+            for pid_str in stdout.split_whitespace() {
+                let Ok(pid) = pid_str.parse::<u32>() else {
+                    continue;
+                };
+                if Some(pid) == managed_pid {
+                    continue; // our own process — leave it alone
+                }
+                warn!("[supervisor] Zombie process on vite port {port}: pid {pid} — killing");
+                let _ = std::process::Command::new("kill")
+                    .args(["-TERM", &pid.to_string()])
+                    .status();
+                killed.push(pid);
+            }
+            // Brief grace period so TIME_WAIT clears before our Vite tries to bind
+            if !killed.is_empty() {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            killed
+        }
+    }
+
+    /// Bring the dev environment up. Idempotent — safe to call repeatedly.
+    ///
+    /// Sequence:
+    /// 1. Apply `mode` if provided (flips the RELEASE_MODE flag).
+    /// 2. If `rebuild`, rebuild the daemon binary and Python bindings.
+    /// 3. Sweep zombie Vite processes on our port.
+    /// 4. Ensure the daemon is running (start if missing; restart on version mismatch).
+    /// 5. If `vite`, start the Vite dev server.
+    /// 6. Ensure the child is healthy (restart if not running).
+    async fn handle_up(&self, request: &CallToolRequestParams) -> Result<CallToolResult, McpError> {
+        let params: UpParams = request
+            .arguments
+            .as_ref()
+            .and_then(|v| serde_json::from_value(Value::Object(v.clone())).ok())
+            .unwrap_or(UpParams {
+                vite: false,
+                rebuild: false,
+                mode: None,
+            });
+
+        let mut report = Vec::<String>::new();
+
+        // Step 1: mode switch
+        if let Some(ref mode) = params.mode {
+            let want_release = match mode.as_str() {
+                "release" => true,
+                "debug" => false,
+                other => {
+                    return Ok(CallToolResult::success(vec![Content::text(format!(
+                        "up: unknown mode '{other}'. Use 'debug' or 'release'."
+                    ))]));
+                }
+            };
+            let old_release = RELEASE_MODE.load(Ordering::Relaxed);
+            if old_release != want_release {
+                RELEASE_MODE.store(want_release, Ordering::Relaxed);
+                report.push(format!(
+                    "mode: switched to {}",
+                    if want_release { "release" } else { "debug" }
+                ));
+            } else {
+                report.push(format!(
+                    "mode: already {}",
+                    if want_release { "release" } else { "debug" }
+                ));
+            }
+        }
+
+        let project_root = self.state.read().await.project_root.clone();
+
+        // Step 2: rebuild (cargo + maturin)
+        if params.rebuild {
+            info!("[supervisor] up: rebuild requested");
+            if !run_cargo_build_daemon(&project_root) {
+                return Ok(CallToolResult::success(vec![Content::text(
+                    "up: cargo build -p runtimed failed. See the supervisor logs for details.",
+                )]));
+            }
+            report.push("rebuild: daemon binary built".into());
+
+            if std::env::var("SKIP_MATURIN").unwrap_or_default() != "1" {
+                if !run_maturin_develop(&project_root) {
+                    return Ok(CallToolResult::success(vec![Content::text(
+                        "up: maturin develop failed. Daemon binary was rebuilt; \
+                         Python bindings were not. See the supervisor logs.",
+                    )]));
+                }
+                report.push("rebuild: python bindings rebuilt".into());
+            } else {
+                report.push("rebuild: maturin skipped (SKIP_MATURIN=1)".into());
+            }
+        }
+
+        // Step 3: sweep zombie vites
+        let vite_port = runt_workspace::vite_port_for_workspace(&project_root);
+        let killed = self.sweep_zombie_vites(vite_port).await;
+        if !killed.is_empty() {
+            report.push(format!(
+                "sweep: killed {} zombie process(es) on port {vite_port}: {:?}",
+                killed.len(),
+                killed
+            ));
+        }
+
+        // Step 4: ensure daemon running
+        let needs_daemon_restart = if params.rebuild {
+            true
+        } else {
+            match daemon_status(&project_root) {
+                Some(info) if info.running => {
+                    // Check for version mismatch with expected
+                    let running = info.daemon_info.as_ref().and_then(|di| di.version.as_ref());
+                    let expected = expected_daemon_version(&project_root);
+                    match (running, expected) {
+                        (Some(r), Some(e)) if r != &e => {
+                            warn!(
+                                "[supervisor] Daemon version mismatch: running={r}, expected={e}"
+                            );
+                            report.push(format!(
+                                "daemon: version mismatch (running={r}, expected={e}) — restarting"
+                            ));
+                            true
+                        }
+                        _ => {
+                            report.push("daemon: already running".into());
+                            false
+                        }
+                    }
+                }
+                _ => {
+                    report.push("daemon: not running — starting".into());
+                    true
+                }
+            }
+        };
+
+        if needs_daemon_restart {
+            let mut state = self.state.write().await;
+            if let Some(ref mut child) = state.daemon_child {
+                let _ = child.kill();
+                let _ = child.wait();
+                state.daemon_child = None;
+            }
+            // Also stop any unmanaged daemon on the socket
+            if let Some(info) = daemon_status(&project_root) {
+                if info.running {
+                    if let Some(pid) = info.daemon_info.and_then(|di| di.pid) {
+                        stop_daemon_by_pid(&project_root, pid);
+                    }
+                }
+            }
+            state.daemon_child = start_daemon(&project_root);
+            drop(state);
+
+            if !wait_for_daemon(&project_root, Duration::from_secs(30)) {
+                return Ok(CallToolResult::success(vec![Content::text(format!(
+                    "up: daemon did not become ready within 30s.\n\n{}",
+                    report.join("\n")
+                ))]));
+            }
+            report.push("daemon: ready".into());
+        }
+
+        // Step 5: optionally start vite
+        if params.vite {
+            match self.start_vite().await {
+                Ok(port) => report.push(format!("vite: running on http://localhost:{port}")),
+                Err(e) => report.push(format!("vite: FAILED — {e}")),
+            }
+        }
+
+        // Step 6: ensure child healthy
+        let child_healthy = {
+            let state = self.state.read().await;
+            if let Some(ref proxy) = state.proxy {
+                let ps = proxy.state.read().await;
+                ps.child_client.is_some()
+            } else {
+                false
+            }
+        };
+
+        if !child_healthy || needs_daemon_restart {
+            // Clear circuit breaker on manual up
+            {
+                let state = self.state.read().await;
+                if let Some(ref proxy) = state.proxy {
+                    proxy.reset_circuit_breaker().await;
+                }
+            }
+            match self.restart_child().await {
+                Ok(()) => report.push("child: restarted".into()),
+                Err(e) => report.push(format!("child: restart FAILED — {e}")),
+            }
+        } else {
+            report.push("child: healthy".into());
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(
+            report.join("\n"),
+        )]))
+    }
+
+    /// Stop managed processes. Opt-in daemon stop via `daemon=true`.
+    async fn handle_down(
+        &self,
+        request: &CallToolRequestParams,
+    ) -> Result<CallToolResult, McpError> {
+        let params: DownParams = request
+            .arguments
+            .as_ref()
+            .and_then(|v| serde_json::from_value(Value::Object(v.clone())).ok())
+            .unwrap_or(DownParams { daemon: false });
+
+        let mut report = Vec::<String>::new();
+
+        // Stop vite if managed
+        match self.stop_managed("vite").await {
+            Ok(()) => report.push("vite: stopped".into()),
+            Err(e) if e.to_lowercase().contains("no managed") => {
+                report.push("vite: not running".into())
+            }
+            Err(e) => report.push(format!("vite: stop FAILED — {e}")),
+        }
+
+        // Stop daemon if requested
+        if params.daemon {
+            let project_root = self.state.read().await.project_root.clone();
+            let mut state = self.state.write().await;
+            if let Some(ref mut child) = state.daemon_child {
+                let _ = child.kill();
+                let _ = child.wait();
+                state.daemon_child = None;
+                report.push("daemon: managed child stopped".into());
+            }
+            if let Some(info) = daemon_status(&project_root) {
+                if info.running {
+                    if let Some(pid) = info.daemon_info.and_then(|di| di.pid) {
+                        stop_daemon_by_pid(&project_root, pid);
+                        report.push(format!("daemon: unmanaged process pid {pid} stopped"));
+                    }
+                }
+            }
+        } else {
+            report.push("daemon: left running (pass daemon=true to stop)".into());
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(
+            report.join("\n"),
+        )]))
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
@@ -998,6 +1296,41 @@ struct SetModeParams {
     mode: String,
 }
 
+/// Arguments for the `up` tool. All fields optional — `up` with no args
+/// is the idiomatic "get me to a working state" call.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[allow(dead_code)]
+struct UpParams {
+    /// Start the Vite dev server in addition to the daemon + child.
+    /// Defaults to `false` (daemon + child only). Safe to pass `true`
+    /// repeatedly — Vite startup is idempotent.
+    #[serde(default)]
+    vite: bool,
+
+    /// Rebuild the daemon binary and Python bindings before bringing
+    /// things up. Equivalent to the old `supervisor_rebuild`. Defaults
+    /// to `false`.
+    #[serde(default)]
+    rebuild: bool,
+
+    /// Optional build mode toggle: "debug" or "release". Omit to leave
+    /// the current mode alone.
+    #[serde(default)]
+    mode: Option<String>,
+}
+
+/// Arguments for the `down` tool.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[allow(dead_code)]
+struct DownParams {
+    /// Also stop the daemon (not just vite + child). Defaults to
+    /// `false` — `down` by default stops everything *except* the
+    /// daemon, because daemons are often managed by launchd / the
+    /// installed app and we don't want to fight with them.
+    #[serde(default)]
+    daemon: bool,
+}
+
 /// MCP ServerHandler that proxies to the nteract child + injects supervisor tools.
 impl ServerHandler for Supervisor {
     fn get_info(&self) -> ServerInfo {
@@ -1038,67 +1371,59 @@ impl ServerHandler for Supervisor {
             .cloned()
             .unwrap_or_default();
 
+        let up_schema = serde_json::to_value(schemars::schema_for!(UpParams))
+            .unwrap()
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        let down_schema = serde_json::to_value(schemars::schema_for!(DownParams))
+            .unwrap()
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        let logs_schema = serde_json::to_value(schemars::schema_for!(SupervisorLogsParams))
+            .unwrap()
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+
         tools.push(Tool::new(
-            "supervisor_status",
-            "Get the status of the MCP supervisor, child process, and daemon.",
+            "up",
+            "Bring the dev environment to a working state. Idempotent: \
+             sweeps zombie Vite processes, ensures the daemon is running \
+             (starting it if needed), ensures the MCP child is healthy, \
+             and optionally starts Vite and/or rebuilds the daemon + \
+             Python bindings first. Pass vite=true to also start Vite, \
+             rebuild=true to rebuild before starting, mode='debug'|'release' \
+             to switch build mode. Returns a structured status report.",
+            up_schema,
+        ));
+        tools.push(Tool::new(
+            "down",
+            "Stop the managed dev processes (Vite and MCP child). Does \
+             NOT stop the daemon by default — daemons are often managed \
+             by launchd or the installed app. Pass daemon=true to also \
+             stop the managed daemon process.",
+            down_schema,
+        ));
+        tools.push(Tool::new(
+            "status",
+            "Report the current state of the supervisor, child process, \
+             daemon, and managed processes (Vite, etc.). Read-only — does \
+             not touch anything.",
             empty_schema.clone(),
         ));
         tools.push(Tool::new(
-            "supervisor_restart",
-            "Restart the nteract MCP server child process, or the daemon. Use target='child' (default) or target='daemon' (restarts both).",
-            serde_json::to_value(schemars::schema_for!(SupervisorRestartParams))
-                .unwrap()
-                .as_object()
-                .cloned()
-                .unwrap_or_default(),
+            "logs",
+            "Read the last N lines of the daemon log file. Defaults to \
+             50 lines.",
+            logs_schema.clone(),
         ));
         tools.push(Tool::new(
-            "supervisor_rebuild",
-            "Full rebuild: compile the daemon binary (cargo build -p runtimed), rebuild the Rust Python bindings (maturin develop), restart the daemon, and restart the MCP server. Use after changing crates/runtimed/, crates/runtimed-py/, or python/ source.",
-            empty_schema.clone(),
-        ));
-        tools.push(Tool::new(
-            "supervisor_logs",
-            "Read the last N lines of the daemon log file. Defaults to 50 lines.",
-            serde_json::to_value(schemars::schema_for!(SupervisorLogsParams))
-                .unwrap()
-                .as_object()
-                .cloned()
-                .unwrap_or_default(),
-        ));
-        tools.push(Tool::new(
-            "supervisor_vite_logs",
-            "Read the last N lines of the Vite dev server log. Defaults to 50 lines.",
-            serde_json::to_value(schemars::schema_for!(SupervisorLogsParams))
-                .unwrap()
-                .as_object()
-                .cloned()
-                .unwrap_or_default(),
-        ));
-        tools.push(Tool::new(
-            "supervisor_start_vite",
-            "Start the Vite dev server for hot-reload frontend development. Returns the port number. If already running, returns the existing port.",
-            empty_schema.clone(),
-        ));
-        tools.push(Tool::new(
-            "supervisor_stop",
-            "Stop a managed process by name (e.g. 'vite').",
-            serde_json::to_value(schemars::schema_for!(StopProcessParams))
-                .unwrap()
-                .as_object()
-                .cloned()
-                .unwrap_or_default(),
-        ));
-        tools.push(Tool::new(
-            "supervisor_set_mode",
-            "Switch the daemon between debug and release builds at runtime. \
-             Stops the current daemon, flips the binary path, and restarts. \
-             Use mode='debug' or mode='release'. No settings.json change needed.",
-            serde_json::to_value(schemars::schema_for!(SetModeParams))
-                .unwrap()
-                .as_object()
-                .cloned()
-                .unwrap_or_default(),
+            "vite_logs",
+            "Read the last N lines of the Vite dev server log. Defaults \
+             to 50 lines.",
+            logs_schema,
         ));
 
         // Get child tools from the proxy (live or cached), falling back
@@ -1161,7 +1486,11 @@ impl ServerHandler for Supervisor {
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         match request.name.as_ref() {
-            "supervisor_status" => {
+            "up" => self.handle_up(&request).await,
+            "down" => self.handle_down(&request).await,
+            // New short names for read-only tools — handled by the same
+            // branches as their supervisor_* predecessors below.
+            "status" | "supervisor_status" => {
                 let status = self.status().await;
                 let json = serde_json::to_string_pretty(&status)
                     .unwrap_or_else(|e| format!("Failed to serialize status: {e}"));
@@ -1406,7 +1735,7 @@ impl ServerHandler for Supervisor {
                     ))])),
                 }
             }
-            "supervisor_vite_logs" => {
+            "vite_logs" | "supervisor_vite_logs" => {
                 let lines = request
                     .arguments
                     .as_ref()
@@ -1427,7 +1756,7 @@ impl ServerHandler for Supervisor {
                     )])),
                 }
             }
-            "supervisor_logs" => {
+            "logs" | "supervisor_logs" => {
                 let lines = request
                     .arguments
                     .as_ref()
