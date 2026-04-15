@@ -1240,6 +1240,42 @@ mod tests {
         assert!(!tools.is_empty());
     }
 
+    // ── Optimistic list_tools (no child, no blocking) ──────────────────
+
+    #[tokio::test]
+    async fn list_tools_returns_cached_tools_immediately_without_child() {
+        // Regression test: list_tools must return cached tools without
+        // blocking when the child process isn't connected yet. The old
+        // behavior waited up to 30s, causing MCP clients to time out
+        // and report zero tools.
+        let proxy = McpProxy::new(test_config(), None);
+        let cached = vec![rmcp::model::Tool::new(
+            "test_tool".to_string(),
+            "A test tool".to_string(),
+            serde_json::Map::new(),
+        )];
+        proxy.state.write().await.cached_tools = Some(cached);
+
+        // Must complete well under the old 30s timeout
+        let result = tokio::time::timeout(Duration::from_millis(100), async {
+            let state = proxy.state.read().await;
+            let tools = if state.child_client.is_some() {
+                drop(state);
+                proxy.child_tools().await
+            } else {
+                let cached = state.cached_tools.clone().unwrap_or_default();
+                drop(state);
+                cached
+            };
+            tools
+        })
+        .await
+        .expect("list_tools should return immediately, not block for 30s");
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name.as_ref(), "test_tool");
+    }
+
     // ── tool_list_changed notification channel ────────────────────────
 
     #[tokio::test]

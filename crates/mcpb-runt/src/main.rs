@@ -10,7 +10,7 @@ use std::process::ExitCode;
 
 use rmcp::ServiceExt;
 use runt_mcp_proxy::{McpProxy, ProxyConfig};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 /// Find the `runt` or `runt-nightly` binary on PATH or in platform-specific locations.
 fn find_runt_binary(channel: &str) -> Option<PathBuf> {
@@ -142,6 +142,12 @@ async fn main() -> ExitCode {
         "mcpb-runt starting (channel={channel}, compiled={})",
         runt_workspace::channel_display_name()
     );
+    if channel != runt_workspace::channel_display_name() {
+        warn!(
+            "NTERACT_CHANNEL overrides baked-in channel ({} → {channel})",
+            runt_workspace::channel_display_name()
+        );
+    }
     if find_runt_binary(&channel).is_none() {
         eprintln!(
             "Error: {binary_name} not found.\n\n\
