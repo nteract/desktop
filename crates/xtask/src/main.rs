@@ -195,6 +195,12 @@ fn cmd_integration(filter: Option<String>) {
         exit(1);
     });
 
+    // dx integration tests are NOT run here — they require the real repo
+    // pyproject.toml (kernels use `env_source="uv:pyproject"` to install dx
+    // and pandas), but `cmd_integration` deliberately uses a TEMP
+    // RUNTIMED_WORKSPACE_PATH for isolation. dx integration is gated by
+    // the CI workflow `build.yml` instead, which runs from
+    // `${GITHUB_WORKSPACE}` (the real repo root).
     let mut pytest_args = vec![
         "run".to_string(),
         "pytest".to_string(),

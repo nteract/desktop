@@ -719,9 +719,16 @@ jobs:
       - name: Build runtimed binary
         run: cargo build --release -p runtimed
 
-      - name: Build runtimed-py
-        working-directory: python/runtimed
-        run: uv run maturin develop --manifest-path ../../crates/runtimed-py/Cargo.toml
+      - name: Build runtimed-py into the workspace venv
+        # `uv sync` at repo root populates .venv with the workspace
+        # members (runtimed, dx, nteract, gremlin) plus their deps
+        # (pandas, polars, pyarrow). VIRTUAL_ENV pins maturin to that
+        # same .venv so the bindings land where pytest will look.
+        run: |
+          uv sync
+          cd crates/runtimed-py && \
+            VIRTUAL_ENV="${GITHUB_WORKSPACE}/.venv" \
+            uv run --directory ../../python/runtimed maturin develop
 
       - name: Run integration tests
         timeout-minutes: 30
@@ -736,8 +743,17 @@ jobs:
           export RUNTIMED_LOG_LEVEL=debug
           export RUNTIMED_WORKSPACE_PATH="${GITHUB_WORKSPACE}"
 
-          # Run tests (daemon is spawned by the test fixture)
-          uv run pytest tests/test_daemon_integration.py -v --tb=short 2>&1 | tee integration-logs/test-output.log || FAIL=1
+          # Pin uv to the workspace venv so dx + pandas + pyarrow + polars
+          # are importable for test_dx_integration. The cwd stays at
+          # python/runtimed so `tool.pytest.ini_options` from this
+          # subproject's pyproject.toml applies (asyncio_mode = "auto",
+          # timeout = 600). uv-installed bindings landed in
+          # ${GITHUB_WORKSPACE}/.venv via VIRTUAL_ENV in the previous step.
+          export VIRTUAL_ENV="${GITHUB_WORKSPACE}/.venv"
+          uv run pytest \
+            tests/test_daemon_integration.py \
+            tests/test_dx_integration.py \
+            -v --tb=short 2>&1 | tee integration-logs/test-output.log || FAIL=1
 
           exit "${FAIL:-0}"
 
