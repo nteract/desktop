@@ -63,7 +63,7 @@ Start or restart the worktree daemon when:
 If the nteract-dev MCP supervisor is available, prefer:
 
 - `up` — idempotent "bring the dev environment up". Ensures daemon + child are healthy. Args: `vite=true`, `rebuild=true`, `mode="debug"|"release"`
-- `down` — stop managed Vite + child. `daemon=true` also stops the daemon
+- `down` — stop the managed Vite dev server. `daemon=true` also stops the daemon
 - `status` — read-only report
 - `logs` — tail daemon logs
 - `vite_logs` — tail Vite dev server logs when you need the Vite side of a hot-reload session

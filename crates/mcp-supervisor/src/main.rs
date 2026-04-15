@@ -1434,10 +1434,12 @@ impl ServerHandler for Supervisor {
         ));
         tools.push(Tool::new(
             "down",
-            "Stop the managed dev processes (Vite and MCP child). Does \
-             NOT stop the daemon by default — daemons are often managed \
-             by launchd or the installed app. Pass daemon=true to also \
-             stop the managed daemon process.",
+            "Stop the managed Vite dev server (if running). Does NOT stop \
+             the MCP proxy child — the child auto-restarts on disconnect \
+             and killing it here would just cause a restart. Does NOT \
+             stop the daemon by default — daemons are often managed by \
+             launchd or the installed app. Pass daemon=true to also stop \
+             the managed daemon process.",
             down_schema,
         ));
         tools.push(Tool::new(

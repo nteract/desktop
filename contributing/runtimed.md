@@ -113,7 +113,7 @@ When iterating on daemon code, you often want to test changes in the notebook ap
 The supervisor manages the dev daemon for you. No env vars or extra terminals needed.
 
 - `up` — idempotent "bring the dev environment up". Ensures the daemon is running and the MCP child is healthy. Pass `vite=true` to also start Vite (health-probed), `rebuild=true` to rebuild the daemon binary + Python bindings first, `mode="debug"|"release"` to switch build mode.
-- `down` — stop managed Vite + child. Pass `daemon=true` to also stop the daemon.
+- `down` — stop the managed Vite dev server. Pass `daemon=true` to also stop the daemon.
 - `status` — read-only report (child, daemon, managed processes, build mode).
 - `logs` — tail the daemon log file.
 - `vite_logs` — tail the Vite dev server log file.

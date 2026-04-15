@@ -165,7 +165,7 @@ cargo xtask dev-mcp
 | Tool | Purpose |
 |------|---------|
 | `up` | Idempotent bring-up. Sweeps zombie Vite processes, ensures daemon + child healthy. Args: `vite=true` (start Vite, health-probed), `rebuild=true` (rebuild daemon + bindings first), `mode="debug"\|"release"` |
-| `down` | Stop managed Vite + child. `daemon=true` also stops daemon. |
+| `down` | Stop the managed Vite dev server. `daemon=true` also stops daemon. |
 | `status` | Read-only report of child, daemon, managed processes, build mode |
 | `logs` | Tail daemon log file |
 | `vite_logs` | Tail Vite dev server log file |

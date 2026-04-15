@@ -171,7 +171,7 @@ In production, the Tauri app auto-installs and manages the system daemon. In dev
 If you have the repo-local `nteract-dev` MCP entry configured, the daemon is managed for you:
 
 - `up` — idempotent "get me to a working state". Sweeps zombie Vite processes, ensures daemon is running, ensures the MCP child is healthy. Args: `vite=true` also starts Vite (health-probed), `rebuild=true` rebuilds the daemon binary + Python bindings first, `mode="debug"|"release"` switches build mode.
-- `down` — stop managed Vite + child. Pass `daemon=true` to also stop the daemon.
+- `down` — stop the managed Vite dev server. Pass `daemon=true` to also stop the daemon.
 - `status` — read-only report (child, daemon, managed processes, build mode, version).
 - `logs` — tail daemon logs.
 - `vite_logs` — tail the Vite dev server log file.
@@ -369,7 +369,7 @@ These tools are always available, even when the child MCP is down:
 | Tool | Purpose |
 |------|---------|
 | `up` | Idempotent dev-env bring-up. Sweeps zombie Vite processes, ensures daemon + child healthy. Args: `vite=true`, `rebuild=true`, `mode="debug"\|"release"` |
-| `down` | Stop managed processes (Vite + child). `daemon=true` also stops the daemon. |
+| `down` | Stop the managed Vite dev server. `daemon=true` also stops the daemon. |
 | `status` | Read-only report: child, daemon, managed processes, build mode, version. |
 | `logs` | Tail the daemon log file. |
 | `vite_logs` | Tail the Vite dev server log file. |

@@ -95,7 +95,7 @@ If your MCP client provides `up`, `down`, `status`, `logs`, `vite_logs` (the nte
 | `runt daemon status` (with env vars) | `status` |
 | `runt daemon logs` | `logs` |
 | `cargo xtask vite` | `up vite=true` |
-| `cargo xtask notebook` (stop dev processes) | `down` (stops Vite + child; `daemon=true` also stops daemon) |
+| `cargo xtask notebook` (stop dev processes) | `down` (stops Vite; `daemon=true` also stops daemon) |
 
 The supervisor automatically handles per-worktree isolation, env var plumbing, zombie Vite cleanup, health probes, and lockfile-drift re-installs. You only need the manual commands below when the supervisor isn't available (e.g. cloud sessions, CI).
 
@@ -325,7 +325,7 @@ Consolidated around two verbs plus three read-only tools:
 | Tool | Purpose |
 |------|---------|
 | `up` | Idempotent "bring the dev environment to a working state". Sweeps zombie Vite processes, ensures daemon is running, ensures the MCP child is healthy. Args: `vite=true` to also start Vite (health-probed), `rebuild=true` to rebuild daemon + Python bindings first, `mode="debug"\|"release"` to switch build mode. Safe to call repeatedly. |
-| `down` | Stop managed processes (Vite + child). Leaves the daemon alone by default (launchd / installed app may own it). Pass `daemon=true` to also stop the managed daemon. |
+| `down` | Stop the managed Vite dev server. Leaves the daemon alone by default (launchd / installed app may own it). Pass `daemon=true` to also stop the managed daemon. |
 | `status` | Read-only report of supervisor, child, daemon, and managed-process state. |
 | `logs` | Tail the daemon log file. |
 | `vite_logs` | Tail the Vite dev server log file. |
