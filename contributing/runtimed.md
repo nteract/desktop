@@ -108,17 +108,17 @@ cargo run -p runt-cli -- daemon status --json | jq -r '.daemon_info.version'
 
 When iterating on daemon code, you often want to test changes in the notebook app without rebuilding the frontend.
 
-**With nteract-dev supervisor** (if you have `supervisor_*` MCP tools — e.g. in Zed):
+**With nteract-dev supervisor** (if you have `up` / `down` / `status` MCP tools — e.g. in Zed or Claude Code):
 
 The supervisor manages the dev daemon for you. No env vars or extra terminals needed.
 
-- `supervisor_restart(target="daemon")` — start or restart the dev daemon after code changes
-- `supervisor_rebuild` — rebuild the daemon binary plus Rust Python bindings, then restart the daemon and MCP child
-- `supervisor_status` — check daemon status (`daemon_managed: true` confirms it's running)
-- `supervisor_logs` — tail daemon logs
-- `supervisor_vite_logs` — tail the Vite dev server log file
-- `supervisor_start_vite` — start the Vite dev server for hot-reload
-- `supervisor_set_mode` — switch the managed daemon between `debug` and `release`
+- `up` — idempotent "bring the dev environment up". Ensures the daemon is running and the MCP child is healthy. Pass `vite=true` to also start Vite (health-probed), `rebuild=true` to rebuild the daemon binary + Python bindings first, `mode="debug"|"release"` to switch build mode.
+- `down` — stop managed Vite + child. Pass `daemon=true` to also stop the daemon.
+- `status` — read-only report (child, daemon, managed processes, build mode).
+- `logs` — tail the daemon log file.
+- `vite_logs` — tail the Vite dev server log file.
+
+The older `supervisor_*` names (`supervisor_restart`, `supervisor_rebuild`, `supervisor_start_vite`, `supervisor_stop`, `supervisor_set_mode`, `supervisor_status`, `supervisor_logs`, `supervisor_vite_logs`) still work as aliases.
 
 Then build and run the app normally:
 ```bash

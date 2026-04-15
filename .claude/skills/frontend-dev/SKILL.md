@@ -164,14 +164,13 @@ cargo xtask dev-mcp
 
 | Tool | Purpose |
 |------|---------|
-| `supervisor_status` | Child process, daemon, restart count, last error |
-| `supervisor_restart` | Restart child or daemon |
-| `supervisor_rebuild` | Rebuild the daemon binary plus Rust Python bindings, then restart the daemon and MCP child |
-| `supervisor_logs` | Tail daemon log file |
-| `supervisor_vite_logs` | Tail Vite dev server log file |
-| `supervisor_start_vite` | Start Vite dev server for hot-reload frontend dev |
-| `supervisor_stop` | Stop a managed process by name |
-| `supervisor_set_mode` | Switch the managed daemon between `debug` and `release` builds |
+| `up` | Idempotent bring-up. Sweeps zombie Vite processes, ensures daemon + child healthy. Args: `vite=true` (start Vite, health-probed), `rebuild=true` (rebuild daemon + bindings first), `mode="debug"\|"release"` |
+| `down` | Stop managed Vite + child. `daemon=true` also stops daemon. |
+| `status` | Read-only report of child, daemon, managed processes, build mode |
+| `logs` | Tail daemon log file |
+| `vite_logs` | Tail Vite dev server log file |
+
+The older `supervisor_*` names (`supervisor_status`, `supervisor_restart`, `supervisor_rebuild`, `supervisor_logs`, `supervisor_vite_logs`, `supervisor_start_vite`, `supervisor_stop`, `supervisor_set_mode`) still work as aliases.
 
 ### Hot Reload
 

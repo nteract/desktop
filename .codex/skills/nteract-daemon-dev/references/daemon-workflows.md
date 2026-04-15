@@ -60,15 +60,15 @@ Start or restart the worktree daemon when:
 
 ## Prefer supervisor tools when available
 
-If the MCP supervisor is available, prefer:
+If the nteract-dev MCP supervisor is available, prefer:
 
-- `supervisor_restart(target="daemon")`
-- `supervisor_status`
-- `supervisor_logs`
-- `supervisor_vite_logs` when you need the Vite side of a hot-reload session
-- `supervisor_set_mode` when you intentionally need the managed daemon in `release` instead of `debug`
+- `up` — idempotent "bring the dev environment up". Ensures daemon + child are healthy. Args: `vite=true`, `rebuild=true`, `mode="debug"|"release"`
+- `down` — stop managed Vite + child. `daemon=true` also stops the daemon
+- `status` — read-only report
+- `logs` — tail daemon logs
+- `vite_logs` — tail Vite dev server logs when you need the Vite side of a hot-reload session
 
-These avoid manual env-var mistakes.
+These avoid manual env-var mistakes. The older `supervisor_*` names (`supervisor_restart`, `supervisor_rebuild`, `supervisor_start_vite`, `supervisor_stop`, `supervisor_set_mode`, `supervisor_status`, `supervisor_logs`, `supervisor_vite_logs`) still work as aliases.
 
 ## Safety rules
 

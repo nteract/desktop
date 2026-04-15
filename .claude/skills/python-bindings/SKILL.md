@@ -21,7 +21,7 @@ cd crates/runtimed-py
 VIRTUAL_ENV=../../.venv uv run --directory ../../python/runtimed maturin develop
 ```
 
-This is what `supervisor_rebuild` does automatically.
+This is what `up rebuild=true` does automatically.
 
 ### Into test venv (for pytest)
 
@@ -230,4 +230,4 @@ cd crates/runtimed-py
 VIRTUAL_ENV=../../.venv uv run --directory ../../python/runtimed maturin develop
 ```
 
-Or if using nteract-dev supervisor, call `supervisor_rebuild`.
+Or if using nteract-dev supervisor, call `up rebuild=true`.

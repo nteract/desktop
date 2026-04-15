@@ -168,16 +168,15 @@ In production, the Tauri app auto-installs and manages the system daemon. In dev
 
 **With nteract-dev (preferred for agents):**
 
-If you have the repo-local `nteract-dev` MCP entry configured, the daemon is managed for you through the `supervisor_*` tools:
+If you have the repo-local `nteract-dev` MCP entry configured, the daemon is managed for you:
 
-- `supervisor_restart(target="daemon")` — start or restart the dev daemon
-- `supervisor_status` — check daemon status (includes `daemon_managed: true/false`)
-- `supervisor_rebuild` — rebuild the daemon binary plus Rust Python bindings, then restart the daemon and MCP child
-- `supervisor_logs` — tail daemon logs
-- `supervisor_vite_logs` — tail the Vite dev server log file
-- `supervisor_set_mode` — switch the managed daemon between `debug` and `release`
+- `up` — idempotent "get me to a working state". Sweeps zombie Vite processes, ensures daemon is running, ensures the MCP child is healthy. Args: `vite=true` also starts Vite (health-probed), `rebuild=true` rebuilds the daemon binary + Python bindings first, `mode="debug"|"release"` switches build mode.
+- `down` — stop managed Vite + child. Pass `daemon=true` to also stop the daemon.
+- `status` — read-only report (child, daemon, managed processes, build mode, version).
+- `logs` — tail daemon logs.
+- `vite_logs` — tail the Vite dev server log file.
 
-No env vars or extra terminals needed. nteract-dev handles per-worktree isolation automatically.
+No env vars or extra terminals needed. nteract-dev handles per-worktree isolation automatically. The older `supervisor_*` names still work as aliases.
 
 **Two-terminal workflow (without supervisor):**
 
@@ -218,7 +217,7 @@ RUNTIMED_DEV=1 cargo xtask notebook
 
 Per-worktree state is stored in `<cache>/{cache_namespace}/worktrees/{hash}/` (macOS: `~/Library/Caches/`, Linux: `~/.cache/`). Source builds default to `runt-nightly`; set `RUNT_BUILD_CHANNEL=stable` only when you intentionally need the stable flow.
 
-**For AI agents:** If the repo-local `nteract-dev` MCP entry is available, prefer its `supervisor_*` tools — they handle env vars and daemon lifecycle automatically. Keep `nteract` as the name for the global/system-installed MCP server. When using a raw terminal (not Zed tasks), set the env vars manually:
+**For AI agents:** If the repo-local `nteract-dev` MCP entry is available, prefer its `up` / `down` / `status` / `logs` / `vite_logs` tools — they handle env vars and daemon lifecycle automatically. Keep `nteract` as the name for the global/system-installed MCP server. When using a raw terminal (not Zed tasks), set the env vars manually:
 
 ```bash
 export RUNTIMED_DEV=1
@@ -361,22 +360,21 @@ Or configure `.zed/settings.json` directly (gitignored):
 }
 ```
 
-In clients that namespace tools by server name, this keeps repo-local notebook tools separate from the global install while still exposing the same notebook APIs plus the extra `supervisor_*` tools.
+In clients that namespace tools by server name, this keeps repo-local notebook tools separate from the global install while still exposing the same notebook APIs plus the extra supervisor tools.
 
 #### Supervisor tools
 
-These tools are always available, even when the Python child is down:
+These tools are always available, even when the child MCP is down:
 
 | Tool | Purpose |
 |------|---------|
-| `supervisor_status` | Child process, daemon, restart count, last error |
-| `supervisor_restart` | Restart child or daemon |
-| `supervisor_rebuild` | Rebuild the daemon binary plus Rust Python bindings, then restart the daemon and MCP child |
-| `supervisor_logs` | Tail the daemon log file |
-| `supervisor_vite_logs` | Tail the Vite dev server log file |
-| `supervisor_start_vite` | Start the Vite dev server for hot-reload frontend development |
-| `supervisor_stop` | Stop a managed process by name (e.g. `"vite"`) |
-| `supervisor_set_mode` | Switch the managed daemon between `debug` and `release` builds |
+| `up` | Idempotent dev-env bring-up. Sweeps zombie Vite processes, ensures daemon + child healthy. Args: `vite=true`, `rebuild=true`, `mode="debug"\|"release"` |
+| `down` | Stop managed processes (Vite + child). `daemon=true` also stops the daemon. |
+| `status` | Read-only report: child, daemon, managed processes, build mode, version. |
+| `logs` | Tail the daemon log file. |
+| `vite_logs` | Tail the Vite dev server log file. |
+
+The older names (`supervisor_status`, `supervisor_restart`, `supervisor_rebuild`, `supervisor_logs`, `supervisor_vite_logs`, `supervisor_start_vite`, `supervisor_stop`, `supervisor_set_mode`) still work as aliases for backward compatibility.
 
 #### Hot reload
 
@@ -407,10 +405,11 @@ cargo xtask dev-mcp
 ### How it works
 
 `nteract-dev` is the **dev-only supervisor server** for this source tree. It
-exposes the extra `supervisor_*` tools itself, then proxies the regular notebook
-tools from a child `runt mcp` process launched inside the supervisor. That child
-is the Rust-native MCP implementation from `crates/runt-mcp/`, not a Python MCP
-server.
+exposes the supervisor tools (`up`, `down`, `status`, `logs`, `vite_logs`, plus
+the older `supervisor_*` aliases) itself, then proxies the regular notebook
+tools from a child `runt mcp` process launched inside the supervisor. That
+child is the Rust-native MCP implementation from `crates/runt-mcp/`, not a
+Python MCP server.
 
 The Python workspace packages still matter for local development: `python/runtimed/`
 provides the PyO3 bindings, and `python/nteract/` is the convenience wrapper that
