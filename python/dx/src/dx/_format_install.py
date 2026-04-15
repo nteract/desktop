@@ -389,8 +389,17 @@ def _emit_dataframe(df: Any, *, total_rows: int) -> dict | None:
     try:
         data, content_type = serialize_dataframe(df, max_bytes=_MAX_PAYLOAD_BYTES)
     except Exception as exc:
-        log.debug("dx: serialize failed: %s — falling back to default repr", exc)
-        return None
+        log.debug("dx: serialize failed: %s — emitting summary-only bundle", exc)
+        # Parquet serialization failed (e.g. pyarrow missing), but the
+        # summary is pure Python — still emit text/llm+plain so the agent
+        # gets column stats instead of a raw repr.
+        try:
+            llm = summarize_dataframe(
+                df, total_rows=total_rows, included_rows=total_rows, sampled=False
+            )
+            return {"text/llm+plain": llm}
+        except Exception:
+            return None
 
     # Detect downsampling by reading parquet metadata (cheap — footer only).
     sampled = False

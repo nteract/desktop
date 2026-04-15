@@ -37,6 +37,36 @@ class TestTextHeavyDataFrameSummaryStaysInline:
         assert "…" in out or "..." in out or len(out) < 1024
 
 
+class TestEmitDataFrameFallbackWithoutPyarrow:
+    """When pyarrow is missing, _emit_dataframe should still return a
+    text/llm+plain summary instead of None."""
+
+    def test_emit_returns_summary_only_on_serialize_failure(self, monkeypatch):
+        import dx._format_install as fi
+
+        # Make serialize_dataframe raise to simulate missing pyarrow
+        monkeypatch.setattr(
+            fi,
+            "serialize_dataframe",
+            lambda df, max_bytes: (_ for _ in ()).throw(ImportError("No module named 'pyarrow'")),
+        )
+
+        df = pd.DataFrame({"score": [0.1, 0.5, 0.9], "name": ["a", "b", "c"]})
+        bundle = fi._emit_dataframe(df, total_rows=3)
+
+        assert bundle is not None
+        assert "text/llm+plain" in bundle
+        # No blob ref — parquet serialization failed
+        from dx._refs import BLOB_REF_MIME
+
+        assert BLOB_REF_MIME not in bundle
+        # Summary should still contain useful stats
+        summary = bundle["text/llm+plain"]
+        assert "score" in summary
+        assert "name" in summary
+        assert "range" in summary
+
+
 class TestDatasetEmitsDisplayDataWithSummary:
     """Verify that a datasets.Dataset produces display_data with
     text/llm+plain mentioning feature names and num_rows."""
