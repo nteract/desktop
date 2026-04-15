@@ -30,4 +30,5 @@ dev = [
     "polars>=0.20",
     "ipykernel>=6.0",
     "narwhals>=1.0",
+    "datasets>=2.0",
 ]
