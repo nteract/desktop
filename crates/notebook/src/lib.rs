@@ -1565,28 +1565,27 @@ pub struct DaemonInfoForBanner {
 }
 
 /// Get daemon info for the debug banner.
-/// Returns None in release builds or if daemon.json doesn't exist.
+/// Returns None in release builds or if the daemon is unreachable.
 #[tauri::command]
 async fn get_daemon_info() -> Option<DaemonInfoForBanner> {
     #[cfg(debug_assertions)]
     {
-        // Use runtimed's path resolution which handles dev mode (per-worktree) paths
-        let info_path = runtimed::singleton::daemon_info_path();
-        let contents = std::fs::read_to_string(info_path).ok()?;
-        let json: serde_json::Value = serde_json::from_str(&contents).ok()?;
-        let version = json.get("version")?.as_str()?.to_string();
-        // Read the actual endpoint from daemon.json (supports custom --socket)
-        let socket_path_full = json
-            .get("endpoint")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| {
-                runt_workspace::default_socket_path()
-                    .to_string_lossy()
-                    .to_string()
-            });
+        // Query the daemon directly via the socket. Falls back to the
+        // legacy daemon.json during the one-release transition window
+        // against older daemons that don't know GetDaemonInfo.
+        let socket_path = runtimed_client::default_socket_path();
+        let info = runtimed::singleton::query_daemon_info(socket_path.clone()).await?;
+        let version = info.version;
+        // Endpoint: prefer what the daemon reports, fall back to the
+        // queried socket path if the daemon didn't set it (e.g. old
+        // daemon-via-file where the endpoint comes from the JSON).
+        let socket_path_full = if info.endpoint.is_empty() {
+            socket_path.to_string_lossy().to_string()
+        } else {
+            info.endpoint
+        };
         // Replace home directory with ~ for shorter display
-        let socket_path = if let Some(home) = dirs::home_dir() {
+        let socket_path_display = if let Some(home) = dirs::home_dir() {
             let home_str = home.to_string_lossy();
             if socket_path_full.starts_with(home_str.as_ref()) {
                 socket_path_full.replacen(home_str.as_ref(), "~", 1)
@@ -1599,7 +1598,7 @@ async fn get_daemon_info() -> Option<DaemonInfoForBanner> {
         let is_dev_mode = runt_workspace::is_dev_mode();
         Some(DaemonInfoForBanner {
             version,
-            socket_path,
+            socket_path: socket_path_display,
             is_dev_mode,
         })
     }
