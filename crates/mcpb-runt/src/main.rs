@@ -154,8 +154,15 @@ async fn main() -> ExitCode {
     }
     info!("Validated {binary_name} is available");
 
-    // Resolve daemon info path for version tracking
-    let daemon_info_path = Some(runtimed_client::singleton::daemon_info_path());
+    // Resolve the daemon socket path for version tracking. The proxy
+    // spawns a long-lived `DaemonConnection` against this socket and
+    // uses its cached `DaemonInfo` to detect daemon upgrades.
+    let build_channel = if channel == "nightly" {
+        runtimed_client::BuildChannel::Nightly
+    } else {
+        runtimed_client::BuildChannel::Stable
+    };
+    let daemon_socket_path = Some(runtimed_client::socket_path_for_channel(build_channel));
 
     // Build child environment
     let mut child_env = HashMap::new();
@@ -189,7 +196,7 @@ async fn main() -> ExitCode {
             let _ = std::fs::create_dir_all(&dir);
             dir
         }),
-        daemon_info_path,
+        daemon_socket_path,
         monitor_poll_interval_ms: 500,
     };
 

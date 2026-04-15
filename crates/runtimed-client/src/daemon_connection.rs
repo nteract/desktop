@@ -444,13 +444,12 @@ async fn emit_transition(
         *state = ConnectionState::Connected { info: info.clone() };
     }
 
-    let event = if is_upgrade {
-        DaemonEvent::Upgraded {
-            previous: previous.expect("is_upgrade implies previous is Some"),
+    let event = match (is_upgrade, previous) {
+        (true, Some(prev)) => DaemonEvent::Upgraded {
+            previous: prev,
             current: info.clone(),
-        }
-    } else {
-        DaemonEvent::Connected { info: info.clone() }
+        },
+        _ => DaemonEvent::Connected { info: info.clone() },
     };
     let _ = events.send(event);
 }
