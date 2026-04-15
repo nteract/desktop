@@ -38,6 +38,40 @@ const MAX_FRAME_SIZE: usize = 100 * 1024 * 1024;
 /// routing has occurred.
 const MAX_CONTROL_FRAME_SIZE: usize = 64 * 1024;
 
+/// Maximum frame body size for `Presence` frames: 1 MiB.
+/// Presence payloads are cursor positions, selection ranges, and small
+/// peer-state snapshots encoded as CBOR. Per-peer they're hundreds of
+/// bytes; a snapshot with many peers is still well under 1 MiB. A cap
+/// here catches a desync that happened to land on the Presence channel
+/// (e.g. a garbage length of tens of MiB) far below the 100 MiB outer
+/// ceiling.
+///
+/// We deliberately do *not* apply a tight cap to Request/Response/
+/// Broadcast: those carry legitimately-large payloads —
+/// `SendComm` / `Broadcast::Comm` widget envelopes can include binary
+/// buffers; `Response::DocBytes` returns serialized Automerge doc
+/// state — and they already share the 100 MiB outer ceiling with data
+/// frames.
+const MAX_PRESENCE_FRAME_SIZE: usize = 1024 * 1024;
+
+/// Maximum body size allowed for a given `NotebookFrameType` byte.
+///
+/// Enforced in `recv_typed_frame` so a corrupted stream with an
+/// oversized length prefix for a narrow-purpose channel (Presence)
+/// trips this check before the allocator honors the bogus length. The
+/// outer 100 MiB ceiling still gates everything else.
+fn max_payload_size_for_frame_type(type_byte: u8) -> usize {
+    use notebook_doc::frame_types;
+    match type_byte {
+        frame_types::PRESENCE => MAX_PRESENCE_FRAME_SIZE,
+        // Every other type — Request/Response/Broadcast (may carry
+        // widget buffers or DocBytes), AutomergeSync/RuntimeStateSync/
+        // PoolStateSync (Automerge sync), and unknown future types —
+        // shares the 100 MiB outer ceiling.
+        _ => MAX_FRAME_SIZE,
+    }
+}
+
 /// Channel handshake — the first frame on every connection.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "channel", rename_all = "snake_case")]
@@ -319,33 +353,73 @@ pub async fn send_typed_json_frame<W: AsyncWrite + Unpin, T: Serialize>(
 /// Receive a typed notebook frame.
 /// Returns `None` on clean disconnect (EOF).
 /// Unknown frame types are logged and skipped for forward compatibility.
+///
+/// Length is read first, then the 1-byte type discriminator, then the
+/// per-type cap is applied before the body is read. This means a
+/// garbage length prefix aimed at, say, the `Request` channel (e.g.
+/// 1.8 GB) is rejected before the allocator tries to honor it.
 pub async fn recv_typed_frame<R: AsyncRead + Unpin>(
     reader: &mut R,
 ) -> std::io::Result<Option<TypedNotebookFrame>> {
     loop {
-        let Some(data) = recv_frame(reader).await? else {
-            return Ok(None);
-        };
+        // Read the 4-byte length prefix.
+        let mut len_buf = [0u8; 4];
+        match reader.read_exact(&mut len_buf).await {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+            Err(e) => return Err(e),
+        }
+        let len = u32::from_be_bytes(len_buf) as usize;
 
-        if data.is_empty() {
+        if len == 0 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "empty frame",
             ));
         }
+        // Outer ceiling before we even look at the type byte — 100 MiB.
+        if len > MAX_FRAME_SIZE {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("frame too large: {} bytes (max {})", len, MAX_FRAME_SIZE),
+            ));
+        }
 
-        match NotebookFrameType::try_from(data[0]) {
+        // Read the 1-byte type discriminator.
+        let mut type_buf = [0u8; 1];
+        reader.read_exact(&mut type_buf).await?;
+        let type_byte = type_buf[0];
+        let body_len = len - 1;
+
+        // Per-type ceiling. Control frames (Request/Response/Broadcast/
+        // Presence) cap at 1 MiB / 64 KiB; data frames keep 100 MiB.
+        let max_body = max_payload_size_for_frame_type(type_byte);
+        if body_len > max_body {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "frame too large for type 0x{:02x}: {} bytes (max {})",
+                    type_byte, body_len, max_body
+                ),
+            ));
+        }
+
+        // Now it's safe to allocate and read the body.
+        let mut payload = vec![0u8; body_len];
+        reader.read_exact(&mut payload).await?;
+
+        match NotebookFrameType::try_from(type_byte) {
             Ok(frame_type) => {
                 return Ok(Some(TypedNotebookFrame {
                     frame_type,
-                    payload: data[1..].to_vec(),
+                    payload,
                 }));
             }
             Err(_) => {
                 log::warn!(
                     "Skipping unknown notebook frame type 0x{:02x} ({} bytes payload)",
-                    data[0],
-                    data.len() - 1,
+                    type_byte,
+                    body_len,
                 );
                 continue;
             }
@@ -719,6 +793,70 @@ mod tests {
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains(r#""error":"File not found""#));
+    }
+
+    #[tokio::test]
+    async fn typed_frame_rejects_oversized_presence() {
+        // Presence frames have a 1 MiB cap because cursor positions /
+        // CBOR peer snapshots never legitimately approach that. A
+        // desync that happens to land on the Presence channel with a
+        // multi-MiB length header is caught here instead of trying to
+        // allocate it.
+        let body_len: u32 = (MAX_PRESENCE_FRAME_SIZE as u32) + 1;
+        let total_len: u32 = body_len + 1;
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&total_len.to_be_bytes());
+        buf.push(notebook_doc::frame_types::PRESENCE);
+        let mut cursor = std::io::Cursor::new(buf);
+        let err = recv_typed_frame(&mut cursor).await.unwrap_err();
+        assert!(err.to_string().contains("too large for type 0x04"));
+    }
+
+    #[tokio::test]
+    async fn typed_frame_allows_big_broadcast_for_widget_comm() {
+        // NotebookBroadcast::Comm and NotebookRequest::SendComm carry
+        // widget envelopes with inline binary buffers that can exceed
+        // 1 MiB. Response::DocBytes similarly carries a serialized
+        // Automerge doc. These must NOT be capped tightly — they share
+        // the 100 MiB outer ceiling with data frames.
+        let big_payload = vec![0x42u8; 2 * 1024 * 1024]; // 2 MiB
+        let mut buf = Vec::new();
+        send_typed_frame(&mut buf, NotebookFrameType::Broadcast, &big_payload)
+            .await
+            .unwrap();
+
+        let mut cursor = std::io::Cursor::new(buf);
+        let frame = recv_typed_frame(&mut cursor).await.unwrap().unwrap();
+        assert_eq!(frame.frame_type, NotebookFrameType::Broadcast);
+        assert_eq!(frame.payload.len(), big_payload.len());
+    }
+
+    #[tokio::test]
+    async fn typed_frame_allows_big_automerge_sync() {
+        let big_payload = vec![0x42u8; 2 * 1024 * 1024]; // 2 MiB
+        let mut buf = Vec::new();
+        send_typed_frame(&mut buf, NotebookFrameType::AutomergeSync, &big_payload)
+            .await
+            .unwrap();
+
+        let mut cursor = std::io::Cursor::new(buf);
+        let frame = recv_typed_frame(&mut cursor).await.unwrap().unwrap();
+        assert_eq!(frame.frame_type, NotebookFrameType::AutomergeSync);
+        assert_eq!(frame.payload.len(), big_payload.len());
+    }
+
+    #[tokio::test]
+    async fn typed_frame_rejects_1819243560_byte_length() {
+        // The specific desync value observed in the field: 0x6C6F6761
+        // ("loga"). Interpreted as a u32 big-endian length this is
+        // 1,819,243,560 bytes — well above the 100 MiB outer cap.
+        // This must be rejected at the outer check before we ever read
+        // the type byte.
+        let loga_bytes: [u8; 4] = [0x6C, 0x6F, 0x67, 0x61];
+        let mut cursor = std::io::Cursor::new(loga_bytes.to_vec());
+        let err = recv_typed_frame(&mut cursor).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("frame too large"), "unexpected error: {msg}");
     }
 
     #[tokio::test]
