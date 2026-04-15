@@ -254,10 +254,15 @@ impl StreamPreview {
         let total_bytes = text.len() as u64;
         let total_lines = text.lines().count() as u64;
         let head = take_head(text, PREVIEW_LINE_CAP, PREVIEW_BYTE_CAP);
-        let tail = if head.len() as u64 >= total_bytes {
+        // Tail is drawn from the text *after* head coverage so the two are
+        // always disjoint. Without this, a medium stream (e.g. 50 lines)
+        // produces head=lines 0..40 and tail=lines 10..50, overlapping by
+        // 30 lines and making `elided_lines` underflow to 0 downstream.
+        let remainder = &text[head.len()..];
+        let tail = if remainder.is_empty() {
             String::new()
         } else {
-            take_tail(text, PREVIEW_LINE_CAP, PREVIEW_BYTE_CAP)
+            take_tail(remainder, PREVIEW_LINE_CAP, PREVIEW_BYTE_CAP)
         };
         Self {
             head,
@@ -324,19 +329,42 @@ fn take_head(text: &str, line_cap: usize, byte_cap: usize) -> String {
 }
 
 fn take_tail(text: &str, line_cap: usize, byte_cap: usize) -> String {
+    // Walk the last `line_cap` lines *backward*, accumulating full lines
+    // until the next one would exceed `byte_cap`. If byte budget remains,
+    // include a truncated prefix of the next-earlier line so the tail
+    // always extends up to the very last line of the input.
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
     let start = lines.len().saturating_sub(line_cap);
-    let mut out = String::new();
-    for line in &lines[start..] {
-        if out.len() + line.len() > byte_cap {
-            let remaining = byte_cap.saturating_sub(out.len());
-            if remaining > 0 {
-                let start_byte = line.len() - remaining;
-                out.push_str(&safe_byte_slice(line, start_byte, line.len()));
-            }
+    let window = &lines[start..];
+
+    let mut total = 0usize;
+    let mut take_from = window.len();
+    for i in (0..window.len()).rev() {
+        let len = window[i].len();
+        if total + len > byte_cap {
             break;
         }
+        total += len;
+        take_from = i;
+    }
+
+    let mut out = String::new();
+    if take_from > 0 && total < byte_cap {
+        let remaining = byte_cap - total;
+        let line = window[take_from - 1];
+        let start_byte = line.len().saturating_sub(remaining);
+        out.push_str(&safe_byte_slice(line, start_byte, line.len()));
+    }
+    for line in &window[take_from..] {
         out.push_str(line);
+    }
+
+    // Pathological case: a single line larger than byte_cap. Fall back to
+    // the final byte_cap bytes of the text itself so the tail still shows
+    // the newest content rather than being empty.
+    if out.is_empty() && !text.is_empty() {
+        let start_byte = text.len().saturating_sub(byte_cap);
+        out.push_str(&safe_byte_slice(text, start_byte, text.len()));
     }
     out
 }
@@ -1070,6 +1098,56 @@ mod tests {
         assert!(p.tail.len() <= 1024 + 3);
         // Head plus tail together should still sample both ends of the stream.
         assert!(p.head.starts_with('y'));
+    }
+
+    #[test]
+    fn stream_preview_tail_contains_final_lines_when_capped_by_bytes() {
+        // Regression: when the last `line_cap` lines exceed `byte_cap`,
+        // the tail must still end at the newest line. The old implementation
+        // iterated forward from `lines.len() - line_cap` and broke on the
+        // byte cap, which silently dropped the newest lines.
+        //
+        // Build 100 lines of 60 bytes each. The last 40 lines sum to 2400
+        // bytes, well over the 1 KiB cap. The tail should contain the very
+        // last line ("line 99") even though it had to drop earlier ones to
+        // stay within the cap.
+        let text: String = (0..100)
+            .map(|i| format!("{}line {i}\n", "x".repeat(50)))
+            .collect();
+        let p = StreamPreview::from_text(&text);
+        assert!(
+            p.tail.contains("line 99"),
+            "tail should contain the final line; got: {:?}",
+            p.tail
+        );
+        assert!(p.tail.len() <= 1024 + 3);
+    }
+
+    #[test]
+    fn stream_preview_head_and_tail_are_disjoint() {
+        // Regression: previously head and tail each independently took 40 lines
+        // from the start/end, so a 50-line stream produced head=lines 0..40 and
+        // tail=lines 10..50 — overlapping by 30 lines. The renderer would
+        // duplicate them while reporting `elided_lines = 0` (saturating_sub).
+        //
+        // Build 50 short lines and verify that no line appears in both head
+        // and tail.
+        let text: String = (0..50).map(|i| format!("line {i}\n")).collect();
+        let p = StreamPreview::from_text(&text);
+        let head_set: std::collections::HashSet<&str> = p.head.lines().collect();
+        let tail_set: std::collections::HashSet<&str> = p.tail.lines().collect();
+        let overlap: Vec<&&str> = head_set.intersection(&tail_set).collect();
+        assert!(
+            overlap.is_empty(),
+            "head and tail must be disjoint; overlap: {:?}\nhead: {:?}\ntail: {:?}",
+            overlap,
+            p.head,
+            p.tail
+        );
+        // Accounting: head + tail + elided must sum to the total.
+        let head_lines = p.head.lines().count() as u64;
+        let tail_lines = p.tail.lines().count() as u64;
+        assert!(head_lines + tail_lines <= p.total_lines);
     }
 
     #[test]
