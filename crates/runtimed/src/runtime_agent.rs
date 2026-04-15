@@ -75,38 +75,8 @@ pub async fn run_runtime_agent(
 
     // -- 1. Connect to daemon socket ----------------------------------------
 
-    #[cfg(unix)]
-    let stream = tokio::net::UnixStream::connect(&socket_path).await?;
-
-    #[cfg(windows)]
-    let stream = {
-        let pipe_name = socket_path.to_string_lossy().to_string();
-        let mut attempts = 0u32;
-        loop {
-            match tokio::net::windows::named_pipe::ClientOptions::new().open(&pipe_name) {
-                Ok(client) => break client,
-                Err(_) if attempts < 10 => {
-                    attempts += 1;
-                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                }
-                Err(e) => return Err(e.into()),
-            }
-        }
-    };
-
-    let (mut reader, mut writer) = tokio::io::split(stream);
-
-    // Send preamble + RuntimeAgent handshake
-    send_preamble(&mut writer).await?;
-    send_json_frame(
-        &mut writer,
-        &Handshake::RuntimeAgent {
-            notebook_id: notebook_id.clone(),
-            runtime_agent_id: runtime_agent_id.clone(),
-            blob_root: blob_root.display().to_string(),
-        },
-    )
-    .await?;
+    let (mut reader, mut writer) =
+        connect_and_handshake(&socket_path, &notebook_id, &runtime_agent_id, &blob_root).await?;
 
     info!("[runtime-agent] Connected to daemon, handshake sent");
 
@@ -119,7 +89,7 @@ pub async fn run_runtime_agent(
 
     // -- 3. Create local infrastructure -------------------------------------
 
-    let blob_store = Arc::new(BlobStore::new(blob_root));
+    let blob_store = Arc::new(BlobStore::new(blob_root.clone()));
     let (broadcast_tx, _broadcast_rx) =
         broadcast::channel::<notebook_protocol::protocol::NotebookBroadcast>(16);
     let presence = Arc::new(RwLock::new(PresenceState::new()));
@@ -274,8 +244,53 @@ pub async fn run_runtime_agent(
                         break;
                     }
                     Err(e) => {
-                        info!("[runtime-agent] Socket read error: {}", e);
-                        break;
+                        // A framing error here means one of two things:
+                        //   - the daemon half-closed the sync stream (clean),
+                        //     which we treat as a disconnect,
+                        //   - or a byte-level desync corrupted the stream
+                        //     (e.g. a stray writer, a massive length field
+                        //     tripping the MAX_FRAME_SIZE cap).
+                        // Either way the kernel state is still ours to own.
+                        // Try to reconnect before tearing down the kernel —
+                        // a brief network-side blip should not cost the user
+                        // their session. Reconnection does a fresh handshake
+                        // and a fresh Automerge sync state; the kernel,
+                        // queue, seen_execution_ids, and local doc stay.
+                        warn!(
+                            "[runtime-agent] Socket read error: {} — reconnecting \
+                             (kernel stays running)",
+                            e
+                        );
+                        match reconnect_with_backoff(
+                            &socket_path,
+                            &notebook_id,
+                            &runtime_agent_id,
+                            &blob_root,
+                        )
+                        .await
+                        {
+                            Ok((new_reader, new_writer)) => {
+                                reader = new_reader;
+                                writer = new_writer;
+                                // The daemon creates a fresh sync state for
+                                // each connection; match that or the doc
+                                // won't converge.
+                                coordinator_sync_state = automerge::sync::State::new();
+                                // Kick off a full resync so the daemon gets
+                                // everything the kernel produced while we
+                                // were disconnected.
+                                let _ = state_changed_tx.send(());
+                                info!("[runtime-agent] Reconnected to daemon");
+                                continue;
+                            }
+                            Err(reconnect_err) => {
+                                error!(
+                                    "[runtime-agent] Reconnect failed after retries: {}",
+                                    reconnect_err
+                                );
+                                break;
+                            }
+                        }
                     }
                 }
             }
@@ -325,6 +340,95 @@ pub async fn run_runtime_agent(
     }
 
     Ok(())
+}
+
+/// Concrete reader/writer halves returned by connect helpers.
+#[cfg(unix)]
+type AgentReader = tokio::io::ReadHalf<tokio::net::UnixStream>;
+#[cfg(unix)]
+type AgentWriter = tokio::io::WriteHalf<tokio::net::UnixStream>;
+#[cfg(windows)]
+type AgentReader = tokio::io::ReadHalf<tokio::net::windows::named_pipe::NamedPipeClient>;
+#[cfg(windows)]
+type AgentWriter = tokio::io::WriteHalf<tokio::net::windows::named_pipe::NamedPipeClient>;
+
+/// Open a stream to the daemon socket and perform the RuntimeAgent
+/// handshake. Extracted from the main startup path so the reconnect
+/// path on framing errors can reuse it without duplicating handshake
+/// logic.
+async fn connect_and_handshake(
+    socket_path: &std::path::Path,
+    notebook_id: &str,
+    runtime_agent_id: &str,
+    blob_root: &std::path::Path,
+) -> anyhow::Result<(AgentReader, AgentWriter)> {
+    #[cfg(unix)]
+    let stream = tokio::net::UnixStream::connect(socket_path).await?;
+
+    #[cfg(windows)]
+    let stream = {
+        let pipe_name = socket_path.to_string_lossy().to_string();
+        let mut attempts = 0u32;
+        loop {
+            match tokio::net::windows::named_pipe::ClientOptions::new().open(&pipe_name) {
+                Ok(client) => break client,
+                Err(_) if attempts < 10 => {
+                    attempts += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+    };
+
+    let (reader, mut writer) = tokio::io::split(stream);
+
+    send_preamble(&mut writer).await?;
+    send_json_frame(
+        &mut writer,
+        &Handshake::RuntimeAgent {
+            notebook_id: notebook_id.to_string(),
+            runtime_agent_id: runtime_agent_id.to_string(),
+            blob_root: blob_root.display().to_string(),
+        },
+    )
+    .await?;
+
+    Ok((reader, writer))
+}
+
+/// Attempt to reconnect to the daemon with exponential backoff.
+///
+/// Called after a framing error on the existing sync stream. Preserves
+/// the kernel state by staying alive across transient socket trouble
+/// (rogue client writing to the socket, daemon restart, etc.). Gives up
+/// after a bounded number of attempts so a genuinely-gone daemon still
+/// lets the agent exit rather than spin forever.
+async fn reconnect_with_backoff(
+    socket_path: &std::path::Path,
+    notebook_id: &str,
+    runtime_agent_id: &str,
+    blob_root: &std::path::Path,
+) -> anyhow::Result<(AgentReader, AgentWriter)> {
+    const MAX_ATTEMPTS: u32 = 10;
+    const BASE_DELAY_MS: u64 = 100;
+
+    let mut last_err: Option<anyhow::Error> = None;
+    for attempt in 1..=MAX_ATTEMPTS {
+        match connect_and_handshake(socket_path, notebook_id, runtime_agent_id, blob_root).await {
+            Ok(pair) => return Ok(pair),
+            Err(e) => {
+                let delay = BASE_DELAY_MS.saturating_mul(1 << (attempt - 1).min(6));
+                warn!(
+                    "[runtime-agent] Reconnect attempt {}/{} failed: {} (retrying in {}ms)",
+                    attempt, MAX_ATTEMPTS, e, delay
+                );
+                last_err = Some(e);
+                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("reconnect gave up with no last error")))
 }
 
 /// Handle a `RuntimeAgentRequest` and return a `RuntimeAgentResponse`.
