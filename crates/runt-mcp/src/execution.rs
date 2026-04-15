@@ -9,6 +9,9 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use notebook_protocol::protocol::{NotebookRequest, NotebookResponse};
+use notebook_sync::execution_wait::{
+    await_execution_terminal, ExecutionTerminalError, ExecutionTerminalState,
+};
 use notebook_sync::handle::DocHandle;
 use runtimed_client::output_resolver;
 use runtimed_client::resolved_output::Output;
@@ -70,77 +73,46 @@ pub async fn execute_and_wait(
         }
     };
 
-    // Step 3: Poll RuntimeStateDoc for terminal execution status.
-    // The CRDT is the source of truth — no broadcast dependency.
+    // Step 3: Wait for terminal state via the shared helper. This uses
+    // the RuntimeStateDoc as the source of truth (no broadcast dependency)
+    // and applies a bounded output-sync grace period to catch the case
+    // where the last stream writes arrive in a sync frame after the
+    // status transition.
     let mut final_status = "running".to_string();
     let mut success = false;
     let mut output_manifests: Vec<serde_json::Value> = Vec::new();
-    let deadline = Instant::now() + timeout;
+    let mut execution_count_from_wait: Option<i64> = None;
 
     if let Some(ref eid) = execution_id {
-        // Phase 1: Wait for execution to reach terminal status.
-        loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                break;
+        match await_execution_terminal(handle, eid, timeout, None).await {
+            Ok(ExecutionTerminalState {
+                status,
+                success: s,
+                output_manifests: outs,
+                execution_count,
+            }) => {
+                final_status = status;
+                success = s;
+                output_manifests = outs;
+                execution_count_from_wait = execution_count;
             }
-
-            if let Ok(state) = handle.get_runtime_state() {
-                if let Some(exec) = state.executions.get(eid.as_str()) {
-                    if exec.status == "done" || exec.status == "error" {
-                        final_status = exec.status.clone();
-                        success = exec.success.unwrap_or(false);
-                        output_manifests = exec.outputs.clone();
-                        break;
-                    }
-                }
+            Err(ExecutionTerminalError::Timeout) => {
+                // Leave `running` and fall through — caller can surface
+                // timeout based on the status field.
             }
-
-            // Yield to the sync task so it can process incoming
-            // RuntimeStateDoc frames from the daemon.
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-
-        // Phase 2: If status is terminal but outputs are empty, poll briefly
-        // for output sync to catch up. The daemon writes outputs before
-        // set_execution_done, but they may arrive in separate sync frames.
-        // Cap at 500ms to avoid hanging on genuinely output-free executions.
-        if (final_status == "done" || final_status == "error") && output_manifests.is_empty() {
-            let output_deadline =
-                Instant::now() + Duration::from_millis(500).min(deadline - Instant::now());
-            while Instant::now() < output_deadline {
-                if let Ok(state) = handle.get_runtime_state() {
-                    if let Some(exec) = state.executions.get(eid.as_str()) {
-                        if !exec.outputs.is_empty() {
-                            output_manifests = exec.outputs.clone();
-                            break;
-                        }
-                    }
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
+            Err(ExecutionTerminalError::KernelFailed { reason }) => {
+                warn!("kernel failed during execution: {reason}");
+                final_status = "error".to_string();
             }
         }
     }
 
     // Step 4: Collect outputs from CRDT.
-    // Prefer output hashes from RuntimeStateDoc (already synced above).
+    // Prefer output hashes from RuntimeStateDoc (already returned above).
     // Fall back to handle.get_cell() which reads via execution_id facade.
-
-    // Get execution_count from RuntimeStateDoc (the source of truth).
-    // The NotebookDoc cell's execution_count field is stale since execution
-    // state was moved to RuntimeStateDoc.
-    let execution_count = if let Some(ref eid) = execution_id {
-        handle
-            .get_runtime_state()
-            .ok()
-            .and_then(|state| {
-                state
-                    .executions
-                    .get(eid.as_str())
-                    .and_then(|e| e.execution_count)
-            })
-            .map(|c| c.to_string())
-    } else {
+    let execution_count = if let Some(count) = execution_count_from_wait {
+        Some(count.to_string())
+    } else if execution_id.is_none() {
         // Fallback: find most recent execution for this cell with an execution_count
         let ec = crate::tools::cell_read::get_cell_execution_count_from_runtime(handle, cell_id);
         if ec.is_empty() {
@@ -148,6 +120,8 @@ pub async fn execute_and_wait(
         } else {
             Some(ec)
         }
+    } else {
+        None
     };
 
     let comms = handle.get_runtime_state().ok().map(|rs| rs.comms);
