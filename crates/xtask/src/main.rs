@@ -2620,14 +2620,19 @@ fn cmd_mcpb(output: Option<&str>, variant: &str) {
     resize_icon(dark_actual, &dark_dest.to_string_lossy());
 
     // ── 4. Build and copy mcpb-runt binary ──────────────────────────────────
-    println!("Building mcpb-runt (release)...");
-    let build_status = Command::new("cargo")
-        .args(["build", "-p", "mcpb-runt", "--release"])
-        .status()
-        .unwrap_or_else(|e| {
-            eprintln!("Failed to run cargo build -p mcpb-runt: {e}");
-            exit(1);
-        });
+    // Set RUNT_BUILD_CHANNEL so the binary knows its channel at compile time.
+    let build_channel = match variant {
+        "stable" => "stable",
+        _ => "nightly",
+    };
+    println!("Building mcpb-runt (release, channel={build_channel})...");
+    let mut build_cmd = Command::new("cargo");
+    build_cmd.args(["build", "-p", "mcpb-runt", "--release"]);
+    build_cmd.env("RUNT_BUILD_CHANNEL", build_channel);
+    let build_status = build_cmd.status().unwrap_or_else(|e| {
+        eprintln!("Failed to run cargo build -p mcpb-runt: {e}");
+        exit(1);
+    });
     if !build_status.success() {
         eprintln!("cargo build -p mcpb-runt --release failed");
         let _ = fs::remove_dir_all(&staging_dir);

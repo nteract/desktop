@@ -738,6 +738,7 @@ impl ServerHandler for McpProxy {
         ServerInfo::new(
             ServerCapabilities::builder()
                 .enable_tools()
+                .enable_tool_list_changed()
                 .enable_resources()
                 .enable_resources_list_changed()
                 .build(),
@@ -753,15 +754,20 @@ impl ServerHandler for McpProxy {
         _request: Option<rmcp::model::PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        // Wait briefly for child if not ready
-        let notified = self.child_ready.notified();
-        let needs_wait = self.state.read().await.child_client.is_none();
-        if needs_wait {
-            info!("list_tools called before child ready, waiting...");
-            let _ = tokio::time::timeout(Duration::from_secs(30), notified).await;
-        }
-
-        let mut tools = self.child_tools().await;
+        // Serve tools optimistically: if the child is connected, query it live;
+        // otherwise return the cached/built-in tool definitions immediately.
+        // This avoids blocking the MCP client during async child initialization.
+        // The background init task sends `notifications/tools/list_changed` once
+        // the child is ready, prompting the client to re-query with live tools.
+        let state = self.state.read().await;
+        let mut tools = if state.child_client.is_some() {
+            drop(state);
+            self.child_tools().await
+        } else {
+            let cached = state.cached_tools.clone().unwrap_or_default();
+            drop(state);
+            cached
+        };
         tools.push(reconnect_tool());
         Ok(ListToolsResult {
             tools,
@@ -1232,6 +1238,42 @@ mod tests {
         let tools = proxy.child_tools().await;
         // Falls back to built-in cache even without a child
         assert!(!tools.is_empty());
+    }
+
+    // ── Optimistic list_tools (no child, no blocking) ──────────────────
+
+    #[tokio::test]
+    async fn list_tools_returns_cached_tools_immediately_without_child() {
+        // Regression test: list_tools must return cached tools without
+        // blocking when the child process isn't connected yet. The old
+        // behavior waited up to 30s, causing MCP clients to time out
+        // and report zero tools.
+        let proxy = McpProxy::new(test_config(), None);
+        let cached = vec![rmcp::model::Tool::new(
+            "test_tool".to_string(),
+            "A test tool".to_string(),
+            serde_json::Map::new(),
+        )];
+        proxy.state.write().await.cached_tools = Some(cached);
+
+        // Must complete well under the old 30s timeout
+        let result = tokio::time::timeout(Duration::from_millis(100), async {
+            let state = proxy.state.read().await;
+            let tools = if state.child_client.is_some() {
+                drop(state);
+                proxy.child_tools().await
+            } else {
+                let cached = state.cached_tools.clone().unwrap_or_default();
+                drop(state);
+                cached
+            };
+            tools
+        })
+        .await
+        .expect("list_tools should return immediately, not block for 30s");
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name.as_ref(), "test_tool");
     }
 
     // ── tool_list_changed notification channel ────────────────────────
