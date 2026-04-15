@@ -77,7 +77,7 @@ class TestDatasetEmitsDisplayDataWithSummary:
 
     def test_dataset_mimebundle_returns_llm_plain(self, monkeypatch):
         import dx._format_install as fi
-        from datasets import Dataset  # ty: ignore[unresolved-import]
+        from datasets import Dataset
 
         monkeypatch.setattr(fi, "_INSTALLED", False)
         if hasattr(fi._pending, "buffers"):
@@ -96,7 +96,7 @@ class TestDatasetEmitsDisplayDataWithSummary:
     def test_dataset_mimebundle_no_parquet_ref(self, monkeypatch):
         """Dataset handler must NOT emit parquet ref MIME — keeps data lazy."""
         import dx._format_install as fi
-        from datasets import Dataset  # ty: ignore[unresolved-import]
+        from datasets import Dataset
         from dx._refs import BLOB_REF_MIME
 
         ds = Dataset.from_dict({"a": [1]})
@@ -106,7 +106,7 @@ class TestDatasetEmitsDisplayDataWithSummary:
 
     def test_dataset_handler_registered_on_install(self, monkeypatch):
         import dx._format_install as fi
-        from datasets import Dataset  # ty: ignore[unresolved-import]
+        from datasets import Dataset
 
         monkeypatch.setattr(fi, "_INSTALLED", False)
         if hasattr(fi._pending, "buffers"):
@@ -139,7 +139,7 @@ class TestDatasetEmitsDisplayDataWithSummary:
 
     def test_dataset_ipython_display_publishes(self, monkeypatch):
         import dx._format_install as fi
-        from datasets import Dataset  # ty: ignore[unresolved-import]
+        from datasets import Dataset
 
         ds = Dataset.from_dict({"text": ["hello"], "label": [1]})
 
