@@ -264,9 +264,15 @@ df
 @pytest.mark.integration
 async def test_dx_polars_last_expression_uses_polars_encoder(session):  # noqa: F811
     """Belt-and-suspenders for the polars path: confirm the parquet payload
-    encodes via polars's native writer (not pyarrow's pandas adapter). The
-    Python-side `text/llm+plain` summary is the canonical signal — it says
-    `(polars)` only when `_serialize_polars` ran."""
+    was actually written by polars's native writer, not pyarrow.
+
+    The `text/llm+plain` summary alone isn't a reliable proof — it's
+    derived from `type(df).__module__` in `summarize_dataframe`, so it
+    would still say `(polars)` if `_serialize_polars` accidentally fell
+    through to a pyarrow path. We check the parquet file metadata
+    instead: polars writes `created_by = "Polars"`, while pyarrow writes
+    `created_by = "parquet-cpp-arrow ..."`. This catches an encoder
+    swap that the summary text would miss."""
     await async_start_kernel_with_retry(session, env_source="uv:pyproject")
 
     bootstrap_id = await async_create_cell_and_wait_for_sync(session, _BOOTSTRAP)
@@ -284,7 +290,26 @@ pl.DataFrame({"id": list(range(100)), "name": [f"row-{i}" for i in range(100)]})
 
     rich = [o for o in result.outputs if o.output_type == "display_data"]
     assert len(rich) == 1
-    llm = rich[0].data.get("text/llm+plain", "")
+    output = rich[0]
+
+    # Sanity on the summary side first — a useful diagnostic if the
+    # parquet check below fails.
+    llm = output.data.get("text/llm+plain", "")
     assert "(polars)" in llm, f"expected (polars) marker in summary, got: {llm[:120]!r}"
     assert "100 rows" in llm
     assert "2 columns" in llm
+
+    # The actual encoder check: read the parquet's `created_by` metadata.
+    # Polars writes "Polars"; pyarrow writes "parquet-cpp-arrow version …".
+    import io
+
+    import pyarrow.parquet as pq  # noqa: PLC0415
+
+    parquet_bytes = output.data["application/vnd.apache.parquet"]
+    pq_file = pq.ParquetFile(io.BytesIO(bytes(parquet_bytes)))
+    created_by = pq_file.metadata.created_by or ""
+    assert created_by.startswith("Polars"), (
+        f"parquet was not written by polars's native encoder. "
+        f"created_by={created_by!r}. If this says 'parquet-cpp-arrow ...', "
+        f"`_serialize_polars` was bypassed and pyarrow ran instead."
+    )
