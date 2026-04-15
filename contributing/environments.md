@@ -79,7 +79,8 @@ graph TB
 
     subgraph Daemon ["runtimed Daemon (owns kernels)"]
         NSS[notebook_sync_server.rs<br/>auto_launch_kernel]
-        KM[kernel_manager.rs<br/>RoomKernel::launch]
+        RA[runtime_agent.rs<br/>(spawned as subprocess)<br/>run_runtime_agent]
+        JK[jupyter_kernel.rs<br/>JupyterKernel::launch<br/>(in runtime-agent process)]
 
         subgraph Detection ["Project File Detection"]
             PF[project_file.rs<br/>find_nearest_project_file]
@@ -105,13 +106,14 @@ graph TB
             NDS[Notebook Doc Sync]
         end
 
-        NSS --> KM
+        NSS --> RA
+        RA --> JK
         NSS --> PF
         PF --> PP
         PF --> PX
         PF --> EY
-        KM --> IE
-        KM --> DM
+        NSS --> IE
+        NSS --> DM
         DM --> UWL
         DM --> CWL
     end
@@ -131,7 +133,7 @@ graph TB
 
     %% Daemon → relay → frontend (notebook:frame, re-emitted as notebook:broadcast after WASM demux)
     NSS -.->|"notebook:frame → notebook:broadcast {KernelLaunched, env_source}"| UDK
-    KM -.->|"notebook:frame → notebook:broadcast {KernelStatus, ExecutionStarted, ExecutionDone}"| UDK
+    JK -.->|"notebook:frame → notebook:broadcast {KernelStatus, ExecutionStarted, ExecutionDone}"| UDK
     VNT -.->|trust status| UD
 
     %% Environment creation → external tools
@@ -139,8 +141,8 @@ graph TB
     IE -->|"rattler solve + install"| RAT
     UWL -->|"uv venv + warmup"| UV
     CWL -->|"rattler + warmup"| RAT
-    KM -->|"deno jupyter --kernel"| DENO
-    KM -->|"spawn python -m ipykernel_launcher"| PY
+    JK -->|"deno jupyter --kernel"| DENO
+    JK -->|"spawn python -m ipykernel_launcher"| PY
 
     %% Settings sync
     SS <-->|"Automerge sync"| UDK
@@ -153,7 +155,7 @@ graph TB
 
     class UDK,UD,UCD,DH,CDH frontend
     class LKD,SKD,GKINFO,VNT,DETP tauri
-    class NSS,KM,PF,PP,PX,EY,IE,UE,CE,DM,UWL,CWL,SS,NDS daemon
+    class NSS,RA,JK,PF,PP,PX,EY,IE,UE,CE,DM,UWL,CWL,SS,NDS daemon
     class UV,RAT,DENO,PY external
 ```
 
@@ -166,7 +168,8 @@ sequenceDiagram
     participant DM as runtimed Daemon<br/>notebook_sync_server.rs
     participant PF as Project File<br/>Detection
     participant IE as inline_env.rs
-    participant KM as kernel_manager.rs
+    participant RA as runtime_agent.rs
+    participant JK as jupyter_kernel.rs
     participant PY as Python<br/>ipykernel
 
     FE->>FE: Notebook opened, auto-launch
@@ -205,14 +208,16 @@ sequenceDiagram
         end
     end
 
-    DM->>KM: RoomKernel::launch(env_source, python_path)
-    KM->>KM: Reserve 5 TCP ports
-    KM->>KM: Write connection.json
-    KM->>PY: spawn python -m ipykernel_launcher -f connection.json
-    KM->>KM: Connect ZMQ shell + iopub
-    KM->>PY: kernel_info_request
-    PY-->>KM: kernel_info_reply
-    KM-->>DM: Kernel ready
+    DM->>RA: dispatch LaunchKernel to per-notebook runtime agent
+    RA->>JK: JupyterKernel::launch(config, shared_refs)
+    JK->>JK: Reserve 5 TCP ports
+    JK->>JK: Write connection.json
+    JK->>PY: spawn python -m ipykernel_launcher -f connection.json
+    JK->>JK: Connect ZMQ shell + iopub
+    JK->>PY: kernel_info_request
+    PY-->>JK: kernel_info_reply
+    JK-->>RA: Kernel ready
+    RA-->>DM: KernelLaunched response
 
     DM-->>TC: KernelLaunched response
     TC-->>FE: notebook:frame {type 0x03, KernelLaunched, env_source}
@@ -513,7 +518,9 @@ The kernel lifecycle is managed by `useDaemonKernel.ts`, which:
 |------|------|
 | `crates/runtimed/src/daemon.rs` | Background daemon pool management, passes settings to handlers |
 | `crates/runtimed/src/notebook_sync_server.rs` | `auto_launch_kernel()` — runtime detection and environment resolution |
-| `crates/runtimed/src/kernel_manager.rs` | `RoomKernel::launch()` — spawns Python or Deno kernel processes |
+| `crates/runtimed/src/runtime_agent.rs` | Spawned as a subprocess by `RuntimeAgentHandle::spawn()`. `run_runtime_agent()` is the per-notebook event loop owning sockets, `QueueCommand` channels, and RuntimeStateDoc writes; `handle_runtime_agent_request()` dispatches each `LaunchKernel`/`RestartKernel`/etc. RPC |
+| `crates/runtimed/src/jupyter_kernel.rs` | `JupyterKernel::launch()` — spawns Python or Deno kernel processes, wires ZMQ sockets |
+| `crates/runtimed/src/kernel_manager.rs` | Shared kernel plumbing — `QueueCommand`, `KernelStatus`, `QueuedCell`, output conversion + display-update helpers, widget-buffer offload. Imported by `runtime_agent.rs`, `jupyter_kernel.rs`, and `kernel_state.rs` |
 | `crates/runtimed/src/project_file.rs` | Unified closest-wins project file detection (pyproject.toml, pixi.toml, environment.yml/yaml) |
 
 ### Notebook Crate (Tauri Commands)
