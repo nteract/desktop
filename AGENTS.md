@@ -210,7 +210,7 @@ Run this command before every commit. CI will reject PRs that fail formatting ch
 cargo xtask lint --fix
 ```
 
-This formats Rust, lints/formats TypeScript/JavaScript with Biome, and lints/formats Python with ruff.
+This formats Rust, lints/formats TypeScript/JavaScript with Biome, lints/formats Python with ruff, and type-checks the `python/` workspace with ty (matches the CI `Type check` step).
 
 For CI-style check-only mode: `cargo xtask lint`
 

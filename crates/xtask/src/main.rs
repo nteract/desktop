@@ -2160,6 +2160,18 @@ fn cmd_lint(fix: bool) {
                 failed = true;
             }
             println!();
+
+            // ty type-check. Scoped to `python/` (matches the CI
+            // `Type check` step in python-package.yml) because scripts/
+            // is intentionally loose and carries historical diagnostics.
+            println!("=== Python (ty) ===");
+            let ty_status = Command::new("uv")
+                .args(["run", "ty", "check", "python/"])
+                .status();
+            if !ty_status.map(|s| s.success()).unwrap_or(false) {
+                failed = true;
+            }
+            println!();
         } else {
             println!("=== Python (ruff) ===");
             println!("Skipping: uv not found in PATH");
