@@ -553,9 +553,34 @@ async fn resolve_display_for_llm(
     let mut output_data: HashMap<String, DataValue> = HashMap::new();
     let prefer_synthesis = has_synthesizable_mime(data_map);
 
+    // Phase 0: If the author already provided `text/llm+plain` (e.g. dx
+    // emits a pre-computed DataFrame summary alongside the parquet blob
+    // it references), resolve it up front. The synthesizers below all
+    // guard on `output_data.contains_key("text/llm+plain")` before
+    // running, so seeding this first is what makes the author summary
+    // win over repr-llm's Rust-side synthesis. Without it, a manifest
+    // like `{application/vnd.apache.parquet, text/llm+plain}` would fall
+    // through to phase 1's parquet synthesizer, which produces its own
+    // text/llm+plain and then phase 2 short-circuits — silently
+    // discarding the author's version.
+    if let Some(content_ref) = data_map.get("text/llm+plain") {
+        if let Some(content) = resolve_content_ref(
+            content_ref,
+            blob_base_url,
+            blob_store_path,
+            Some("text/llm+plain"),
+        )
+        .await
+        {
+            output_data.insert("text/llm+plain".to_string(), content);
+        }
+    }
+
     // Phase 1: If the manifest has MIMEs with dedicated synthesizers, run
     // synthesis first. These produce text/llm+plain that's more useful than
     // a generic text/plain repr (e.g., "Scatter chart: x vs y" vs "alt.Chart(...)").
+    // Synthesizers all skip when `text/llm+plain` is already present, so if
+    // phase 0 seeded an author-provided summary, synthesis is a no-op.
     if prefer_synthesis {
         // 1a: Resolve JSON types for viz summarization.
         for (mime, content_ref) in data_map {
@@ -573,18 +598,24 @@ async fn resolve_display_for_llm(
         // Resolve parquet bytes transiently for summarization, then drop them
         // so we don't ship raw parquet bytes back through MCP. The summary
         // ends up in text/llm+plain.
-        if let Some(pq_ref) = data_map.get("application/vnd.apache.parquet") {
-            if let Some(content) = resolve_content_ref(
-                pq_ref,
-                blob_base_url,
-                blob_store_path,
-                Some("application/vnd.apache.parquet"),
-            )
-            .await
-            {
-                output_data.insert("application/vnd.apache.parquet".to_string(), content);
-                synthesize_llm_plain_for_parquet(&mut output_data);
-                output_data.remove("application/vnd.apache.parquet");
+        //
+        // Skip the blob fetch entirely if phase 0 already seeded
+        // text/llm+plain — the synthesizer would no-op anyway, and parquet
+        // blobs can be large.
+        if !output_data.contains_key("text/llm+plain") {
+            if let Some(pq_ref) = data_map.get("application/vnd.apache.parquet") {
+                if let Some(content) = resolve_content_ref(
+                    pq_ref,
+                    blob_base_url,
+                    blob_store_path,
+                    Some("application/vnd.apache.parquet"),
+                )
+                .await
+                {
+                    output_data.insert("application/vnd.apache.parquet".to_string(), content);
+                    synthesize_llm_plain_for_parquet(&mut output_data);
+                    output_data.remove("application/vnd.apache.parquet");
+                }
             }
         }
 
@@ -1811,6 +1842,85 @@ mod tests {
         assert!(llm.contains("HTML"));
         assert!(llm.contains("text/html"));
         assert!(llm.contains("http://localhost:9999/blob/html_hash"));
+    }
+
+    #[tokio::test]
+    async fn llm_author_text_llm_plain_wins_over_parquet_synth() {
+        // Regression test for the silent-drop bug: when a manifest contains
+        // both `application/vnd.apache.parquet` AND an author-provided
+        // `text/llm+plain` (the dx pattern — Python-side summary emitted
+        // alongside the parquet ref), the author's summary must reach the
+        // LLM. Previously the parquet synthesizer ran first and produced
+        // its own text/llm+plain, which then short-circuited phase 2 and
+        // discarded the author's summary silently.
+        let manifest = make_display_manifest(json!({
+            "application/vnd.apache.parquet": blob_ref("pq_hash_123", 10_000),
+            "text/llm+plain": inline_ref("DataFrame (polars): 3 rows × 2 columns\nColumns:\n  - id: Int64\n  - name: String"),
+        }));
+        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+            panic!("resolve should succeed");
+        };
+        let Some(data) = output.data else {
+            panic!("output should have data");
+        };
+        // The author-provided summary must survive.
+        let Some(DataValue::Text(summary)) = data.get("text/llm+plain") else {
+            panic!(
+                "text/llm+plain should be present as inline text, got {:?}",
+                data.get("text/llm+plain")
+            );
+        };
+        assert!(
+            summary.contains("DataFrame (polars)"),
+            "expected author's dx summary, got: {summary}"
+        );
+        // Parquet bytes must not leak through to the LLM.
+        assert!(!data.contains_key("application/vnd.apache.parquet"));
+    }
+
+    #[tokio::test]
+    async fn llm_author_text_llm_plain_wins_over_viz_synth() {
+        // Same guarantee for viz MIMEs: a pre-computed text/llm+plain
+        // alongside a vegalite spec must not be overwritten by the viz
+        // synthesizer.
+        let manifest = make_display_manifest(json!({
+            "application/vnd.vegalite.v5+json": inline_ref(r#"{"mark": "bar"}"#),
+            "text/llm+plain": inline_ref("Custom author summary: sales by region"),
+        }));
+        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+            panic!("resolve should succeed");
+        };
+        let Some(data) = output.data else {
+            panic!("output should have data");
+        };
+        let Some(DataValue::Text(summary)) = data.get("text/llm+plain") else {
+            panic!("text/llm+plain should be present as inline text");
+        };
+        assert_eq!(summary, "Custom author summary: sales by region");
+    }
+
+    #[tokio::test]
+    async fn llm_parquet_synth_still_runs_when_no_author_summary() {
+        // Non-regression: if there's no author-provided text/llm+plain,
+        // the phase-1 parquet synthesizer still runs (when bytes can be
+        // fetched). This is exercised in production with a blob store;
+        // without one, the synth no-ops gracefully.
+        let manifest = make_display_manifest(json!({
+            "application/vnd.apache.parquet": blob_ref("pq_hash_456", 10_000),
+        }));
+        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+            panic!("resolve should succeed");
+        };
+        // Without blob store access, the synthesizer can't read bytes and
+        // phase 3 describes the parquet MIME from metadata. Either way,
+        // the data map must not be empty — the LLM needs *some* signal.
+        let Some(data) = output.data else {
+            panic!("output should have data");
+        };
+        assert!(
+            !data.is_empty(),
+            "resolver produced no data for parquet-only output"
+        );
     }
 
     #[tokio::test]
