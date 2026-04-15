@@ -129,21 +129,19 @@ async fn main() -> ExitCode {
         .with_writer(std::io::stderr)
         .init();
 
-    let channel = std::env::var("NTERACT_CHANNEL").unwrap_or_else(|_| "stable".to_string());
-    let app_name = if channel == "nightly" {
-        "nteract Nightly"
-    } else {
-        "nteract"
-    };
+    // Channel is baked in at compile time via RUNT_BUILD_CHANNEL (read by
+    // runt_workspace::build_channel()). The NTERACT_CHANNEL env var is an
+    // optional runtime override for testing — it does NOT change the binary
+    // identity, just which child binary is discovered.
+    let channel = std::env::var("NTERACT_CHANNEL")
+        .unwrap_or_else(|_| runt_workspace::channel_display_name().to_string());
+    let app_name = runt_workspace::desktop_display_name();
+    let binary_name = runt_workspace::cli_command_name();
 
-    info!("mcpb-runt starting (channel={channel})");
-
-    // Validate that the runt binary exists at startup (clear error for users)
-    let binary_name = if channel == "nightly" {
-        "runt-nightly"
-    } else {
-        "runt"
-    };
+    info!(
+        "mcpb-runt starting (channel={channel}, compiled={})",
+        runt_workspace::channel_display_name()
+    );
     if find_runt_binary(&channel).is_none() {
         eprintln!(
             "Error: {binary_name} not found.\n\n\
@@ -173,26 +171,17 @@ async fn main() -> ExitCode {
     // upgrades the nteract app (new runt binary), and the proxy picks it up
     // without needing to reinstall the MCPB extension.
     let channel_for_resolve = channel.clone();
-    let binary_name_for_resolve = binary_name.to_string();
     let config = ProxyConfig {
         resolve_child_command: Box::new(move || {
-            find_runt_binary(&channel_for_resolve)
-                .ok_or_else(|| format!("{binary_name_for_resolve} no longer found on PATH or in known install locations"))
+            find_runt_binary(&channel_for_resolve).ok_or_else(|| {
+                format!("{binary_name} no longer found on PATH or in known install locations")
+            })
         }),
         child_args: vec!["mcp".to_string()],
         child_env,
-        server_name: if channel == "nightly" {
-            "nteract-nightly".to_string()
-        } else {
-            "nteract".to_string()
-        },
+        server_name: runt_workspace::desktop_product_name().to_string(),
         cache_dir: dirs::cache_dir().map(|d| {
-            let namespace = if channel == "nightly" {
-                "runt-nightly"
-            } else {
-                "runt"
-            };
-            let dir = d.join(namespace).join("mcpb");
+            let dir = d.join(runt_workspace::cache_namespace()).join("mcpb");
             let _ = std::fs::create_dir_all(&dir);
             dir
         }),

@@ -738,6 +738,7 @@ impl ServerHandler for McpProxy {
         ServerInfo::new(
             ServerCapabilities::builder()
                 .enable_tools()
+                .enable_tool_list_changed()
                 .enable_resources()
                 .enable_resources_list_changed()
                 .build(),
@@ -753,15 +754,20 @@ impl ServerHandler for McpProxy {
         _request: Option<rmcp::model::PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        // Wait briefly for child if not ready
-        let notified = self.child_ready.notified();
-        let needs_wait = self.state.read().await.child_client.is_none();
-        if needs_wait {
-            info!("list_tools called before child ready, waiting...");
-            let _ = tokio::time::timeout(Duration::from_secs(30), notified).await;
-        }
-
-        let mut tools = self.child_tools().await;
+        // Serve tools optimistically: if the child is connected, query it live;
+        // otherwise return the cached/built-in tool definitions immediately.
+        // This avoids blocking the MCP client during async child initialization.
+        // The background init task sends `notifications/tools/list_changed` once
+        // the child is ready, prompting the client to re-query with live tools.
+        let state = self.state.read().await;
+        let mut tools = if state.child_client.is_some() {
+            drop(state);
+            self.child_tools().await
+        } else {
+            let cached = state.cached_tools.clone().unwrap_or_default();
+            drop(state);
+            cached
+        };
         tools.push(reconnect_tool());
         Ok(ListToolsResult {
             tools,

@@ -1371,6 +1371,7 @@ impl ServerHandler for Supervisor {
         ServerInfo::new(
             ServerCapabilities::builder()
                 .enable_tools()
+                .enable_tool_list_changed()
                 .enable_resources()
                 .enable_resources_list_changed()
                 .build(),
