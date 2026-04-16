@@ -1416,13 +1416,39 @@ impl Daemon {
                 // For the legacy NotebookSync handshake:
                 // - UUID notebook_id → untitled room (path=None)
                 // - Path notebook_id → file-backed room (path=Some)
+                //
+                // When notebook_id is a path, canonicalize and consult path_index
+                // before minting a new UUID. Without this, each reconnect creates a
+                // fresh UUID and a duplicate room (two file watchers, two autosave
+                // debouncers, two writers on the same .ipynb — zombie rooms).
                 let room = {
-                    let ns_uuid = uuid::Uuid::parse_str(&notebook_id)
-                        .unwrap_or_else(|_| uuid::Uuid::new_v4());
-                    let ns_path = if uuid::Uuid::parse_str(&notebook_id).is_ok() {
-                        None
+                    let (ns_uuid, ns_path) = if let Ok(parsed) = uuid::Uuid::parse_str(&notebook_id)
+                    {
+                        (parsed, None)
                     } else {
-                        Some(PathBuf::from(&notebook_id))
+                        // notebook_id is a path — canonicalize and look up
+                        // existing room.
+                        let raw = PathBuf::from(&notebook_id);
+                        let canonical = match tokio::fs::canonicalize(&raw).await {
+                            Ok(c) => c,
+                            Err(e) => {
+                                warn!(
+                                        "[daemon] canonicalize({}) for NotebookSync handshake failed: {}, using raw path",
+                                        notebook_id, e
+                                    );
+                                raw
+                            }
+                        };
+                        match crate::notebook_sync_server::find_room_by_path(
+                            &self.notebook_rooms,
+                            &self.path_index,
+                            &canonical,
+                        )
+                        .await
+                        {
+                            Some(existing) => (existing.id, Some(canonical)),
+                            None => (uuid::Uuid::new_v4(), Some(canonical)),
+                        }
                     };
                     crate::notebook_sync_server::get_or_create_room(
                         &self.notebook_rooms,

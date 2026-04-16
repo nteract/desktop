@@ -1564,9 +1564,11 @@ pub async fn get_or_create_room(
         match path_index.lock().await.insert(p.clone(), uuid) {
             Ok(()) => {}
             Err(e) => {
-                warn!(
-                    "[notebook-sync] path_index.insert({:?}) for new room {}: {}",
-                    p, uuid, e
+                error!(
+                    "[notebook-sync] path_index.insert failed for new room {} at {:?}: {} — \
+                     this is a caller invariant violation (should have done find_room_by_path first). \
+                     Room is orphaned from path lookup.",
+                    uuid, p, e
                 );
             }
         }
@@ -2144,7 +2146,7 @@ where
             //
             // Look up the room by Arc pointer — UUID key is stable, but this
             // guards against double-eviction races.
-            let (should_teardown, evicted_path) = {
+            let (should_teardown, evicted_uuid) = {
                 let mut rooms_guard = rooms_for_eviction.lock().await;
                 if room_for_eviction.active_peers.load(Ordering::Relaxed) == 0 {
                     // Find the room's current key by Arc pointer (stable across re-keys)
@@ -2154,13 +2156,7 @@ where
                         .map(|(k, _)| *k);
                     if let Some(uuid) = current_key {
                         rooms_guard.remove(&uuid);
-                        // Snapshot path for path_index cleanup (done after lock drop).
-                        let path_snapshot = room_for_eviction
-                            .path
-                            .try_read()
-                            .ok()
-                            .and_then(|g| g.clone());
-                        (true, path_snapshot)
+                        (true, Some(uuid))
                     } else {
                         debug!(
                             "[notebook-sync] Eviction skipped for {} (room already removed)",
@@ -2174,9 +2170,12 @@ where
             }; // rooms lock dropped here
 
             // Clean up path_index entry (separate lock, after rooms lock is dropped).
+            // Use remove_by_uuid rather than reading room.path — a concurrent writer
+            // (rekey, save-path-update) could hold room.path.write() and a try_read()
+            // would silently return None, leaking the path_index entry.
             if should_teardown {
-                if let Some(p) = evicted_path {
-                    path_index_for_eviction.lock().await.remove(&p);
+                if let Some(uuid) = evicted_uuid {
+                    path_index_for_eviction.lock().await.remove_by_uuid(uuid);
                 }
             }
 
@@ -4568,7 +4567,10 @@ async fn rekey_ephemeral_room(
     // skip the interloper check (Phase 7 will clean this up with the path_index
     // reference). The rooms map still uses UUID keys so there's no collision there.
     // For now, just register the path in the room's own path field.
-    // TODO(phase-7): thread path_index into rekey_ephemeral_room for interloper detection.
+    // Gap: this function does NOT update path_index. That's fine because Task 6.2
+    // (SaveNotebook rewrite) bypasses rekey_ephemeral_room entirely and updates
+    // path_index directly. Task 7.1 then deletes this function. So the gap exists
+    // only in the intermediate state of this feature branch between commits.
 
     // Update the room's path so subsequent saves write to the correct file.
     let new_path = canonical_path.clone();
@@ -11654,15 +11656,15 @@ mod tests {
         );
     }
 
-    // ── Regression test: eviction finds re-keyed room by Arc pointer ─────
+    // ── Regression test: eviction finds re-keyed room by Arc pointer and cleans path_index ──
 
     /// Verify that after a room is promoted from ephemeral (UUID-only) to
-    /// file-backed (path set on room), the eviction logic still finds and
-    /// removes it via Arc pointer comparison.
+    /// file-backed (path set on room), the eviction logic:
+    ///   1. Finds and removes it via Arc pointer comparison.
+    ///   2. Cleans up the path_index entry via remove_by_uuid (not try_read on room.path).
     ///
-    /// In the new UUID-keyed model the room stays under its UUID key, so
-    /// eviction by UUID key always works. This test validates that the
-    /// Arc-pointer scan fallback is also correct for rooms with a path.
+    /// Using remove_by_uuid(uuid) is robust against concurrent writers holding
+    /// room.path.write() — a try_read() would silently return None and leak the entry.
     #[tokio::test(start_paused = true)]
     async fn test_eviction_finds_rekeyed_room_by_arc_pointer() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -11684,7 +11686,9 @@ mod tests {
             doc.update_source("cell-1", "x = 1").unwrap();
         }
 
-        // 2. Insert into rooms map under UUID key and simulate a connected peer
+        // 2. Insert into rooms map under UUID key and simulate a connected peer.
+        //    Also populate path_index with the file-backed path (as get_or_create_room
+        //    would do after rekey).
         let rooms: NotebookRooms = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
         rooms.lock().await.insert(uuid, room.clone());
         room.active_peers.fetch_add(1, Ordering::Relaxed);
@@ -11699,6 +11703,18 @@ mod tests {
             rekey_ephemeral_room(&rooms, uuid_id, save_path.to_str().unwrap(), &room).await;
         assert!(new_id.is_some());
         let path_key = new_id.unwrap();
+
+        // Manually insert into path_index (rekey_ephemeral_room doesn't have path_index
+        // access yet — Task 6.2 owns that. Simulate what the caller would have done.)
+        let path_index = Arc::new(tokio::sync::Mutex::new(PathIndex::new()));
+        let save_path_canonical = tokio::fs::canonicalize(&save_path)
+            .await
+            .unwrap_or_else(|_| save_path.clone());
+        path_index
+            .lock()
+            .await
+            .insert(save_path_canonical.clone(), uuid)
+            .unwrap();
 
         // Verify: UUID key is still present (room stays under UUID), path set on room
         {
@@ -11718,33 +11734,39 @@ mod tests {
                 *path
             );
         }
+        // Verify path_index has an entry for this room
+        assert_eq!(
+            path_index.lock().await.lookup(&save_path_canonical),
+            Some(uuid),
+            "path_index should have an entry for the saved path before eviction"
+        );
 
         // 4. Simulate peer disconnect — active_peers drops to 0
         room.active_peers.fetch_sub(1, Ordering::Relaxed);
         assert_eq!(room.active_peers.load(Ordering::Relaxed), 0);
 
-        // 5. Simulate the eviction timer — now fires with the UUID key (stable in new model).
-        //    The Arc-pointer scan is the fallback; with UUID keys it's always a direct lookup.
+        // 5. Simulate the eviction timer using the same logic as the disconnect handler.
+        //    The Arc-pointer scan finds the room; evicted_uuid is captured for path_index cleanup.
         let rooms_for_eviction = rooms.clone();
+        let path_index_for_eviction = path_index.clone();
         let room_for_eviction = room.clone();
         let notebook_id_for_eviction = path_key.clone();
 
-        // Run the exact eviction logic from the disconnect handler
-        let should_teardown = {
+        let (should_teardown, evicted_uuid) = {
             let mut rooms_guard = rooms_for_eviction.lock().await;
             if room_for_eviction.active_peers.load(Ordering::Relaxed) == 0 {
                 let current_key = rooms_guard
                     .iter()
                     .find(|(_, r)| Arc::ptr_eq(r, &room_for_eviction))
                     .map(|(k, _)| *k);
-                if let Some(key) = current_key {
-                    rooms_guard.remove(&key);
-                    true
+                if let Some(uuid) = current_key {
+                    rooms_guard.remove(&uuid);
+                    (true, Some(uuid))
                 } else {
-                    false
+                    (false, None)
                 }
             } else {
-                false
+                (false, None)
             }
         };
 
@@ -11754,10 +11776,26 @@ mod tests {
             notebook_id_for_eviction
         );
 
-        // 6. Verify room was removed from the map
+        // 6. Clean up path_index via remove_by_uuid (mirrors production eviction code).
+        //    This must work even when room.path cannot be read (concurrent writer).
+        if let Some(uuid) = evicted_uuid {
+            path_index_for_eviction.lock().await.remove_by_uuid(uuid);
+        }
+
+        // 7. Verify room was removed from the rooms map
         assert!(
             rooms.lock().await.is_empty(),
             "Room should be removed from the map after eviction"
+        );
+
+        // 8. Verify path_index entry was cleaned up
+        assert!(
+            path_index
+                .lock()
+                .await
+                .lookup(&save_path_canonical)
+                .is_none(),
+            "path_index entry should be removed after eviction"
         );
     }
 
@@ -11793,6 +11831,88 @@ mod tests {
         let path_index = Arc::new(tokio::sync::Mutex::new(PathIndex::new()));
         let found = find_room_by_path(&rooms, &path_index, &tmp.path().join("nope.ipynb")).await;
         assert!(found.is_none());
+    }
+
+    // ── C1 regression: NotebookSync path handshake must reuse existing room ──
+
+    /// Verify that the pattern used by the NotebookSync handshake — consulting
+    /// `find_room_by_path` before calling `get_or_create_room` — produces
+    /// exactly one room for a given path even when called twice.
+    ///
+    /// Before the C1 fix the handshake would mint a fresh UUID on every call,
+    /// so a second connection to the same path created a second room (zombie
+    /// room: two file watchers, two autosave debouncers, two writers).
+    ///
+    /// The fix: if `find_room_by_path` returns `Some(existing)`, reuse its UUID
+    /// so `get_or_create_room` returns the existing room instead of creating one.
+    #[tokio::test]
+    async fn test_notebook_sync_path_handshake_reuses_existing_room() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let blob_store = test_blob_store(&tmp);
+        let docs_dir = tmp.path().to_path_buf();
+        let rooms: NotebookRooms = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let path_index = Arc::new(tokio::sync::Mutex::new(PathIndex::new()));
+
+        // Simulate a file-backed path (doesn't need to exist for this test).
+        let notebook_path = tmp.path().join("my_notebook.ipynb");
+
+        // --- First handshake (simulates the fixed NotebookSync path) ---
+        // 1. Check path_index — not yet indexed, so mint a new UUID.
+        let room1 = {
+            let (uuid, path) = match find_room_by_path(&rooms, &path_index, &notebook_path).await {
+                Some(existing) => (existing.id, Some(notebook_path.clone())),
+                None => (Uuid::new_v4(), Some(notebook_path.clone())),
+            };
+            get_or_create_room(
+                &rooms,
+                &path_index,
+                uuid,
+                path,
+                &docs_dir,
+                blob_store.clone(),
+                false,
+            )
+            .await
+        };
+
+        // --- Second handshake for the same path ---
+        // find_room_by_path should now return the existing room.
+        let room2 = {
+            let (uuid, path) = match find_room_by_path(&rooms, &path_index, &notebook_path).await {
+                Some(existing) => (existing.id, Some(notebook_path.clone())),
+                None => (Uuid::new_v4(), Some(notebook_path.clone())),
+            };
+            get_or_create_room(
+                &rooms,
+                &path_index,
+                uuid,
+                path,
+                &docs_dir,
+                blob_store.clone(),
+                false,
+            )
+            .await
+        };
+
+        // Both handshakes must return the same room Arc — no zombie duplicates.
+        assert!(
+            Arc::ptr_eq(&room1, &room2),
+            "Second NotebookSync handshake for same path must reuse existing room"
+        );
+
+        // Exactly one room in the map (not two).
+        assert_eq!(
+            rooms.lock().await.len(),
+            1,
+            "Only one room should exist after two handshakes for the same path"
+        );
+
+        // path_index has exactly one entry.
+        assert_eq!(
+            path_index.lock().await.len(),
+            1,
+            "path_index should have exactly one entry"
+        );
     }
 
     // ── compute_env_sync_diff tests ───────────────────────────────────────
