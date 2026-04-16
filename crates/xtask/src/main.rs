@@ -2836,7 +2836,11 @@ fn cmd_sync_tool_cache(check: bool) {
             for tool in tools_arr {
                 let name = tool["name"].as_str().unwrap_or("");
                 let desc = tool["description"].as_str().unwrap_or("");
-                let needle = format!(r#""description": "{}""#, desc);
+                // The mcpb_install.rs source is Rust code with JSON inside a
+                // serde_json::json!() macro, so inner quotes appear as \"
+                // in the source file. Escape them in the needle to match.
+                let escaped_desc = desc.replace('"', r#"\""#);
+                let needle = format!(r#""description": "{}""#, escaped_desc);
                 if !source.contains(&needle) && source.contains(&format!(r#""name": "{}""#, name)) {
                     eprintln!(
                         "STALE: {} (description mismatch for tool '{}')",
