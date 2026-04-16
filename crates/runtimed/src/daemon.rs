@@ -26,7 +26,7 @@ use tokio::sync::RwLock;
 use crate::blob_server;
 use crate::blob_store::BlobStore;
 use crate::connection::{self, Handshake};
-use crate::notebook_sync_server::NotebookRooms;
+use crate::notebook_sync_server::{NotebookRooms, PathIndex};
 use crate::protocol::{BlobRequest, BlobResponse, Request, Response};
 use crate::settings_doc::SettingsDoc;
 use crate::singleton::DaemonLock;
@@ -523,6 +523,10 @@ pub struct Daemon {
     started_at: chrono::DateTime<chrono::Utc>,
     /// Per-notebook Automerge sync rooms.
     notebook_rooms: NotebookRooms,
+    /// Secondary index: canonical .ipynb path → room UUID.
+    /// Kept in sync with `notebook_rooms` by `get_or_create_room` (insert)
+    /// and the eviction loop (remove). Queried by `find_room_by_path`.
+    pub(crate) path_index: Arc<tokio::sync::Mutex<PathIndex>>,
     /// Set to `true` the first time any client causes a room to be
     /// acquired in `notebook_rooms` (via `get_or_create_room`). Used by
     /// the zero-room sweep-skip guard to distinguish "post-restart, no
@@ -624,6 +628,7 @@ impl Daemon {
             blob_port: Mutex::new(None),
             started_at: chrono::Utc::now(),
             notebook_rooms: Arc::new(Mutex::new(HashMap::new())),
+            path_index: Arc::new(tokio::sync::Mutex::new(PathIndex::new())),
             rooms_ever_seen: std::sync::atomic::AtomicBool::new(false),
             redirect_map: std::sync::Mutex::new(HashMap::new()),
         }))
@@ -843,14 +848,14 @@ impl Daemon {
             rooms.drain().collect::<Vec<_>>()
         };
 
-        for (notebook_id, room) in drained_rooms {
+        for (notebook_uuid, room) in drained_rooms {
             // Shut down runtime agent via RPC before dropping handle
             {
                 let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
                 if has_runtime_agent {
                     info!(
                         "[runtimed] Shutting down runtime agent for notebook on exit: {}",
-                        notebook_id
+                        notebook_uuid
                     );
                     let _ = tokio::time::timeout(
                         std::time::Duration::from_secs(10),
@@ -1408,15 +1413,27 @@ impl Daemon {
                     working_dir
                 );
                 let docs_dir = self.config.notebook_docs_dir.clone();
+                // For the legacy NotebookSync handshake:
+                // - UUID notebook_id → untitled room (path=None)
+                // - Path notebook_id → file-backed room (path=Some)
                 let room = {
-                    let mut rooms = self.notebook_rooms.lock().await;
+                    let ns_uuid = uuid::Uuid::parse_str(&notebook_id)
+                        .unwrap_or_else(|_| uuid::Uuid::new_v4());
+                    let ns_path = if uuid::Uuid::parse_str(&notebook_id).is_ok() {
+                        None
+                    } else {
+                        Some(PathBuf::from(&notebook_id))
+                    };
                     crate::notebook_sync_server::get_or_create_room(
-                        &mut rooms,
-                        &notebook_id,
+                        &self.notebook_rooms,
+                        &self.path_index,
+                        ns_uuid,
+                        ns_path,
                         &docs_dir,
                         self.blob_store.clone(),
                         false, // NotebookSync handshake is always persistent
                     )
+                    .await
                 };
                 self.mark_rooms_ever_seen();
                 let (reader, writer) = tokio::io::split(stream);
@@ -1465,7 +1482,10 @@ impl Daemon {
                 );
                 let room = {
                     let rooms = self.notebook_rooms.lock().await;
-                    rooms.get(&notebook_id).cloned()
+                    // notebook_id from runtime agent is always a UUID string
+                    uuid::Uuid::parse_str(&notebook_id)
+                        .ok()
+                        .and_then(|uuid| rooms.get(&uuid).cloned())
                 };
                 match room {
                     Some(room) => {
@@ -1640,23 +1660,32 @@ impl Daemon {
         };
 
         // Get or create room for this notebook.
-        // First check if an existing room (including UUID-keyed ephemeral rooms)
-        // already owns this path — prevents duplicate rooms and re-key collisions.
+        // First check if an existing room already owns this canonical path.
+        // The path_index gives O(1) lookup without scanning all rooms.
         let docs_dir = self.config.notebook_docs_dir.clone();
+        let canonical_path = PathBuf::from(&notebook_id);
         let room = {
-            let mut rooms = self.notebook_rooms.lock().await;
-            if let Some(existing) =
-                crate::notebook_sync_server::find_room_by_notebook_path(&rooms, &notebook_id)
+            if let Some(existing) = crate::notebook_sync_server::find_room_by_path(
+                &self.notebook_rooms,
+                &self.path_index,
+                &canonical_path,
+            )
+            .await
             {
                 existing
             } else {
+                let uuid = uuid::Uuid::new_v4();
+                let path = Some(canonical_path.clone());
                 crate::notebook_sync_server::get_or_create_room(
-                    &mut rooms,
-                    &notebook_id,
+                    &self.notebook_rooms,
+                    &self.path_index,
+                    uuid,
+                    path,
                     &docs_dir,
                     self.blob_store.clone(),
                     false, // OpenNotebook handshake is always persistent
                 )
+                .await
             }
         };
         self.mark_rooms_ever_seen();
@@ -1833,18 +1862,20 @@ impl Daemon {
             Err(_) => (notebook_id, ephemeral.unwrap_or(false)),
         };
 
-        // Create room for this notebook
+        // Create room for this notebook. For CreateNotebook, the notebook_id is
+        // always a UUID (new room) or an existing UUID (session restore).
         let docs_dir = self.config.notebook_docs_dir.clone();
-        let room = {
-            let mut rooms = self.notebook_rooms.lock().await;
-            crate::notebook_sync_server::get_or_create_room(
-                &mut rooms,
-                &notebook_id,
-                &docs_dir,
-                self.blob_store.clone(),
-                ephemeral,
-            )
-        };
+        let uuid = uuid::Uuid::parse_str(&notebook_id).unwrap_or_else(|_| uuid::Uuid::new_v4());
+        let room = crate::notebook_sync_server::get_or_create_room(
+            &self.notebook_rooms,
+            &self.path_index,
+            uuid,
+            None, // CreateNotebook creates untitled rooms with no file path
+            &docs_dir,
+            self.blob_store.clone(),
+            ephemeral,
+        )
+        .await;
         self.mark_rooms_ever_seen();
 
         // Populate the room's doc with the empty notebook content — but only if the
@@ -1878,9 +1909,10 @@ impl Daemon {
 
         if let Some(e) = create_error {
             // Remove the room to prevent stale state (consistency with OpenNotebook)
+            // CreateNotebook rooms have no path, so no path_index cleanup needed.
             {
                 let mut rooms = self.notebook_rooms.lock().await;
-                rooms.remove(&notebook_id);
+                rooms.remove(&uuid);
                 info!(
                     "[runtimed] Removed room {} after create failure",
                     notebook_id
@@ -2306,7 +2338,9 @@ impl Daemon {
                 // holding notebook_rooms across async calls.
                 let maybe_room = {
                     let rooms = self.notebook_rooms.lock().await;
-                    rooms.get(&notebook_id).cloned()
+                    uuid::Uuid::parse_str(&notebook_id)
+                        .ok()
+                        .and_then(|uuid| rooms.get(&uuid).cloned())
                 };
                 if let Some(room) = maybe_room {
                     let cells = {
@@ -2368,7 +2402,7 @@ impl Daemon {
                     let rooms = self.notebook_rooms.lock().await;
                     rooms
                         .iter()
-                        .map(|(id, room)| (id.clone(), room.clone()))
+                        .map(|(id, room)| (id.to_string(), room.clone()))
                         .collect()
                 };
                 let mut room_infos = Vec::new();
@@ -2405,8 +2439,17 @@ impl Daemon {
                 // teardown that follows.
                 let maybe_room = {
                     let mut rooms = self.notebook_rooms.lock().await;
-                    rooms.remove(&notebook_id)
+                    uuid::Uuid::parse_str(&notebook_id)
+                        .ok()
+                        .and_then(|uuid| rooms.remove(&uuid))
                 };
+                // Clean up path_index if the room had a path.
+                if let Some(ref room) = maybe_room {
+                    let path = room.path.read().await.clone();
+                    if let Some(p) = path {
+                        self.path_index.lock().await.remove(&p);
+                    }
+                }
                 if let Some(room) = maybe_room {
                     // Shut down runtime agent via RPC before dropping handle.
                     // RuntimeAgentHandle doesn't own the Child (it's in a background
@@ -2610,7 +2653,7 @@ impl Daemon {
                 let active_rooms = self.notebook_rooms.lock().await;
                 let active_hashes: std::collections::HashSet<String> = active_rooms
                     .keys()
-                    .map(|id| notebook_doc::notebook_doc_filename(id))
+                    .map(|id| notebook_doc::notebook_doc_filename(&id.to_string()))
                     .collect();
                 drop(active_rooms);
 
@@ -2658,7 +2701,10 @@ impl Daemon {
                 // it before any async state_doc reads (deadlock prevention).
                 let room_arcs: Vec<(String, _)> = {
                     let rooms = self.notebook_rooms.lock().await;
-                    rooms.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+                    rooms
+                        .iter()
+                        .map(|(k, v)| (k.to_string(), v.clone()))
+                        .collect()
                 };
 
                 // Zero-rooms sweep-skip: ambiguous only right after a daemon
