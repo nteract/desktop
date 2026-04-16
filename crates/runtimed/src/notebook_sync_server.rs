@@ -1020,6 +1020,9 @@ fn verify_trust_from_snapshot(snapshot: &NotebookMetadataSnapshot) -> TrustState
 /// A notebook sync room — holds the canonical document and a broadcast
 /// channel for notifying peers of changes.
 pub struct NotebookRoom {
+    /// Permanent, immutable UUID for this room. Used as the map key once
+    /// Phase 5 lands; for now coexists with the string-keyed map.
+    pub id: uuid::Uuid,
     /// The canonical Automerge notebook document.
     pub doc: Arc<RwLock<NotebookDoc>>,
     /// Broadcast channel to notify all peers in this room of changes.
@@ -1221,6 +1224,11 @@ impl NotebookRoom {
         blob_store: Arc<BlobStore>,
         ephemeral: bool,
     ) -> Self {
+        // For this phase, derive `id` from `notebook_id` if it parses as a UUID,
+        // else mint a fresh one. This keeps path-keyed rooms working — their
+        // `id` is decoupled from their key until Phase 5.
+        let id = uuid::Uuid::parse_str(notebook_id).unwrap_or_else(|_| uuid::Uuid::new_v4());
+
         let filename = notebook_doc_filename(notebook_id);
         let persist_path = docs_dir.join(&filename);
 
@@ -1327,6 +1335,7 @@ impl NotebookRoom {
         let (state_changed_tx, _) = broadcast::channel(16);
 
         Self {
+            id,
             doc: Arc::new(RwLock::new(doc)),
             changed_tx,
             kernel_broadcast_tx,
@@ -1385,6 +1394,11 @@ impl NotebookRoom {
     #[cfg(test)]
     #[allow(clippy::unwrap_used, clippy::expect_used)]
     pub fn load_or_create(notebook_id: &str, docs_dir: &Path, blob_store: Arc<BlobStore>) -> Self {
+        // For this phase, derive `id` from `notebook_id` if it parses as a UUID,
+        // else mint a fresh one. This keeps path-keyed rooms working — their
+        // `id` is decoupled from their key until Phase 5.
+        let id = uuid::Uuid::parse_str(notebook_id).unwrap_or_else(|_| uuid::Uuid::new_v4());
+
         let filename = notebook_doc_filename(notebook_id);
         let persist_path = docs_dir.join(filename);
         let doc = NotebookDoc::load_or_create(&persist_path, notebook_id);
@@ -1414,6 +1428,7 @@ impl NotebookRoom {
         let state_doc = Arc::new(RwLock::new(RuntimeStateDoc::new()));
         let (state_changed_tx, _) = broadcast::channel(16);
         Self {
+            id,
             doc: Arc::new(RwLock::new(doc)),
             changed_tx,
             kernel_broadcast_tx,
@@ -9507,6 +9522,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn notebook_room_has_uuid_id_populated() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let blob_store = test_blob_store(&tmp);
+        // For now notebook_id is still a string; id is independent.
+        let uuid = uuid::Uuid::new_v4();
+        let room = NotebookRoom::new_fresh(
+            &uuid.to_string(),
+            tmp.path(),
+            blob_store,
+            false, // ephemeral
+        );
+        assert_eq!(room.id, uuid);
+    }
+
+    #[tokio::test]
     async fn test_room_load_or_create_new() {
         let tmp = tempfile::TempDir::new().unwrap();
         let blob_store = test_blob_store(&tmp);
@@ -9940,6 +9970,7 @@ mod tests {
         let state_doc = Arc::new(RwLock::new(RuntimeStateDoc::new()));
         let (state_changed_tx, _) = broadcast::channel(16);
         let room = NotebookRoom {
+            id: uuid::Uuid::new_v4(),
             doc: Arc::new(RwLock::new(doc)),
             changed_tx,
             kernel_broadcast_tx,
