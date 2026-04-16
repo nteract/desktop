@@ -126,6 +126,15 @@ pub struct SyncTaskConfig {
 
     /// Broadcast sender for kernel/execution events from the daemon.
     pub broadcast_tx: broadcast::Sender<NotebookBroadcast>,
+
+    /// Pre-encoded RuntimeStateSync reply frames to send on startup.
+    ///
+    /// During initial connection, RuntimeStateSync frames from the daemon are
+    /// buffered and applied to the SharedDocState before the sync task starts.
+    /// The Automerge sync protocol requires a reply so the daemon knows what
+    /// data to send next. These replies are generated during `build_and_spawn`
+    /// and sent here on the first loop iteration.
+    pub pending_state_sync_replies: Vec<Vec<u8>>,
 }
 
 /// Run the sync task.
@@ -149,6 +158,25 @@ where
     };
 
     let mut loop_count: u64 = 0;
+
+    // Send any pre-generated RuntimeStateSync replies from initial connection.
+    // These complete the Automerge sync handshake for the RuntimeStateDoc so
+    // the daemon sends the actual document data in subsequent messages.
+    for reply_bytes in std::mem::take(&mut config.pending_state_sync_replies) {
+        if let Err(e) = connection::send_typed_frame(
+            &mut writer,
+            NotebookFrameType::RuntimeStateSync,
+            &reply_bytes,
+        )
+        .await
+        {
+            warn!(
+                "[notebook-sync] Failed to send initial RuntimeStateSync reply for {}: {}",
+                notebook_id, e
+            );
+            return;
+        }
+    }
 
     // Track last metadata for change detection (used for SyncUpdate-like behavior)
     let mut _last_metadata: Option<notebook_doc::metadata::NotebookMetadataSnapshot> = {

@@ -474,9 +474,22 @@ where
     // Apply any RuntimeStateSync frames buffered during initial sync.
     // do_initial_sync only has the notebook doc — the RuntimeStateDoc lives
     // in SharedDocState, so we replay the frames here.
-    for frame_payload in &pending_state_sync_frames {
-        if let Ok(msg) = sync::Message::decode(frame_payload) {
-            let _ = shared_state.receive_state_sync_message(msg);
+    //
+    // After applying, generate reply sync messages. The Automerge sync
+    // protocol requires a reply from the receiver so the sender knows what
+    // data to include in subsequent messages. Without the reply, the daemon
+    // only sends heads/bloom and never delivers the actual document changes.
+    let mut pending_state_sync_replies: Vec<Vec<u8>> = Vec::new();
+    {
+        for frame_payload in &pending_state_sync_frames {
+            if let Ok(msg) = sync::Message::decode(frame_payload) {
+                let _ = shared_state.receive_state_sync_message(msg);
+            }
+        }
+        // Generate reply messages for each applied frame. Automerge sync
+        // may need multiple rounds, so generate until no more replies.
+        while let Some(reply) = shared_state.generate_state_sync_message() {
+            pending_state_sync_replies.push(reply.encode());
         }
     }
 
@@ -513,6 +526,7 @@ where
         cmd_rx,
         snapshot_tx: Arc::clone(&snapshot_tx),
         broadcast_tx,
+        pending_state_sync_replies,
     };
 
     let notebook_id_for_task = notebook_id;
