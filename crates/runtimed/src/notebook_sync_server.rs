@@ -6190,9 +6190,57 @@ async fn handle_notebook_request(
                 (p.is_none(), p.clone())
             };
 
+            // For any save that writes to a NEW path (untitled promotion or
+            // save-as rename), claim path_index BEFORE touching disk. Writing
+            // first and then checking the claim would overwrite another room's
+            // file if both happen to target the same path — the overwritten
+            // file then trips the other room's watcher, wiping its CRDT cells.
+            //
+            // Compute the pre-write canonical target. For untitled rooms a path
+            // is required; for file-backed rooms we only need a pre-write claim
+            // if the caller specified a path different from room.path.
+            let target_for_claim: Option<PathBuf> = match (&path, was_untitled) {
+                (Some(p), _) => match normalize_save_target(p) {
+                    Ok(normalized) => Some(canonical_target_path(&normalized).await),
+                    Err(msg) => {
+                        return NotebookResponse::SaveError {
+                            error: notebook_protocol::protocol::SaveErrorKind::Io { message: msg },
+                        };
+                    }
+                },
+                (None, true) => {
+                    // Untitled save with no path — the daemon requires one.
+                    // Fall through to save_notebook_to_disk which returns the
+                    // structured error; no claim needed (no write happens).
+                    None
+                }
+                (None, false) => None, // save-in-place on file-backed room
+            };
+
+            let needs_new_claim = match (&target_for_claim, &old_path) {
+                (Some(t), Some(old)) => t != old,
+                (Some(_), None) => true, // untitled→file-backed
+                (None, _) => false,
+            };
+
+            if needs_new_claim {
+                let canonical_pre = target_for_claim.clone().unwrap();
+                if let Err(kind) = try_claim_path(&daemon.path_index, &canonical_pre, room.id).await
+                {
+                    return NotebookResponse::SaveError { error: kind };
+                }
+            }
+
             let written = match save_notebook_to_disk(room, path.as_deref()).await {
                 Ok(p) => p,
                 Err(e) => {
+                    // Rollback the path_index claim we just made so the room
+                    // stays untitled / its old path stays claimed.
+                    if needs_new_claim {
+                        if let Some(ref canonical_pre) = target_for_claim {
+                            daemon.path_index.lock().await.remove(canonical_pre);
+                        }
+                    }
                     // Emergency persist for ephemeral rooms: if saving to .ipynb
                     // failed, at least write the Automerge doc so data isn't lost.
                     if room.is_ephemeral.load(Ordering::Relaxed) && room.persist_tx.is_none() {
@@ -6212,12 +6260,14 @@ async fn handle_notebook_request(
                 }
             };
 
-            // Canonicalize the written path so path_index keys are stable.
+            // Post-write canonicalize. Usually matches the pre-write key. If it
+            // differs (uncommon — only when parent-canonicalize disagreed with
+            // full canonicalize), swap the path_index entry.
             let canonical = match tokio::fs::canonicalize(&written).await {
                 Ok(c) => c,
                 Err(e) => {
                     warn!(
-                        "[notebook-sync] canonicalize({}) failed: {} — using raw path. \
+                        "[notebook-sync] post-save canonicalize({}) failed: {} — using raw path. \
                          Duplicate-room detection may be weakened.",
                         written, e
                     );
@@ -6225,31 +6275,42 @@ async fn handle_notebook_request(
                 }
             };
 
-            if was_untitled {
-                // ── Transition: untitled → file-backed ──────────────────────────
-                if let Err(kind) =
-                    promote_untitled_to_file_backed(room, canonical.clone(), &daemon.path_index)
-                        .await
-                {
-                    return NotebookResponse::SaveError { error: kind };
-                }
-            } else {
-                // ── Room was already file-backed ────────────────────────────────
-                let path_changed = old_path.as_deref() != Some(canonical.as_path());
-                if path_changed {
-                    // Save-as rename: update path_index and room.path.
-                    if let Err(kind) = rename_file_backed_room(
-                        room,
-                        canonical.clone(),
-                        old_path,
-                        &daemon.path_index,
-                    )
-                    .await
-                    {
-                        return NotebookResponse::SaveError { error: kind };
+            if needs_new_claim {
+                if let Some(canonical_pre) = target_for_claim.as_ref() {
+                    if canonical_pre != &canonical {
+                        let mut idx = daemon.path_index.lock().await;
+                        idx.remove(canonical_pre);
+                        // Best-effort reinsert under the post-write canonical.
+                        if let Err(e) = idx.insert(canonical.clone(), room.id) {
+                            warn!(
+                                "[notebook-sync] post-write path_index reinsert failed for {:?}: {} \
+                                 — room {} may be orphaned from path lookup",
+                                canonical, e, room.id
+                            );
+                        }
                     }
                 }
-                // If path_changed is false, this is a save-in-place: nothing else to do.
+            }
+
+            if was_untitled {
+                finalize_untitled_promotion(room, canonical.clone()).await;
+            } else if let Some(old) = old_path.as_ref() {
+                let path_changed = old != &canonical;
+                if path_changed {
+                    // Save-as rename: new path already claimed above; remove
+                    // the old path_index entry and update room.path.
+                    {
+                        let mut idx = daemon.path_index.lock().await;
+                        idx.remove(old);
+                    }
+                    *room.path.write().await = Some(canonical.clone());
+                    let _ = room
+                        .kernel_broadcast_tx
+                        .send(NotebookBroadcast::PathChanged {
+                            path: Some(canonical.to_string_lossy().into_owned()),
+                        });
+                }
+                // If path didn't change, this is save-in-place: nothing else.
             }
 
             NotebookResponse::NotebookSaved { path: written }
@@ -7358,25 +7419,64 @@ async fn save_notebook_to_disk(
 /// Returns `Ok(())` on success, or `Err(SaveErrorKind::PathAlreadyOpen)` if
 /// another room is already serving this canonical path.  On error the caller's
 /// room state is NOT mutated.
-async fn promote_untitled_to_file_backed(
-    room: &Arc<NotebookRoom>,
-    canonical: PathBuf,
+/// Canonicalize a path that may not yet exist on disk.
+///
+/// `tokio::fs::canonicalize` requires the target to exist. For pre-write
+/// collision checks, we canonicalize the parent directory and append the
+/// filename. Falls back to the raw path if even the parent is unresolvable.
+async fn canonical_target_path(target: &Path) -> PathBuf {
+    if let Ok(c) = tokio::fs::canonicalize(target).await {
+        return c;
+    }
+    if let (Some(parent), Some(name)) = (target.parent(), target.file_name()) {
+        if let Ok(canonical_parent) = tokio::fs::canonicalize(parent).await {
+            return canonical_parent.join(name);
+        }
+    }
+    target.to_path_buf()
+}
+
+/// Normalize a user-supplied save target: append `.ipynb` if missing, reject
+/// relative paths, and return the path that `save_notebook_to_disk` will use.
+fn normalize_save_target(target: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(target);
+    if path.is_relative() {
+        return Err(format!(
+            "Relative paths are not supported for save: '{}'. Please provide an absolute path.",
+            target
+        ));
+    }
+    Ok(if target.ends_with(".ipynb") {
+        path
+    } else {
+        PathBuf::from(format!("{}.ipynb", target))
+    })
+}
+
+/// Try to claim a path in the path_index for a given room. Returns the
+/// structured `PathAlreadyOpen` error if another room already holds it.
+async fn try_claim_path(
     path_index: &Arc<tokio::sync::Mutex<PathIndex>>,
+    canonical: &Path,
+    uuid: uuid::Uuid,
 ) -> Result<(), notebook_protocol::protocol::SaveErrorKind> {
-    // Claim the path in path_index. Fail fast if another room already holds it.
-    let claim_result = {
-        let mut idx = path_index.lock().await;
-        idx.insert(canonical.clone(), room.id)
-    };
-    if let Err(path_index::PathIndexError::PathAlreadyOpen { uuid, path: p }) = claim_result {
-        return Err(
+    let mut idx = path_index.lock().await;
+    match idx.insert(canonical.to_path_buf(), uuid) {
+        Ok(()) => Ok(()),
+        Err(path_index::PathIndexError::PathAlreadyOpen { uuid, path: p }) => Err(
             notebook_protocol::protocol::SaveErrorKind::PathAlreadyOpen {
                 uuid: uuid.to_string(),
                 path: p.to_string_lossy().into_owned(),
             },
-        );
+        ),
     }
+}
 
+/// Finalize the untitled-to-file-backed transition AFTER the .ipynb has been
+/// written and path_index already holds the claim. This is the non-claim half
+/// of the promotion: path field update, persist file cleanup, file watcher +
+/// autosave debouncer spawn, ephemeral marker clear, and PathChanged broadcast.
+async fn finalize_untitled_promotion(room: &Arc<NotebookRoom>, canonical: PathBuf) {
     // Update room's path now that path_index owns it.
     *room.path.write().await = Some(canonical.clone());
 
@@ -7428,51 +7528,9 @@ async fn promote_untitled_to_file_backed(
         "[notebook-sync] Promoted untitled room {} to file-backed path {:?}",
         room.id, canonical
     );
-
-    Ok(())
 }
 
 /// Updates path_index and room.path when a file-backed room is saved to a
-/// different path (save-as rename). Broadcasts `PathChanged`.
-///
-/// Returns `Err(SaveErrorKind::PathAlreadyOpen)` if the new path is currently
-/// held by another room.  On error the caller's room state is NOT mutated.
-async fn rename_file_backed_room(
-    room: &Arc<NotebookRoom>,
-    new_canonical: PathBuf,
-    old_path: Option<PathBuf>,
-    path_index: &Arc<tokio::sync::Mutex<PathIndex>>,
-) -> Result<(), notebook_protocol::protocol::SaveErrorKind> {
-    let claim_result = {
-        let mut idx = path_index.lock().await;
-        let result = idx.insert(new_canonical.clone(), room.id);
-        if result.is_ok() {
-            if let Some(ref op) = old_path {
-                idx.remove(op);
-            }
-        }
-        result
-    };
-    if let Err(path_index::PathIndexError::PathAlreadyOpen { uuid, path: p }) = claim_result {
-        return Err(
-            notebook_protocol::protocol::SaveErrorKind::PathAlreadyOpen {
-                uuid: uuid.to_string(),
-                path: p.to_string_lossy().into_owned(),
-            },
-        );
-    }
-
-    *room.path.write().await = Some(new_canonical.clone());
-
-    let _ = room
-        .kernel_broadcast_tx
-        .send(NotebookBroadcast::PathChanged {
-            path: Some(new_canonical.to_string_lossy().into_owned()),
-        });
-
-    Ok(())
-}
-
 /// Clone the notebook to a new path with a fresh env_id and cleared outputs.
 ///
 /// This is used for "Save As Copy" functionality - creates a new independent notebook
@@ -11628,8 +11686,8 @@ mod tests {
             new_uuid, None, &docs_dir, blob_store, false,
         ));
 
-        // Call the production helper — must fail.
-        let err = promote_untitled_to_file_backed(&room, target_path.clone(), &path_index)
+        // Try to claim the path — must fail.
+        let err = try_claim_path(&path_index, &target_path, new_uuid)
             .await
             .unwrap_err();
 
@@ -11644,7 +11702,55 @@ mod tests {
         // room.path must NOT have been mutated on error.
         assert!(
             room.path.read().await.is_none(),
-            "room.path should still be None after a failed promote"
+            "room.path should still be None after a failed claim"
+        );
+    }
+
+    /// Regression test for the demo-day incident: when a second room tries to
+    /// save to a path that another room already claims, the claim check must
+    /// happen BEFORE any disk write. Otherwise the second room's save writes
+    /// 0 cells to the shared path, the first room's file watcher interprets
+    /// that as an external edit, and the first room's CRDT cells are wiped.
+    #[tokio::test]
+    async fn path_collision_does_not_overwrite_existing_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let blob_store = test_blob_store(&tmp);
+        let docs_dir = tmp.path().join("docs");
+        std::fs::create_dir_all(&docs_dir).unwrap();
+
+        // Room A claims the path; write a known marker payload to disk.
+        let target_path = tmp.path().join("shared.ipynb");
+        let marker_content = r#"{"cells":[{"cell_type":"code","source":"x = 1"}],"metadata":{},"nbformat":4,"nbformat_minor":5}"#;
+        tokio::fs::write(&target_path, marker_content)
+            .await
+            .unwrap();
+
+        // Canonicalize before inserting so the key matches what the handler
+        // would compute via canonical_target_path at save time.
+        let canonical = canonical_target_path(&target_path).await;
+        let path_index = Arc::new(tokio::sync::Mutex::new(PathIndex::new()));
+        let uuid_a = Uuid::new_v4();
+        path_index
+            .lock()
+            .await
+            .insert(canonical.clone(), uuid_a)
+            .unwrap();
+
+        // Room B attempts to save to the same path. Per the handler's
+        // claim-before-write ordering, it must fail at try_claim_path without
+        // ever invoking save_notebook_to_disk.
+        let uuid_b = Uuid::new_v4();
+        let _room_b = Arc::new(NotebookRoom::new_fresh(
+            uuid_b, None, &docs_dir, blob_store, false,
+        ));
+        let claim = try_claim_path(&path_index, &canonical, uuid_b).await;
+        assert!(claim.is_err(), "claim must fail on collision");
+
+        // Target file must be byte-for-byte identical.
+        let on_disk = tokio::fs::read_to_string(&target_path).await.unwrap();
+        assert_eq!(
+            on_disk, marker_content,
+            "collision attempt must not touch the file on disk"
         );
     }
 
@@ -11694,9 +11800,10 @@ mod tests {
             .unwrap_or_else(|_| PathBuf::from(&written));
         let path_index = Arc::new(tokio::sync::Mutex::new(PathIndex::new()));
 
-        promote_untitled_to_file_backed(&room, canonical.clone(), &path_index)
+        try_claim_path(&path_index, &canonical, room.id)
             .await
-            .expect("promotion should succeed");
+            .expect("path claim should succeed");
+        finalize_untitled_promotion(&room, canonical.clone()).await;
 
         // Verify post-promotion state.
         assert!(
