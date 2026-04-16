@@ -2118,18 +2118,24 @@ where
             // BEFORE async teardown. Holding the lock across runtime agent
             // shutdown RPCs causes a convoy deadlock when the agent is
             // unresponsive — all notebook operations block on the lock.
+            //
+            // Look up the room by Arc pointer, not by the captured notebook_id,
+            // because rekey_ephemeral_room may have moved the room to a new key
+            // (UUID → file path) after the eviction timer was scheduled.
             let should_teardown = {
                 let mut rooms_guard = rooms_for_eviction.lock().await;
                 if room_for_eviction.active_peers.load(Ordering::Relaxed) == 0 {
-                    if rooms_guard
-                        .get(&notebook_id_for_eviction)
-                        .is_some_and(|r| Arc::ptr_eq(r, &room_for_eviction))
-                    {
-                        rooms_guard.remove(&notebook_id_for_eviction);
+                    // Find the room's current key by Arc pointer (stable across re-keys)
+                    let current_key = rooms_guard
+                        .iter()
+                        .find(|(_, r)| Arc::ptr_eq(r, &room_for_eviction))
+                        .map(|(k, _)| k.clone());
+                    if let Some(key) = current_key {
+                        rooms_guard.remove(&key);
                         true
                     } else {
                         debug!(
-                            "[notebook-sync] Eviction skipped for {} (room was replaced)",
+                            "[notebook-sync] Eviction skipped for {} (room already removed)",
                             notebook_id_for_eviction
                         );
                         false
