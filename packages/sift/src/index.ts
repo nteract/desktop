@@ -23,6 +23,7 @@ export {
   isNullSentinel,
   NumericAccumulator,
   refineColumnType,
+  stringifyValue,
   TimestampAccumulator,
 } from "./accumulators";
 export type {

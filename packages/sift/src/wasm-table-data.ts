@@ -6,7 +6,7 @@
  * getCell/getCellRaw read from the JS-side cache — no per-cell FFI.
  */
 import { tableFromIPC } from "apache-arrow";
-import { formatCell } from "./accumulators";
+import { formatCell, stringifyValue } from "./accumulators";
 import { autoWidth } from "./auto-width";
 import type { FilterSpecJson } from "./predicate";
 import { getModuleSync } from "./predicate";
@@ -102,10 +102,10 @@ export function createWasmTableData(
           raws.push(numVal);
         } else if (colType === "numeric") {
           const numVal = typeof val === "bigint" ? Number(val) : Number(val);
-          strings.push(String(val));
+          strings.push(stringifyValue(val));
           raws.push(numVal);
         } else {
-          strings.push(String(val));
+          strings.push(stringifyValue(val));
           raws.push(val);
         }
       }

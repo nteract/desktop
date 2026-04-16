@@ -87,7 +87,7 @@ export function refineColumnType(
 
   for (const val of sample) {
     if (val == null) continue;
-    const s = String(val);
+    const s = stringifyValue(val);
     if (NULL_SENTINELS.has(s)) {
       nullSentinelCount++;
       continue;
@@ -110,6 +110,13 @@ export function refineColumnType(
 
 // --- Cell formatting ---
 
+export function stringifyValue(val: unknown): string {
+  if (Array.isArray(val) || (typeof val === "object" && val !== null)) {
+    return JSON.stringify(val);
+  }
+  return String(val);
+}
+
 export function formatCell(columnType: ColumnType, val: unknown): string {
   if (val == null) return "";
   switch (columnType) {
@@ -124,7 +131,7 @@ export function formatCell(columnType: ColumnType, val: unknown): string {
     case "boolean":
       return val ? "Yes" : "No";
     default:
-      return String(val);
+      return stringifyValue(val);
   }
 }
 

@@ -1117,7 +1117,21 @@ export function createTable(
         break;
       }
       default:
-        cellEl.textContent = str;
+        if (
+          Array.isArray(raw) &&
+          raw.length > 0 &&
+          raw.every((item) => !Array.isArray(item) && (typeof item !== "object" || item === null))
+        ) {
+          cellEl.classList.add("sift-cell-list");
+          for (const item of raw) {
+            const badge = document.createElement("span");
+            badge.className = "sift-badge sift-badge-list-item";
+            badge.textContent = item == null ? "null" : String(item);
+            cellEl.appendChild(badge);
+          }
+        } else {
+          cellEl.textContent = str;
+        }
     }
   }
 
@@ -1386,6 +1400,18 @@ export function createTable(
         badge.className = raw ? "sift-badge sift-badge-true" : "sift-badge sift-badge-false";
         badge.textContent = raw ? "Yes" : "No";
         valueEl.appendChild(badge);
+      } else if (
+        Array.isArray(raw) &&
+        raw.length > 0 &&
+        raw.every((item) => !Array.isArray(item) && (typeof item !== "object" || item === null))
+      ) {
+        valueEl.classList.add("sift-cell-list");
+        for (const item of raw) {
+          const badge = document.createElement("span");
+          badge.className = "sift-badge sift-badge-list-item";
+          badge.textContent = item == null ? "null" : String(item);
+          valueEl.appendChild(badge);
+        }
       } else {
         valueEl.textContent = data.getCell(dataRow, c);
       }

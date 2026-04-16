@@ -670,6 +670,18 @@ h1 {
   font-style: italic;
 }
 
+.sift-badge-list-item {
+  background: color-mix(in srgb, var(--sift-accent) 10%, transparent);
+  color: color-mix(in srgb, var(--sift-accent) 80%, var(--sift-ink));
+}
+
+.sift-cell-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  align-items: center;
+}
+
 /* --- Boolean summary in header --- */
 
 .sift-bool-summary {

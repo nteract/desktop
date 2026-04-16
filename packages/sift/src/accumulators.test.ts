@@ -301,6 +301,20 @@ describe("formatCell", () => {
     expect(formatCell("numeric", 42)).toBe("42");
     expect(formatCell("categorical", "hello")).toBe("hello");
   });
+
+  it("preserves nested array structure", () => {
+    expect(formatCell("categorical", [["fast", "slow"], ["red"]])).toBe(
+      '[["fast","slow"],["red"]]',
+    );
+  });
+
+  it("preserves flat array structure", () => {
+    expect(formatCell("categorical", ["fast", "slow", "red"])).toBe('["fast","slow","red"]');
+  });
+
+  it("preserves object structure", () => {
+    expect(formatCell("categorical", { a: 1 })).toBe('{"a":1}');
+  });
 });
 
 describe("isNullSentinel", () => {
