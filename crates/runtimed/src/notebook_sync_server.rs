@@ -8981,17 +8981,28 @@ async fn apply_ipynb_changes(
     // are in the CRDT but NOT in last_save_sources were created after
     // the save and should be preserved (the user or agent just added them).
     //
-    // If we've never saved (last_save_sources is empty), fall back to the
-    // old behavior: delete any cell not on disk. This handles the initial
-    // load case where there's no save snapshot yet.
-    let cells_to_delete: Vec<String> = current_cells
-        .iter()
-        .filter(|c| {
-            !external_map.contains_key(c.id.as_str())
-                && (!have_save_snapshot || saved_sources_snapshot.contains_key(c.id.as_str()))
-        })
-        .map(|c| c.id.clone())
-        .collect();
+    // If we've never saved (last_save_sources is empty), we have no
+    // baseline to distinguish "externally deleted" from "just created in
+    // CRDT but not yet saved." Skip deletions entirely — it's safer to
+    // keep extra cells than to silently drop cells a client just created.
+    let cells_to_delete: Vec<String> = if !have_save_snapshot {
+        if !current_cells.is_empty() {
+            debug!(
+                "[notebook-watch] No save snapshot — skipping deletion of {} CRDT cells not on disk",
+                current_cells.iter().filter(|c| !external_map.contains_key(c.id.as_str())).count()
+            );
+        }
+        Vec::new()
+    } else {
+        current_cells
+            .iter()
+            .filter(|c| {
+                !external_map.contains_key(c.id.as_str())
+                    && saved_sources_snapshot.contains_key(c.id.as_str())
+            })
+            .map(|c| c.id.clone())
+            .collect()
+    };
 
     // Snapshot current execution state from state_doc before acquiring
     // the doc write lock, so we don't hold state_doc and doc simultaneously
@@ -10299,7 +10310,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_ipynb_changes_clears_all_cells() {
-        // Valid "delete all cells" case - empty cells array should clear the doc
+        // Valid "delete all cells" case — empty cells array from external
+        // file should clear the doc, but ONLY when we have a save baseline
+        // (last_save_sources populated). Without a save snapshot, deletions
+        // are skipped to prevent the Run 38 cell-loss bug.
         let tmp = tempfile::TempDir::new().unwrap();
         let (room, _) = test_room_with_path(&tmp, "test.ipynb");
 
@@ -10310,7 +10324,14 @@ mod tests {
             doc.update_source("cell-1", "x = 1").unwrap();
         }
 
-        // Apply empty external cells - should delete all cells
+        // Populate last_save_sources — simulates a save that included the cell
+        {
+            let mut saved = room.last_save_sources.write().await;
+            saved.insert("cell-1".to_string(), "x = 1".to_string());
+        }
+
+        // Apply empty external cells - should delete all cells (we have
+        // a save baseline confirming cell-1 was on disk before)
         let external_cells = vec![];
         let changed = apply_ipynb_changes(&room, &external_cells, &HashMap::new(), false).await;
         assert!(changed, "Should apply changes to clear all cells");
@@ -10602,6 +10623,53 @@ mod tests {
         assert!(
             ids.contains(&"user-added"),
             "User-added cell not in save snapshot should be preserved: {:?}",
+            ids
+        );
+    }
+
+    #[tokio::test]
+    async fn test_apply_ipynb_changes_no_save_snapshot_preserves_crdt_cells() {
+        // Regression test for Run 38 cell-loss: when last_save_sources is
+        // empty (initial autosave with 0 cells), the file watcher must NOT
+        // delete CRDT cells that aren't on disk. Without a save baseline we
+        // can't distinguish "externally deleted" from "just created in CRDT."
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (room, _) = test_room_with_path(&tmp, "test.ipynb");
+
+        // Add cells to the CRDT (simulates MCP client creating cells)
+        {
+            let mut doc = room.doc.write().await;
+            doc.add_cell(0, "cell-a", "code").unwrap();
+            doc.update_source("cell-a", "x = 1").unwrap();
+            doc.add_cell(1, "cell-b", "code").unwrap();
+            doc.update_source("cell-b", "y = 2").unwrap();
+        }
+
+        // Do NOT populate last_save_sources — simulates the case where
+        // the only save was with 0 cells (empty HashMap is the default).
+        assert!(room.last_save_sources.read().await.is_empty());
+
+        // External file has 0 cells (the autosave wrote an empty notebook)
+        let external_cells: Vec<CellSnapshot> = vec![];
+
+        let changed =
+            apply_ipynb_changes(&room, &external_cells, &HashMap::new(), false).await;
+        // No changes should be applied — cells preserved
+        assert!(!changed, "Should not delete cells when no save snapshot exists");
+
+        let cells = {
+            let doc = room.doc.read().await;
+            doc.get_cells()
+        };
+        let ids: Vec<&str> = cells.iter().map(|c| c.id.as_str()).collect();
+        assert!(
+            ids.contains(&"cell-a"),
+            "CRDT cell should be preserved when no save snapshot: {:?}",
+            ids
+        );
+        assert!(
+            ids.contains(&"cell-b"),
+            "CRDT cell should be preserved when no save snapshot: {:?}",
             ids
         );
     }
