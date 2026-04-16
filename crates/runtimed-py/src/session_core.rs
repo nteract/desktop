@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use notebook_protocol::protocol::{NotebookBroadcast, NotebookRequest, NotebookResponse};
+use notebook_protocol::protocol::{
+    NotebookBroadcast, NotebookRequest, NotebookResponse, SaveErrorKind,
+};
 use notebook_sync::{BroadcastReceiver, DocHandle};
 
 use notebook_doc::metadata::NotebookMetadataSnapshot;
@@ -1887,6 +1889,16 @@ pub(crate) async fn save(
 
     match response {
         NotebookResponse::NotebookSaved { path: saved_path } => Ok(SaveResult { path: saved_path }),
+        NotebookResponse::SaveError { error } => match error {
+            SaveErrorKind::PathAlreadyOpen {
+                uuid,
+                path: conflict,
+            } => Err(to_py_err(format!(
+                "Cannot save: {conflict} is already open in session {uuid}. \
+                 Close that session first, then retry.",
+            ))),
+            SaveErrorKind::Io { message } => Err(to_py_err(message)),
+        },
         NotebookResponse::Error { error } => Err(to_py_err(error)),
         other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
     }

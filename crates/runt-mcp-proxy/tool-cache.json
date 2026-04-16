@@ -25,18 +25,27 @@
       "idempotentHint": true,
       "openWorldHint": true
     },
-    "description": "Open a notebook by path or session ID.",
+    "description": "Open a notebook. Provide exactly one of: path (file path, e.g. \"~/analysis.ipynb\") or notebook_id (UUID from list_active_notebooks). Paths open the file from disk; notebook_id connects to a running session.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
-        "notebook": {
-          "description": "A file path (e.g. \"~/analysis.ipynb\") or a notebook ID from\nlist_active_notebooks. Paths are opened from disk; IDs connect\nto a running session.",
-          "type": "string"
+        "notebook_id": {
+          "default": null,
+          "description": "UUID of a running notebook session from list_active_notebooks.\nEither this OR path must be provided, not both.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "default": null,
+          "description": "Canonical file path to open (e.g. \"~/analysis.ipynb\").\nEither this OR notebook_id must be provided, not both.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
-      "required": [
-        "notebook"
-      ],
       "title": "OpenNotebookParams",
       "type": "object"
     },
