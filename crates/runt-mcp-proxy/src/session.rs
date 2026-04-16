@@ -63,18 +63,37 @@ fn extract_notebook_id_from_result(result: &CallToolResult) -> Option<String> {
     None
 }
 
+fn looks_like_untitled_notebook_id(target: &str) -> bool {
+    let path = std::path::Path::new(target);
+    path.components().count() == 1
+        && path.extension().is_none()
+        && uuid::Uuid::parse_str(target).is_ok()
+}
+
+fn build_rejoin_params(target: &str) -> Option<CallToolRequestParams> {
+    let arguments = if looks_like_untitled_notebook_id(target) {
+        serde_json::json!({ "notebook_id": target })
+    } else {
+        serde_json::json!({ "path": target })
+    };
+
+    serde_json::from_value(serde_json::json!({
+        "name": "open_notebook",
+        "arguments": arguments
+    }))
+    .ok()
+}
+
 /// Attempt to re-join a notebook session in the new child process.
 ///
 /// Returns `true` if rejoin succeeded, `false` otherwise.
 pub async fn auto_rejoin(client: &RunningChild, notebook_id: &str) -> bool {
     info!("Auto-rejoining notebook session: {notebook_id}");
 
-    let params: CallToolRequestParams = match serde_json::from_value(serde_json::json!({
-        "name": "open_notebook",
-        "arguments": { "path": notebook_id }
-    })) {
-        Ok(p) => p,
-        Err(e) => {
+    let params = match build_rejoin_params(notebook_id) {
+        Some(p) => p,
+        None => {
+            let e = "invalid auto-rejoin parameters";
             warn!("Failed to build rejoin params: {e}");
             return false;
         }
@@ -158,6 +177,29 @@ mod tests {
             extract_session_id(&params, &success_result()),
             Some("abc-123".to_string())
         );
+    }
+
+    #[test]
+    fn build_rejoin_params_uses_notebook_id_for_uuid_targets() {
+        let target = "550e8400-e29b-41d4-a716-446655440000";
+        let params = build_rejoin_params(target).expect("params");
+        let args = params.arguments.expect("args");
+
+        assert_eq!(
+            args.get("notebook_id").and_then(Value::as_str),
+            Some(target)
+        );
+        assert!(args.get("path").is_none());
+    }
+
+    #[test]
+    fn build_rejoin_params_uses_path_for_file_targets() {
+        let target = "/tmp/test.ipynb";
+        let params = build_rejoin_params(target).expect("params");
+        let args = params.arguments.expect("args");
+
+        assert_eq!(args.get("path").and_then(Value::as_str), Some(target));
+        assert!(args.get("notebook_id").is_none());
     }
 
     // ── create_notebook tracking ──────────────────────────────────────

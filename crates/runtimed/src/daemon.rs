@@ -1582,6 +1582,20 @@ impl Daemon {
             Ok(())
         }
 
+        if looks_like_untitled_notebook_path(&path) {
+            let (_reader, mut writer) = tokio::io::split(stream);
+            send_error_response(
+                &mut writer,
+                format!(
+                    "Refusing to open bare UUID '{}' as a file path. \
+                     Untitled notebooks must reconnect via notebook_id, not OpenNotebook path.",
+                    path
+                ),
+            )
+            .await?;
+            return Ok(());
+        }
+
         // Check if file exists before canonicalizing (canonicalize fails for non-existent paths)
         let mut path_buf = std::path::PathBuf::from(&path);
         let file_exists = match tokio::fs::metadata(&path_buf).await {
@@ -4348,6 +4362,13 @@ impl Daemon {
     }
 }
 
+fn looks_like_untitled_notebook_path(path: &str) -> bool {
+    let candidate = Path::new(path);
+    candidate.components().count() == 1
+        && candidate.extension().is_none()
+        && uuid::Uuid::parse_str(path).is_ok()
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -5338,5 +5359,18 @@ mod tests {
             blob_store.get(&hash).await.unwrap().is_some(),
             "unreferenced blob within grace should survive"
         );
+    }
+
+    #[test]
+    fn bare_uuid_path_is_rejected() {
+        assert!(looks_like_untitled_notebook_path(
+            "550e8400-e29b-41d4-a716-446655440000"
+        ));
+        assert!(!looks_like_untitled_notebook_path(
+            "/tmp/550e8400-e29b-41d4-a716-446655440000"
+        ));
+        assert!(!looks_like_untitled_notebook_path(
+            "550e8400-e29b-41d4-a716-446655440000.ipynb"
+        ));
     }
 }
