@@ -11491,6 +11491,101 @@ mod tests {
         );
     }
 
+    // ── Regression test: eviction finds re-keyed room by Arc pointer ─────
+
+    /// Verify that when a room is re-keyed from UUID → file path and the
+    /// eviction timer fires under the old UUID key, the room is still found
+    /// and removed from the rooms map via Arc pointer comparison.
+    ///
+    /// This is the exact scenario that caused zombie rooms before the fix:
+    /// UUID eviction timer → `rooms.get(uuid)` returns None → eviction
+    /// skipped → room lives forever under the path key.
+    #[tokio::test(start_paused = true)]
+    async fn test_eviction_finds_rekeyed_room_by_arc_pointer() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let blob_store = test_blob_store(&tmp);
+        let docs_dir = tmp.path().join("docs");
+        std::fs::create_dir_all(&docs_dir).unwrap();
+
+        // 1. Create an ephemeral room with a UUID notebook_id
+        let uuid_id = "11111111-2222-3333-4444-555555555555";
+        let room = Arc::new(NotebookRoom::new_fresh(
+            uuid_id, &docs_dir, blob_store, false,
+        ));
+
+        // Add a cell so save produces valid .ipynb
+        {
+            let mut doc = room.doc.write().await;
+            doc.add_cell(0, "cell-1", "code").unwrap();
+            doc.update_source("cell-1", "x = 1").unwrap();
+        }
+
+        // 2. Insert into rooms map and simulate a connected peer
+        let rooms: NotebookRooms = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        rooms.lock().await.insert(uuid_id.to_string(), room.clone());
+        room.active_peers.fetch_add(1, Ordering::Relaxed);
+        room.had_peers.store(true, Ordering::Relaxed);
+
+        // 3. Save to disk and re-key from UUID → file path
+        let save_path = tmp.path().join("rekeyed.ipynb");
+        let result = save_notebook_to_disk(&room, Some(save_path.to_str().unwrap())).await;
+        assert!(result.is_ok());
+
+        let new_id =
+            rekey_ephemeral_room(&rooms, uuid_id, save_path.to_str().unwrap(), &room).await;
+        assert!(new_id.is_some());
+        let path_key = new_id.unwrap();
+
+        // Verify: UUID key gone, path key present, same Arc
+        {
+            let guard = rooms.lock().await;
+            assert!(!guard.contains_key(uuid_id));
+            assert!(guard.contains_key(&path_key));
+            assert!(Arc::ptr_eq(guard.get(&path_key).unwrap(), &room));
+        }
+
+        // 4. Simulate peer disconnect — active_peers drops to 0
+        room.active_peers.fetch_sub(1, Ordering::Relaxed);
+        assert_eq!(room.active_peers.load(Ordering::Relaxed), 0);
+
+        // 5. Simulate the eviction timer firing with the OLD UUID key.
+        //    This is what the disconnect handler captures before re-key.
+        let rooms_for_eviction = rooms.clone();
+        let room_for_eviction = room.clone();
+        let notebook_id_for_eviction = uuid_id.to_string(); // stale UUID key!
+
+        // Run the exact eviction logic from the disconnect handler
+        let should_teardown = {
+            let mut rooms_guard = rooms_for_eviction.lock().await;
+            if room_for_eviction.active_peers.load(Ordering::Relaxed) == 0 {
+                let current_key = rooms_guard
+                    .iter()
+                    .find(|(_, r)| Arc::ptr_eq(r, &room_for_eviction))
+                    .map(|(k, _)| k.clone());
+                if let Some(key) = current_key {
+                    rooms_guard.remove(&key);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        };
+
+        assert!(
+            should_teardown,
+            "Eviction should succeed even though the room was re-keyed from {} to {}",
+            notebook_id_for_eviction, path_key
+        );
+
+        // 6. Verify room was removed from the map
+        assert!(
+            rooms.lock().await.is_empty(),
+            "Room should be removed from the map after eviction"
+        );
+    }
+
     // ── compute_env_sync_diff tests ───────────────────────────────────────
 
     #[test]
