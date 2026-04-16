@@ -10652,10 +10652,12 @@ mod tests {
         // External file has 0 cells (the autosave wrote an empty notebook)
         let external_cells: Vec<CellSnapshot> = vec![];
 
-        let changed =
-            apply_ipynb_changes(&room, &external_cells, &HashMap::new(), false).await;
+        let changed = apply_ipynb_changes(&room, &external_cells, &HashMap::new(), false).await;
         // No changes should be applied — cells preserved
-        assert!(!changed, "Should not delete cells when no save snapshot exists");
+        assert!(
+            !changed,
+            "Should not delete cells when no save snapshot exists"
+        );
 
         let cells = {
             let doc = room.doc.read().await;
