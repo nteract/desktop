@@ -38,11 +38,27 @@ use crate::snapshot::NotebookSnapshot;
 /// Rebuild a `SharedDocState` after an automerge panic by round-tripping
 /// save→load to clear corrupted internal indices, then resetting the
 /// peer sync state to force a fresh handshake with the daemon.
+///
+/// Includes a defensive cell-count guard: if the rebuilt doc would have
+/// fewer cells than the original, the rebuild is skipped (only sync state
+/// is reset). This prevents silent cell loss when `save()` on a
+/// panic-corrupted doc drops ops from the serialized bytes.
 fn rebuild_shared_doc_state(state: &mut SharedDocState) {
     let actor = state.doc.get_actor().clone();
+    let pre_cell_count = notebook_doc::get_cells_from_doc(&state.doc).len();
     let bytes = state.doc.save();
     match AutoCommit::load(&bytes) {
         Ok(mut doc) => {
+            let post_cell_count = notebook_doc::get_cells_from_doc(&doc).len();
+            if post_cell_count < pre_cell_count {
+                warn!(
+                    "[notebook-sync] rebuild_shared_doc_state would lose cells \
+                     ({} → {}), keeping original doc and resetting sync state only",
+                    pre_cell_count, post_cell_count
+                );
+                state.peer_state = sync::State::new();
+                return;
+            }
             doc.set_actor(actor);
             state.doc = doc;
             state.peer_state = sync::State::new();
@@ -50,6 +66,7 @@ fn rebuild_shared_doc_state(state: &mut SharedDocState) {
         }
         Err(e) => {
             warn!("[notebook-sync] Failed to rebuild doc after panic: {}", e);
+            state.peer_state = sync::State::new();
         }
     }
 }

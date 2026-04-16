@@ -1012,11 +1012,25 @@ impl NotebookDoc {
     /// and `load()` reconstructs all internal data structures from scratch.
     /// This is the document-level equivalent of automerge-repo's
     /// `decodeSyncState(encodeSyncState(state))` round-trip hack.
+    ///
+    /// Includes a defensive cell-count guard: if the rebuilt doc would have
+    /// fewer cells, the rebuild is skipped to prevent silent cell loss when
+    /// `save()` on a panic-corrupted doc drops ops from the serialized bytes.
     pub fn rebuild_from_save(&mut self) -> bool {
         let actor = self.doc.get_actor().clone();
+        let pre_cell_count = self.cell_count();
         let bytes = self.doc.save();
         match AutoCommit::load(&bytes) {
             Ok(mut doc) => {
+                let post_cell_count = get_cells_from_doc(&doc).len();
+                if post_cell_count < pre_cell_count {
+                    #[cfg(feature = "persistence")]
+                    warn!(
+                        "[notebook-doc] rebuild_from_save would lose cells ({} → {}), skipping",
+                        pre_cell_count, post_cell_count
+                    );
+                    return false;
+                }
                 doc.set_actor(actor);
                 self.doc = doc;
                 true
