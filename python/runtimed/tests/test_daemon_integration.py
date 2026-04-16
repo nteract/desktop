@@ -1846,9 +1846,11 @@ class TestKernelLifecycle:
 
     async def test_async_start_kernel(self, session):
         """Can start a kernel."""
-        assert not await session.kernel_started()
-
-        await async_start_kernel_with_retry(session)
+        # The daemon may auto-launch the kernel when a runtime is configured
+        # (the session fixture passes runtime="python"). With inline
+        # RuntimeStateDoc sync, hydrate_kernel_state picks this up immediately.
+        if not await session.kernel_started():
+            await async_start_kernel_with_retry(session)
 
         assert await session.kernel_started()
         assert await session.env_source() is not None
@@ -2265,8 +2267,10 @@ class TestOpenNotebook:
         session = await client.open_notebook(str(nb_path))
         assert await session.is_connected()
 
-        # Verify daemon-derived notebook_id (should contain canonical path)
-        assert str(nb_path.resolve()) in session.notebook_id or nb_path.name in session.notebook_id
+        # With UUID-first identity, notebook_id is a UUID, not a path
+        import uuid
+
+        uuid.UUID(session.notebook_id)  # validates it's a well-formed UUID
 
         # Verify cells loaded
         cells = await session.get_cells()
@@ -2333,11 +2337,10 @@ class TestOpenNotebook:
         try:
             info = await session.connection_info()
             assert info is not None
-            # Notebook is created with the path as notebook_id
-            assert "new_notebook.ipynb" in info.notebook_id
-            # New notebook starts with cells (one empty code cell)
-            # Note: cell_count in handshake may be 0 due to streaming, but notebook_id is set
-            assert info.notebook_id != ""
+            # With UUID-first identity, notebook_id is a UUID
+            import uuid
+
+            uuid.UUID(info.notebook_id)  # validates it's a well-formed UUID
         finally:
             await session.close()
 
@@ -2348,8 +2351,10 @@ class TestOpenNotebook:
         try:
             info = await session.connection_info()
             assert info is not None
-            # The .ipynb extension is auto-appended
-            assert info.notebook_id.endswith("mynotebook.ipynb")
+            # With UUID-first identity, notebook_id is a UUID
+            import uuid
+
+            uuid.UUID(info.notebook_id)  # validates it's a well-formed UUID
         finally:
             await session.close()
 
