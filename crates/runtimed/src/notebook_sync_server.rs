@@ -1279,10 +1279,10 @@ impl NotebookRoom {
         } else {
             Some(PathBuf::from(notebook_id))
         };
-        let trust_state = if is_untitled_notebook(notebook_id) {
+        let trust_state = match &path {
             // Untitled notebooks have no .ipynb on disk — trust signature lives
             // in the persisted Automerge doc we just loaded.
-            match doc.get_metadata_snapshot() {
+            None => match doc.get_metadata_snapshot() {
                 Some(snapshot) => verify_trust_from_snapshot(&snapshot),
                 None => TrustState {
                     status: runt_trust::TrustStatus::NoDependencies,
@@ -1294,9 +1294,8 @@ impl NotebookRoom {
                     },
                     pending_launch: false,
                 },
-            }
-        } else {
-            verify_trust_from_file(path.as_deref().expect("file-backed room always has path"))
+            },
+            Some(p) => verify_trust_from_file(p),
         };
         info!(
             "[notebook-sync] Trust status for {}: {:?}",
@@ -1415,8 +1414,8 @@ impl NotebookRoom {
         } else {
             Some(PathBuf::from(notebook_id))
         };
-        let trust_state = if is_untitled_notebook(notebook_id) {
-            match doc.get_metadata_snapshot() {
+        let trust_state = match &path {
+            None => match doc.get_metadata_snapshot() {
                 Some(snapshot) => verify_trust_from_snapshot(&snapshot),
                 None => TrustState {
                     status: runt_trust::TrustStatus::NoDependencies,
@@ -1428,9 +1427,8 @@ impl NotebookRoom {
                     },
                     pending_launch: false,
                 },
-            }
-        } else {
-            verify_trust_from_file(path.as_deref().expect("file-backed room always has path"))
+            },
+            Some(p) => verify_trust_from_file(p),
         };
         let state_doc = Arc::new(RwLock::new(RuntimeStateDoc::new()));
         let (state_changed_tx, _) = broadcast::channel(16);
@@ -1992,7 +1990,7 @@ where
     if peers == 1 {
         // Check if notebook_id is a UUID (new unsaved notebook) vs a file path
         let path_snapshot = room.path.read().await.clone();
-        let is_new_notebook = path_snapshot.as_ref().map_or(true, |p| !p.exists())
+        let is_new_notebook = path_snapshot.as_ref().is_none_or(|p| !p.exists())
             && uuid::Uuid::parse_str(&notebook_id).is_ok();
 
         // Scope the trust_state read guard so it drops before
@@ -2010,7 +2008,7 @@ where
             // For existing files: trust must be verified (Trusted or NoDependencies)
             // For new notebooks (UUID, no file): NoDependencies is safe to auto-launch
             // For newly-created notebooks at a path: also safe to auto-launch
-            && (path_snapshot.as_ref().map_or(false, |p| p.exists()) || is_new_notebook || created_new_at_path);
+            && (path_snapshot.as_ref().is_some_and(|p| p.exists()) || is_new_notebook || created_new_at_path);
 
         if should_auto_launch {
             info!(
@@ -2069,7 +2067,7 @@ where
             info!(
                 "[notebook-sync] Auto-launch skipped for {} (trust: {:?}, has_kernel: {}, path_exists: {}, is_new: {}, created_at_path: {})",
                 notebook_id, trust_status, has_kernel,
-                path_snapshot.as_ref().map_or(false, |p| p.exists()), is_new_notebook, created_new_at_path
+                path_snapshot.as_ref().is_some_and(|p| p.exists()), is_new_notebook, created_new_at_path
             );
         }
     }
