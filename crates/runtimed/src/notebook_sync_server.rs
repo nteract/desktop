@@ -625,8 +625,7 @@ fn compute_env_sync_diff(
 /// blob-store hashes, then updates the cell-local `resolved_assets` maps so
 /// isolated markdown rendering can rewrite those refs to blob URLs.
 async fn process_markdown_assets(room: &NotebookRoom) {
-    let notebook_path_val = room.notebook_path.read().await.clone();
-    let notebook_path = notebook_path_val.exists().then_some(notebook_path_val);
+    let notebook_path = room.path.read().await.clone().filter(|p| p.exists());
     let nbformat_attachments = room.nbformat_attachments.read().await.clone();
 
     // Fork BEFORE async resolution so the fork's baseline predates
@@ -1050,10 +1049,10 @@ pub struct NotebookRoom {
     pub blob_store: Arc<BlobStore>,
     /// Trust state for this notebook (for auto-launch decisions).
     pub trust_state: Arc<RwLock<TrustState>>,
-    /// The notebook file path (notebook_id is the path).
-    /// Wrapped in RwLock so it can be updated when an ephemeral (UUID-keyed) room
-    /// is re-keyed to a file-path room on save.
-    pub notebook_path: RwLock<PathBuf>,
+    /// The `.ipynb` path, when this room is file-backed. `None` for untitled and
+    /// ephemeral rooms. Mutated when an untitled room is saved to disk (see
+    /// `handle_save_notebook`).
+    pub path: RwLock<Option<PathBuf>>,
     /// Raw nbformat attachments preserved from disk, keyed by cell ID.
     /// These are not user-editable in the current UI, so the file remains the source of truth.
     pub nbformat_attachments: Arc<RwLock<HashMap<String, serde_json::Value>>>,
@@ -1275,7 +1274,11 @@ impl NotebookRoom {
             Some(persist_tx)
         };
 
-        let notebook_path = PathBuf::from(notebook_id);
+        let path = if is_untitled_notebook(notebook_id) {
+            None
+        } else {
+            Some(PathBuf::from(notebook_id))
+        };
         let trust_state = if is_untitled_notebook(notebook_id) {
             // Untitled notebooks have no .ipynb on disk — trust signature lives
             // in the persisted Automerge doc we just loaded.
@@ -1293,7 +1296,7 @@ impl NotebookRoom {
                 },
             }
         } else {
-            verify_trust_from_file(&notebook_path)
+            verify_trust_from_file(path.as_deref().expect("file-backed room always has path"))
         };
         info!(
             "[notebook-sync] Trust status for {}: {:?}",
@@ -1348,7 +1351,7 @@ impl NotebookRoom {
             is_ephemeral: AtomicBool::new(ephemeral),
             blob_store,
             trust_state: Arc::new(RwLock::new(trust_state)),
-            notebook_path: RwLock::new(notebook_path),
+            path: RwLock::new(path),
             nbformat_attachments: Arc::new(RwLock::new(HashMap::new())),
             working_dir: Arc::new(RwLock::new(None)),
             auto_launch_at: Arc::new(RwLock::new(None)),
@@ -1407,7 +1410,11 @@ impl NotebookRoom {
         let (persist_tx, persist_rx) = watch::channel::<Option<Vec<u8>>>(None);
         spawn_persist_debouncer(persist_rx, persist_path.clone());
         let (presence_tx, _) = broadcast::channel(64);
-        let notebook_path = PathBuf::from(notebook_id);
+        let path = if is_untitled_notebook(notebook_id) {
+            None
+        } else {
+            Some(PathBuf::from(notebook_id))
+        };
         let trust_state = if is_untitled_notebook(notebook_id) {
             match doc.get_metadata_snapshot() {
                 Some(snapshot) => verify_trust_from_snapshot(&snapshot),
@@ -1423,7 +1430,7 @@ impl NotebookRoom {
                 },
             }
         } else {
-            verify_trust_from_file(&notebook_path)
+            verify_trust_from_file(path.as_deref().expect("file-backed room always has path"))
         };
         let state_doc = Arc::new(RwLock::new(RuntimeStateDoc::new()));
         let (state_changed_tx, _) = broadcast::channel(16);
@@ -1441,7 +1448,7 @@ impl NotebookRoom {
             is_ephemeral: AtomicBool::new(false),
             blob_store,
             trust_state: Arc::new(RwLock::new(trust_state)),
-            notebook_path: RwLock::new(notebook_path),
+            path: RwLock::new(path),
             nbformat_attachments: Arc::new(RwLock::new(HashMap::new())),
             working_dir: Arc::new(RwLock::new(None)),
             auto_launch_at: Arc::new(RwLock::new(None)),
@@ -1507,14 +1514,14 @@ pub type NotebookRooms = Arc<Mutex<HashMap<String, Arc<NotebookRoom>>>>;
 /// local file.
 ///
 /// For .ipynb files, a file watcher is spawned to detect external changes.
-/// Find an existing room whose `notebook_path` matches the given canonical path.
+/// Find an existing room whose `path` matches the given canonical path.
 ///
 /// Handles the case where an ephemeral (UUID-keyed) room has been saved to
 /// a file path but not yet re-keyed in the rooms map. Without this, a second
 /// peer opening the same file path would create a duplicate room, leading to
 /// a re-key collision.
 ///
-/// Uses `try_read()` on `notebook_path` to avoid blocking — if a room's path
+/// Uses `try_read()` on `path` to avoid blocking — if a room's path
 /// lock is contended (rare), that room is skipped and will be caught by the
 /// re-key collision handler instead.
 pub fn find_room_by_notebook_path(
@@ -1526,16 +1533,16 @@ pub fn find_room_by_notebook_path(
         return Some(room.clone());
     }
 
-    // Scan UUID-keyed rooms for a matching notebook_path.
-    // This catches rooms that have been saved (notebook_path updated) but
+    // Scan UUID-keyed rooms for a matching path.
+    // This catches rooms that have been saved (path updated) but
     // not yet re-keyed in the map.
     let canonical = PathBuf::from(canonical_path);
     for (key, room) in rooms {
         if !is_untitled_notebook(key) {
             continue;
         }
-        if let Ok(guard) = room.notebook_path.try_read() {
-            if *guard == canonical {
+        if let Ok(guard) = room.path.try_read() {
+            if guard.as_deref() == Some(canonical.as_path()) {
                 info!(
                     "[notebook-sync] Found ephemeral room {} with matching path {}",
                     key, canonical_path
@@ -1984,9 +1991,9 @@ where
     // Auto-launch kernel if this is the first peer and notebook is trusted
     if peers == 1 {
         // Check if notebook_id is a UUID (new unsaved notebook) vs a file path
-        let notebook_path_snapshot = room.notebook_path.read().await.clone();
-        let is_new_notebook =
-            !notebook_path_snapshot.exists() && uuid::Uuid::parse_str(&notebook_id).is_ok();
+        let path_snapshot = room.path.read().await.clone();
+        let is_new_notebook = path_snapshot.as_ref().map_or(true, |p| !p.exists())
+            && uuid::Uuid::parse_str(&notebook_id).is_ok();
 
         // Scope the trust_state read guard so it drops before
         // `has_kernel()` which acquires another lock (deadlock prevention).
@@ -2003,7 +2010,7 @@ where
             // For existing files: trust must be verified (Trusted or NoDependencies)
             // For new notebooks (UUID, no file): NoDependencies is safe to auto-launch
             // For newly-created notebooks at a path: also safe to auto-launch
-            && (notebook_path_snapshot.exists() || is_new_notebook || created_new_at_path);
+            && (path_snapshot.as_ref().map_or(false, |p| p.exists()) || is_new_notebook || created_new_at_path);
 
         if should_auto_launch {
             info!(
@@ -2062,7 +2069,7 @@ where
             info!(
                 "[notebook-sync] Auto-launch skipped for {} (trust: {:?}, has_kernel: {}, path_exists: {}, is_new: {}, created_at_path: {})",
                 notebook_id, trust_status, has_kernel,
-                notebook_path_snapshot.exists(), is_new_notebook, created_new_at_path
+                path_snapshot.as_ref().map_or(false, |p| p.exists()), is_new_notebook, created_new_at_path
             );
         }
     }
@@ -4615,10 +4622,10 @@ async fn rekey_ephemeral_room(
         });
     }
 
-    // Update the room's notebook_path so subsequent saves without an explicit
+    // Update the room's path so subsequent saves without an explicit
     // path write to the correct file
     let new_path = PathBuf::from(&canonical);
-    *room.notebook_path.write().await = new_path.clone();
+    *room.path.write().await = Some(new_path.clone());
 
     // Delete the old UUID-based persist file — the .ipynb is now source of truth.
     // Note: The debounced persistence task captures persist_path by value at spawn
@@ -5756,7 +5763,13 @@ async fn handle_notebook_request(
             {
                 info!("[notebook-sync] Spawning runtime agent subprocess");
 
-                let notebook_id = room.notebook_path.read().await.display().to_string();
+                let notebook_id = room
+                    .path
+                    .read()
+                    .await
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| room.id.to_string());
                 let runtime_agent_id =
                     format!("runtime-agent:{}", &uuid::Uuid::new_v4().to_string()[..8]);
                 let socket_path = daemon.socket_path().clone();
@@ -7224,7 +7237,7 @@ async fn format_notebook_cells(room: &NotebookRoom) -> Result<usize, String> {
 /// Save the notebook from the Automerge doc to disk as .ipynb.
 ///
 /// If `target_path` is Some, saves to that path (with .ipynb appended if needed).
-/// If `target_path` is None, saves to `room.notebook_path` (original file location).
+/// If `target_path` is None, saves to `room.path` (original file location).
 ///
 /// 1. Read existing .ipynb from disk (if it exists) to preserve unknown metadata
 /// 2. Read cells and metadata from the Automerge doc
@@ -7275,7 +7288,16 @@ async fn save_notebook_to_disk(
                 PathBuf::from(format!("{}.ipynb", p))
             }
         }
-        None => room.notebook_path.read().await.clone(),
+        None => match room.path.read().await.clone() {
+            Some(p) => p,
+            None => {
+                return Err(SaveError::Unrecoverable(
+                    "Cannot save untitled notebook without a target path. \
+                 Please provide an explicit save path."
+                        .to_string(),
+                ))
+            }
+        },
     };
 
     // Read existing .ipynb to preserve unknown metadata and cell metadata
@@ -7469,9 +7491,9 @@ async fn save_notebook_to_disk(
     // Record snapshot-time heads so the file watcher can fork_at this
     // point. Only update when saving to the primary path — saving to an
     // alternate path (Save As) must not corrupt the fork base for the
-    // watcher on room.notebook_path.
+    // file watcher.
     let is_primary_path =
-        target_path.is_none() || notebook_path == *room.notebook_path.read().await;
+        target_path.is_none() || room.path.read().await.as_deref() == Some(notebook_path.as_path());
     if is_primary_path {
         *room.last_save_heads.write().await = snapshot_heads;
         // Snapshot cell sources at save time so the file watcher can
@@ -7526,12 +7548,14 @@ async fn clone_notebook_to_disk(room: &NotebookRoom, target_path: &str) -> Resul
     let nbformat_attachments = room.nbformat_attachments.read().await.clone();
 
     // Read existing source notebook to preserve unknown top-level metadata keys.
-    let source_notebook_path = room.notebook_path.read().await.clone();
-    let existing: Option<serde_json::Value> =
-        match tokio::fs::read_to_string(&source_notebook_path).await {
+    let source_notebook_path = room.path.read().await.clone();
+    let existing: Option<serde_json::Value> = match source_notebook_path {
+        Some(ref p) => match tokio::fs::read_to_string(p).await {
             Ok(content) => serde_json::from_str(&content).ok(),
             Err(_) => None,
-        };
+        },
+        None => None,
+    };
 
     // Generate fresh env_id for the cloned notebook
     let new_env_id = uuid::Uuid::new_v4().to_string();
@@ -8790,14 +8814,14 @@ async fn apply_ipynb_changes(
         }
         map
     };
-    let notebook_path_for_assets = room.notebook_path.read().await.clone();
+    let notebook_path_for_assets = room.path.read().await.clone();
     let converted_assets: HashMap<String, ResolvedAssets> = {
         let mut map = HashMap::new();
         for cell in external_cells {
             if should_resolve_markdown_assets(&cell.cell_type) {
                 let resolved_assets = resolve_markdown_assets(
                     &cell.source,
-                    Some(&notebook_path_for_assets),
+                    notebook_path_for_assets.as_deref(),
                     external_attachments.get(&cell.id),
                     &room.blob_store,
                 )
@@ -9453,6 +9477,7 @@ pub(crate) fn spawn_notebook_file_watcher(
 mod tests {
     use super::*;
     use serial_test::serial;
+    use uuid::Uuid;
 
     #[test]
     fn test_sanitize_peer_label_basic() {
@@ -9534,6 +9559,26 @@ mod tests {
             false, // ephemeral
         );
         assert_eq!(room.id, uuid);
+    }
+
+    #[tokio::test]
+    async fn untitled_room_has_path_none() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let blob_store = test_blob_store(&tmp);
+        let room =
+            NotebookRoom::new_fresh(&Uuid::new_v4().to_string(), tmp.path(), blob_store, false);
+        assert!(room.path.read().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn file_backed_room_has_path_some() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let blob_store = test_blob_store(&tmp);
+        let fake_path = tmp.path().join("note.ipynb");
+        let room =
+            NotebookRoom::new_fresh(fake_path.to_str().unwrap(), tmp.path(), blob_store, false);
+        let guard = room.path.read().await;
+        assert_eq!(guard.as_deref(), Some(fake_path.as_path()));
     }
 
     #[tokio::test]
@@ -9992,7 +10037,7 @@ mod tests {
                 },
                 pending_launch: false,
             })),
-            notebook_path: RwLock::new(notebook_path.clone()),
+            path: RwLock::new(Some(notebook_path.clone())),
             nbformat_attachments: Arc::new(RwLock::new(HashMap::new())),
             working_dir: Arc::new(RwLock::new(None)),
             auto_launch_at: Arc::new(RwLock::new(None)),
