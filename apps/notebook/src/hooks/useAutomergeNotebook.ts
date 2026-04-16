@@ -65,13 +65,17 @@ export function useAutomergeNotebook() {
     refreshBlobPort();
   }, []);
 
-  // Clear dirty state on daemon autosave.
+  // Clear dirty state on daemon autosave. Also sync Tauri-side path state
+  // when the daemon broadcasts a path change (untitled→saved, save-as, or a
+  // peer renamed the notebook). The UUID is stable across all of this.
   useEffect(() => {
     return subscribeBroadcast((payload) => {
       const broadcast = payload as DaemonBroadcast;
       if (broadcast.event === "notebook_autosaved") {
         setDirty(false);
         invoke("mark_notebook_clean").catch(() => {});
+      } else if (broadcast.event === "path_changed") {
+        invoke("apply_path_changed", { path: broadcast.path }).catch(() => {});
       }
     });
   }, []);

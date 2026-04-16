@@ -18,7 +18,7 @@ extern crate runtimed_client as runtimed;
 pub use runtimed::runtime::Runtime;
 
 use notebook_protocol::protocol::{
-    CompletionItem, HistoryEntry, NotebookRequest, NotebookResponse,
+    CompletionItem, HistoryEntry, NotebookRequest, NotebookResponse, SaveErrorKind,
 };
 use notebook_sync::RelayHandle;
 
@@ -1791,6 +1791,36 @@ fn mark_notebook_clean(
     Ok(())
 }
 
+/// Sync the Tauri window's local path state and title with a `PathChanged`
+/// broadcast from the daemon. Called by the frontend when another peer (an
+/// MCP agent, a sibling window) saves or renames the notebook — without this,
+/// the Tauri window would hold a stale path and show a stale title.
+///
+/// Safe to call when the path is unchanged; behavior is idempotent.
+#[tauri::command]
+fn apply_path_changed(
+    path: Option<String>,
+    window: tauri::Window,
+    registry: tauri::State<'_, WindowNotebookRegistry>,
+) -> Result<(), String> {
+    let context_path = path_for_window(&window, registry.inner())?;
+    let new_path = path.as_deref().map(PathBuf::from);
+
+    if let Ok(mut p) = context_path.lock() {
+        *p = new_path.clone();
+    }
+
+    // Update window title to match the new path (or "Untitled" if cleared).
+    let title = new_path
+        .as_deref()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("Untitled.ipynb");
+    let _ = window.set_title(title);
+
+    Ok(())
+}
+
 /// Format all code cells in the notebook and save.
 /// Formatting is best-effort - cells that fail to format are saved as-is.
 ///
@@ -1830,6 +1860,9 @@ async fn save_notebook(
         Ok(NotebookResponse::NotebookSaved { path, .. }) => {
             info!("[save] Notebook saved via daemon to: {}", path);
         }
+        Ok(NotebookResponse::SaveError { error }) => {
+            return Err(format_save_error(&error));
+        }
         Ok(NotebookResponse::Error { error }) => {
             return Err(format!("Daemon save failed: {}", error));
         }
@@ -1844,6 +1877,18 @@ async fn save_notebook(
     // Mark as clean
     dirty.store(false, Ordering::SeqCst);
     Ok(())
+}
+
+/// Format a structured daemon `SaveErrorKind` as a user-facing message.
+fn format_save_error(error: &SaveErrorKind) -> String {
+    match error {
+        SaveErrorKind::PathAlreadyOpen { path, .. } => format!(
+            "Cannot save: {} is already open in another notebook window. \
+             Close that window first, or choose a different path.",
+            path
+        ),
+        SaveErrorKind::Io { message } => format!("Failed to save notebook: {}", message),
+    }
 }
 
 /// Save notebook to a specific path (Save As).
@@ -1879,6 +1924,9 @@ async fn save_notebook_as(
         Ok(NotebookResponse::NotebookSaved { path: daemon_path }) => {
             info!("[save-as] Notebook saved via daemon to: {}", daemon_path);
             PathBuf::from(daemon_path)
+        }
+        Ok(NotebookResponse::SaveError { error }) => {
+            return Err(format_save_error(&error));
         }
         Ok(NotebookResponse::Error { error }) => {
             return Err(format!("Daemon save failed: {}", error));
@@ -4193,6 +4241,7 @@ pub fn run(
             // Notebook file operations
             has_notebook_path,
             mark_notebook_clean,
+            apply_path_changed,
             save_notebook,
             save_notebook_as,
             get_default_save_directory,
