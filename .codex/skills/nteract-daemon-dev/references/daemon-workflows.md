@@ -58,9 +58,9 @@ Start or restart the worktree daemon when:
 - You are verifying MCP server behavior against local Rust changes
 - You are comparing behavior across worktrees and need isolation
 
-## Prefer supervisor tools when available
+## Prefer nteract-dev tools when available
 
-If the nteract-dev MCP supervisor is available, prefer:
+If `nteract-dev` is available, prefer:
 
 - `up` — idempotent "bring the dev environment up". Ensures daemon + child are healthy. Args: `vite=true`, `rebuild=true`, `mode="debug"|"release"`
 - `down` — stop the managed Vite dev server. `daemon=true` also stops the daemon
@@ -68,7 +68,7 @@ If the nteract-dev MCP supervisor is available, prefer:
 - `logs` — tail daemon logs
 - `vite_logs` — tail Vite dev server logs when you need the Vite side of a hot-reload session
 
-These avoid manual env-var mistakes. The older `supervisor_*` names (`supervisor_restart`, `supervisor_rebuild`, `supervisor_start_vite`, `supervisor_stop`, `supervisor_set_mode`, `supervisor_status`, `supervisor_logs`, `supervisor_vite_logs`) still work as aliases.
+These avoid manual env-var mistakes.
 
 ## Safety rules
 

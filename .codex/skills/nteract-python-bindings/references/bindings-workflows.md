@@ -58,7 +58,7 @@ The MCP server is `runt mcp` (Rust, shipped with the desktop app). For developme
 uv run nteract
 ```
 
-If the MCP supervisor is available, prefer `cargo xtask run-mcp` or the supervisor tools instead of a manual launch.
+If `nteract-dev` is available, prefer `cargo xtask run-mcp` or its tools (`up`, `down`, `status`, `logs`, `vite_logs`) instead of a manual launch.
 
 Use `default_socket_path()` for current-process resolution. Use `socket_path_for_channel("stable"|"nightly")` only when you need an explicit channel path that ignores `RUNTIMED_SOCKET_PATH`.
 
