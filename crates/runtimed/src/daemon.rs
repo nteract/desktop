@@ -486,12 +486,6 @@ impl Pool {
     }
 }
 
-/// Entry in the redirect map for re-keyed ephemeral rooms.
-pub(crate) struct RedirectEntry {
-    pub(crate) new_notebook_id: String,
-    pub(crate) created_at: tokio::time::Instant,
-}
-
 /// The pool daemon state.
 pub struct Daemon {
     config: DaemonConfig,
@@ -540,9 +534,6 @@ pub struct Daemon {
     /// loop would miss short-lived sessions and pin the daemon back in
     /// the post-restart state forever.
     rooms_ever_seen: std::sync::atomic::AtomicBool,
-    /// Redirect map: old ephemeral UUID -> new canonical path after rekey.
-    /// Used so peers reconnecting with the old UUID find the re-keyed room.
-    pub(crate) redirect_map: std::sync::Mutex<HashMap<String, RedirectEntry>>,
 }
 
 /// Error returned when another daemon is already running.
@@ -630,7 +621,6 @@ impl Daemon {
             notebook_rooms: Arc::new(Mutex::new(HashMap::new())),
             path_index: Arc::new(tokio::sync::Mutex::new(PathIndex::new())),
             rooms_ever_seen: std::sync::atomic::AtomicBool::new(false),
-            redirect_map: std::sync::Mutex::new(HashMap::new()),
         }))
     }
 
@@ -1669,22 +1659,6 @@ impl Daemon {
                 .to_string()
         };
 
-        // Check if this notebook_id was re-keyed (ephemeral -> saved).
-        let notebook_id = match self.redirect_map.lock() {
-            Ok(redirects) => {
-                if let Some(entry) = redirects.get(&notebook_id) {
-                    info!(
-                        "[runtimed] Redirecting open {} -> {} (re-keyed room)",
-                        notebook_id, entry.new_notebook_id
-                    );
-                    entry.new_notebook_id.clone()
-                } else {
-                    notebook_id
-                }
-            }
-            Err(_) => notebook_id,
-        };
-
         // Get or create room for this notebook.
         // First check if an existing room already owns this canonical path.
         // The path_index gives O(1) lookup without scanning all rooms.
@@ -1867,26 +1841,7 @@ impl Daemon {
 
         // Use provided notebook_id (session restore) or generate a new UUID
         let notebook_id = notebook_id_hint.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-
-        // Check if this notebook_id was re-keyed (ephemeral -> saved).
-        // If so, redirect to the new canonical path so the peer joins the
-        // existing room instead of creating a new empty one.
-        // Check redirect map and resolve ephemeral flag together.
-        // If the UUID was re-keyed (saved), the room is now file-backed — force persistent.
-        let (notebook_id, ephemeral) = match self.redirect_map.lock() {
-            Ok(redirects) => {
-                if let Some(entry) = redirects.get(&notebook_id) {
-                    info!(
-                        "[runtimed] Redirecting {} -> {} (re-keyed room)",
-                        notebook_id, entry.new_notebook_id
-                    );
-                    (entry.new_notebook_id.clone(), false)
-                } else {
-                    (notebook_id, ephemeral.unwrap_or(false))
-                }
-            }
-            Err(_) => (notebook_id, ephemeral.unwrap_or(false)),
-        };
+        let ephemeral = ephemeral.unwrap_or(false);
 
         // Create room for this notebook. For CreateNotebook, the notebook_id is
         // always a UUID (new room) or an existing UUID (session restore).
