@@ -250,6 +250,7 @@ pub async fn connect_with_options(
         reader,
         writer,
     )
+    .await
     .map(|(handle, broadcast_rx)| ConnectResult {
         handle,
         broadcast_rx,
@@ -330,6 +331,7 @@ pub async fn connect_open(
         reader,
         writer,
     )
+    .await
     .map(|(handle, broadcast_rx)| OpenResult {
         handle,
         broadcast_rx,
@@ -439,6 +441,7 @@ async fn connect_create_inner(
         reader,
         writer,
     )
+    .await
     .map(|(handle, broadcast_rx)| CreateResult {
         handle,
         broadcast_rx,
@@ -455,14 +458,14 @@ async fn connect_create_inner(
 ///
 /// This is the common setup after handshake + initial sync, shared by
 /// all connect variants.
-fn build_and_spawn<R, W>(
+async fn build_and_spawn<R, W>(
     doc: AutoCommit,
     peer_state: sync::State,
     notebook_id: String,
     pending_broadcasts: Vec<NotebookBroadcast>,
     pending_state_sync_frames: Vec<Vec<u8>>,
-    reader: R,
-    writer: W,
+    mut reader: R,
+    mut writer: W,
 ) -> Result<(DocHandle, crate::BroadcastReceiver), SyncError>
 where
     R: AsyncRead + Unpin + Send + 'static,
@@ -471,25 +474,74 @@ where
     let mut shared_state = SharedDocState::new(doc, notebook_id.clone());
     shared_state.peer_state = peer_state;
 
-    // Apply any RuntimeStateSync frames buffered during initial sync.
-    // do_initial_sync only has the notebook doc — the RuntimeStateDoc lives
-    // in SharedDocState, so we replay the frames here.
+    // Complete the RuntimeStateDoc sync handshake inline so the doc is
+    // fully populated before we return the handle. The Automerge sync
+    // protocol is multi-round: the daemon's initial message contains only
+    // heads/bloom; the actual document data arrives after we reply.
     //
-    // After applying, generate reply sync messages. The Automerge sync
-    // protocol requires a reply from the receiver so the sender knows what
-    // data to include in subsequent messages. Without the reply, the daemon
-    // only sends heads/bloom and never delivers the actual document changes.
-    let mut pending_state_sync_replies: Vec<Vec<u8>> = Vec::new();
+    // 1. Apply buffered frames from do_initial_sync
+    // 2. Send reply messages to the daemon
+    // 3. Receive follow-up frames until convergence (100ms timeout)
     {
+        // Step 1: Apply buffered frames
         for frame_payload in &pending_state_sync_frames {
             if let Ok(msg) = sync::Message::decode(frame_payload) {
                 let _ = shared_state.receive_state_sync_message(msg);
             }
         }
-        // Generate reply messages for each applied frame. Automerge sync
-        // may need multiple rounds, so generate until no more replies.
+
+        // Step 2: Send replies
         while let Some(reply) = shared_state.generate_state_sync_message() {
-            pending_state_sync_replies.push(reply.encode());
+            connection::send_typed_frame(
+                &mut writer,
+                NotebookFrameType::RuntimeStateSync,
+                &reply.encode(),
+            )
+            .await?;
+        }
+
+        // Step 3: Receive follow-up frames until convergence
+        loop {
+            match tokio::time::timeout(
+                Duration::from_millis(100),
+                connection::recv_typed_frame(&mut reader),
+            )
+            .await
+            {
+                Ok(Ok(Some(frame))) if frame.frame_type == NotebookFrameType::RuntimeStateSync => {
+                    if let Ok(msg) = sync::Message::decode(&frame.payload) {
+                        let _ = shared_state.receive_state_sync_message(msg);
+                    }
+                    // Reply to each round
+                    while let Some(reply) = shared_state.generate_state_sync_message() {
+                        connection::send_typed_frame(
+                            &mut writer,
+                            NotebookFrameType::RuntimeStateSync,
+                            &reply.encode(),
+                        )
+                        .await?;
+                    }
+                }
+                Ok(Ok(Some(_frame))) => {
+                    // Non-RuntimeStateSync frame — sync has converged,
+                    // but we received a different frame type (e.g. broadcast).
+                    // We can't put it back, so break and let the sync task
+                    // handle subsequent frames.
+                    break;
+                }
+                Ok(Ok(None)) => {
+                    return Err(SyncError::Protocol(
+                        "Connection closed during RuntimeStateDoc sync".into(),
+                    ));
+                }
+                Ok(Err(e)) => {
+                    return Err(SyncError::Io(e));
+                }
+                Err(_) => {
+                    // Timeout — RuntimeStateDoc sync converged
+                    break;
+                }
+            }
         }
     }
 
@@ -526,7 +578,6 @@ where
         cmd_rx,
         snapshot_tx: Arc::clone(&snapshot_tx),
         broadcast_tx,
-        pending_state_sync_replies,
     };
 
     let notebook_id_for_task = notebook_id;
