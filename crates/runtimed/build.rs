@@ -1,3 +1,5 @@
+use std::fs;
+use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
@@ -17,15 +19,35 @@ fn main() {
     // rerun-if-changed above, cargo won't use its default behavior).
     println!("cargo:rerun-if-changed=build.rs");
 
-    // Capture short commit hash for version-mismatch detection.
-    let commit = git_commit_short();
-    println!("cargo:rustc-env=GIT_COMMIT={commit}");
+    write_git_hash();
+}
 
-    // We intentionally do NOT watch .git/HEAD or refs — that causes
-    // recompilation of this crate and all dependents on every commit,
-    // branch switch, pull, or fetch. The hash is refreshed whenever
-    // this build script reruns (plugin asset change or build.rs edit).
-    // CI always starts clean so release builds always get the right hash.
+/// Write the git commit hash to `$OUT_DIR/git_hash.txt`, skipping the write
+/// if the content hasn't changed. Consumer code uses:
+///
+///     include_str!(concat!(env!("OUT_DIR"), "/git_hash.txt"))
+///
+/// Because cargo tracks file modification times on included files, an
+/// unchanged hash file means no recompilation — even after a rebase that
+/// doesn't touch this crate's source. This replaces the old
+/// `cargo:rustc-env=GIT_COMMIT=...` approach which forced recompilation
+/// every time the build script ran.
+#[allow(clippy::unwrap_used)]
+fn write_git_hash() {
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let hash_file = out_dir.join("git_hash.txt");
+    let hash = git_commit_short();
+
+    // Only write if the content actually changed — preserves mtime so
+    // cargo's incremental compilation skips dependent rustc invocations.
+    let needs_write = match fs::read_to_string(&hash_file) {
+        Ok(existing) => existing != hash,
+        Err(_) => true,
+    };
+
+    if needs_write {
+        fs::write(&hash_file, &hash).unwrap();
+    }
 }
 
 fn git_commit_short() -> String {

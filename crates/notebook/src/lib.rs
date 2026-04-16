@@ -864,7 +864,11 @@ mod tests {
 /// Get the version string of the bundled daemon.
 /// Format: "{CARGO_PKG_VERSION}+{GIT_COMMIT}" e.g., "1.4.1+a1b2c3d"
 fn bundled_daemon_version() -> String {
-    format!("{}+{}", env!("CARGO_PKG_VERSION"), env!("GIT_COMMIT"))
+    format!(
+        "{}+{}",
+        env!("CARGO_PKG_VERSION"),
+        include_str!(concat!(env!("OUT_DIR"), "/git_hash.txt"))
+    )
 }
 
 /// Extract the commit hash from a version string.
@@ -1545,8 +1549,8 @@ async fn get_git_info() -> Option<GitInfo> {
             .filter(|s| !s.is_empty());
 
         Some(GitInfo {
-            branch: env!("GIT_BRANCH").to_string(),
-            commit: env!("GIT_COMMIT").to_string(),
+            branch: include_str!(concat!(env!("OUT_DIR"), "/git_branch.txt")).to_string(),
+            commit: include_str!(concat!(env!("OUT_DIR"), "/git_hash.txt")).to_string(),
             description,
         })
     }

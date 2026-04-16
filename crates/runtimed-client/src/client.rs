@@ -567,7 +567,11 @@ where
     let mut manager = ServiceManager::default();
 
     // Version of the bundled/calling binary (includes git commit for dev builds)
-    let bundled_version = format!("{}+{}", env!("CARGO_PKG_VERSION"), env!("GIT_COMMIT"));
+    let bundled_version = format!(
+        "{}+{}",
+        env!("CARGO_PKG_VERSION"),
+        include_str!(concat!(env!("OUT_DIR"), "/git_hash.txt"))
+    );
 
     // First, try to ping the daemon
     if client.ping().await.is_ok() {

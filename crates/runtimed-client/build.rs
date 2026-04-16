@@ -1,17 +1,32 @@
+use std::fs;
+use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
-    // Capture short commit hash for version-mismatch detection.
-    // This ensures the daemon gets restarted when the binary changes,
-    // even if the crate version (Cargo.toml) hasn't been bumped.
-    let commit = git_commit_short();
-    println!("cargo:rustc-env=GIT_COMMIT={commit}");
+    write_git_hash();
 
     // No rerun-if-changed directives — cargo's default behavior reruns
     // this script when any file in the package changes, which is exactly
-    // when we want a fresh commit hash. We intentionally do NOT watch
-    // .git/HEAD or refs — that causes recompilation of this crate (and
-    // all dependents) on every commit, branch switch, pull, or fetch.
+    // when we want a fresh commit hash check.
+}
+
+/// Write the git commit hash to `$OUT_DIR/git_hash.txt`, skipping the write
+/// if the content hasn't changed. See `crates/runtimed/build.rs` for the
+/// rationale — this avoids recompilation when the hash doesn't change.
+#[allow(clippy::unwrap_used)]
+fn write_git_hash() {
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let hash_file = out_dir.join("git_hash.txt");
+    let hash = git_commit_short();
+
+    let needs_write = match fs::read_to_string(&hash_file) {
+        Ok(existing) => existing != hash,
+        Err(_) => true,
+    };
+
+    if needs_write {
+        fs::write(&hash_file, &hash).unwrap();
+    }
 }
 
 fn git_commit_short() -> String {
