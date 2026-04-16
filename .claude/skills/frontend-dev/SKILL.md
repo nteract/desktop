@@ -17,7 +17,7 @@ description: Run the notebook app in dev mode with hot reload. Use when starting
 | Run bundled binary | `cargo xtask run` |
 | One-shot setup | `cargo xtask dev` |
 | Lint/format | `cargo xtask lint --fix` |
-| MCP supervisor | `cargo xtask run-mcp` |
+| nteract-dev MCP server | `cargo xtask run-mcp` |
 
 ## `cargo xtask notebook` — Hot Reload
 
@@ -118,13 +118,13 @@ RUNTIMED_DEV=1 cargo xtask notebook      # Terminal 2
 
 ## MCP Server Development
 
-### nteract-dev Supervisor (recommended)
+### nteract-dev (recommended)
 
 ```bash
 cargo xtask run-mcp
 ```
 
-Starts the dev daemon, launches the dev-only `nteract-dev` supervisor, spawns a child `runt mcp`, proxies notebook tool calls, watches for file changes, and hot-reloads. Python bindings are rebuilt when the watched Rust paths require it.
+Starts the dev daemon, launches `nteract-dev` (the dev-only MCP server for this source tree), spawns a child `runt mcp`, proxies notebook tool calls, watches for file changes, and hot-reloads. Python bindings are rebuilt when the watched Rust paths require it.
 
 For editor config:
 
@@ -150,7 +150,7 @@ Use `nteract-dev` as the repo-local MCP server name so it stays distinct from an
 }
 ```
 
-### Direct Mode (no supervisor)
+### Direct Mode (no proxy)
 
 ```bash
 # Terminal 1: start dev daemon
@@ -160,7 +160,7 @@ cargo xtask dev-daemon
 cargo xtask dev-mcp
 ```
 
-### Supervisor Tools
+### nteract-dev Tools
 
 | Tool | Purpose |
 |------|---------|
@@ -169,8 +169,6 @@ cargo xtask dev-mcp
 | `status` | Read-only report of child, daemon, managed processes, build mode |
 | `logs` | Tail daemon log file |
 | `vite_logs` | Tail Vite dev server log file |
-
-The older `supervisor_*` names (`supervisor_status`, `supervisor_restart`, `supervisor_rebuild`, `supervisor_logs`, `supervisor_vite_logs`, `supervisor_start_vite`, `supervisor_stop`, `supervisor_set_mode`) still work as aliases.
 
 ### Hot Reload
 

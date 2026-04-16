@@ -1,6 +1,6 @@
 ---
 name: nteract-daemon-dev
-description: Work with the per-worktree runtimed daemon in the nteract desktop repo. Use when changing `crates/runtimed/**`, debugging daemon-backed notebook behavior, deriving `RUNTIMED_SOCKET_PATH`, checking daemon logs/status, running daemon-backed tests or reviews, or deciding whether to use `supervisor_*` tools versus manual `cargo xtask dev-daemon` commands.
+description: Work with the per-worktree runtimed daemon in the nteract desktop repo. Use when changing `crates/runtimed/**`, debugging daemon-backed notebook behavior, deriving `RUNTIMED_SOCKET_PATH`, checking daemon logs/status, running daemon-backed tests or reviews, or deciding whether to use the `nteract-dev` MCP tools (`up`/`down`/`status`/`logs`/`vite_logs`) versus manual `cargo xtask dev-daemon` commands.
 ---
 
 # nteract Daemon Dev
@@ -9,7 +9,7 @@ Use this skill to avoid talking to the wrong daemon and to keep daemon-backed ve
 
 ## Workflow
 
-1. Prefer `supervisor_*` tools when they are available.
+1. Prefer the `nteract-dev` MCP tools (`up`, `down`, `status`, `logs`, `vite_logs`) when they are available.
 2. Decide whether you are validating the default nightly source flow or an explicit stable flow. Source builds are nightly unless `RUNT_BUILD_CHANNEL=stable`.
 3. Otherwise, treat the worktree daemon as mandatory for daemon-backed verification.
 4. Export `RUNTIMED_DEV=1` and `RUNTIMED_WORKSPACE_PATH="$(pwd)"` before any manual `runt` command.
@@ -27,6 +27,6 @@ Use this skill to avoid talking to the wrong daemon and to keep daemon-backed ve
 
 ## Quick Start
 
-If you have supervisor tools, use them for daemon lifecycle and logs.
+If you have `nteract-dev` tools, use them for daemon lifecycle and logs.
 
 If you do not, read [references/daemon-workflows.md](references/daemon-workflows.md) and follow the manual command sequence there.

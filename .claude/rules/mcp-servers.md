@@ -10,34 +10,32 @@ Three nteract MCP servers may be available. Always use the right one:
 
 | Server | What it is | When to use |
 |--------|-----------|-------------|
-| `nteract-dev` | Dev MCP server with supervisor tools (`up`, `down`, `status`, `logs`, `vite_logs`). Manages a per-worktree dev daemon, hot-reloads on code changes. | **Default for all development work.** Use this for notebook interaction, daemon lifecycle, building, and testing. |
+| `nteract-dev` | Dev MCP server. Adds dev tools (`up`, `down`, `status`, `logs`, `vite_logs`) on top of the proxied `runt mcp` toolset. Manages a per-worktree dev daemon, hot-reloads on code changes. | **Default for all development work.** Use this for notebook interaction, daemon lifecycle, building, and testing. |
 | `nteract-nightly` | System-installed nightly release daemon | Diagnostics and inspection of the installed nightly app. Do NOT use for development. |
 | `nteract` | System-installed stable release daemon (nteract.app) | Diagnostics and inspection of the installed stable app. Do NOT use for development. |
 
 **Rules:**
 
-1. **Always prefer `nteract-dev`** (`mcp__nteract-dev__*` tools) for development work in this repo. It connects to the per-worktree dev daemon and includes supervisor tools for managing the build/daemon lifecycle.
+1. **Always prefer `nteract-dev`** (`mcp__nteract-dev__*` tools) for development work in this repo. It connects to the per-worktree dev daemon and includes the dev tools for managing the build/daemon lifecycle.
 2. **Never use `nteract-nightly` or `nteract` for development.** They connect to system-installed daemons and will not reflect your source changes.
 3. If `nteract-dev` tools are not available, fall back to `cargo xtask` commands — not to the system MCP servers.
-4. The supervisor tools are part of the `nteract-dev` server. They manage the dev daemon and build pipeline — prefer them over manual terminal commands.
+4. The dev tools (`up`, `down`, `status`, `logs`, `vite_logs`) live on the `nteract-dev` server. They manage the dev daemon and build pipeline — prefer them over manual terminal commands.
 
-## Supervisor tool surface (nteract-dev)
+## nteract-dev tool surface
 
-Consolidated around two verbs plus three read-only tools:
+Two verbs plus three read-only tools, layered on top of the proxied `runt mcp` toolset:
 
 | Tool | Purpose |
 |------|---------|
 | `up` | Idempotent "bring the dev environment to a working state." Sweeps zombie Vite processes, ensures the daemon is running, ensures the MCP child is healthy. Optional args: `vite=true` to also start Vite, `rebuild=true` to rebuild daemon + Python bindings first, `mode='debug'\|'release'` to switch build mode. Safe to call repeatedly — this is the first thing to reach for when things feel off. |
 | `down` | Stop the managed Vite dev server. Leaves the daemon running by default (launchd / the installed app may own it). Pass `daemon=true` to also stop the managed daemon process. |
-| `status` | Read-only report of supervisor, child, daemon, and managed-process state. |
+| `status` | Read-only report of `nteract-dev`, child, daemon, and managed-process state. |
 | `logs` | Tail the daemon log. Arg: `lines` (default 50). |
 | `vite_logs` | Tail the Vite dev server log. Arg: `lines` (default 50). |
 
-The older `supervisor_*` names (`supervisor_status`, `supervisor_restart`, `supervisor_rebuild`, `supervisor_logs`, `supervisor_vite_logs`, `supervisor_start_vite`, `supervisor_stop`, `supervisor_set_mode`) still work as aliases. Prefer the new names.
-
 ## MCP Server
 
-The supervisor always uses `runt mcp` (Rust-native, direct Automerge access, no Python overhead). It auto-builds `runt-cli` on startup and watches `crates/runt-mcp/src/` for hot reload. For the installed app, `runt mcp` ships as a sidecar binary — no Python or uv required.
+`nteract-dev` proxies `runt mcp` (Rust-native, direct Automerge access, no Python overhead). It auto-builds `runt-cli` on startup and watches `crates/runt-mcp/src/` for hot reload. For the installed app, `runt mcp` ships as a sidecar binary — no Python or uv required.
 
 ## System daemon CLI (`runt` / `runt-nightly`)
 
@@ -62,7 +60,7 @@ For the dev daemon, use `./target/debug/runt` directly (no `env -i` needed — d
 After setting up direnv, verify that the three MCP servers connect to the correct daemons:
 
 ```bash
-# 1. Check nteract-dev supervisor status (should show worktrees/ socket)
+# 1. Check nteract-dev status (should show worktrees/ socket)
 status
 # Expected socket: ~/.cache/runt-nightly/worktrees/{hash}/runtimed.sock
 

@@ -185,21 +185,23 @@ runt mcp
 # Or via the Python wrapper
 uv run nteract
 
-# Via nteract-dev supervisor (recommended for development, handles lifecycle)
+# Via nteract-dev (recommended for development, handles lifecycle)
 cargo xtask run-mcp
 ```
 
-### nteract MCP Tools (27 tools)
+### nteract MCP Tools (26 tools)
 
 | Category | Tools |
 |----------|-------|
-| Session | `list_active_notebooks`, `show_notebook`, `join_notebook`, `open_notebook`, `create_notebook`, `save_notebook` |
+| Session | `list_active_notebooks`, `open_notebook`, `create_notebook`, `save_notebook`, `launch_app` |
 | Kernel | `interrupt_kernel`, `restart_kernel` |
 | Dependencies | `add_dependency`, `remove_dependency`, `get_dependencies`, `sync_environment` |
-| Cell CRUD | `create_cell`, `get_cell`, `get_all_cells`, `set_cell`, `delete_cell`, `move_cell` |
+| Cell CRUD | `create_cell`, `get_cell`, `get_all_cells`, `set_cell`, `delete_cell`, `move_cell`, `clear_outputs` |
 | Cell metadata | `set_cells_source_hidden`, `set_cells_outputs_hidden`, `add_cell_tags`, `remove_cell_tags` |
-| Find/Replace | `replace_match`, `replace_regex` |
-| Execution | `execute_cell`, `run_all_cells`, `clear_outputs` |
+| Editing | `replace_match`, `replace_regex` |
+| Execution | `execute_cell`, `run_all_cells` |
+
+`join_notebook` is accepted as a backward-compat alias for `open_notebook`.
 
 Three packages are workspace members:
 
@@ -230,4 +232,4 @@ cd crates/runtimed-py
 VIRTUAL_ENV=../../.venv uv run --directory ../../python/runtimed maturin develop
 ```
 
-Or if using nteract-dev supervisor, call `up rebuild=true`.
+Or if using nteract-dev, call `up rebuild=true`.

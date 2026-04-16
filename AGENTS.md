@@ -49,25 +49,25 @@ which runt                      # Should be repo/bin/runt (not /usr/local/bin/ru
 **Three MCP servers** should be configured:
 
 1. **nteract-dev** (development, per-worktree daemon)
-   - Command: `cargo xtask run-mcp` or `/path/to/repo/target/debug/mcp-supervisor`
+   - Command: `cargo xtask run-mcp` (builds and runs the local `mcp-supervisor` binary)
    - Working directory: `/path/to/nteract/desktop`
    - Env vars: Inherits from shell (direnv provides RUNTIMED_DEV, RUNTIMED_WORKSPACE_PATH)
    - Socket: `~/.cache/runt-nightly/worktrees/{hash}/runtimed.sock`
-   - Tools: 27 nteract tools + 8 supervisor tools
+   - Tools: 26 nteract tools (proxied from `runt mcp`) + 5 dev tools (`up`, `down`, `status`, `logs`, `vite_logs`)
 
 2. **nteract-nightly** (system nightly daemon, for testing releases)
    - Command: `env -i HOME=$HOME /usr/local/bin/runt-nightly mcp`
    - Working directory: Can be anywhere (no repo dependency)
    - Env vars: **MUST use `env -i`** to strip RUNTIMED_DEV and RUNTIMED_WORKSPACE_PATH
    - Socket: `~/.cache/runt-nightly/runtimed.sock` (system socket, NOT worktrees/)
-   - Tools: 27 nteract tools (no supervisor tools)
+   - Tools: 26 nteract tools (no dev tools)
 
 3. **nteract** (system stable daemon, for testing stable releases)
    - Command: `env -i HOME=$HOME /usr/local/bin/runt mcp`
    - Working directory: Can be anywhere
    - Env vars: **MUST use `env -i`** to strip dev env vars
    - Socket: `~/.cache/runt/runtimed.sock`
-   - Tools: 27 nteract tools (no supervisor tools)
+   - Tools: 26 nteract tools (no dev tools)
 
 **Critical:** The `env -i` wrapper on nteract-nightly and nteract is required to prevent direnv's env vars from leaking into these MCP servers. Without it, they will incorrectly connect to the dev daemon instead of the system daemon.
 
@@ -84,7 +84,7 @@ which runt                      # Should be repo/bin/runt (not /usr/local/bin/ru
 
 ### If you have `up` / `down` / `status` tools — use them
 
-If your MCP client provides `up`, `down`, `status`, `logs`, `vite_logs` (the nteract-dev supervisor surface), **prefer those over manual terminal commands**. The supervisor manages the dev daemon lifecycle for you — no env vars, no extra terminals.
+If your MCP client provides `up`, `down`, `status`, `logs`, `vite_logs` (provided by `nteract-dev`), **prefer those over manual terminal commands**. `nteract-dev` manages the dev daemon lifecycle for you — no env vars, no extra terminals.
 
 **Claude Code has nteract-dev locally** — the local dev environment connects Claude Code to the repo-local `nteract-dev` MCP entry via `cargo xtask run-mcp`. Codex app/CLI can use the same server when this repo's project-scoped `.codex/config.toml` is enabled in a trusted workspace. If your current environment does not expose these tools, use the manual `cargo xtask` commands below.
 
@@ -97,11 +97,9 @@ If your MCP client provides `up`, `down`, `status`, `logs`, `vite_logs` (the nte
 | `cargo xtask vite` | `up vite=true` |
 | `cargo xtask notebook` (stop dev processes) | `down` (stops Vite; `daemon=true` also stops daemon) |
 
-The supervisor automatically handles per-worktree isolation, env var plumbing, zombie Vite cleanup, health probes, and lockfile-drift re-installs. You only need the manual commands below when the supervisor isn't available (e.g. cloud sessions, CI).
+`nteract-dev` automatically handles per-worktree isolation, env var plumbing, zombie Vite cleanup, health probes, and lockfile-drift re-installs. You only need the manual commands below when `nteract-dev` isn't available (e.g. cloud sessions, CI).
 
-The older `supervisor_*` names (`supervisor_restart`, `supervisor_rebuild`, `supervisor_start_vite`, `supervisor_stop`, `supervisor_set_mode`, `supervisor_status`, `supervisor_logs`, `supervisor_vite_logs`) still work as aliases — prefer the new ones.
-
-### Manual commands (when supervisor is not available)
+### Manual commands (when nteract-dev is not available)
 
 For raw terminal commands, opt into dev mode explicitly. `RUNTIMED_DEV=1` is what enables per-worktree daemon isolation. `RUNTIMED_WORKSPACE_PATH` is the safest way to pin the current worktree, though binaries launched from the repo root can also discover the worktree via git.
 
@@ -158,12 +156,12 @@ python/runtimed/.venv/bin/python -m pytest python/runtimed/tests/test_session_un
 
 **Do not launch the notebook app from an agent terminal.** The app is a GUI process that blocks until the user quits it (⌘Q), and the agent will misinterpret the exit. Let the human launch it from their own terminal or Zed task.
 
-With supervisor tools, the daemon and vite are already managed — the human just runs:
+With `nteract-dev`, the daemon and vite are already managed — the human just runs:
 ```bash
 cargo xtask notebook
 ```
 
-Without supervisor (human runs both):
+Without `nteract-dev` (human runs both):
 ```bash
 # Terminal 1: Start dev daemon
 cargo xtask dev-daemon
@@ -296,10 +294,10 @@ If you must write a `.ipynb` file directly (e.g., test fixtures), dependencies g
 
 ## MCP Server (Local Development)
 
-### nteract-dev — MCP Supervisor
+### nteract-dev
 
 ```bash
-# Build and run the supervisor (starts daemon if needed)
+# Build and run nteract-dev (starts daemon if needed)
 cargo xtask run-mcp
 
 # Or print config JSON for your MCP client
@@ -308,49 +306,49 @@ cargo xtask run-mcp --print-config
 
 Use `nteract-dev` as the MCP server name for this source tree. Keep `nteract` for the global/system-installed MCP server. In clients that namespace tools by server name, that keeps repo-local tools distinct from the global install.
 
-For Codex app/CLI, this repository also includes a project-scoped MCP config in `.codex/config.toml` that points at the same `mcp-supervisor` server using the `nteract-dev` entry name.
+For Codex app/CLI, this repository also includes a project-scoped MCP config in `.codex/config.toml` that points at the same server using the `nteract-dev` entry name.
 
 ### MCP Server
 
-The supervisor always uses the Rust-native `runt mcp` server (direct Automerge access, no Python overhead). It auto-builds `runt-cli` on startup and watches `crates/runt-mcp/src/` for hot reload.
+`nteract-dev` proxies the Rust-native `runt mcp` server (direct Automerge access, no Python overhead). It auto-builds `runt-cli` on startup and watches `crates/runt-mcp/src/` for hot reload.
 
-`runt mcp` can also be run standalone (no supervisor): `./target/debug/runt mcp`. It reads `RUNTIMED_SOCKET_PATH` for the daemon connection.
+`runt mcp` can also be run standalone (no proxy): `./target/debug/runt mcp`. It reads `RUNTIMED_SOCKET_PATH` for the daemon connection.
 
 For the installed app, `runt mcp` ships as a sidecar binary alongside `runtimed`, so MCP clients can use it directly without Python or uv.
 
-### Supervisor Tools (from nteract-dev / `mcp-supervisor`)
+### nteract-dev Tools
 
-Consolidated around two verbs plus three read-only tools:
+Two verbs plus three read-only tools layered on top of the proxied `runt mcp` toolset:
 
 | Tool | Purpose |
 |------|---------|
 | `up` | Idempotent "bring the dev environment to a working state". Sweeps zombie Vite processes, ensures daemon is running, ensures the MCP child is healthy. Args: `vite=true` to also start Vite (health-probed), `rebuild=true` to rebuild daemon + Python bindings first, `mode="debug"\|"release"` to switch build mode. Safe to call repeatedly. |
 | `down` | Stop the managed Vite dev server. Leaves the daemon alone by default (launchd / installed app may own it). Pass `daemon=true` to also stop the managed daemon. |
-| `status` | Read-only report of supervisor, child, daemon, and managed-process state. |
+| `status` | Read-only report of `nteract-dev`, child, daemon, and managed-process state. |
 | `logs` | Tail the daemon log file. |
 | `vite_logs` | Tail the Vite dev server log file. |
 
-The older `supervisor_*` names (`supervisor_status`, `supervisor_restart`, `supervisor_rebuild`, `supervisor_logs`, `supervisor_vite_logs`, `supervisor_start_vite`, `supervisor_stop`, `supervisor_set_mode`) still work as aliases.
+### nteract MCP Tools (26 tools for notebook interaction)
 
-### nteract MCP Tools (27 tools for notebook interaction)
-
-When nteract-dev is active, agents also get the full nteract tool suite. **Use these to audit your own work** — open a notebook, execute cells, and inspect outputs to verify changes actually work before committing.
+When `nteract-dev` is active, agents also get the full nteract tool suite. **Use these to audit your own work** — open a notebook, execute cells, and inspect outputs to verify changes actually work before committing.
 
 | Category | Tools |
 |----------|-------|
-| Session | `list_active_notebooks`, `show_notebook`, `join_notebook`, `open_notebook`, `create_notebook`, `save_notebook` |
+| Session | `list_active_notebooks`, `open_notebook`, `create_notebook`, `save_notebook`, `launch_app` |
 | Kernel | `interrupt_kernel`, `restart_kernel` |
 | Dependencies | `add_dependency`, `remove_dependency`, `get_dependencies`, `sync_environment` |
-| Cell CRUD | `create_cell`, `get_cell`, `get_all_cells`, `set_cell`, `delete_cell`, `move_cell` |
+| Cell CRUD | `create_cell`, `get_cell`, `get_all_cells`, `set_cell`, `delete_cell`, `move_cell`, `clear_outputs` |
 | Cell metadata | `set_cells_source_hidden`, `set_cells_outputs_hidden`, `add_cell_tags`, `remove_cell_tags` |
-| Find/Replace | `replace_match`, `replace_regex` |
-| Execution | `execute_cell`, `run_all_cells`, `clear_outputs` |
+| Editing | `replace_match`, `replace_regex` |
+| Execution | `execute_cell`, `run_all_cells` |
+
+`join_notebook` is accepted as a backward-compat alias that routes to `open_notebook`.
 
 **Audit workflow example:** After modifying daemon or kernel code, use `open_notebook` on a test fixture, `execute_cell` to run it, then `get_cell` to inspect outputs — confirming the change works end-to-end without leaving the agent session.
 
 ### Hot reload
 
-The supervisor watches source directories and auto-restarts the child on changes:
+`nteract-dev` watches source directories and auto-restarts the child on changes:
 - **`crates/runt-mcp/src/`** → `cargo build -p runt-cli` + restart (Rust MCP mode)
 - **`crates/runtimed-client/src/`** → `cargo build -p runt-cli` + `maturin develop` + restart (shared code)
 - **`crates/runtimed-py/src/`, `crates/runtimed/src/`** → `maturin develop` + `cargo build` + restart
@@ -358,13 +356,13 @@ The supervisor watches source directories and auto-restarts the child on changes
 
 ### Tool availability
 
-- **Local Claude Code / Zed / Codex app/CLI with MCP configured** → Configure the repo-local MCP entry as `nteract-dev`. nteract-dev exposes `up` / `down` / `status` / `logs` / `vite_logs` (plus the older `supervisor_*` aliases) and the proxied nteract notebook tools. **Prefer these for daemon lifecycle** — they handle env vars and isolation automatically.
-- **Environments without supervisor tools** → use `cargo xtask` commands directly for build, daemon, and testing.
-- **nteract MCP only** → The global/system `nteract` server exposes notebook tools only, with no supervisor surface. Use manual terminal commands for daemon management.
+- **Local Claude Code / Zed / Codex app/CLI with MCP configured** → Configure the repo-local MCP entry as `nteract-dev`. It exposes `up` / `down` / `status` / `logs` / `vite_logs` plus the proxied nteract notebook tools. **Prefer these for daemon lifecycle** — they handle env vars and isolation automatically.
+- **Environments without `nteract-dev`** → use `cargo xtask` commands directly for build, daemon, and testing.
+- **nteract MCP only** → The global/system `nteract` server exposes notebook tools only, with no dev tools. Use manual terminal commands for daemon management.
 - **No MCP server** → use `cargo xtask run-mcp` to set one up
-- **Dev daemon not running** → call `up` — nteract-dev starts it if missing
+- **Dev daemon not running** → call `up` — `nteract-dev` starts it if missing
 
-## Workspace Crates (17)
+## Workspace Crates (21)
 
 | Crate | Purpose |
 |-------|---------|
@@ -376,14 +374,18 @@ The supervisor watches source directories and auto-restarts the child on changes
 | `notebook-doc` | Shared Automerge schema — cells, outputs, RuntimeStateDoc, PEP 723, MIME classification |
 | `notebook-protocol` | Wire types — requests, responses, broadcasts |
 | `notebook-sync` | Automerge sync client — `DocHandle`, per-cell Python accessors |
-| `runt` | CLI — daemon management, kernel control, notebook launching, MCP server |
-| `runt-mcp` | Rust-native MCP server — 27 tools for notebook interaction via `runt mcp` |
+| `runt-cli` | CLI (`runt` binary) — daemon management, kernel control, notebook launching, MCP server |
+| `runt-mcp` | Rust-native MCP server — 26 tools for notebook interaction via `runt mcp` |
+| `runt-mcp-proxy` | Resilient proxy for `runt mcp` — child supervision, restart-with-retry, session tracking |
 | `runt-trust` | Notebook trust (HMAC-SHA256 over dependency metadata) |
 | `runt-workspace` | Per-worktree daemon isolation, socket path management |
 | `kernel-launch` | Kernel launching, tool bootstrapping (deno, uv, ruff via rattler) |
 | `kernel-env` | Python environment management (UV + Conda) with progress reporting |
 | `repr-llm` | LLM-friendly text summaries of visualization specs incl. GeoJSON (`text/llm+plain` synthesis) |
-| `mcp-supervisor` | nteract-dev — MCP supervisor proxy, daemon/vite lifecycle management |
+| `nteract-predicate` | Pure-Rust compute kernels for dataframe/Arrow analysis (summary, filter, histogram) — backs `@nteract/sift` and `nteract/dx` |
+| `sift-wasm` | WASM bindings for `nteract-predicate` — used by `@nteract/sift` |
+| `mcp-supervisor` | `nteract-dev` MCP server — proxies `runt mcp` and adds dev tools (`up`, `down`, `status`, `logs`, `vite_logs`) |
+| `mcpb-runt` | MCPB binary — resilient proxy for `runt mcp` shipped in the `.mcpb` Claude Desktop extension |
 | `xtask` | Build system orchestration |
 
 ## Build System (`cargo xtask`)
@@ -408,9 +410,9 @@ All build, lint, and dev commands go through `cargo xtask`. **Run `cargo xtask h
 | Daemon | `cargo xtask dev-daemon` | Per-worktree dev daemon |
 | | `cargo xtask dev-daemon --release` | Run the per-worktree daemon in release mode |
 | | `cargo xtask install-daemon` | Install runtimed as system daemon |
-| MCP | `cargo xtask run-mcp` | nteract-dev supervisor (daemon + MCP + auto-restart) |
+| MCP | `cargo xtask run-mcp` | nteract-dev (daemon + MCP + auto-restart) |
 | | `cargo xtask run-mcp --print-config` | Print MCP client config JSON |
-| | `cargo xtask dev-mcp` | Direct nteract MCP (no supervisor) |
+| | `cargo xtask dev-mcp` | Direct `runt mcp` (no proxy, no auto-restart) |
 | | `cargo xtask dev-mcp --print-config` | Print direct MCP client config JSON |
 | | `cargo xtask mcp-inspector` | Launch MCP Inspector UI for testing runt mcp |
 | Lint | `cargo xtask lint` | Check formatting (Rust, JS/TS, Python) |
@@ -435,9 +437,9 @@ Use instead:
 
 ### Per-Worktree Daemon Isolation
 
-Each git worktree runs its own isolated daemon in dev mode. If you have supervisor tools, the daemon is managed for you — use `up` to start it (idempotent), and `status` to check it.
+Each git worktree runs its own isolated daemon in dev mode. With `nteract-dev` available, the daemon is managed for you — use `up` to start it (idempotent), and `status` to check it.
 
-Without supervisor (manual two-terminal workflow):
+Without `nteract-dev` (manual two-terminal workflow):
 
 ```bash
 # Terminal 1: Start dev daemon

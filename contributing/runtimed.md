@@ -108,17 +108,15 @@ cargo run -p runt-cli -- daemon status --json | jq -r '.daemon_info.version'
 
 When iterating on daemon code, you often want to test changes in the notebook app without rebuilding the frontend.
 
-**With nteract-dev supervisor** (if you have `up` / `down` / `status` MCP tools — e.g. in Zed or Claude Code):
+**With nteract-dev** (if you have `up` / `down` / `status` MCP tools — e.g. in Zed or Claude Code):
 
-The supervisor manages the dev daemon for you. No env vars or extra terminals needed.
+`nteract-dev` manages the dev daemon for you. No env vars or extra terminals needed.
 
 - `up` — idempotent "bring the dev environment up". Ensures the daemon is running and the MCP child is healthy. Pass `vite=true` to also start Vite (health-probed), `rebuild=true` to rebuild the daemon binary + Python bindings first, `mode="debug"|"release"` to switch build mode.
 - `down` — stop the managed Vite dev server. Pass `daemon=true` to also stop the daemon.
 - `status` — read-only report (child, daemon, managed processes, build mode).
 - `logs` — tail the daemon log file.
 - `vite_logs` — tail the Vite dev server log file.
-
-The older `supervisor_*` names (`supervisor_restart`, `supervisor_rebuild`, `supervisor_start_vite`, `supervisor_stop`, `supervisor_set_mode`, `supervisor_status`, `supervisor_logs`, `supervisor_vite_logs`) still work as aliases.
 
 Then build and run the app normally:
 ```bash
@@ -127,7 +125,7 @@ cargo xtask build --rust-only     # Fast rebuild (reuses frontend assets)
 cargo xtask run                   # Run the bundled binary
 ```
 
-**Without supervisor** (manual two-terminal workflow):
+**Without nteract-dev** (manual two-terminal workflow):
 
 ```bash
 # Terminal 1: Run dev daemon (restart when you change daemon code)

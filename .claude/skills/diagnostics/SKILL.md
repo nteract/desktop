@@ -7,7 +7,7 @@ description: Collect and analyze nteract diagnostic logs. Use when debugging iss
 
 ## Why `env -i`?
 
-In the dev environment, `RUNTIMED_DEV` and `RUNTIMED_WORKSPACE_PATH` are set (by direnv, xtask, or the supervisor). These cause `runt` to target the per-worktree dev daemon. System diagnostics need to target the **system-installed** daemon, so we use `env -i` to strip all env vars except `PATH` and `HOME`.
+In the dev environment, `RUNTIMED_DEV` and `RUNTIMED_WORKSPACE_PATH` are set (by direnv, xtask, or `nteract-dev`). These cause `runt` to target the per-worktree dev daemon. System diagnostics need to target the **system-installed** daemon, so we use `env -i` to strip all env vars except `PATH` and `HOME`.
 
 The repo-local `bin/runt` wrapper is first in `$PATH` — it runs `./target/debug/runt`, which is the dev build. That's fine for quick checks, but for true system diagnostics, call the system binary by its channel-specific name (`runt` for stable, `runt-nightly` for nightly) via `env -i` so dev env vars don't leak through.
 

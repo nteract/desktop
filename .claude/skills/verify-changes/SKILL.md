@@ -24,16 +24,16 @@ Run `git diff --name-only` to see changed files and match them to the table belo
 | `crates/runt/src/**` | `cargo test -p runt` |
 | `crates/runt-workspace/src/**` | `cargo test -p runt-workspace` |
 | `crates/runtimed-py/src/**` | `up rebuild=true` (rebuilds Python bindings) |
-| `python/nteract/src/**` | Supervisor auto-restarts; no explicit test needed |
-| `python/runtimed/src/**` | Supervisor auto-restarts; run `pytest python/runtimed/tests/test_session_unit.py -v` |
+| `python/nteract/src/**` | `nteract-dev` auto-restarts; no explicit test needed |
+| `python/runtimed/src/**` | `nteract-dev` auto-restarts; run `pytest python/runtimed/tests/test_session_unit.py -v` |
 | `apps/notebook/src/**` | `pnpm test:run` |
 | `crates/runtimed-wasm/**` | `cargo xtask wasm` then `deno test --allow-read --allow-env --no-check` |
 
 If multiple crates changed, run tests for each: `cargo test -p runtimed -p notebook-doc`.
 
-## Step 3: MCP Live Verification (when supervisor tools are available)
+## Step 3: MCP Live Verification (when nteract-dev tools are available)
 
-If narrow tests pass and you have the nteract-dev supervisor (`up`/`down`/`status`) and `open_notebook`/`execute_cell` tools, do a live check:
+If narrow tests pass and you have `nteract-dev` (`up`/`down`/`status`) and `open_notebook`/`execute_cell` tools, do a live check:
 
 ### For daemon/kernel changes (`crates/runtimed/`, `crates/runtimed-py/`):
 
@@ -79,7 +79,7 @@ Run the setup cell first, then run any metric cell. Each metric cell is self-con
 - Uses the **project venv** (no inline dependencies) — `runtimed` and `matplotlib` are both project dev deps
 - Imports `runtimed.Client` directly for inline async measurements (no subprocess needed)
 - Loads `baseline.json` from the notebook's own directory (`scripts/metrics/`)
-- The daemon socket is discovered automatically via `RUNTIMED_SOCKET_PATH` env var (set by the daemon/supervisor)
+- The daemon socket is discovered automatically via `RUNTIMED_SOCKET_PATH` env var (set by the daemon or `nteract-dev`)
 
 **Three measurement cells:**
 - **Execution latency** — cold start + warm p50/p95 distribution, compared to baseline

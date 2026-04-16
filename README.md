@@ -115,7 +115,7 @@ nteract/desktop
 │   ├── runtimed-client/   # Shared client library for daemon communication
 │   ├── repr-llm/          # LLM-friendly text summaries of visualization specs
 │   ├── xtask/             # Build automation tasks
-│   └── mcp-supervisor/    # nteract-dev MCP supervisor for dev workflows
+│   └── mcp-supervisor/    # nteract-dev MCP server (proxies runt mcp + adds dev tools)
 ├── python/                 # Python packages
 │   ├── runtimed/          # PyPI: runtimed (Python bindings for daemon)
 │   ├── nteract/           # PyPI: nteract (MCP server)

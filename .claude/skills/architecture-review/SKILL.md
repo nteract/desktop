@@ -79,8 +79,8 @@ Python packages. The major architectural seams are:
 - `runt-workspace`: Per-worktree daemon socket isolation
 - `runt`: CLI binary (daemon management, kernel control, notebook launching, MCP server)
 - `runtimed-client`: Shared client library (output resolution, daemon paths, pool client)
-- `runt-mcp`: Rust-native MCP server (27 tools for notebook interaction)
-- `mcp-supervisor`: nteract-dev MCP supervisor proxy, daemon/vite lifecycle
+- `runt-mcp`: Rust-native MCP server (26 tools for notebook interaction)
+- `mcp-supervisor`: `nteract-dev` MCP server (proxies `runt mcp`, manages daemon/vite lifecycle)
 - `repr-llm`: LLM-friendly text summaries of visualization specs
 - `notebook`: Tauri desktop app (main GUI, bundles daemon+CLI as sidecars)
 
