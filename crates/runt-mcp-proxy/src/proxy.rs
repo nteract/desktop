@@ -14,7 +14,7 @@ use rmcp::model::{
     ListResourcesResult, ListToolsResult, ReadResourceRequestParams, ReadResourceResult,
     ServerCapabilities, ServerInfo, Tool,
 };
-use rmcp::service::{RequestContext, RoleServer};
+use rmcp::service::{NotificationContext, RequestContext, RoleServer};
 use rmcp::{ErrorData as McpError, ServerHandler};
 use tokio::sync::{mpsc, Mutex, Notify, RwLock};
 use tracing::{error, info, warn};
@@ -585,11 +585,19 @@ impl McpProxy {
     }
 
     /// Get the current child tools (live from child, or cached).
+    ///
+    /// Falls back to the cached list if the live query fails OR returns empty.
+    /// Empty-fallback matters when the child is alive but its daemon isn't —
+    /// a bare `runt mcp` against a missing daemon returns `{tools: []}`, and
+    /// without the fallback the MCP client would see zero tools and stick.
     pub async fn child_tools(&self) -> Vec<Tool> {
         let state = self.state.read().await;
         if let Some(ref client) = state.child_client {
             match client.list_tools(None).await {
-                Ok(result) => return result.tools,
+                Ok(result) if !result.tools.is_empty() => return result.tools,
+                Ok(_) => {
+                    warn!("Child returned empty tool list — falling back to cached tools");
+                }
                 Err(e) => {
                     warn!("Failed to list child tools: {e}");
                 }
@@ -713,10 +721,19 @@ impl McpProxy {
         if let Some(ref client) = state.child_client {
             match client.list_tools(None).await {
                 Ok(child_tools) => {
-                    if let Some(ref cache_dir) = self.config.cache_dir {
-                        tools::save_tool_cache(cache_dir, &child_tools.tools);
+                    // Never enshrine an empty list. An old/broken child that
+                    // transiently returns `{tools: []}` would otherwise poison
+                    // the on-disk cache — `load_cached_tools` treats an empty
+                    // file as valid, so every subsequent start would read
+                    // zero tools and skip the built-in fallback.
+                    if child_tools.tools.is_empty() {
+                        warn!("Child returned empty tool list — keeping prior cache");
+                    } else {
+                        if let Some(ref cache_dir) = self.config.cache_dir {
+                            tools::save_tool_cache(cache_dir, &child_tools.tools);
+                        }
+                        state.cached_tools = Some(child_tools.tools);
                     }
-                    state.cached_tools = Some(child_tools.tools);
                 }
                 Err(e) => {
                     warn!("Failed to refresh tool cache: {e}");
@@ -824,6 +841,31 @@ impl ServerHandler for McpProxy {
         }
 
         self.forward_tool_call(request).await
+    }
+
+    // Spawn the child only after the client has sent `notifications/initialized`.
+    // Per MCP spec, servers must not send notifications (tools/list_changed,
+    // resources/list_changed) before this point — Claude Code drops early ones,
+    // which leaves its tool list empty until a later refresh.
+    async fn on_initialized(&self, context: NotificationContext<RoleServer>) {
+        if self.state.read().await.child_client.is_some() {
+            return;
+        }
+        let proxy = self.clone();
+        let peer = context.peer;
+        tokio::spawn(async move {
+            if let Err(e) = proxy.init_child().await {
+                error!("Failed to initialize child: {e}");
+                return;
+            }
+            if let Err(e) = peer.notify_tool_list_changed().await {
+                warn!("Failed to send tools/list_changed: {e}");
+            }
+            if let Err(e) = peer.notify_resource_list_changed().await {
+                warn!("Failed to send resources/list_changed: {e}");
+            }
+            info!("Child initialized after client-initialized, tools available");
+        });
     }
 }
 

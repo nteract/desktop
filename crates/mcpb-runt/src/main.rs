@@ -224,24 +224,11 @@ async fn main() -> ExitCode {
         .set_upstream_identity(upstream_name, upstream_title)
         .await;
 
-    // Background: initialize child process
-    let proxy_for_init = proxy_ref.clone();
-    let peer = server.peer().clone();
-    tokio::spawn(async move {
-        if let Err(e) = proxy_for_init.init_child().await {
-            error!("Failed to initialize child: {e}");
-            return;
-        }
-
-        // Notify client that tools are available
-        if let Err(e) = peer.notify_tool_list_changed().await {
-            tracing::warn!("Failed to send tools/list_changed: {e}");
-        }
-        if let Err(e) = peer.notify_resource_list_changed().await {
-            tracing::warn!("Failed to send resources/list_changed: {e}");
-        }
-        info!("Child initialized, tools available");
-    });
+    // Child spawn and `tools/list_changed` / `resources/list_changed` notifications
+    // happen in `McpProxy::on_initialized`, after the client sends
+    // `notifications/initialized`. Firing them earlier races the MCP handshake —
+    // Claude Code drops notifications received before it has finished initializing,
+    // leaving its tool list empty.
 
     // Wait for client disconnect OR exit signal from incompatible tool divergence.
     let exit_signal = proxy_ref.exit_signal.clone();

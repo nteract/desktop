@@ -58,7 +58,15 @@ pub fn load_builtin_tools() -> Option<Vec<Tool>> {
 }
 
 /// Save child tool definitions to disk for optimistic serving on next startup.
+///
+/// Refuses to persist an empty list — an empty cache on disk outranks the
+/// built-in fallback in [`load_cached_tools`], so writing `[]` would poison
+/// every future start. Callers should treat empty results as "keep prior".
 pub fn save_tool_cache(cache_dir: &Path, tools: &[Tool]) {
+    if tools.is_empty() {
+        warn!("Refusing to save empty tool cache to disk");
+        return;
+    }
     let path = cache_dir.join(TOOL_CACHE_FILENAME);
     match serde_json::to_string_pretty(tools) {
         Ok(json) => {
@@ -301,12 +309,16 @@ mod tests {
     }
 
     #[test]
-    fn save_empty_cache() {
+    fn save_refuses_empty_cache() {
+        // Empty saves would poison future starts — `load_cached_tools` would
+        // hit the empty file and skip the built-in fallback.
         let dir = tempfile::tempdir().unwrap();
         let tools: Vec<Tool> = vec![];
         save_tool_cache(dir.path(), &tools);
-        let loaded = load_cached_tools(dir.path()).expect("should load empty cache");
-        assert!(loaded.is_empty());
+        assert!(
+            !dir.path().join(TOOL_CACHE_FILENAME).exists(),
+            "empty cache must not be persisted"
+        );
     }
 
     #[test]
