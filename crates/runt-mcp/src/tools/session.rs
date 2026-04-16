@@ -59,7 +59,7 @@ fn resolve_path(path: &str) -> String {
     }
 }
 
-use notebook_protocol::protocol::{NotebookRequest, NotebookResponse};
+use notebook_protocol::protocol::{NotebookRequest, NotebookResponse, SaveErrorKind};
 
 use super::{arg_bool, arg_str, arg_string_array, tool_error, tool_success};
 
@@ -606,14 +606,10 @@ pub async fn save_notebook(
         }
     };
 
-    // If no path and notebook is ephemeral (UUID-keyed), require a path.
-    // Ephemeral notebooks have a UUID as their notebook_id with no backing file.
-    if path.is_none() && uuid::Uuid::parse_str(&notebook_id).is_ok() {
-        return tool_error(
-            "No path specified for ephemeral notebook. \
-             Provide a path: save_notebook(path='/path/to/notebook.ipynb')",
-        );
-    }
+    // The daemon decides whether a path is required (untitled rooms with
+    // no existing path field return SaveError with a clear message). We no
+    // longer parse notebook_id to guess — every room has a UUID now, so
+    // that heuristic would misfire on file-backed rooms.
 
     // Ensure daemon has latest
     if let Err(e) = handle.confirm_sync().await {
@@ -637,16 +633,27 @@ pub async fn save_notebook(
                 serde_json::to_string_pretty(&result).unwrap_or_default(),
             )]))
         }
-        Ok(NotebookResponse::Error { error }) => {
-            if path.is_none() && (error.contains("Read-only") || error.contains("Failed to write"))
-            {
-                tool_error(
-                    "No path specified. For notebooks created with create_notebook(), \
-                     you must provide a path (e.g., save_notebook(path='/path/to/file.ipynb'))",
-                )
-            } else {
-                tool_error(&format!("Failed to save notebook: {error}"))
+        Ok(NotebookResponse::SaveError { error }) => match error {
+            SaveErrorKind::PathAlreadyOpen {
+                uuid,
+                path: conflict,
+            } => tool_error(&format!(
+                "Cannot save: {conflict} is already open in session {uuid}. \
+                 Close that session first, then retry.",
+            )),
+            SaveErrorKind::Io { message } => {
+                if path.is_none() && message.contains("untitled") {
+                    tool_error(
+                        "No path specified. For notebooks created with create_notebook(), \
+                         you must provide a path (e.g., save_notebook(path='/path/to/file.ipynb'))",
+                    )
+                } else {
+                    tool_error(&format!("Failed to save notebook: {message}"))
+                }
             }
+        },
+        Ok(NotebookResponse::Error { error }) => {
+            tool_error(&format!("Failed to save notebook: {error}"))
         }
         Ok(resp) => tool_error(&format!("Unexpected response: {resp:?}")),
         Err(e) => tool_error(&format!("Failed to save notebook: {e}")),
@@ -760,33 +767,6 @@ mod tests {
         }
         assert!(!matches!("mamba", "uv" | "conda" | "pixi"));
         assert!(!matches!("pip", "uv" | "conda" | "pixi"));
-    }
-
-    /// Ephemeral notebooks have UUID keys; file-backed ones have path-derived keys.
-    /// The save_notebook handler uses a UUID parse check to decide whether to
-    /// require a path argument.
-    #[test]
-    fn ephemeral_uuid_detection() {
-        // UUID notebook_ids (ephemeral) → save requires a path
-        let uuid_id = "550e8400-e29b-41d4-a716-446655440000";
-        assert!(
-            uuid::Uuid::parse_str(uuid_id).is_ok(),
-            "UUID should parse OK"
-        );
-
-        // Path-like strings (file-backed) → save can infer path from the id
-        let path_like = "/home/user/notebooks/analysis.ipynb";
-        assert!(
-            uuid::Uuid::parse_str(path_like).is_err(),
-            "Path should not parse as UUID"
-        );
-
-        // UUID check is the gate — not a path heuristic.
-        let another_uuid = uuid::Uuid::new_v4().to_string();
-        assert!(
-            uuid::Uuid::parse_str(&another_uuid).is_ok(),
-            "Fresh UUID should parse OK"
-        );
     }
 
     /// save_notebook response must include notebook_id (unchanged UUID) and path.
