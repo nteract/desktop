@@ -39,7 +39,7 @@ The `.ipynb` file on disk is a checkpoint/snapshot. The Automerge document is th
 - Saved notebooks reload from `.ipynb` (which autosave keeps current). Before deleting a persisted Automerge doc on reopen, the daemon snapshots it to `notebook-docs/snapshots/` (max 5 per notebook).
 - `runt recover` can list all snapshots and export any to `.ipynb`.
 
-**Room re-keying:** When an untitled notebook is first saved to a file path, `rekey_ephemeral_room()` atomically changes the room key from a UUID to the canonical path, spawns a file watcher, cleans up the old persist file, and broadcasts `RoomRenamed` so all peers update their `notebook_id`.
+**UUID-stable rooms:** Room keys are always UUIDs. When an untitled notebook is first saved, the daemon updates a secondary `path_index` map and broadcasts `PathChanged { path }` so peers can update local path tracking. The UUID never changes.
 
 ### 4. Local-First Editing, Synced Execution
 

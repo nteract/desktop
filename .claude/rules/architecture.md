@@ -129,7 +129,7 @@ Per-cell WASM accessors (O(1) Automerge map lookups): `get_cell_source(id)`, `ge
 ## Notebook Room Lifecycle
 
 - **Autosave:** 2s quiet period, 10s max interval. `NotebookAutosaved` broadcast clears the frontend dirty flag.
-- **Re-keying:** When an untitled notebook is saved, `rekey_ephemeral_room()` atomically changes the room key from UUID to file path. `RoomRenamed` broadcast notifies all peers.
+- **UUID-stable rooms:** Room keys are always UUIDs. Saving an untitled notebook updates `path_index` and broadcasts `PathChanged { path }` to peers. The UUID never changes.
 - **Crash recovery:** Untitled notebooks persist to `notebook-docs/{hash}.automerge`. Snapshots go to `notebook-docs/snapshots/`. `runt recover` exports to `.ipynb`.
 - **Multi-window:** Multiple windows join the same room as separate Automerge peers.
 - **Eviction:** After all peers disconnect, delayed eviction (default 30s via `keep_alive_secs`) shuts down the kernel and removes the room.
@@ -164,7 +164,7 @@ Never pass code directly in execution requests. The correct flow: write to the C
 | `crates/notebook-doc/src/mime.rs` | Canonical MIME classification (`is_binary_mime`, `mime_kind`, `MimeKind`) |
 | `crates/notebook-protocol/src/protocol.rs` | Wire types: requests, responses, broadcasts |
 | `crates/notebook-sync/src/handle.rs` | `DocHandle` -- sync infrastructure, per-cell accessors |
-| `crates/runtimed/src/notebook_sync_server.rs` | `NotebookRoom`, room lifecycle, autosave, re-keying |
+| `crates/runtimed/src/notebook_sync_server.rs` | `NotebookRoom`, room lifecycle, autosave, path_index |
 | `crates/runtimed/src/kernel_manager.rs` | Kernel lifecycle, execution queue, IOPub routing |
 | `crates/runtimed/src/output_store.rs` | Manifest creation/resolution, `ContentRef` |
 | `crates/runtimed/src/blob_store.rs` | Content-addressed storage |

@@ -2149,7 +2149,7 @@ where
             let (should_teardown, evicted_uuid) = {
                 let mut rooms_guard = rooms_for_eviction.lock().await;
                 if room_for_eviction.active_peers.load(Ordering::Relaxed) == 0 {
-                    // Find the room's current key by Arc pointer (stable across re-keys)
+                    // Find the room's UUID key by Arc pointer identity
                     let current_key = rooms_guard
                         .iter()
                         .find(|(_, r)| Arc::ptr_eq(r, &room_for_eviction))
@@ -2171,8 +2171,8 @@ where
 
             // Clean up path_index entry (separate lock, after rooms lock is dropped).
             // Use remove_by_uuid rather than reading room.path — a concurrent writer
-            // (rekey, save-path-update) could hold room.path.write() and a try_read()
-            // would silently return None, leaking the path_index entry.
+            // A concurrent save-path-update could hold room.path.write() and a
+            // try_read() would silently return None, leaking the path_index entry.
             if should_teardown {
                 if let Some(uuid) = evicted_uuid {
                     path_index_for_eviction.lock().await.remove_by_uuid(uuid);
@@ -2658,7 +2658,7 @@ where
 
                                 // Promotion from untitled → file-backed is now handled
                                 // entirely inside handle_notebook_request (SaveNotebook arm).
-                                // No post-save rekeying needed here.
+                                // Save path update is handled inside handle_notebook_request.
 
                                 connection::send_typed_json_frame(
                                     writer,
@@ -11558,7 +11558,7 @@ mod tests {
         }
     }
 
-    // ── Regression test: autosave after ephemeral room re-key ──────────
+    // ── Regression test: autosave after save_notebook path update ──────
 
     /// Verify that saving an untitled (UUID-keyed) room updates path_index and
     /// room.path, while keeping the UUID stable in the rooms map.

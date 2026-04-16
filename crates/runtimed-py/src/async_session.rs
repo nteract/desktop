@@ -32,9 +32,10 @@ use crate::session_core::{self, SessionState};
 pub struct AsyncSession {
     state: Arc<Mutex<SessionState>>,
     notebook_id: String,
-    /// Re-keyed notebook ID after saving an ephemeral room.
-    /// Stored outside `SessionState` (behind a lightweight `std::sync::Mutex`)
-    /// so the `notebook_id` getter never contends with the async `tokio::sync::Mutex`.
+    /// Overridden notebook ID (set when the Python layer needs to update the
+    /// displayed ID independently of `SessionState`). Stored behind a
+    /// lightweight `std::sync::Mutex` so the getter never contends with the
+    /// async `tokio::sync::Mutex`.
     notebook_id_override: Arc<std::sync::Mutex<Option<String>>>,
     peer_label: Option<String>,
 }
@@ -118,11 +119,10 @@ impl AsyncSession {
 
 #[pymethods]
 impl AsyncSession {
-    /// The notebook ID for this session.
-    /// After saving an ephemeral notebook, this reflects the new file-path ID.
+    /// The notebook ID for this session (always a UUID).
     #[getter]
     fn notebook_id(&self) -> String {
-        // If save() re-keyed the room, return the new file-path ID.
+        // Return overridden ID if set; otherwise return the connect-time UUID.
         // This lock is a std::sync::Mutex (not tokio), so it never contends
         // with async SessionState operations.
         if let Some(ref id) = *self.notebook_id_override.lock().unwrap() {

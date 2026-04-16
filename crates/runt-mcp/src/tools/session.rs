@@ -591,9 +591,7 @@ pub async fn save_notebook(
 ) -> Result<CallToolResult, McpError> {
     let path = arg_str(request, "path").map(resolve_path);
 
-    // Need both handle and the mutable notebook_id from the session (not the
-    // handle's immutable connect-time ID) so that post-rekey saves report the
-    // correct notebook_id.
+    // Need both handle and the notebook_id from the session.
     let (handle, notebook_id) = {
         let guard = server.session.read().await;
         match guard.as_ref() {

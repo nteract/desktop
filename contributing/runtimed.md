@@ -169,7 +169,7 @@ Integration tests use temp directories for socket and lock files to avoid confli
 
 ## Notebook Room Lifecycle
 
-Each open notebook has a **room** (`NotebookRoom` in `notebook_sync_server.rs`), keyed by notebook ID (canonical file path or UUID for untitled notebooks).
+Each open notebook has a **room** (`NotebookRoom` in `notebook_sync_server.rs`), always keyed by UUID. A secondary `path_index: HashMap<PathBuf, Uuid>` maps canonical file paths to room UUIDs for path-based lookups.
 
 ### Autosave
 
@@ -177,18 +177,18 @@ The daemon autosaves `.ipynb` on a debounce (2s quiet period, 10s max interval) 
 
 Autosave skips untitled notebooks (no file path) and notebooks mid-load (`is_loading` flag). After saving, the debouncer drains the change channel to detect mutations during the async write — the `NotebookAutosaved` broadcast only fires when the file is truly caught up.
 
-### Room re-keying
+### Saving an untitled notebook
 
-When an untitled notebook (UUID room) is first saved, `rekey_ephemeral_room()`:
+Room keys are always UUIDs — they never change after a room is created. When an untitled notebook is first saved:
+
 1. Canonicalizes the save path
-2. Guards against overwriting an existing room
-3. Re-keys the `NotebookRooms` HashMap (remove UUID, insert path)
-4. Updates the room's `notebook_path` (`RwLock<PathBuf>`)
-5. Deletes the old UUID-based persist file
-6. Spawns a file watcher for the new path
-7. Broadcasts `RoomRenamed { new_notebook_id }` so all peers update their local ID
+2. Checks `path_index` for conflicts (returns `SaveError::PathAlreadyOpen` if another room owns the path)
+3. Inserts into `path_index: HashMap<PathBuf, Uuid>` (secondary map for path → UUID lookups)
+4. Updates the room's `path: RwLock<Option<PathBuf>>`
+5. Spawns a file watcher for the new path
+6. Broadcasts `PathChanged { path }` so peers can update local path tracking
 
-The `NotebookSaved` response includes `new_notebook_id: Option<String>` for the re-key case.
+The `NotebookSaved` response returns the room's UUID (unchanged).
 
 ### Crash recovery
 
@@ -228,7 +228,7 @@ crates/runtimed/
 │   ├── lib.rs                   # Daemon crate + backward-compatible re-exports from runtimed-client
 │   ├── main.rs                  # Daemon CLI entry point
 │   ├── daemon.rs                # Daemon state, pool management, connection routing
-│   ├── notebook_sync_server.rs  # NotebookRoom, room lifecycle, autosave, re-keying, sync loop
+│   ├── notebook_sync_server.rs  # NotebookRoom, room lifecycle, autosave, path_index, sync loop
 │   ├── runtime_agent.rs         # Runtime agent subprocess: Unix socket peer, CRDT queue watching, kernel ownership
 │   ├── runtime_agent_handle.rs  # Coordinator-side runtime agent process management (spawn + monitor)
 │   ├── jupyter_kernel.rs        # JupyterKernel: process spawn, ZMQ socket wiring, IOPub output routing

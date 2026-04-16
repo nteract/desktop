@@ -75,22 +75,21 @@ Integration tests use temp directories for socket/lock files to avoid conflicts.
 
 ## Notebook Room Lifecycle
 
-Each open notebook has a **room** (`NotebookRoom` in `notebook_sync_server.rs`), keyed by notebook ID (file path or UUID for untitled).
+Each open notebook has a **room** (`NotebookRoom` in `notebook_sync_server.rs`), always keyed by UUID. A secondary `path_index: HashMap<PathBuf, Uuid>` maps file paths to room UUIDs.
 
 ### Autosave
 
 Debounced: 2s quiet period, 10s max interval via `spawn_autosave_debouncer`. `NotebookAutosaved` broadcast clears frontend dirty flag. Explicit Cmd+S also runs cell formatting (ruff/deno fmt). Skips untitled notebooks and notebooks mid-load.
 
-### Room Re-keying
+### Saving an untitled notebook
 
-When an untitled notebook is first saved, `rekey_ephemeral_room()`:
+Room keys are always UUIDs (never change). When an untitled notebook is first saved:
 1. Canonicalizes save path
-2. Guards against overwriting existing room
-3. Re-keys `NotebookRooms` HashMap (remove UUID, insert path)
-4. Updates room's `notebook_path`
-5. Deletes old UUID-based persist file
-6. Spawns file watcher for new path
-7. Broadcasts `RoomRenamed` so all peers update
+2. Checks `path_index` for conflicts (`PathAlreadyOpen` error if collision)
+3. Inserts into `path_index: HashMap<PathBuf, Uuid>`
+4. Updates room's `path: RwLock<Option<PathBuf>>`
+5. Spawns file watcher for new path
+6. Broadcasts `PathChanged { path }` so peers update local path tracking
 
 ### Crash Recovery
 
@@ -161,7 +160,7 @@ crates/runtimed/src/
   lib.rs                   — Public types, path helpers
   main.rs                  — CLI entry point
   daemon.rs                — Daemon state, pool management, connection routing
-  notebook_sync_server.rs  — NotebookRoom, room lifecycle, autosave, re-keying
+  notebook_sync_server.rs  — NotebookRoom, room lifecycle, autosave, path_index
   jupyter_kernel.rs        — JupyterKernel: process spawn, ZMQ socket wiring, IOPub output routing
   kernel_manager.rs        — Shared kernel plumbing: QueueCommand, KernelStatus, QueuedCell, output conversion, widget buffers
   runtime_agent.rs         — Process-isolated runtime agent: kernel lifecycle, IOPub, RuntimeStateDoc writes

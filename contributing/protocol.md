@@ -257,7 +257,7 @@ Broadcasts are daemon-initiated messages pushed to all connected clients for a n
 | ~~`CommSync`~~ | Removed — widget state syncs via RuntimeStateDoc CRDT |
 | `EnvProgress { env_type, phase }` | Environment setup progress (`phase` is a flattened `EnvProgressPhase`) |
 | `EnvSyncState { in_sync, diff }` | Notebook dependencies drifted from launched kernel config |
-| `RoomRenamed { new_notebook_id }` | Untitled notebook saved — room re-keyed from UUID to file path |
+| `PathChanged { path }` | Room's `.ipynb` path changed (e.g. untitled notebook saved) — UUID is stable; peers update local path tracking |
 | `NotebookAutosaved { path }` | Daemon autosaved `.ipynb` to disk — frontend clears dirty flag |
 
 Several broadcast variants have been superseded by RuntimeStateDoc CRDT sync: `CommSync` (removed), `KernelStatus`, `ExecutionStarted`, `ExecutionDone`, `QueueChanged`, and `EnvSyncState` are filtered at the relay stage and never reach clients. The `Comm` variant is now limited to custom messages (`method != "update"`) — state updates flow through the CRDT instead.
@@ -320,7 +320,7 @@ Stream outputs (stdout/stderr) are special: text is fed through a terminal emula
 
 **Autosave:** The daemon autosaves `.ipynb` on a debounce (2s quiet, 10s max). `NotebookAutosaved` broadcast clears the frontend dirty flag. Explicit save (Cmd+S) additionally formats cells.
 
-**Room re-keying:** When an untitled notebook is first saved, `rekey_ephemeral_room()` atomically changes the room key from a UUID to the canonical file path. `RoomRenamed` broadcast tells all peers to update their `notebook_id` for reconnection.
+**UUID-stable rooms:** Room keys are always UUIDs. Saving an untitled notebook updates a secondary `path_index` map and broadcasts `PathChanged { path }` so peers can update their local path tracking. The UUID never changes.
 
 **Crash recovery:** Untitled notebooks persist their Automerge doc to `notebook-docs/{hash}.automerge`. Before overwriting on reopen, the daemon snapshots to `notebook-docs/snapshots/`. `runt recover` exports snapshots to `.ipynb`.
 
@@ -350,7 +350,7 @@ Widget state now lives in `doc.comms/` in RuntimeStateDoc. The daemon writes com
 | `crates/notebook-sync/src/relay.rs` | Relay handle for notebook sync connections |
 | `crates/notebook-sync/src/connect.rs` | Connection setup (`connect_open_relay`, `connect_create_relay`) |
 | `crates/notebook-sync/src/handle.rs` | `DocHandle` — sync infrastructure, per-cell accessors for Python clients |
-| `crates/runtimed/src/notebook_sync_server.rs` | `NotebookRoom`, room lifecycle, autosave debouncer, re-keying, sync loop |
+| `crates/runtimed/src/notebook_sync_server.rs` | `NotebookRoom`, room lifecycle, autosave debouncer, sync loop |
 | `crates/runtimed/src/kernel_manager.rs` | Kernel process lifecycle, execution queue, IOPub output routing |
 | `crates/runtimed/src/comm_state.rs` | Widget comm state + Output widget capture routing |
 | `crates/runtimed/src/output_store.rs` | Output manifest creation, blob inlining threshold |

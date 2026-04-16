@@ -95,7 +95,7 @@ Only `0x00` (AutomergeSync), `0x04` (Presence), and `0x06` (PoolStateSync) are v
 | ~~`CommSync`~~ | Removed — widget state syncs via RuntimeStateDoc CRDT |
 | `EnvProgress { env_type, phase }` | Environment setup progress |
 | `EnvSyncState { in_sync, diff }` | Deps drifted from launched kernel |
-| `RoomRenamed { new_notebook_id }` | Untitled notebook saved, room re-keyed |
+| `PathChanged { path }` | Room's `.ipynb` path changed — UUID is stable; peers update local path tracking |
 | `NotebookAutosaved { path }` | Autosave completed, frontend clears dirty flag |
 
 ## Tauri Event Bridge

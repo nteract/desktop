@@ -107,7 +107,7 @@ impl RelayHandle {
             .clone()
     }
 
-    /// Update the notebook ID after a room re-key (e.g. save-as from untitled).
+    /// Update the notebook ID stored in this relay handle.
     pub fn set_notebook_id(&self, new_id: String) {
         *self.notebook_id.write().unwrap_or_else(|e| e.into_inner()) = new_id;
     }
