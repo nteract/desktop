@@ -4282,7 +4282,9 @@ async fn auto_launch_kernel(
     {
         info!("[notebook-sync] Spawning runtime agent subprocess for auto-launch");
 
-        let nb_id = notebook_id.to_string();
+        // Always pass the room UUID so the agent's RuntimeAgent handshake
+        // finds the room in the UUID-keyed rooms map.
+        let nb_id = room.id.to_string();
         let runtime_agent_id = format!("runtime-agent:{}", &uuid::Uuid::new_v4().to_string()[..8]);
         let socket_path = daemon.socket_path().clone();
 
@@ -5553,13 +5555,9 @@ async fn handle_notebook_request(
             {
                 info!("[notebook-sync] Spawning runtime agent subprocess");
 
-                let notebook_id = room
-                    .path
-                    .read()
-                    .await
-                    .as_ref()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| room.id.to_string());
+                // Always pass the room UUID so the agent's RuntimeAgent
+                // handshake finds the room in the UUID-keyed rooms map.
+                let notebook_id = room.id.to_string();
                 let runtime_agent_id =
                     format!("runtime-agent:{}", &uuid::Uuid::new_v4().to_string()[..8]);
                 let socket_path = daemon.socket_path().clone();
