@@ -45,5 +45,11 @@ pub mod terminal_size;
 /// Cached to avoid repeated allocations on hot paths.
 pub fn daemon_version() -> &'static str {
     static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    VERSION.get_or_init(|| format!("{}+{}", env!("CARGO_PKG_VERSION"), env!("GIT_COMMIT")))
+    VERSION.get_or_init(|| {
+        format!(
+            "{}+{}",
+            env!("CARGO_PKG_VERSION"),
+            include_str!(concat!(env!("OUT_DIR"), "/git_hash.txt"))
+        )
+    })
 }

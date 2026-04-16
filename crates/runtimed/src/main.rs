@@ -13,7 +13,7 @@ use tracing::info;
 
 #[derive(Parser, Debug)]
 #[command(name = "runtimed")]
-#[command(version = concat!(env!("CARGO_PKG_VERSION"), "+", env!("GIT_COMMIT")))]
+#[command(version = concat!(env!("CARGO_PKG_VERSION"), "+", include_str!(concat!(env!("OUT_DIR"), "/git_hash.txt"))))]
 #[command(about = "Runtime daemon for managing Jupyter environments")]
 struct Cli {
     #[command(subcommand)]
@@ -472,7 +472,7 @@ fn install_service(binary: Option<PathBuf>) -> anyhow::Result<()> {
     println!(
         "Binary version: {}+{}",
         env!("CARGO_PKG_VERSION"),
-        env!("GIT_COMMIT")
+        include_str!(concat!(env!("OUT_DIR"), "/git_hash.txt"))
     );
 
     let mut manager = ServiceManager::default();

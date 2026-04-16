@@ -43,8 +43,8 @@ pub const MENU_CHECK_FOR_UPDATES: &str = "check_for_updates";
 pub const MENU_SETTINGS: &str = "settings";
 pub const MENU_SEND_FEEDBACK: &str = "send_feedback";
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const APP_COMMIT_SHA: &str = env!("GIT_COMMIT");
-pub const APP_RELEASE_DATE: &str = env!("GIT_COMMIT_DATE");
+pub const APP_COMMIT_SHA: &str = include_str!(concat!(env!("OUT_DIR"), "/git_hash.txt"));
+pub const APP_RELEASE_DATE: &str = include_str!(concat!(env!("OUT_DIR"), "/git_date.txt"));
 
 pub const BUNDLED_SAMPLE_NOTEBOOK: BundledSampleNotebook = BundledSampleNotebook {
     title: "Open Sample",

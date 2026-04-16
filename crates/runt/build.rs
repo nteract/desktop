@@ -1,9 +1,8 @@
+use std::fs;
+use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
-    let commit = git_commit_short();
-    println!("cargo:rustc-env=GIT_COMMIT={commit}");
-
     let variant = std::env::var("RUNT_VARIANT").unwrap_or_default();
     println!("cargo:rustc-env=RUNT_VARIANT={variant}");
     println!("cargo:rerun-if-env-changed=RUNT_VARIANT");
@@ -12,10 +11,26 @@ fn main() {
     // rerun-if-changed above, cargo won't use its default behavior).
     println!("cargo:rerun-if-changed=build.rs");
 
-    // We intentionally do NOT watch .git/HEAD or refs — that causes
-    // recompilation on every commit, branch switch, pull, or fetch.
-    // The hash is refreshed when build.rs or RUNT_VARIANT changes.
-    // CI always starts clean so release builds always get the right hash.
+    write_git_hash();
+}
+
+/// Write the git commit hash to `$OUT_DIR/git_hash.txt`, skipping the write
+/// if the content hasn't changed. See `crates/runtimed/build.rs` for the
+/// rationale — this avoids recompilation when the hash doesn't change.
+#[allow(clippy::unwrap_used)]
+fn write_git_hash() {
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let hash_file = out_dir.join("git_hash.txt");
+    let hash = git_commit_short();
+
+    let needs_write = match fs::read_to_string(&hash_file) {
+        Ok(existing) => existing != hash,
+        Err(_) => true,
+    };
+
+    if needs_write {
+        fs::write(&hash_file, &hash).unwrap();
+    }
 }
 
 fn git_commit_short() -> String {

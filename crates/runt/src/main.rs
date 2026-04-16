@@ -143,14 +143,20 @@ fn random_tagline() -> String {
     )
 }
 
+const GIT_COMMIT: &str = include_str!(concat!(env!("OUT_DIR"), "/git_hash.txt"));
+
 const fn runt_version_string() -> &'static str {
     if env!("RUNT_VARIANT").is_empty() {
-        concat!(env!("CARGO_PKG_VERSION"), "+", env!("GIT_COMMIT"))
+        concat!(
+            env!("CARGO_PKG_VERSION"),
+            "+",
+            include_str!(concat!(env!("OUT_DIR"), "/git_hash.txt"))
+        )
     } else {
         concat!(
             env!("CARGO_PKG_VERSION"),
             "+",
-            env!("GIT_COMMIT"),
+            include_str!(concat!(env!("OUT_DIR"), "/git_hash.txt")),
             "-",
             env!("RUNT_VARIANT")
         )
@@ -3644,7 +3650,7 @@ fn collect_system_info() -> serde_json::Value {
         "arch": std::env::consts::ARCH,
         "os_version": os_version,
         "runt_version": env!("CARGO_PKG_VERSION"),
-        "runt_commit": env!("GIT_COMMIT"),
+        "runt_commit": GIT_COMMIT,
         "runt_variant": env!("RUNT_VARIANT"),
         "build_channel": format!("{:?}", runt_workspace::build_channel()),
         "dev_mode": runt_workspace::is_dev_mode(),

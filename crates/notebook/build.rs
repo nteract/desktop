@@ -78,29 +78,45 @@ fn maybe_disable_external_bin_for_local_checks() {
 }
 
 fn main() {
-    // Capture git metadata for About menu and version strings.
-    let branch = git_output(&["rev-parse", "--abbrev-ref", "HEAD"]);
-    let commit = git_output(&["rev-parse", "--short=7", "HEAD"]);
-    let release_date = git_output(&["show", "-s", "--format=%cs", "HEAD"]);
-
-    println!("cargo:rustc-env=GIT_BRANCH={branch}");
-    println!("cargo:rustc-env=GIT_COMMIT={commit}");
-    println!("cargo:rustc-env=GIT_COMMIT_DATE={release_date}");
+    // Write git metadata to $OUT_DIR files, skipping writes when content
+    // hasn't changed to avoid unnecessary recompilation.
+    write_git_metadata();
 
     // Re-run if frontend dist changes (ensures fresh frontend is embedded).
     // This is the only non-git watcher — Phase 2 builds the frontend, then
     // Phase 3 (cargo tauri build) picks up the updated dist/.
     println!("cargo:rerun-if-changed=../../apps/notebook/dist");
 
-    // We intentionally do NOT watch .git/HEAD, .git/index, or refs.
-    // That caused recompilation of notebook + all dependents on every
-    // commit, branch switch, pull, or fetch. The git metadata is refreshed
-    // whenever dist/ changes (every build) or this build script changes.
-    // CI always starts clean so release builds always get the right hash.
-
     maybe_disable_external_bin_for_local_checks();
 
     tauri_build::build()
+}
+
+/// Write git metadata to `$OUT_DIR/git_{hash,branch,date}.txt`, skipping
+/// writes when content hasn't changed. See `crates/runtimed/build.rs` for
+/// the rationale — this avoids recompilation when the metadata is unchanged.
+#[allow(clippy::unwrap_used)]
+fn write_git_metadata() {
+    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+
+    let hash = git_output(&["rev-parse", "--short=7", "HEAD"]);
+    let branch = git_output(&["rev-parse", "--abbrev-ref", "HEAD"]);
+    let date = git_output(&["show", "-s", "--format=%cs", "HEAD"]);
+
+    write_if_changed(&out_dir.join("git_hash.txt"), &hash);
+    write_if_changed(&out_dir.join("git_branch.txt"), &branch);
+    write_if_changed(&out_dir.join("git_date.txt"), &date);
+}
+
+#[allow(clippy::unwrap_used)]
+fn write_if_changed(path: &PathBuf, content: &str) {
+    let needs_write = match std::fs::read_to_string(path) {
+        Ok(existing) => existing != content,
+        Err(_) => true,
+    };
+    if needs_write {
+        std::fs::write(path, content).unwrap();
+    }
 }
 
 fn git_output(args: &[&str]) -> String {
