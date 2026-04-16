@@ -568,11 +568,30 @@ async fn initialize_notebook_sync_open(
 ) -> Result<(), String> {
     let current_generation = sync_generation.fetch_add(1, Ordering::SeqCst) + 1;
 
+    // Diagnostic: flag paths that look like a bare UUID with no extension,
+    // which trip daemon-side `cwd.join(path)` and create stray
+    // `{cwd}/{uuid}.ipynb` files.
+    let display_str = path.to_string_lossy();
+    let looks_uuid_shaped = !display_str.contains('/')
+        && !display_str.contains('\\')
+        && !display_str.ends_with(".ipynb")
+        && uuid::Uuid::parse_str(&display_str).is_ok();
+    if looks_uuid_shaped {
+        warn!(
+            "[notebook-sync] initialize_notebook_sync_open called with bare-UUID path {:?} \
+             (window={}) — this is the stray-ipynb-file bug upstream. Please capture this \
+             stack in the issue tracker.",
+            path.display(),
+            window.label(),
+        );
+    }
+
     let socket_path = runt_workspace::default_socket_path();
     info!(
-        "[notebook-sync] Opening notebook via daemon: {} ({})",
+        "[notebook-sync] Opening notebook via daemon: {} ({}) window={}",
         path.display(),
         socket_path.display(),
+        window.label(),
     );
 
     let (frame_tx, raw_frame_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
@@ -1803,10 +1822,21 @@ fn apply_path_changed(
     window: tauri::Window,
     registry: tauri::State<'_, WindowNotebookRegistry>,
 ) -> Result<(), String> {
+    info!(
+        "[path-changed] apply_path_changed invoked: path={:?} window={}",
+        path,
+        window.label()
+    );
     let context_path = path_for_window(&window, registry.inner())?;
     let new_path = path.as_deref().map(PathBuf::from);
 
     if let Ok(mut p) = context_path.lock() {
+        info!(
+            "[path-changed] context.path mutation: {:?} -> {:?} (window={})",
+            *p,
+            new_path,
+            window.label()
+        );
         *p = new_path.clone();
     }
 
@@ -1833,6 +1863,10 @@ async fn save_notebook(
     window: tauri::Window,
     registry: tauri::State<'_, WindowNotebookRegistry>,
 ) -> Result<(), String> {
+    info!(
+        "[save] save_notebook command invoked by window {}",
+        window.label()
+    );
     let path = path_for_window(&window, registry.inner())?;
     let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
     let dirty = dirty_for_window(&window, registry.inner())?;
@@ -1906,6 +1940,11 @@ async fn save_notebook_as(
     window: tauri::Window,
     registry: tauri::State<'_, WindowNotebookRegistry>,
 ) -> Result<(), String> {
+    info!(
+        "[save] save_notebook_as command invoked by window {} with path {:?}",
+        window.label(),
+        path
+    );
     let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
     let context_path = path_for_window(&window, registry.inner())?;
     let dirty = dirty_for_window(&window, registry.inner())?;
@@ -1947,6 +1986,12 @@ async fn save_notebook_as(
     let _ = window.set_title(filename);
 
     if let Ok(mut p) = context_path.lock() {
+        info!(
+            "[save-as] context.path mutation: {:?} -> {:?} (window={})",
+            *p,
+            saved_path,
+            window.label()
+        );
         *p = Some(saved_path.clone());
     }
     dirty.store(false, Ordering::SeqCst);
@@ -2248,6 +2293,12 @@ fn handle_open_url(
         if let Ok(context) = registry.get(&empty_label) {
             // Update path in context
             if let Ok(mut p) = context.path.lock() {
+                log::info!(
+                    "[file-open] context.path mutation (reuse empty window): {:?} -> {:?} (label={})",
+                    *p,
+                    path,
+                    empty_label
+                );
                 *p = Some(path.clone());
             }
 

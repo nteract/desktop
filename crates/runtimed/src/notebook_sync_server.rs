@@ -7163,6 +7163,15 @@ async fn save_notebook_to_disk(
     room: &NotebookRoom,
     target_path: Option<&str>,
 ) -> Result<String, SaveError> {
+    // Diagnostic: log the call with the caller-supplied path and what the
+    // room currently has as its path. Triangulates stray-file bugs by letting
+    // us correlate saves against whoever fired them.
+    debug!(
+        "[save] save_notebook_to_disk entered: target_path={:?}, room.id={}, room.path={:?}",
+        target_path,
+        room.id,
+        room.path.read().await.as_deref()
+    );
     // Determine the actual save path
     let notebook_path = match target_path {
         Some(p) => {

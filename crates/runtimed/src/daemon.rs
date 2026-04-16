@@ -1543,6 +1543,26 @@ impl Daemon {
 
         info!("[runtimed] OpenNotebook requested for {}", path);
 
+        // Diagnostic: flag suspicious path shapes. UUID-shaped paths (no slash,
+        // no extension, parses as a UUID) almost certainly indicate a bug
+        // upstream — someone is passing a notebook_id string as a path and
+        // the daemon would resolve it via current_dir.join(uuid), creating
+        // stray `{cwd}/{uuid}.ipynb` files.
+        {
+            let looks_uuid_shaped = !path.contains('/')
+                && !path.contains('\\')
+                && !path.ends_with(".ipynb")
+                && uuid::Uuid::parse_str(&path).is_ok();
+            if looks_uuid_shaped {
+                warn!(
+                    "[runtimed] OpenNotebook received bare-UUID path {:?} — \
+                     this usually means a caller passed a notebook_id as a path. \
+                     The daemon will resolve it against cwd, creating a stray file.",
+                    path
+                );
+            }
+        }
+
         // Helper to send error response to client
         async fn send_error_response<W: AsyncWrite + Unpin>(
             writer: &mut W,
