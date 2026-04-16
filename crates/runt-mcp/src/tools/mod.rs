@@ -90,7 +90,10 @@ pub fn all_tools() -> Vec<Tool> {
         .with_meta(always_load_meta()),
         Tool::new(
             "open_notebook",
-            "Open a notebook by path or session ID.",
+            "Open a notebook. Provide exactly one of: \
+             path (file path, e.g. \"~/analysis.ipynb\") or \
+             notebook_id (UUID from list_active_notebooks). \
+             Paths open the file from disk; notebook_id connects to a running session.",
             schema_for::<session::OpenNotebookParams>(),
         )
         .annotate(

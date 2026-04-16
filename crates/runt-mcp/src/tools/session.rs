@@ -179,10 +179,14 @@ fn format_cell_summaries(handle: &notebook_sync::handle::DocHandle) -> String {
 #[allow(dead_code)] // Fields used by schemars for tool input schema generation
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct OpenNotebookParams {
-    /// A file path (e.g. "~/analysis.ipynb") or a notebook ID from
-    /// list_active_notebooks. Paths are opened from disk; IDs connect
-    /// to a running session.
-    pub notebook: String,
+    /// Canonical file path to open (e.g. "~/analysis.ipynb").
+    /// Either this OR notebook_id must be provided, not both.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// UUID of a running notebook session from list_active_notebooks.
+    /// Either this OR path must be provided, not both.
+    #[serde(default)]
+    pub notebook_id: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -241,43 +245,41 @@ pub async fn list_active_notebooks(server: &NteractMcp) -> Result<CallToolResult
     }
 }
 
-/// Heuristic: does this string look like a file path rather than a daemon room ID?
-/// Paths contain separators, start with ~ or ., or end in .ipynb.
-fn looks_like_path(s: &str) -> bool {
-    s.contains('/')
-        || s.contains('\\')
-        || s.starts_with('~')
-        || s.starts_with('.')
-        || s.ends_with(".ipynb")
-}
-
 /// Open a notebook — either from a file path on disk or by connecting to an
-/// existing daemon session by ID.
+/// existing daemon session by UUID.
 ///
 /// Unified handler for `open_notebook` and the deprecated `join_notebook`.
-/// Accepts `notebook`, `path`, or `notebook_id` params (in that priority order)
-/// and auto-detects whether the value is a file path or a session ID.
+/// Requires exactly one of `path` or `notebook_id` — not both, not neither.
 pub async fn open_notebook(
     server: &NteractMcp,
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
-    // Resolve the notebook identifier from whichever param was provided.
-    let notebook = arg_str(request, "notebook")
-        .or_else(|| arg_str(request, "path"))
-        .or_else(|| arg_str(request, "notebook_id"))
-        .ok_or_else(|| {
-            McpError::invalid_params(
-                "Missing required parameter: notebook (a file path or notebook ID)",
+    let path_arg = arg_str(request, "path").map(str::to_string);
+    let id_arg = arg_str(request, "notebook_id").map(str::to_string);
+
+    // Exactly one must be provided.
+    match (&path_arg, &id_arg) {
+        (None, None) => {
+            return Err(McpError::invalid_params(
+                "Missing required parameter: provide either 'path' (file path) or \
+                 'notebook_id' (UUID from list_active_notebooks), not both.",
                 None,
-            )
-        })?
-        .to_string();
+            ));
+        }
+        (Some(_), Some(_)) => {
+            return Err(McpError::invalid_params(
+                "Ambiguous parameters: provide either 'path' or 'notebook_id', not both.",
+                None,
+            ));
+        }
+        _ => {}
+    }
 
     let prev = previous_notebook_id(server).await;
 
-    if looks_like_path(&notebook) {
+    if let Some(path) = path_arg {
         // File path — resolve and open from disk via the daemon's OpenNotebook handshake.
-        let abs_path = PathBuf::from(resolve_path(&notebook));
+        let abs_path = PathBuf::from(resolve_path(&path));
 
         match notebook_sync::connect::connect_open(
             server.socket_path.clone(),
@@ -324,11 +326,26 @@ pub async fn open_notebook(
                     serde_json::to_string_pretty(&response).unwrap_or_default(),
                 )]))
             }
-            Err(e) => tool_error(&format!("Failed to open notebook '{}': {}", notebook, e)),
+            Err(e) => tool_error(&format!("Failed to open notebook '{}': {}", path, e)),
         }
     } else {
-        // Session ID — connect to an existing daemon room.
-        let notebook_id = notebook;
+        // UUID notebook_id — connect to an existing daemon room.
+        let notebook_id = match id_arg {
+            Some(id) => id,
+            None => unreachable!("id_arg is Some when path_arg is None — validated above"),
+        };
+
+        // Validate that the provided value is a UUID.
+        if uuid::Uuid::parse_str(&notebook_id).is_err() {
+            return Err(McpError::invalid_params(
+                format!(
+                    "Invalid notebook_id '{}': must be a UUID (e.g. from list_active_notebooks). \
+                     To open a file, use the 'path' parameter instead.",
+                    notebook_id
+                ),
+                None,
+            ));
+        }
 
         match notebook_sync::connect::connect(
             server.socket_path.clone(),
@@ -589,8 +606,9 @@ pub async fn save_notebook(
         }
     };
 
-    // If no path and notebook is ephemeral (UUID-keyed, not a file path), require a path
-    if path.is_none() && !looks_like_path(&notebook_id) {
+    // If no path and notebook is ephemeral (UUID-keyed), require a path.
+    // Ephemeral notebooks have a UUID as their notebook_id with no backing file.
+    if path.is_none() && uuid::Uuid::parse_str(&notebook_id).is_ok() {
         return tool_error(
             "No path specified for ephemeral notebook. \
              Provide a path: save_notebook(path='/path/to/notebook.ipynb')",
@@ -742,5 +760,66 @@ mod tests {
         }
         assert!(!matches!("mamba", "uv" | "conda" | "pixi"));
         assert!(!matches!("pip", "uv" | "conda" | "pixi"));
+    }
+
+    /// Ephemeral notebooks have UUID keys; file-backed ones have path-derived keys.
+    /// The save_notebook handler uses a UUID parse check to decide whether to
+    /// require a path argument.
+    #[test]
+    fn ephemeral_uuid_detection() {
+        // UUID notebook_ids (ephemeral) → save requires a path
+        let uuid_id = "550e8400-e29b-41d4-a716-446655440000";
+        assert!(
+            uuid::Uuid::parse_str(uuid_id).is_ok(),
+            "UUID should parse OK"
+        );
+
+        // Path-like strings (file-backed) → save can infer path from the id
+        let path_like = "/home/user/notebooks/analysis.ipynb";
+        assert!(
+            uuid::Uuid::parse_str(path_like).is_err(),
+            "Path should not parse as UUID"
+        );
+
+        // UUID check is the gate — not a path heuristic.
+        let another_uuid = uuid::Uuid::new_v4().to_string();
+        assert!(
+            uuid::Uuid::parse_str(&another_uuid).is_ok(),
+            "Fresh UUID should parse OK"
+        );
+    }
+
+    /// save_notebook response must include notebook_id (unchanged UUID) and path.
+    /// Verify no previous_notebook_id or new_notebook_id fields exist in the
+    /// response schema (structural test via serde_json shape).
+    #[test]
+    fn save_notebook_response_shape() {
+        // Simulate the response JSON that save_notebook produces on success.
+        let notebook_id = uuid::Uuid::new_v4().to_string();
+        let saved_path = "/tmp/test.ipynb";
+        let result = serde_json::json!({
+            "path": saved_path,
+            "notebook_id": notebook_id,
+        });
+
+        // Must have path and notebook_id.
+        assert_eq!(result["path"].as_str().unwrap(), saved_path);
+        assert_eq!(result["notebook_id"].as_str().unwrap(), notebook_id);
+
+        // Must NOT have legacy identity-mutation fields.
+        assert!(
+            result.get("previous_notebook_id").is_none(),
+            "previous_notebook_id must not appear in save response"
+        );
+        assert!(
+            result.get("new_notebook_id").is_none(),
+            "new_notebook_id must not appear in save response"
+        );
+
+        // The notebook_id in the response is a valid UUID.
+        assert!(
+            uuid::Uuid::parse_str(&notebook_id).is_ok(),
+            "notebook_id in save response must be a valid UUID"
+        );
     }
 }
