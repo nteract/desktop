@@ -112,7 +112,7 @@ export function refineColumnType(
 
 export function stringifyValue(val: unknown): string {
   if (Array.isArray(val) || (typeof val === "object" && val !== null)) {
-    return JSON.stringify(val);
+    return JSON.stringify(val, (_k, v) => (typeof v === "bigint" ? Number(v) : v));
   }
   return String(val);
 }

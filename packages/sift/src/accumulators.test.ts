@@ -315,6 +315,10 @@ describe("formatCell", () => {
   it("preserves object structure", () => {
     expect(formatCell("categorical", { a: 1 })).toBe('{"a":1}');
   });
+
+  it("handles arrays containing bigint values", () => {
+    expect(formatCell("categorical", [1n, 2n, 3n])).toBe("[1,2,3]");
+  });
 });
 
 describe("isNullSentinel", () => {
