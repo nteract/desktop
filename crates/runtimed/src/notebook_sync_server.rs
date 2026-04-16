@@ -50,6 +50,9 @@ use notebook_doc::diff::diff_metadata_touched;
 use notebook_doc::presence::{self, PresenceState};
 use notebook_doc::runtime_state::{QueueEntry as DocQueueEntry, RuntimeStateDoc};
 
+mod path_index;
+pub use path_index::{PathIndex, PathIndexError};
+
 /// Capacity for the per-room kernel broadcast channel. Sized to absorb bursts
 /// of output messages (e.g. fast-printing cells) so slower peers trigger a
 /// full doc sync ("peer lagged") rather than losing messages.
