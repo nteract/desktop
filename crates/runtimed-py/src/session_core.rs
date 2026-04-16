@@ -248,34 +248,6 @@ fn hydrate_kernel_state(state: &mut SessionState) {
     }
 }
 
-/// Spawn a background task that listens for `RoomRenamed` broadcasts
-/// and updates the `notebook_id_override` when another peer re-keys the room.
-///
-/// This ensures `Session.notebook_id` / `AsyncSession.notebook_id` stays
-/// correct even when a different peer saves an ephemeral notebook.
-pub(crate) fn spawn_rekey_watcher(
-    broadcast_rx: &BroadcastReceiver,
-    notebook_id_override: Arc<std::sync::Mutex<Option<String>>>,
-    handle: &tokio::runtime::Handle,
-) {
-    let mut rx = broadcast_rx.resubscribe();
-    handle.spawn(async move {
-        loop {
-            match rx.recv().await {
-                Some(NotebookBroadcast::RoomRenamed { new_notebook_id }) => {
-                    log::info!(
-                        "[session] Room re-keyed by peer, new notebook_id: {}",
-                        new_notebook_id
-                    );
-                    *notebook_id_override.lock().unwrap() = Some(new_notebook_id);
-                }
-                Some(_) => continue,
-                None => break, // channel closed
-            }
-        }
-    });
-}
-
 /// Connect and open an existing notebook file.
 ///
 /// Returns (notebook_id, populated SessionState, NotebookConnectionInfo).
@@ -1883,12 +1855,9 @@ pub(crate) async fn confirm_sync(state: &Arc<Mutex<SessionState>>) -> PyResult<(
     handle.confirm_sync().await.map_err(to_py_err)
 }
 
-/// Save the notebook to disk.
-/// Result of a save operation, containing the saved path and optionally
-/// a new notebook_id if the daemon re-keyed the room (ephemeral → file-path).
+/// Result of a save operation, containing the saved path.
 pub(crate) struct SaveResult {
     pub path: String,
-    pub new_notebook_id: Option<String>,
 }
 
 pub(crate) async fn save(
@@ -1917,13 +1886,7 @@ pub(crate) async fn save(
     let response = handle.send_request(request).await.map_err(to_py_err)?;
 
     match response {
-        NotebookResponse::NotebookSaved {
-            path: saved_path,
-            new_notebook_id,
-        } => Ok(SaveResult {
-            path: saved_path,
-            new_notebook_id,
-        }),
+        NotebookResponse::NotebookSaved { path: saved_path } => Ok(SaveResult { path: saved_path }),
         NotebookResponse::Error { error } => Err(to_py_err(error)),
         other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
     }
@@ -2352,46 +2315,6 @@ mod tests {
         let a = make_actor_label("Claude");
         let b = make_actor_label("Claude");
         assert_ne!(a, b, "each call should produce a unique session suffix");
-    }
-
-    /// Regression test: spawn_rekey_watcher must work when called OUTSIDE
-    /// of `runtime.block_on()` — the sync Session API calls it after
-    /// `block_on` returns. Previously it used `tokio::spawn` which panics
-    /// without an active runtime context. The fix uses `handle.spawn()`.
-    #[test]
-    fn test_spawn_rekey_watcher_outside_block_on() {
-        use notebook_protocol::protocol::NotebookBroadcast;
-
-        let runtime = tokio::runtime::Runtime::new().unwrap();
-
-        // Create a broadcast channel (capacity 16 is fine for tests)
-        let (tx, rx) = tokio::sync::broadcast::channel::<NotebookBroadcast>(16);
-        let broadcast_rx = notebook_sync::BroadcastReceiver::new(rx);
-
-        let override_arc = Arc::new(std::sync::Mutex::new(None::<String>));
-
-        // This is the critical call — it must NOT panic when called
-        // outside of block_on, using only the runtime handle.
-        spawn_rekey_watcher(&broadcast_rx, Arc::clone(&override_arc), runtime.handle());
-
-        // Send a RoomRenamed broadcast and verify the override is updated
-        let new_id = "notebooks/test.ipynb".to_string();
-        tx.send(NotebookBroadcast::RoomRenamed {
-            new_notebook_id: new_id.clone(),
-        })
-        .unwrap();
-
-        // Give the spawned task a moment to process
-        runtime.block_on(async {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        });
-
-        let override_val = override_arc.lock().unwrap();
-        assert_eq!(
-            override_val.as_deref(),
-            Some("notebooks/test.ipynb"),
-            "spawn_rekey_watcher should update notebook_id_override on RoomRenamed"
-        );
     }
 
     /// Helper that mirrors the restart env_source mapping logic in restart_kernel().

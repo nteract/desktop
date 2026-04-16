@@ -245,10 +245,6 @@ export type DaemonBroadcast =
       };
     }
   | {
-      event: "room_renamed";
-      new_notebook_id: string;
-    }
-  | {
       event: "notebook_autosaved";
       path: string;
     };

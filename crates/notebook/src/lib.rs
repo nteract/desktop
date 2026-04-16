@@ -1868,21 +1868,17 @@ async fn save_notebook_as(
     let sync_handle = notebook_sync.lock().await.clone();
     let handle = sync_handle.ok_or("Not connected to daemon")?;
 
-    // Save via daemon — daemon writes to disk and re-keys the room from
-    // UUID → canonical file path. The connection stays live, no reconnect needed.
-    let (saved_path, new_notebook_id) = match handle
+    // Save via daemon — daemon writes to disk. The UUID-keyed room is stable.
+    let saved_path = match handle
         .send_request(NotebookRequest::SaveNotebook {
             format_cells: true,
             path: Some(path),
         })
         .await
     {
-        Ok(NotebookResponse::NotebookSaved {
-            path: daemon_path,
-            new_notebook_id,
-        }) => {
+        Ok(NotebookResponse::NotebookSaved { path: daemon_path }) => {
             info!("[save-as] Notebook saved via daemon to: {}", daemon_path);
-            (PathBuf::from(daemon_path), new_notebook_id)
+            PathBuf::from(daemon_path)
         }
         Ok(NotebookResponse::Error { error }) => {
             return Err(format!("Daemon save failed: {}", error));
@@ -1906,24 +1902,6 @@ async fn save_notebook_as(
         *p = Some(saved_path.clone());
     }
     dirty.store(false, Ordering::SeqCst);
-
-    if let Some(ref new_id) = new_notebook_id {
-        let notebook_id_arc = notebook_id_for_window(&window, registry.inner())?;
-        if let Ok(mut id) = notebook_id_arc.lock() {
-            info!("[save-as] Room re-keyed: {} -> {}", *id, new_id);
-            *id = new_id.clone();
-        }
-        drop(notebook_id_arc);
-
-        // Update the live relay handle's notebook_id so subsequent commands
-        // (e.g. user-triggered kernel restart) derive the correct file path
-        // instead of the stale UUID.
-        let guard = notebook_sync.lock().await;
-        if let Some(ref handle) = *guard {
-            handle.set_notebook_id(new_id.clone());
-        }
-        drop(guard);
-    }
 
     refresh_native_menu(window.app_handle(), registry.inner());
 

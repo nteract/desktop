@@ -48,13 +48,6 @@ impl AsyncSession {
         peer_label: Option<String>,
     ) -> Self {
         let override_arc = Arc::new(std::sync::Mutex::new(None));
-        if let Some(ref rx) = state.broadcast_rx {
-            session_core::spawn_rekey_watcher(
-                rx,
-                Arc::clone(&override_arc),
-                &tokio::runtime::Handle::current(),
-            );
-        }
         Self {
             state: Arc::new(Mutex::new(state)),
             notebook_id,
@@ -226,17 +219,6 @@ impl AsyncSession {
             {
                 let st = state.lock().await;
                 session_core::announce_presence(&st).await;
-            }
-            // Spawn background task to update notebook_id if a peer re-keys the room
-            {
-                let st = state.lock().await;
-                if let Some(ref rx) = st.broadcast_rx {
-                    session_core::spawn_rekey_watcher(
-                        rx,
-                        override_arc,
-                        &tokio::runtime::Handle::current(),
-                    );
-                }
             }
             Ok(())
         })
@@ -643,11 +625,6 @@ impl AsyncSession {
         future_into_py(py, async move {
             session_core::connect(&state, &effective_id).await?;
             let result = session_core::save(&state, path.as_deref()).await?;
-            // If the daemon re-keyed the room (ephemeral → file-path),
-            // store the new ID so the notebook_id getter reflects it.
-            if let Some(ref new_id) = result.new_notebook_id {
-                *override_arc.lock().unwrap() = Some(new_id.clone());
-            }
             Ok(result.path)
         })
     }

@@ -4471,7 +4471,6 @@ pub(crate) async fn update_kernel_presence(
     let _ = presence_tx.send(("daemon".to_string(), bytes));
 }
 
-
 /// Handle a NotebookRequest and return a NotebookResponse.
 async fn handle_notebook_request(
     room: &Arc<NotebookRoom>,
@@ -6255,10 +6254,7 @@ async fn handle_notebook_request(
                 // If path_changed is false, this is a save-in-place: nothing else to do.
             }
 
-            NotebookResponse::NotebookSaved {
-                path: written,
-                new_notebook_id: None,
-            }
+            NotebookResponse::NotebookSaved { path: written }
         }
 
         NotebookRequest::CloneNotebook { path } => {
@@ -11771,7 +11767,6 @@ mod tests {
             sources
         );
     }
-
 
     // ── find_room_by_path tests ───────────────────────────────────────────
 

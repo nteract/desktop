@@ -609,24 +609,11 @@ pub async fn save_notebook(
         })
         .await
     {
-        Ok(NotebookResponse::NotebookSaved {
-            path: saved_path,
-            new_notebook_id,
-        }) => {
-            let mut result = serde_json::json!({
+        Ok(NotebookResponse::NotebookSaved { path: saved_path }) => {
+            let result = serde_json::json!({
                 "path": saved_path,
-                "notebook_id": new_notebook_id.as_deref().unwrap_or(&notebook_id),
+                "notebook_id": notebook_id,
             });
-
-            // If room was re-keyed, update our session
-            if let Some(new_id) = &new_notebook_id {
-                let mut write = server.session.write().await;
-                if let Some(ref mut s) = *write {
-                    let old_id = s.notebook_id.clone();
-                    s.notebook_id = new_id.clone();
-                    result["previous_notebook_id"] = serde_json::json!(old_id);
-                }
-            }
 
             Ok(CallToolResult::success(vec![Content::text(
                 serde_json::to_string_pretty(&result).unwrap_or_default(),
