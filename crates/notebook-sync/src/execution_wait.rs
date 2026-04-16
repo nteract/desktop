@@ -92,20 +92,13 @@ pub async fn await_execution_terminal(
         }
 
         if let Ok(state) = handle.get_runtime_state() {
-            // Kernel-level fault takes precedence over per-execution polling.
-            // Without this, a kernel crash mid-execution leaves us spinning
-            // until the outer timeout fires.
-            if state.kernel.status == "error" {
-                return Err(ExecutionTerminalError::KernelFailed {
-                    reason: "kernel error".to_string(),
-                });
-            }
-            if state.kernel.status == "shutdown" {
-                return Err(ExecutionTerminalError::KernelFailed {
-                    reason: "kernel shutdown".to_string(),
-                });
-            }
-
+            // Targeted execution wins over kernel-level status. When the
+            // daemon fails a kernel mid-run, it writes `set_execution_done`
+            // for pending executions *before* flipping `kernel.status` to
+            // `"error"`, so a late consumer (e.g. `Execution.result()`
+            // called after the fact) must be able to read a completed
+            // execution's real status/outputs rather than being handed a
+            // generic `KernelFailed`.
             if let Some(exec) = state.executions.get(execution_id) {
                 if exec.status == "done" || exec.status == "error" {
                     break ExecutionTerminalState {
@@ -115,6 +108,20 @@ pub async fn await_execution_terminal(
                         execution_count: exec.execution_count,
                     };
                 }
+            }
+
+            // Fallback: kernel fault aborts only if *this* execution is
+            // still non-terminal. Otherwise the caller would spin until
+            // the outer timeout fires.
+            if state.kernel.status == "error" {
+                return Err(ExecutionTerminalError::KernelFailed {
+                    reason: "kernel error".to_string(),
+                });
+            }
+            if state.kernel.status == "shutdown" {
+                return Err(ExecutionTerminalError::KernelFailed {
+                    reason: "kernel shutdown".to_string(),
+                });
             }
         }
 

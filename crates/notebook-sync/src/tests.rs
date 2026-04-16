@@ -750,6 +750,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn await_execution_terminal_prefers_done_over_kernel_error() {
+        // Regression: the daemon writes set_execution_done() for pending
+        // executions *before* flipping kernel.status to "error" on kernel
+        // death. A late consumer (e.g. Execution.result()) must return the
+        // execution's real terminal state rather than being handed a
+        // generic KernelFailed.
+        use crate::execution_wait::await_execution_terminal;
+
+        let (handle, shared, _rx, _cmd_rx) = test_handle_with_shared();
+        let outputs = vec![serde_json::json!({
+            "output_type": "stream",
+            "name": "stdout",
+            "text": {"inline": "result data"},
+        })];
+        set_execution(&shared, "exec-1", "cell-1", "done", &outputs, Some(4));
+        // Kernel is now flagged as error AFTER the execution completed.
+        {
+            let mut st = shared.lock().unwrap();
+            st.state_doc.set_kernel_status("error");
+        }
+
+        let state =
+            await_execution_terminal(&handle, "exec-1", std::time::Duration::from_secs(5), None)
+                .await
+                .expect("should return completed execution, not KernelFailed");
+
+        assert_eq!(state.status, "done");
+        assert!(state.success);
+        assert_eq!(state.output_manifests.len(), 1);
+        assert_eq!(state.execution_count, Some(4));
+    }
+
+    #[tokio::test]
     async fn await_execution_terminal_grace_catches_late_outputs() {
         // Simulates the failing CI pattern: execution transitions to done
         // with empty outputs on our replica, then output manifests land a
