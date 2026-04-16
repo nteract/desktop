@@ -179,6 +179,26 @@ pub struct EnvSyncDiff {
 
 // ── Notebook protocol enums ─────────────────────────────────────────────────
 
+/// Structured error kinds returned in `NotebookResponse::SaveError`.
+///
+/// Note: `path` fields carry the serialized path string. Callers that build
+/// `PathAlreadyOpen` from a `PathBuf` should use `p.to_string_lossy().into_owned()`
+/// so non-UTF-8 paths degrade gracefully on the wire (Task 6.2 concern).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SaveErrorKind {
+    /// Another room is currently serving this path. The agent must close
+    /// the conflicting session (by UUID) before saving here.
+    PathAlreadyOpen {
+        /// UUID of the room that currently holds this path.
+        uuid: String,
+        /// The conflicting path (lossy-UTF-8 serialized from `PathBuf`).
+        path: String,
+    },
+    /// I/O or serialization failure. Message is human-readable.
+    Io { message: String },
+}
+
 /// Requests sent from notebook app to daemon for notebook operations.
 ///
 /// These are sent as JSON over the notebook sync connection alongside
@@ -377,6 +397,9 @@ pub enum NotebookResponse {
         new_notebook_id: Option<String>,
     },
 
+    /// Save failed with a structured error.
+    SaveError { error: SaveErrorKind },
+
     /// Notebook cloned successfully to a new file.
     NotebookCloned {
         /// The absolute path where the cloned notebook was written.
@@ -546,6 +569,16 @@ pub enum NotebookBroadcast {
         /// The new canonical notebook_id (file path).
         new_notebook_id: String,
     },
+
+    /// Sent when the room's `.ipynb` path changes (untitled→saved, save-as rename).
+    ///
+    /// Peers update local bookkeeping but do NOT reconnect — the UUID is stable.
+    /// `path` is `None` for an explicit "close file" rename (rare/future).
+    ///
+    /// Callers building this from a `PathBuf` should use
+    /// `p.to_string_lossy().into_owned()` so non-UTF-8 paths degrade gracefully
+    /// on the wire.
+    PathChanged { path: Option<String> },
 
     /// Notebook was autosaved to disk by the daemon.
     NotebookAutosaved { path: String },
