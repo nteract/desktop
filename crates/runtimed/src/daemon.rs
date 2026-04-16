@@ -1772,13 +1772,16 @@ impl Daemon {
             )
         };
 
-        // Send NotebookConnectionInfo response
+        // Send NotebookConnectionInfo response. The wire notebook_id is the
+        // room's UUID (stable across the life of the room); the local
+        // `notebook_id` variable in this handler is the canonical path string
+        // used for logging and file-watcher wiring below.
         let (reader, mut writer) = tokio::io::split(stream);
         let response = NotebookConnectionInfo {
             protocol: PROTOCOL_V2.to_string(),
             protocol_version: Some(PROTOCOL_VERSION),
             daemon_version: Some(crate::daemon_version().to_string()),
-            notebook_id: notebook_id.clone(),
+            notebook_id: room.id.to_string(),
             cell_count,
             needs_trust_approval,
             error: None,
@@ -1916,13 +1919,15 @@ impl Daemon {
         }
 
         // Send NotebookConnectionInfo response
-        // New notebooks have no deps, so no trust approval needed
+        // New notebooks have no deps, so no trust approval needed.
+        // Always send the room's UUID on the wire, even when the caller
+        // provided a notebook_id_hint — room.id is the canonical source.
         let (reader, mut writer) = tokio::io::split(stream);
         let response = NotebookConnectionInfo {
             protocol: PROTOCOL_V2.to_string(),
             protocol_version: Some(PROTOCOL_VERSION),
             daemon_version: Some(crate::daemon_version().to_string()),
-            notebook_id: notebook_id.clone(),
+            notebook_id: room.id.to_string(),
             cell_count,
             needs_trust_approval: false,
             error: None,
