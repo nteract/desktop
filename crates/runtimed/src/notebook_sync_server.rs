@@ -6217,15 +6217,17 @@ async fn handle_notebook_request(
                 (None, false) => None, // save-in-place on file-backed room
             };
 
-            let needs_new_claim = match (&target_for_claim, &old_path) {
-                (Some(t), Some(old)) => t != old,
-                (Some(_), None) => true, // untitled→file-backed
-                (None, _) => false,
+            // The new path that needs a pre-write claim (if any). Separates
+            // "claim required" from "have a claim path" so downstream branches
+            // don't need a runtime is_some + unwrap.
+            let pre_claim: Option<PathBuf> = match (&target_for_claim, &old_path) {
+                (Some(t), Some(old)) if t != old => Some(t.clone()),
+                (Some(t), None) => Some(t.clone()),
+                _ => None,
             };
 
-            if needs_new_claim {
-                let canonical_pre = target_for_claim.clone().unwrap();
-                if let Err(kind) = try_claim_path(&daemon.path_index, &canonical_pre, room.id).await
+            if let Some(ref canonical_pre) = pre_claim {
+                if let Err(kind) = try_claim_path(&daemon.path_index, canonical_pre, room.id).await
                 {
                     return NotebookResponse::SaveError { error: kind };
                 }
@@ -6236,10 +6238,8 @@ async fn handle_notebook_request(
                 Err(e) => {
                     // Rollback the path_index claim we just made so the room
                     // stays untitled / its old path stays claimed.
-                    if needs_new_claim {
-                        if let Some(ref canonical_pre) = target_for_claim {
-                            daemon.path_index.lock().await.remove(canonical_pre);
-                        }
+                    if let Some(ref canonical_pre) = pre_claim {
+                        daemon.path_index.lock().await.remove(canonical_pre);
                     }
                     // Emergency persist for ephemeral rooms: if saving to .ipynb
                     // failed, at least write the Automerge doc so data isn't lost.
@@ -6275,19 +6275,17 @@ async fn handle_notebook_request(
                 }
             };
 
-            if needs_new_claim {
-                if let Some(canonical_pre) = target_for_claim.as_ref() {
-                    if canonical_pre != &canonical {
-                        let mut idx = daemon.path_index.lock().await;
-                        idx.remove(canonical_pre);
-                        // Best-effort reinsert under the post-write canonical.
-                        if let Err(e) = idx.insert(canonical.clone(), room.id) {
-                            warn!(
-                                "[notebook-sync] post-write path_index reinsert failed for {:?}: {} \
-                                 — room {} may be orphaned from path lookup",
-                                canonical, e, room.id
-                            );
-                        }
+            if let Some(ref canonical_pre) = pre_claim {
+                if canonical_pre != &canonical {
+                    let mut idx = daemon.path_index.lock().await;
+                    idx.remove(canonical_pre);
+                    // Best-effort reinsert under the post-write canonical.
+                    if let Err(e) = idx.insert(canonical.clone(), room.id) {
+                        warn!(
+                            "[notebook-sync] post-write path_index reinsert failed for {:?}: {} \
+                             — room {} may be orphaned from path lookup",
+                            canonical, e, room.id
+                        );
                     }
                 }
             }
