@@ -2356,8 +2356,8 @@ async fn run_sync_loop_v2<R, W>(
     reader: &mut R,
     writer: &mut W,
     room: &Arc<NotebookRoom>,
-    rooms: NotebookRooms,
-    mut notebook_id: String,
+    _rooms: NotebookRooms,
+    _notebook_id: String,
     daemon: std::sync::Arc<crate::daemon::Daemon>,
     needs_load: Option<&Path>,
     peer_id: &str,
@@ -2656,48 +2656,9 @@ where
                                 let response =
                                     handle_notebook_request(room, request, daemon.clone()).await;
 
-                                // If we just saved an ephemeral notebook, re-key the room
-                                let response = if let NotebookResponse::NotebookSaved { ref path, .. } = response {
-                                    if let Some(new_id) = rekey_ephemeral_room(
-                                        &rooms,
-                                        &notebook_id,
-                                        path,
-                                        room,
-                                    ).await {
-                                        // Insert redirect so peers reconnecting with the old UUID
-                                        // get routed to the re-keyed room.
-                                        if let Ok(mut redirects) = daemon.redirect_map.lock() {
-                                            redirects.insert(notebook_id.clone(), crate::daemon::RedirectEntry {
-                                                new_notebook_id: new_id.clone(),
-                                                created_at: tokio::time::Instant::now(),
-                                            });
-                                            // Prune old entries (older than 1 hour)
-                                            let cutoff = tokio::time::Instant::now() - std::time::Duration::from_secs(3600);
-                                            redirects.retain(|_, v| v.created_at > cutoff);
-                                            // Cap at 1000 entries to bound memory under extreme agent churn
-                                            while redirects.len() > 1000 {
-                                                if let Some(oldest_key) = redirects
-                                                    .iter()
-                                                    .min_by_key(|(_, v)| v.created_at)
-                                                    .map(|(k, _)| k.clone())
-                                                {
-                                                    redirects.remove(&oldest_key);
-                                                } else {
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                        notebook_id = new_id.clone();
-                                        NotebookResponse::NotebookSaved {
-                                            path: path.clone(),
-                                            new_notebook_id: Some(new_id),
-                                        }
-                                    } else {
-                                        response
-                                    }
-                                } else {
-                                    response
-                                };
+                                // Promotion from untitled → file-backed is now handled
+                                // entirely inside handle_notebook_request (SaveNotebook arm).
+                                // No post-save rekeying needed here.
 
                                 connection::send_typed_json_frame(
                                     writer,
@@ -4518,6 +4479,13 @@ pub(crate) async fn update_kernel_presence(
 /// The room's UUID key in the rooms map stays the same — only path_index is updated.
 ///
 /// Returns `Some(canonical_path_string)` if successful, `None` otherwise.
+///
+/// # Note
+///
+/// This function has no production callers after Task 6.2. The SaveNotebook
+/// handler now performs the untitled→file-backed transition inline.
+/// Task 7.1 will delete this function along with its companion tests.
+#[allow(dead_code)]
 async fn rekey_ephemeral_room(
     rooms: &NotebookRooms,
     old_notebook_id: &str,
@@ -6344,11 +6312,14 @@ async fn handle_notebook_request(
                 }
             }
 
-            match save_notebook_to_disk(room, path.as_deref()).await {
-                Ok(saved_path) => NotebookResponse::NotebookSaved {
-                    path: saved_path,
-                    new_notebook_id: None,
-                },
+            // Capture whether room was untitled BEFORE any mutation.
+            let was_untitled = room.path.read().await.is_none();
+
+            // Capture old path for save-as rename detection.
+            let old_path = room.path.read().await.clone();
+
+            let written = match save_notebook_to_disk(room, path.as_deref()).await {
+                Ok(p) => p,
                 Err(e) => {
                     // Emergency persist for ephemeral rooms: if saving to .ipynb
                     // failed, at least write the Automerge doc so data isn't lost.
@@ -6360,10 +6331,121 @@ async fn handle_notebook_request(
                             room.persist_path
                         );
                     }
-                    NotebookResponse::Error {
-                        error: format!("Failed to save notebook: {e}"),
+                    let kind = match e {
+                        SaveError::Unrecoverable(msg) | SaveError::Retryable(msg) => {
+                            notebook_protocol::protocol::SaveErrorKind::Io { message: msg }
+                        }
+                    };
+                    return NotebookResponse::SaveError { error: kind };
+                }
+            };
+
+            // Canonicalize the written path so path_index keys are stable.
+            let canonical: PathBuf =
+                tokio::fs::canonicalize(&written).await.unwrap_or_else(|_| PathBuf::from(&written));
+
+            if was_untitled {
+                // ── Transition: untitled → file-backed ──────────────────────────
+                // Claim the path in path_index. Fail fast if another room already
+                // holds it (interloper detection).
+                let claim_result = {
+                    let mut idx = daemon.path_index.lock().await;
+                    idx.insert(canonical.clone(), room.id)
+                };
+                if let Err(path_index::PathIndexError::PathAlreadyOpen { uuid, path: p }) =
+                    claim_result
+                {
+                    return NotebookResponse::SaveError {
+                        error: notebook_protocol::protocol::SaveErrorKind::PathAlreadyOpen {
+                            uuid: uuid.to_string(),
+                            path: p.to_string_lossy().into_owned(),
+                        },
+                    };
+                }
+
+                // Update room's path now that path_index owns it.
+                *room.path.write().await = Some(canonical.clone());
+
+                // Stop old .automerge persistence (room was untitled-persisted).
+                if let Some(ref tx) = room.persist_tx {
+                    let _ = tx.send(None);
+                }
+
+                // Delete the stale .automerge file.
+                let old_persist = room.persist_path.clone();
+                if old_persist.exists() {
+                    if let Err(e) = std::fs::remove_file(&old_persist) {
+                        warn!(
+                            "[notebook-sync] Failed to remove old persist file {:?}: {}",
+                            old_persist, e
+                        );
                     }
                 }
+
+                // Spawn .ipynb file watcher.
+                if canonical.extension().is_some_and(|ext| ext == "ipynb") {
+                    let shutdown_tx =
+                        spawn_notebook_file_watcher(canonical.clone(), Arc::clone(room));
+                    *room.watcher_shutdown_tx.lock().await = Some(shutdown_tx);
+                }
+
+                // Spawn autosave debouncer so subsequent edits persist to .ipynb.
+                spawn_autosave_debouncer(canonical.to_string_lossy().into_owned(), Arc::clone(room));
+
+                // Clear ephemeral markers.
+                room.is_ephemeral.store(false, Ordering::Relaxed);
+                {
+                    let mut doc = room.doc.write().await;
+                    let _ = doc.delete_metadata("ephemeral");
+                }
+
+                // Broadcast path change to all peers.
+                let _ = room.kernel_broadcast_tx.send(NotebookBroadcast::PathChanged {
+                    path: Some(canonical.to_string_lossy().into_owned()),
+                });
+
+                info!(
+                    "[notebook-sync] Promoted ephemeral room {} to file-backed path {:?}",
+                    room.id, canonical
+                );
+            } else {
+                // ── Room was already file-backed ────────────────────────────────
+                let path_changed = old_path.as_deref() != Some(canonical.as_path());
+                if path_changed {
+                    // Save-as rename: update path_index and room.path.
+                    let claim_result = {
+                        let mut idx = daemon.path_index.lock().await;
+                        let result = idx.insert(canonical.clone(), room.id);
+                        if result.is_ok() {
+                            if let Some(ref op) = old_path {
+                                idx.remove(op);
+                            }
+                        }
+                        result
+                    };
+                    if let Err(path_index::PathIndexError::PathAlreadyOpen { uuid, path: p }) =
+                        claim_result
+                    {
+                        return NotebookResponse::SaveError {
+                            error: notebook_protocol::protocol::SaveErrorKind::PathAlreadyOpen {
+                                uuid: uuid.to_string(),
+                                path: p.to_string_lossy().into_owned(),
+                            },
+                        };
+                    }
+
+                    *room.path.write().await = Some(canonical.clone());
+
+                    let _ = room.kernel_broadcast_tx.send(NotebookBroadcast::PathChanged {
+                        path: Some(canonical.to_string_lossy().into_owned()),
+                    });
+                }
+                // If path_changed is false, this is a save-in-place: nothing else to do.
+            }
+
+            NotebookResponse::NotebookSaved {
+                path: written,
+                new_notebook_id: None,
             }
         }
 
@@ -11547,11 +11629,89 @@ mod tests {
 
     // ── Regression test: autosave after ephemeral room re-key ──────────
 
+    /// Verify that saving an untitled (UUID-keyed) room updates path_index and
+    /// room.path, while keeping the UUID stable in the rooms map.
+    #[tokio::test]
+    async fn saving_untitled_notebook_updates_path_index_and_keeps_uuid() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let blob_store = test_blob_store(&tmp);
+        let docs_dir = tmp.path().join("docs");
+        std::fs::create_dir_all(&docs_dir).unwrap();
+
+        // 1. Create an ephemeral-but-persisted room (UUID, no path)
+        let uuid = Uuid::new_v4();
+        let room = Arc::new(NotebookRoom::new_fresh(
+            uuid, None, &docs_dir, blob_store, false,
+        ));
+        {
+            let mut doc = room.doc.write().await;
+            doc.add_cell(0, "c1", "code").unwrap();
+        }
+        let rooms: NotebookRooms = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        rooms.lock().await.insert(uuid, room.clone());
+        let path_index = Arc::new(tokio::sync::Mutex::new(PathIndex::new()));
+
+        // 2. Simulate the handler's transition: save to disk then wire path_index.
+        let save_target = tmp.path().join("note.ipynb");
+        let written = save_notebook_to_disk(&room, Some(save_target.to_str().unwrap()))
+            .await
+            .unwrap();
+        let canonical = tokio::fs::canonicalize(&written)
+            .await
+            .unwrap_or_else(|_| PathBuf::from(&written));
+
+        path_index
+            .lock()
+            .await
+            .insert(canonical.clone(), room.id)
+            .unwrap();
+        *room.path.write().await = Some(canonical.clone());
+
+        // UUID key unchanged, path_index populated, room.path set.
+        assert!(rooms.lock().await.contains_key(&uuid));
+        assert_eq!(path_index.lock().await.lookup(&canonical), Some(uuid));
+        assert_eq!(room.path.read().await.as_deref(), Some(canonical.as_path()));
+    }
+
+    /// Verify that attempting to claim a path already held by another room
+    /// returns PathIndexError::PathAlreadyOpen with the existing room's UUID.
+    #[tokio::test]
+    async fn saving_to_already_open_path_returns_path_already_open_error() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("existing.ipynb");
+
+        // Set up: existing room already claiming `path`.
+        let existing_uuid = Uuid::new_v4();
+        let path_index = Arc::new(tokio::sync::Mutex::new(PathIndex::new()));
+        path_index
+            .lock()
+            .await
+            .insert(path.clone(), existing_uuid)
+            .unwrap();
+
+        // New untitled room attempts to claim the same path.
+        let new_uuid = Uuid::new_v4();
+        let err = path_index
+            .lock()
+            .await
+            .insert(path.clone(), new_uuid)
+            .unwrap_err();
+        match err {
+            path_index::PathIndexError::PathAlreadyOpen { uuid, path: p } => {
+                assert_eq!(uuid, existing_uuid);
+                assert_eq!(p, path);
+            }
+        }
+    }
+
     /// Verify the full lifecycle: create ephemeral room → save to disk →
-    /// re-key → edit → autosave flushes the edit to the .ipynb file.
+    /// promote via SaveNotebook handler logic → edit → autosave flushes the
+    /// edit to the .ipynb file.
     ///
     /// This is the exact scenario that was broken before the autosave
-    /// debouncer was spawned in `rekey_ephemeral_room`.
+    /// debouncer was spawned during the untitled→file-backed transition.
+    /// Previously this drove through `rekey_ephemeral_room`; now it exercises
+    /// the inline transition logic from the SaveNotebook handler (Task 6.2).
     #[tokio::test(start_paused = true)]
     async fn test_rekey_ephemeral_room_starts_autosave() {
         use std::time::Duration;
@@ -11576,37 +11736,80 @@ mod tests {
             doc.update_source("cell-1", "x = 1").unwrap();
         }
 
-        // 2. Insert into rooms map under UUID key (new model: UUID key stays constant)
+        // 2. Insert into rooms map under UUID key (UUID key stays constant)
         let rooms: NotebookRooms = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
         rooms.lock().await.insert(uuid, room.clone());
 
-        // 3. Save to disk — creates the .ipynb file that rekey will canonicalize
+        // 3. Save to disk — creates the .ipynb file
         let save_path = tmp.path().join("saved.ipynb");
-        let result = save_notebook_to_disk(&room, Some(save_path.to_str().unwrap())).await;
-        assert!(result.is_ok(), "Initial save should succeed");
+        let written = save_notebook_to_disk(&room, Some(save_path.to_str().unwrap()))
+            .await
+            .unwrap();
         assert!(save_path.exists());
 
-        // 4. Re-key: promotes room to file-backed, spawns autosave debouncer.
-        //    UUID key stays in rooms map; only path is updated on the room.
-        let new_id =
-            rekey_ephemeral_room(&rooms, uuid_id, save_path.to_str().unwrap(), &room).await;
-        assert!(new_id.is_some(), "Re-key should succeed for UUID room");
+        // 4. Simulate the SaveNotebook handler's untitled→file-backed transition.
+        //    This mirrors what handle_notebook_request does after a successful save.
+        let canonical: PathBuf = tokio::fs::canonicalize(&written)
+            .await
+            .unwrap_or_else(|_| PathBuf::from(&written));
 
-        // Verify UUID key is still present (new model: UUID key is stable)
+        // Claim path in path_index (no collision expected in this test)
+        let path_index = Arc::new(tokio::sync::Mutex::new(PathIndex::new()));
+        path_index
+            .lock()
+            .await
+            .insert(canonical.clone(), room.id)
+            .unwrap();
+
+        // Update room's path
+        *room.path.write().await = Some(canonical.clone());
+
+        // Stop old .automerge persistence sentinel (None = exit)
+        if let Some(ref tx) = room.persist_tx {
+            let _ = tx.send(None);
+        }
+
+        // Delete old persist file
+        let old_persist = room.persist_path.clone();
+        if old_persist.exists() {
+            let _ = std::fs::remove_file(&old_persist);
+        }
+
+        // Spawn file watcher + autosave debouncer
+        if canonical.extension().is_some_and(|ext| ext == "ipynb") {
+            let shutdown_tx = spawn_notebook_file_watcher(canonical.clone(), room.clone());
+            *room.watcher_shutdown_tx.lock().await = Some(shutdown_tx);
+        }
+        spawn_autosave_debouncer(canonical.to_string_lossy().into_owned(), room.clone());
+
+        // Clear ephemeral markers
+        room.is_ephemeral.store(false, Ordering::Relaxed);
+        {
+            let mut doc = room.doc.write().await;
+            let _ = doc.delete_metadata("ephemeral");
+        }
+
+        // Verify UUID key is still present (UUID key is stable)
         {
             let guard = rooms.lock().await;
             assert!(
                 guard.contains_key(&uuid),
-                "UUID key should still be present after rekey"
+                "UUID key should still be present after promotion"
             );
         }
         // Verify room path was updated
         {
             let path = room.path.read().await;
-            assert!(path.is_some(), "Room path should be set after rekey");
+            assert!(path.is_some(), "Room path should be set after promotion");
         }
+        // Verify path_index entry
+        assert_eq!(
+            path_index.lock().await.lookup(&canonical),
+            Some(uuid),
+            "path_index should contain the room's UUID"
+        );
 
-        // 5. Add a new cell AFTER re-key (simulates MCP create_cell)
+        // 5. Add a new cell AFTER promotion (simulates MCP create_cell)
         {
             let mut doc = room.doc.write().await;
             doc.add_cell(1, "cell-2", "code").unwrap();
@@ -11634,7 +11837,7 @@ mod tests {
             );
         };
 
-        // 7. Verify the post-rekey cell's source is present.
+        // 7. Verify the post-promotion cell's source is present.
         // nbformat stores source as an array of strings, e.g. ["y = 2"].
         let cells = nb["cells"].as_array().unwrap();
         let sources: Vec<String> = cells
@@ -11651,7 +11854,7 @@ mod tests {
             .collect();
         assert!(
             sources.iter().any(|s| s.contains("y = 2")),
-            "Post-rekey cell should be persisted; sources: {:?}",
+            "Post-promotion cell should be persisted; sources: {:?}",
             sources
         );
     }
