@@ -1229,8 +1229,14 @@ pub(crate) async fn queue_cell(
 
 /// Wait for execution to complete, then read outputs from the Automerge doc.
 ///
-/// Uses the broadcast stream only as a signal for when execution is done.
-/// The Automerge document is the source of truth for cell outputs.
+/// When an `execution_id` is provided, defers to
+/// [`notebook_sync::await_execution_terminal`] and reads outputs directly
+/// from the `RuntimeStateDoc` — the same path `runt-mcp` uses. This avoids
+/// the stream-output race where the `ExecutionDone` broadcast arrives
+/// before the final stream manifests have synced into our replica.
+///
+/// When `execution_id` is `None` (legacy callers), falls back to the older
+/// queue-presence polling + `NotebookDoc` cell snapshot read.
 pub(crate) async fn collect_outputs(
     state: &Arc<Mutex<SessionState>>,
     cell_id: &str,
@@ -1238,6 +1244,62 @@ pub(crate) async fn collect_outputs(
     blob_base_url: Option<String>,
     blob_store_path: Option<PathBuf>,
 ) -> PyResult<ExecutionResult> {
+    // ── Fast path: execution_id known — use the shared helper ─────────
+    if let Some(eid) = execution_id {
+        let handle = {
+            let st = state.lock().await;
+            st.handle
+                .as_ref()
+                .ok_or_else(|| to_py_err("Not connected"))?
+                .clone()
+        };
+
+        // No outer timeout here: the caller's tokio::time::timeout at
+        // execute_cell()/wait_for_execution() bounds the total wait. Pass
+        // a very long timeout so the helper only returns on terminal state
+        // or kernel failure.
+        let helper_timeout = std::time::Duration::from_secs(60 * 60 * 24);
+        let terminal =
+            notebook_sync::await_execution_terminal(&handle, eid, helper_timeout, None).await;
+
+        match terminal {
+            Ok(state) => {
+                let comms = handle.get_runtime_state().ok().map(|rs| rs.comms);
+                let outputs = output_resolver::resolve_cell_outputs(
+                    &state.output_manifests,
+                    &blob_base_url,
+                    &blob_store_path,
+                    comms.as_ref(),
+                )
+                .await;
+                let success = state.status == "done"
+                    && state.success
+                    && !outputs.iter().any(|o| o.output_type == "error");
+                return Ok(ExecutionResult {
+                    cell_id: cell_id.to_string(),
+                    outputs,
+                    success,
+                    execution_count: state.execution_count,
+                });
+            }
+            Err(notebook_sync::ExecutionTerminalError::KernelFailed { reason }) => {
+                return Ok(ExecutionResult {
+                    cell_id: cell_id.to_string(),
+                    outputs: vec![Output::error("KernelError", &reason, vec![])],
+                    success: false,
+                    execution_count: None,
+                });
+            }
+            Err(notebook_sync::ExecutionTerminalError::Timeout) => {
+                // Helper timeout is a day; reaching this means something
+                // drove us there intentionally (cancellation, outer abort).
+                return Err(to_py_err("Execution wait aborted"));
+            }
+        }
+    }
+
+    // ── Legacy path: no execution_id ─────────────────────────────────
+    // Falls through to queue-presence polling + NotebookDoc cell read.
     let mut kernel_error: Option<String> = None;
 
     // Phase 1: Wait for the cell to leave the execution queue.
