@@ -1504,14 +1504,6 @@ impl NotebookRoom {
 /// Thread-safe map of notebook rooms, keyed by notebook_id.
 pub type NotebookRooms = Arc<Mutex<HashMap<String, Arc<NotebookRoom>>>>;
 
-/// Get or create a room for a notebook.
-///
-/// The caller must hold the rooms mutex. This function will create a new
-/// fresh room if one doesn't exist. The .ipynb file is the source of truth -
-/// the first client to connect will populate the Automerge doc from their
-/// local file.
-///
-/// For .ipynb files, a file watcher is spawned to detect external changes.
 /// Find an existing room whose `path` matches the given canonical path.
 ///
 /// Handles the case where an ephemeral (UUID-keyed) room has been saved to
@@ -1553,6 +1545,14 @@ pub fn find_room_by_notebook_path(
     None
 }
 
+/// Get or create a room for a notebook.
+///
+/// The caller must hold the rooms mutex. This function will create a new
+/// fresh room if one doesn't exist. The .ipynb file is the source of truth -
+/// the first client to connect will populate the Automerge doc from their
+/// local file.
+///
+/// For .ipynb files, a file watcher is spawned to detect external changes.
 pub fn get_or_create_room(
     rooms: &mut HashMap<String, Arc<NotebookRoom>>,
     notebook_id: &str,
@@ -9992,7 +9992,7 @@ mod tests {
 
     // ── Integration tests for save_notebook_to_disk ────────────────────────
 
-    /// Create a test room with a notebook_path pointing to a file in temp dir.
+    /// Create a test room with a path pointing to a file in temp dir.
     fn test_room_with_path(
         tmp: &tempfile::TempDir,
         notebook_filename: &str,

@@ -254,11 +254,12 @@ pub enum NotebookRequest {
     /// and writes the result.
     ///
     /// If `path` is provided, saves to that path (with .ipynb appended if needed).
-    /// If `path` is None, saves to the room's notebook_path (original file location).
+    /// If `path` is None, saves to the room's current path; untitled rooms
+    /// (no path) return an error.
     SaveNotebook {
         /// If true, format code cells before saving (e.g., with ruff).
         format_cells: bool,
-        /// Optional target path. If None, uses the room's notebook_path.
+        /// Optional target path. If None, uses the room's current path.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         path: Option<String>,
     },
