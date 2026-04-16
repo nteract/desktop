@@ -206,7 +206,6 @@ impl AsyncSession {
     /// Connect to the daemon.
     fn connect<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let state = Arc::clone(&self.state);
-        let override_arc = Arc::clone(&self.notebook_id_override);
         let effective_id = self
             .notebook_id_override
             .lock()
@@ -613,7 +612,6 @@ impl AsyncSession {
     #[pyo3(signature = (path=None))]
     fn save<'py>(&self, py: Python<'py>, path: Option<&str>) -> PyResult<Bound<'py, PyAny>> {
         let state = Arc::clone(&self.state);
-        let override_arc = Arc::clone(&self.notebook_id_override);
         let effective_id = self
             .notebook_id_override
             .lock()
