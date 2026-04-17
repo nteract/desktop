@@ -933,6 +933,60 @@ pub fn store_sort_indices(handle: u32, col: usize, ascending: bool) -> Result<Ve
     .map_err(|e: String| JsValue::from_str(&e))
 }
 
+/// Downgrade Arrow "view" types (Utf8View, BinaryView) to their non-view
+/// equivalents (Utf8, Binary) before emitting IPC to the JS consumer. The
+/// apache-arrow npm package used by the sift frontend (21.x at time of
+/// writing) throws `Unrecognized type: "undefined" (24)` when it hits a
+/// Utf8View field during schema decode, which silently empties the table
+/// body. Normalizing server-side keeps the JS side on types it understands.
+///
+/// Currently handles the top-level column case (the actual repro path —
+/// polars' default string encoding is Utf8View). Nested occurrences
+/// (List<Utf8View>, Struct{s: Utf8View}) are left as-is; if they show up
+/// in practice we can walk the types recursively.
+///
+/// Fast-path: if the batch has no view columns, returns `batch.clone()`.
+///
+/// See nteract/desktop#1853.
+fn downgrade_view_types(batch: &RecordBatch) -> Result<RecordBatch, String> {
+    use arrow::datatypes::{Field, Schema};
+    use std::sync::Arc;
+
+    let schema = batch.schema();
+    let needs_cast = schema
+        .fields()
+        .iter()
+        .any(|f| matches!(f.data_type(), DataType::Utf8View | DataType::BinaryView));
+    if !needs_cast {
+        return Ok(batch.clone());
+    }
+
+    let mut new_columns: Vec<arrow::array::ArrayRef> = Vec::with_capacity(batch.num_columns());
+    let mut new_fields: Vec<Field> = Vec::with_capacity(schema.fields().len());
+
+    for (i, field) in schema.fields().iter().enumerate() {
+        let col = batch.column(i);
+        let (new_col, new_type) = match field.data_type() {
+            DataType::Utf8View => (
+                arrow_cast::cast(col.as_ref(), &DataType::Utf8)
+                    .map_err(|e| format!("cast Utf8View→Utf8 on {}: {}", field.name(), e))?,
+                DataType::Utf8,
+            ),
+            DataType::BinaryView => (
+                arrow_cast::cast(col.as_ref(), &DataType::Binary)
+                    .map_err(|e| format!("cast BinaryView→Binary on {}: {}", field.name(), e))?,
+                DataType::Binary,
+            ),
+            _ => (col.clone(), field.data_type().clone()),
+        };
+        new_columns.push(new_col);
+        new_fields.push(Field::new(field.name(), new_type, field.is_nullable()));
+    }
+
+    let new_schema = Arc::new(Schema::new(new_fields));
+    RecordBatch::try_new(new_schema, new_columns).map_err(|e| format!("rebatch: {}", e))
+}
+
 /// Get a viewport slice as Arrow IPC bytes.
 /// Returns the rows [start_row, end_row) serialized as Arrow IPC stream.
 /// This is the hot-path function — one call per scroll frame.
@@ -945,7 +999,6 @@ pub fn get_viewport(handle: u32, start_row: u32, end_row: u32) -> Result<Vec<u8>
             return Err("empty viewport".to_string());
         }
 
-        let schema = s.batches[0].schema();
         let mut slices: Vec<RecordBatch> = Vec::new();
 
         // Walk batches, slicing the ones that overlap [start, end)
@@ -966,16 +1019,20 @@ pub fn get_viewport(handle: u32, start_row: u32, end_row: u32) -> Result<Vec<u8>
                 batch.num_rows()
             };
 
-            slices.push(batch.slice(local_start, local_end - local_start));
+            let slice = batch.slice(local_start, local_end - local_start);
+            slices.push(downgrade_view_types(&slice)?);
         }
 
         if slices.is_empty() {
             return Err("no data in viewport".to_string());
         }
 
+        // All downgraded slices share the same (possibly-transformed) schema.
+        let writer_schema = slices[0].schema();
+
         // Serialize to Arrow IPC stream
         let mut buf = Vec::new();
-        let mut writer = StreamWriter::try_new(&mut buf, &schema)
+        let mut writer = StreamWriter::try_new(&mut buf, &writer_schema)
             .map_err(|e| format!("IPC writer error: {}", e))?;
         for slice in &slices {
             writer
@@ -1027,6 +1084,7 @@ pub fn get_viewport_by_indices(handle: u32, indices: &[u32]) -> Result<Vec<u8>, 
 
         let batch =
             RecordBatch::try_new(schema, columns).map_err(|e| format!("batch error: {}", e))?;
+        let batch = downgrade_view_types(&batch)?;
 
         let mut buf = Vec::new();
         let mut writer = StreamWriter::try_new(&mut buf, batch.schema_ref())
