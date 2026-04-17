@@ -962,28 +962,35 @@ fn downgrade_view_types(batch: &RecordBatch) -> Result<RecordBatch, String> {
     }
 
     let mut new_columns: Vec<arrow::array::ArrayRef> = Vec::with_capacity(batch.num_columns());
-    let mut new_fields: Vec<Field> = Vec::with_capacity(schema.fields().len());
+    let mut new_fields: Vec<Arc<Field>> = Vec::with_capacity(schema.fields().len());
 
     for (i, field) in schema.fields().iter().enumerate() {
         let col = batch.column(i);
-        let (new_col, new_type) = match field.data_type() {
+        let (new_col, new_field) = match field.data_type() {
             DataType::Utf8View => (
                 arrow_cast::cast(col.as_ref(), &DataType::Utf8)
                     .map_err(|e| format!("cast Utf8View→Utf8 on {}: {}", field.name(), e))?,
-                DataType::Utf8,
+                // Preserve field-level metadata (e.g. Arrow extension
+                // keys like `ARROW:extension:name`) by cloning the
+                // original and only swapping the data type.
+                Arc::new(field.as_ref().clone().with_data_type(DataType::Utf8)),
             ),
             DataType::BinaryView => (
                 arrow_cast::cast(col.as_ref(), &DataType::Binary)
                     .map_err(|e| format!("cast BinaryView→Binary on {}: {}", field.name(), e))?,
-                DataType::Binary,
+                Arc::new(field.as_ref().clone().with_data_type(DataType::Binary)),
             ),
-            _ => (col.clone(), field.data_type().clone()),
+            _ => (col.clone(), field.clone()),
         };
         new_columns.push(new_col);
-        new_fields.push(Field::new(field.name(), new_type, field.is_nullable()));
+        new_fields.push(new_field);
     }
 
-    let new_schema = Arc::new(Schema::new(new_fields));
+    // Preserve schema-level metadata too.
+    let new_schema = Arc::new(Schema::new_with_metadata(
+        new_fields,
+        schema.metadata().clone(),
+    ));
     RecordBatch::try_new(new_schema, new_columns).map_err(|e| format!("rebatch: {}", e))
 }
 
