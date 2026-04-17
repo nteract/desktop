@@ -1440,6 +1440,27 @@ fn cmd_install_nightly(args: &[String]) {
     let on_macos_override = args.iter().any(|a| a == "--on-macos");
     let replace_installed_app = args.iter().any(|a| a == "--replace-installed-app");
 
+    // ── Guard 0: xtask must itself be a nightly-channel build ───────────
+    // `ServiceManager` and `runt_workspace::*` helpers derive service
+    // names, binary basenames, and install paths from `build_channel()`,
+    // which is baked into this xtask binary at compile time via
+    // `RUNT_BUILD_CHANNEL`. If someone built xtask with
+    // `RUNT_BUILD_CHANNEL=stable` (the release-validation path), running
+    // `install-nightly` would silently touch the stable namespace and
+    // potentially clobber a real stable install. Refuse loudly instead.
+    if runt_workspace::build_channel() != runt_workspace::BuildChannel::Nightly {
+        eprintln!(
+            "Refusing to run: this xtask was built with RUNT_BUILD_CHANNEL=stable, but \
+             `install-nightly` only targets the nightly channel."
+        );
+        eprintln!();
+        eprintln!("Re-run without the stable override so xtask is built as nightly:");
+        eprintln!();
+        eprintln!("    unset RUNT_BUILD_CHANNEL");
+        eprintln!("    cargo xtask install-nightly");
+        exit(1);
+    }
+
     // ── Guard 1: macOS platform gate ─────────────────────────────────────
     if cfg!(target_os = "macos") && !on_macos_override {
         eprintln!("Refusing to run on macOS by default.");
@@ -1549,8 +1570,21 @@ fn cmd_install_nightly(args: &[String]) {
             exit(1);
         }
         if let Err(e) = manager.start() {
-            eprintln!("Warning: service installed but failed to start: {e}");
-            eprintln!("Start manually with: cargo xtask install-nightly (re-run) or systemctl --user start <unit>");
+            eprintln!("Failed to start daemon service: {e}");
+            eprintln!();
+            eprintln!("The service file was written, but starting it failed. Common causes on");
+            eprintln!("a fresh Linux box:");
+            eprintln!();
+            eprintln!("  - `loginctl enable-linger $USER` hasn't been run yet, so the user");
+            eprintln!("    manager isn't available for a non-login session. Enable linger, then");
+            eprintln!("    re-run `cargo xtask install-nightly`.");
+            eprintln!("  - systemctl --user isn't reachable (no DBUS session).");
+            eprintln!();
+            eprintln!(
+                "Diagnose with: systemctl --user status {}",
+                runt_workspace::daemon_service_basename()
+            );
+            exit(1);
         }
     }
 
@@ -1587,9 +1621,49 @@ fn cmd_install_nightly(args: &[String]) {
         println!("Installed {}", dest.display());
     }
 
+    // ── Verify the daemon is actually up ─────────────────────────────────
+    // systemctl returning success isn't quite enough — the daemon writes
+    // daemon.json on startup, so presence + parseable version is the best
+    // evidence we have that the new binary is serving. Poll with a short
+    // backoff (daemon.json write races with socket bind on a cold start).
+    let daemon_json = dirs::cache_dir()
+        .unwrap_or_else(|| Path::new("/tmp").to_path_buf())
+        .join(runt_workspace::cache_namespace())
+        .join("daemon.json");
+
+    let mut verified_version: Option<String> = None;
+    for _ in 0..10 {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        if let Ok(contents) = fs::read_to_string(&daemon_json) {
+            if let Ok(info) = serde_json::from_str::<serde_json::Value>(&contents) {
+                if let Some(version) = info.get("version").and_then(|v| v.as_str()) {
+                    verified_version = Some(version.to_string());
+                    break;
+                }
+            }
+        }
+    }
+
     // ── Post-install guidance ────────────────────────────────────────────
     println!();
-    println!("✓ nightly install complete");
+    match verified_version {
+        Some(version) => {
+            println!("✓ nightly install complete — daemon running: version {version}");
+        }
+        None => {
+            eprintln!(
+                "⚠️  Binaries installed and service command returned success, but could not \
+                 verify the daemon is running ({} did not appear within 5s).",
+                daemon_json.display()
+            );
+            eprintln!();
+            eprintln!(
+                "Check status with: systemctl --user status {}",
+                runt_workspace::daemon_service_basename()
+            );
+            exit(1);
+        }
+    }
     println!();
     print_post_install_guidance(&install_dir, was_installed);
 }
