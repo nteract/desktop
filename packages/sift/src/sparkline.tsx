@@ -598,7 +598,13 @@ function CategoryPopoverContent({
     if (activeSet.has(label)) {
       const next = new Set(activeSet);
       next.delete(label);
-      onFilter(next.size > 0 ? { kind: "set", values: next } : null);
+      // Empty out to a real empty-set filter ("None"), not to `null`
+      // (which means "no filter = show everything"). In the popover
+      // checkbox UI, unchecking the last checked row is semantically
+      // "select nothing", and should match what the "None" button
+      // produces - row count drops to 0 rather than jumping back to
+      // the full dataset.
+      onFilter({ kind: "set", values: next });
     } else {
       const next = new Set(activeSet);
       next.add(label);
