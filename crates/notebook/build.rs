@@ -42,7 +42,7 @@ fn maybe_disable_external_bin_for_local_checks() {
     let expected_sidecars = [
         target_sidecar_path(&manifest_dir, &target, "runtimed"),
         target_sidecar_path(&manifest_dir, &target, "runt"),
-        target_sidecar_path(&manifest_dir, &target, "mcpb-runt"),
+        target_sidecar_path(&manifest_dir, &target, "runt-proxy"),
     ];
 
     for path in &expected_sidecars {

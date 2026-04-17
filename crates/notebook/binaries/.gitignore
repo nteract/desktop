@@ -1,4 +1,3 @@
 # Ignore all external binaries (built by xtask)
 runtimed-*
 runt-*
-mcpb-runt-*

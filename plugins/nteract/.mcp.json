@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "nteract": {
-      "command": "./bin/nteract-mcpb-runt",
+      "command": "./bin/nteract-runt-proxy",
       "args": [],
       "env": {
         "NTERACT_CHANNEL": "stable"

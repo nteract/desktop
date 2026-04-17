@@ -1,7 +1,7 @@
 //! Build and install the nteract .mcpb (Claude Desktop extension) from the running app.
 //!
 //! Creates a `.mcpb` ZIP archive at runtime from embedded assets (manifest,
-//! icons, mcpb-runt binary), then opens it with the system handler so Claude
+//! icons, runt-proxy binary), then opens it with the system handler so Claude
 //! Desktop shows the install prompt.
 
 use std::fs;
@@ -57,14 +57,14 @@ pub fn install_mcpb(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         "license": "BSD-3-Clause",
         "server": {
             "type": "binary",
-            "entry_point": "server/mcpb-runt",
+            "entry_point": "server/runt-proxy",
             "mcp_config": {
-                "command": "${__dirname}/server/mcpb-runt",
+                "command": "${__dirname}/server/runt-proxy",
                 "args": [],
                 "env": { "NTERACT_CHANNEL": channel },
                 "platform_overrides": {
                     "win32": {
-                        "command": "${__dirname}/server/mcpb-runt.exe"
+                        "command": "${__dirname}/server/runt-proxy.exe"
                     }
                 }
             }
@@ -126,22 +126,22 @@ pub fn install_mcpb(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         format!("Failed to write manifest.json: {e}")
     })?;
 
-    // ── 4. Copy mcpb-runt binary from app sidecar ──────────────────────
+    // ── 4. Copy runt-proxy binary from app sidecar ─────────────────────
     let server_dir = staging.join("server");
     fs::create_dir_all(&server_dir).map_err(|e| {
         cleanup();
         format!("Failed to create server directory: {e}")
     })?;
 
-    let mcpb_runt_binary = get_bundled_mcpb_runt(app)?;
+    let runt_proxy_binary = get_bundled_runt_proxy(app)?;
     let binary_name = if cfg!(target_os = "windows") {
-        "mcpb-runt.exe"
+        "runt-proxy.exe"
     } else {
-        "mcpb-runt"
+        "runt-proxy"
     };
-    fs::copy(&mcpb_runt_binary, server_dir.join(binary_name)).map_err(|e| {
+    fs::copy(&runt_proxy_binary, server_dir.join(binary_name)).map_err(|e| {
         cleanup();
-        format!("Failed to copy mcpb-runt binary: {e}")
+        format!("Failed to copy runt-proxy binary: {e}")
     })?;
 
     // ── 5. Write icons (pre-sized 512x512, no runtime resize needed) ──
@@ -225,14 +225,14 @@ fn cli_on_path(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Find the bundled `mcpb-runt` binary in the app's sidecar directory.
-fn get_bundled_mcpb_runt(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+/// Find the bundled `runt-proxy` binary in the app's sidecar directory.
+fn get_bundled_runt_proxy(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     use tauri::Manager;
 
     let binary_name = if cfg!(target_os = "windows") {
-        "mcpb-runt.exe"
+        "runt-proxy.exe"
     } else {
-        "mcpb-runt"
+        "runt-proxy"
     };
 
     // Try the Tauri resource directory (where sidecars are bundled)
@@ -254,7 +254,7 @@ fn get_bundled_mcpb_runt(app: &tauri::AppHandle) -> Result<PathBuf, String> {
             return Ok(candidate);
         }
 
-        // macOS: Contents/MacOS/mcpb-runt
+        // macOS: Contents/MacOS/runt-proxy
         #[cfg(target_os = "macos")]
         {
             let candidate = exe_dir.join(binary_name);
@@ -264,8 +264,8 @@ fn get_bundled_mcpb_runt(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         }
     }
 
-    Err("mcpb-runt binary not found in app bundle. \
-         The app may need to be rebuilt with mcpb-runt as a sidecar."
+    Err("runt-proxy binary not found in app bundle. \
+         The app may need to be rebuilt with runt-proxy as a sidecar."
         .to_string())
 }
 

@@ -1,7 +1,8 @@
-//! mcpb-runt — resilient MCP proxy for the nteract MCPB bundle.
+//! runt-proxy — resilient MCP proxy for `runt mcp`.
 //!
-//! Ships inside the `.mcpb` archive. Finds `runt` via `runt-workspace`,
-//! spawns `runt mcp` as a child, and proxies MCP over stdio with transparent
+//! Ships as a sidecar in the nteract desktop app and inside the `.mcpb`
+//! Claude Desktop extension. Finds `runt` via `runt-workspace`, spawns
+//! `runt mcp` as a child, and proxies MCP over stdio with transparent
 //! restart on child death (daemon upgrade, crash, etc.).
 
 use std::collections::HashMap;
@@ -139,7 +140,7 @@ async fn main() -> ExitCode {
     let binary_name = runt_workspace::cli_command_name();
 
     info!(
-        "mcpb-runt starting (channel={channel}, compiled={})",
+        "runt-proxy starting (channel={channel}, compiled={})",
         runt_workspace::channel_display_name()
     );
     if channel != runt_workspace::channel_display_name() {
@@ -187,7 +188,7 @@ async fn main() -> ExitCode {
         child_env,
         server_name: runt_workspace::desktop_product_name().to_string(),
         cache_dir: dirs::cache_dir().map(|d| {
-            let dir = d.join(runt_workspace::cache_namespace()).join("mcpb");
+            let dir = d.join(runt_workspace::cache_namespace()).join("proxy");
             let _ = std::fs::create_dir_all(&dir);
             dir
         }),
