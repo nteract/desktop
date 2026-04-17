@@ -663,12 +663,95 @@ pub fn store_filtered_histogram(
                         }
                     }
                 }
-                DataType::Timestamp(_, _) => {
-                    // Timestamps stored as i64 milliseconds
-                    let arr = column
-                        .as_any()
-                        .downcast_ref::<arrow::array::TimestampMillisecondArray>();
-                    if let Some(arr) = arr {
+                DataType::Timestamp(unit, _) => {
+                    // Normalize to milliseconds to match the unfiltered histogram
+                    // (`extract_timestamp_ms`) and the frontend's Date-based
+                    // rendering. Without this, polars' default Datetime(us) /
+                    // nanosecond clickhouse columns / second-precision epoch
+                    // sources all fall through the old MillisecondArray-only
+                    // downcast, leave `values` empty, and make the filtered
+                    // histogram silently fall back to the unfiltered summary —
+                    // so the header range never zooms in on a brushed filter.
+                    match unit {
+                        TimeUnit::Second => {
+                            if let Some(arr) = column
+                                .as_any()
+                                .downcast_ref::<arrow::array::TimestampSecondArray>()
+                            {
+                                for i in 0..n {
+                                    if global_row + i < mask.len()
+                                        && mask[global_row + i] != 0
+                                        && !arr.is_null(i)
+                                    {
+                                        values.push((arr.value(i) as f64) * 1000.0);
+                                    }
+                                }
+                            }
+                        }
+                        TimeUnit::Millisecond => {
+                            if let Some(arr) = column
+                                .as_any()
+                                .downcast_ref::<arrow::array::TimestampMillisecondArray>(
+                            ) {
+                                for i in 0..n {
+                                    if global_row + i < mask.len()
+                                        && mask[global_row + i] != 0
+                                        && !arr.is_null(i)
+                                    {
+                                        values.push(arr.value(i) as f64);
+                                    }
+                                }
+                            }
+                        }
+                        TimeUnit::Microsecond => {
+                            if let Some(arr) = column
+                                .as_any()
+                                .downcast_ref::<arrow::array::TimestampMicrosecondArray>(
+                            ) {
+                                for i in 0..n {
+                                    if global_row + i < mask.len()
+                                        && mask[global_row + i] != 0
+                                        && !arr.is_null(i)
+                                    {
+                                        values.push((arr.value(i) / 1_000) as f64);
+                                    }
+                                }
+                            }
+                        }
+                        TimeUnit::Nanosecond => {
+                            if let Some(arr) = column
+                                .as_any()
+                                .downcast_ref::<arrow::array::TimestampNanosecondArray>()
+                            {
+                                for i in 0..n {
+                                    if global_row + i < mask.len()
+                                        && mask[global_row + i] != 0
+                                        && !arr.is_null(i)
+                                    {
+                                        values.push((arr.value(i) / 1_000_000) as f64);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                DataType::Date32 => {
+                    // Date32 is days since epoch. Normalize to ms to match the
+                    // unfiltered path (`extract_timestamp_ms` does the same).
+                    if let Some(arr) = column.as_any().downcast_ref::<arrow::array::Date32Array>() {
+                        for i in 0..n {
+                            if global_row + i < mask.len()
+                                && mask[global_row + i] != 0
+                                && !arr.is_null(i)
+                            {
+                                values.push((arr.value(i) as i64 * 86_400_000) as f64);
+                            }
+                        }
+                    }
+                }
+                DataType::Date64 => {
+                    // Date64 is already milliseconds since epoch.
+                    if let Some(arr) = column.as_any().downcast_ref::<arrow::array::Date64Array>() {
                         for i in 0..n {
                             if global_row + i < mask.len()
                                 && mask[global_row + i] != 0
