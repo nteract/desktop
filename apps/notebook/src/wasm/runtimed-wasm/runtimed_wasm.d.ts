@@ -386,13 +386,20 @@ export class NotebookHandle {
      * Resolve ContentRef values in a comm's state for frontend consumption.
      *
      * Walks the state **recursively**, resolving ContentRef objects:
-     * - `{"blob": hash, "size": N, ...}` → plain URL string
+     * - `{"blob": hash, "size": N, "media_type": M?}` → plain URL string
      * - `{"inline": value}` → unwrapped inner value
      * - Plain values → passed through unchanged
      *
-     * Returns `{ state, buffer_paths }` where `buffer_paths` records the
-     * JSON paths of blob refs that were resolved to URLs (so the iframe
-     * knows which values to fetch as ArrayBuffers).
+     * Returns `{ state, buffer_paths, text_paths }`:
+     * - `buffer_paths` — JSON paths of blob refs with binary MIME types (or no
+     *   media_type). The caller fetches these as ArrayBuffers for ipywidgets
+     *   buffer handling.
+     * - `text_paths` — JSON paths of blob refs whose `media_type` classifies
+     *   as text (`text/*`, `application/json`, `application/javascript`, etc.).
+     *   The caller must fetch each URL, decode as UTF-8, and replace the URL
+     *   string at that path with the decoded content before handing the state
+     *   to widget code. Widgets that consume synced string traits (e.g.
+     *   anywidget `_py_render`) expect the actual content, not a URL.
      *
      * Returns undefined if blob_port is not set or comm doesn't exist.
      */

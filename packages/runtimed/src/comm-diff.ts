@@ -36,9 +36,13 @@ export interface ResolvedComm {
   targetName: string;
   modelModule: string;
   modelName: string;
-  /** State with blob ContentRefs replaced by URL strings, inlines unwrapped. */
+  /**
+   * Resolved widget state. Binary blob ContentRefs appear as URL strings;
+   * text blob ContentRefs are fetched from the blob server and inlined as
+   * their decoded string content. Inline ContentRefs are unwrapped.
+   */
   state: Record<string, unknown>;
-  /** JSON paths where blob URLs replaced ContentRef objects (for binary fetch). */
+  /** JSON paths where blob URLs replaced binary ContentRef objects (for ArrayBuffer fetch). */
   bufferPaths: string[][];
   /** Unresolved outputs for OutputModel widgets (null if not an OutputModel). */
   unresolvedOutputs: unknown[] | null;

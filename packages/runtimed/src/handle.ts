@@ -113,16 +113,23 @@ export interface SyncableHandle {
   /**
    * Resolve ContentRef values in a comm's state.
    *
-   * Returns `{ state, buffer_paths }` where blob ContentRefs are replaced
-   * with plain URL strings and inline ContentRefs are unwrapped.
-   * `buffer_paths` records which JSON paths were resolved from blob refs.
+   * Returns `{ state, buffer_paths, text_paths }` where blob ContentRefs are
+   * replaced with plain URL strings and inline ContentRefs are unwrapped.
+   * `buffer_paths` records JSON paths for binary blobs (caller fetches as
+   * ArrayBuffer for ipywidgets buffer handling). `text_paths` records JSON
+   * paths for text blobs (caller must fetch and substitute the decoded
+   * string in place before delivering state to widget code).
    *
    * Returns undefined if blob_port is not set or the comm doesn't exist.
    *
    * Optional — implementations that don't support comm state resolution
    * (e.g. test mocks) may omit this method.
    */
-  resolve_comm_state?(
-    comm_id: string,
-  ): { state: Record<string, unknown>; buffer_paths: string[][] } | undefined;
+  resolve_comm_state?(comm_id: string):
+    | {
+        state: Record<string, unknown>;
+        buffer_paths: string[][];
+        text_paths?: string[][];
+      }
+    | undefined;
 }

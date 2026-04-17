@@ -273,7 +273,13 @@ impl From<(usize, CellSnapshot)> for JsCell {
 /// Recursively walk a JSON value, resolving ContentRef objects in place.
 ///
 /// - `{"inline": V}` → unwrap to `V`
-/// - `{"blob": H, "size": N, ...}` → plain URL string, path recorded in `buffer_paths`
+/// - `{"blob": H, "size": N, "media_type": M?}` → plain URL string. The JSON
+///   path is recorded in either `buffer_paths` (binary MIME, caller should
+///   fetch as ArrayBuffer) or `text_paths` (text MIME, caller should fetch
+///   the URL and substitute the decoded text back into the state tree before
+///   handing it to widget code). A missing or unknown `media_type` is treated
+///   as binary so the value stays a URL — matches the legacy behavior for
+///   comms that don't carry MIME metadata.
 /// - Arrays/objects → recurse
 /// - Primitives → pass through
 fn walk_and_resolve_comm_state(
@@ -281,6 +287,7 @@ fn walk_and_resolve_comm_state(
     port: u16,
     current_path: &mut Vec<String>,
     buffer_paths: &mut Vec<Vec<String>>,
+    text_paths: &mut Vec<Vec<String>>,
 ) -> serde_json::Value {
     match val {
         serde_json::Value::Object(obj) => {
@@ -293,7 +300,15 @@ fn walk_and_resolve_comm_state(
             if let (Some(serde_json::Value::String(hash)), Some(serde_json::Value::Number(_))) =
                 (obj.get("blob"), obj.get("size"))
             {
-                buffer_paths.push(current_path.clone());
+                let media_type = obj.get("media_type").and_then(|v| v.as_str());
+                // Only classify as text when we have a media_type that says so.
+                // Missing media_type → binary (URL) to preserve legacy behavior.
+                let is_text = media_type.map(|mt| !is_binary_mime(mt)).unwrap_or(false);
+                if is_text {
+                    text_paths.push(current_path.clone());
+                } else {
+                    buffer_paths.push(current_path.clone());
+                }
                 return serde_json::Value::String(format!(
                     "http://127.0.0.1:{}/blob/{}",
                     port, hash
@@ -306,7 +321,13 @@ fn walk_and_resolve_comm_state(
                 current_path.push(key.clone());
                 resolved.insert(
                     key.clone(),
-                    walk_and_resolve_comm_state(child, port, current_path, buffer_paths),
+                    walk_and_resolve_comm_state(
+                        child,
+                        port,
+                        current_path,
+                        buffer_paths,
+                        text_paths,
+                    ),
                 );
                 current_path.pop();
             }
@@ -318,7 +339,13 @@ fn walk_and_resolve_comm_state(
                 .enumerate()
                 .map(|(i, child)| {
                     current_path.push(i.to_string());
-                    let r = walk_and_resolve_comm_state(child, port, current_path, buffer_paths);
+                    let r = walk_and_resolve_comm_state(
+                        child,
+                        port,
+                        current_path,
+                        buffer_paths,
+                        text_paths,
+                    );
                     current_path.pop();
                     r
                 })
@@ -1277,13 +1304,20 @@ impl NotebookHandle {
     /// Resolve ContentRef values in a comm's state for frontend consumption.
     ///
     /// Walks the state **recursively**, resolving ContentRef objects:
-    /// - `{"blob": hash, "size": N, ...}` → plain URL string
+    /// - `{"blob": hash, "size": N, "media_type": M?}` → plain URL string
     /// - `{"inline": value}` → unwrapped inner value
     /// - Plain values → passed through unchanged
     ///
-    /// Returns `{ state, buffer_paths }` where `buffer_paths` records the
-    /// JSON paths of blob refs that were resolved to URLs (so the iframe
-    /// knows which values to fetch as ArrayBuffers).
+    /// Returns `{ state, buffer_paths, text_paths }`:
+    /// - `buffer_paths` — JSON paths of blob refs with binary MIME types (or no
+    ///   media_type). The caller fetches these as ArrayBuffers for ipywidgets
+    ///   buffer handling.
+    /// - `text_paths` — JSON paths of blob refs whose `media_type` classifies
+    ///   as text (`text/*`, `application/json`, `application/javascript`, etc.).
+    ///   The caller must fetch each URL, decode as UTF-8, and replace the URL
+    ///   string at that path with the decoded content before handing the state
+    ///   to widget code. Widgets that consume synced string traits (e.g.
+    ///   anywidget `_py_render`) expect the actual content, not a URL.
     ///
     /// Returns undefined if blob_port is not set or comm doesn't exist.
     pub fn resolve_comm_state(&self, comm_id: &str) -> JsValue {
@@ -1296,12 +1330,19 @@ impl NotebookHandle {
         };
 
         let mut buffer_paths: Vec<Vec<String>> = Vec::new();
-        let resolved =
-            walk_and_resolve_comm_state(&entry.state, port, &mut Vec::new(), &mut buffer_paths);
+        let mut text_paths: Vec<Vec<String>> = Vec::new();
+        let resolved = walk_and_resolve_comm_state(
+            &entry.state,
+            port,
+            &mut Vec::new(),
+            &mut buffer_paths,
+            &mut text_paths,
+        );
 
         serialize_to_js(&serde_json::json!({
             "state": resolved,
             "buffer_paths": buffer_paths,
+            "text_paths": text_paths,
         }))
         .unwrap_or(JsValue::UNDEFINED)
     }
@@ -1846,4 +1887,155 @@ pub fn encode_clear_channel_presence(peer_id: &str, channel: &str) -> Vec<u8> {
         _ => return vec![],
     };
     presence::encode_clear_channel(peer_id, ch)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn resolve(val: serde_json::Value) -> (serde_json::Value, Vec<Vec<String>>, Vec<Vec<String>>) {
+        let mut buffer_paths: Vec<Vec<String>> = Vec::new();
+        let mut text_paths: Vec<Vec<String>> = Vec::new();
+        let resolved = walk_and_resolve_comm_state(
+            &val,
+            1234,
+            &mut Vec::new(),
+            &mut buffer_paths,
+            &mut text_paths,
+        );
+        (resolved, buffer_paths, text_paths)
+    }
+
+    #[test]
+    fn inline_content_ref_is_unwrapped() {
+        let (resolved, buffer_paths, text_paths) = resolve(json!({
+            "value": { "inline": 42 },
+        }));
+        assert_eq!(resolved, json!({ "value": 42 }));
+        assert!(buffer_paths.is_empty());
+        assert!(text_paths.is_empty());
+    }
+
+    #[test]
+    fn binary_blob_ref_goes_to_buffer_paths() {
+        let (resolved, buffer_paths, text_paths) = resolve(json!({
+            "image": { "blob": "abc123", "size": 100, "media_type": "image/png" },
+        }));
+        assert_eq!(
+            resolved,
+            json!({ "image": "http://127.0.0.1:1234/blob/abc123" })
+        );
+        assert_eq!(buffer_paths, vec![vec!["image".to_string()]]);
+        assert!(text_paths.is_empty());
+    }
+
+    #[test]
+    fn text_blob_ref_goes_to_text_paths() {
+        let (resolved, buffer_paths, text_paths) = resolve(json!({
+            "_py_render": { "blob": "def456", "size": 2048, "media_type": "text/plain" },
+            "_esm": { "blob": "ghi789", "size": 50000, "media_type": "text/javascript" },
+        }));
+        assert_eq!(
+            resolved["_py_render"],
+            json!("http://127.0.0.1:1234/blob/def456")
+        );
+        assert_eq!(resolved["_esm"], json!("http://127.0.0.1:1234/blob/ghi789"));
+        assert!(buffer_paths.is_empty());
+        assert_eq!(text_paths.len(), 2);
+        assert!(text_paths.contains(&vec!["_py_render".to_string()]));
+        assert!(text_paths.contains(&vec!["_esm".to_string()]));
+    }
+
+    #[test]
+    fn svg_is_text_not_binary() {
+        // image/svg+xml is a common gotcha — it's text despite the image/ prefix.
+        let (_, buffer_paths, text_paths) = resolve(json!({
+            "svg": { "blob": "s1", "size": 200, "media_type": "image/svg+xml" },
+        }));
+        assert!(buffer_paths.is_empty());
+        assert_eq!(text_paths, vec![vec!["svg".to_string()]]);
+    }
+
+    #[test]
+    fn missing_media_type_defaults_to_binary() {
+        // Legacy comms without media_type must stay URL-shaped so existing
+        // ipywidgets binary-buffer paths keep working.
+        let (resolved, buffer_paths, text_paths) = resolve(json!({
+            "buf": { "blob": "h", "size": 10 },
+        }));
+        assert_eq!(resolved, json!({ "buf": "http://127.0.0.1:1234/blob/h" }));
+        assert_eq!(buffer_paths, vec![vec!["buf".to_string()]]);
+        assert!(text_paths.is_empty());
+    }
+
+    #[test]
+    fn application_json_is_text() {
+        let (_, buffer_paths, text_paths) = resolve(json!({
+            "spec": { "blob": "j", "size": 9999, "media_type": "application/json" },
+        }));
+        assert!(buffer_paths.is_empty());
+        assert_eq!(text_paths, vec![vec!["spec".to_string()]]);
+    }
+
+    #[test]
+    fn nested_paths_are_tracked_correctly() {
+        let (resolved, buffer_paths, text_paths) = resolve(json!({
+            "outer": {
+                "list": [
+                    { "inline": "first" },
+                    { "blob": "binhash", "size": 1, "media_type": "image/png" },
+                    { "blob": "txthash", "size": 1, "media_type": "text/plain" },
+                ],
+            },
+        }));
+        assert_eq!(resolved["outer"]["list"][0], json!("first"));
+        assert_eq!(
+            resolved["outer"]["list"][1],
+            json!("http://127.0.0.1:1234/blob/binhash")
+        );
+        assert_eq!(
+            resolved["outer"]["list"][2],
+            json!("http://127.0.0.1:1234/blob/txthash")
+        );
+        assert_eq!(
+            buffer_paths,
+            vec![vec![
+                "outer".to_string(),
+                "list".to_string(),
+                "1".to_string()
+            ]]
+        );
+        assert_eq!(
+            text_paths,
+            vec![vec![
+                "outer".to_string(),
+                "list".to_string(),
+                "2".to_string()
+            ]]
+        );
+    }
+
+    #[test]
+    fn primitives_pass_through_unchanged() {
+        let (resolved, buffer_paths, text_paths) = resolve(json!({
+            "n": 1,
+            "s": "hello",
+            "b": true,
+            "nil": null,
+            "arr": [1, 2, 3],
+        }));
+        assert_eq!(
+            resolved,
+            json!({
+                "n": 1,
+                "s": "hello",
+                "b": true,
+                "nil": null,
+                "arr": [1, 2, 3],
+            })
+        );
+        assert!(buffer_paths.is_empty());
+        assert!(text_paths.is_empty());
+    }
 }
