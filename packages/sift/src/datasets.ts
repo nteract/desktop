@@ -30,6 +30,15 @@ export const DATASETS: DatasetEntry[] = [
     typeOverrides: { joined: "timestamp" },
   },
   {
+    id: "timestamp-fixture",
+    label: "Timestamp fixture (500)",
+    description:
+      "Regression fixture for filtered timestamp histograms — one column per Arrow TimeUnit (us, ns, ms) plus Date32",
+    source: "local",
+    path: "timestamp-fixture.arrow",
+    rows: "500",
+  },
+  {
     id: "spotify",
     label: "Spotify Tracks",
     description:
