@@ -346,8 +346,8 @@ export function OutputArea({
       }
     }
 
-    // Detect Plotly in text/html content from non-default renderers (e.g. "notebook",
-    // "iframe_connected") that emit only text/html without the structured MIME type.
+    // Detect Plotly in text/html content from non-default renderers (e.g. "notebook")
+    // that emit inline scripts without the structured MIME type.
     if (!pluginMimes.has("application/vnd.plotly.v1+json")) {
       for (const output of outputs) {
         if (

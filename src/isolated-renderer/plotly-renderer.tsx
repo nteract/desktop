@@ -144,7 +144,7 @@ export function install(ctx: {
   ctx.register(["application/vnd.plotly.v1+json"], PlotlyRenderer);
 
   // Expose Plotly globally so text/html outputs that reference window.Plotly
-  // (from non-default renderers like "notebook" or "iframe_connected") work.
+  // (from non-default renderers like "notebook") work.
   win.Plotly = Plotly;
 
   // If RequireJS is already loaded (e.g. by a prior HTML output), register

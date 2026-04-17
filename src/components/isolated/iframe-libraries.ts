@@ -58,7 +58,7 @@ const PLOTLY_HTML_RE =
  * `window.Plotly` or AMD `require("plotly")` to be available.
  *
  * Used to trigger plotly plugin injection for non-default Plotly renderers
- * (e.g. `notebook`, `iframe_connected`) that emit only text/html.
+ * (e.g. `notebook`) that emit inline scripts in text/html.
  */
 export function htmlNeedsPlotly(html: string): boolean {
   return PLOTLY_HTML_RE.test(html);
