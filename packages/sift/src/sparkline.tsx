@@ -21,6 +21,35 @@ type FilterCallback = (filter: ColumnFilter) => void;
 
 const CHART_HEIGHT = 48;
 
+/**
+ * Does a bin with range [x0, x1] overlap the active range filter?
+ *
+ * Uses strict inequality for the common case of two extents overlapping.
+ * The inclusive fallback handles two degenerate shapes that can arise
+ * from the constant-slice pin behavior (#1859 / #1860):
+ *
+ * - **Bin is a point** (`x0 === x1`): the bin collapsed to one value;
+ *   include it when the filter brackets that value.
+ * - **Filter is a point** (`filterMin === filterMax`): the user pinned
+ *   a value while the column was collapsed, and the column later
+ *   widened. Include any bin whose extent contains the pinned value so
+ *   the bar stays highlighted even with a zero-width filter.
+ */
+export function binOverlapsFilter(
+  x0: number,
+  x1: number,
+  filterMin: number,
+  filterMax: number,
+): boolean {
+  if (x0 === x1) {
+    return x0 >= filterMin && x0 <= filterMax;
+  }
+  if (filterMin === filterMax) {
+    return x0 <= filterMin && filterMin <= x1;
+  }
+  return x1 > filterMin && x0 < filterMax;
+}
+
 // --- Histogram brush layer ---
 
 function BrushLayer({
@@ -131,12 +160,24 @@ function BrushLayer({
     // a full-width overlay so the user still sees their filter is active.
     // Otherwise the filter has already excluded everything here (unlikely
     // but harmless), and a zero-width rect is fine.
+    //
+    // Separately, when the *filter* itself is a point (min === max — the
+    // pin created by the span-0 branch above) but the column has since
+    // widened, `valueToX(min) - valueToX(max)` is 0 pixels and the
+    // overlay disappears. Paint a 2px marker at the pinned value so the
+    // filter stays visible. Clamp so the marker sits flush against the
+    // right edge when the pin coincides with `max`.
+    const POINT_MARKER_WIDTH = 2;
     let x: number;
     let w: number;
     if (span <= 0) {
       const covered = activeFilter.min <= min && activeFilter.max >= max;
       x = 0;
       w = covered ? width : 0;
+    } else if (activeFilter.min === activeFilter.max) {
+      const center = valueToX(activeFilter.min);
+      x = Math.max(0, Math.min(width - POINT_MARKER_WIDTH, center - POINT_MARKER_WIDTH / 2));
+      w = POINT_MARKER_WIDTH;
     } else {
       x = valueToX(activeFilter.min);
       w = valueToX(activeFilter.max) - x;
@@ -207,9 +248,10 @@ function BinaryNumericRatioBar({
     : formatNum((highBin.x0 + highBin.x1) / 2);
 
   // Determine which segment is "active" based on range filter
-  const lowActive = !activeFilter || (lowBin.x1 > activeFilter.min && lowBin.x0 < activeFilter.max);
+  const lowActive =
+    !activeFilter || binOverlapsFilter(lowBin.x0, lowBin.x1, activeFilter.min, activeFilter.max);
   const highActive =
-    !activeFilter || (highBin.x1 > activeFilter.min && highBin.x0 < activeFilter.max);
+    !activeFilter || binOverlapsFilter(highBin.x0, highBin.x1, activeFilter.min, activeFilter.max);
 
   return (
     <div className="sift-bool-summary">
@@ -304,7 +346,7 @@ function LowCardinalityNumericBars({
       {items.map((item) => {
         // Highlight bar if its range overlaps the active range filter
         const isActive =
-          !activeFilter || (item.x1 > activeFilter.min && item.x0 < activeFilter.max);
+          !activeFilter || binOverlapsFilter(item.x0, item.x1, activeFilter.min, activeFilter.max);
         return (
           <div
             key={item.label}
@@ -413,17 +455,13 @@ function NumericHistogram({
               const x = i * (barW + gap);
               const h = (bin.count / maxCount) * CHART_HEIGHT;
               // Per-bin highlight: bins overlapping the filter range are bright, others dimmed.
-              // The zero-width bin case (x0 === x1, from the constant-slice fix) collapses
-              // to a single point and needs an inclusive point-in-range check; the regular
-              // overlap predicate uses strict inequality and would mark the bar inactive
-              // when the filter selects exactly that point.
+              // See `binOverlapsFilter` for the zero-width bin / zero-width filter cases
+              // that fall out of the constant-slice pin behavior (#1859 / #1860).
               let fill = baseFill;
               if (isFiltered) {
-                const binOverlaps =
-                  bin.x0 === bin.x1
-                    ? bin.x0 >= activeFilter.min && bin.x0 <= activeFilter.max
-                    : bin.x1 > activeFilter.min && bin.x0 < activeFilter.max;
-                fill = binOverlaps ? activeFill : dimFill;
+                fill = binOverlapsFilter(bin.x0, bin.x1, activeFilter.min, activeFilter.max)
+                  ? activeFill
+                  : dimFill;
               }
               return (
                 <rect
@@ -977,21 +1015,15 @@ function TimestampHistogram({
               if (bin.count <= 0) return null;
               const x = i * barW;
               const h = (bin.count / maxCount) * CHART_HEIGHT;
-              // Per-bin highlight for timestamp bins.
-              // When summary.min === summary.max (zero-span, constant-slice fix)
-              // binSpan collapses to 0 and both endpoints coincide at the single
-              // value, so switch to an inclusive point-in-range check; otherwise
-              // the strict inequalities dim the only visible bar even when the
-              // filter selects that exact instant.
+              // Per-bin highlight for timestamp bins. See `binOverlapsFilter` for
+              // the zero-span / zero-width-filter degenerate cases (#1859 / #1860).
               let fill = baseFill;
               if (isFiltered) {
                 const binStart = summary.min + i * binSpan;
                 const binEnd = binStart + binSpan;
-                const binOverlaps =
-                  binSpan === 0
-                    ? binStart >= activeFilter.min && binStart <= activeFilter.max
-                    : binEnd > activeFilter.min && binStart < activeFilter.max;
-                fill = binOverlaps ? activeFill : dimFill;
+                fill = binOverlapsFilter(binStart, binEnd, activeFilter.min, activeFilter.max)
+                  ? activeFill
+                  : dimFill;
               }
               return (
                 <rect
