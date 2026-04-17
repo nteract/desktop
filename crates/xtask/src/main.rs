@@ -1440,6 +1440,19 @@ fn cmd_install_nightly(args: &[String]) {
     let on_macos_override = args.iter().any(|a| a == "--on-macos");
     let replace_installed_app = args.iter().any(|a| a == "--replace-installed-app");
 
+    // ── Windows platform gate ────────────────────────────────────────────
+    // The atomic temp-file + rename helper below fails when the destination
+    // already exists on Windows, and the post-install symlink/linger
+    // guidance is Linux-specific. Installing the nightly daemon from source
+    // isn't a supported Windows workflow — users should install the app.
+    if cfg!(target_os = "windows") {
+        eprintln!("install-nightly is not supported on Windows.");
+        eprintln!();
+        eprintln!("Install the nteract Nightly app from https://nteract.io for the");
+        eprintln!("Windows daemon + CLI + runt-proxy bundle.");
+        exit(1);
+    }
+
     // ── Guard 0: xtask must itself be a nightly-channel build ───────────
     // `ServiceManager` and `runt_workspace::*` helpers derive service
     // names, binary basenames, and install paths from `build_channel()`,
@@ -1553,6 +1566,19 @@ fn cmd_install_nightly(args: &[String]) {
         }
     }
 
+    // ── Capture daemon.json pre-state (for restart verification) ─────────
+    // The post-start check needs to prove the *new* daemon wrote daemon.json,
+    // not just that *some* daemon.json exists. A previous daemon's file can
+    // linger (stale pid/version) when the restart fails. Record the mtime
+    // before starting so the verification loop can require a fresher write.
+    let daemon_json = dirs::cache_dir()
+        .unwrap_or_else(|| Path::new("/tmp").to_path_buf())
+        .join(runt_workspace::cache_namespace())
+        .join("daemon.json");
+    let pre_start_mtime = fs::metadata(&daemon_json)
+        .ok()
+        .and_then(|m| m.modified().ok());
+
     // ── Install the daemon via ServiceManager ────────────────────────────
     let mut manager = runtimed_client::service::ServiceManager::default();
     let was_installed = manager.is_installed();
@@ -1621,19 +1647,28 @@ fn cmd_install_nightly(args: &[String]) {
         println!("Installed {}", dest.display());
     }
 
-    // ── Verify the daemon is actually up ─────────────────────────────────
+    // ── Verify the daemon is actually up (fresh daemon.json write) ───────
     // systemctl returning success isn't quite enough — the daemon writes
-    // daemon.json on startup, so presence + parseable version is the best
-    // evidence we have that the new binary is serving. Poll with a short
-    // backoff (daemon.json write races with socket bind on a cold start).
-    let daemon_json = dirs::cache_dir()
-        .unwrap_or_else(|| Path::new("/tmp").to_path_buf())
-        .join(runt_workspace::cache_namespace())
-        .join("daemon.json");
-
+    // daemon.json on startup, so the combination of "file mtime advanced
+    // beyond our pre-start snapshot" AND "parseable version" proves the
+    // *new* daemon restarted and is serving. Without the mtime check, a
+    // stale daemon.json from a previous daemon (killed / crashed / never
+    // restarted) would satisfy the verification.
     let mut verified_version: Option<String> = None;
     for _ in 0..10 {
         std::thread::sleep(std::time::Duration::from_millis(500));
+        let Ok(meta) = fs::metadata(&daemon_json) else {
+            continue;
+        };
+        let Ok(mtime) = meta.modified() else {
+            continue;
+        };
+        if let Some(pre) = pre_start_mtime {
+            if mtime <= pre {
+                // Still the pre-start file — the new daemon hasn't written yet.
+                continue;
+            }
+        }
         if let Ok(contents) = fs::read_to_string(&daemon_json) {
             if let Ok(info) = serde_json::from_str::<serde_json::Value>(&contents) {
                 if let Some(version) = info.get("version").and_then(|v| v.as_str()) {
@@ -1670,10 +1705,12 @@ fn cmd_install_nightly(args: &[String]) {
 
 /// Atomic binary install: write to a temp sibling, set perms, rename into place.
 ///
-/// Mirrors the approach in `runtimed::service::ServiceManager::atomic_copy_binary`
+/// Mirrors the approach in `runtimed_client::service::ServiceManager::atomic_copy_binary`
 /// so upgrading a running `runt` or `runt-proxy` (e.g. the proxy being driven
 /// by a Claude Code session) doesn't corrupt a memory-mapped inode.
-#[allow(dead_code)] // used only on unix-like targets; the cfg gating keeps it quiet elsewhere
+///
+/// Unix only. Windows is refused at the top of `cmd_install_nightly` because
+/// `fs::rename` does not overwrite an existing destination on Windows.
 fn atomic_install(source: &Path, dest: &Path) -> std::io::Result<()> {
     let tmp = dest.with_extension("new");
     fs::copy(source, &tmp)?;
