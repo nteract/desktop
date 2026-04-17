@@ -9,7 +9,7 @@ The repo keeps a shared semver source version across its release inputs, but CI 
 | Artifact | Where | Version source |
 |---|---|---|
 | nteract desktop app | GitHub Releases | `crates/notebook/tauri.conf.json` |
-| `runt` CLI | GitHub Releases | `crates/runt/Cargo.toml` |
+| `runt` CLI | GitHub Releases | `crates/runt/Cargo.toml` (package name `runt-cli`) |
 | `runtimed` daemon | Bundled in app + Python wheel | `crates/runtimed/Cargo.toml` |
 | `runtimed` Python package | PyPI | `python/runtimed/pyproject.toml` |
 | `nteract` Python package | PyPI | `python/nteract/pyproject.toml` |
@@ -147,6 +147,17 @@ Desktop version is computed as `{runt-cli version}-{suffix}.{timestamp}` where s
 ### Trusted Publishing
 
 PyPI publishing uses OIDC trusted publishing (no API tokens). The GitHub Actions workflow identity is registered as a trusted publisher on PyPI for the `runtimed` package. Both `release-common.yml` and `python-package.yml` use this.
+
+## Local Validation
+
+To exercise the release packaging path without tagging:
+
+```bash
+cargo xtask build-app   # build the .app bundle with icons
+cargo xtask build-dmg   # build the DMG used by stable/nightly releases (macOS only)
+```
+
+These produce the same artifacts CI publishes, minus signing/notarization. Useful when changing build dependencies, sidecar binaries, or `tauri.conf.json`.
 
 ## Checklist
 

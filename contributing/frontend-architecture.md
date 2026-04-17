@@ -91,8 +91,10 @@ import { useDaemonKernel } from "~/hooks/useDaemonKernel";  // app-specific
 CodeMirror integration with Jupyter-specific extensions:
 - `codemirror-editor.tsx` — Main editor component
 - `extensions.ts` — Keybindings, line numbers, bracket matching
-- `languages.ts` — Python, Markdown, SQL syntax
-- `themes.ts` — Light and dark themes
+- `languages.ts` — Python, Markdown, SQL syntax (Lezer parsers; replaced Prism in #1742)
+- `themes.ts` — Light and dark themes (in-tree, no external CodeMirror theme dependency)
+
+Markdown rendering uses the same Lezer parsers for static highlighting of code fences, so the editor and the rendered preview agree on tokens without bundling a second highlighter.
 
 ### Outputs (`src/components/outputs/`)
 

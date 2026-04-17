@@ -146,6 +146,7 @@ After the handshake, frames are typed by their first byte:
 | `0x03`    | NotebookBroadcast  | JSON |
 | `0x04`    | Presence           | Binary (CBOR, see `notebook_doc::presence`) |
 | `0x05`    | RuntimeStateSync   | Binary (raw Automerge sync for per-notebook `RuntimeStateDoc`) |
+| `0x06`    | PoolStateSync      | Binary (raw Automerge sync for the per-daemon `PoolDoc`) |
 
 ## Automerge Sync
 
@@ -359,7 +360,7 @@ Widget state now lives in `doc.comms/` in RuntimeStateDoc. The daemon writes com
 | `crates/runtimed-wasm/src/lib.rs` | WASM bindings: cell mutations, sync, per-cell accessors, `CellChangeset` |
 | `crates/notebook-doc/src/lib.rs` | `NotebookDoc`: Automerge schema, cell CRUD, output writes, per-cell accessors |
 | `crates/notebook-doc/src/diff.rs` | `CellChangeset`: structural diff from Automerge patches |
-| `crates/notebook-doc/src/frame_types.rs` | Shared frame type constants (0x00–0x05) |
+| `crates/notebook-doc/src/frame_types.rs` | Shared frame type constants (0x00–0x06) |
 | `crates/notebook-doc/src/runtime_state.rs` | `RuntimeStateDoc`: per-notebook daemon-authoritative state (kernel, queue, env sync) |
 | `apps/notebook/src/lib/runtime-state.ts` | Frontend runtime state store + `useRuntimeState()` hook |
 | `apps/notebook/src/lib/frame-types.ts` | Frame type constants + `sendFrame()` binary IPC helper |

@@ -382,7 +382,7 @@ When `nteract-dev` is active, agents also get the full nteract tool suite. **Use
 | `kernel-launch` | Kernel launching, tool bootstrapping (deno, uv, ruff via rattler) |
 | `kernel-env` | Python environment management (UV + Conda) with progress reporting |
 | `repr-llm` | LLM-friendly text summaries of visualization specs incl. GeoJSON (`text/llm+plain` synthesis) |
-| `nteract-predicate` | Pure-Rust compute kernels for dataframe/Arrow analysis (summary, filter, histogram) — backs `@nteract/sift` and `nteract/dx` |
+| `nteract-predicate` | Pure-Rust compute kernels for dataframe/Arrow analysis (summary, filter, histogram) — backs Sift (the `@nteract/sift` viewer; `nteract/dx` is the Python sender) |
 | `sift-wasm` | WASM bindings for `nteract-predicate` — used by `@nteract/sift` |
 | `mcp-supervisor` | `nteract-dev` MCP server — proxies `runt mcp` and adds dev tools (`up`, `down`, `status`, `logs`, `vite_logs`) |
 | `mcpb-runt` | MCPB binary — resilient proxy for `runt mcp` shipped in the `.mcpb` Claude Desktop extension |

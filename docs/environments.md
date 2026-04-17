@@ -97,11 +97,13 @@ See [Settings](settings.md) for how to change these defaults.
 
 When you open a notebook with dependencies for the first time, nteract Desktop may show a trust dialog asking you to approve the dependency installation. This happens because:
 
-- Dependencies are signed with a per-machine key
+- Dependencies are signed with a per-machine HMAC-SHA256 key
 - Notebooks from other machines (shared by a colleague, cloned from a repo) have a different signature
 - nteract Desktop asks you to verify the dependencies before installing anything
 
-After you approve, the notebook is re-signed with your machine's key and won't prompt again.
+After you approve, the notebook is re-signed with your machine's key and won't prompt again — unless the dependency list changes, which invalidates the signature and re-prompts.
+
+The key lives at `~/.config/runt/trust-key` (Linux), `~/Library/Application Support/runt/trust-key` (macOS), or the platform equivalent — file mode `0600`. It's created on first run and never sent off the machine.
 
 ## Cache and Cleanup
 

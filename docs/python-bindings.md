@@ -2,6 +2,8 @@
 
 The `runtimed` Python package provides programmatic access to the notebook daemon. Use it to execute code, manage kernels, and interact with notebooks from Python scripts, agents, or automation workflows.
 
+> **Looking for an MCP server?** `runt mcp` (Rust, shipped as a sidecar of the desktop app) is the canonical MCP path — you do not need Python or uv for it. The Python `nteract` package that launches `runt mcp` still ships, but these bindings are for programmatic use, not MCP integration.
+
 ## Installation
 
 ```bash

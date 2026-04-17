@@ -55,6 +55,10 @@ The notebook lives alongside a project file (`pyproject.toml`, `environment.yml`
 
 When you open a notebook with inline dependencies from another machine, nteract Desktop shows a trust dialog. This is a security measure — it prevents notebooks from silently installing arbitrary packages.
 
-The dialog shows what dependencies the notebook wants to install. After you approve, nteract Desktop signs the notebook with your machine's key and won't ask again for that notebook (unless the dependencies change).
+The dialog shows what dependencies the notebook wants to install. After you approve, nteract Desktop signs the notebook with your machine's HMAC-SHA256 key (stored at `~/.config/runt/trust-key` or the platform equivalent) and won't ask again for that notebook. Editing the dependency list invalidates the signature and re-prompts.
 
 Project-file-based environments (pyproject.toml, environment.yml, pixi.toml) don't trigger the trust dialog because the dependencies come from files you can inspect in the repository, not from embedded notebook metadata.
+
+## Notebook File Format
+
+Saved `.ipynb` files are standard Jupyter notebooks. Most outputs are inlined as base64 (the same as vanilla Jupyter), so any tool that reads `.ipynb` will see them. Large nteract-specific outputs like `application/vnd.apache.parquet` (the format Sift, the nteract dataframe viewer, uses to round-trip tabular data) are externalized as small blob references — the file stays small, and reopening the notebook in nteract Desktop rehydrates the data from the local blob store. Other tools see a placeholder MIME but still get the standard `text/html` and `text/plain` representations of the same output.

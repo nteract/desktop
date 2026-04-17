@@ -72,6 +72,8 @@ Cell outputs are stored as content-addressed blobs with manifest references. Thi
 - Manifest format allows lazy loading and deduplication
 - Large outputs don't block document sync
 
+**On `.ipynb` save** the daemon still inlines most outputs as base64 — the same as vanilla Jupyter — so other tools can read the file. A small whitelist of nteract-specific MIMEs (currently just `application/vnd.apache.parquet`, the format the Sift dataframe viewer round-trips through) is externalized as a `BLOB_REF_MIME` entry pointing at the local blob store, keeping `.ipynb` size bounded for outputs that would otherwise serialize tens or hundreds of MiB. The Python `nteract/dx` package is the helper that produces those parquet payloads from a kernel. See `crates/runtimed/src/output_store.rs` (`should_externalize_mime_on_save`) and `docs/superpowers/specs/2026-04-14-ipynb-save-blob-refs-design.md`.
+
 **Implementation details:**
 
 The blob store uses content-addressed storage at `~/.cache/runt/blobs/`. Each blob is identified by its SHA-256 hash and stored in a two-level shard directory:
@@ -102,7 +104,7 @@ Jupyter kernels send binary data (images) as base64-encoded strings on the wire.
 
 #### The `is_binary_mime` Contract
 
-One canonical Rust implementation in `notebook-doc::mime` is the single source of truth. All Rust crates use this module — the old per-crate copies have been deleted. On the TypeScript side, `isBinaryMime()` has been deleted from `manifest-resolution.ts`. WASM now owns MIME classification end-to-end — it resolves `ContentRef`s to `Inline`/`Url`/`Blob` variants directly.
+One canonical Rust implementation in `notebook-doc::mime` is the single source of truth. All Rust crates use this module — the old per-crate copies have been deleted. WASM owns MIME classification end-to-end and resolves `ContentRef`s to `Inline`/`Url`/`Blob` variants directly, so the frontend never has to classify MIMEs itself. The `looksLikeBinaryMime()` helper in `apps/notebook/src/lib/manifest-resolution.ts` is a thin cold-start safety net that runs before WASM is ready and is intentionally not the source of truth.
 
 | Location | Function |
 |----------|----------|
@@ -143,7 +145,7 @@ Key files:
 - `crates/runtimed/src/blob_store.rs` — Content-addressed storage with atomic writes
 - `crates/runtimed/src/blob_server.rs` — HTTP server (`GET /blob/{hash}`, serves raw bytes with correct `Content-Type`)
 - `crates/runtimed-client/src/output_resolver.rs` — Shared Rust manifest resolution, Python/MCP consumers
-- `apps/notebook/src/lib/manifest-resolution.ts` — Frontend resolution (`isBinaryMime()` deleted, WASM resolves `ContentRef` directly)
+- `apps/notebook/src/lib/manifest-resolution.ts` — Frontend resolution (WASM resolves `ContentRef` directly; `looksLikeBinaryMime()` is only the cold-start fallback)
 - `apps/notebook/src/lib/materialize-cells.ts` — Assembles cells with resolved outputs
 
 ### 6. Process-Isolated Kernel Execution
@@ -276,7 +278,7 @@ The frontend now owns a local Automerge doc via `runtimed-wasm` WASM bindings, m
 - `crates/notebook-sync/src/connect.rs` — `connect_open_relay()`, `connect_create_relay()`: transparent byte pipe setup
 - `crates/runtimed-wasm/src/lib.rs` — WASM bindings: local Automerge peer, frame demux, per-cell accessors, `CellChangeset`
 - `crates/notebook/src/lib.rs` — Tauri commands and relay tasks (`send_frame` accepts raw binary via `tauri::ipc::Request`, `setup_sync_receivers`)
-- `crates/notebook-doc/src/frame_types.rs` — Shared frame type constants (0x00–0x05)
+- `crates/notebook-doc/src/frame_types.rs` — Shared frame type constants (0x00–0x06)
 - `apps/notebook/src/lib/frame-types.ts` — Frame type constants + `sendFrame()` binary IPC helper
 - `apps/notebook/src/hooks/useAutomergeNotebook.ts` — WASM handle owner, `scheduleMaterialize`, `CellChangeset` dispatch
 - `apps/notebook/src/lib/materialize-cells.ts` — `materializeCellFromWasm()` (per-cell) + `cellSnapshotsToNotebookCells()` (full)
