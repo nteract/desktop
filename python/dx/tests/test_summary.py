@@ -20,14 +20,20 @@ def test_summarize_pandas_sampled_mentions_sampling():
 
 
 def test_summarize_pandas_includes_dtypes():
-    df = pd.DataFrame({"i": [1, 2], "s": ["a", "b"]})
+    data: dict = {"i": [1, 2], "s": ["a", "b"]}
+    for j in range(30):
+        data[f"_pad{j}"] = ["padding_value_long_string"] * 2
+    df = pd.DataFrame(data)
     out = summarize_dataframe(df, total_rows=2, included_rows=2, sampled=False)
     assert "int" in out.lower()
     assert "object" in out.lower() or "str" in out.lower()
 
 
 def test_summarize_pandas_includes_null_counts():
-    df = pd.DataFrame({"a": [1.0, None, 3.0], "b": [None, None, "x"]})
+    data: dict = {"a": [1.0, None, 3.0], "b": [None, None, "x"]}
+    for j in range(20):
+        data[f"_pad{j}"] = ["padding_value"] * 3
+    df = pd.DataFrame(data)
     out = summarize_dataframe(df, total_rows=3, included_rows=3, sampled=False)
     assert "null" in out.lower()
 

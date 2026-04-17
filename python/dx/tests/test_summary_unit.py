@@ -7,10 +7,21 @@ HuggingFace Dataset summaries.
 import pandas as pd
 import pytest
 from dx._summary import (
+    _MAX_TEXT_PLAIN_BYTES,
     _truncate_cell,
     summarize_dataframe,
     summarize_dataset,
 )
+
+
+def _pad_pandas(df: pd.DataFrame) -> pd.DataFrame:
+    """Add padding columns so the text/plain exceeds the fast-path threshold."""
+    while len(df.to_string(index=False).encode("utf-8")) <= _MAX_TEXT_PLAIN_BYTES:
+        df[f"_pad{len(df.columns)}"] = ["padding_value"] * len(df)
+    return df
+
+
+_pad_to_force_rich_path = _pad_pandas
 
 # ── Truncation ──────────────────────────────────────────────────────
 
@@ -40,14 +51,14 @@ class TestTruncateCell:
 
 class TestPandasNumericRange:
     def test_includes_numeric_range(self):
-        df = pd.DataFrame({"score": [0.12, 0.5, 0.99]})
+        df = _pad_to_force_rich_path(pd.DataFrame({"score": [0.12, 0.5, 0.99]}))
         out = summarize_dataframe(df, total_rows=3, included_rows=3, sampled=False)
         assert "range" in out
         assert "0.120" in out
         assert "0.990" in out
 
     def test_integer_range(self):
-        df = pd.DataFrame({"id": [1, 500, 1200]})
+        df = _pad_to_force_rich_path(pd.DataFrame({"id": [1, 500, 1200]}))
         out = summarize_dataframe(df, total_rows=3, included_rows=3, sampled=False)
         assert "range" in out
         assert "1" in out
@@ -59,14 +70,17 @@ class TestPandasNumericRange:
 
 class TestPandasStringStats:
     def test_includes_string_distinct_and_top(self):
-        df = pd.DataFrame({"name": ["alice", "bob", "carol", "alice", "bob"]})
-        out = summarize_dataframe(df, total_rows=5, included_rows=5, sampled=False)
+        df = _pad_to_force_rich_path(
+            pd.DataFrame({"name": ["alice", "bob", "carol", "alice", "bob"]})
+        )
+        n = len(df)
+        out = summarize_dataframe(df, total_rows=n, included_rows=n, sampled=False)
         assert "distinct" in out
         assert "top:" in out
         assert '"alice"' in out or '"bob"' in out
 
     def test_single_value_column(self):
-        df = pd.DataFrame({"status": ["ok"] * 10})
+        df = _pad_to_force_rich_path(pd.DataFrame({"status": ["ok"] * 10}))
         out = summarize_dataframe(df, total_rows=10, included_rows=10, sampled=False)
         assert "1 distinct" in out
         assert '"ok"' in out
@@ -96,12 +110,12 @@ class TestTruncationIntegration:
 
 class TestNullHandling:
     def test_all_null_column(self):
-        df = pd.DataFrame({"empty": [None, None, None]})
+        df = _pad_to_force_rich_path(pd.DataFrame({"empty": [None, None, None]}))
         out = summarize_dataframe(df, total_rows=3, included_rows=3, sampled=False)
         assert "all null" in out
 
     def test_partial_null_with_percentage(self):
-        df = pd.DataFrame({"a": [1.0, None, 3.0]})
+        df = _pad_to_force_rich_path(pd.DataFrame({"a": [1.0, None, 3.0]}))
         out = summarize_dataframe(df, total_rows=3, included_rows=3, sampled=False)
         assert "null" in out
         assert "%" in out
@@ -143,7 +157,10 @@ class TestPolars:
     def test_polars_numeric_range(self):
         import polars as pl
 
-        df = pl.DataFrame({"val": [10, 20, 30]})
+        data: dict = {"val": [10, 20, 30]}
+        for i in range(20):
+            data[f"_pad{i}"] = ["padding_value"] * 3
+        df = pl.DataFrame(data)
         out = summarize_dataframe(df, total_rows=3, included_rows=3, sampled=False)
         assert "range" in out
         assert "10" in out
@@ -152,7 +169,10 @@ class TestPolars:
     def test_polars_string_distinct(self):
         import polars as pl
 
-        df = pl.DataFrame({"name": ["alice", "bob", "carol"]})
+        data: dict = {"name": ["alice", "bob", "carol"]}
+        for i in range(20):
+            data[f"_pad{i}"] = ["padding_value"] * 3
+        df = pl.DataFrame(data)
         out = summarize_dataframe(df, total_rows=3, included_rows=3, sampled=False)
         assert "distinct" in out
 
@@ -189,7 +209,12 @@ class TestPolars:
     def test_polars_all_null(self):
         import polars as pl
 
-        df = pl.DataFrame({"x": [None, None, None]}, schema={"x": pl.Int64})
+        schema: dict = {"x": pl.Int64}
+        data: dict = {"x": [None, None, None]}
+        for i in range(20):
+            data[f"_pad{i}"] = ["padding_value"] * 3
+            schema[f"_pad{i}"] = pl.Utf8
+        df = pl.DataFrame(data, schema=schema)
         out = summarize_dataframe(df, total_rows=3, included_rows=3, sampled=False)
         assert "all null" in out
 
@@ -198,8 +223,13 @@ class TestPolars:
         equivalent structural elements."""
         import polars as pl
 
-        pd_df = pd.DataFrame({"a": [1, 2, 3], "b": ["x", "y", "z"]})
-        pl_df = pl.DataFrame({"a": [1, 2, 3], "b": ["x", "y", "z"]})
+        pd_data: dict = {"a": [1, 2, 3], "b": ["x", "y", "z"]}
+        pl_data: dict = {"a": [1, 2, 3], "b": ["x", "y", "z"]}
+        for i in range(20):
+            pd_data[f"_pad{i}"] = ["padding_value"] * 3
+            pl_data[f"_pad{i}"] = ["padding_value"] * 3
+        pd_df = pd.DataFrame(pd_data)
+        pl_df = pl.DataFrame(pl_data)
 
         pd_out = summarize_dataframe(pd_df, total_rows=3, included_rows=3, sampled=False)
         pl_out = summarize_dataframe(pl_df, total_rows=3, included_rows=3, sampled=False)
@@ -253,3 +283,52 @@ class TestDatasetSummary:
         out = summarize_dataset(ds)
         assert "…" in out
         assert "chars]" in out
+
+
+# ── Small DataFrame text/plain fast path ───────────────────────────
+
+
+class TestSmallDataFrameTextPlainPath:
+    """When a DataFrame's native text/plain fits under 1 KB, summarize_dataframe
+    should return it directly instead of running the stat-rich path."""
+
+    def test_small_pandas_uses_text_plain(self):
+        df = pd.DataFrame({"a": [1, 2, 3], "b": ["x", "y", "z"]})
+        out = summarize_dataframe(df, total_rows=3, included_rows=3, sampled=False)
+        assert out.startswith("DataFrame (pandas): 3 rows × 2 columns")
+        assert "Columns:" not in out
+        assert "Head (" not in out
+        # Should contain the actual cell values
+        assert "x" in out and "y" in out and "z" in out
+
+    def test_small_polars_uses_text_plain(self):
+        pl = pytest.importorskip("polars")
+        df = pl.DataFrame({"a": [1, 2, 3], "b": ["x", "y", "z"]})
+        out = summarize_dataframe(df, total_rows=3, included_rows=3, sampled=False)
+        assert out.startswith("DataFrame (polars): 3 rows × 2 columns")
+        assert "Columns:" not in out
+        assert "Head (" not in out
+
+    def test_large_pandas_uses_rich_path(self):
+        df = pd.DataFrame({"text": ["word " * 40] * 100})
+        out = summarize_dataframe(df, total_rows=100, included_rows=100, sampled=False)
+        assert "Columns:" in out
+        assert "Head (" in out
+
+    def test_sampled_frame_uses_rich_path(self):
+        df = pd.DataFrame({"a": [1, 2, 3]})
+        out = summarize_dataframe(df, total_rows=1000, included_rows=3, sampled=True)
+        assert "Columns:" in out
+        assert "(sampled from" in out
+
+    def test_wide_frame_uses_rich_path(self):
+        data = {f"c{i}": [i] for i in range(50)}
+        df = pd.DataFrame(data)
+        out = summarize_dataframe(df, total_rows=1, included_rows=1, sampled=False)
+        assert "Columns:" in out
+
+    def test_sampled_but_equal_totals_uses_text_plain(self):
+        df = pd.DataFrame({"a": [1, 2]})
+        out = summarize_dataframe(df, total_rows=2, included_rows=2, sampled=True)
+        assert "Columns:" not in out
+        assert "Head (" not in out
