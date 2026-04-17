@@ -752,6 +752,12 @@ impl McpProxy {
 /// adds supervisor_* tools.
 impl ServerHandler for McpProxy {
     fn get_info(&self) -> ServerInfo {
+        // list_tools serves the cached tool set synchronously so the first
+        // client response is fast, then on_initialized spawns the child and
+        // fires tools/list_changed. Advertising listChanged tells the client
+        // to re-query when that notification arrives, so any drift between
+        // the cache and the live child (e.g. after a daemon upgrade) is
+        // reconciled without a reconnect.
         ServerInfo::new(
             ServerCapabilities::builder()
                 .enable_tools()
@@ -764,6 +770,13 @@ impl ServerHandler for McpProxy {
             &self.config.server_name,
             env!("CARGO_PKG_VERSION"),
         ))
+        .with_instructions(
+            "nteract MCP server for Jupyter notebooks. \
+             Each connection has one active notebook session. \
+             Use list_active_notebooks to discover open notebooks, \
+             then open_notebook or create_notebook to set your active session. \
+             Calling these again switches your active session.",
+        )
     }
 
     async fn list_tools(
@@ -844,9 +857,8 @@ impl ServerHandler for McpProxy {
     }
 
     // Spawn the child only after the client has sent `notifications/initialized`.
-    // Per MCP spec, servers must not send notifications (tools/list_changed,
-    // resources/list_changed) before this point — Claude Code drops early ones,
-    // which leaves its tool list empty until a later refresh.
+    // Once the child is up, send tools/list_changed and resources/list_changed
+    // so the client re-queries and replaces the cached list with the live one.
     async fn on_initialized(&self, context: NotificationContext<RoleServer>) {
         if self.state.read().await.child_client.is_some() {
             return;
