@@ -111,6 +111,31 @@ export async function loadESM(esm: string): Promise<AnyWidgetModule> {
 // === CSS Injection ===
 
 /**
+ * Injected CSS handle.
+ *
+ * `ready` resolves when the stylesheet is parsed and its rules have
+ * applied to the document — resolved synchronously for the raw-text
+ * branch, and on the `<link>`'s `load` / `error` event for the URL
+ * branch. Callers that measure layout (anywidget `initialize` /
+ * `render`) should await `ready` before measuring so the widget
+ * doesn't mount against unstyled geometry.
+ *
+ * `cleanup` removes the injected element.
+ */
+export interface InjectedCSS {
+  ready: Promise<void>;
+  cleanup: () => void;
+}
+
+/**
+ * How long to wait for a `<link rel="stylesheet">` to load before
+ * letting the widget render anyway. 5s is long enough for slow
+ * networks (remote CDN stylesheets) and short enough that a broken
+ * blob server never silently blocks a widget forever.
+ */
+const CSS_LOAD_TIMEOUT_MS = 5_000;
+
+/**
  * Inject CSS into the document head for a widget.
  *
  * Accepts either raw CSS text (rendered into a `<style>`) or an
@@ -118,23 +143,49 @@ export async function loadESM(esm: string): Promise<AnyWidgetModule> {
  * form is preferred when the daemon keeps `_css` as a blob URL —
  * it avoids a redundant round-trip fetch in the sync engine and lets
  * the browser cache the stylesheet.
- *
- * @returns Cleanup function to remove the injected element.
  */
-export function injectCSS(modelId: string, css: string): () => void {
+export function injectCSS(modelId: string, css: string): InjectedCSS {
   const isUrl = css.startsWith("http://") || css.startsWith("https://");
   if (isUrl) {
     const link = document.createElement("link");
     link.rel = "stylesheet";
     link.href = css;
     link.setAttribute("data-widget-id", modelId);
-    link.onerror = () => {
-      // Don't throw — widget can still render without its CSS.
-      console.warn(`[anywidget] failed to load CSS: ${css}`);
+
+    let readyResolve: () => void = () => {};
+    const ready = new Promise<void>((resolve) => {
+      readyResolve = resolve;
+    });
+
+    // Resolve on the first of load / error / timeout so the widget is
+    // never blocked on a missing stylesheet. `onload` fires after the
+    // rules are parsed and applied; `onerror` fires for 404s / network
+    // failures. The timeout is a last-resort guard against a browser
+    // that never signals either (e.g. the blob server hangs the
+    // connection open).
+    const timeoutId = window.setTimeout(() => {
+      console.warn(`[anywidget] CSS load timed out after ${CSS_LOAD_TIMEOUT_MS}ms: ${css}`);
+      readyResolve();
+    }, CSS_LOAD_TIMEOUT_MS);
+
+    link.onload = () => {
+      window.clearTimeout(timeoutId);
+      readyResolve();
     };
+    link.onerror = () => {
+      window.clearTimeout(timeoutId);
+      console.warn(`[anywidget] failed to load CSS: ${css}`);
+      readyResolve();
+    };
+
     document.head.appendChild(link);
-    return () => {
-      link.remove();
+
+    return {
+      ready,
+      cleanup: () => {
+        window.clearTimeout(timeoutId);
+        link.remove();
+      },
     };
   }
 
@@ -143,8 +194,12 @@ export function injectCSS(modelId: string, css: string): () => void {
   style.textContent = css;
   document.head.appendChild(style);
 
-  return () => {
-    style.remove();
+  return {
+    // Inline <style> applies synchronously — no wait needed.
+    ready: Promise.resolve(),
+    cleanup: () => {
+      style.remove();
+    },
   };
 }
 
@@ -470,9 +525,16 @@ export function AnyWidgetView({ modelId, className }: AnyWidgetViewProps) {
           containerRef.current.innerHTML = "";
         }
 
-        // Inject CSS if provided
+        // Inject CSS if provided. The URL branch returns a pending
+        // `ready` promise (resolves on the `<link>`'s load/error or
+        // after a timeout); the inline branch resolves synchronously.
+        // We start CSS injection before loading the ESM so both fetches
+        // run in parallel, then await `ready` before `render` so the
+        // widget never measures against unstyled geometry.
+        let cssHandle: InjectedCSS | undefined;
         if (css) {
-          cleanupRef.current.css = injectCSS(modelId, css);
+          cssHandle = injectCSS(modelId, css);
+          cleanupRef.current.css = cssHandle.cleanup;
         }
 
         // Load the ESM module
@@ -480,6 +542,13 @@ export function AnyWidgetView({ modelId, className }: AnyWidgetViewProps) {
 
         // Check if cancelled after async load
         if (isCancelled) return;
+
+        // Wait for the stylesheet to apply before rendering so
+        // layout-sensitive anywidgets don't measure unstyled DOM.
+        if (cssHandle) {
+          await cssHandle.ready;
+          if (isCancelled) return;
+        }
 
         // Create the AFM model proxy using refs for stable references
         const modelProxy = createAFMModelProxy(
