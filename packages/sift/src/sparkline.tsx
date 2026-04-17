@@ -402,10 +402,17 @@ function NumericHistogram({
               if (bin.count <= 0) return null;
               const x = i * (barW + gap);
               const h = (bin.count / maxCount) * CHART_HEIGHT;
-              // Per-bin highlight: bins overlapping the filter range are bright, others dimmed
+              // Per-bin highlight: bins overlapping the filter range are bright, others dimmed.
+              // The zero-width bin case (x0 === x1, from the constant-slice fix) collapses
+              // to a single point and needs an inclusive point-in-range check; the regular
+              // overlap predicate uses strict inequality and would mark the bar inactive
+              // when the filter selects exactly that point.
               let fill = baseFill;
               if (isFiltered) {
-                const binOverlaps = bin.x1 > activeFilter.min && bin.x0 < activeFilter.max;
+                const binOverlaps =
+                  bin.x0 === bin.x1
+                    ? bin.x0 >= activeFilter.min && bin.x0 <= activeFilter.max
+                    : bin.x1 > activeFilter.min && bin.x0 < activeFilter.max;
                 fill = binOverlaps ? activeFill : dimFill;
               }
               return (
@@ -803,16 +810,16 @@ function formatDateRange(minMs: number, maxMs: number): [string, string] {
   const spanDays = (maxMs - minMs) / (1000 * 60 * 60 * 24);
 
   if (maxMs === minMs) {
-    // Zero-span: filtered to a single value (or Date32 column with one
-    // distinct row). Use the date-only format for values that land
-    // exactly at midnight UTC (Date32 / pure-date sources - they arrive
-    // with a 0 sub-day remainder), and full date+time for everything
-    // else so sub-day timestamps keep their time-of-day. Without this
-    // the fallthrough to the `<1 day` branch rendered "12:00 AM" and
-    // lost the calendar date entirely.
-    const dateFmt = (d: Date) =>
-      d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
-    const dateTimeFmt = (d: Date) =>
+    // Zero-span: filtered to a single value. Always show date + time so
+    // we never drop information we can't reconstruct. Date32 columns
+    // arrive at midnight UTC and render with a "12:00 AM" suffix - a
+    // little noisy but unambiguous - while sub-day Datetime filters
+    // keep their actual time. Distinguishing Date32 from Datetime
+    // would require plumbing the source type through the summary; the
+    // old midnight-UTC heuristic guessed wrong whenever a real
+    // Datetime value happened to land at midnight (scheduled jobs,
+    // log rollovers, etc.) and silently stripped the time.
+    const fmt = (d: Date) =>
       d.toLocaleString(undefined, {
         year: "numeric",
         month: "short",
@@ -820,7 +827,6 @@ function formatDateRange(minMs: number, maxMs: number): [string, string] {
         hour: "2-digit",
         minute: "2-digit",
       });
-    const fmt = minMs % 86_400_000 === 0 ? dateFmt : dateTimeFmt;
     return [fmt(min), fmt(max)];
   }
 
@@ -902,12 +908,20 @@ function TimestampHistogram({
               if (bin.count <= 0) return null;
               const x = i * barW;
               const h = (bin.count / maxCount) * CHART_HEIGHT;
-              // Per-bin highlight for timestamp bins
+              // Per-bin highlight for timestamp bins.
+              // When summary.min === summary.max (zero-span, constant-slice fix)
+              // binSpan collapses to 0 and both endpoints coincide at the single
+              // value, so switch to an inclusive point-in-range check; otherwise
+              // the strict inequalities dim the only visible bar even when the
+              // filter selects that exact instant.
               let fill = baseFill;
               if (isFiltered) {
                 const binStart = summary.min + i * binSpan;
                 const binEnd = binStart + binSpan;
-                const binOverlaps = binEnd > activeFilter.min && binStart < activeFilter.max;
+                const binOverlaps =
+                  binSpan === 0
+                    ? binStart >= activeFilter.min && binStart <= activeFilter.max
+                    : binEnd > activeFilter.min && binStart < activeFilter.max;
                 fill = binOverlaps ? activeFill : dimFill;
               }
               return (
