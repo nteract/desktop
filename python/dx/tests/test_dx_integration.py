@@ -51,7 +51,10 @@ class TestEmitDataFrameFallbackWithoutPyarrow:
             lambda df, max_bytes: (_ for _ in ()).throw(ImportError("No module named 'pyarrow'")),
         )
 
-        df = pd.DataFrame({"score": [0.1, 0.5, 0.9], "name": ["a", "b", "c"]})
+        data: dict = {"score": [0.1, 0.5, 0.9], "name": ["a", "b", "c"]}
+        for j in range(30):
+            data[f"_pad{j}"] = ["padding_value_long_string"] * 3
+        df = pd.DataFrame(data)
         bundle = fi._emit_dataframe(df, total_rows=3)
 
         assert bundle is not None

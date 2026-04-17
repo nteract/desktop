@@ -12,6 +12,10 @@ from typing import Any
 # Cap the number of columns in the summary to keep it compact.
 _MAX_SUMMARY_COLUMNS = 40
 
+# Maximum byte length for using the library's text/plain directly as the LLM
+# summary.  Matches the CRDT inline threshold (1 KB).
+_MAX_TEXT_PLAIN_BYTES = 1024
+
 
 def _format_int(n: int) -> str:
     return f"{n:,}"
@@ -35,6 +39,15 @@ def _detect_flavor(df: Any) -> str:
     if mod in ("pandas", "polars"):
         return mod
     return "unknown"
+
+
+def _text_plain(df: Any, flavor: str) -> str:
+    """Return the library's native text/plain for *df*."""
+    if flavor == "pandas":
+        return df.to_string(index=False)
+    if flavor == "polars":
+        return str(df)
+    return repr(df)
 
 
 # ── Per-column stat extractors ──────────────────────────────────────
@@ -289,8 +302,16 @@ def summarize_dataframe(
     explicitly calls that out.
     """
     flavor = _detect_flavor(df)
+    n_cols = len(df.columns) if hasattr(df, "columns") else 0
 
-    # Extract per-column stats
+    # ── Fast path: small DataFrames use text/plain directly ────────
+    if not (sampled and total_rows != included_rows) and n_cols <= _MAX_SUMMARY_COLUMNS:
+        text_plain = _text_plain(df, flavor)
+        if len(text_plain.encode("utf-8")) <= _MAX_TEXT_PLAIN_BYTES:
+            header = f"DataFrame ({flavor}): {_format_int(included_rows)} rows × {n_cols} columns"
+            return f"{header}\n\n{text_plain}"
+
+    # ── Rich path: per-column stats + head preview ─────────────────
     if flavor == "pandas":
         col_stats = _pandas_column_stats(df)
     elif flavor == "polars":
@@ -298,11 +319,11 @@ def summarize_dataframe(
     else:
         col_stats = []
 
-    n_cols = len(col_stats) if col_stats else (len(df.columns) if hasattr(df, "columns") else 0)
+    rich_n_cols = len(col_stats) if col_stats else n_cols
     lines: list[str] = []
 
     # Header
-    header = f"DataFrame ({flavor}): {_format_int(included_rows)} rows × {n_cols} columns"
+    header = f"DataFrame ({flavor}): {_format_int(included_rows)} rows × {rich_n_cols} columns"
     if sampled and total_rows != included_rows:
         header += f" (sampled from {_format_int(total_rows)} total rows)"
     lines.append(header)
