@@ -113,9 +113,31 @@ export async function loadESM(esm: string): Promise<AnyWidgetModule> {
 /**
  * Inject CSS into the document head for a widget.
  *
- * @returns Cleanup function to remove the style element
+ * Accepts either raw CSS text (rendered into a `<style>`) or an
+ * `http(s)://` URL (rendered as `<link rel="stylesheet">`). The URL
+ * form is preferred when the daemon keeps `_css` as a blob URL —
+ * it avoids a redundant round-trip fetch in the sync engine and lets
+ * the browser cache the stylesheet.
+ *
+ * @returns Cleanup function to remove the injected element.
  */
 export function injectCSS(modelId: string, css: string): () => void {
+  const isUrl = css.startsWith("http://") || css.startsWith("https://");
+  if (isUrl) {
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = css;
+    link.setAttribute("data-widget-id", modelId);
+    link.onerror = () => {
+      // Don't throw — widget can still render without its CSS.
+      console.warn(`[anywidget] failed to load CSS: ${css}`);
+    };
+    document.head.appendChild(link);
+    return () => {
+      link.remove();
+    };
+  }
+
   const style = document.createElement("style");
   style.setAttribute("data-widget-id", modelId);
   style.textContent = css;
