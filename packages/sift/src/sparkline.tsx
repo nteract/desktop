@@ -319,9 +319,7 @@ function NumericHistogram({
   if (summary.isIndex) {
     return (
       <div>
-        <span className="sift-th-range">
-          {formatNum(summary.min)} – {formatNum(summary.max)}
-        </span>
+        <span className="sift-th-range">{formatNumRange(summary.min, summary.max)}</span>
       </div>
     );
   }
@@ -419,11 +417,7 @@ function NumericHistogram({
         Number.isInteger(summary.min) &&
         Number.isInteger(summary.max) &&
         summary.max - summary.min <= 1
-      ) && (
-        <span className="sift-th-range">
-          {formatNum(summary.min)} – {formatNum(summary.max)}
-        </span>
-      )}
+      ) && <span className="sift-th-range">{formatNumRange(summary.min, summary.max)}</span>}
       <NumericProfile summary={summary} />
     </div>
   );
@@ -894,7 +888,7 @@ function TimestampHistogram({
         />
       </div>
       <span className="sift-th-range">
-        {minLabel} – {maxLabel}
+        {minLabel === maxLabel ? minLabel : `${minLabel} – ${maxLabel}`}
       </span>
     </div>
   );
@@ -968,6 +962,13 @@ function ColumnSummaryChart({
 function formatNum(n: number): string {
   if (Number.isInteger(n)) return n.toLocaleString();
   return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
+
+/** Format a numeric range, collapsing to a single value when min === max. */
+function formatNumRange(min: number, max: number): string {
+  const minStr = formatNum(min);
+  const maxStr = formatNum(max);
+  return minStr === maxStr ? minStr : `${minStr} – ${maxStr}`;
 }
 
 function truncate(s: string, max: number): string {

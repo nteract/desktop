@@ -142,11 +142,22 @@ pub fn histogram(
 
     let min = values.iter().cloned().fold(f64::INFINITY, f64::min);
     let max = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-    let bin_width = if (max - min).abs() < f64::EPSILON {
-        1.0
-    } else {
-        (max - min) / num_bins as f64
-    };
+
+    // Constant slice: return a single degenerate bin at `min`. The prior
+    // `bin_width = 1.0` fallback stretched `num_bins` bins across the
+    // range `[min, min + num_bins]`, leaving the TS consumer convinced
+    // the column's max was `min + num_bins` (it reads `bins[last].x1` as
+    // the upper bound). Header labels like "0.46 – 25.46" for a column
+    // where every row is 0.459 come from that. See nteract/desktop#1847.
+    if (max - min).abs() < f64::EPSILON {
+        return Ok(vec![HistogramBin {
+            x0: min,
+            x1: min,
+            count: u32::try_from(values.len()).unwrap_or(u32::MAX),
+        }]);
+    }
+
+    let bin_width = (max - min) / num_bins as f64;
 
     let mut bins: Vec<HistogramBin> = (0..num_bins)
         .map(|i| HistogramBin {
