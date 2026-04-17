@@ -167,23 +167,23 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          cargo build --release -p runtimed -p runt-cli -p mcpb-runt
+          cargo build --release -p runtimed -p runt-cli -p runt-proxy
           TARGET=$(rustc --print host-tuple)
 
           mkdir -p crates/notebook/binaries target/release/binaries
 
           cp target/release/runtimed "crates/notebook/binaries/runtimed-$TARGET"
           cp target/release/runt "crates/notebook/binaries/runt-$TARGET"
-          cp target/release/mcpb-runt "crates/notebook/binaries/mcpb-runt-$TARGET"
+          cp target/release/runt-proxy "crates/notebook/binaries/runt-proxy-$TARGET"
           cp target/release/runtimed "target/release/binaries/runtimed-$TARGET"
           cp target/release/runt "target/release/binaries/runt-$TARGET"
-          cp target/release/mcpb-runt "target/release/binaries/mcpb-runt-$TARGET"
+          cp target/release/runt-proxy "target/release/binaries/runt-proxy-$TARGET"
 
       - name: Build external binaries (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          cargo build --release -p runtimed -p runt-cli -p mcpb-runt
+          cargo build --release -p runtimed -p runt-cli -p runt-proxy
           $target = (rustc --print host-tuple).Trim()
 
           New-Item -ItemType Directory -Force crates/notebook/binaries | Out-Null
@@ -191,10 +191,10 @@ jobs:
 
           Copy-Item target/release/runtimed.exe "crates/notebook/binaries/runtimed-$target.exe"
           Copy-Item target/release/runt.exe "crates/notebook/binaries/runt-$target.exe"
-          Copy-Item target/release/mcpb-runt.exe "crates/notebook/binaries/mcpb-runt-$target.exe"
+          Copy-Item target/release/runt-proxy.exe "crates/notebook/binaries/runt-proxy-$target.exe"
           Copy-Item target/release/runtimed.exe "target/release/binaries/runtimed-$target.exe"
           Copy-Item target/release/runt.exe "target/release/binaries/runt-$target.exe"
-          Copy-Item target/release/mcpb-runt.exe "target/release/binaries/mcpb-runt-$target.exe"
+          Copy-Item target/release/runt-proxy.exe "target/release/binaries/runt-proxy-$target.exe"
 
       - name: Build notebook app (no bundle)
         working-directory: crates/notebook

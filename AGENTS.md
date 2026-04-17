@@ -385,7 +385,7 @@ When `nteract-dev` is active, agents also get the full nteract tool suite. **Use
 | `nteract-predicate` | Pure-Rust compute kernels for dataframe/Arrow analysis (summary, filter, histogram) — backs Sift (the `@nteract/sift` viewer; `nteract/dx` is the Python sender) |
 | `sift-wasm` | WASM bindings for `nteract-predicate` — used by `@nteract/sift` |
 | `mcp-supervisor` | `nteract-dev` MCP server — proxies `runt mcp` and adds dev tools (`up`, `down`, `status`, `logs`, `vite_logs`) |
-| `mcpb-runt` | MCPB binary — resilient proxy for `runt mcp` shipped in the `.mcpb` Claude Desktop extension |
+| `runt-proxy` | Resilient MCP proxy for `runt mcp` — shipped as a sidecar in the nteract desktop app and inside the `.mcpb` Claude Desktop extension |
 | `xtask` | Build system orchestration |
 
 ## Build System (`cargo xtask`)

@@ -271,17 +271,17 @@ jobs:
       - name: Build external binaries
         shell: bash
         run: |
-          cargo build --release -p runtimed -p runt-cli -p mcpb-runt
+          cargo build --release -p runtimed -p runt-cli -p runt-proxy
           TARGET=$(rustc --print host-tuple)
           mkdir -p crates/notebook/binaries
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             cp target/release/runtimed.exe "crates/notebook/binaries/runtimed-$TARGET.exe"
             cp target/release/runt.exe "crates/notebook/binaries/runt-$TARGET.exe"
-            cp target/release/mcpb-runt.exe "crates/notebook/binaries/mcpb-runt-$TARGET.exe"
+            cp target/release/runt-proxy.exe "crates/notebook/binaries/runt-proxy-$TARGET.exe"
           else
             cp target/release/runtimed "crates/notebook/binaries/runtimed-$TARGET"
             cp target/release/runt "crates/notebook/binaries/runt-$TARGET"
-            cp target/release/mcpb-runt "crates/notebook/binaries/mcpb-runt-$TARGET"
+            cp target/release/runt-proxy "crates/notebook/binaries/runt-proxy-$TARGET"
           fi
 
       - name: Check tool caches are up to date
@@ -303,10 +303,10 @@ jobs:
           path: |
             target/release/runtimed
             target/release/runt
-            target/release/mcpb-runt
+            target/release/runt-proxy
             crates/notebook/binaries/runtimed-*
             crates/notebook/binaries/runt-*
-            crates/notebook/binaries/mcpb-runt-*
+            crates/notebook/binaries/runt-proxy-*
           retention-days: 1
 
       - name: Build Tauri E2E app
@@ -317,7 +317,7 @@ jobs:
           mkdir -p target/release/binaries
           cp crates/notebook/binaries/runtimed-* target/release/binaries/
           cp crates/notebook/binaries/runt-* target/release/binaries/
-          cp crates/notebook/binaries/mcpb-runt-* target/release/binaries/
+          cp crates/notebook/binaries/runt-proxy-* target/release/binaries/
 
       - name: Upload E2E app
         uses: actions/upload-artifact@v4
@@ -448,17 +448,17 @@ jobs:
         if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
         shell: bash
         run: |
-          cargo build --release -p runtimed -p runt-cli -p mcpb-runt
+          cargo build --release -p runtimed -p runt-cli -p runt-proxy
           TARGET=$(rustc --print host-tuple)
           mkdir -p crates/notebook/binaries
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             cp target/release/runtimed.exe "crates/notebook/binaries/runtimed-$TARGET.exe"
             cp target/release/runt.exe "crates/notebook/binaries/runt-$TARGET.exe"
-            cp target/release/mcpb-runt.exe "crates/notebook/binaries/mcpb-runt-$TARGET.exe"
+            cp target/release/runt-proxy.exe "crates/notebook/binaries/runt-proxy-$TARGET.exe"
           else
             cp target/release/runtimed "crates/notebook/binaries/runtimed-$TARGET"
             cp target/release/runt "crates/notebook/binaries/runt-$TARGET"
-            cp target/release/mcpb-runt "crates/notebook/binaries/mcpb-runt-$TARGET"
+            cp target/release/runt-proxy "crates/notebook/binaries/runt-proxy-$TARGET"
           fi
 
       - name: Clippy

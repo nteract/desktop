@@ -2,7 +2,7 @@
 set -euo pipefail
 
 channel="${NTERACT_CHANNEL:-stable}"
-binary_name="mcpb-runt"
+binary_name="runt-proxy"
 
 if [[ "$channel" == "nightly" ]]; then
   app_names=("nteract Nightly" "nteract-nightly" "nteract (Nightly)" "nteract")
@@ -29,7 +29,7 @@ case "$(uname -s)" in
     ;;
   MINGW*|MSYS*|CYGWIN*)
     local_app_data="${LOCALAPPDATA:-${HOME}/AppData/Local}"
-    binary_name="mcpb-runt.exe"
+    binary_name="runt-proxy.exe"
     for app_name in "${app_names[@]}"; do
       candidate_paths+=("${local_app_data}/${app_name}/${binary_name}")
       candidate_paths+=("${local_app_data}/Programs/${app_name}/${binary_name}")

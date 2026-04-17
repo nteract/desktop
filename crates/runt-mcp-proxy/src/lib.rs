@@ -4,7 +4,7 @@
 //! forwards MCP tools/resources, and handles transparent restart on child death.
 //!
 //! Used by:
-//! - `mcpb-runt` — lightweight MCPB binary for Claude Desktop
+//! - `runt-proxy` — shipped as a sidecar in the nteract app and inside the `.mcpb` Claude Desktop extension
 //! - `mcp-supervisor` — dev environment MCP proxy with file watching and build management
 
 pub mod child;

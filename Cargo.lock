@@ -4092,20 +4092,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mcpb-runt"
-version = "0.1.0"
-dependencies = [
- "dirs",
- "rmcp",
- "runt-mcp-proxy",
- "runt-workspace",
- "runtimed-client",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "md-5"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6851,6 +6837,20 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "runt-proxy"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "rmcp",
+ "runt-mcp-proxy",
+ "runt-workspace",
+ "runtimed-client",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
