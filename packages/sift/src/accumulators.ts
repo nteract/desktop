@@ -302,14 +302,17 @@ export class CategoricalAccumulator implements SummaryAccumulator {
 
   snapshot(totalRows: number): ColumnSummary {
     const sorted = [...this.freq.entries()].sort((a, b) => b[1] - a[1]);
+    // Guard against a 0-row total (e.g. a filter that matches nothing):
+    // `count / 0` is NaN and surfaces as "NaN%" in the category header.
+    const pctOf = (n: number) => (totalRows > 0 ? Math.round((n / totalRows) * 1000) / 10 : 0);
     const allCategories = sorted.map(([label, count]) => ({
       label,
       count,
-      pct: Math.round((count / totalRows) * 1000) / 10,
+      pct: pctOf(count),
     }));
     const topCategories = allCategories.slice(0, TOP_CATEGORIES);
     const othersCount = sorted.slice(TOP_CATEGORIES).reduce((s, e) => s + e[1], 0);
-    const othersPct = Math.round((othersCount / totalRows) * 1000) / 10;
+    const othersPct = pctOf(othersCount);
 
     // Compute median text length across unique values
     const lengths = sorted.map(([label]) => label.length).sort((a, b) => a - b);

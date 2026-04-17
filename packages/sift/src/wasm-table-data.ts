@@ -179,14 +179,20 @@ export function createWasmTableData(
               label: string;
               count: number;
             }[];
+            // Guard against a 0-row filtered slice: `count / 0` is NaN and
+            // renders as "NaN%" in the "N others" label (and in every
+            // per-category bar) after the user clicks "None" or otherwise
+            // filters to an empty set.
+            const pctOf = (n: number) =>
+              filteredRowCount > 0 ? Math.round((n / filteredRowCount) * 1000) / 10 : 0;
             const allCategories = counts.map(({ label, count }) => ({
               label,
               count,
-              pct: Math.round((count / filteredRowCount) * 1000) / 10,
+              pct: pctOf(count),
             }));
             const topCategories = allCategories.slice(0, 3);
             const othersCount = counts.slice(3).reduce((s, e) => s + e.count, 0);
-            const othersPct = Math.round((othersCount / filteredRowCount) * 1000) / 10;
+            const othersPct = pctOf(othersCount);
             const lengths = counts.map(({ label }) => label.length).sort((a, b) => a - b);
             const medianTextLength =
               lengths.length > 0 ? lengths[Math.floor(lengths.length / 2)] : 0;
