@@ -405,11 +405,21 @@ pub fn store_histogram(handle: u32, col: usize, num_bins: usize) -> Result<JsVal
         }
         let min = values.iter().cloned().fold(f64::INFINITY, f64::min);
         let max = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        let bin_width = if (max - min).abs() < f64::EPSILON {
-            1.0
-        } else {
-            (max - min) / num_bins as f64
-        };
+
+        // Same fix as `store_filtered_histogram`: when the whole column
+        // is a single value, collapse to one degenerate bin rather than
+        // stretching `num_bins` bins across `[min, min + num_bins]`. See
+        // nteract/desktop#1847.
+        if (max - min).abs() < f64::EPSILON {
+            let single = vec![HistogramBin {
+                x0: min,
+                x1: min,
+                count: u32::try_from(values.len()).unwrap_or(u32::MAX),
+            }];
+            return serde_wasm_bindgen::to_value(&single).unwrap_or(JsValue::NULL);
+        }
+
+        let bin_width = (max - min) / num_bins as f64;
         let mut bins: Vec<HistogramBin> = (0..num_bins)
             .map(|i| HistogramBin {
                 x0: min + i as f64 * bin_width,

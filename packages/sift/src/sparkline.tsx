@@ -797,6 +797,16 @@ function formatDateRange(minMs: number, maxMs: number): [string, string] {
   const max = new Date(maxMs);
   const spanDays = (maxMs - minMs) / (1000 * 60 * 60 * 24);
 
+  if (maxMs === minMs) {
+    // Zero-span: filtered to a single value (or Date32 column with one
+    // distinct row). Show the full calendar date — falling through to
+    // the <24h branch below strips the date and leaves "12:00 AM",
+    // which tells the user nothing about which day is selected.
+    const fmt = (d: Date) =>
+      d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+    return [fmt(min), fmt(max)];
+  }
+
   if (spanDays < 1) {
     // < 24 hours: show time only
     const fmt = (d: Date) =>
