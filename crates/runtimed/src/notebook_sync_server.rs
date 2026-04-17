@@ -3739,13 +3739,24 @@ async fn auto_launch_kernel(
                     let deps = info.default_deps_snapshot();
                     if !deps.is_empty() {
                         let mut doc = room.doc.write().await;
+                        let mut changed = false;
                         doc.fork_and_merge(|fork| {
                             let mut snap = fork.get_metadata_snapshot().unwrap_or_default();
-                            let pixi = snap.pixi_section_or_default();
-                            pixi.dependencies = deps;
-                            let _ = fork.set_metadata_snapshot(&snap);
+                            let current_deps = snap.runt.pixi.as_ref().map(|p| &p.dependencies);
+                            if current_deps.is_none_or(|d| d != &deps) {
+                                let pixi = snap.pixi_section_or_default();
+                                pixi.dependencies = deps;
+                                let _ = fork.set_metadata_snapshot(&snap);
+                                changed = true;
+                            }
                         });
-                        info!("[notebook-sync] Bootstrapped pixi.toml deps into CRDT");
+                        if changed {
+                            info!("[notebook-sync] Bootstrapped pixi.toml deps into CRDT");
+                        } else {
+                            debug!(
+                                "[notebook-sync] Pixi deps already current in CRDT, skipping write"
+                            );
+                        }
                     }
                 }
             }
@@ -3755,19 +3766,28 @@ async fn auto_launch_kernel(
                     let deps = extract_pyproject_deps(&content);
                     if !deps.is_empty() {
                         let mut doc = room.doc.write().await;
+                        let mut changed = false;
                         doc.fork_and_merge(|fork| {
                             let mut snap = fork.get_metadata_snapshot().unwrap_or_default();
-                            let uv = snap.runt.uv.get_or_insert_with(|| {
-                                notebook_doc::metadata::UvInlineMetadata {
-                                    dependencies: Vec::new(),
-                                    requires_python: None,
-                                    prerelease: None,
-                                }
-                            });
-                            uv.dependencies = deps;
-                            let _ = fork.set_metadata_snapshot(&snap);
+                            let current_deps = snap.runt.uv.as_ref().map(|u| &u.dependencies);
+                            if current_deps.is_none_or(|d| d != &deps) {
+                                let uv = snap.runt.uv.get_or_insert_with(|| {
+                                    notebook_doc::metadata::UvInlineMetadata {
+                                        dependencies: Vec::new(),
+                                        requires_python: None,
+                                        prerelease: None,
+                                    }
+                                });
+                                uv.dependencies = deps;
+                                let _ = fork.set_metadata_snapshot(&snap);
+                                changed = true;
+                            }
                         });
-                        info!("[notebook-sync] Bootstrapped pyproject.toml deps into CRDT");
+                        if changed {
+                            info!("[notebook-sync] Bootstrapped pyproject.toml deps into CRDT");
+                        } else {
+                            debug!("[notebook-sync] Pyproject deps already current in CRDT, skipping write");
+                        }
                     }
                 }
             }
