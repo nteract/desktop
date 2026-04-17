@@ -3632,14 +3632,19 @@ fn open_notebook_from_menu_without_window(
     log::info!("[menu] File > Open triggered with no windows open");
 
     // On macOS, activate the app to ensure the file dialog is visible
-    // when the app has no windows but is still running
+    // when the app has no windows but is still running.
+    //
+    // Use `cocoa::base::YES` rather than a raw `true`: Objective-C's `BOOL`
+    // is `bool` on aarch64 Apple targets but `i8` on x86_64 (see
+    // `objc::runtime::BOOL`), and the cocoa 0.26 shim follows suit. The
+    // `YES` constant is the portable spelling across both archs.
     #[cfg(target_os = "macos")]
     #[allow(deprecated)]
     unsafe {
         use cocoa::appkit::NSApplication;
-        use cocoa::base::nil;
+        use cocoa::base::{nil, YES};
         let ns_app = NSApplication::sharedApplication(nil);
-        ns_app.activateIgnoringOtherApps_(true);
+        ns_app.activateIgnoringOtherApps_(YES);
     }
 
     let app_handle = app.clone();
