@@ -700,9 +700,19 @@ function CategoricalBars({
     pct: c.pct,
     isOthers: false,
   }));
-  if (summary.othersCount > 0) {
+
+  // Whether the column has an "others" bucket at all is a property of
+  // the *unfiltered* data, not the current filter. Without this, any
+  // filter that narrows the set to only the top categories — or an
+  // all-empty "None" selection — unmounts the trigger and leaves the
+  // user with no button to reopen the popover and adjust their filter.
+  // Fall back to the current summary's lists when the unfiltered
+  // snapshot isn't available.
+  const unfilteredUniqueCount = unfilteredAllCategories?.length ?? summary.allCategories.length;
+  const hasOthersTrigger = unfilteredUniqueCount > summary.topCategories.length;
+  if (hasOthersTrigger) {
     items.push({
-      label: `${summary.uniqueCount - summary.topCategories.length} others`,
+      label: `${unfilteredUniqueCount - summary.topCategories.length} others`,
       count: summary.othersCount,
       pct: summary.othersPct,
       isOthers: true,
@@ -710,17 +720,6 @@ function CategoricalBars({
   }
 
   const activeSet = activeFilter?.kind === "set" ? activeFilter.values : null;
-
-  // If the "others" trigger unmounts (e.g. a filter change narrowed the
-  // set to only the top categories), Radix loses its popover anchor and
-  // the content snaps to the top-left corner. Close the popover so it
-  // re-anchors cleanly the next time the user opens it.
-  const hasOthersTrigger = summary.othersCount > 0;
-  useEffect(() => {
-    if (popoverOpen && !hasOthersTrigger) {
-      setPopoverOpen(false);
-    }
-  }, [popoverOpen, hasOthersTrigger]);
 
   return (
     <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
