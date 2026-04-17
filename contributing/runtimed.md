@@ -6,7 +6,7 @@ The runtime daemon manages prewarmed Python environments, notebook document sync
 
 | Task | Command |
 |------|---------|
-| Install daemon from source | `cargo xtask install-daemon` |
+| Install nightly from source (Linux/headless) | `cargo xtask install-nightly` |
 | Run daemon | `cargo run -p runtimed` |
 | Run with debug logs | `RUST_LOG=debug cargo run -p runtimed` |
 | Check status | `cargo run -p runt-cli -- daemon status` |
@@ -92,19 +92,25 @@ The notebook app automatically connects to or starts the daemon on launch. The d
 
 The notebook app calls `ensure_daemon_via_sidecar()` (a private function in `crates/notebook/src/lib.rs`) which takes a `tauri::AppHandle` and a progress callback to start and connect to the daemon.
 
-### Install daemon from source
+### Install the nightly stack from source (Linux / headless)
 
-When you change daemon code and want the installed service to pick it up:
+On Linux cloud boxes and headless dev environments:
 
 ```bash
-cargo xtask install-daemon
+cargo xtask install-nightly
 ```
 
-This builds runtimed in release mode, stops the running service, replaces the binary, and restarts it. You can verify the version with:
+This builds `runtimed`, `runt`, and `runt-proxy` in release mode and installs all three into `~/.local/share/runt-nightly/bin/` with channel-suffixed names (`runtimed-nightly`, `runt-nightly`, `runt-proxy-nightly`). On first run it writes the systemd user unit and starts it; on subsequent runs it upgrades in place. After the initial install the command prints the follow-up `sudo ln -sf` symlink commands for `/usr/local/bin/` and the `sudo loginctl enable-linger` step that keeps the user service alive across logout.
+
+It refuses by default on macOS (the desktop app manages its own daemon via SMAppService — reinstalling from source out of the app bundle is a footgun) and when an nteract app bundle is already installed on any platform. Override respectively with `--on-macos` and `--replace-installed-app` if you really mean it.
+
+Verify the running version with:
 
 ```bash
 cargo run -p runt-cli -- daemon status --json | jq -r '.daemon_info.version'
 ```
+
+For per-worktree daemon development (no system install involved), use `cargo xtask dev-daemon` instead — it runs the daemon out of the worktree with per-worktree socket isolation and no service files.
 
 ### Fast iteration: Daemon + bundled notebook
 

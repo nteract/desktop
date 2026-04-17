@@ -161,7 +161,7 @@ cargo xtask dev
 | Lint (check) | `cargo xtask lint` | Check formatting and linting across Rust, JS/TS, Python |
 | Lint (fix) | `cargo xtask lint --fix` | Auto-fix formatting and linting |
 | Dev daemon | `cargo xtask dev-daemon` | Run per-worktree dev daemon |
-| Install daemon | `cargo xtask install-daemon` | Install daemon into the running service |
+| Install nightly (Linux/headless) | `cargo xtask install-nightly` | Build + install runtimed + runt + runt-proxy as the local nightly. Refuses on macOS and when an app bundle is installed. |
 | Release .app | `cargo xtask build-app` | Testing app bundle locally |
 | Release DMG | `cargo xtask build-dmg` | Distribution (usually CI) |
 | Generate icons | `cargo xtask icons [source.png]` | Generate icon variants from source image |

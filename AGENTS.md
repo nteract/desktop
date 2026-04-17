@@ -72,10 +72,10 @@ which runt                      # Should be repo/bin/runt (not /usr/local/bin/ru
 **Critical:** The `env -i` wrapper on nteract-nightly and nteract is required to prevent direnv's env vars from leaking into these MCP servers. Without it, they will incorrectly connect to the dev daemon instead of the system daemon.
 
 **This system's nightly installation:**
-- Binaries: `~/.local/share/runt-nightly/bin/{runtimed-nightly,runt-nightly}`
-- Symlink: `/usr/local/bin/runt-nightly` → `~/.local/share/runt-nightly/bin/runt-nightly`
+- Binaries: `~/.local/share/runt-nightly/bin/{runtimed-nightly,runt-nightly,runt-proxy-nightly}`
+- Symlinks: `/usr/local/bin/{runtimed-nightly,runt-nightly,runt-proxy-nightly}` → the install dir
 - Daemon socket: `~/.cache/runt-nightly/runtimed.sock`
-- Install command: `cargo xtask build --release && cargo xtask install-daemon --channel nightly`
+- Install command: `cargo xtask install-nightly` (refuses on macOS and when an app bundle is installed — see § `install-nightly` below)
 - Version: Built from source, updated after each PR merge
 
 **Verification steps:** See `.claude/rules/mcp-servers.md` § Verifying Daemon Isolation.
@@ -409,7 +409,7 @@ All build, lint, and dev commands go through `cargo xtask`. **Run `cargo xtask h
 | | `cargo xtask build-dmg` | Build a DMG bundle (CI/release packaging) |
 | Daemon | `cargo xtask dev-daemon` | Per-worktree dev daemon |
 | | `cargo xtask dev-daemon --release` | Run the per-worktree daemon in release mode |
-| | `cargo xtask install-daemon` | Install runtimed as system daemon |
+| | `cargo xtask install-nightly` | Install runtimed + runt + runt-proxy as the local nightly (cloud-box / headless-Linux first-install). Refuses on macOS unless `--on-macos`; refuses when an app bundle is installed unless `--replace-installed-app`. |
 | MCP | `cargo xtask run-mcp` | nteract-dev (daemon + MCP + auto-restart) |
 | | `cargo xtask run-mcp --print-config` | Print MCP client config JSON |
 | | `cargo xtask dev-mcp` | Direct `runt mcp` (no proxy, no auto-restart) |
@@ -433,7 +433,7 @@ The daemon is a separate process from the notebook app. When you change code in 
 
 Use instead:
 - `./target/debug/runt daemon stop` — stops only your worktree's daemon
-- `cargo xtask install-daemon` — gracefully reinstalls the system daemon
+- `cargo xtask install-nightly` — gracefully installs or reinstalls the full nightly stack (Linux/headless only; refuses on macOS by default)
 
 ### Per-Worktree Daemon Isolation
 

@@ -10,7 +10,7 @@ description: Develop, debug, and manage the runtimed daemon. Use when working on
 | Task | Command |
 |------|---------|
 | Start dev daemon | `cargo xtask dev-daemon` |
-| Install system daemon | `cargo xtask install-daemon` |
+| Install nightly (Linux/headless only) | `cargo xtask install-nightly` |
 | Check status | `./target/debug/runt daemon status` |
 | Check status (JSON) | `./target/debug/runt daemon status --json` |
 | Tail logs | `./target/debug/runt daemon logs -f` |
@@ -41,15 +41,17 @@ The daemon (`runtimed`) is a singleton process that communicates with notebook w
 
 The notebook app auto-connects to or starts the daemon. If unavailable, falls back to in-process prewarming.
 
-### Install from source
+### Install from source (Linux / headless)
 
-When you change daemon code and want the system service to pick it up:
+When you change daemon code and want the system service to pick it up on a cloud box or headless Linux machine:
 
 ```bash
-cargo xtask install-daemon
+cargo xtask install-nightly
 ```
 
-Builds release, stops old service, replaces binary, restarts. Verify: `cat ~/.cache/runt/daemon.json`.
+Builds runtimed + runt + runt-proxy (release), installs them to `~/.local/share/runt-nightly/bin/` with channel-suffixed names, writes + starts the systemd user unit on first install, upgrades in place on subsequent runs. On macOS it refuses by default — use the nteract Nightly app (it auto-updates). Pass `--on-macos` to override, `--replace-installed-app` if an app bundle is already present.
+
+Verify: `runt-nightly daemon status` or `cat ~/.cache/runt-nightly/daemon.json`.
 
 ### Fast iteration
 
@@ -272,7 +274,7 @@ Check that uv/conda are installed and working.
 **Never** use `pkill runtimed`, `killall runtimed`, or similar. These kill ALL runtimed processes system-wide, disrupting other agents and worktrees. Use:
 
 - `./target/debug/runt daemon stop` — stops only your worktree's daemon
-- `cargo xtask install-daemon` — gracefully reinstalls the system daemon
+- `cargo xtask install-nightly` — gracefully installs/reinstalls the full nightly stack (Linux/headless only; refuses on macOS by default)
 
 ## Shipped App Behavior
 

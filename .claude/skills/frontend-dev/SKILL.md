@@ -193,8 +193,9 @@ The repo includes `.zed/tasks.json` with pre-configured tasks (use cmd-shift-t):
 
 **Daemon code changes not taking effect:**
 1. In dev mode: restart `cargo xtask dev-daemon`
-2. In production mode: run `cargo xtask install-daemon`
-3. Check which daemon: `./target/debug/runt daemon status`
+2. In production mode on macOS: reinstall the nteract Nightly .app (it auto-updates its daemon)
+3. In production mode on Linux / headless: run `cargo xtask install-nightly`
+4. Check which daemon: `./target/debug/runt daemon status`
 
 **App says "Dev daemon not running":**
 - You're in dev mode but haven't started the dev daemon

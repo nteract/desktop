@@ -10874,6 +10874,7 @@ version = "0.1.0"
 dependencies = [
  "dirs",
  "runt-workspace",
+ "runtimed-client",
  "serde_json",
 ]
 

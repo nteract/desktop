@@ -234,12 +234,15 @@ When you need to test the full production flow (daemon auto-install, upgrades, e
 unset RUNTIMED_DEV
 unset RUNTIMED_WORKSPACE_PATH
 
-# Rebuild and reinstall system daemon
-cargo xtask install-daemon
+# On macOS: install the nteract Nightly .app and let SMAppService manage the daemon.
+# On Linux / headless: rebuild and reinstall the full nightly stack from source:
+cargo xtask install-nightly
 
-# Run the app (it will connect to system daemon)
+# Run the app (it will connect to the system daemon)
 cargo xtask notebook
 ```
+
+Note: `cargo xtask install-nightly` refuses on macOS by default (the app bundle manages the daemon itself). Pass `--on-macos` if you really need to install out-of-bundle binaries, and `--replace-installed-app` if an app bundle is already present.
 
 ### Daemon logs
 
@@ -258,8 +261,9 @@ runt daemon logs -f | grep -i "kernel\|auto-detect"
 
 If your daemon code changes aren't taking effect:
 1. **In dev mode:** Did you restart `cargo xtask dev-daemon`?
-2. **In production mode:** Did you run `cargo xtask install-daemon`?
-3. Check which daemon is running: `runt daemon status`
+2. **In production mode (macOS):** Re-install the nteract Nightly .app (it auto-updates the bundled daemon).
+3. **In production mode (Linux / headless):** Did you run `cargo xtask install-nightly`?
+4. Check which daemon is running: `runt daemon status`
 
 If the app says "Dev daemon not running":
 - You're in dev mode but haven't started the dev daemon

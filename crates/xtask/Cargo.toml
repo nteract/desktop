@@ -12,4 +12,5 @@ workspace = true
 [dependencies]
 dirs = "6"
 runt-workspace = { path = "../runt-workspace" }
+runtimed-client = { path = "../runtimed-client" }
 serde_json.workspace = true

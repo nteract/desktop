@@ -96,6 +96,13 @@ pub fn cli_command_name_for(channel: BuildChannel) -> &'static str {
     }
 }
 
+pub fn proxy_binary_basename_for(channel: BuildChannel) -> &'static str {
+    match channel {
+        BuildChannel::Stable => "runt-proxy",
+        BuildChannel::Nightly => "runt-proxy-nightly",
+    }
+}
+
 fn cli_notebook_alias_name_for(channel: BuildChannel) -> &'static str {
     match channel {
         BuildChannel::Stable => "nb",
@@ -141,6 +148,11 @@ pub fn daemon_launchd_label() -> &'static str {
 /// Channel-specific CLI command name.
 pub fn cli_command_name() -> &'static str {
     cli_command_name_for(build_channel())
+}
+
+/// Channel-specific runt-proxy binary base name (without extension).
+pub fn proxy_binary_basename() -> &'static str {
+    proxy_binary_basename_for(build_channel())
 }
 
 /// Channel-specific shorthand notebook command name.

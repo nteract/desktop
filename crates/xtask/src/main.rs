@@ -49,7 +49,10 @@ fn main() {
         "build-e2e" => cmd_build_e2e(),
         "build-dmg" => cmd_build_dmg(),
         "build-app" => cmd_build_app(),
-        "install-daemon" => cmd_install_daemon(),
+        "install-nightly" => {
+            let sub_args: Vec<String> = args[1..].to_vec();
+            cmd_install_nightly(&sub_args);
+        }
         "dev-daemon" => {
             let release = args.iter().any(|a| a == "--release");
             cmd_dev_daemon(release);
@@ -123,7 +126,10 @@ Release:
   build-dmg                  Build DMG with icons (for CI)
 
 Daemon:
-  install-daemon             Build and install runtimed into the running service
+  install-nightly [FLAGS]    Build and install runtimed + runt + runt-proxy from this source
+                             tree as the local nightly install. Refuses on macOS (use the app)
+                             and when an nteract app bundle is present, unless overridden with
+                             --on-macos or --replace-installed-app.
   dev-daemon [--release]     Build and run runtimed in per-worktree dev mode
 
 MCP:
@@ -1408,17 +1414,71 @@ fn generate_launch_agent_plist() {
     println!("Generated launch agent plist: {}", output_path.display());
 }
 
-/// Build runtimed and install it into the running launchd/systemd service.
+/// Build and install runtimed + runt + runt-proxy from this source tree
+/// as the local nightly install.
 ///
-/// This is the dev workflow for testing daemon changes:
-/// 1. Build runtimed in release mode
-/// 2. Stop the running service
-/// 3. Copy the new binary over the installed one
-/// 4. Restart the service
+/// This is the cloud-box / headless-Linux first-install flow. On macOS, the
+/// install pattern is the `.app` bundle — reinstalling from source out of
+/// bundle is a footgun, so we refuse by default (overridable with
+/// `--on-macos`). If an nteract app bundle is already installed on any
+/// platform we also refuse unless `--replace-installed-app` is passed, since
+/// the app auto-manages its own daemon.
+///
+/// What it does (once the guards pass):
+///
+/// 1. Build runtimed, runt-cli, runt-proxy (release)
+/// 2. Install the daemon via `ServiceManager::install()` (first-time) or
+///    `upgrade()` (when the service is already configured). This writes the
+///    systemd user unit or launchd plist, atomic-copies the binary, and
+///    starts the service.
+/// 3. Copy `runt` and `runt-proxy` into the same install dir, named after
+///    the channel (e.g. `runt-nightly`, `runt-proxy-nightly`).
+/// 4. Print follow-up steps (symlink into `/usr/local/bin`, `loginctl
+///    enable-linger`) — both require sudo, so we don't run them.
 #[allow(clippy::expect_used)] // xtask is a dev tool; panics with context are fine here
-fn cmd_install_daemon() {
-    // Guard: warn if running from a feature branch or worktree to prevent
-    // accidentally replacing the system daemon with a dev build.
+fn cmd_install_nightly(args: &[String]) {
+    let on_macos_override = args.iter().any(|a| a == "--on-macos");
+    let replace_installed_app = args.iter().any(|a| a == "--replace-installed-app");
+
+    // ── Guard 1: macOS platform gate ─────────────────────────────────────
+    if cfg!(target_os = "macos") && !on_macos_override {
+        eprintln!("Refusing to run on macOS by default.");
+        eprintln!();
+        eprintln!("macOS's install pattern is the nteract/nteract Nightly .app bundle,");
+        eprintln!("which manages its own daemon via SMAppService. Installing binaries");
+        eprintln!("out-of-bundle from source is a footgun and will diverge from the");
+        eprintln!("auto-update flow.");
+        eprintln!();
+        eprintln!("For local daemon development use:  cargo xtask dev-daemon");
+        eprintln!("To override anyway pass:           --on-macos");
+        exit(1);
+    }
+
+    // ── Guard 2: existing app bundle detection (all platforms) ───────────
+    #[cfg(target_os = "macos")]
+    if !replace_installed_app {
+        if let Some((bundle_path, app_name)) = runt_workspace::find_any_installed_nteract_bundle() {
+            eprintln!(
+                "Refusing to install: {app_name} is already installed at {}.",
+                bundle_path.display()
+            );
+            eprintln!();
+            eprintln!("That app auto-updates itself and manages its own daemon. Installing");
+            eprintln!("nightly binaries from this source tree will diverge from the app's");
+            eprintln!("copies and can cause confusing 'which one is running' situations.");
+            eprintln!();
+            eprintln!("To override anyway pass: --replace-installed-app");
+            exit(1);
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // App-bundle detection is macOS-specific; the flag is accepted silently
+        // on other platforms to keep CLI surface identical.
+        let _ = replace_installed_app;
+    }
+
+    // ── Branch warning ───────────────────────────────────────────────────
     if let Ok(branch) = std::process::Command::new("git")
         .args(["rev-parse", "--abbrev-ref", "HEAD"])
         .output()
@@ -1426,127 +1486,192 @@ fn cmd_install_daemon() {
         let branch = String::from_utf8_lossy(&branch.stdout).trim().to_string();
         if branch != "main" && !branch.is_empty() {
             eprintln!("⚠️  You are on branch '{branch}', not 'main'.");
-            eprintln!("   This will install your local build as the system daemon,");
-            eprintln!("   replacing the current nightly/release version.");
+            eprintln!("   This will install your local build as the nightly daemon,");
+            eprintln!("   replacing the current nightly install on this machine.");
             eprintln!();
-            eprintln!("   For development, use: cargo xtask dev-daemon");
+            eprintln!("   For per-worktree dev, use: cargo xtask dev-daemon");
             eprintln!("   Press Ctrl+C within 5 seconds to abort...");
             eprintln!();
             std::thread::sleep(Duration::from_secs(5));
         }
     }
 
-    println!("Building runtimed (release)...");
-    run_cmd("cargo", &["build", "--release", "-p", "runtimed"]);
+    // ── Build ────────────────────────────────────────────────────────────
+    println!("Building runtimed, runt-cli, runt-proxy (release)...");
+    run_cmd(
+        "cargo",
+        &[
+            "build",
+            "--release",
+            "-p",
+            "runtimed",
+            "-p",
+            "runt-cli",
+            "-p",
+            "runt-proxy",
+        ],
+    );
 
-    let source = if cfg!(windows) {
-        "target/release/runtimed.exe"
+    let exe_suffix = if cfg!(windows) { ".exe" } else { "" };
+    let release_dir = Path::new("target/release");
+    let runtimed_source = release_dir.join(format!("runtimed{exe_suffix}"));
+    let runt_source = release_dir.join(format!("runt{exe_suffix}"));
+    let proxy_source = release_dir.join(format!("runt-proxy{exe_suffix}"));
+
+    for (label, path) in [
+        ("runtimed", &runtimed_source),
+        ("runt", &runt_source),
+        ("runt-proxy", &proxy_source),
+    ] {
+        if !path.exists() {
+            eprintln!(
+                "Build succeeded but {label} binary not found at {}",
+                path.display()
+            );
+            exit(1);
+        }
+    }
+
+    // ── Install the daemon via ServiceManager ────────────────────────────
+    let mut manager = runtimed_client::service::ServiceManager::default();
+    let was_installed = manager.is_installed();
+
+    if was_installed {
+        println!("Upgrading daemon service...");
+        if let Err(e) = manager.upgrade(&runtimed_source) {
+            eprintln!("Failed to upgrade daemon: {e}");
+            exit(1);
+        }
     } else {
-        "target/release/runtimed"
-    };
-
-    if !Path::new(source).exists() {
-        eprintln!("Build succeeded but binary not found at {source}");
-        exit(1);
+        println!("Installing daemon service (first time)...");
+        if let Err(e) = manager.install(&runtimed_source) {
+            eprintln!("Failed to install daemon: {e}");
+            exit(1);
+        }
+        if let Err(e) = manager.start() {
+            eprintln!("Warning: service installed but failed to start: {e}");
+            eprintln!("Start manually with: cargo xtask install-nightly (re-run) or systemctl --user start <unit>");
+        }
     }
 
-    // Use runtimed's own service manager to perform the upgrade.
-    // The `runtimed install` CLI already handles stop → copy → chmod → start.
-    // We call `runtimed upgrade --from <source>` if available, otherwise
-    // fall back to the manual stop/copy/start dance.
-    println!("Installing daemon...");
-
-    // Stop the running daemon gracefully
-    #[cfg(target_os = "macos")]
-    {
-        let _ = runt_workspace::launchd_stop();
-        // Brief pause for process cleanup
-        std::thread::sleep(std::time::Duration::from_secs(1));
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        let service = format!("{}.service", runt_workspace::daemon_service_basename());
-        let _ = Command::new("systemctl")
-            .args(["--user", "stop", &service])
-            .status();
-        std::thread::sleep(std::time::Duration::from_secs(1));
-    }
-
-    // Determine install path (matches runtimed::service::default_binary_path)
+    // ── Install runt + runt-proxy into the same bin dir ──────────────────
     let install_dir = dirs::data_local_dir()
         .expect("Could not determine data directory")
         .join(runt_workspace::cache_namespace())
         .join("bin");
-
-    let binary_name = runt_workspace::daemon_binary_basename();
-    let install_path = if cfg!(windows) {
-        install_dir.join(format!("{binary_name}.exe"))
-    } else {
-        install_dir.join(binary_name)
-    };
-
-    if !install_path.exists() {
+    fs::create_dir_all(&install_dir).unwrap_or_else(|e| {
         eprintln!(
-            "No existing daemon installation found at {}",
-            install_path.display()
+            "Failed to create install dir {}: {e}",
+            install_dir.display()
         );
-        eprintln!("Run the app once first to install the daemon service.");
-        exit(1);
-    }
-
-    // Copy new binary
-    fs::copy(source, &install_path).unwrap_or_else(|e| {
-        eprintln!("Failed to copy binary: {e}");
         exit(1);
     });
 
-    // Make executable on Unix
+    let runt_dest = install_dir.join(format!(
+        "{}{exe_suffix}",
+        runt_workspace::cli_command_name()
+    ));
+    let proxy_dest = install_dir.join(format!(
+        "{}{exe_suffix}",
+        runt_workspace::proxy_binary_basename()
+    ));
+
+    for (src, dest, label) in [
+        (&runt_source, &runt_dest, "runt"),
+        (&proxy_source, &proxy_dest, "runt-proxy"),
+    ] {
+        atomic_install(src, dest).unwrap_or_else(|e| {
+            eprintln!("Failed to install {label} to {}: {e}", dest.display());
+            exit(1);
+        });
+        println!("Installed {}", dest.display());
+    }
+
+    // ── Post-install guidance ────────────────────────────────────────────
+    println!();
+    println!("✓ nightly install complete");
+    println!();
+    print_post_install_guidance(&install_dir, was_installed);
+}
+
+/// Atomic binary install: write to a temp sibling, set perms, rename into place.
+///
+/// Mirrors the approach in `runtimed::service::ServiceManager::atomic_copy_binary`
+/// so upgrading a running `runt` or `runt-proxy` (e.g. the proxy being driven
+/// by a Claude Code session) doesn't corrupt a memory-mapped inode.
+#[allow(dead_code)] // used only on unix-like targets; the cfg gating keeps it quiet elsewhere
+fn atomic_install(source: &Path, dest: &Path) -> std::io::Result<()> {
+    let tmp = dest.with_extension("new");
+    fs::copy(source, &tmp)?;
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&install_path, fs::Permissions::from_mode(0o755)).unwrap_or_else(|e| {
-            eprintln!("Failed to set permissions: {e}");
-            exit(1);
-        });
+        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755))?;
     }
 
-    println!("Installed to {}", install_path.display());
+    fs::rename(&tmp, dest)?;
+    Ok(())
+}
 
-    // Restart the service
-    #[cfg(target_os = "macos")]
-    {
-        if let Err(e) = runt_workspace::launchd_start() {
-            eprintln!("Warning: failed to start launchd service: {e}");
-            eprintln!("Start manually with: {}", install_path.display());
+/// Print follow-up steps the user needs to take themselves (they require sudo).
+fn print_post_install_guidance(install_dir: &Path, was_upgrade: bool) {
+    let runt_name = runt_workspace::cli_command_name();
+    let proxy_name = runt_workspace::proxy_binary_basename();
+    let daemon_name = runt_workspace::daemon_binary_basename();
+
+    if !was_upgrade {
+        println!("First-time install — a few follow-up steps are needed:");
+        println!();
+
+        #[cfg(target_os = "linux")]
+        {
+            println!("  1. Put binaries on PATH (requires sudo):");
+            println!();
+            println!("     for bin in {daemon_name} {runt_name} {proxy_name}; do");
+            println!(
+                "       sudo ln -sf \"{}/$bin\" \"/usr/local/bin/$bin\"",
+                install_dir.display()
+            );
+            println!("     done");
+            println!();
+            println!("  2. Make the user service survive shell logout (requires sudo):");
+            println!();
+            println!("     sudo loginctl enable-linger \"$USER\"");
+            println!();
+            println!("  3. Verify the daemon is running:");
+            println!();
+            println!("     {runt_name} daemon status");
         }
-    }
 
-    #[cfg(target_os = "linux")]
-    {
-        let service = format!("{}.service", runt_workspace::daemon_service_basename());
-        run_cmd("systemctl", &["--user", "start", &service]);
-    }
-
-    // Wait briefly and verify
-    std::thread::sleep(std::time::Duration::from_secs(2));
-    let daemon_json = dirs::cache_dir()
-        .unwrap_or_else(|| Path::new("/tmp").to_path_buf())
-        .join(runt_workspace::cache_namespace())
-        .join("daemon.json");
-
-    if daemon_json.exists() {
-        if let Ok(contents) = fs::read_to_string(&daemon_json) {
-            if let Ok(info) = serde_json::from_str::<serde_json::Value>(&contents) {
-                if let Some(version) = info.get("version").and_then(|v| v.as_str()) {
-                    println!("Daemon running: version {version}");
-                    return;
-                }
-            }
+        #[cfg(target_os = "macos")]
+        {
+            println!("  1. Put binaries on PATH (requires sudo):");
+            println!();
+            println!("     for bin in {daemon_name} {runt_name} {proxy_name}; do");
+            println!(
+                "       sudo ln -sf \"{}/$bin\" \"/usr/local/bin/$bin\"",
+                install_dir.display()
+            );
+            println!("     done");
+            println!();
+            println!("  2. Verify the daemon is running:");
+            println!();
+            println!("     {runt_name} daemon status");
         }
-    }
 
-    println!("Daemon restarted (could not verify version from daemon.json)");
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            let _ = (install_dir, daemon_name, runt_name, proxy_name);
+            println!("  Put binaries on PATH and verify with `{runt_name} daemon status`.");
+        }
+    } else {
+        // Upgrade path — symlinks and linger are already in place from the
+        // prior first-install. Just point at verification.
+        println!("Upgrade complete. Verify:");
+        println!();
+        println!("  {runt_name} daemon status");
+    }
 }
 
 /// Build and run runtimed in per-worktree development mode.
