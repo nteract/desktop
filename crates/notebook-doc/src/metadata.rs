@@ -49,6 +49,12 @@ pub struct RuntMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deno: Option<DenoMetadata>,
 
+    /// Explicit runtime type declaration.
+    /// When set, takes priority over auto-detection from kernelspec/language_info.
+    /// Values: "python", "deno", "test". Future: "jupyter:{name}".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<String>,
+
     /// HMAC-SHA256 signature of the dependency metadata for trust verification.
     /// Format: "hmac-sha256:<hex-digest>"
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -230,6 +236,7 @@ impl NotebookMetadataSnapshot {
                     conda,
                     pixi: None,
                     deno: None,
+                    runtime: None,
                     trust_signature: None,
                     trust_timestamp: None,
                     extra: std::collections::BTreeMap::new(),
@@ -310,17 +317,25 @@ impl NotebookMetadataSnapshot {
 
     // ── Runtime detection ────────────────────────────────────────────
 
-    /// Detect the notebook runtime from kernelspec + language_info metadata.
+    /// Detect the notebook runtime from metadata.
     ///
-    /// Returns `"python"`, `"deno"`, or `None` for unknown runtimes.
+    /// Returns a runtime identifier (`"python"`, `"deno"`, `"test"`, etc.)
+    /// or `None` for unknown runtimes.
     ///
     /// Priority chain:
-    /// 1. `kernelspec.name` (substring match for "deno" or "python")
-    /// 2. `kernelspec.language` (exact match: "typescript"/"javascript" → deno)
-    /// 3. `language_info.name` (exact match, including "deno")
-    /// 4. `runt.deno` presence (legacy notebooks without kernelspec)
+    /// 1. `runt.runtime` (explicit declaration — highest priority)
+    /// 2. `kernelspec.name` (substring match for "deno" or "python")
+    /// 3. `kernelspec.language` (exact match: "typescript"/"javascript" → deno)
+    /// 4. `language_info.name` (exact match, including "deno")
+    /// 5. `runt.deno` presence (legacy notebooks without kernelspec)
+    /// 6. `runt.uv` / `runt.conda` presence (implicit python)
     pub fn detect_runtime(&self) -> Option<String> {
-        // Check kernelspec.name first (most reliable)
+        // Explicit runt.runtime declaration takes priority over all heuristics
+        if let Some(ref rt) = self.runt.runtime {
+            return Some(rt.clone());
+        }
+
+        // Check kernelspec.name (most reliable heuristic)
         if let Some(ref ks) = self.kernelspec {
             let name = ks.name.to_lowercase();
             if name.contains("deno") {
@@ -567,6 +582,7 @@ impl RuntMetadata {
             conda: None,
             pixi: None,
             deno: None,
+            runtime: None,
             trust_signature: None,
             trust_timestamp: None,
             extra: std::collections::BTreeMap::new(),
@@ -586,6 +602,7 @@ impl RuntMetadata {
             }),
             pixi: None,
             deno: None,
+            runtime: None,
             trust_signature: None,
             trust_timestamp: None,
             extra: std::collections::BTreeMap::new(),
@@ -606,6 +623,7 @@ impl RuntMetadata {
                 python: None,
             }),
             deno: None,
+            runtime: None,
             trust_signature: None,
             trust_timestamp: None,
             extra: std::collections::BTreeMap::new(),
@@ -626,6 +644,7 @@ impl RuntMetadata {
                 config: None,
                 flexible_npm_imports: None,
             }),
+            runtime: None,
             trust_signature: None,
             trust_timestamp: None,
             extra: std::collections::BTreeMap::new(),
@@ -644,6 +663,7 @@ impl Default for RuntMetadata {
             conda: None,
             pixi: None,
             deno: None,
+            runtime: None,
             trust_signature: None,
             trust_timestamp: None,
             extra: std::collections::BTreeMap::new(),
@@ -766,6 +786,7 @@ mod tests {
                 conda: None,
                 pixi: None,
                 deno: None,
+                runtime: None,
                 trust_signature: None,
                 trust_timestamp: None,
                 extra: std::collections::BTreeMap::new(),
@@ -874,6 +895,7 @@ mod tests {
             conda: None,
             pixi: None,
             deno: None,
+            runtime: None,
             trust_signature: None,
             trust_timestamp: None,
             extra: std::collections::BTreeMap::new(),
@@ -884,6 +906,7 @@ mod tests {
         assert!(!json.as_object().unwrap().contains_key("uv"));
         assert!(!json.as_object().unwrap().contains_key("conda"));
         assert!(!json.as_object().unwrap().contains_key("deno"));
+        assert!(!json.as_object().unwrap().contains_key("runtime"));
         assert!(!json.as_object().unwrap().contains_key("trust_signature"));
         assert!(!json.as_object().unwrap().contains_key("trust_timestamp"));
         // schema_version should always be present
@@ -1183,6 +1206,35 @@ mod tests {
     fn test_detect_runtime_unknown_kernelspec() {
         let s = snapshot_with_kernelspec("julia-1.10", Some("julia"));
         assert_eq!(s.detect_runtime(), None);
+    }
+
+    #[test]
+    fn test_detect_runtime_runt_runtime_field() {
+        let s = NotebookMetadataSnapshot {
+            runt: RuntMetadata {
+                runtime: Some("test".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(s.detect_runtime(), Some("test".to_string()));
+    }
+
+    #[test]
+    fn test_detect_runtime_runt_runtime_overrides_kernelspec() {
+        let s = NotebookMetadataSnapshot {
+            kernelspec: Some(KernelspecSnapshot {
+                name: "deno".to_string(),
+                display_name: "Deno".to_string(),
+                language: Some("typescript".to_string()),
+            }),
+            runt: RuntMetadata {
+                runtime: Some("python".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(s.detect_runtime(), Some("python".to_string()));
     }
 
     // ── UV dependency CRUD ───────────────────────────────────────

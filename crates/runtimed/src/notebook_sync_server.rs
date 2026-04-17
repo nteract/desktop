@@ -4596,6 +4596,154 @@ async fn handle_notebook_request(
                 resolved_kernel_type, kernel_type
             );
 
+            // Test runtime: skip all env resolution, pool allocation, and inline
+            // env preparation. Jump straight to agent spawn with empty config.
+            if resolved_kernel_type == "test" {
+                info!("[notebook-sync] LaunchKernel: test runtime — skipping env resolution");
+                let resolved_env_source = "test:builtin".to_string();
+                let launched_config = notebook_protocol::protocol::LaunchedEnvConfig::default();
+
+                // Transition to "launching" phase
+                {
+                    let mut sd = room.state_doc.write().await;
+                    if sd.set_starting_phase("launching") {
+                        let _ = room.state_changed_tx.send(());
+                    }
+                }
+
+                // Spawn runtime agent subprocess
+                {
+                    info!("[notebook-sync] Spawning runtime agent subprocess");
+                    let notebook_id = room.id.to_string();
+                    let runtime_agent_id =
+                        format!("runtime-agent:{}", &uuid::Uuid::new_v4().to_string()[..8]);
+                    let socket_path = daemon.socket_path().clone();
+
+                    {
+                        let mut id = room.current_runtime_agent_id.write().await;
+                        *id = Some(runtime_agent_id.clone());
+                    }
+                    room.runtime_agent_generation
+                        .fetch_add(1, Ordering::Release);
+                    let runtime_agent_connect_rx = {
+                        let (tx, rx) = oneshot::channel();
+                        let mut guard = room.pending_runtime_agent_connect_tx.lock().await;
+                        *guard = Some(tx);
+                        rx
+                    };
+
+                    match crate::runtime_agent_handle::RuntimeAgentHandle::spawn(
+                        notebook_id,
+                        runtime_agent_id.clone(),
+                        room.blob_store.root().to_path_buf(),
+                        socket_path,
+                    )
+                    .await
+                    {
+                        Ok(ra) => {
+                            {
+                                let mut ra_guard = room.runtime_agent_handle.lock().await;
+                                *ra_guard = Some(ra);
+                            }
+
+                            {
+                                let mut sd = room.state_doc.write().await;
+                                if sd.set_starting_phase("connecting") {
+                                    let _ = room.state_changed_tx.send(());
+                                }
+                            }
+
+                            match tokio::time::timeout(
+                                std::time::Duration::from_secs(30),
+                                runtime_agent_connect_rx,
+                            )
+                            .await
+                            {
+                                Ok(Ok(())) => {}
+                                Ok(Err(_)) => {
+                                    reset_starting_state(room, Some(&runtime_agent_id)).await;
+                                    return NotebookResponse::Error {
+                                        error: "Runtime agent connect cancelled".to_string(),
+                                    };
+                                }
+                                Err(_) => {
+                                    reset_starting_state(room, Some(&runtime_agent_id)).await;
+                                    return NotebookResponse::Error {
+                                        error: "Agent failed to connect within 30s".to_string(),
+                                    };
+                                }
+                            }
+
+                            let launch_request =
+                                notebook_protocol::protocol::RuntimeAgentRequest::LaunchKernel {
+                                    kernel_type: resolved_kernel_type.clone(),
+                                    env_source: resolved_env_source.clone(),
+                                    notebook_path: notebook_path
+                                        .as_deref()
+                                        .map(|p| p.to_str().unwrap_or("").to_string()),
+                                    launched_config: launched_config.clone(),
+                                    env_vars: Default::default(),
+                                };
+
+                            return match send_runtime_agent_request(room, launch_request).await {
+                                Ok(
+                                    notebook_protocol::protocol::RuntimeAgentResponse::KernelLaunched {
+                                        env_source: es,
+                                    },
+                                ) => {
+                                    publish_kernel_state_presence(
+                                        room,
+                                        presence::KernelStatus::Idle,
+                                        &es,
+                                    )
+                                    .await;
+
+                                    {
+                                        let mut sd = room.state_doc.write().await;
+                                        sd.set_kernel_status("idle");
+                                        sd.set_kernel_info(
+                                            &resolved_kernel_type,
+                                            &resolved_kernel_type,
+                                            &es,
+                                        );
+                                        let _ = room.state_changed_tx.send(());
+                                    }
+
+                                    NotebookResponse::KernelLaunched {
+                                        kernel_type: resolved_kernel_type.clone(),
+                                        env_source: es,
+                                        launched_config,
+                                    }
+                                }
+                                Ok(notebook_protocol::protocol::RuntimeAgentResponse::Error {
+                                    error,
+                                }) => {
+                                    reset_starting_state(room, Some(&runtime_agent_id)).await;
+                                    NotebookResponse::Error { error }
+                                }
+                                Ok(other) => {
+                                    reset_starting_state(room, Some(&runtime_agent_id)).await;
+                                    NotebookResponse::Error {
+                                        error: format!("Unexpected agent response: {:?}", other),
+                                    }
+                                }
+                                Err(e) => {
+                                    reset_starting_state(room, Some(&runtime_agent_id)).await;
+                                    NotebookResponse::Error {
+                                        error: format!("Agent request failed: {}", e),
+                                    }
+                                }
+                            };
+                        }
+                        Err(e) => {
+                            reset_starting_state(room, Some(&runtime_agent_id)).await;
+                            return NotebookResponse::Error {
+                                error: format!("Failed to spawn runtime agent: {}", e),
+                            };
+                        }
+                    }
+                }
+            }
             // Deno kernels don't use Python environments - always use "deno" regardless
             // of what env_source was requested. Log a warning if caller passed a Python env.
             let resolved_env_source = if resolved_kernel_type == "deno" {
@@ -8724,15 +8872,8 @@ fn build_new_notebook_metadata(
                 version: None,
             },
             RuntMetadata {
-                schema_version: "1".to_string(),
                 env_id: Some(env_id.to_string()),
-                uv: None,
-                conda: None,
-                pixi: None,
-                deno: None,
-                trust_signature: None,
-                trust_timestamp: None,
-                extra: std::collections::BTreeMap::new(),
+                ..RuntMetadata::default()
             },
         ),
         _ => {
@@ -8782,15 +8923,11 @@ fn build_new_notebook_metadata(
                     version: None,
                 },
                 RuntMetadata {
-                    schema_version: "1".to_string(),
                     env_id: Some(env_id.to_string()),
                     uv,
                     conda,
                     pixi,
-                    deno: None,
-                    trust_signature: None,
-                    trust_timestamp: None,
-                    extra: std::collections::BTreeMap::new(),
+                    ..RuntMetadata::default()
                 },
             )
         }
@@ -9919,66 +10056,36 @@ mod tests {
     /// Helper to build a snapshot with UV inline deps.
     fn snapshot_with_uv(deps: Vec<String>) -> NotebookMetadataSnapshot {
         NotebookMetadataSnapshot {
-            kernelspec: None,
-            language_info: None,
             runt: crate::notebook_metadata::RuntMetadata {
-                schema_version: "1".to_string(),
-                env_id: None,
                 uv: Some(crate::notebook_metadata::UvInlineMetadata {
                     dependencies: deps,
                     requires_python: None,
                     prerelease: None,
                 }),
-                conda: None,
-                pixi: None,
-                deno: None,
-                trust_signature: None,
-                trust_timestamp: None,
-                extra: std::collections::BTreeMap::new(),
+                ..Default::default()
             },
+            ..Default::default()
         }
     }
 
     /// Helper to build a snapshot with conda inline deps.
     fn snapshot_with_conda(deps: Vec<String>) -> NotebookMetadataSnapshot {
         NotebookMetadataSnapshot {
-            kernelspec: None,
-            language_info: None,
             runt: crate::notebook_metadata::RuntMetadata {
-                schema_version: "1".to_string(),
-                env_id: None,
-                uv: None,
                 conda: Some(crate::notebook_metadata::CondaInlineMetadata {
                     dependencies: deps,
                     channels: vec!["conda-forge".to_string()],
                     python: None,
                 }),
-                pixi: None,
-                deno: None,
-                trust_signature: None,
-                trust_timestamp: None,
-                extra: std::collections::BTreeMap::new(),
+                ..Default::default()
             },
+            ..Default::default()
         }
     }
 
     /// Helper to build an empty snapshot (no deps).
     fn snapshot_empty() -> NotebookMetadataSnapshot {
-        NotebookMetadataSnapshot {
-            kernelspec: None,
-            language_info: None,
-            runt: crate::notebook_metadata::RuntMetadata {
-                schema_version: "1".to_string(),
-                env_id: None,
-                uv: None,
-                conda: None,
-                pixi: None,
-                deno: None,
-                trust_signature: None,
-                trust_timestamp: None,
-                extra: std::collections::BTreeMap::new(),
-            },
-        }
+        NotebookMetadataSnapshot::default()
     }
 
     #[test]
@@ -10013,11 +10120,7 @@ mod tests {
     fn test_check_inline_deps_uv_priority() {
         // Snapshot with both UV and conda deps - UV takes priority
         let snapshot = NotebookMetadataSnapshot {
-            kernelspec: None,
-            language_info: None,
             runt: crate::notebook_metadata::RuntMetadata {
-                schema_version: "1".to_string(),
-                env_id: None,
                 uv: Some(crate::notebook_metadata::UvInlineMetadata {
                     dependencies: vec!["numpy".to_string()],
                     requires_python: None,
@@ -10028,12 +10131,9 @@ mod tests {
                     channels: vec!["conda-forge".to_string()],
                     python: None,
                 }),
-                pixi: None,
-                deno: None,
-                trust_signature: None,
-                trust_timestamp: None,
-                extra: std::collections::BTreeMap::new(),
+                ..Default::default()
             },
+            ..Default::default()
         };
         assert_eq!(check_inline_deps(&snapshot), Some("uv:inline".to_string()));
     }
@@ -10042,28 +10142,21 @@ mod tests {
     fn test_check_inline_deps_deno() {
         // Snapshot with deno config - deno takes priority over everything
         let snapshot = NotebookMetadataSnapshot {
-            kernelspec: None,
-            language_info: None,
             runt: crate::notebook_metadata::RuntMetadata {
-                schema_version: "1".to_string(),
-                env_id: None,
                 uv: Some(crate::notebook_metadata::UvInlineMetadata {
                     dependencies: vec!["numpy".to_string()],
                     requires_python: None,
                     prerelease: None,
                 }),
-                conda: None,
-                pixi: None,
                 deno: Some(crate::notebook_metadata::DenoMetadata {
                     permissions: vec![],
                     import_map: None,
                     config: None,
                     flexible_npm_imports: None,
                 }),
-                trust_signature: None,
-                trust_timestamp: None,
-                extra: std::collections::BTreeMap::new(),
+                ..Default::default()
             },
+            ..Default::default()
         };
         assert_eq!(check_inline_deps(&snapshot), Some("deno".to_string()));
     }

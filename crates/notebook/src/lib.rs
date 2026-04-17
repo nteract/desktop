@@ -445,17 +445,7 @@ fn default_metadata_snapshot() -> notebook_doc::metadata::NotebookMetadataSnapsh
     notebook_doc::metadata::NotebookMetadataSnapshot {
         kernelspec: None,
         language_info: None,
-        runt: notebook_doc::metadata::RuntMetadata {
-            schema_version: "1".to_string(),
-            env_id: None,
-            uv: None,
-            conda: None,
-            pixi: None,
-            deno: None,
-            trust_signature: None,
-            trust_timestamp: None,
-            extra: std::collections::BTreeMap::new(),
-        },
+        runt: notebook_doc::metadata::RuntMetadata::default(),
     }
 }
 
@@ -494,18 +484,8 @@ fn snapshot_from_nbformat(
     };
 
     let runt = if let Some(runt_value) = metadata.additional.get("runt") {
-        let mut runt_meta = serde_json::from_value::<RuntMetadata>(runt_value.clone())
-            .unwrap_or_else(|_| RuntMetadata {
-                schema_version: "1".to_string(),
-                env_id: None,
-                uv: None,
-                conda: None,
-                pixi: None,
-                deno: None,
-                trust_signature: None,
-                trust_timestamp: None,
-                extra: std::collections::BTreeMap::new(),
-            });
+        let mut runt_meta =
+            serde_json::from_value::<RuntMetadata>(runt_value.clone()).unwrap_or_default();
 
         if runt_meta.deno.is_none() {
             if let Some(deno_value) = metadata.additional.get("deno") {
@@ -536,15 +516,10 @@ fn snapshot_from_nbformat(
             .map(convert_legacy_deno);
 
         RuntMetadata {
-            schema_version: "1".to_string(),
-            env_id: None,
             uv,
             conda,
-            pixi: None,
             deno,
-            trust_signature: None,
-            trust_timestamp: None,
-            extra: std::collections::BTreeMap::new(),
+            ..RuntMetadata::default()
         }
     };
 

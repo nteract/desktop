@@ -48,6 +48,8 @@ use crate::jupyter_kernel::JupyterKernel;
 use crate::kernel_connection::{KernelConnection, KernelLaunchConfig, KernelSharedRefs};
 use crate::kernel_manager::QueueCommand;
 use crate::kernel_state::KernelState;
+use crate::runtime_dispatch::Runtime;
+use crate::test_runtime::TestRuntime;
 
 /// Shared context for the runtime agent (no kernel -- kernel is owned locally).
 struct RuntimeAgentContext {
@@ -106,7 +108,7 @@ pub async fn run_runtime_agent(
 
     // -- Local variables owned by the select! loop (no mutex) ---------------
 
-    let mut kernel: Option<JupyterKernel> = None;
+    let mut kernel: Option<Runtime> = None;
     let mut kernel_state = KernelState::new(
         state_doc.clone(),
         state_changed_tx.clone(),
@@ -442,7 +444,7 @@ async fn reconnect_with_backoff(
 async fn handle_runtime_agent_request(
     request: RuntimeAgentRequest,
     ctx: &RuntimeAgentContext,
-    kernel: &mut Option<JupyterKernel>,
+    kernel: &mut Option<Runtime>,
     state: &mut KernelState,
     seen_execution_ids: &mut HashSet<String>,
 ) -> (RuntimeAgentResponse, Option<mpsc::Receiver<QueueCommand>>) {
@@ -475,6 +477,8 @@ async fn handle_runtime_agent_request(
                     })
             });
 
+            let is_test_runtime = kernel_type == "test";
+
             let shared = KernelSharedRefs {
                 state_doc: ctx.state_doc.clone(),
                 state_changed_tx: ctx.state_changed_tx.clone(),
@@ -492,7 +496,17 @@ async fn handle_runtime_agent_request(
                 pooled_env,
             };
 
-            match JupyterKernel::launch(config, shared).await {
+            let result = if is_test_runtime {
+                TestRuntime::launch(config, shared)
+                    .await
+                    .map(|(k, rx)| (Runtime::Test(Box::new(k)), rx))
+            } else {
+                JupyterKernel::launch(config, shared)
+                    .await
+                    .map(|(k, rx)| (Runtime::Jupyter(Box::new(k)), rx))
+            };
+
+            match result {
                 Ok((k, rx)) => {
                     let es = k.env_source().to_string();
                     *kernel = Some(k);
@@ -523,6 +537,8 @@ async fn handle_runtime_agent_request(
                 "[runtime-agent] RestartKernel: type={} source={}",
                 kernel_type, env_source
             );
+
+            let is_test_runtime = kernel_type == "test";
 
             // Capture in-flight executions before shutdown so we can mark them
             // as failed in RuntimeStateDoc (the old kernel can't finish them).
@@ -599,7 +615,17 @@ async fn handle_runtime_agent_request(
                 let _ = ctx.state_changed_tx.send(());
             }
 
-            match JupyterKernel::launch(config, shared).await {
+            let result = if is_test_runtime {
+                TestRuntime::launch(config, shared)
+                    .await
+                    .map(|(k, rx)| (Runtime::Test(Box::new(k)), rx))
+            } else {
+                JupyterKernel::launch(config, shared)
+                    .await
+                    .map(|(k, rx)| (Runtime::Jupyter(Box::new(k)), rx))
+            };
+
+            match result {
                 Ok((k, rx)) => {
                     let es = k.env_source().to_string();
                     *kernel = Some(k);
@@ -859,7 +885,7 @@ async fn handle_runtime_agent_request(
 async fn handle_queue_command(
     command: QueueCommand,
     ctx: &RuntimeAgentContext,
-    kernel: &mut Option<JupyterKernel>,
+    kernel: &mut Option<Runtime>,
     state: &mut KernelState,
 ) -> anyhow::Result<()> {
     match command {
@@ -1086,7 +1112,7 @@ mod tests {
         handle_queue_command(
             QueueCommand::KernelDied,
             &ctx,
-            &mut None::<JupyterKernel>,
+            &mut None::<Runtime>,
             &mut state,
         )
         .await
@@ -1120,7 +1146,7 @@ mod tests {
         handle_queue_command(
             QueueCommand::KernelDied,
             &ctx,
-            &mut None::<JupyterKernel>,
+            &mut None::<Runtime>,
             &mut state,
         )
         .await

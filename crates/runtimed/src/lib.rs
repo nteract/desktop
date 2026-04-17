@@ -35,10 +35,12 @@ pub mod process_groups;
 pub mod project_file;
 pub mod runtime_agent;
 pub mod runtime_agent_handle;
+pub mod runtime_dispatch;
 pub mod singleton;
 pub mod stream_terminal;
 pub mod sync_server;
 pub mod terminal_size;
+pub mod test_runtime;
 
 /// Get the daemon version string (e.g., "0.1.0-dev.10+abc123").
 /// Used for protocol version checking and debugging.
