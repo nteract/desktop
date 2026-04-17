@@ -144,9 +144,10 @@ const LINE_HEIGHT = 20;
 const CELL_PAD_H = 24; // 12px each side
 const CELL_PAD_V = 16; // 8px top + 8px bottom
 const MIN_COL_WIDTH = 60;
-const OVERSCAN = 40; // base buffer rows above/below viewport
+// Generous buffer: Safari fires scroll events ~2-3x less often than Chromium.
+const OVERSCAN = 80; // base buffer rows above/below viewport
 const OVERSCAN_VELOCITY_SCALE = 3; // extra rows per 10px of scroll delta
-const MAX_OVERSCAN = 120; // cap total overscan per side
+const MAX_OVERSCAN = 240; // cap total overscan per side
 
 // --- Table Engine ---
 
