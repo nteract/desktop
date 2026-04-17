@@ -86,6 +86,7 @@ export function LeafletMapWidget({ modelId, className }: WidgetComponentProps) {
     ] as const) {
       map.on(eventType, (e: L.LeafletMouseEvent) => {
         sendCustom(modelId, {
+          event: "interaction",
           type: eventType,
           coordinates: [e.latlng.lat, e.latlng.lng],
         });

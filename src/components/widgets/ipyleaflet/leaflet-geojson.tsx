@@ -29,35 +29,22 @@ export function LeafletGeoJSONWidget({ modelId }: WidgetComponentProps) {
         return L.circleMarker(latlng, { radius: 6, ...(style as L.CircleMarkerOptions) });
       },
       onEachFeature: (feature, featureLayer) => {
-        featureLayer.on("click", (e) => {
-          sendCustom(modelId, {
-            event: "click",
-            feature: feature.properties,
-            id: feature.id,
-            coordinates: [e.latlng.lat, e.latlng.lng],
-          });
-        });
-        featureLayer.on("mouseover", (e) => {
-          sendCustom(modelId, {
-            event: "mouseover",
-            feature: feature.properties,
-            id: feature.id,
-            coordinates: [e.latlng.lat, e.latlng.lng],
-          });
-          if (hasHover && "setStyle" in featureLayer) {
+        const mouseevent = (e: L.LeafletMouseEvent) => {
+          if (e.type === "mouseover" && hasHover && "setStyle" in featureLayer) {
             (featureLayer as L.Path).setStyle(hoverStyle as L.PathOptions);
+            featureLayer.once("mouseout", () => {
+              layer.resetStyle(featureLayer as L.Path);
+            });
           }
-        });
-        featureLayer.on("mouseout", () => {
           sendCustom(modelId, {
-            event: "mouseout",
-            feature: feature.properties,
+            event: e.type,
+            feature,
+            properties: feature.properties,
             id: feature.id,
+            coordinates: [e.latlng.lat, e.latlng.lng],
           });
-          if (hasHover) {
-            layer.resetStyle(featureLayer as L.Path);
-          }
-        });
+        };
+        featureLayer.on({ mouseover: mouseevent, click: mouseevent });
       },
     });
 

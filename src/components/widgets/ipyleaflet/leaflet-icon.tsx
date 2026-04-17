@@ -29,20 +29,9 @@ export function createLeafletIcon(model: WidgetModel): L.Icon | L.DivIcon | unde
     });
   }
 
-  if (modelName === "LeafletAwesomeIconModel") {
-    const name = (state.name as string) || "home";
-    const markerColor = (state.marker_color as string) || "blue";
-    const iconColor = (state.icon_color as string) || "white";
-    const spin = state.spin as boolean;
-    const spinClass = spin ? "fa-spin" : "";
-    return L.divIcon({
-      html: `<i class="fa fa-${name} ${spinClass}" style="color:${iconColor}"></i>`,
-      iconSize: [35, 45],
-      iconAnchor: [17, 42],
-      popupAnchor: [1, -32],
-      className: `awesome-marker awesome-marker-icon-${markerColor}`,
-    });
-  }
+  // LeafletAwesomeIconModel requires Font Awesome + Leaflet.AwesomeMarkers CSS
+  // which we don't ship. Fall back to default marker rather than rendering
+  // blank/unstyled DOM nodes.
 
   return undefined;
 }
