@@ -1192,7 +1192,16 @@ impl RuntimeStateDoc {
         Ok(true)
     }
 
-    /// Clear all outputs for an execution.
+    /// Reset an execution entry to a cleared state.
+    ///
+    /// Empties the outputs list and nulls `execution_count` and `success`, so
+    /// the cell backed by this execution reads as "never run" from the
+    /// frontend's point of view. Mirrors JupyterLab's `clearExecution()` which
+    /// clears outputs *and* resets `executionCount` to `null`.
+    ///
+    /// Without nulling `execution_count`, the frontend's per-cell resolver
+    /// (which walks all executions for a cell looking for a non-null count)
+    /// would keep displaying the stale `[N]:` counter after a Clear Outputs.
     #[allow(clippy::expect_used)]
     pub fn clear_execution_outputs(&mut self, execution_id: &str) -> Result<bool, AutomergeError> {
         let Some(executions) = self.get_map("executions") else {
@@ -1204,6 +1213,10 @@ impl RuntimeStateDoc {
         // Replace with empty list
         let _ = self.doc.delete(&entry, "outputs");
         self.doc.put_object(&entry, "outputs", ObjType::List)?;
+        // Null out execution_count and success so the cell reads as "never
+        // run" — matches JupyterLab's clearExecution() semantics.
+        self.doc.put(&entry, "execution_count", ScalarValue::Null)?;
+        self.doc.put(&entry, "success", ScalarValue::Null)?;
         Ok(true)
     }
 
@@ -2660,6 +2673,31 @@ mod tests {
 
         // Clearing nonexistent is a no-op
         assert!(!doc.clear_execution_outputs("nope").unwrap());
+    }
+
+    #[test]
+    fn test_clear_execution_outputs_resets_count_and_success() {
+        // Regression: Clear Outputs must also null execution_count and
+        // success, or the cell keeps showing its stale [N]: counter
+        // (matches JupyterLab's clearExecution()).
+        let mut doc = RuntimeStateDoc::new();
+        doc.create_execution("exec-1", "cell-1");
+        doc.set_execution_count("exec-1", 7);
+        doc.set_execution_done("exec-1", true);
+        doc.append_output("exec-1", &test_stream("hash-a")).unwrap();
+
+        let before = doc.get_execution("exec-1").unwrap();
+        assert_eq!(before.execution_count, Some(7));
+        assert_eq!(before.success, Some(true));
+
+        assert!(doc.clear_execution_outputs("exec-1").unwrap());
+
+        let after = doc.get_execution("exec-1").unwrap();
+        assert!(after.outputs.is_empty());
+        assert_eq!(after.execution_count, None);
+        assert_eq!(after.success, None);
+        // Status is intentionally left as-is; "cleared" is a transient UX
+        // state, not a new lifecycle phase — the next run overwrites it.
     }
 
     #[test]
