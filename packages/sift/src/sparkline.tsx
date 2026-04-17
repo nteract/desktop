@@ -94,6 +94,16 @@ function BrushLayer({
       return;
     }
 
+    // Constant-slice column (span === 0): xToValue maps every pixel to
+    // `min`, so v0 === v1 === min === max and the "entire range" check
+    // below would fire on every real drag and clear the filter. Let the
+    // user pin the single value instead so their filter survives
+    // subsequent changes on other columns.
+    if (span <= 0) {
+      onFilter({ kind: "range", min, max });
+      return;
+    }
+
     const v0 = xToValue(x0);
     const v1 = xToValue(x1);
 
@@ -104,7 +114,7 @@ function BrushLayer({
     }
 
     onFilter({ kind: "range", min: v0, max: v1 });
-  }, [brushState, xToValue, onFilter, min, max]);
+  }, [brushState, xToValue, onFilter, min, max, span]);
 
   // Render brush rect for active selection
   let brushRect = null;
@@ -810,15 +820,16 @@ function formatDateRange(minMs: number, maxMs: number): [string, string] {
   const spanDays = (maxMs - minMs) / (1000 * 60 * 60 * 24);
 
   if (maxMs === minMs) {
-    // Zero-span: filtered to a single value. Always show date + time so
-    // we never drop information we can't reconstruct. Date32 columns
-    // arrive at midnight UTC and render with a "12:00 AM" suffix - a
-    // little noisy but unambiguous - while sub-day Datetime filters
-    // keep their actual time. Distinguishing Date32 from Datetime
-    // would require plumbing the source type through the summary; the
-    // old midnight-UTC heuristic guessed wrong whenever a real
-    // Datetime value happened to land at midnight (scheduled jobs,
-    // log rollovers, etc.) and silently stripped the time.
+    // Zero-span: filtered to a single value. Render date + time in UTC
+    // so Date32 values (days-since-epoch normalized to midnight UTC)
+    // still show the correct calendar day in non-UTC locales. Using
+    // local time here would shift `2024-01-01` to `Dec 31, 2023, 4:00
+    // PM` for a viewer in America/Los_Angeles. Real Datetime instants
+    // also render in UTC, which is a reasonable trade for a filtered
+    // single-value header where absolute-time correctness matters
+    // more than the user's local wall-clock. A proper Date32-vs-
+    // Datetime distinction would need source-type plumbing through
+    // the summary.
     const fmt = (d: Date) =>
       d.toLocaleString(undefined, {
         year: "numeric",
@@ -826,6 +837,8 @@ function formatDateRange(minMs: number, maxMs: number): [string, string] {
         day: "numeric",
         hour: "2-digit",
         minute: "2-digit",
+        timeZone: "UTC",
+        timeZoneName: "short",
       });
     return [fmt(min), fmt(max)];
   }
