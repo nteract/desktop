@@ -1538,15 +1538,20 @@ describe("SyncEngine", () => {
     });
 
     it("retries transient 5xx errors and succeeds", async () => {
+      // Uses `_py_render` (a pywidget-style text trait that really is
+      // consumed as a literal string). `_esm` deliberately stays on
+      // the URL path at the Rust level, so it never exercises the
+      // text-inline retry code — see esm_blob_stays_as_url_not_text_inlined
+      // in runtimed-wasm tests.
       const commId = "retry1";
       const payload = "loaded after retry";
       let attempts = 0;
 
       handle = createMockHandle({
         resolve_comm_state: vi.fn(() => ({
-          state: { _esm: "http://127.0.0.1:1234/blob/esm" },
+          state: { _py_render: "http://127.0.0.1:1234/blob/pysrc" },
           buffer_paths: [] as string[][],
-          text_paths: [["_esm"]] as string[][],
+          text_paths: [["_py_render"]] as string[][],
         })),
       });
 
@@ -1567,7 +1572,7 @@ describe("SyncEngine", () => {
         engine.commChanges$.subscribe((c) => emissions.push(c));
 
         (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
-          runtimeStateSyncEvent(runtimeStateWithComm(commId, { _esm: "<blob-ref>" })),
+          runtimeStateSyncEvent(runtimeStateWithComm(commId, { _py_render: "<blob-ref>" })),
         ]);
         transport.deliver([0x05, 0x03]);
 
@@ -1581,7 +1586,53 @@ describe("SyncEngine", () => {
 
         expect(attempts).toBe(2);
         const openedState = emissions[0].opened[0].state as Record<string, unknown>;
-        expect(openedState._esm).toBe(payload);
+        expect(openedState._py_render).toBe(payload);
+
+        engine.stop();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("does not fetch _esm — URL string passes through untouched", async () => {
+      // Regression guard: `_esm` is excluded from text_paths in the Rust
+      // resolver (see esm_blob_stays_as_url_not_text_inlined). The sync
+      // engine must never issue a fetch for it — anywidget's loadESM
+      // handles `import(url)` directly, and pulling the source here
+      // defeats browser caching.
+      const commId = "esm-passthrough";
+      const esmUrl = "http://127.0.0.1:1234/blob/esmhash";
+
+      handle = createMockHandle({
+        resolve_comm_state: vi.fn(() => ({
+          state: { _esm: esmUrl },
+          buffer_paths: [["_esm"]] as string[][],
+          text_paths: [] as string[][],
+        })),
+      });
+
+      const fetchStub = vi.fn(() => Promise.resolve(new Response("unused")));
+      vi.stubGlobal("fetch", fetchStub);
+
+      try {
+        const engine = createEngine();
+        engine.start();
+
+        const emissions: Array<{ opened: Array<{ commId: string; state: unknown }> }> = [];
+        engine.commChanges$.subscribe((c) => emissions.push(c));
+
+        (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
+          runtimeStateSyncEvent(runtimeStateWithComm(commId, { _esm: "<blob-ref>" })),
+        ]);
+        transport.deliver([0x05, 0x06]);
+
+        await vi.waitFor(() => {
+          expect(emissions.length).toBeGreaterThan(0);
+        });
+
+        expect(fetchStub).not.toHaveBeenCalled();
+        const openedState = emissions[0].opened[0].state as Record<string, unknown>;
+        expect(openedState._esm).toBe(esmUrl);
 
         engine.stop();
       } finally {

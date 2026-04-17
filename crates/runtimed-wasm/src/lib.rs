@@ -300,10 +300,21 @@ fn walk_and_resolve_comm_state(
             if let (Some(serde_json::Value::String(hash)), Some(serde_json::Value::Number(_))) =
                 (obj.get("blob"), obj.get("size"))
             {
+                // Anywidget reserves `_esm` and `_css` for URL-preferring
+                // loaders: `_esm` flows through `import(url)` and `_css`
+                // through `<link rel=stylesheet href=url>`, both of which
+                // handle URLs natively. Pulling those blobs over HTTP
+                // in the sync engine just to re-serve the decoded string
+                // is wasted work and defeats browser caching, so keep
+                // them on the URL path regardless of media_type.
+                let last_key = current_path.last().map(String::as_str);
+                let url_preferred = matches!(last_key, Some("_esm") | Some("_css"));
+
                 let media_type = obj.get("media_type").and_then(|v| v.as_str());
                 // Only classify as text when we have a media_type that says so.
                 // Missing media_type → binary (URL) to preserve legacy behavior.
-                let is_text = media_type.map(|mt| !is_binary_mime(mt)).unwrap_or(false);
+                let is_text =
+                    !url_preferred && media_type.map(|mt| !is_binary_mime(mt)).unwrap_or(false);
                 if is_text {
                     text_paths.push(current_path.clone());
                 } else {
@@ -1932,19 +1943,87 @@ mod tests {
 
     #[test]
     fn text_blob_ref_goes_to_text_paths() {
+        // `_py_render` is consumed as a literal string by Pyodide, so it
+        // must be text-inlined. `_esm` and `_css` are excluded from
+        // text_paths even though their MIMEs are text — see the
+        // `esm_and_css_stay_as_url` tests below for the rationale.
         let (resolved, buffer_paths, text_paths) = resolve(json!({
             "_py_render": { "blob": "def456", "size": 2048, "media_type": "text/plain" },
-            "_esm": { "blob": "ghi789", "size": 50000, "media_type": "text/javascript" },
+            "value": { "blob": "jkl012", "size": 4096, "media_type": "text/html" },
         }));
         assert_eq!(
             resolved["_py_render"],
             json!("http://127.0.0.1:1234/blob/def456")
         );
-        assert_eq!(resolved["_esm"], json!("http://127.0.0.1:1234/blob/ghi789"));
+        assert_eq!(
+            resolved["value"],
+            json!("http://127.0.0.1:1234/blob/jkl012")
+        );
         assert!(buffer_paths.is_empty());
         assert_eq!(text_paths.len(), 2);
         assert!(text_paths.contains(&vec!["_py_render".to_string()]));
-        assert!(text_paths.contains(&vec!["_esm".to_string()]));
+        assert!(text_paths.contains(&vec!["value".to_string()]));
+    }
+
+    #[test]
+    fn esm_blob_stays_as_url_not_text_inlined() {
+        // Anywidget's `_esm` loads via native `import(url)`; pre-fetching
+        // the text in the sync engine just to re-import it defeats
+        // browser caching. Keep it on the URL path regardless of MIME.
+        let (resolved, buffer_paths, text_paths) = resolve(json!({
+            "_esm": { "blob": "esmhash", "size": 50000, "media_type": "text/javascript" },
+        }));
+        assert_eq!(
+            resolved["_esm"],
+            json!("http://127.0.0.1:1234/blob/esmhash")
+        );
+        assert_eq!(buffer_paths, vec![vec!["_esm".to_string()]]);
+        assert!(
+            text_paths.is_empty(),
+            "_esm must not be inlined — loadESM handles URLs natively"
+        );
+    }
+
+    #[test]
+    fn css_blob_stays_as_url_not_text_inlined() {
+        // Anywidget's `_css` is rendered as `<link rel=stylesheet
+        // href=url>`; the browser fetches + caches it directly. No
+        // reason to round-trip through the sync engine.
+        let (resolved, buffer_paths, text_paths) = resolve(json!({
+            "_css": { "blob": "csshash", "size": 2048, "media_type": "text/css" },
+        }));
+        assert_eq!(
+            resolved["_css"],
+            json!("http://127.0.0.1:1234/blob/csshash")
+        );
+        assert_eq!(buffer_paths, vec![vec!["_css".to_string()]]);
+        assert!(
+            text_paths.is_empty(),
+            "_css must not be inlined — injectCSS handles URLs natively"
+        );
+    }
+
+    #[test]
+    fn esm_under_nested_parent_also_excluded() {
+        // Exclusion matches the last path segment, not the full path.
+        // Collateral: a stray `_esm` buried in user state is also
+        // URL-routed. Acceptable since the identifier is reserved.
+        let (_, buffer_paths, text_paths) = resolve(json!({
+            "children": [
+                {
+                    "_esm": { "blob": "h", "size": 100, "media_type": "text/javascript" },
+                },
+            ],
+        }));
+        assert!(text_paths.is_empty());
+        assert_eq!(
+            buffer_paths,
+            vec![vec![
+                "children".to_string(),
+                "0".to_string(),
+                "_esm".to_string(),
+            ]]
+        );
     }
 
     #[test]
