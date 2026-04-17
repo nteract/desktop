@@ -6,7 +6,11 @@ import {
   IsolatedFrame,
   type IsolatedFrameHandle,
 } from "@/components/isolated";
-import { injectPluginsForMimes, needsPlugin } from "@/components/isolated/iframe-libraries";
+import {
+  htmlNeedsPlotly,
+  injectPluginsForMimes,
+  needsPlugin,
+} from "@/components/isolated/iframe-libraries";
 import { AnsiErrorOutput, AnsiStreamOutput } from "@/components/outputs/ansi-output";
 import { isSafeForMainDom } from "@/components/outputs/safe-mime-types";
 import { DEFAULT_PRIORITY, MediaRouter } from "@/components/outputs/media-router";
@@ -338,6 +342,24 @@ export function OutputArea({
       if (output.output_type === "execute_result" || output.output_type === "display_data") {
         for (const mime of Object.keys(output.data)) {
           if (needsPlugin(mime)) pluginMimes.add(mime);
+        }
+      }
+    }
+
+    // Detect Plotly in text/html content from non-default renderers (e.g. "notebook",
+    // "iframe_connected") that emit only text/html without the structured MIME type.
+    if (!pluginMimes.has("application/vnd.plotly.v1+json")) {
+      for (const output of outputs) {
+        if (
+          (output.output_type === "execute_result" || output.output_type === "display_data") &&
+          output.data?.["text/html"]
+        ) {
+          const html = output.data["text/html"];
+          const htmlStr = Array.isArray(html) ? html.join("") : String(html);
+          if (htmlNeedsPlotly(htmlStr)) {
+            pluginMimes.add("application/vnd.plotly.v1+json");
+            break;
+          }
         }
       }
     }

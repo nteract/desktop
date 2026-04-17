@@ -135,8 +135,41 @@ function PlotlyRenderer({ data: rawData }: RendererProps) {
 
 // --- Plugin install ---
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const win = window as any;
+
 export function install(ctx: {
   register: (mimeTypes: string[], component: React.ComponentType<RendererProps>) => void;
 }) {
   ctx.register(["application/vnd.plotly.v1+json"], PlotlyRenderer);
+
+  // Expose Plotly globally so text/html outputs that reference window.Plotly
+  // (from non-default renderers like "notebook" or "iframe_connected") work.
+  win.Plotly = Plotly;
+
+  // If RequireJS is already loaded (e.g. by a prior HTML output), register
+  // plotly as a named AMD module so require(["plotly"], cb) resolves.
+  if (typeof win.define === "function" && win.define.amd) {
+    win.define("plotly", [], () => Plotly);
+    win.define("plotly.js", [], () => Plotly);
+  }
+
+  // Otherwise install a minimal AMD/CJS require shim for Plotly's "notebook"
+  // renderer, which calls require(["plotly"], function(Plotly) { ... }).
+  if (typeof win.require !== "function") {
+    win.require = function require(
+      deps: string | string[],
+      callback?: (...modules: unknown[]) => void,
+    ) {
+      const resolve = (name: string) => {
+        if (name === "plotly" || name === "plotly.js") return Plotly;
+        throw new Error(`[plotly-shim] Unknown module: ${name}`);
+      };
+      if (typeof deps === "string") return resolve(deps);
+      if (Array.isArray(deps) && typeof callback === "function") {
+        callback(...deps.map(resolve));
+      }
+    };
+    win.require.amd = {};
+  }
 }

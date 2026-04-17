@@ -50,6 +50,20 @@ export function needsPlugin(mime: string): boolean {
   return mime in PLUGIN_MIME_TYPES || isVegaMimeType(mime);
 }
 
+const PLOTLY_HTML_RE =
+  /Plotly\s*\.\s*(?:newPlot|react|plot|relayout|restyle|update|animate)\s*\(|require\s*\(\s*[['"]\s*['"]?plotly/;
+
+/**
+ * Detect whether a text/html output contains Plotly scripts that expect
+ * `window.Plotly` or AMD `require("plotly")` to be available.
+ *
+ * Used to trigger plotly plugin injection for non-default Plotly renderers
+ * (e.g. `notebook`, `iframe_connected`) that emit only text/html.
+ */
+export function htmlNeedsPlotly(html: string): boolean {
+  return PLOTLY_HTML_RE.test(html);
+}
+
 /** Cache of plugin code promises, keyed by MIME type. */
 const pluginCache = new Map<string, Promise<PluginModule>>();
 
