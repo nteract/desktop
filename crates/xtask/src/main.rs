@@ -1,13 +1,42 @@
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{exit, Child, Command, ExitStatus, Stdio};
 use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
+/// Find the workspace root (nearest ancestor containing a Cargo.toml with
+/// a `[workspace]` section). Used to normalize the working directory at
+/// xtask startup so subprocesses that take repo-relative paths (notably
+/// `wasm-pack build crates/sift-wasm`) work regardless of where the user
+/// invoked `cargo xtask` from.
+fn find_workspace_root() -> Option<PathBuf> {
+    let mut dir = env::current_dir().ok()?;
+    loop {
+        let cargo = dir.join("Cargo.toml");
+        if cargo.exists() {
+            if let Ok(contents) = fs::read_to_string(&cargo) {
+                if contents.contains("[workspace]") {
+                    return Some(dir);
+                }
+            }
+        }
+        dir = dir.parent()?.to_path_buf();
+    }
+}
+
 fn main() {
+    // Pin cwd to the workspace root before dispatching commands. Several
+    // subcommands (`wasm`, `renderer-plugins`, `mcpb`, …) spawn tools
+    // that take repo-relative paths; running xtask from `packages/sift`
+    // or any other subdir would otherwise fail with opaque errors like
+    // "crate directory is missing a Cargo.toml file".
+    if let Some(root) = find_workspace_root() {
+        let _ = env::set_current_dir(&root);
+    }
+
     let args: Vec<String> = env::args().skip(1).collect();
 
     if args.is_empty() {

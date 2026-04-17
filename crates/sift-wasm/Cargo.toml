@@ -1,8 +1,11 @@
 [package]
 name = "sift-wasm"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
 description = "WASM bindings for nteract-predicate — used by @nteract/sift"
+repository.workspace = true
+license.workspace = true
+publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]
