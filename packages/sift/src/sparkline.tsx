@@ -799,11 +799,23 @@ function formatDateRange(minMs: number, maxMs: number): [string, string] {
 
   if (maxMs === minMs) {
     // Zero-span: filtered to a single value (or Date32 column with one
-    // distinct row). Show the full calendar date — falling through to
-    // the <24h branch below strips the date and leaves "12:00 AM",
-    // which tells the user nothing about which day is selected.
-    const fmt = (d: Date) =>
+    // distinct row). Use the date-only format for values that land
+    // exactly at midnight UTC (Date32 / pure-date sources - they arrive
+    // with a 0 sub-day remainder), and full date+time for everything
+    // else so sub-day timestamps keep their time-of-day. Without this
+    // the fallthrough to the `<1 day` branch rendered "12:00 AM" and
+    // lost the calendar date entirely.
+    const dateFmt = (d: Date) =>
       d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+    const dateTimeFmt = (d: Date) =>
+      d.toLocaleString(undefined, {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    const fmt = minMs % 86_400_000 === 0 ? dateFmt : dateTimeFmt;
     return [fmt(min), fmt(max)];
   }
 
