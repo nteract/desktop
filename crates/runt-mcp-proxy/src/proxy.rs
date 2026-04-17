@@ -875,14 +875,21 @@ const RECONNECT_TOOL_NAME: &str = "reconnect";
 /// Build the `reconnect` tool definition injected into the standalone
 /// `ServerHandler::list_tools` result.
 fn reconnect_tool() -> Tool {
-    let empty_schema: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+    // Claude Code validates every tool's inputSchema as JSON Schema and rejects
+    // the entire tools/list response if any tool is missing `type: "object"`
+    // at the root — even for no-argument tools.
+    let mut schema: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+    schema.insert(
+        "type".to_string(),
+        serde_json::Value::String("object".to_string()),
+    );
     Tool::new(
         RECONNECT_TOOL_NAME,
         "Restart the nteract MCP child process and reconnect to the daemon. \
          Use when tools are hanging, returning stale errors, or after a daemon \
          upgrade. Child-only — the daemon itself is managed by the installed \
          nteract app.",
-        empty_schema,
+        schema,
     )
 }
 
@@ -1440,6 +1447,11 @@ mod tests {
         assert!(
             desc.to_lowercase().contains("restart"),
             "reconnect tool description should mention restart: {desc}"
+        );
+        assert_eq!(
+            tool.input_schema.get("type").and_then(|v| v.as_str()),
+            Some("object"),
+            "reconnect tool inputSchema must declare type=object for Claude Code"
         );
     }
 
