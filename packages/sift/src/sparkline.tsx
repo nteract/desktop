@@ -115,8 +115,22 @@ function BrushLayer({
       <rect x={x} y={0} width={w} height={CHART_HEIGHT} fill="var(--sift-accent)" opacity={0.2} />
     );
   } else if (activeFilter) {
-    const x = valueToX(activeFilter.min);
-    const w = valueToX(activeFilter.max) - x;
+    // When the filtered slice has collapsed to a single value (span === 0),
+    // `valueToX` can't express a range anymore. If the active filter
+    // brackets that single value, the entire column is "selected" — show
+    // a full-width overlay so the user still sees their filter is active.
+    // Otherwise the filter has already excluded everything here (unlikely
+    // but harmless), and a zero-width rect is fine.
+    let x: number;
+    let w: number;
+    if (span <= 0) {
+      const covered = activeFilter.min <= min && activeFilter.max >= max;
+      x = 0;
+      w = covered ? width : 0;
+    } else {
+      x = valueToX(activeFilter.min);
+      w = valueToX(activeFilter.max) - x;
+    }
     brushRect = (
       <rect
         x={x}
@@ -896,7 +910,7 @@ function TimestampHistogram({
         />
       </div>
       <span className="sift-th-range">
-        {minLabel === maxLabel ? minLabel : `${minLabel} – ${maxLabel}`}
+        {summary.min === summary.max ? minLabel : `${minLabel} – ${maxLabel}`}
       </span>
     </div>
   );
