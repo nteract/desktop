@@ -39,6 +39,15 @@ export const DATASETS: DatasetEntry[] = [
     rows: "500",
   },
   {
+    id: "polars-utf8view",
+    label: "Polars Utf8View (100)",
+    description:
+      "Regression fixture for #1853 — polars-written Arrow IPC with Utf8View string columns that apache-arrow-js cannot decode without the server-side Utf8View→Utf8 cast",
+    source: "local",
+    path: "polars-utf8view.arrow",
+    rows: "100",
+  },
+  {
     id: "spotify",
     label: "Spotify Tracks",
     description:

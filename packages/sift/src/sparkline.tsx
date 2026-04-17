@@ -42,18 +42,26 @@ function BrushLayer({
     currentX: number;
   } | null>(null);
 
+  // When min === max (the filtered slice is a single value), the brush's
+  // value↔pixel mapping would divide by zero and produce NaN coordinates,
+  // which corrupts the active-selection overlay. Treat that case as a
+  // degenerate single-value column: any brush result collapses to `min`,
+  // and the overlay spans the full width.
+  const span = max - min;
   const xToValue = useCallback(
     (px: number) => {
-      return min + (px / width) * (max - min);
+      if (span <= 0) return min;
+      return min + (px / width) * span;
     },
-    [width, min, max],
+    [width, min, span],
   );
 
   const valueToX = useCallback(
     (v: number) => {
-      return ((v - min) / (max - min)) * width;
+      if (span <= 0) return 0;
+      return ((v - min) / span) * width;
     },
-    [width, min, max],
+    [width, min, span],
   );
 
   const onPointerDown = useCallback((e: React.PointerEvent) => {
@@ -86,6 +94,16 @@ function BrushLayer({
       return;
     }
 
+    // Constant-slice column (span === 0): xToValue maps every pixel to
+    // `min`, so v0 === v1 === min === max and the "entire range" check
+    // below would fire on every real drag and clear the filter. Let the
+    // user pin the single value instead so their filter survives
+    // subsequent changes on other columns.
+    if (span <= 0) {
+      onFilter({ kind: "range", min, max });
+      return;
+    }
+
     const v0 = xToValue(x0);
     const v1 = xToValue(x1);
 
@@ -96,7 +114,7 @@ function BrushLayer({
     }
 
     onFilter({ kind: "range", min: v0, max: v1 });
-  }, [brushState, xToValue, onFilter, min, max]);
+  }, [brushState, xToValue, onFilter, min, max, span]);
 
   // Render brush rect for active selection
   let brushRect = null;
@@ -107,8 +125,22 @@ function BrushLayer({
       <rect x={x} y={0} width={w} height={CHART_HEIGHT} fill="var(--sift-accent)" opacity={0.2} />
     );
   } else if (activeFilter) {
-    const x = valueToX(activeFilter.min);
-    const w = valueToX(activeFilter.max) - x;
+    // When the filtered slice has collapsed to a single value (span === 0),
+    // `valueToX` can't express a range anymore. If the active filter
+    // brackets that single value, the entire column is "selected" — show
+    // a full-width overlay so the user still sees their filter is active.
+    // Otherwise the filter has already excluded everything here (unlikely
+    // but harmless), and a zero-width rect is fine.
+    let x: number;
+    let w: number;
+    if (span <= 0) {
+      const covered = activeFilter.min <= min && activeFilter.max >= max;
+      x = 0;
+      w = covered ? width : 0;
+    } else {
+      x = valueToX(activeFilter.min);
+      w = valueToX(activeFilter.max) - x;
+    }
     brushRect = (
       <rect
         x={x}
@@ -319,9 +351,7 @@ function NumericHistogram({
   if (summary.isIndex) {
     return (
       <div>
-        <span className="sift-th-range">
-          {formatNum(summary.min)} – {formatNum(summary.max)}
-        </span>
+        <span className="sift-th-range">{formatNumRange(summary.min, summary.max)}</span>
       </div>
     );
   }
@@ -382,10 +412,17 @@ function NumericHistogram({
               if (bin.count <= 0) return null;
               const x = i * (barW + gap);
               const h = (bin.count / maxCount) * CHART_HEIGHT;
-              // Per-bin highlight: bins overlapping the filter range are bright, others dimmed
+              // Per-bin highlight: bins overlapping the filter range are bright, others dimmed.
+              // The zero-width bin case (x0 === x1, from the constant-slice fix) collapses
+              // to a single point and needs an inclusive point-in-range check; the regular
+              // overlap predicate uses strict inequality and would mark the bar inactive
+              // when the filter selects exactly that point.
               let fill = baseFill;
               if (isFiltered) {
-                const binOverlaps = bin.x1 > activeFilter.min && bin.x0 < activeFilter.max;
+                const binOverlaps =
+                  bin.x0 === bin.x1
+                    ? bin.x0 >= activeFilter.min && bin.x0 <= activeFilter.max
+                    : bin.x1 > activeFilter.min && bin.x0 < activeFilter.max;
                 fill = binOverlaps ? activeFill : dimFill;
               }
               return (
@@ -414,16 +451,17 @@ function NumericHistogram({
           onFilter={onFilter}
         />
       </div>
-      {/* Hide range for binary-like columns where the ratio bar says it all */}
-      {!(
-        Number.isInteger(summary.min) &&
-        Number.isInteger(summary.max) &&
-        summary.max - summary.min <= 1
-      ) && (
-        <span className="sift-th-range">
-          {formatNum(summary.min)} – {formatNum(summary.max)}
-        </span>
-      )}
+      {/*
+        Always show the range label. The earlier "hide when integer span
+        <= 1" heuristic was a carry-over from the binary (0/1) case, which
+        already early-returns into `BinaryNumericRatioBar` via the
+        `uniqueCount === 2` branch above. Past that branch, single-valued
+        integer columns (e.g., a filtered slice where every row is 0)
+        were falling into this suppression and rendering no textual
+        label at all - with no ratio bar either, since `uniqueCount`
+        is 1 in that case.
+      */}
+      <span className="sift-th-range">{formatNumRange(summary.min, summary.max)}</span>
       <NumericProfile summary={summary} />
     </div>
   );
@@ -781,6 +819,30 @@ function formatDateRange(minMs: number, maxMs: number): [string, string] {
   const max = new Date(maxMs);
   const spanDays = (maxMs - minMs) / (1000 * 60 * 60 * 24);
 
+  if (maxMs === minMs) {
+    // Zero-span: filtered to a single value. Render date + time in UTC
+    // so Date32 values (days-since-epoch normalized to midnight UTC)
+    // still show the correct calendar day in non-UTC locales. Using
+    // local time here would shift `2024-01-01` to `Dec 31, 2023, 4:00
+    // PM` for a viewer in America/Los_Angeles. Real Datetime instants
+    // also render in UTC, which is a reasonable trade for a filtered
+    // single-value header where absolute-time correctness matters
+    // more than the user's local wall-clock. A proper Date32-vs-
+    // Datetime distinction would need source-type plumbing through
+    // the summary.
+    const fmt = (d: Date) =>
+      d.toLocaleString(undefined, {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        timeZone: "UTC",
+        timeZoneName: "short",
+      });
+    return [fmt(min), fmt(max)];
+  }
+
   if (spanDays < 1) {
     // < 24 hours: show time only
     const fmt = (d: Date) =>
@@ -859,12 +921,20 @@ function TimestampHistogram({
               if (bin.count <= 0) return null;
               const x = i * barW;
               const h = (bin.count / maxCount) * CHART_HEIGHT;
-              // Per-bin highlight for timestamp bins
+              // Per-bin highlight for timestamp bins.
+              // When summary.min === summary.max (zero-span, constant-slice fix)
+              // binSpan collapses to 0 and both endpoints coincide at the single
+              // value, so switch to an inclusive point-in-range check; otherwise
+              // the strict inequalities dim the only visible bar even when the
+              // filter selects that exact instant.
               let fill = baseFill;
               if (isFiltered) {
                 const binStart = summary.min + i * binSpan;
                 const binEnd = binStart + binSpan;
-                const binOverlaps = binEnd > activeFilter.min && binStart < activeFilter.max;
+                const binOverlaps =
+                  binSpan === 0
+                    ? binStart >= activeFilter.min && binStart <= activeFilter.max
+                    : binEnd > activeFilter.min && binStart < activeFilter.max;
                 fill = binOverlaps ? activeFill : dimFill;
               }
               return (
@@ -894,7 +964,7 @@ function TimestampHistogram({
         />
       </div>
       <span className="sift-th-range">
-        {minLabel} – {maxLabel}
+        {summary.min === summary.max ? minLabel : `${minLabel} – ${maxLabel}`}
       </span>
     </div>
   );
@@ -968,6 +1038,17 @@ function ColumnSummaryChart({
 function formatNum(n: number): string {
   if (Number.isInteger(n)) return n.toLocaleString();
   return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
+
+/** Format a numeric range, collapsing to a single value when min === max.
+ *
+ * Compare against the raw values, not the formatted strings — `formatNum`
+ * rounds to two decimals, so `0.001`–`0.004` would both render as "0" and
+ * falsely collapse. We only want to hide the upper endpoint when the
+ * column is genuinely single-valued. */
+function formatNumRange(min: number, max: number): string {
+  if (min === max) return formatNum(min);
+  return `${formatNum(min)} – ${formatNum(max)}`;
 }
 
 function truncate(s: string, max: number): string {
