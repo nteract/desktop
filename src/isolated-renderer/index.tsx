@@ -46,6 +46,9 @@ import { IframeWidgetStoreProvider } from "./widget-provider";
 // This import has side effects that register all built-in widgets
 import "@/components/widgets/controls";
 
+// Import ipyleaflet widgets (native Leaflet.js rendering of ipyleaflet state)
+import "@/components/widgets/ipyleaflet";
+
 // --- Renderer Plugin Registry ---
 //
 // On-demand renderer plugins register React components for specific MIME types.

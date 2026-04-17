@@ -102,7 +102,9 @@ Some widgets extend IPython's `DOMWidget` class instead of the standard `@jupyte
 
 **Known incompatible:**
 - `bqplot` — Uses IPython DOMWidget internals
-- `ipyleaflet` — Uses IPython DOMWidget internals
+
+**Native implementations (no upstream JS):**
+- `ipyleaflet` — Map, TileLayer, Marker, GeoJSON supported natively. Other layer types (shapes, heatmap, clusters) and controls render as blank placeholders until implemented.
 
 ## Why These Limitations?
 
