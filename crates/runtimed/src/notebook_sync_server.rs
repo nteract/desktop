@@ -4695,6 +4695,12 @@ async fn handle_notebook_request(
                                         env_source: es,
                                     },
                                 ) => {
+                                    {
+                                        let mut lc =
+                                            room.runtime_agent_launched_config.write().await;
+                                        *lc = Some(launched_config.clone());
+                                    }
+
                                     publish_kernel_state_presence(
                                         room,
                                         presence::KernelStatus::Idle,
@@ -4704,13 +4710,25 @@ async fn handle_notebook_request(
 
                                     {
                                         let mut sd = room.state_doc.write().await;
-                                        sd.set_kernel_status("idle");
-                                        sd.set_kernel_info(
+                                        let mut changed = false;
+                                        changed |= sd.set_kernel_status("idle");
+                                        changed |= sd.set_kernel_info(
                                             &resolved_kernel_type,
                                             &resolved_kernel_type,
                                             &es,
                                         );
-                                        let _ = room.state_changed_tx.send(());
+                                        changed |=
+                                            sd.set_runtime_agent_id(&runtime_agent_id);
+                                        if changed {
+                                            let _ = room.state_changed_tx.send(());
+                                        }
+                                    }
+
+                                    {
+                                        let mut sd = room.state_doc.write().await;
+                                        if sd.set_env_sync(true, &[], &[], false, false) {
+                                            let _ = room.state_changed_tx.send(());
+                                        }
                                     }
 
                                     NotebookResponse::KernelLaunched {
