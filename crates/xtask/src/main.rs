@@ -1531,20 +1531,34 @@ fn cmd_install_nightly(args: &[String]) {
     }
 
     // ── Build ────────────────────────────────────────────────────────────
-    println!("Building runtimed, runt-cli, runt-proxy (release)...");
-    run_cmd(
-        "cargo",
-        &[
-            "build",
-            "--release",
-            "-p",
-            "runtimed",
-            "-p",
-            "runt-cli",
-            "-p",
-            "runt-proxy",
-        ],
-    );
+    // Force RUNT_BUILD_CHANNEL=nightly for the child cargo build. Running
+    // the binary's guard already proved *this* xtask is a nightly build,
+    // but the child cargo inherits env from the caller — if the user has
+    // `RUNT_BUILD_CHANNEL=stable` exported for release validation, a naive
+    // `cargo build` would produce stable binaries that then get installed
+    // into the nightly namespace.
+    println!("Building runtimed, runt-cli, runt-proxy (release, channel=nightly)...");
+    let mut build_cmd = Command::new("cargo");
+    build_cmd.args([
+        "build",
+        "--release",
+        "-p",
+        "runtimed",
+        "-p",
+        "runt-cli",
+        "-p",
+        "runt-proxy",
+    ]);
+    build_cmd.env("RUNT_BUILD_CHANNEL", "nightly");
+    apply_sccache_env(&mut build_cmd);
+    let status = build_cmd.status().unwrap_or_else(|e| {
+        eprintln!("Failed to run cargo build: {e}");
+        exit(1);
+    });
+    if !status.success() {
+        eprintln!("cargo build --release failed");
+        exit(status.code().unwrap_or(1));
+    }
 
     let exe_suffix = if cfg!(windows) { ".exe" } else { "" };
     let release_dir = Path::new("target/release");
@@ -1726,13 +1740,43 @@ fn atomic_install(source: &Path, dest: &Path) -> std::io::Result<()> {
 }
 
 /// Print follow-up steps the user needs to take themselves (they require sudo).
+///
+/// `was_upgrade` is taken from `ServiceManager::is_installed()`, which only
+/// tells us whether the service config existed before this run — it doesn't
+/// guarantee the user ever completed the sudo follow-up steps (`ln -sf` into
+/// `/usr/local/bin`, `loginctl enable-linger`). To avoid leaving someone
+/// stuck on a half-finished install that reports success, inspect the
+/// expected symlinks and always print guidance when any are missing.
 fn print_post_install_guidance(install_dir: &Path, was_upgrade: bool) {
     let runt_name = runt_workspace::cli_command_name();
     let proxy_name = runt_workspace::proxy_binary_basename();
     let daemon_name = runt_workspace::daemon_binary_basename();
 
-    if !was_upgrade {
-        println!("First-time install — a few follow-up steps are needed:");
+    let symlinks_complete = {
+        let expected = [daemon_name, runt_name, proxy_name];
+        expected.iter().all(|name| {
+            let link = Path::new("/usr/local/bin").join(name);
+            fs::symlink_metadata(&link)
+                .ok()
+                .and_then(|m| if m.is_symlink() { Some(()) } else { None })
+                .is_some()
+        })
+    };
+
+    // Show the full guidance on first install, or on any subsequent run
+    // where the expected `/usr/local/bin` symlinks don't all resolve —
+    // the prior install may have aborted before the user ran the sudo
+    // step, and we don't want a retry to silently stop at a working
+    // daemon with a still-missing CLI on PATH.
+    if !was_upgrade || !symlinks_complete {
+        if was_upgrade {
+            println!(
+                "Upgrade complete — but /usr/local/bin/{daemon_name}, /{runt_name}, or /{proxy_name} \
+                 is missing, so finish the setup now:"
+            );
+        } else {
+            println!("First-time install — a few follow-up steps are needed:");
+        }
         println!();
 
         #[cfg(target_os = "linux")]
