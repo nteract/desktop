@@ -608,7 +608,18 @@ function CategoryPopoverContent({
     } else {
       const next = new Set(activeSet);
       next.add(label);
-      onFilter({ kind: "set", values: next });
+      // Re-checking the last unchecked row refills the set to the full
+      // universe. Collapse that back to `null` ("no filter = show
+      // everything") rather than holding an explicit all-selected
+      // filter. Otherwise the filter pill sticks around on a no-op
+      // filter, the header reports "Filtered to N of N", and any
+      // category added to the data later would be silently excluded
+      // by the frozen set.
+      if (next.size >= allCategories.length) {
+        onFilter(null);
+      } else {
+        onFilter({ kind: "set", values: next });
+      }
     }
   }
 
