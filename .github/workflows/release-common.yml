@@ -133,7 +133,7 @@ jobs:
             runt-linux-x64
 
   build-macos:
-    name: Build macOS ARM64 Executables
+    name: Build macOS Executables
     runs-on: macos-latest
     needs: compute-version
     steps:
@@ -146,8 +146,8 @@ jobs:
       - name: Set up Rust
         uses: dsherret/rust-toolchain-file@v1
 
-      - name: Install cross-compilation target
-        run: rustup target add aarch64-apple-darwin
+      - name: Install cross-compilation targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -180,10 +180,15 @@ jobs:
       - name: Build for macOS ARM64
         run: cargo build --release --target aarch64-apple-darwin -p runt-cli
 
+      - name: Build for macOS x64
+        run: cargo build --release --target x86_64-apple-darwin -p runt-cli
+
       - name: Rename binaries
         run: |
           cp target/aarch64-apple-darwin/release/runt runt-darwin-arm64
           chmod +x runt-darwin-arm64
+          cp target/x86_64-apple-darwin/release/runt runt-darwin-x64
+          chmod +x runt-darwin-x64
 
       - name: Upload macOS executables
         uses: actions/upload-artifact@v4
@@ -191,6 +196,7 @@ jobs:
           name: runt-macos-executables
           path: |
             runt-darwin-arm64
+            runt-darwin-x64
 
   build-notebook-macos-arm64:
     name: Build macOS ARM64 Notebook
@@ -353,6 +359,172 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: nteract-macos-arm64
+          path: artifacts/
+
+  build-notebook-macos-x64:
+    name: Build macOS x64 Notebook
+    runs-on: macos-latest
+    needs: compute-version
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          lfs: true
+
+      - name: Set up Rust
+        uses: dsherret/rust-toolchain-file@v1
+
+      - name: Install cross-compilation target
+        run: rustup target add x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "macos-notebook-x64"
+
+      - uses: voidzero-dev/setup-vp@v1
+        with:
+          run-install: false
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: pnpm
+      - run: pnpm install
+
+      - name: Build frontend
+        run: pnpm build
+
+      - name: Install cargo-binstall
+        run: curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+
+      - name: Install Tauri CLI
+        run: cargo binstall tauri-cli --no-confirm --locked --force
+
+      - name: Import Apple signing certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          if [ -z "$APPLE_CERTIFICATE" ]; then
+            echo "No signing certificate configured, skipping"
+            exit 0
+          fi
+
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          rm "$RUNNER_TEMP/certificate.p12"
+
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+      - name: Set version in tauri.conf.json
+        run: |
+          VERSION="${{ needs.compute-version.outputs.version }}"
+          echo "Setting version to: ${VERSION}"
+          CHANNEL="${RUNT_BUILD_CHANNEL:-stable}"
+          if [ "$CHANNEL" = "nightly" ]; then
+            PRODUCT_NAME="nteract Nightly"
+            BUNDLE_ID="org.nteract.desktop.nightly"
+          else
+            PRODUCT_NAME="nteract"
+            BUNDLE_ID="org.nteract.desktop"
+          fi
+          sed -i '' "s/\"version\": \"[^\"]*\"/\"version\": \"${VERSION}\"/" crates/notebook/tauri.conf.json
+          sed -i '' "s/\"productName\": \"[^\"]*\"/\"productName\": \"${PRODUCT_NAME}\"/" crates/notebook/tauri.conf.json
+          sed -i '' "s/\"identifier\": \"[^\"]*\"/\"identifier\": \"${BUNDLE_ID}\"/" crates/notebook/tauri.conf.json
+          sed -i '' "s#https://github.com/nteract/desktop/releases/download/stable-latest/latest.json#https://github.com/nteract/desktop/releases/download/${{ inputs.updater_channel_tag }}/latest.json#" crates/notebook/tauri.conf.json
+          sed -i '' "s/^version = .*/version = \"${VERSION}\"/" crates/runt/Cargo.toml
+          sed -i '' "s/^version = .*/version = \"${VERSION}\"/" crates/runtimed/Cargo.toml
+
+      - name: Generate Icons
+        run: |
+          CHANNEL="${RUNT_BUILD_CHANNEL:-stable}"
+          ICON_SOURCE="crates/notebook/icons/source.png"
+          if [ "$CHANNEL" = "nightly" ] && [ -f "crates/notebook/icons/source-nightly.png" ]; then
+            ICON_SOURCE="crates/notebook/icons/source-nightly.png"
+          fi
+          cargo xtask icons "$ICON_SOURCE"
+
+      # Build MCP output widget HTML (needed by runt-mcp's include_str!)
+      - name: Build MCP output widget
+        run: pnpm --filter nteract-mcp-app install && vp run nteract-mcp-app#build
+
+      - name: Build external binaries
+        run: |
+          cargo build --release --target x86_64-apple-darwin -p runtimed -p runt-cli -p runt-proxy
+          TARGET="x86_64-apple-darwin"
+          mkdir -p crates/notebook/binaries
+          cp target/x86_64-apple-darwin/release/runtimed "crates/notebook/binaries/runtimed-$TARGET"
+          cp target/x86_64-apple-darwin/release/runt "crates/notebook/binaries/runt-$TARGET"
+          cp target/x86_64-apple-darwin/release/runt-proxy "crates/notebook/binaries/runt-proxy-$TARGET"
+
+      - name: Build with tauri-action
+        uses: tauri-apps/tauri-action@v0
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: crates/notebook
+          args: --target x86_64-apple-darwin --bundles app,dmg --config '{"build":{"beforeBuildCommand":""}}'
+          includeUpdaterJson: false
+
+      - name: Cleanup keychain
+        if: always()
+        run: |
+          if [ -n "$KEYCHAIN_PATH" ] && [ -f "$KEYCHAIN_PATH" ]; then
+            security delete-keychain "$KEYCHAIN_PATH" || true
+          fi
+
+      - name: Collect artifacts
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          CHANNEL="${RUNT_BUILD_CHANNEL:-stable}"
+
+          shopt -s nullglob
+          DMG_BINARIES=(target/x86_64-apple-darwin/release/bundle/dmg/*.dmg)
+          TAR_GZ_BINARIES=(target/x86_64-apple-darwin/release/bundle/macos/*.tar.gz)
+          TAR_GZ_SIG_BINARIES=(target/x86_64-apple-darwin/release/bundle/macos/*.tar.gz.sig)
+          shopt -u nullglob
+
+          if [ ${#DMG_BINARIES[@]} -eq 0 ]; then
+            echo "::error::No macOS installer (.dmg) found in target/x86_64-apple-darwin/release/bundle/dmg"
+            exit 1
+          fi
+
+          cp "${DMG_BINARIES[0]}" "artifacts/nteract-${CHANNEL}-darwin-x64.dmg"
+
+          if [ ${#TAR_GZ_BINARIES[@]} -eq 0 ]; then
+            echo "::error::No macOS updater bundle (.app.tar.gz) found in target/x86_64-apple-darwin/release/bundle/macos"
+            exit 1
+          fi
+          if [ ${#TAR_GZ_SIG_BINARIES[@]} -eq 0 ]; then
+            echo "::error::No macOS updater signature (.app.tar.gz.sig) found in target/x86_64-apple-darwin/release/bundle/macos"
+            exit 1
+          fi
+
+          cp "${TAR_GZ_BINARIES[0]}" "artifacts/nteract-${CHANNEL}-darwin-x64.app.tar.gz"
+          cp "${TAR_GZ_SIG_BINARIES[0]}" "artifacts/nteract-${CHANNEL}-darwin-x64.app.tar.gz.sig"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nteract-macos-x64
           path: artifacts/
 
   build-notebook-windows-x64:
@@ -687,6 +859,8 @@ jobs:
         platform:
           - runner: macos-latest
             target: aarch64-apple-darwin
+          - runner: macos-latest
+            target: x86_64-apple-darwin
           - runner: blacksmith-4vcpu-ubuntu-2404
             target: x86_64-unknown-linux-gnu
           - runner: windows-latest
@@ -698,6 +872,9 @@ jobs:
 
       - name: Set up Rust
         uses: dsherret/rust-toolchain-file@v1
+
+      - name: Install compilation target
+        run: rustup target add ${{ matrix.platform.target }}
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -775,6 +952,7 @@ jobs:
         build-linux,
         build-macos,
         build-notebook-macos-arm64,
+        build-notebook-macos-x64,
         build-notebook-windows-x64,
         build-notebook-linux-x64,
         build-python-wheels,
@@ -833,6 +1011,12 @@ jobs:
           name: nteract-macos-arm64
           path: ./notebook-macos-arm64
 
+      - name: Download macOS x64 notebook
+        uses: actions/download-artifact@v4
+        with:
+          name: nteract-macos-x64
+          path: ./notebook-macos-x64
+
       - name: Download Windows x64 notebook
         uses: actions/download-artifact@v4
         with:
@@ -856,14 +1040,18 @@ jobs:
           # CLI binaries
           cp executables/runt-linux-x64 "release-assets/${CLI_NAME}-linux-x64"
           cp executables/runt-darwin-arm64 "release-assets/${CLI_NAME}-darwin-arm64"
+          cp executables/runt-darwin-x64 "release-assets/${CLI_NAME}-darwin-x64"
           # Notebook installers
           cp "notebook-macos-arm64/nteract-${CHANNEL}-darwin-arm64.dmg" release-assets/
+          cp "notebook-macos-x64/nteract-${CHANNEL}-darwin-x64.dmg" release-assets/
           cp "notebook-windows-x64/nteract-${CHANNEL}-windows-x64.exe" release-assets/
           cp "notebook-linux-x64/nteract-${CHANNEL}-linux-x64.AppImage" release-assets/
           cp "notebook-linux-x64/nteract-${CHANNEL}-linux-x64.deb" release-assets/
           # Updater bundles + signatures
           cp "notebook-macos-arm64/nteract-${CHANNEL}-darwin-arm64.app.tar.gz" release-assets/
           cp "notebook-macos-arm64/nteract-${CHANNEL}-darwin-arm64.app.tar.gz.sig" release-assets/
+          cp "notebook-macos-x64/nteract-${CHANNEL}-darwin-x64.app.tar.gz" release-assets/
+          cp "notebook-macos-x64/nteract-${CHANNEL}-darwin-x64.app.tar.gz.sig" release-assets/
           cp "notebook-windows-x64/nteract-${CHANNEL}-windows-x64.exe.sig" release-assets/
           cp "notebook-linux-x64/nteract-${CHANNEL}-linux-x64.AppImage.sig" release-assets/ 2>/dev/null || true
 
@@ -894,13 +1082,16 @@ jobs:
           read_sig() { cat "$1"; }
 
           require_file "release-assets/nteract-${CHANNEL}-darwin-arm64.app.tar.gz"
+          require_file "release-assets/nteract-${CHANNEL}-darwin-x64.app.tar.gz"
           require_file "release-assets/nteract-${CHANNEL}-linux-x64.AppImage"
           require_file "release-assets/nteract-${CHANNEL}-windows-x64.exe"
           require_sig "release-assets/nteract-${CHANNEL}-darwin-arm64.app.tar.gz.sig"
+          require_sig "release-assets/nteract-${CHANNEL}-darwin-x64.app.tar.gz.sig"
           require_sig "release-assets/nteract-${CHANNEL}-linux-x64.AppImage.sig"
           require_sig "release-assets/nteract-${CHANNEL}-windows-x64.exe.sig"
 
           SIG_DARWIN_ARM64=$(read_sig "release-assets/nteract-${CHANNEL}-darwin-arm64.app.tar.gz.sig")
+          SIG_DARWIN_X64=$(read_sig "release-assets/nteract-${CHANNEL}-darwin-x64.app.tar.gz.sig")
           SIG_LINUX_X64=$(read_sig "release-assets/nteract-${CHANNEL}-linux-x64.AppImage.sig")
           SIG_WINDOWS_X64=$(read_sig "release-assets/nteract-${CHANNEL}-windows-x64.exe.sig")
 
@@ -910,6 +1101,8 @@ jobs:
             --arg pub_date "$PUB_DATE" \
             --arg sig_darwin_arm64 "$SIG_DARWIN_ARM64" \
             --arg url_darwin_arm64 "$RELEASE_BASE/nteract-${CHANNEL}-darwin-arm64.app.tar.gz" \
+            --arg sig_darwin_x64 "$SIG_DARWIN_X64" \
+            --arg url_darwin_x64 "$RELEASE_BASE/nteract-${CHANNEL}-darwin-x64.app.tar.gz" \
             --arg sig_linux_x64 "$SIG_LINUX_X64" \
             --arg url_linux_x64 "$RELEASE_BASE/nteract-${CHANNEL}-linux-x64.AppImage" \
             --arg sig_windows_x64 "$SIG_WINDOWS_X64" \
@@ -920,6 +1113,7 @@ jobs:
               pub_date: $pub_date,
               platforms: {
                 "darwin-aarch64": { signature: $sig_darwin_arm64, url: $url_darwin_arm64 },
+                "darwin-x86_64": { signature: $sig_darwin_x64, url: $url_darwin_x64 },
                 "linux-x86_64": { signature: $sig_linux_x64, url: $url_linux_x64 },
                 "windows-x86_64": { signature: $sig_windows_x64, url: $url_windows_x64 }
               }
@@ -996,6 +1190,7 @@ jobs:
             echo '| Platform | Architecture | Download |'
             echo '|----------|--------------|----------|'
             echo "| macOS | ARM64 (Apple Silicon) | \`nteract-${VERSION_SUFFIX}-darwin-arm64.dmg\` |"
+            echo "| macOS | x64 (Intel) | \`nteract-${VERSION_SUFFIX}-darwin-x64.dmg\` |"
             echo "| Windows | x64 | \`nteract-${VERSION_SUFFIX}-windows-x64.exe\` |"
             echo "| Linux | x64 | \`nteract-${VERSION_SUFFIX}-linux-x64.AppImage\` |"
             echo "| Linux | x64 (deb) | \`nteract-${VERSION_SUFFIX}-linux-x64.deb\` |"
@@ -1026,6 +1221,7 @@ jobs:
             echo '|----------|--------------|----------|'
             echo "| Linux | x64 | \`${CLI_NAME}-linux-x64\` |"
             echo "| macOS | ARM64 | \`${CLI_NAME}-darwin-arm64\` |"
+            echo "| macOS | x64 (Intel) | \`${CLI_NAME}-darwin-x64\` |"
             echo ''
             echo '## runtimed (Python — macOS, Linux, Windows)'
             echo ''
@@ -1053,12 +1249,16 @@ jobs:
           files: |
             ./release-assets/runt*-linux-x64
             ./release-assets/runt*-darwin-arm64
+            ./release-assets/runt*-darwin-x64
             ./release-assets/nteract-${{ inputs.version_suffix }}-linux-x64.AppImage
             ./release-assets/nteract-${{ inputs.version_suffix }}-linux-x64.AppImage.sig
             ./release-assets/nteract-${{ inputs.version_suffix }}-linux-x64.deb
             ./release-assets/nteract-${{ inputs.version_suffix }}-darwin-arm64.dmg
             ./release-assets/nteract-${{ inputs.version_suffix }}-darwin-arm64.app.tar.gz
             ./release-assets/nteract-${{ inputs.version_suffix }}-darwin-arm64.app.tar.gz.sig
+            ./release-assets/nteract-${{ inputs.version_suffix }}-darwin-x64.dmg
+            ./release-assets/nteract-${{ inputs.version_suffix }}-darwin-x64.app.tar.gz
+            ./release-assets/nteract-${{ inputs.version_suffix }}-darwin-x64.app.tar.gz.sig
             ./release-assets/nteract-${{ inputs.version_suffix }}-windows-x64.exe
             ./release-assets/nteract-${{ inputs.version_suffix }}-windows-x64.exe.sig
             ./release-assets/latest.json
