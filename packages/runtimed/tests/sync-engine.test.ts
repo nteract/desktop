@@ -1410,6 +1410,226 @@ describe("SyncEngine", () => {
       engine.stop();
     });
   });
+
+  // ── Comm state projection + text-blob inlining ──────────────────
+
+  describe("commChanges$ projection", () => {
+    /**
+     * Minimal runtime state with a single comm. The `CommDocEntry.state`
+     * carries the raw blob-ref objects (what the daemon wrote into the
+     * CRDT); `resolve_comm_state` on the handle is what the WASM side
+     * uses to swap them for URL strings + path manifests.
+     */
+    function runtimeStateWithComm(
+      commId: string,
+      entryState: Record<string, unknown>,
+    ): RuntimeState {
+      const base = makeRuntimeState({});
+      return {
+        ...base,
+        comms: {
+          [commId]: {
+            target_name: "jupyter.widget",
+            model_module: "anywidget",
+            model_name: "AnyModel",
+            state: entryState,
+            outputs: [],
+            seq: 0,
+          },
+        },
+      };
+    }
+
+    it("inlines text-MIME blobs into emitted comm state", async () => {
+      const commId = "abc123";
+      const pythonSource = "class Counter: count = 0";
+
+      // handle.resolve_comm_state returns URLs + text_paths — same shape
+      // as the WASM binding. The fetch mock completes that URL fetch.
+      handle = createMockHandle({
+        resolve_comm_state: vi.fn(() => ({
+          state: {
+            count: 0,
+            _py_render: "http://127.0.0.1:1234/blob/pysrc",
+          },
+          buffer_paths: [] as string[][],
+          text_paths: [["_py_render"]] as string[][],
+        })),
+      });
+
+      const fetchStub = vi.fn(async (input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url.endsWith("/blob/pysrc")) {
+          return new Response(pythonSource, { status: 200 });
+        }
+        return new Response("", { status: 404 });
+      });
+      vi.stubGlobal("fetch", fetchStub);
+
+      try {
+        const engine = createEngine();
+        engine.start();
+
+        const emissions: Array<{ opened: Array<{ commId: string; state: unknown }> }> = [];
+        engine.commChanges$.subscribe((c) => emissions.push(c));
+
+        (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
+          runtimeStateSyncEvent(runtimeStateWithComm(commId, { _py_render: "<blob-ref>" })),
+        ]);
+        transport.deliver([0x05, 0x01]);
+
+        await vi.waitFor(() => {
+          expect(emissions.length).toBeGreaterThan(0);
+        });
+
+        expect(fetchStub).toHaveBeenCalledTimes(1);
+        expect(emissions[0].opened).toHaveLength(1);
+        const openedState = emissions[0].opened[0].state as Record<string, unknown>;
+        expect(openedState._py_render).toBe(pythonSource);
+        expect(openedState.count).toBe(0);
+
+        engine.stop();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("leaves binary-MIME blobs as URL strings", async () => {
+      const commId = "bin1";
+      handle = createMockHandle({
+        resolve_comm_state: vi.fn(() => ({
+          state: {
+            image: "http://127.0.0.1:1234/blob/imghash",
+          },
+          buffer_paths: [["image"]] as string[][],
+          text_paths: [] as string[][],
+        })),
+      });
+
+      const fetchStub = vi.fn();
+      vi.stubGlobal("fetch", fetchStub);
+
+      try {
+        const engine = createEngine();
+        engine.start();
+
+        const emissions: Array<{ opened: Array<{ commId: string; state: unknown }> }> = [];
+        engine.commChanges$.subscribe((c) => emissions.push(c));
+
+        (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
+          runtimeStateSyncEvent(runtimeStateWithComm(commId, { image: "<blob-ref>" })),
+        ]);
+        transport.deliver([0x05, 0x02]);
+
+        await vi.waitFor(() => {
+          expect(emissions.length).toBeGreaterThan(0);
+        });
+
+        // Binary blobs must not be fetched — widgets resolve them via
+        // blob-URL <img src> / ArrayBuffer fetch on their own.
+        expect(fetchStub).not.toHaveBeenCalled();
+        const openedState = emissions[0].opened[0].state as Record<string, unknown>;
+        expect(openedState.image).toBe("http://127.0.0.1:1234/blob/imghash");
+
+        engine.stop();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("retries transient 5xx errors and succeeds", async () => {
+      const commId = "retry1";
+      const payload = "loaded after retry";
+      let attempts = 0;
+
+      handle = createMockHandle({
+        resolve_comm_state: vi.fn(() => ({
+          state: { _esm: "http://127.0.0.1:1234/blob/esm" },
+          buffer_paths: [] as string[][],
+          text_paths: [["_esm"]] as string[][],
+        })),
+      });
+
+      const fetchStub = vi.fn(async () => {
+        attempts++;
+        if (attempts === 1) {
+          return new Response("temp err", { status: 503 });
+        }
+        return new Response(payload, { status: 200 });
+      });
+      vi.stubGlobal("fetch", fetchStub);
+
+      try {
+        const engine = createEngine();
+        engine.start();
+
+        const emissions: Array<{ opened: Array<{ commId: string; state: unknown }> }> = [];
+        engine.commChanges$.subscribe((c) => emissions.push(c));
+
+        (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
+          runtimeStateSyncEvent(runtimeStateWithComm(commId, { _esm: "<blob-ref>" })),
+        ]);
+        transport.deliver([0x05, 0x03]);
+
+        // First fetch is immediate; the retry waits ~100ms of real time.
+        await vi.waitFor(
+          () => {
+            expect(emissions.length).toBeGreaterThan(0);
+          },
+          { timeout: 2000 },
+        );
+
+        expect(attempts).toBe(2);
+        const openedState = emissions[0].opened[0].state as Record<string, unknown>;
+        expect(openedState._esm).toBe(payload);
+
+        engine.stop();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("does not retry 4xx — leaves URL in state and emits anyway", async () => {
+      const commId = "missing1";
+      handle = createMockHandle({
+        resolve_comm_state: vi.fn(() => ({
+          state: { _py_render: "http://127.0.0.1:1234/blob/gone" },
+          buffer_paths: [] as string[][],
+          text_paths: [["_py_render"]] as string[][],
+        })),
+      });
+
+      const fetchStub = vi.fn(async () => new Response("not found", { status: 404 }));
+      vi.stubGlobal("fetch", fetchStub);
+
+      try {
+        const engine = createEngine();
+        engine.start();
+
+        const emissions: Array<{ opened: Array<{ commId: string; state: unknown }> }> = [];
+        engine.commChanges$.subscribe((c) => emissions.push(c));
+
+        (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
+          runtimeStateSyncEvent(runtimeStateWithComm(commId, { _py_render: "<blob-ref>" })),
+        ]);
+        transport.deliver([0x05, 0x04]);
+
+        await vi.waitFor(() => {
+          expect(emissions.length).toBeGreaterThan(0);
+        });
+
+        expect(fetchStub).toHaveBeenCalledTimes(1); // no retry on 4xx
+        const openedState = emissions[0].opened[0].state as Record<string, unknown>;
+        // Fetch failed permanently — URL stays so downstream code at
+        // least has a non-null value instead of discarding the emission.
+        expect(openedState._py_render).toBe("http://127.0.0.1:1234/blob/gone");
+
+        engine.stop();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+  });
 });
 
 // ── DirectTransport tests ──────────────────────────────────────────

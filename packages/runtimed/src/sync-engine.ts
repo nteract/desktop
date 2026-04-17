@@ -93,6 +93,118 @@ const nullLogger: SyncEngineLogger = {
   error() {},
 };
 
+// ── Comm state helpers ───────────────────────────────────────────────
+
+/**
+ * Backoff delays between text-blob fetch attempts, in milliseconds.
+ *
+ * Under "run all cells" load the daemon's blob write can race the
+ * frontend's GET — especially for large pywidget `_py_render` payloads.
+ * Three retries with exponential backoff covers that window without
+ * stalling the UI for long on genuinely missing blobs.
+ *
+ * The first attempt is immediate (no entry). Each subsequent entry is
+ * the delay *before* the next attempt.
+ */
+const TEXT_BLOB_RETRY_DELAYS_MS = [100, 300, 1000];
+
+/** Sleep helper for `inlineTextBlobs` retry backoff. */
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * For each JSON path in `paths`, read the blob-server URL currently at that
+ * position in `state`, fetch its body as text, and replace the URL with the
+ * decoded string in place.
+ *
+ * Used by `projectComms` to resolve text blobs (e.g. anywidget `_py_render`
+ * source code) that the WASM resolver left as URL strings — widget code
+ * consumes synced string traits directly and can't fetch URLs on its own.
+ *
+ * Retries transient failures (network errors, 5xx) with exponential
+ * backoff; gives up on 4xx (the blob genuinely isn't there). After all
+ * attempts fail the URL stays in place and a warning is logged — the
+ * widget will render broken, but better than throwing away the whole
+ * comm emission.
+ */
+async function inlineTextBlobs(
+  state: Record<string, unknown>,
+  paths: string[][],
+  logger: SyncEngineLogger,
+): Promise<void> {
+  if (paths.length === 0) return;
+  await Promise.all(
+    paths.map(async (path) => {
+      const url = readPath(state, path);
+      if (typeof url !== "string") return;
+      const text = await fetchTextBlobWithRetry(url, logger);
+      if (text !== null) {
+        writePath(state, path, text);
+      }
+    }),
+  );
+}
+
+/**
+ * Fetch `url` as text, retrying transient failures.
+ *
+ * Returns the decoded body on success, or `null` after all retries are
+ * exhausted. 4xx responses are treated as permanent and returned
+ * immediately without retry (the daemon doesn't know about that hash).
+ */
+async function fetchTextBlobWithRetry(
+  url: string,
+  logger: SyncEngineLogger,
+): Promise<string | null> {
+  let lastReason = "";
+  for (let attempt = 0; attempt <= TEXT_BLOB_RETRY_DELAYS_MS.length; attempt++) {
+    if (attempt > 0) {
+      await delay(TEXT_BLOB_RETRY_DELAYS_MS[attempt - 1]);
+    }
+    try {
+      const res = await fetch(url);
+      if (res.ok) {
+        return await res.text();
+      }
+      lastReason = `HTTP ${res.status}`;
+      // 4xx is permanent — don't burn retries.
+      if (res.status >= 400 && res.status < 500) {
+        logger.warn(`[sync-engine] text blob ${url} returned ${res.status}, giving up`);
+        return null;
+      }
+    } catch (err) {
+      lastReason = err instanceof Error ? err.message : String(err);
+    }
+  }
+  logger.warn(
+    `[sync-engine] text blob ${url} failed after ${TEXT_BLOB_RETRY_DELAYS_MS.length + 1} attempts: ${lastReason}`,
+  );
+  return null;
+}
+
+/** Read `obj[path[0]][path[1]]...` — returns undefined if any step is missing. */
+function readPath(obj: unknown, path: string[]): unknown {
+  let cursor: unknown = obj;
+  for (const seg of path) {
+    if (cursor == null || typeof cursor !== "object") return undefined;
+    cursor = (cursor as Record<string, unknown>)[seg];
+  }
+  return cursor;
+}
+
+/** Write `value` at `obj[path[0]][path[1]]...`. No-op if the path is missing. */
+function writePath(obj: unknown, path: string[], value: unknown): void {
+  if (path.length === 0) return;
+  let cursor: unknown = obj;
+  for (let i = 0; i < path.length - 1; i++) {
+    if (cursor == null || typeof cursor !== "object") return;
+    cursor = (cursor as Record<string, unknown>)[path[i]];
+  }
+  if (cursor == null || typeof cursor !== "object") return;
+  (cursor as Record<string, unknown>)[path[path.length - 1]] = value;
+}
+
 // ── Options ──────────────────────────────────────────────────────────
 
 export interface SyncEngineOptions {
@@ -124,6 +236,16 @@ export class SyncEngine {
   private prevExecutions: Record<string, ExecutionState> = {};
   private commDiffState: CommDiffState = { comms: {}, json: {} };
   private lastRuntimeState: RuntimeState | null = null;
+  /**
+   * Serial queue for async comm emissions.
+   *
+   * `projectComms` is invoked synchronously from several observable
+   * pipelines. Text blobs require HTTP fetches to the blob server, which
+   * are async. Chaining each emission's async resolution onto this promise
+   * preserves the order of `commChanges$` emissions regardless of which
+   * fetch completes first.
+   */
+  private commEmitQueue: Promise<void> = Promise.resolve();
 
   // Internal subjects
   private readonly frameIn$ = new Subject<number[]>();
@@ -724,7 +846,12 @@ export class SyncEngine {
    * Project comm state from a RuntimeState snapshot.
    *
    * Diffs against previous state, resolves ContentRefs via the WASM handle,
-   * and emits to commChanges$.
+   * fetches any text blob references, and emits to commChanges$.
+   *
+   * The diff computation and `commDiffState` update happen synchronously
+   * so successive calls see correct incremental deltas. The final emission
+   * is queued on `commEmitQueue` so emissions stay in order even when text
+   * blob fetches from one batch outlive a later batch's fetches.
    */
   private projectComms(state: RuntimeState): void {
     this.lastRuntimeState = state;
@@ -739,10 +866,16 @@ export class SyncEngine {
     const handle = this.opts.getHandle();
     const resolve = (commId: string) =>
       handle?.resolve_comm_state?.(commId) as
-        | { state: Record<string, unknown>; buffer_paths: string[][] }
+        | {
+            state: Record<string, unknown>;
+            buffer_paths: string[][];
+            text_paths?: string[][];
+          }
         | undefined;
 
-    const opened: ResolvedComm[] = [];
+    // Pending entries carry the raw resolved state plus the text paths that
+    // still need to be fetched before emission.
+    const opened: Array<{ comm: ResolvedComm; textPaths: string[][] }> = [];
     for (const { commId, entry } of result.opened) {
       const resolved = resolve(commId);
       if (!resolved) {
@@ -754,46 +887,68 @@ export class SyncEngine {
         continue;
       }
       opened.push({
-        commId,
-        targetName: entry.target_name,
-        modelModule: entry.model_module,
-        modelName: entry.model_name,
-        state: {
-          ...resolved.state,
-          _model_module: entry.model_module || undefined,
-          _model_name: entry.model_name || undefined,
+        comm: {
+          commId,
+          targetName: entry.target_name,
+          modelModule: entry.model_module,
+          modelName: entry.model_name,
+          state: {
+            ...resolved.state,
+            _model_module: entry.model_module || undefined,
+            _model_name: entry.model_name || undefined,
+          },
+          bufferPaths: resolved.buffer_paths,
+          unresolvedOutputs:
+            detectUnresolvedOutputs(entry.state as Record<string, unknown>)?.outputs ?? null,
         },
-        bufferPaths: resolved.buffer_paths,
-        unresolvedOutputs:
-          detectUnresolvedOutputs(entry.state as Record<string, unknown>)?.outputs ?? null,
+        textPaths: resolved.text_paths ?? [],
       });
     }
 
-    const updated: ResolvedComm[] = [];
+    const updated: Array<{ comm: ResolvedComm; textPaths: string[][] }> = [];
     for (const { commId, entry } of result.updated) {
       const resolved = resolve(commId);
       if (!resolved) continue;
       updated.push({
-        commId,
-        targetName: entry.target_name,
-        modelModule: entry.model_module,
-        modelName: entry.model_name,
-        state: resolved.state,
-        bufferPaths: resolved.buffer_paths,
-        unresolvedOutputs:
-          detectUnresolvedOutputs(entry.state as Record<string, unknown>)?.outputs ?? null,
+        comm: {
+          commId,
+          targetName: entry.target_name,
+          modelModule: entry.model_module,
+          modelName: entry.model_name,
+          state: resolved.state,
+          bufferPaths: resolved.buffer_paths,
+          unresolvedOutputs:
+            detectUnresolvedOutputs(entry.state as Record<string, unknown>)?.outputs ?? null,
+        },
+        textPaths: resolved.text_paths ?? [],
       });
     }
 
     this.commDiffState = next;
 
-    if (opened.length > 0 || updated.length > 0 || result.closed.length > 0) {
-      this._commChanges$.next({
-        opened,
-        updated,
-        closed: result.closed,
-      });
+    if (opened.length === 0 && updated.length === 0 && result.closed.length === 0) {
+      return;
     }
+
+    // Serialize async resolution + emit so ordering is preserved across
+    // overlapping projectComms calls. A `.catch` keeps one failing fetch
+    // from poisoning the queue for subsequent batches.
+    const log = this.opts.logger;
+    this.commEmitQueue = this.commEmitQueue
+      .then(async () => {
+        await Promise.all([
+          ...opened.map((o) => inlineTextBlobs(o.comm.state, o.textPaths, log)),
+          ...updated.map((u) => inlineTextBlobs(u.comm.state, u.textPaths, log)),
+        ]);
+        this._commChanges$.next({
+          opened: opened.map((o) => o.comm),
+          updated: updated.map((u) => u.comm),
+          closed: result.closed,
+        });
+      })
+      .catch((err) => {
+        log.warn("[sync-engine] comm emission failed:", err);
+      });
   }
 
   // ── Outbound sync ────────────────────────────────────────────────
