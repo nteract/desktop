@@ -83,6 +83,9 @@ export function LeafletMapWidget({ modelId, className }: WidgetComponentProps) {
       "mouseup",
       "mouseover",
       "mouseout",
+      "mousemove",
+      "contextmenu",
+      "preclick",
     ] as const) {
       map.on(eventType, (e: L.LeafletMouseEvent) => {
         sendCustom(modelId, {

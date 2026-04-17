@@ -1,4 +1,11 @@
 import { registerWidget } from "../widget-registry";
+import {
+  LeafletAttributionControlWidget,
+  LeafletFullScreenControlWidget,
+  LeafletLayersControlWidget,
+  LeafletScaleControlWidget,
+  LeafletZoomControlWidget,
+} from "./leaflet-controls";
 import { LeafletGeoJSONWidget } from "./leaflet-geojson";
 import { LeafletMapWidget } from "./leaflet-map-widget";
 import { LeafletMarkerWidget } from "./leaflet-marker";
@@ -37,11 +44,11 @@ registerWidget("LeafletVideoOverlayModel", NullWidget);
 registerWidget("LeafletWMSLayerModel", NullWidget);
 registerWidget("LeafletPopupModel", NullWidget);
 registerWidget("LeafletControlModel", NullWidget);
-registerWidget("LeafletZoomControlModel", NullWidget);
-registerWidget("LeafletScaleControlModel", NullWidget);
-registerWidget("LeafletAttributionControlModel", NullWidget);
-registerWidget("LeafletFullScreenControlModel", NullWidget);
-registerWidget("LeafletLayersControlModel", NullWidget);
+registerWidget("LeafletZoomControlModel", LeafletZoomControlWidget);
+registerWidget("LeafletScaleControlModel", LeafletScaleControlWidget);
+registerWidget("LeafletAttributionControlModel", LeafletAttributionControlWidget);
+registerWidget("LeafletFullScreenControlModel", LeafletFullScreenControlWidget);
+registerWidget("LeafletLayersControlModel", LeafletLayersControlWidget);
 registerWidget("LeafletDrawControlModel", NullWidget);
 registerWidget("LeafletGeomanDrawControlModel", NullWidget);
 registerWidget("LeafletMeasureControlModel", NullWidget);
