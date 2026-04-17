@@ -1488,7 +1488,15 @@ fn cmd_install_nightly(args: &[String]) {
         exit(1);
     }
 
-    // ── Guard 2: existing app bundle detection (all platforms) ───────────
+    // ── Guard 2: existing app bundle detection (macOS only) ──────────────
+    // On macOS the .app bundle manages its own daemon via SMAppService —
+    // overwriting it from source is the specific footgun we're avoiding.
+    //
+    // On Linux, by contrast, replacing whatever's installed *is* the
+    // explicit goal of this command: cloud boxes and headless dev
+    // environments want to bring their source tree's build online as the
+    // running nightly, whether or not a prior .deb/AppImage put something
+    // there. So the installed-app guard is macOS-scoped intentionally.
     #[cfg(target_os = "macos")]
     if !replace_installed_app {
         if let Some((bundle_path, app_name)) = runt_workspace::find_any_installed_nteract_bundle() {
@@ -1507,8 +1515,7 @@ fn cmd_install_nightly(args: &[String]) {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        // App-bundle detection is macOS-specific; the flag is accepted silently
-        // on other platforms to keep CLI surface identical.
+        // Flag accepted silently on non-macOS so the CLI surface matches.
         let _ = replace_installed_app;
     }
 
