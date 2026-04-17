@@ -1146,6 +1146,7 @@ fn cmd_wasm(target: Option<&str>) {
                 "../../apps/notebook/src/wasm/runtimed-wasm",
             ],
         );
+        let _ = fs::remove_file("apps/notebook/src/wasm/runtimed-wasm/.gitignore");
         println!("WASM build complete. Output: apps/notebook/src/wasm/runtimed-wasm/");
     }
 
@@ -1170,6 +1171,7 @@ fn cmd_wasm(target: Option<&str>) {
                 // Default --out-dir (./pkg) is what all consumers expect.
             ],
         );
+        let _ = fs::remove_file("crates/sift-wasm/pkg/.gitignore");
         // Mirror the pkg to packages/sift/public/wasm/ for the sift demo
         // app's runtime fetch (vite base=/, served as static asset).
         let pkg_dir = Path::new("crates/sift-wasm/pkg");

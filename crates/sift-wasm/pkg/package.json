@@ -1,0 +1,16 @@
+{
+  "name": "sift-wasm",
+  "type": "module",
+  "description": "WASM bindings for nteract-predicate — used by @nteract/sift",
+  "version": "0.1.0",
+  "files": [
+    "sift_wasm_bg.wasm",
+    "sift_wasm.js",
+    "sift_wasm.d.ts"
+  ],
+  "main": "sift_wasm.js",
+  "types": "sift_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
