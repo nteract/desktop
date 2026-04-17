@@ -584,12 +584,23 @@ function CategoryPopoverContent({
   const selectedCount = activeSet ? activeSet.size : allCategories.length;
 
   function toggleItem(label: string) {
-    if (activeSet?.has(label)) {
+    if (activeSet === null) {
+      // No filter active = every value is implicitly selected. A click
+      // here means "uncheck this one" — subtract it from the full set.
+      // Without this, the handler below would treat the click as
+      // "there's no set yet, add just this" and invert the user's
+      // intent to a 1-selected filter.
+      const next = new Set(allCategories.map((c) => c.label));
+      next.delete(label);
+      onFilter({ kind: "set", values: next });
+      return;
+    }
+    if (activeSet.has(label)) {
       const next = new Set(activeSet);
       next.delete(label);
       onFilter(next.size > 0 ? { kind: "set", values: next } : null);
     } else {
-      const next = new Set(activeSet ?? []);
+      const next = new Set(activeSet);
       next.add(label);
       onFilter({ kind: "set", values: next });
     }
@@ -700,6 +711,17 @@ function CategoricalBars({
 
   const activeSet = activeFilter?.kind === "set" ? activeFilter.values : null;
 
+  // If the "others" trigger unmounts (e.g. a filter change narrowed the
+  // set to only the top categories), Radix loses its popover anchor and
+  // the content snaps to the top-left corner. Close the popover so it
+  // re-anchors cleanly the next time the user opens it.
+  const hasOthersTrigger = summary.othersCount > 0;
+  useEffect(() => {
+    if (popoverOpen && !hasOthersTrigger) {
+      setPopoverOpen(false);
+    }
+  }, [popoverOpen, hasOthersTrigger]);
+
   return (
     <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
       <div className="sift-cat-summary">
@@ -716,6 +738,14 @@ function CategoricalBars({
                 item.isOthers
                   ? undefined
                   : () => {
+                      // Top-category bars use "click to filter to this"
+                      // semantics (the bar highlight / dim affordance signals
+                      // selection, not a checkbox). Unlike the popover rows
+                      // inside CategoryPopoverContent — those are checkboxes
+                      // and need the implicit-full-set subtract behavior —
+                      // clicking a bar while nothing is filtered should
+                      // filter to that single category. That's the existing
+                      // incremental-add path working as intended.
                       if (activeSet?.has(item.label)) {
                         const next = new Set(activeSet);
                         next.delete(item.label);
