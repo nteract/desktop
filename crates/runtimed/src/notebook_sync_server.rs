@@ -3777,6 +3777,10 @@ async fn auto_launch_kernel(
 
     // Determine kernel type and environment
     let (kernel_type, env_source, pooled_env) = match notebook_kernel_type.as_deref() {
+        Some("test") => {
+            info!("[notebook-sync] Auto-launch: test runtime (runt.runtime)");
+            ("test", "test:builtin".to_string(), None)
+        }
         Some("deno") => {
             // Notebook is a Deno notebook (per its kernelspec)
             info!("[notebook-sync] Auto-launch: Deno kernel (notebook kernelspec)");
@@ -8860,22 +8864,30 @@ fn build_new_notebook_metadata(
         UvInlineMetadata,
     };
 
-    let (kernelspec, language_info, runt) = match runtime {
-        "deno" => (
-            KernelspecSnapshot {
+    match runtime {
+        "test" => NotebookMetadataSnapshot {
+            runt: RuntMetadata {
+                env_id: Some(env_id.to_string()),
+                runtime: Some("test".to_string()),
+                ..RuntMetadata::default()
+            },
+            ..Default::default()
+        },
+        "deno" => NotebookMetadataSnapshot {
+            kernelspec: Some(KernelspecSnapshot {
                 name: "deno".to_string(),
                 display_name: "Deno".to_string(),
                 language: Some("typescript".to_string()),
-            },
-            LanguageInfoSnapshot {
+            }),
+            language_info: Some(LanguageInfoSnapshot {
                 name: "typescript".to_string(),
                 version: None,
-            },
-            RuntMetadata {
+            }),
+            runt: RuntMetadata {
                 env_id: Some(env_id.to_string()),
                 ..RuntMetadata::default()
             },
-        ),
+        },
         _ => {
             // Python (default)
             let (uv, conda, pixi) = match default_python_env {
@@ -8883,8 +8895,6 @@ fn build_new_notebook_metadata(
                     None,
                     Some(CondaInlineMetadata {
                         dependencies: vec![],
-                        // Default to conda-forge to match launch logic normalization
-                        // (avoids false channel-drift detection)
                         channels: vec!["conda-forge".to_string()],
                         python: None,
                     }),
@@ -8912,31 +8922,25 @@ fn build_new_notebook_metadata(
                 ),
             };
 
-            (
-                KernelspecSnapshot {
+            NotebookMetadataSnapshot {
+                kernelspec: Some(KernelspecSnapshot {
                     name: "python3".to_string(),
                     display_name: "Python 3".to_string(),
                     language: Some("python".to_string()),
-                },
-                LanguageInfoSnapshot {
+                }),
+                language_info: Some(LanguageInfoSnapshot {
                     name: "python".to_string(),
                     version: None,
-                },
-                RuntMetadata {
+                }),
+                runt: RuntMetadata {
                     env_id: Some(env_id.to_string()),
                     uv,
                     conda,
                     pixi,
                     ..RuntMetadata::default()
                 },
-            )
+            }
         }
-    };
-
-    NotebookMetadataSnapshot {
-        kernelspec: Some(kernelspec),
-        language_info: Some(language_info),
-        runt,
     }
 }
 
