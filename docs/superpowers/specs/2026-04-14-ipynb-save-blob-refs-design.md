@@ -1,6 +1,6 @@
 # `.ipynb` save: external blob refs instead of base64 inlining
 
-**Status:** Design
+**Status:** Shipped (#1769)
 **Date:** 2026-04-14
 **Related:** #1762 (dx), [spec: blob GC correctness](./2026-04-14-blob-gc-correctness-design.md)
 

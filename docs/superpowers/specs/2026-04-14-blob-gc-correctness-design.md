@@ -1,6 +1,6 @@
 # Blob GC correctness
 
-**Status:** Design
+**Status:** Shipped (#1770)
 **Date:** 2026-04-14
 **Related:** #1762 (dx), [spec: ipynb save without base64 inlining](./2026-04-14-ipynb-save-blob-refs-design.md)
 
