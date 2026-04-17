@@ -28,17 +28,26 @@ describe("binOverlapsFilter", () => {
     expect(binOverlapsFilter(11, 11, 0, 10)).toBe(false);
   });
 
-  it("point-filter (min === max) is inclusive against the bin extent", () => {
+  it("point-filter (min === max) lands in one bin at interior boundaries", () => {
     // This is the #1860 case: user pinned a value while the column was
     // collapsed, then cleared the other filter so the column widened.
-    // A bin whose extent *contains* the pinned value should stay active.
-    expect(binOverlapsFilter(0, 10, 5, 5)).toBe(true);
-    // Pinned value at bin boundaries should still count.
-    expect(binOverlapsFilter(0, 10, 0, 0)).toBe(true);
-    expect(binOverlapsFilter(0, 10, 10, 10)).toBe(true);
-    // Pinned value outside the bin.
+    // Mirror the half-open [x0, x1) bucketing in NumericAccumulator —
+    // at an interior boundary (e.g. v = 10 for bins [0,10) and [10,20)),
+    // the pinned value should light the *upper* bin only, not both.
+    expect(binOverlapsFilter(0, 10, 5, 5)).toBe(true); // interior of bin
+    expect(binOverlapsFilter(0, 10, 0, 0)).toBe(true); // left edge (inclusive)
+    expect(binOverlapsFilter(0, 10, 10, 10)).toBe(false); // right edge — upper bin wins
+    expect(binOverlapsFilter(10, 20, 10, 10)).toBe(true); // same boundary from the upper side
     expect(binOverlapsFilter(0, 10, 11, 11)).toBe(false);
     expect(binOverlapsFilter(0, 10, -1, -1)).toBe(false);
+  });
+
+  it("point-filter hitting the last bin's upper edge stays inclusive", () => {
+    // `v === summary.max` clamps into the last bucket in the accumulator,
+    // so passing `isLastBin = true` makes the upper edge inclusive.
+    expect(binOverlapsFilter(90, 100, 100, 100, true)).toBe(true);
+    // Without the flag the last bin behaves like any interior bin.
+    expect(binOverlapsFilter(90, 100, 100, 100, false)).toBe(false);
   });
 
   it("point-bin and point-filter at the same value overlap", () => {

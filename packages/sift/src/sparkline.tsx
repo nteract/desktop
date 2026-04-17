@@ -25,27 +25,33 @@ const CHART_HEIGHT = 48;
  * Does a bin with range [x0, x1] overlap the active range filter?
  *
  * Uses strict inequality for the common case of two extents overlapping.
- * The inclusive fallback handles two degenerate shapes that can arise
+ * The inclusive fallbacks handle two degenerate shapes that can arise
  * from the constant-slice pin behavior (#1859 / #1860):
  *
  * - **Bin is a point** (`x0 === x1`): the bin collapsed to one value;
  *   include it when the filter brackets that value.
  * - **Filter is a point** (`filterMin === filterMax`): the user pinned
  *   a value while the column was collapsed, and the column later
- *   widened. Include any bin whose extent contains the pinned value so
- *   the bar stays highlighted even with a zero-width filter.
+ *   widened. Use half-open `[x0, x1)` to mirror the actual bucketing
+ *   in `NumericAccumulator.snapshot` / `store_histogram` (values at
+ *   interior boundaries go to the upper bin via floor division). Pass
+ *   `isLastBin = true` for the final histogram bucket so `v === max`
+ *   still lights up the last bar — the bucketing code clamps that
+ *   index into the last bucket too.
  */
 export function binOverlapsFilter(
   x0: number,
   x1: number,
   filterMin: number,
   filterMax: number,
+  isLastBin: boolean = false,
 ): boolean {
   if (x0 === x1) {
     return x0 >= filterMin && x0 <= filterMax;
   }
   if (filterMin === filterMax) {
-    return x0 <= filterMin && filterMin <= x1;
+    const v = filterMin;
+    return isLastBin ? x0 <= v && v <= x1 : x0 <= v && v < x1;
   }
   return x1 > filterMin && x0 < filterMax;
 }
@@ -247,11 +253,21 @@ function BinaryNumericRatioBar({
     ? String(Math.round((highBin.x0 + highBin.x1) / 2))
     : formatNum((highBin.x0 + highBin.x1) / 2);
 
-  // Determine which segment is "active" based on range filter
+  // Determine which segment is "active" based on range filter. The high
+  // bin's right edge coincides with `summary.max`, so we mark it as the
+  // last bin so `v === max` pins keep it active (mirrors the bucketing
+  // clamp in `NumericAccumulator.snapshot`).
   const lowActive =
     !activeFilter || binOverlapsFilter(lowBin.x0, lowBin.x1, activeFilter.min, activeFilter.max);
   const highActive =
-    !activeFilter || binOverlapsFilter(highBin.x0, highBin.x1, activeFilter.min, activeFilter.max);
+    !activeFilter ||
+    binOverlapsFilter(
+      highBin.x0,
+      highBin.x1,
+      activeFilter.min,
+      activeFilter.max,
+      highBin.x1 === summary.max,
+    );
 
   return (
     <div className="sift-bool-summary">
@@ -344,9 +360,18 @@ function LowCardinalityNumericBars({
   return (
     <div className="sift-cat-summary">
       {items.map((item) => {
-        // Highlight bar if its range overlaps the active range filter
+        // Highlight bar if its range overlaps the active range filter.
+        // Mark the last bin (x1 === summary.max) so `v === max` pins
+        // stay lit; mirrors the bucketing clamp in the accumulator.
         const isActive =
-          !activeFilter || binOverlapsFilter(item.x0, item.x1, activeFilter.min, activeFilter.max);
+          !activeFilter ||
+          binOverlapsFilter(
+            item.x0,
+            item.x1,
+            activeFilter.min,
+            activeFilter.max,
+            item.x1 === summary.max,
+          );
         return (
           <div
             key={item.label}
@@ -459,7 +484,13 @@ function NumericHistogram({
               // that fall out of the constant-slice pin behavior (#1859 / #1860).
               let fill = baseFill;
               if (isFiltered) {
-                fill = binOverlapsFilter(bin.x0, bin.x1, activeFilter.min, activeFilter.max)
+                fill = binOverlapsFilter(
+                  bin.x0,
+                  bin.x1,
+                  activeFilter.min,
+                  activeFilter.max,
+                  i === numBins - 1,
+                )
                   ? activeFill
                   : dimFill;
               }
@@ -1021,7 +1052,13 @@ function TimestampHistogram({
               if (isFiltered) {
                 const binStart = summary.min + i * binSpan;
                 const binEnd = binStart + binSpan;
-                fill = binOverlapsFilter(binStart, binEnd, activeFilter.min, activeFilter.max)
+                fill = binOverlapsFilter(
+                  binStart,
+                  binEnd,
+                  activeFilter.min,
+                  activeFilter.max,
+                  i === numBins - 1,
+                )
                   ? activeFill
                   : dimFill;
               }
