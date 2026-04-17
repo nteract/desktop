@@ -3,6 +3,11 @@
   "type": "module",
   "description": "WASM bindings for nteract-predicate — used by @nteract/sift",
   "version": "0.1.0",
+  "license": "BSD-3-Clause",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nteract/desktop"
+  },
   "files": [
     "sift_wasm_bg.wasm",
     "sift_wasm.js",

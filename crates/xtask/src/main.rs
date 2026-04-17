@@ -1,11 +1,44 @@
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{exit, Child, Command, ExitStatus, Stdio};
 use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
+
+/// Find the workspace root (nearest ancestor containing a Cargo.toml with
+/// a `[workspace]` section). Subcommands that need repo-relative paths
+/// can call `ensure_workspace_root_cwd()` from within the subcommand to
+/// `cd` there before shelling out.
+fn find_workspace_root() -> Option<PathBuf> {
+    let mut dir = env::current_dir().ok()?;
+    loop {
+        let cargo = dir.join("Cargo.toml");
+        if cargo.exists() {
+            if let Ok(contents) = fs::read_to_string(&cargo) {
+                if contents.contains("[workspace]") {
+                    return Some(dir);
+                }
+            }
+        }
+        dir = dir.parent()?.to_path_buf();
+    }
+}
+
+/// Change the process cwd to the workspace root. Scope this to the
+/// specific subcommands that need it — not the top of `main` — because
+/// several xtask subcommands accept user-supplied relative path arguments
+/// (`notebook foo.ipynb`, `icons ./src.png`, `mcpb --output dist/out.mcpb`,
+/// `e2e test-fixture fixture.ipynb spec.js`, `run notebook.ipynb`) and
+/// those must stay relative to the shell cwd where the user invoked
+/// `cargo xtask`. A global cd silently reinterprets those args against
+/// the workspace root and opens/writes the wrong files.
+fn ensure_workspace_root_cwd() {
+    if let Some(root) = find_workspace_root() {
+        let _ = env::set_current_dir(&root);
+    }
+}
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -1126,6 +1159,11 @@ fn cmd_e2e_test_all() {
 }
 
 fn cmd_wasm(target: Option<&str>) {
+    // `wasm-pack build crates/<name>` and the subsequent `fs::copy`/
+    // `fs::read_dir` calls here all use repo-relative paths. cd to the
+    // workspace root so this works whether the user invoked xtask from
+    // the root, from `packages/sift`, or from anywhere else.
+    ensure_workspace_root_cwd();
     require_tool("wasm-pack", WASM_PACK_INSTALL);
 
     // Default (no target) builds both. `sift` or `runtimed` pick just one.
@@ -1216,6 +1254,10 @@ fn cmd_wasm(target: Option<&str>) {
 }
 
 fn cmd_renderer_plugins() {
+    // The `node scripts/build-renderer-plugins.ts` call below resolves
+    // the script path against cwd — normalize it so this works from
+    // any subdirectory.
+    ensure_workspace_root_cwd();
     require_pnpm();
     println!("Building renderer plugins...");
     // Build both the notebook renderer plugins and the runt-mcp plugin assets.
