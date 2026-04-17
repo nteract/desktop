@@ -42,18 +42,26 @@ function BrushLayer({
     currentX: number;
   } | null>(null);
 
+  // When min === max (the filtered slice is a single value), the brush's
+  // value↔pixel mapping would divide by zero and produce NaN coordinates,
+  // which corrupts the active-selection overlay. Treat that case as a
+  // degenerate single-value column: any brush result collapses to `min`,
+  // and the overlay spans the full width.
+  const span = max - min;
   const xToValue = useCallback(
     (px: number) => {
-      return min + (px / width) * (max - min);
+      if (span <= 0) return min;
+      return min + (px / width) * span;
     },
-    [width, min, max],
+    [width, min, span],
   );
 
   const valueToX = useCallback(
     (v: number) => {
-      return ((v - min) / (max - min)) * width;
+      if (span <= 0) return 0;
+      return ((v - min) / span) * width;
     },
-    [width, min, max],
+    [width, min, span],
   );
 
   const onPointerDown = useCallback((e: React.PointerEvent) => {
@@ -964,11 +972,15 @@ function formatNum(n: number): string {
   return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
 }
 
-/** Format a numeric range, collapsing to a single value when min === max. */
+/** Format a numeric range, collapsing to a single value when min === max.
+ *
+ * Compare against the raw values, not the formatted strings — `formatNum`
+ * rounds to two decimals, so `0.001`–`0.004` would both render as "0" and
+ * falsely collapse. We only want to hide the upper endpoint when the
+ * column is genuinely single-valued. */
 function formatNumRange(min: number, max: number): string {
-  const minStr = formatNum(min);
-  const maxStr = formatNum(max);
-  return minStr === maxStr ? minStr : `${minStr} – ${maxStr}`;
+  if (min === max) return formatNum(min);
+  return `${formatNum(min)} – ${formatNum(max)}`;
 }
 
 function truncate(s: string, max: number): string {
