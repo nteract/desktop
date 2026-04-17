@@ -434,12 +434,17 @@ function NumericHistogram({
           onFilter={onFilter}
         />
       </div>
-      {/* Hide range for binary-like columns where the ratio bar says it all */}
-      {!(
-        Number.isInteger(summary.min) &&
-        Number.isInteger(summary.max) &&
-        summary.max - summary.min <= 1
-      ) && <span className="sift-th-range">{formatNumRange(summary.min, summary.max)}</span>}
+      {/*
+        Always show the range label. The earlier "hide when integer span
+        <= 1" heuristic was a carry-over from the binary (0/1) case, which
+        already early-returns into `BinaryNumericRatioBar` via the
+        `uniqueCount === 2` branch above. Past that branch, single-valued
+        integer columns (e.g., a filtered slice where every row is 0)
+        were falling into this suppression and rendering no textual
+        label at all - with no ratio bar either, since `uniqueCount`
+        is 1 in that case.
+      */}
+      <span className="sift-th-range">{formatNumRange(summary.min, summary.max)}</span>
       <NumericProfile summary={summary} />
     </div>
   );
