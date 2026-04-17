@@ -427,6 +427,7 @@ export function createTable(
   headerRowEl.setAttribute("role", "row");
 
   const summaryContainers: HTMLDivElement[] = [];
+  const headerCells: HTMLDivElement[] = [];
 
   for (let c = 0; c < columns.length; c++) {
     const th = document.createElement("div");
@@ -563,6 +564,7 @@ export function createTable(
       th.appendChild(handle);
     }
 
+    headerCells.push(th);
     headerRowEl.appendChild(th);
   }
 
@@ -884,10 +886,9 @@ export function createTable(
     const totalW = colWidths.reduce((s, w) => s + w, 0);
     if (containerW > 0 && totalW < containerW) {
       const scale = containerW / totalW;
-      const ths = headerRowEl.children as HTMLCollectionOf<HTMLDivElement>;
       for (let c = 0; c < columns.length; c++) {
         colWidths[c] = Math.round(colWidths[c] * scale);
-        ths[c].style.width = colWidths[c] + "px";
+        headerCells[c].style.width = colWidths[c] + "px";
       }
       updateScrollContentWidth();
       heightsDirty = true;
@@ -1485,8 +1486,7 @@ export function createTable(
     const onMove = (ev: PointerEvent) => {
       const delta = ev.clientX - startX;
       colWidths[colIndex] = Math.max(MIN_COL_WIDTH, startWidth + delta);
-      const ths = headerRowEl.children as HTMLCollectionOf<HTMLDivElement>;
-      ths[colIndex].style.width = colWidths[colIndex] + "px";
+      headerCells[colIndex].style.width = colWidths[colIndex] + "px";
       renderSummary(colIndex);
       updateScrollContentWidth();
       heightsDirty = true;
@@ -1526,16 +1526,18 @@ export function createTable(
   }
 
   function updateSortUI() {
-    const ths = headerRowEl.children as HTMLCollectionOf<HTMLDivElement>;
     for (let c = 0; c < columns.length; c++) {
-      const arrow = ths[c].querySelector(".sift-sort-arrow");
+      const arrow = headerCells[c].querySelector(".sift-sort-arrow");
       if (!arrow) continue;
       if (sortState && sortState.col === c) {
         arrow.textContent = sortState.dir === "asc" ? " ↑" : " ↓";
-        ths[c].setAttribute("aria-sort", sortState.dir === "asc" ? "ascending" : "descending");
+        headerCells[c].setAttribute(
+          "aria-sort",
+          sortState.dir === "asc" ? "ascending" : "descending",
+        );
       } else {
         arrow.textContent = "";
-        ths[c].removeAttribute("aria-sort");
+        headerCells[c].removeAttribute("aria-sort");
       }
     }
   }
@@ -1799,9 +1801,8 @@ export function createTable(
 
   function updateFilteredLabels() {
     const active = hasActiveFilters();
-    const ths = headerRowEl.children as HTMLCollectionOf<HTMLDivElement>;
     for (let c = 0; c < columns.length; c++) {
-      const th = ths[c];
+      const th = headerCells[c];
       const label = th.querySelector(".sift-th-label") as HTMLElement;
 
       // Remove existing filter line
@@ -2001,8 +2002,7 @@ export function createTable(
           columns[colIndex].columnType = action.targetType;
           columns[colIndex].numeric = action.targetType === "numeric";
           // Update type icon
-          const ths = headerRowEl.children as HTMLCollectionOf<HTMLDivElement>;
-          const icon = ths[colIndex].querySelector(".sift-type-icon");
+          const icon = headerCells[colIndex].querySelector(".sift-type-icon");
           if (icon) {
             icon.textContent =
               action.targetType === "numeric"
@@ -2036,8 +2036,7 @@ export function createTable(
           columns[colIndex].columnType = restoredType;
           columns[colIndex].numeric = restoredType === "numeric";
           // Update type icon
-          const thsUndo = headerRowEl.children as HTMLCollectionOf<HTMLDivElement>;
-          const iconUndo = thsUndo[colIndex].querySelector(".sift-type-icon");
+          const iconUndo = headerCells[colIndex].querySelector(".sift-type-icon");
           if (iconUndo) {
             iconUndo.textContent =
               restoredType === "numeric"
@@ -2099,9 +2098,8 @@ export function createTable(
 
   function reorderColumns() {
     // Reorder header TH elements to match visualOrder
-    const ths = Array.from(headerRowEl.children) as HTMLDivElement[];
     for (const colIdx of visualOrder) {
-      headerRowEl.appendChild(ths[colIdx]);
+      headerRowEl.appendChild(headerCells[colIdx]);
     }
 
     // Reorder cells in each pooled row
