@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { Popover, PopoverContent, PopoverTrigger } from "./components/ui/popover";
+import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "./components/ui/popover";
 import type {
   BooleanColumnSummary,
   CategoricalColumnSummary,
@@ -584,14 +584,42 @@ function CategoryPopoverContent({
   const selectedCount = activeSet ? activeSet.size : allCategories.length;
 
   function toggleItem(label: string) {
-    if (activeSet?.has(label)) {
+    if (activeSet === null) {
+      // No filter active = every value is implicitly selected. A click
+      // here means "uncheck this one" — subtract it from the full set.
+      // Without this, the handler below would treat the click as
+      // "there's no set yet, add just this" and invert the user's
+      // intent to a 1-selected filter.
+      const next = new Set(allCategories.map((c) => c.label));
+      next.delete(label);
+      onFilter({ kind: "set", values: next });
+      return;
+    }
+    if (activeSet.has(label)) {
       const next = new Set(activeSet);
       next.delete(label);
-      onFilter(next.size > 0 ? { kind: "set", values: next } : null);
-    } else {
-      const next = new Set(activeSet ?? []);
-      next.add(label);
+      // Empty out to a real empty-set filter ("None"), not to `null`
+      // (which means "no filter = show everything"). In the popover
+      // checkbox UI, unchecking the last checked row is semantically
+      // "select nothing", and should match what the "None" button
+      // produces - row count drops to 0 rather than jumping back to
+      // the full dataset.
       onFilter({ kind: "set", values: next });
+    } else {
+      const next = new Set(activeSet);
+      next.add(label);
+      // Re-checking the last unchecked row refills the set to the full
+      // universe. Collapse that back to `null` ("no filter = show
+      // everything") rather than holding an explicit all-selected
+      // filter. Otherwise the filter pill sticks around on a no-op
+      // filter, the header reports "Filtered to N of N", and any
+      // category added to the data later would be silently excluded
+      // by the frozen set.
+      if (next.size >= allCategories.length) {
+        onFilter(null);
+      } else {
+        onFilter({ kind: "set", values: next });
+      }
     }
   }
 
@@ -689,9 +717,19 @@ function CategoricalBars({
     pct: c.pct,
     isOthers: false,
   }));
-  if (summary.othersCount > 0) {
+
+  // Whether the column has an "others" bucket at all is a property of
+  // the *unfiltered* data, not the current filter. Without this, any
+  // filter that narrows the set to only the top categories — or an
+  // all-empty "None" selection — unmounts the trigger and leaves the
+  // user with no button to reopen the popover and adjust their filter.
+  // Fall back to the current summary's lists when the unfiltered
+  // snapshot isn't available.
+  const unfilteredUniqueCount = unfilteredAllCategories?.length ?? summary.allCategories.length;
+  const hasOthersTrigger = unfilteredUniqueCount > summary.topCategories.length;
+  if (hasOthersTrigger) {
     items.push({
-      label: `${summary.uniqueCount - summary.topCategories.length} others`,
+      label: `${unfilteredUniqueCount - summary.topCategories.length} others`,
       count: summary.othersCount,
       pct: summary.othersPct,
       isOthers: true,
@@ -702,51 +740,69 @@ function CategoricalBars({
 
   return (
     <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
-      <div className="sift-cat-summary">
-        {items.map((item) => {
-          const isActive = activeSet ? activeSet.has(item.label) : true;
-          const row = (
-            <div
-              key={item.label}
-              className={`sift-cat-row sift-cat-clickable`}
-              style={{
-                opacity: activeSet && !isActive && !item.isOthers ? 0.3 : 1,
-              }}
-              onClick={
-                item.isOthers
-                  ? undefined
-                  : () => {
-                      if (activeSet?.has(item.label)) {
-                        const next = new Set(activeSet);
-                        next.delete(item.label);
-                        onFilter(next.size > 0 ? { kind: "set", values: next } : null);
-                      } else {
-                        const next = new Set(activeSet ?? []);
-                        next.add(item.label);
-                        onFilter({ kind: "set", values: next });
+      {/*
+        Anchor the popover to the whole category summary area rather than
+        the "others" row itself. The summary box is a stable position
+        directly below the column heading, so the popover stays pinned
+        there even as individual category bars reflow with the filter.
+        Wrapping the same div makes its position track the column's
+        scroll/layout while the trigger remains the "others" row click.
+      */}
+      <PopoverAnchor asChild>
+        <div className="sift-cat-summary">
+          {items.map((item) => {
+            const isActive = activeSet ? activeSet.has(item.label) : true;
+            const row = (
+              <div
+                key={item.label}
+                className={`sift-cat-row sift-cat-clickable`}
+                style={{
+                  opacity: activeSet && !isActive && !item.isOthers ? 0.3 : 1,
+                }}
+                onClick={
+                  item.isOthers
+                    ? undefined
+                    : () => {
+                        // Top-category bars use "click to filter to this"
+                        // semantics (the bar highlight / dim affordance signals
+                        // selection, not a checkbox). Unlike the popover rows
+                        // inside CategoryPopoverContent — those are checkboxes
+                        // and need the implicit-full-set subtract behavior —
+                        // clicking a bar while nothing is filtered should
+                        // filter to that single category. That's the existing
+                        // incremental-add path working as intended.
+                        if (activeSet?.has(item.label)) {
+                          const next = new Set(activeSet);
+                          next.delete(item.label);
+                          onFilter(next.size > 0 ? { kind: "set", values: next } : null);
+                        } else {
+                          const next = new Set(activeSet ?? []);
+                          next.add(item.label);
+                          onFilter({ kind: "set", values: next });
+                        }
                       }
-                    }
-              }
-            >
-              <div className="sift-cat-bar-track">
-                <div className="sift-cat-bar-fill" style={{ width: `${item.pct}%` }} />
+                }
+              >
+                <div className="sift-cat-bar-track">
+                  <div className="sift-cat-bar-fill" style={{ width: `${item.pct}%` }} />
+                </div>
+                <span className="sift-cat-label">
+                  {item.isOthers ? item.label + " ▾" : truncate(item.label, 16)}
+                </span>
+                <span className="sift-cat-pct">{item.pct}%</span>
               </div>
-              <span className="sift-cat-label">
-                {item.isOthers ? item.label + " ▾" : truncate(item.label, 16)}
-              </span>
-              <span className="sift-cat-pct">{item.pct}%</span>
-            </div>
-          );
-          if (item.isOthers) {
-            return (
-              <PopoverTrigger key={item.label} asChild>
-                {row}
-              </PopoverTrigger>
             );
-          }
-          return row;
-        })}
-      </div>
+            if (item.isOthers) {
+              return (
+                <PopoverTrigger key={item.label} asChild>
+                  {row}
+                </PopoverTrigger>
+              );
+            }
+            return row;
+          })}
+        </div>
+      </PopoverAnchor>
       <PopoverContent side="bottom" align="start">
         <CategoryPopoverContent
           allCategories={unfilteredAllCategories ?? summary.allCategories}
