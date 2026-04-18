@@ -100,6 +100,40 @@ async function sendMessage(message: unknown): Promise<void> {
 const _outputResolveGen = new Map<string, number>();
 
 /**
+ * Compute the diff of `next` relative to `existing` — returns only
+ * the keys whose values aren't already current in `existing`.
+ *
+ * Used by the `commChanges$` subscriber to avoid firing duplicate
+ * `change` notifications when a synchronous caller (anywidget
+ * `save_changes`, etc.) wrote the value into the store immediately
+ * and the subsequent projection's resolved state carries the same
+ * bytes. Equality is by reference OR by stringified JSON — shallow
+ * comparison would miss structurally-equal objects arriving through
+ * the WASM resolver as fresh references.
+ */
+function diffResolvedState(
+  existing: Record<string, unknown>,
+  next: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(next)) {
+    const prev = existing[key];
+    if (prev === value) continue;
+    // Cheap path: referential match. Otherwise fall back to JSON.
+    // For widget state (mostly scalars and small arrays/objects)
+    // this is fast and avoids the subtleties of deep equality with
+    // mixed reference identities from the WASM resolver.
+    try {
+      if (JSON.stringify(prev) === JSON.stringify(value)) continue;
+    } catch {
+      // Non-serializable values (rare in comm state) → treat as changed.
+    }
+    out[key] = value;
+  }
+  return out;
+}
+
+/**
  * Resolve Output widget manifests and update the WidgetStore.
  *
  * When SyncEngine.commChanges$ emits a comm with `unresolvedOutputs`,
@@ -380,12 +414,18 @@ function AppContent() {
         }
       }
       for (const comm of changes.updated) {
-        // CRDT is the single source of truth — no echo suppression
-        // needed (see Track A in the widget-sync stall design doc).
-        // Local writes flow through the same pipeline via
-        // `engine.projectLocalState()`, so every update visible to
-        // the user is also visible in this emission.
-        widgetStore.updateModel(comm.commId, comm.state);
+        // CRDT is the single source of truth. The commChanges$
+        // emission re-delivers the full resolved state; filter out
+        // keys whose values already match the store before calling
+        // `updateModel`, to avoid double `change` notifications when
+        // a caller (anywidget `save_changes`, etc.) wrote the value
+        // synchronously before the projection hopped through a
+        // microtask.
+        const existing = widgetStore.getModel(comm.commId);
+        const diff = existing ? diffResolvedState(existing.state, comm.state) : comm.state;
+        if (Object.keys(diff).length > 0) {
+          widgetStore.updateModel(comm.commId, diff);
+        }
         if (comm.unresolvedOutputs) {
           resolveCommOutputs(comm.commId, comm.unresolvedOutputs, widgetStore);
         }

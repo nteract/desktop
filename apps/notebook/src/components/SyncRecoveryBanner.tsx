@@ -41,15 +41,26 @@ export function SyncRecoveryBanner({ event, onDismiss }: SyncRecoveryBannerProps
     if (!event || event === lastEventRef.current) return;
     lastEventRef.current = event;
     setVisible(true);
-    setCount((c) => c + 1);
+    // Only accumulate the burst counter while the banner is still
+    // visible. A fresh emission after the banner has dismissed
+    // restarts the counter — otherwise a one-off recovery hours
+    // earlier would make a new one-off recovery report itself as
+    // the second in a burst.
+    setCount((c) => (visible ? c + 1 : 1));
 
     const timer = window.setTimeout(() => {
       setVisible(false);
+      // Reset the burst counter on dismissal so the next emission
+      // starts fresh.
+      setCount(0);
     }, DISMISS_DELAY_MS);
 
     return () => {
       window.clearTimeout(timer);
     };
+    // `visible` intentionally omitted from deps: we only care about
+    // its value at the instant the event changes.
+    // biome-ignore lint/correctness/useExhaustiveDependencies: see above
   }, [event]);
 
   if (!visible || !event) return null;
