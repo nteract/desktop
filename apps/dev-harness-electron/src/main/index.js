@@ -501,6 +501,28 @@ app.whenReady().then(async () => {
   // map the daemon-request subset to NotebookRequest frames and no-op the
   // Tauri-chrome surface (auto-updater, trust prompts, window state).
   ipcMain.handle("tauri-shim:invoke", async (_event, cmd, args) => {
+    // `send_frame` is the raw-bytes Tauri command backing
+    // apps/notebook/src/lib/frame-types.ts sendFrame(). It accepts a
+    // Uint8Array where byte 0 is the frame type. Used for outbound
+    // Automerge/Presence/RuntimeStateSync/PoolStateSync. Critical:
+    // initial sync uses this path via notebook-metadata.ts — without
+    // routing it, the frontend's doc never reaches the daemon and
+    // no cells ever render.
+    if (cmd === "send_frame") {
+      const bytes = args instanceof Uint8Array ? args : Buffer.from(args ?? []);
+      if (bytes.length === 0) {
+        throw new Error("send_frame: empty frame");
+      }
+      const typeByte = bytes[0];
+      const payload = bytes.subarray(1);
+      try {
+        daemon.sendFrame(typeByte, payload);
+        return undefined;
+      } catch (err) {
+        throw new Error(`send_frame(0x${typeByte.toString(16)}): ${err.message}`);
+      }
+    }
+
     const daemonReq = mapTauriCommandToNotebookRequest(cmd, args);
     if (daemonReq) {
       try {
