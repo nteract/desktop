@@ -144,9 +144,7 @@ const LINE_HEIGHT = 20;
 const CELL_PAD_H = 24; // 12px each side
 const CELL_PAD_V = 16; // 8px top + 8px bottom
 const MIN_COL_WIDTH = 60;
-const OVERSCAN = 40; // base buffer rows above/below viewport
-const OVERSCAN_VELOCITY_SCALE = 3; // extra rows per 10px of scroll delta
-const MAX_OVERSCAN = 120; // cap total overscan per side
+const OVERSCAN = 80; // buffer rows above and below viewport
 
 // --- Table Engine ---
 
@@ -1177,20 +1175,8 @@ export function createTable(
     const visFirst = rowAtOffset(scrollTop);
     const visLast = Math.min(rowAtOffset(scrollTop + viewportH), filteredCount - 1);
 
-    // Scroll velocity: proportional overscan in the direction of travel
-    const scrollDelta = scrollTop - lastScrollTop;
-    const scrollingDown = scrollDelta > 0;
-    const absDelta = Math.abs(scrollDelta);
-    const velocityOverscan = Math.min(
-      Math.round((absDelta / 10) * OVERSCAN_VELOCITY_SCALE),
-      MAX_OVERSCAN,
-    );
-
-    const overscanBefore = OVERSCAN + (scrollingDown ? 0 : velocityOverscan);
-    const overscanAfter = OVERSCAN + (scrollingDown ? velocityOverscan : 0);
-
-    const first = Math.max(0, visFirst - overscanBefore);
-    const last = Math.min(visLast + overscanAfter, filteredCount - 1);
+    const first = Math.max(0, visFirst - OVERSCAN);
+    const last = Math.min(visLast + OVERSCAN, filteredCount - 1);
 
     // Prefetch visible rows in batch (WASM viewport optimization)
     if (data.prefetchViewport) {
@@ -1246,33 +1232,19 @@ export function createTable(
       }
     }
 
-    // If we lazy-prepared any rows, positions shifted — recycle everything
-    // and re-render with corrected positions
+    // If we lazy-prepared any rows, their heights shifted downstream row
+    // positions. The original code then reset the entire pool and re-rendered
+    // the whole visible range with corrected positions, doubling paint cost
+    // on every scroll that pulled in fresh rows — Safari white-screened on
+    // downward momentum scroll because the compositor starved waiting for
+    // main. Update positions now and let the next rAF tick reposition the
+    // pool. The displayed rows sit at slightly-stale transforms for one
+    // frame (≤ one row height ≈ 20px, ≈ 16ms) — invisible in practice; the
+    // scroll stays smooth.
     if (lazyPrepared) {
       rebuildPositions();
       scrollContent.style.height = totalHeight + "px";
-      // Reset all assignments so the next pass positions them correctly
-      for (const pr of pool) {
-        pr.assignedRow = -1;
-        pr.el.style.display = "none";
-      }
-      // Re-assign with corrected positions (no more lazy-prep this pass since we just did it)
-      for (let r = first; r <= last; r++) {
-        const dataRow = viewIndices[r];
-        const pr = getPooledRow();
-        pr.assignedRow = r;
-        pr.el.style.display = "";
-        pr.el.style.transform = `translateY(${rowPositions[r]}px)`;
-        pr.el.style.height = rowHeights[r] + "px";
-        pr.el.setAttribute("aria-rowindex", String(r + 2));
-        if (r % 2 === 1) pr.el.classList.add("sift-row-alt");
-        else pr.el.classList.remove("sift-row-alt");
-        for (let c = 0; c < columns.length; c++) {
-          renderCell(pr.cells[c], dataRow, c);
-          pr.cells[c].style.width = colWidths[c] + "px";
-          applyCellPinStyle(pr.cells[c], c);
-        }
-      }
+      scheduleRender();
     }
 
     if (lastScrollTop === scrollTop && lastViewportHeight === viewportH) {
