@@ -2791,8 +2791,13 @@ where
                                 // arrow-key slider drags. If `lock_ms` is ever
                                 // seconds long, some other task is holding
                                 // `state_doc.write()` — that's the wedge site.
+                                //
+                                // The trace itself is emitted AFTER the write guard
+                                // drops so a slow tracing subscriber can't extend
+                                // the critical section and cause the contention it
+                                // was meant to diagnose.
                                 let stage_start = std::time::Instant::now();
-                                let reply_encoded = {
+                                let (reply_encoded, lock_ms, recv_ms) = {
                                     let mut state_doc = room.state_doc.write().await;
                                     let lock_ms = stage_start.elapsed().as_millis();
 
@@ -2804,12 +2809,6 @@ where
                                         )
                                     });
                                     let recv_ms = recv_started.elapsed().as_millis();
-                                    tracing::trace!(
-                                        "[frame-trace] daemon state-sync apply: peer={} lock_ms={} recv_ms={}",
-                                        peer_id,
-                                        lock_ms,
-                                        recv_ms,
-                                    );
                                     let had_changes = match recv_result {
                                         Ok(Ok(changed)) => changed,
                                         Ok(Err(e)) => {
@@ -2832,7 +2831,7 @@ where
                                         let _ = room.state_changed_tx.send(());
                                     }
 
-                                    match catch_automerge_panic("state-sync-reply", || {
+                                    let encoded = match catch_automerge_panic("state-sync-reply", || {
                                         state_doc
                                             .generate_sync_message(&mut state_peer_state)
                                             .map(|msg| msg.encode())
@@ -2846,8 +2845,17 @@ where
                                                 .generate_sync_message(&mut state_peer_state)
                                                 .map(|msg| msg.encode())
                                         }
-                                    }
+                                    };
+                                    (encoded, lock_ms, recv_ms)
                                 };
+                                // Emit apply-stage trace now that the write guard
+                                // has dropped (previous block closed).
+                                tracing::trace!(
+                                    "[frame-trace] daemon state-sync apply: peer={} lock_ms={} recv_ms={}",
+                                    peer_id,
+                                    lock_ms,
+                                    recv_ms,
+                                );
                                 if let Some(encoded) = reply_encoded {
                                     let send_started = std::time::Instant::now();
                                     connection::send_typed_frame(
