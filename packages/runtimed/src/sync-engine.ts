@@ -740,10 +740,6 @@ export class SyncEngine {
         .pipe(
           filter((e) => e.type === "runtime_state_sync_applied"),
           concatMap((e) => {
-            // Any inbound runtime-state sync frame acknowledges the
-            // daemon is responsive — even if nothing changed (pure
-            // convergence ack), that's still a liveness signal.
-            this.clearRuntimeStateStallWatchdog();
             if (e.changed && e.state) {
               const state = e.state as RuntimeState;
 
@@ -817,7 +813,16 @@ export class SyncEngine {
               this.projectComms(state);
             }
 
-            // Send sync reply so the daemon knows our heads
+            // Send sync reply so the daemon knows our heads.
+            //
+            // `generate_runtime_state_sync_reply` returns `null` IFF
+            // we and the daemon have fully converged — nothing left to
+            // send in either direction. That's the precise signal we
+            // want for the stall watchdog: clear it only when our own
+            // outstanding writes have been incorporated, not on every
+            // inbound runtime-state frame (which fires often for
+            // daemon-authored queue / execution / status changes even
+            // when our widget update was silently dropped).
             const handle = this.opts.getHandle();
             if (handle) {
               try {
@@ -831,6 +836,7 @@ export class SyncEngine {
                       ),
                   );
                 }
+                this.clearRuntimeStateStallWatchdog();
               } catch (err) {
                 log.warn("[sync-engine] generate_runtime_state_sync_reply failed:", err);
               }
