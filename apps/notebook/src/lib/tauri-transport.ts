@@ -13,6 +13,7 @@ import type {
   NotebookRequest,
   NotebookTransport,
 } from "runtimed";
+import { logger } from "./logger";
 
 export class TauriTransport implements NotebookTransport {
   private _connected = true;
@@ -36,10 +37,23 @@ export class TauriTransport implements NotebookTransport {
     let unlistenFn: (() => void) | null = null;
     let cancelled = false;
 
+    // IMPORTANT: wrap the callback in try/catch. Tauri's event system
+    // drops listeners whose handlers throw — a single exception
+    // escaping here silently unsubscribes the webview for the rest of
+    // its lifetime, and the daemon's subsequent frames land nowhere.
+    // That's the class of bug behind the widget-sync stall we were
+    // chasing: the daemon keeps talking, nothing is listening, the
+    // only recovery is reload. Catching here preserves the listener
+    // across a bad frame and surfaces the exception to the log so
+    // the underlying issue is fixable.
     const unlistenPromise = webview.listen<number[]>(
       "notebook:frame",
       (event) => {
-        callback(event.payload);
+        try {
+          callback(event.payload);
+        } catch (err) {
+          logger.error("[tauri-transport] notebook:frame handler threw:", err);
+        }
       },
     );
 
@@ -51,7 +65,12 @@ export class TauriTransport implements NotebookTransport {
           unlistenFn = fn;
         }
       })
-      .catch(() => {});
+      .catch((err) => {
+        // Registration failure is worth knowing about even if there's
+        // no recovery for it here — the caller will see the transport
+        // behaving as if it never attached any listener.
+        logger.error("[tauri-transport] failed to register notebook:frame listener:", err);
+      });
 
     const unlisten = () => {
       cancelled = true;
