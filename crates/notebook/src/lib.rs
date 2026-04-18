@@ -2030,6 +2030,7 @@ async fn save_notebook_as(
     path: String,
     window: tauri::Window,
     registry: tauri::State<'_, WindowNotebookRegistry>,
+    sync_ready: tauri::State<'_, SyncReadyState>,
 ) -> Result<(), String> {
     info!(
         "[save] save_notebook_as command invoked by window {} with path {:?}",
@@ -2082,6 +2083,11 @@ async fn save_notebook_as(
         );
         *p = Some(saved_path.clone());
     }
+    // Keep the cached `daemon:ready` payload's path in sync so a React
+    // remount (HMR, error boundary) after this save-as sees the new path
+    // via `get_daemon_ready_info` instead of replaying the old untitled
+    // payload. Mirrors the same update in `apply_path_changed`.
+    sync_ready.update_cached_path(window.label(), Some(&saved_path.to_string_lossy()));
     dirty.store(false, Ordering::SeqCst);
 
     refresh_native_menu(window.app_handle(), registry.inner());
