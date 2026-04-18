@@ -124,8 +124,13 @@ test("slider drive vs kernel round-trip", async () => {
     diverged: boolean;
   };
   const rounds: Round[] = [];
-  const roundsToRun = 4;
-  const pressesPerRound = 500;
+  const roundsToRun = Number(process.env.HARNESS_STALL_ROUNDS ?? "4");
+  const pressesPerRound = Number(
+    process.env.HARNESS_STALL_PRESSES ?? "500",
+  );
+  // Randomize right/left bursts inside each round so the oscillation
+  // pattern isn't a clean rhythm the sync engine can keep up with.
+  const chaos = process.env.HARNESS_STALL_CHAOS === "1";
 
   for (let round = 1; round <= roundsToRun; round++) {
     await slider.focus();
@@ -135,16 +140,51 @@ test("slider drive vs kernel round-trip", async () => {
     // direction spam. We add a slight net drift (more rights than lefts)
     // so a full round is expected to end at a non-zero value. If displayed
     // vs kernel diverge, it means some comm_msgs got dropped or reordered.
-    const rightBurst = 60;
-    const leftBurst = 40;
-    for (let i = 0; i < pressesPerRound; i += rightBurst + leftBurst) {
-      for (let j = 0; j < rightBurst; j++) {
-        // eslint-disable-next-line no-await-in-loop
-        await window.keyboard.press("ArrowRight");
+    const mode = process.env.HARNESS_STALL_MODE ?? "keyboard";
+    if (mode === "mouse") {
+      // Mouse drag across the slider thumb — closer to the actual manual
+      // repro (dragging back and forth with a trackpad). Alternates
+      // direction every ~300ms.
+      const box = await slider.boundingBox();
+      if (!box) throw new Error("slider has no bounding box");
+      const centerY = box.y + box.height / 2;
+      const leftX = box.x + box.width * 0.1;
+      const rightX = box.x + box.width * 0.9;
+      const durationMs = 3000 + Math.floor(Math.random() * 2000);
+      const endAt = Date.now() + durationMs;
+      await window.mouse.move(box.x + box.width / 2, centerY);
+      await window.mouse.down();
+      let goingRight = true;
+      while (Date.now() < endAt) {
+        const steps = 10 + Math.floor(Math.random() * 30);
+        await window.mouse.move(goingRight ? rightX : leftX, centerY, { steps });
+        goingRight = !goingRight;
       }
-      for (let j = 0; j < leftBurst; j++) {
-        // eslint-disable-next-line no-await-in-loop
-        await window.keyboard.press("ArrowLeft");
+      await window.mouse.up();
+    } else {
+      let remaining = pressesPerRound;
+      while (remaining > 0) {
+        const rightBurst = chaos ? 20 + Math.floor(Math.random() * 80) : 60;
+        const leftBurst = chaos ? Math.floor(Math.random() * rightBurst) : 40;
+        const total = rightBurst + leftBurst;
+        const slice = Math.min(total, remaining);
+        const r = Math.min(rightBurst, slice);
+        const l = Math.min(leftBurst, slice - r);
+        for (let j = 0; j < r; j++) {
+          // eslint-disable-next-line no-await-in-loop
+          await window.keyboard.press("ArrowRight");
+        }
+        for (let j = 0; j < l; j++) {
+          // eslint-disable-next-line no-await-in-loop
+          await window.keyboard.press("ArrowLeft");
+        }
+        if (chaos && Math.random() < 0.3) {
+          // Short unpredictable pause — lets sync almost catch up, then
+          // races the next burst against the settling state.
+          // eslint-disable-next-line no-await-in-loop
+          await window.waitForTimeout(20 + Math.floor(Math.random() * 80));
+        }
+        remaining -= r + l;
       }
     }
     const pressMs = Date.now() - start;
