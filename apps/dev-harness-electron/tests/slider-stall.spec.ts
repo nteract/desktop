@@ -69,7 +69,10 @@ test("slider drive vs kernel round-trip", async () => {
     };
     for (const el of document.querySelectorAll("[data-cell-id]")) {
       const code = el.textContent ?? "";
-      if (code.includes("IntSlider(")) out.slider = el.getAttribute("data-cell-id");
+      // Fixture uses FloatSlider wrapped by @interact; accept either
+      // FloatSlider or IntSlider for resilience.
+      if (code.includes("FloatSlider(") || code.includes("IntSlider("))
+        out.slider = el.getAttribute("data-cell-id");
       if (code.includes("kernel_slider_value=")) out.probe = el.getAttribute("data-cell-id");
     }
     return out;
@@ -99,9 +102,11 @@ test("slider drive vs kernel round-trip", async () => {
   // renders in parent DOM; with HARNESS_INLINE_WIDGETS=0 on main it
   // renders inside the isolated iframe.
   const inlineWidgets = process.env.HARNESS_INLINE_WIDGETS !== "0";
+  const widgetSelector = '[data-widget-type="IntSlider"], [data-widget-type="FloatSlider"]';
   const slider = inlineWidgets
     ? window
-        .locator(`[data-cell-id="${cellIds.slider}"] [data-widget-type="IntSlider"]`)
+        .locator(`[data-cell-id="${cellIds.slider}"]`)
+        .locator(widgetSelector)
         .locator("[role='slider']")
         .first()
     : window
@@ -255,7 +260,7 @@ test("slider drive vs kernel round-trip", async () => {
         .locator(`[data-cell-id="${cellIds.probe}"]`)
         .textContent()
         .catch(() => null);
-      const match = text?.match(/kernel_slider_value=(\d+)/);
+      const match = text?.match(/kernel_slider_value=(-?\d+(?:\.\d+)?)/);
       if (match) {
         kernel = Number(match[1]);
         break;
