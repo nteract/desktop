@@ -453,6 +453,14 @@ app.whenReady().then(async () => {
     cellCount: connectionInfo && connectionInfo.cell_count,
   }));
 
+  // Sync IPC so the preload (sandbox:true) can read env-driven flags
+  // without process.env access.
+  ipcMain.on("harness:get-config", (event) => {
+    event.returnValue = {
+      inlineWidgets: process.env.HARNESS_INLINE_WIDGETS !== "0",
+    };
+  });
+
   // The renderer calls this once ElectronTransport has its onFrame
   // listener attached. Until then, inbound frames are buffered in
   // `pendingFrames` rather than sent into the void.

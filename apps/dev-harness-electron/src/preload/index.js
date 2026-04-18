@@ -137,4 +137,12 @@ contextBridge.exposeInMainWorld("isTauri", true);
 // Rendering `<WidgetView />` directly in the parent DOM (via the MediaProvider
 // renderer in apps/notebook/src/App.tsx) sidesteps the issue entirely and
 // lets Playwright drive sliders natively. Scope: dev harness only.
-contextBridge.exposeInMainWorld("__NTERACT_DEV_HARNESS_INLINE_WIDGETS__", true);
+//
+// Pulled from main via sync IPC because preload `sandbox: true` doesn't
+// give access to process.env. Toggle off with `HARNESS_INLINE_WIDGETS=0`
+// on the main process — useful when debugging the iframe bootstrap path.
+const harnessConfig = ipcRenderer.sendSync("harness:get-config") || {};
+contextBridge.exposeInMainWorld(
+  "__NTERACT_DEV_HARNESS_INLINE_WIDGETS__",
+  harnessConfig.inlineWidgets !== false,
+);

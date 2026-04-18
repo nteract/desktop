@@ -95,14 +95,21 @@ test("slider drive vs kernel round-trip", async () => {
     });
   });
 
-  // Wait for the slider thumb to render in parent DOM (requires the
-  // harness inline-widgets flag from the preload).
-  const slider = window
-    .locator(`[data-cell-id="${cellIds.slider}"] [data-widget-type="IntSlider"]`)
-    .locator("[role='slider']")
-    .first();
+  // Locate the slider. With the inline-widgets flag (default) the widget
+  // renders in parent DOM; with HARNESS_INLINE_WIDGETS=0 on main it
+  // renders inside the isolated iframe.
+  const inlineWidgets = process.env.HARNESS_INLINE_WIDGETS !== "0";
+  const slider = inlineWidgets
+    ? window
+        .locator(`[data-cell-id="${cellIds.slider}"] [data-widget-type="IntSlider"]`)
+        .locator("[role='slider']")
+        .first()
+    : window
+        .frameLocator(`[data-cell-id="${cellIds.slider}"] iframe`)
+        .locator("[role='slider']")
+        .first();
   await slider.waitFor({ state: "attached", timeout: 60_000 });
-  process.stdout.write(`[test] slider attached in parent DOM\n`);
+  process.stdout.write(`[test] slider attached (${inlineWidgets ? "parent DOM" : "iframe"})\n`);
 
   // Rounds of drive + probe. Each round:
   //   1. Focus the slider, press ArrowRight N times with small pauses.
