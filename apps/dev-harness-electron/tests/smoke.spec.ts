@@ -16,21 +16,36 @@ const MAIN_ENTRY = path.join(__dirname, "..", "src", "main", "index.js");
 test("electron harness opens a window and loads the notebook UI", async () => {
   const app = await electron.launch({
     args: [MAIN_ENTRY],
-    env: {
-      ...process.env,
-      // Leave RUNTIMED_VITE_PORT/RUNTIMED_SOCKET_PATH/HARNESS_NOTEBOOK_ID to
-      // the environment — this test just checks the window renders.
-    },
+    env: { ...process.env },
   });
 
+  // Mirror main-process stdout/stderr to the test log.
+  app.process().stdout?.on("data", (d) => process.stdout.write(`[main] ${d}`));
+  app.process().stderr?.on("data", (d) => process.stderr.write(`[main!] ${d}`));
+
   const window = await app.firstWindow({ timeout: 15_000 });
+  window.on("console", (msg) => {
+    process.stdout.write(`[renderer ${msg.type()}] ${msg.text()}\n`);
+  });
+  window.on("pageerror", (err) => {
+    process.stderr.write(`[renderer pageerror] ${err.message}\n`);
+  });
 
-  // Title is set in main/index.js BrowserWindow options.
+  const url = window.url();
   const title = await window.title();
-  expect(title.length).toBeGreaterThan(0);
+  process.stdout.write(`[test] window url=${url} title=${title}\n`);
 
-  // Wait for React to hydrate anything under #root.
-  await window.waitForSelector("#root", { timeout: 15_000 });
+  expect(url).toMatch(/localhost:\d+/);
+
+  try {
+    await window.waitForSelector("#root", { timeout: 15_000 });
+  } catch (e) {
+    const html = await window.content().catch(() => "<unavailable>");
+    process.stderr.write(`[test] waitForSelector(#root) timed out. HTML head:\n`);
+    process.stderr.write(html.slice(0, 2000));
+    process.stderr.write("\n");
+    throw e;
+  }
 
   await app.close();
 });
