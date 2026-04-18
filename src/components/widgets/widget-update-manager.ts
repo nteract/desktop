@@ -156,6 +156,17 @@ export class WidgetUpdateManager {
     return false;
   }
 
+  /**
+   * Record a local write against the pending-history for echo
+   * suppression. Exposed as public so direct CRDT writers (e.g.
+   * anywidget `save_changes`, which bypasses `updateAndPersist`
+   * to preserve AFM synchronous `model.get()` semantics) can share
+   * the same echo bookkeeping as throttled writes.
+   */
+  recordLocalWrite(commId: string, patch: Record<string, unknown>): void {
+    this.markPending(commId, patch);
+  }
+
   private markPending(commId: string, patch: Record<string, unknown>): void {
     let keys = this.pendingKeys.get(commId);
     if (!keys) {
@@ -242,12 +253,34 @@ export class WidgetUpdateManager {
     if (buffers?.length) {
       // Buffers bypass the throttle: ArrayBuffers aren't patchable
       // through Automerge, and delaying them would corrupt
-      // anywidget model.buffers ordering.
+      // anywidget model.buffers ordering. But first drain any
+      // scalar patch waiting on the trailing timer for this comm,
+      // otherwise the older scalar would land *after* the buffered
+      // update and reorder ordering-sensitive widget protocols.
+      this.fireTrailingNow(commId, writer);
       writer(commId, patch);
       return;
     }
 
     this.scheduleThrottled(commId, patch, writer);
+  }
+
+  /**
+   * If there's a pending trailing flush for this comm, fire it
+   * immediately (before the throttle window expires). Used when a
+   * buffered update — which can't wait for the trailing timer —
+   * needs to preserve ordering relative to earlier scalar patches.
+   */
+  private fireTrailingNow(commId: string, writer: CrdtCommWriter): void {
+    const state = this.throttles.get(commId);
+    if (!state || !state.trailingTimer) return;
+    clearTimeout(state.trailingTimer);
+    state.trailingTimer = null;
+    const patch = state.pending;
+    state.pending = null;
+    if (!patch) return;
+    writer(commId, patch);
+    state.lastFlushAt = Date.now();
   }
 
   private scheduleThrottled(

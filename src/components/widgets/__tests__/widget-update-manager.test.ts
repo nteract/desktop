@@ -169,6 +169,20 @@ describe("WidgetUpdateManager", () => {
       expect(manager.isEchoOfPendingWrite("comm-1", "value", 99)).toBe(false);
     });
 
+    it("recordLocalWrite lets a direct writer share the echo history", () => {
+      // anywidget `save_changes()` reaches the CRDT writer directly
+      // (bypasses updateAndPersist to preserve AFM synchronous
+      // model.get() semantics). `recordLocalWrite` exposes markPending
+      // so those writes get the same echo suppression, otherwise
+      // their stale projections would rewind the store mid-burst.
+      const { manager } = setup();
+
+      manager.recordLocalWrite("comm-1", { value: 77 });
+
+      expect(manager.isEchoOfPendingWrite("comm-1", "value", 77)).toBe(true);
+      expect(manager.isEchoOfPendingWrite("comm-1", "value", 77)).toBe(false);
+    });
+
     it("consumes matches so a peer writing the same value afterward lands", () => {
       // Collaborative case: we write 10, our own echo arrives and
       // gets consumed. If a peer later writes 10 as an authoritative
@@ -258,6 +272,32 @@ describe("WidgetUpdateManager", () => {
         { commId: "comm-1", patch: { value: 2 } },
       ]);
       expect(store.getModel("comm-1")?.buffers).toContain(buf2);
+    });
+
+    it("flushes pending throttled scalar patches before a buffered update", () => {
+      // Ordering matters: a throttle-pending scalar patch must not
+      // land after a buffered update for the same comm, otherwise
+      // it would overwrite the newer buffered state and reorder
+      // widget protocols that expect monotonic deltas.
+      const { manager, writerCalls } = setup();
+      const buf = new ArrayBuffer(4);
+
+      manager.updateAndPersist("comm-1", { value: 1 }); // leading, fires
+      manager.updateAndPersist("comm-1", { value: 2 }); // pending (throttled)
+      manager.updateAndPersist("comm-1", { state: "after" }, [buf]);
+
+      // Expect: leading scalar, then flushed-early pending scalar,
+      // then buffered update — in that exact order.
+      expect(writerCalls).toEqual([
+        { commId: "comm-1", patch: { value: 1 } },
+        { commId: "comm-1", patch: { value: 2 } },
+        { commId: "comm-1", patch: { state: "after" } },
+      ]);
+
+      // Advance past the trailing window — no additional writes,
+      // because `fireTrailingNow` already cleared the pending state.
+      vi.advanceTimersByTime(60);
+      expect(writerCalls).toHaveLength(3);
     });
   });
 

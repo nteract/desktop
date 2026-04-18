@@ -396,6 +396,14 @@ function AppContent() {
     setCrdtCommWriter((commId: string, patch: Record<string, unknown>) => {
       const handle = getHandle();
       if (!handle) return;
+      // Record the write against the echo-suppression history
+      // regardless of whether the caller went through
+      // `WidgetUpdateManager.updateAndPersist` (normal widgets) or
+      // reached the writer directly (anywidget `save_changes`). The
+      // subsequent `projectLocalState` emission is always one of
+      // our own local writes, so it must be consumable by the
+      // pending-write filter.
+      updateManager.recordLocalWrite(commId, patch);
       handle.set_comm_state_batch(commId, JSON.stringify(patch));
       getEngine()?.projectLocalState();
       triggerSync();
