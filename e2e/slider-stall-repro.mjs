@@ -164,62 +164,72 @@ async function main() {
     //    off), but WebDriver's `switchToFrame` is a driver-level
     //    operation that works regardless of the sandbox.
     //
-    //    Wait for an iframe to appear at all, then switch into it
-    //    and wait for the slider to render.
-    await browser.waitUntil(
-      async () => (await browser.$$("iframe")).length > 0,
-      { timeout: 60000, interval: 500, timeoutMsg: "no output iframe" },
-    );
-    console.log("[slider-stall] iframe present");
-
-    // Try each iframe; the right one has the slider. Fail loudly if
-    // none have it after the timeout — most likely cause is
-    // ipywidgets not being installed in the notebook env.
-    const iframeHandles = await browser.$$("iframe");
+    //    Look specifically inside the FIRST cell (the one we just
+    //    rewrote + executed). Scanning the global iframe list can
+    //    pick up stale outputs from other cells if the notebook
+    //    already had widget renders before we overwrote the cell.
+    const deadline = Date.now() + 60000;
     let sliderFrame = null;
-    for (const frame of iframeHandles) {
-      try {
-        await browser.switchToFrame(frame);
-        const sliderExists = await browser.execute(
-          () => !!document.querySelector('input[type="range"], [role="slider"]'),
-        );
-        if (sliderExists) {
-          sliderFrame = frame;
-          break;
+    while (Date.now() < deadline) {
+      const cellIframes = await browser.$$(
+        '[data-cell-type="code"]:first-of-type iframe',
+      );
+      for (const frame of cellIframes) {
+        try {
+          await browser.switchToFrame(frame);
+          const sliderExists = await browser.execute(
+            () =>
+              !!document.querySelector('input[type="range"], [role="slider"]'),
+          );
+          if (sliderExists) {
+            sliderFrame = frame;
+            break;
+          }
+        } catch {
+          // driver may refuse switch on some frames; skip
+        } finally {
+          if (!sliderFrame) await browser.switchToParentFrame();
         }
-      } catch {
-        // cross-origin, driver can sometimes refuse the switch
-      } finally {
-        await browser.switchToParentFrame();
       }
+      if (sliderFrame) break;
+      await browser.pause(300);
     }
 
     if (!sliderFrame) {
-      // Widget didn't render. Read the cell output to surface
-      // whatever actually happened (usually ModuleNotFoundError).
+      // Widget didn't render in the first cell. Read the cell text
+      // to surface whatever actually happened (usually
+      // ModuleNotFoundError for ipywidgets).
       const outputText = await browser.execute(() => {
         const cells = document.querySelectorAll('[data-cell-type="code"]');
         return cells[0]?.textContent?.slice(0, 500) ?? "";
       });
       throw new Error(
-        `slider did not render within 60s. First cell text: ${outputText}`,
+        `slider did not render within 60s in the first cell. ` +
+          `Cell text: ${outputText}`,
       );
     }
-    console.log("[slider-stall] slider rendered");
+    console.log("[slider-stall] slider rendered (in first cell's iframe)");
 
-    // 6. Switch into the iframe, focus the slider, hammer keys.
-    await browser.switchToFrame(sliderFrame);
+    // 6. Focus the slider, hammer keys. Already in the iframe
+    //    context from the discovery loop above.
     const sliderEl = await browser.$('input[type="range"], [role="slider"]');
     await sliderEl.click();
 
     console.log("[slider-stall] hammer phase starting");
     const end = Date.now() + DURATION_SECS * 1000;
-    const intervalMs = Math.max(1, Math.floor(1000 / PRESSES_PER_SEC));
+    const intervalMs = 1000 / PRESSES_PER_SEC;
+    // Target-time pacing so the actual rate matches --presses-per-sec
+    // regardless of WebDriver latency (up to a ceiling of "as fast
+    // as WebDriver can go"). Without this, sleeping every N
+    // iterations undershoots the target rate by a factor of N.
+    let nextTick = Date.now();
     let presses = 0;
     while (Date.now() < end) {
       await browser.keys(["ArrowRight"]);
       presses++;
-      if (presses % 10 === 0) await browser.pause(intervalMs);
+      nextTick += intervalMs;
+      const wait = nextTick - Date.now();
+      if (wait > 0) await browser.pause(wait);
     }
     const hammerMs = DURATION_SECS * 1000;
     console.log(
