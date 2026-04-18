@@ -81,11 +81,16 @@ function argFlag(name, fallback) {
 // else beyond ipywidgets. The on_change handler emits a print line
 // so the cell output itself tells us whether the kernel is getting
 // updates.
+// Slider range is generous so long runs (`--duration` * `--presses-per-sec`)
+// don't saturate the max and fall off the end of the widget's range,
+// which would stop generating CRDT writes and look like a stall.
+const SLIDER_MAX = 1_000_000;
+
 const SLIDER_CELL_SOURCE = `
 from ipywidgets import FloatSlider, Output
 from IPython.display import display
 
-_slider = FloatSlider(min=0.0, max=1000.0, step=1.0, value=0.0, description="drive")
+_slider = FloatSlider(min=0.0, max=${SLIDER_MAX}.0, step=1.0, value=0.0, description="drive")
 _out = Output()
 
 @_out.capture(clear_output=True, wait=True)
@@ -163,14 +168,17 @@ async function main() {
 
     const cellSelector = `[data-cell-id="${targetCellId}"]`;
 
-    // Drop the widget cell source into the target cell.
+    // Drop the widget cell source into the target cell. CM6 attaches
+    // the `EditorView` to `.cm-content.cmTile.view` (not `.cmView.view`
+    // — that path exists in some older snippets but is not what's
+    // wired up here, see `e2e/helpers.js` `setCellSource`).
     const setOk = await browser.execute(
       (sel, src) => {
         const cell = document.querySelector(sel);
         if (!cell) return false;
-        const cm = cell.querySelector(".cm-content");
+        const cm = cell.querySelector(".cm-content[contenteditable]");
         // biome-ignore lint/suspicious/noExplicitAny: CodeMirror view escape hatch
-        const view = cm?.cmView?.view;
+        const view = cm?.cmTile?.view;
         if (!view) return false;
         view.dispatch({
           changes: { from: 0, to: view.state.doc.length, insert: src },
@@ -192,6 +200,32 @@ async function main() {
       return true;
     }, cellSelector);
     if (!execOk) throw new Error("failed to click execute");
+
+    // Wait for the kernel to actually run the cell (busy → idle). If
+    // the cell had a stale widget iframe, it'll be cleared on
+    // execution start, so after this wait the iframe we find is
+    // guaranteed to be fresh.
+    await browser.waitUntil(
+      async () => {
+        const status = await browser.execute(() => {
+          const el = document.querySelector("[data-testid='kernel-status']");
+          return el?.textContent?.toLowerCase() || "";
+        });
+        return status === "busy";
+      },
+      { timeout: 30000, interval: 200, timeoutMsg: "kernel didn't go busy" },
+    );
+    await browser.waitUntil(
+      async () => {
+        const status = await browser.execute(() => {
+          const el = document.querySelector("[data-testid='kernel-status']");
+          return el?.textContent?.toLowerCase() || "";
+        });
+        return status === "idle";
+      },
+      { timeout: 60000, interval: 200, timeoutMsg: "kernel didn't go idle" },
+    );
+    console.log("[slider-stall] cell executed (kernel busy → idle)");
 
     // 5. The widget lives inside an isolated iframe. We can't see its
     //    DOM from the parent (`allow-same-origin` is intentionally
