@@ -1,4 +1,4 @@
-# Widget sync: immediate fix + cleanup plan
+# Widget sync: diagnose, then redesign
 
 **Status:** Proposal. Two existing PRs are open as reference
 (#1880, #1881); neither is merged. Don't treat them as current
@@ -7,63 +7,94 @@ state — main has no watchdog, no `SyncRecoveryBanner`, no
 `shouldSuppressEcho` filter in `WidgetUpdateManager` and a raw
 `listen("notebook:frame")` handler with no exception trapping.
 
-## Lead with the bug
+A previous version of this doc led with "the fix is five lines"
+based on a listener-death theory. That theory is contradicted by
+Tauri 2.10.3's source (`scripts/core.js:39` — `runCallback` does
+not unregister on throw). The five-line `try / catch` is still
+worth landing as defensive hygiene (merged as #1883 under that
+framing), but it is not the cure. The real mechanism of the
+stall is still unknown; the honest first step is instrumentation.
+
+## What we know, what we don't
 
 Under rapid widget interaction (matplotlib `@interact`
 `FloatSlider` driven with arrow keys), the notebook app
 occasionally stops reflecting kernel-side changes. Slider thumb
-moves in the UI; plot underneath freezes mid-drag. Reloading fixes
-it instantly.
+moves in the UI; plot underneath freezes mid-drag. Reloading
+fixes it instantly.
 
-The best hypothesis from the evidence is that the webview's
-`listen("notebook:frame")` handler unsubscribes after an
-uncaught exception. Tauri's event system drops callbacks whose
-handlers throw. Daemon keeps sending frames; nothing is listening.
-The outbound path (WASM → Tauri invoke) still works, which is why
-flushes complete without error — only the return channel is dead.
+**Known:**
 
-**The fix is five lines.** `apps/notebook/src/lib/tauri-transport.ts`
-today has no `try` / `catch` around the listener callback. Adding
-one — plus a `console.error` log — both confirms the theory and
-prevents the listener from dying. Reproduce the stall before and
-after, look for the exception in the log, harden against whatever
-shows up.
+- Daemon stays responsive — other windows opened during the stall
+  sync normally.
+- The user's webview continues to run (the #1881 watchdog logs
+  fire every 3s; JS is not deadlocked).
+- `WidgetUpdateManager`'s optimistic write path keeps the UI
+  responsive (slider moves) while the CRDT-sourced projection
+  stops advancing.
+- Reload fully recovers — something the reload rebuilds is what's
+  broken.
 
-This should ship first, before any of the larger investigations
-below. If it turns out the listener doesn't die (no exception
-logged, stall still happens), the theory is wrong and the
-cleanup plan below needs revisiting. Either way, the experiment
-takes 30 minutes and de-risks everything that follows.
+**Not known:**
 
-## Cleanup worth doing around the fix
+- Whether the break is *outbound* (the flush appears to succeed
+  but the daemon never processed it) or *inbound* (the daemon's
+  reply is emitted but never reaches our listener).
+- Whether it's in our JS code, in Tauri's event pump, in WebKit,
+  or in the WASM handle's sync state.
+- What the throttle/flood load is doing to the Tauri IPC queue.
 
-With the bug patched, what's still worth cleaning up? Two
-orthogonal things:
+## Start by measuring
 
-1. **A real recovery path (investigation 3)** — so the user can
-   recover without a full reload if the bug ever regresses or a
-   different failure mode produces a similar wedge. The building
-   blocks exist (`TauriTransport.disconnect`, `SyncEngine.start`,
-   `resetForBootstrap`); this is wiring them to a trigger, plus
-   verifying Tauri actually releases subscriptions cleanly
-   (investigation 0.5, a 15-minute verification).
+Before any architectural change, instrument the pipe so the next
+repro tells us which half is broken:
 
-2. **Stop reconstructing authorship from merged JSON
-   (investigation 1)** — a code-smell refactor justified on its
-   own merits, not on the stall. The current `shouldSuppressEcho`
-   works today; the argument for replacing it is that we already
-   have an actor-based precedent in `useCrdtBridge.tsx:154` and
-   the filter's trajectory under load (#1880's review history)
-   points at trouble. This is refactor-on-its-own-merits, not
-   part of the bug fix.
+- **Count inbound `notebook:frame` events** at the earliest point
+  inside the JS callback, plus the frame type byte. If the
+  counter freezes at stall time, the break is somewhere between
+  Tauri's Rust side and our JS listener — a class of problem
+  sync-engine changes cannot address.
+- **Count outbound `invoke("send_frame", ...)` calls** and their
+  promise resolutions. If the invoke resolves but the daemon log
+  never shows the frame arriving, the break is between JS and
+  Rust on the outbound side.
+- **Log on the daemon side** (`notebook_sync_server.rs`) whether
+  it's still receiving from this specific window during the
+  stall, and what it sends back. Pairs with the JS counters to
+  localize the break.
+- **#1883 (merged)** — `try / catch` + `logger.error` around the
+  `notebook:frame` callback. If an exception fires inside the
+  listener at stall time, we'll see it in `notebook.log`.
 
-A third investigation — heads-gossip as a liveness probe — stays
-deferred. The dead-pipe argument is already enough to shelve it.
+Concrete next step: add a small counter-instrumentation PR
+(counts + frame-type logs on both sides), reproduce the stall,
+read the logs, and update this proposal based on what the
+measurements say.
 
-PR #1881's watchdog could be dropped entirely once (0) + (3)
-land: if the listener is protected *and* we have a reconnect
-primitive, the watchdog is detecting a failure mode that can't
-occur. That's a decision for when those PRs actually land.
+## Provisional plan, pending the measurements
+
+If the measurements point at **inbound** being dead (frames
+arrive at Tauri Rust but not the JS callback), some variant of
+investigation (3) applies — but see its honest API-surface
+caveats below.
+
+If the measurements point at **outbound** being dead (JS
+invokes resolve but the daemon doesn't see the frame), the fix
+is in Rust-side frame handling, not anywhere in this doc's
+current investigations.
+
+If the measurements point at **the WASM handle losing state**
+(sync messages arrive but don't update the doc), that's a
+different category altogether — probably a Rust-side WASM bug
+to reproduce in a harness.
+
+Investigation (1) — actor-ID echo detection — stands on its own
+as a code smell to fix regardless of the stall. Do not couple it
+to the diagnosis.
+
+Investigation (2) — heads-gossip — stays deferred. The dead-pipe
+critique holds for any variant where the gossip rides the same
+broken channel.
 
 ## Problem (in detail)
 
@@ -248,34 +279,42 @@ A new implementer should be able to reproduce the stall and then:
 
 ## Proposed investigations
 
-Four items. Investigation 0 is a 30-minute experiment that gates
-the scope of (2) and (3). Investigation 1 is high-leverage on its
-own regardless of 0's result.
+Four items, in rough order of doing. Investigation 0 is real
+instrumentation that has to run before the rest. Investigation 1
+is separable — pursue it for its own sake regardless.
 
-### 0. Confirm the listener-death diagnosis
+### 0. Instrument and localize the stall
 
-Before committing to a reconnect primitive or a heads-gossip
-protocol, run one experiment: wrap the `listen("notebook:frame")`
-callback in `apps/notebook/src/lib/tauri-transport.ts` with a
-`try / catch` that logs to `console.error` and reproduces the
-stall.
+The stall's mechanism is still an open question. Before
+proposing architectural changes, run a measurement pass:
 
-- If an exception shows up in the log right before the stall,
-  the diagnosis holds and (3) is the right shape. The specific
-  exception also tells you the malformed-frame or decoder
-  assertion to harden against.
-- If no exception appears and the listener still stops delivering,
-  the theory is wrong. (3) would be building a reconnect for the
-  wrong problem; revise from there.
+1. **`try / catch` + `logger.error` around the
+   `notebook:frame` callback** (merged as #1883). Not a
+   recovery mechanism — Tauri doesn't actually unregister
+   listeners on throw — but if an exception is thrown at stall
+   time, this is how we'd find out.
+2. **Counter + frame-type log on inbound.** Record how many
+   frames the JS callback sees and of what type. The simplest
+   stall signature is "counter freezes" — that tells us the
+   break is above our JS, in Tauri's pump or below.
+3. **Counter + resolution tracking on outbound.** Record each
+   `invoke("send_frame", ...)` and whether it resolves.
+   Matches against daemon-side logs to localize.
+4. **Daemon-side correlating log** — emit per-window frame
+   received/sent counts in `notebook_sync_server.rs`. Diff
+   against the JS counters to confirm which side loses frames.
 
-This is cheap and de-risks the larger investigations. Do it first.
+None of this is a fix. All of it is a prerequisite for
+proposing one, and it's cheap compared to landing architectural
+changes for a misdiagnosed cause.
 
 **Where to look:**
-- `apps/notebook/src/lib/tauri-transport.ts` — the `listen`
-  callback currently has no `try / catch`; frame decoding happens
-  downstream in WASM which has its own error handling, but any
-  exception between `listen` and the WASM call will unregister the
-  listener silently.
+- `apps/notebook/src/lib/tauri-transport.ts` — both the `listen`
+  callback and the `sendFrame` invoke site.
+- `apps/notebook/src/lib/logger.ts` — already writes to
+  `notebook.log` via the Tauri log plugin.
+- `crates/runtimed/src/notebook_sync_server.rs` — daemon-side
+  per-frame logging.
 
 ### 0.5. Verify Tauri's unlisten actually releases
 
@@ -299,19 +338,17 @@ fallback plan: for example, recreate the `Webview` entirely, or
 expose a Tauri Rust command that drops and rebuilds the per-window
 event subscription.
 
-### 1. Actor-ID-based echo detection
+### 1. Actor-ID-based echo detection (design spike, not a drop-in)
 
 **Justification upfront:** this is a refactor, not a bug fix.
 Today `shouldSuppressEcho` is ~15 lines and works. The case for
-replacing it rests on two things: (a) there's already an
-actor-based precedent that widget code should probably have been
-using originally, and (b) #1880's review history suggests the
-current filter grows corners under load. It should be pursued on
-those merits, independent of the stall class (0) + (3) are
-fixing.
+replacing it is that `#1880`'s review history showed the current
+filter grows corners under load pressure, and building on
+Automerge's native authorship would be more honest than
+reconstructing it from merged JSON.
 
-**The precedent:** `apps/notebook/src/hooks/useCrdtBridge.tsx:154`
-already does actor-based echo filtering for text edits:
+**The precedent, scoped honestly:**
+`apps/notebook/src/hooks/useCrdtBridge.tsx:154` does
 
 ```ts
 if (attr.actors.length === 1 && attr.actors[0] === localActor) {
@@ -319,57 +356,78 @@ if (attr.actors.length === 1 && attr.actors[0] === localActor) {
 }
 ```
 
-This is the same shape widget code should use. The text path has
-the `attributions` payload from `text_attribution` broadcasts
-giving it this info cheaply. Widget code doesn't — the authorship
-information exists in the CRDT, but isn't surfaced to JS. That gap
-is what investigation 1 closes.
+— which is "skip this patch if the only actor in the delta was
+the local one." That works for text-edit echoes because the
+`attributions` payload is already a per-patch list. But look at
+what produces that payload (`crates/runtimed-wasm/src/lib.rs:1707`):
 
-Sketch:
+```rust
+let new_changes = doc.get_changes(before);
+let actors: Vec<String> = new_changes
+    .iter()
+    .map(|c| notebook_doc::actor_label_from_id(c.actor_id()))
+    .collect::<BTreeSet<_>>()
+    .into_iter()
+    .collect();
+```
 
-- Each frontend window already has a stable actor ID (baked into
-  every Automerge op it generates).
-- For each key in a projected comm update, query the CRDT: what's
-  the actor of the most recent op on this key?
-- If it's our actor, skip (our echo).
-- If it's a different actor, apply (authoritative — daemon, peer,
-  kernel validator).
-- Delete: `optimisticKeys`, `shouldSuppressEcho`.
-- Keep: per-tick local store mirror; throttled outbound CRDT
-  writes.
+It collects every actor that appears in the delta as a set, and
+attaches the same set to every emitted patch. Good enough for
+"only local actor wrote the delta," not good enough for "which
+actor last wrote key K." The comm widget case needs the latter —
+a collaborative write of one widget value must not be suppressed
+because a different widget was written locally in the same delta.
 
-**Load-bearing unknown — prototype this before committing:**
-`automerge` 0.8 has no indexed "who last wrote key K" query.
-Answering authorship per key requires walking
-`doc.get_changes(&heads)` and filtering for ops touching K —
-O(total history). Per widget tick, per key, on every incoming
-diff. On a long session with hammered sliders, history grows
-unbounded. **Before committing to this investigation**, write a
-~50-line Rust prototype that measures the walk cost on a
-realistic doc (10k changes, hammered-slider workload). If it's
-microseconds per key, ship. If it's milliseconds, the whole
-direction needs to change shape — either an indexed query in
-notebook-doc (more work), a coarse-grained authorship snapshot
-taken less often, or accepting that the current filter stays.
+So this investigation is a **design spike**, not an extension of
+an existing primitive:
+
+- We need a new query shape: per-comm-key, most-recent actor, for
+  the keys in a projected delta. Existing attribution doesn't
+  compute this.
+- `automerge` 0.8 does have `get_changes_added`
+  (`autocommit.rs:590`) to scope the walk to a delta rather than
+  the full history. But filtering ops to "which ones touched
+  comm K's field V" still requires walking ops inside those
+  changes. Cost profile is open.
+- The answer might not be "one query per key per emission." It
+  could be a batched `AuthorshipSnapshot` produced once per
+  projection cycle, or a persistent authorship index maintained
+  on write. Design question, not an implementation detail.
+
+**Prototype before committing:**
+
+Write a ~50-line Rust prototype that, given a comms Automerge
+doc with 10k changes and a hammered-slider workload, measures:
+
+- Cost of `get_changes_added` to scope a delta.
+- Cost of walking ops-in-changes to find "last actor for key K."
+- Cost of a batched snapshot vs. per-key lookup.
+
+These numbers determine the API shape, not just "is it fast
+enough." If per-key lookup is millisecond-scale, the whole
+direction needs an indexed-authorship approach, which is a
+larger Rust crate change.
 
 **Where to look:**
 - `apps/notebook/src/hooks/useCrdtBridge.tsx:150-156` — the
-  existing actor-filter precedent.
-- `crates/notebook-doc/` — the attribution code already walks
-  `Change::actor_id()` for text. Per-key comm authorship is the
-  same primitive against the comms map.
-- `crates/runtimed-wasm/src/lib.rs` — needs a new export. Options:
-  richer `resolve_comm_state` carrying per-key actor info, or a
-  standalone `get_comm_authorship(comm_id)` map. Shape depends on
-  the prototype's cost profile.
+  existing filter pattern (scoped to "was the delta all-local?",
+  not per-key).
+- `crates/runtimed-wasm/src/lib.rs:1707-1713` — current
+  attribution payload construction. Shows what's already computed
+  and what's missing.
+- `crates/notebook-doc/` — would likely get a new
+  `comm_authorship` API.
+- `crates/runtimed-wasm/src/lib.rs` — needs a WASM export
+  matching whatever shape the prototype validates.
 - `packages/runtimed/src/comm-diff.ts:146-191` — **structural
   change**. Today diffs whole-comm state JSON via
   `JSON.stringify` + string compare. Per-key actor checks require
-  a per-key diff, so the emission shape of `commChanges$` changes.
-  Downstream consumers of `commChanges$` (`App.tsx`'s widget-store
-  subscriber, any test harness using the observable, the isolated
-  renderer's widget bridge) all read the whole-state payload
-  today — audit call sites before committing.
+  a per-key diff, so the emission shape of `commChanges$`
+  changes. Audit every subscriber before committing:
+  - `apps/notebook/src/App.tsx` widget-store subscriber
+  - `packages/runtimed/tests/` harnesses using the observable
+  - `src/isolated-renderer/widget-bridge-client.ts` downstream
+    of `commChanges$` in the iframe bridge
 - `src/components/widgets/link-subscriptions.ts` — **not gated on
   this refactor**. jslink is pure local-store sync and doesn't
   touch the CRDT.
@@ -394,14 +452,13 @@ symmetrically.
   information for free.
 
 **Risks to investigate:**
-- How expensive is "most-recent actor for a key"? Automerge-core
-  has this (attribution code walks it), but the cost profile for
-  per-emission use isn't characterized.
-- `automerge` 0.8 has `get_changes(from_heads)` but not
-  `get_changes_added` — which API shape you land on affects how
-  the per-key query composes.
+- Cost of "most-recent actor for key K" per emission. The
+  attribution pattern walks changes for a delta but doesn't do
+  the per-key reduction. The prototype above is how we'd find
+  out whether that reduction is cheap or expensive.
 - The comm-diff restructure is not purely additive; it's
-  structural. Budget for that.
+  structural. Budget for touching every downstream subscriber of
+  `commChanges$`.
 
 ### 2. Heads-gossip for stall detection (speculative)
 
@@ -449,80 +506,64 @@ in 5s → try reconnecting" without heads).
 - automerge-repo's `DocSynchronizer` for prior art on heads-based
   sync — reference only.
 
-### 3. Escalating recovery with a reconnect primitive
+### 3. A real reconnect path (conditional on what (0) finds)
 
-**Thesis:** `reset_sync_state()` is the wrong hammer for a dead
-pipe. We need a recovery path that can rebuild the listener and
-re-handshake, not just reset sync state on a channel that isn't
-delivering.
+**Thesis:** If the instrumentation in (0) shows that inbound
+frames stop reaching our JS callback on a still-healthy daemon,
+we need a recovery path that rebuilds the listener — `Cmd+R` is
+the only one today. This investigation is the shape of that
+path, not a commitment to build it before we know the failure
+mode.
 
-Today, the only signals that take action on stall are WASM auto-
-recovery (fine for `receive_sync_message` failures, does nothing
-for dead listeners) and the runtime-state watchdog (calls
-`reset_sync_state()`, which doesn't help when inbound is dead).
-The user's only real recovery is `Cmd+R`.
+**Honest API surface required.** An earlier version of this doc
+said the reconnect was "mostly wiring" on top of existing
+`disconnect` / `start` / `resetForBootstrap` primitives. That
+undercounts the actual work. Today the transport is constructed
+once inside the `useAutomergeNotebook` React effect and passed to
+`SyncEngine` at construction time (`packages/runtimed/src/sync-engine.ts`,
+`apps/notebook/src/hooks/useAutomergeNotebook.ts`). There is no
+current API for "swap in a fresh transport and reuse the engine"
+— engine and transport are paired for the engine's lifetime. So
+a real reconnect needs one of:
 
-Proposed recovery hierarchy:
+- **Transport swap API.** `SyncEngine.reattach(newTransport)` or
+  similar. Hooks the new transport's frame listener into the
+  existing pipeline without rebuilding the whole engine. Requires
+  thinking about what in-flight state (in-flight flush promises,
+  watchdog timers) survives the swap.
+- **Tear-down + rebuild.** Destroy both the transport and the
+  engine; create a new pair; keep the WASM handle (which holds
+  the CRDT). Needs React-level coordination to avoid tearing
+  down React state that depends on the engine.
+- **Daemon-scoped reconnect only.** Use the existing
+  `reconnect_to_daemon` path (which already exists for
+  `daemon:ready`) and accept that per-window-listener failures
+  fall through to reload. Cheapest; least recovery.
+
+Which one depends on (0)'s findings and on (0.5)'s Tauri-unlisten
+verification.
+
+**Recovery hierarchy it would slot into:**
 
 | Signal | Recovery | Cost |
 |---|---|---|
 | WASM `receive_sync_message` error | WASM rebuilds doc; engine forwards recovery reply | cheap; already exists |
-| Heads diverged but inbound otherwise healthy | `reset_sync_state()`; re-flush | cheap |
-| Heads diverged + reset didn't help after N rounds | Tear down the `listen("notebook:frame")` handler; re-register it; re-handshake from the daemon's current heads | moderate — full sync round, but no UI state loss |
-| Reconnect failed or listener won't re-register | Surface "Reload notebook" in the banner with a one-click reload button | last resort; user loses nothing meaningful (CRDT is durable) |
-
-The third level is the missing recovery step. It's also cheaper
-than it first looks — the building blocks already exist:
-
-- `TauriTransport.disconnect()` already unlistens the
-  `notebook:frame` handler.
-- `SyncEngine.start()` already re-registers the listener via the
-  transport and reinitializes the sync pipeline.
-- `SyncEngine.resetForBootstrap()` already clears engine-side state
-  that would be stale across a reconnect.
-
-So this investigation is largely about **wiring** these existing
-primitives to a new trigger, plus making sure the listener can be
-cleanly re-registered for the same event on the same window.
-
-Implementation sketch:
-
-- New signal on escalation (N consecutive stall_detected events,
-  or a one-shot "Reconnect" action in the banner).
-- Call `transport.disconnect()`; `engine.stop()`.
-- Instantiate a fresh transport (or reset the existing one's
-  listener state); `engine.start()` to re-register.
-- On the WASM handle: `reset_sync_state()` so the next flush does
-  a full handshake from the daemon's current heads.
+| Sync state stale (bloom / sent_hashes) | `reset_sync_state()`; re-flush | cheap; currently the only recovery |
+| Channel-level stall | **Whatever (3) turns out to be** — see options above | moderate; new API surface |
+| Channel unrecoverable | "Reload" action in banner | last resort; no state loss |
 
 **Where to look:**
-- `apps/notebook/src/lib/tauri-transport.ts` — contains the `listen`
-  call and `disconnect`. Add explicit handler-exception trapping
-  here (investigation 0's experiment graduates to production
-  hardening).
-- `packages/runtimed/src/sync-engine.ts` — `resetForBootstrap`
-  is the same shape of reset already driven by `daemon:ready`.
-  Reuse rather than build anew.
-- `apps/notebook/src/components/SyncRecoveryBanner.tsx` — an
-  escalated state with a "Reconnect" button wired to the trigger.
+- `apps/notebook/src/hooks/useAutomergeNotebook.ts` — where the
+  transport + engine pair is created today. Start here to see
+  what lifecycle currently owns it.
+- `packages/runtimed/src/sync-engine.ts:339, 381` — the engine's
+  transport reference, fixed at construction.
+- `apps/notebook/src/lib/tauri-transport.ts` — the listener
+  registration that (0.5) needs to verify releases cleanly.
 
-**Why it's worth it:**
-- Eliminates the reload requirement for the failure mode we
-  actually observed (listener death on a still-healthy daemon).
-- Reuses the existing `disconnect` + `start` + `resetForBootstrap`
-  infrastructure — small code footprint for a big user-visible win.
-- The watchdog in PR #1881 becomes level 2 of the hierarchy rather
-  than the terminal recovery.
-- Tauri-specific and not shared with `runt mcp` (which uses a
-  different transport entirely) — that's fine; this investigation
-  has no useful MCP angle.
-
-**Risk to investigate:** does Tauri cleanly release the underlying
-subscription when an `unlisten` promise resolves? If there's a
-hidden reference cycle or the drop doesn't fully release, the
-"reconnect" could silently layer a new listener on top of the
-dead one. Verify with the listener-counter instrumentation from
-investigation 0.
+**Don't build this until (0) points at it.** If the
+instrumentation shows outbound is the broken half, a listener
+reconnect wouldn't help.
 
 ## What not to revisit
 
@@ -578,42 +619,43 @@ write filter is exactly what investigation (1) replaces.
 
 ## Recommended ordering
 
-Fix the bug, then do the cleanup:
+Diagnose before architecting:
 
-1. **(0)** — try/catch around the listener + reproduce. 30 min.
-   Ships the actual fix and confirms the diagnosis in one motion.
-2. **(0.5)** — verify Tauri unlisten cleanly releases. 15 min.
-   Gates whether (3) is wiring or a larger Tauri workaround.
-3. **(3)** — escalating recovery, conditional on (0) + (0.5).
-   Mostly wiring of existing primitives; surfaces a real
-   non-reload recovery path.
-4. **(1)** — actor-ID echo refactor, independent. Start with the
-   cost-profile prototype before committing. Parallelizable with
-   the above or can wait.
-5. **(2)** — deferred. Revisit only if (0) + (3) close the stall
-   and a distinct liveness gap remains.
+1. **(0) instrumentation** — counters on both sides of the pipe;
+   reproduce; read the logs. Nothing below is worth building
+   until this localizes the break.
+2. Then, based on what (0) shows:
+   - **Inbound dead**: (0.5) verifies Tauri unlisten behavior,
+     then (3) designs a reconnect with the right API surface.
+   - **Outbound dead**: the fix is in Rust-side frame handling;
+     none of the investigations here apply directly.
+   - **WASM state corruption**: Rust-side harness repro; new
+     work not captured by this proposal.
+3. **(1) actor-ID echo** — separable from the stall. Start with
+   the cost-profile prototype before committing. Land on its own
+   merits whenever there's bandwidth for it.
+4. **(2) heads-gossip** — deferred. Revisit only if a liveness
+   gap remains after whatever (0) leads to lands.
 
-PR #1881's watchdog ceases to earn its surface area once (0) +
-(3) land. Drop it; the watchdog was detecting a class that won't
-occur with a protected listener + reconnect primitive.
+PR #1881's watchdog may or may not earn its keep depending on
+(0)'s findings. Don't decide until we know what it's actually
+watching for.
 
 ## Success criteria
 
 A successful set of changes, in order of importance:
 
-1. **(0)** — the reproducer (`@interact` slider hammered with
-   arrow keys) doesn't stall. If an exception shows up in the log,
-   it's been hardened against. The specific failure mode behind
-   the user's repro is closed.
-2. **(3)** — if some future failure mode produces a similar wedge,
-   the user recovers via a "Reconnect" action rather than
-   reloading. The CRDT has no state to lose, so the action is
-   safe by construction.
-3. **(1)** — the widget write path is smaller than today and
-   relies on the CRDT's native authorship information, not a
-   reconstructed filter. `get_comm_authorship` (or whatever shape
-   the prototype validates) is consumed from both the WASM binding
-   and `runt mcp`.
-4. Reload requirement is reserved for genuinely unrecoverable
-   states (daemon dead, Tauri process gone) and surfaced with a
-   one-click banner action.
+1. The stall class is actually diagnosed. Whatever (0) measures
+   tells us what's broken — outbound, inbound, or state
+   corruption — and the fix targets that specifically instead
+   of patching adjacent layers.
+2. Whatever is broken is fixed. "Fixed" means the user can
+   reproduce the repro without hitting the stall, not just
+   that a banner tells them about it.
+3. If the fix involves a reconnect primitive, it lives at the
+   right API layer (engine/transport coupling thought through,
+   not bolted on). If it doesn't, we don't build one.
+4. **(1)**, independent — the widget write path is smaller than
+   today and relies on the CRDT's native authorship information
+   rather than a reconstructed filter. Consumed symmetrically by
+   WASM and `runt mcp`.
