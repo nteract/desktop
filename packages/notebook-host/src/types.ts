@@ -194,6 +194,43 @@ export interface HostSystem {
   getUsername(): Promise<string>;
 }
 
+/** File picker. Returned paths are platform-native strings, or null if cancelled. */
+export interface HostDialog {
+  /** Open an existing file; returns the selected path or null on cancel. */
+  openFile(options?: HostDialogOpenOptions): Promise<string | null>;
+  /** Open a save-as dialog; returns the chosen path or null on cancel. */
+  saveFile(options?: HostDialogSaveOptions): Promise<string | null>;
+}
+
+/** Filter for file pickers. Matches Tauri's shape for drop-in compatibility. */
+export interface HostDialogFilter {
+  name: string;
+  extensions: string[];
+}
+
+export interface HostDialogOpenOptions {
+  filters?: HostDialogFilter[];
+  defaultPath?: string;
+  multiple?: false;
+}
+
+export interface HostDialogSaveOptions {
+  filters?: HostDialogFilter[];
+  defaultPath?: string;
+}
+
+/**
+ * Open a URL in the user's default browser or handler app.
+ *
+ * Named "externalLinks" (not "shell") on purpose — the Tauri `plugin-shell`
+ * exposes a generic shell-command surface that we deliberately don't want
+ * to advertise through the host interface. URL-opening is the only subset
+ * the notebook frontend uses.
+ */
+export interface HostExternalLinks {
+  open(url: string): Promise<void>;
+}
+
 /**
  * Structured-log pipe shared across the frontend. Replaces the direct
  * `@tauri-apps/plugin-log` coupling in `apps/notebook/src/lib/logger.ts`.
@@ -231,6 +268,8 @@ export interface NotebookHost {
   readonly notebook: HostNotebook;
   readonly window: HostWindow;
   readonly system: HostSystem;
+  readonly dialog: HostDialog;
+  readonly externalLinks: HostExternalLinks;
   /**
    * Typed action bus shared between host UI surfaces (menus, keyboard,
    * future palette) and the app. Host-side wiring calls `run(id, payload)`;

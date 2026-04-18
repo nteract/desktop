@@ -485,13 +485,13 @@ export function useAutomergeNotebook() {
   // ── File operations ────────────────────────────────────────────────
 
   const save = useCallback(async () => {
-    const saved = await saveNotebook(flushSync);
+    const saved = await saveNotebook(host, flushSync);
     if (saved) setDirty(false);
-  }, [flushSync]);
+  }, [host, flushSync]);
 
-  const openNotebook = useCallback(() => openNotebookFile(), []);
+  const openNotebook = useCallback(() => openNotebookFile(host), [host]);
 
-  const cloneNotebook = useCallback(() => cloneNotebookFile(), []);
+  const cloneNotebook = useCallback(() => cloneNotebookFile(host), [host]);
 
   // ── Output overlays (optimistic, pre-sync) ─────────────────────────
 

@@ -8,6 +8,7 @@ import { IsolatedRendererProvider } from "@/components/isolated/isolated-rendere
 import { setBlobPortHost } from "./lib/blob-port";
 import { setLoggerHost } from "./lib/logger";
 import { setMetadataTransport } from "./lib/notebook-metadata";
+import { setOpenUrlHost } from "./lib/open-url";
 
 // Register built-in widget components
 import "@/components/widgets/controls";
@@ -36,6 +37,7 @@ const host = createTauriHost();
 setMetadataTransport(host.transport);
 setBlobPortHost(host);
 setLoggerHost(host);
+setOpenUrlHost(host);
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
