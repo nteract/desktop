@@ -112,28 +112,50 @@ describe("WidgetUpdateManager", () => {
       expect(store.getModel("comm-1")?.state.value).toBe(42);
     });
 
-    it("marks written keys as pending so stale projected echoes can be dropped", () => {
-      // While the trailing throttle flush is in flight, the daemon's
-      // sync frames still carry its pre-flush view of the state. The
-      // App-level `commChanges$` subscriber consults
-      // `hasPendingKey(commId, key)` to drop those stale echoes, so
-      // an in-flight drag value doesn't snap back mid-burst.
+    it("flags an identical projected value as an echo of the pending local write", () => {
+      // Continuous drag → user writes value=42 → daemon lags and
+      // projects the previous value back. The App-level subscriber
+      // uses isEchoOfPendingWrite to drop just the matching echo.
       const { manager } = setup();
 
       manager.updateAndPersist("comm-1", { value: 42 });
 
-      expect(manager.hasPendingKey("comm-1", "value")).toBe(true);
-      expect(manager.hasPendingKey("comm-1", "description")).toBe(false);
+      expect(manager.isEchoOfPendingWrite("comm-1", "value", 42)).toBe(true);
+      expect(manager.isEchoOfPendingWrite("comm-1", "description", "test")).toBe(false);
+    });
+
+    it("still accepts authoritative updates that differ from the pending local value", () => {
+      // Kernel-side validators (value clamp, normalization) and
+      // collaborative peers can write authoritative values that
+      // don't match what we last wrote. Those must land in the
+      // store; otherwise the frontend stays permanently divergent.
+      const { manager } = setup();
+
+      manager.updateAndPersist("comm-1", { value: 42 });
+
+      // Daemon echoes a clamped value — not ours.
+      expect(manager.isEchoOfPendingWrite("comm-1", "value", 100)).toBe(false);
+    });
+
+    it("matches by structural equality for object/array values", () => {
+      const { manager } = setup();
+
+      manager.updateAndPersist("comm-1", { value: [1, 2, 3] });
+
+      // Different reference, same shape → still our echo.
+      expect(manager.isEchoOfPendingWrite("comm-1", "value", [1, 2, 3])).toBe(true);
+      // Different content → authoritative.
+      expect(manager.isEchoOfPendingWrite("comm-1", "value", [1, 2, 4])).toBe(false);
     });
 
     it("clears pending-key marks after the TTL elapses", () => {
       const { manager } = setup();
 
       manager.updateAndPersist("comm-1", { value: 42 });
-      expect(manager.hasPendingKey("comm-1", "value")).toBe(true);
+      expect(manager.isEchoOfPendingWrite("comm-1", "value", 42)).toBe(true);
 
       vi.advanceTimersByTime(600); // past PENDING_TTL_MS (500)
-      expect(manager.hasPendingKey("comm-1", "value")).toBe(false);
+      expect(manager.isEchoOfPendingWrite("comm-1", "value", 42)).toBe(false);
     });
 
     it("clears pending keys on clearComm (comm_close)", () => {
@@ -142,7 +164,7 @@ describe("WidgetUpdateManager", () => {
       manager.updateAndPersist("comm-1", { value: 42 });
       manager.clearComm("comm-1");
 
-      expect(manager.hasPendingKey("comm-1", "value")).toBe(false);
+      expect(manager.isEchoOfPendingWrite("comm-1", "value", 42)).toBe(false);
     });
   });
 

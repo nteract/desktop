@@ -53,6 +53,15 @@ interface CommThrottleState {
  */
 const PENDING_TTL_MS = 500;
 
+interface PendingValue {
+  /** The exact value we last wrote locally for this key. */
+  value: unknown;
+  /** Cached JSON serialization of `value` for cheap equality. */
+  json: string;
+  /** Wall-clock ms when the write happened. */
+  ts: number;
+}
+
 export class WidgetUpdateManager {
   private readonly getStore: () => WidgetStore | null;
   private readonly getCrdtWriter: () => CrdtCommWriter | null;
@@ -65,15 +74,16 @@ export class WidgetUpdateManager {
   private throttles = new Map<string, CommThrottleState>();
 
   /**
-   * Per-comm per-key timestamps of local writes that haven't yet
-   * round-tripped through the CRDT. Consulted by the App-level
-   * `commChanges$` subscriber: if a projected echo carries a key
-   * that was written locally within `PENDING_TTL_MS`, the store's
-   * current value wins and the echo is dropped. Prevents the
-   * daemon's lagged view of the throttle window from clobbering
-   * the in-flight drag.
+   * Per-comm per-key record of the last value we wrote locally
+   * and when. Consulted by the App-level `commChanges$` subscriber
+   * via `isEchoOfPendingWrite`: a projected value matching what we
+   * just wrote is dropped as a stale echo of our own in-flight
+   * write. A projected value *differing* from our pending value is
+   * treated as authoritative (kernel validator, peer edit, etc.)
+   * and still applied — so a clamped or collaboratively-updated
+   * key can't get stuck on the optimistic local value.
    */
-  private pendingKeys = new Map<string, Map<string, number>>();
+  private pendingKeys = new Map<string, Map<string, PendingValue>>();
 
   /**
    * Patches that arrived before the CRDT writer was registered.
@@ -88,23 +98,31 @@ export class WidgetUpdateManager {
   }
 
   /**
-   * Is there a pending local write for this key that the daemon's
-   * projected echo shouldn't clobber? Consulted by the `commChanges$`
-   * subscriber to drop stale projected values during the throttle
-   * window (and briefly after, until the daemon's merged view catches
-   * up).
+   * Is the projected `candidate` value for `(commId, key)` a stale
+   * echo of a local write we just made? Returns true only when the
+   * candidate matches the most recently written local value within
+   * the TTL. A mismatch indicates the daemon or a peer authoritatively
+   * changed the key (e.g., kernel validator clamp, another tab's edit)
+   * and the caller should still apply the update.
    */
-  hasPendingKey(commId: string, key: string): boolean {
+  isEchoOfPendingWrite(commId: string, key: string, candidate: unknown): boolean {
     const keys = this.pendingKeys.get(commId);
     if (!keys) return false;
-    const ts = keys.get(key);
-    if (ts === undefined) return false;
-    if (Date.now() - ts > PENDING_TTL_MS) {
+    const entry = keys.get(key);
+    if (!entry) return false;
+    if (Date.now() - entry.ts > PENDING_TTL_MS) {
       keys.delete(key);
       if (keys.size === 0) this.pendingKeys.delete(commId);
       return false;
     }
-    return true;
+    if (entry.value === candidate) return true;
+    try {
+      return JSON.stringify(candidate) === entry.json;
+    } catch {
+      // Non-serializable candidate → can't confirm it's our echo; err
+      // on the side of applying the update.
+      return false;
+    }
   }
 
   private markPending(commId: string, patch: Record<string, unknown>): void {
@@ -114,8 +132,17 @@ export class WidgetUpdateManager {
       this.pendingKeys.set(commId, keys);
     }
     const now = Date.now();
-    for (const key of Object.keys(patch)) {
-      keys.set(key, now);
+    for (const [key, value] of Object.entries(patch)) {
+      let json: string;
+      try {
+        json = JSON.stringify(value);
+      } catch {
+        // Skip tracking — we can't compare echoes reliably without
+        // JSON. The worst outcome is an occasional redundant store
+        // write, which is benign.
+        continue;
+      }
+      keys.set(key, { value, json, ts: now });
     }
   }
 
