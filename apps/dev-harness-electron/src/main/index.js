@@ -59,8 +59,10 @@ function parseArgs(argv) {
   return out;
 }
 
-function discoverSocketPath() {
-  if (process.env.RUNTIMED_SOCKET_PATH) return process.env.RUNTIMED_SOCKET_PATH;
+let cachedDaemonStatus = null;
+
+function fetchDaemonStatus() {
+  if (cachedDaemonStatus) return cachedDaemonStatus;
   const runtBin = process.env.RUNTIMED_CLI_BIN || "runt";
   try {
     const stdout = execFileSync(runtBin, ["daemon", "status", "--json"], {
@@ -68,15 +70,28 @@ function discoverSocketPath() {
       timeout: 5000,
       env: process.env,
     });
-    const info = JSON.parse(stdout);
-    if (info && typeof info.socket_path === "string") return info.socket_path;
+    cachedDaemonStatus = JSON.parse(stdout);
+    return cachedDaemonStatus;
   } catch (err) {
     console.error(
-      "[dev-harness] failed to discover socket path via `runt daemon status`:",
+      "[dev-harness] failed to fetch daemon status:",
       err.message,
     );
+    return null;
   }
-  return null;
+}
+
+function discoverSocketPath() {
+  if (process.env.RUNTIMED_SOCKET_PATH) return process.env.RUNTIMED_SOCKET_PATH;
+  const status = fetchDaemonStatus();
+  return (status && status.socket_path) || null;
+}
+
+function discoverBlobPort() {
+  const status = fetchDaemonStatus();
+  return (
+    (status && status.daemon_info && status.daemon_info.blob_port) || null
+  );
 }
 
 // ---------- Frame codec ----------
@@ -357,8 +372,123 @@ app.whenReady().then(async () => {
     }
   });
 
+  // ── Tauri shim router ─────────────────────────────────────────────────
+  //
+  // The notebook UI imports `@tauri-apps/api/core` in ~15 places. The preload
+  // installs a `window.__TAURI_INTERNALS__` shim; its `invoke` IPCs here. We
+  // map the daemon-request subset to NotebookRequest frames and no-op the
+  // Tauri-chrome surface (auto-updater, trust prompts, window state).
+  ipcMain.handle("tauri-shim:invoke", async (_event, cmd, args) => {
+    const daemonReq = mapTauriCommandToNotebookRequest(cmd, args);
+    if (daemonReq) {
+      try {
+        return await daemon.sendRequest(daemonReq);
+      } catch (err) {
+        throw new Error(`daemon request failed for ${cmd}: ${err.message}`);
+      }
+    }
+    return tauriShimNoop(cmd, args);
+  });
+
   await createWindow(cli);
 });
+
+// Translate Tauri command names to NotebookRequest payloads. The Rust side
+// of the Tauri app has one-off Tauri commands that each build and send a
+// NotebookRequest; the harness short-circuits them to avoid maintaining a
+// separate router.
+function mapTauriCommandToNotebookRequest(cmd, args) {
+  switch (cmd) {
+    case "launch_kernel_via_daemon":
+      return {
+        action: "launch_kernel",
+        kernel_type: args.kernelType,
+        env_source: args.envSource,
+        notebook_path: args.notebookPath ?? null,
+      };
+    case "execute_cell_via_daemon":
+      return { action: "execute_cell", cell_id: args.cellId };
+    case "clear_outputs_via_daemon":
+      return { action: "clear_outputs", cell_id: args.cellId };
+    case "interrupt_via_daemon":
+      return { action: "interrupt_execution" };
+    case "shutdown_kernel_via_daemon":
+      return { action: "shutdown_kernel" };
+    case "sync_environment_via_daemon":
+      return { action: "sync_environment" };
+    case "run_all_cells_via_daemon":
+      return { action: "run_all_cells" };
+    case "send_comm_via_daemon":
+      return { action: "send_comm", message: args.message };
+    default:
+      return null;
+  }
+}
+
+// Tauri-chrome commands handled with fixed default values (no daemon call).
+// The handlers cover the subset the notebook UI calls at startup; everything
+// else falls through to a silent no-op.
+function tauriShimNoop(cmd, _args) {
+  switch (cmd) {
+    // Blob server discovery — real port from daemon status.
+    case "get_blob_port": {
+      const port = discoverBlobPort();
+      if (port == null) throw new Error("Blob server not available");
+      return port;
+    }
+
+    // Dev harness is implicitly trusted — we launched it locally. Shape
+    // matches TrustInfo in apps/notebook/src/hooks/useTrust.ts so the hook's
+    // spread-of-dependencies doesn't crash.
+    case "verify_notebook_trust":
+      return {
+        status: "trusted",
+        uv_dependencies: [],
+        conda_dependencies: [],
+        conda_channels: [],
+      };
+
+    case "check_typosquats":
+      return [];
+
+    // Settings live in a per-user Automerge doc on the daemon. Returning an
+    // empty object makes the frontend fall back to built-in defaults.
+    case "get_synced_settings":
+      return {};
+
+    // Optional UI chrome — return null / empty so banners hide themselves.
+    case "get_git_info":
+    case "get_daemon_info":
+    case "detect_pyproject":
+    case "detect_environment_yml":
+    case "detect_pixi_toml":
+    case "detect_deno_config":
+      return null;
+
+    case "get_username":
+      return process.env.USER || process.env.USERNAME || "dev-harness";
+
+    // Fire-and-forget frontend signals (relay gates, window-title sync, etc.).
+    case "notify_sync_ready":
+    case "reconnect_to_daemon":
+    case "approve_notebook_trust":
+    case "mark_notebook_clean":
+    case "apply_path_changed":
+    case "import_pyproject_dependencies":
+      return undefined;
+
+    default:
+      // Log once-per-command so the harness surfaces unhandled Tauri surface area.
+      if (!cmd.startsWith("plugin:")) {
+        tauriShimNoop._logged = tauriShimNoop._logged || new Set();
+        if (!tauriShimNoop._logged.has(cmd)) {
+          tauriShimNoop._logged.add(cmd);
+          console.warn(`[tauri-shim] no-op for unknown command: ${cmd}`);
+        }
+      }
+      return undefined;
+  }
+}
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
