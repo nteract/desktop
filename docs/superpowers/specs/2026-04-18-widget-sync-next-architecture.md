@@ -109,10 +109,72 @@ Honest assessment of why the above composes poorly:
    the optimistic outcome, and nothing at the sync layer detects
    the divergence.
 
+## Why recovery doesn't currently recover
+
+The watchdog log from the user's repro is diagnostic. It fires
+every 3s in a tight loop:
+
+```
+[WARN] runtime-state flush stalled ... — resetting sync state and re-flushing
+[WARN] runtime-state flush stalled ... — resetting sync state and re-flushing
+[WARN] runtime-state flush stalled ... — resetting sync state and re-flushing
+...
+```
+
+That rules out most of the "obvious" hypotheses:
+
+- **Not a bloom-filter false positive.** `reset_sync_state()` rebuilds
+  the entire `sync::State`, which forces the next flush to do a full
+  sync handshake with no bloom. A false positive cannot survive that
+  reset. Since the reset isn't helping, the protocol-level sync
+  state is not the problem.
+- **Not daemon death.** Windows opened *after* the first one stalls
+  work normally against the same daemon. The daemon is reading,
+  writing, and talking to the kernel.
+- **Not a WASM panic.** Those produce `sync_error` events that the
+  engine handles and the banner would show as `auto_recovered`. The
+  log shows only `stall_detected`, meaning the WASM side is happily
+  generating messages but nothing is coming back.
+
+What *does* survive `reset_sync_state()` is a dead pipe. If the
+outbound path silently drops, we re-send everything into the void;
+the daemon never responds because it never received; the next
+watchdog fires; repeat. That matches the loop exactly.
+
+The most likely specific failure mode is the webview's
+`listen("notebook:frame")` handler unsubscribing. Tauri's event
+system drops callbacks if an exception escapes the handler — a
+single malformed frame, decoder assertion, or mid-receive exception
+and the listener is dead from that point on. The daemon keeps
+sending frames, Tauri keeps dispatching them, and nothing on our
+side is listening. The outbound side (WASM → Tauri invoke) is still
+fine, which is why the flush completes without error; only the
+return channel is dead.
+
+That explains the reload-fixes-it behavior: reload tears down the
+webview entirely, rebuilding the listener registration along with
+everything else.
+
+### Experiments to confirm
+
+A new implementer should be able to reproduce the stall and then:
+
+1. **Open a second window on the same notebook while the first is
+   stalled.** If the second window syncs normally, the daemon and
+   inter-window sync are fine — only the first window's listener
+   is dead. Strongly implicates the Tauri listener theory.
+2. **Instrument `listen("notebook:frame")` with a counter.** If the
+   counter stops incrementing after the stall but other listeners
+   on the same window (presence, broadcasts) keep firing, a
+   specific listener has been silently unregistered.
+3. **Add a `console.error` trap around the frame handler.** If any
+   exceptions are escaping the handler, they should be visible —
+   and that's the signal to fix the handler to catch them itself.
+
 ## Proposed investigations
 
-Two directions, orthogonal to each other. Either can be pursued
-independently; neither requires the other.
+Three directions, orthogonal to each other. Any can be pursued
+independently; none require the others.
 
 ### 1. Actor-ID-based echo detection
 
@@ -207,6 +269,64 @@ Sketch:
 per window is small but non-zero. Could be adaptive — faster when
 there's in-flight traffic, slow when idle.
 
+### 3. Escalating recovery with a reconnect primitive
+
+**Thesis:** `reset_sync_state()` is the wrong hammer for a dead
+pipe. We need a recovery path that can rebuild the listener and
+re-handshake, not just reset sync state on a channel that isn't
+delivering.
+
+Today, the only signals that take action on stall are WASM auto-
+recovery (fine for `receive_sync_message` failures, does nothing
+for dead listeners) and the runtime-state watchdog (calls
+`reset_sync_state()`, which doesn't help when inbound is dead).
+The user's only real recovery is `Cmd+R`.
+
+Proposed recovery hierarchy:
+
+| Signal | Recovery | Cost |
+|---|---|---|
+| WASM `receive_sync_message` error | WASM rebuilds doc; engine forwards recovery reply | cheap; already exists |
+| Heads diverged but inbound otherwise healthy | `reset_sync_state()`; re-flush | cheap |
+| Heads diverged + reset didn't help after N rounds | Tear down the `listen("notebook:frame")` handler; re-register it; re-handshake from the daemon's current heads | moderate — full sync round, but no UI state loss |
+| Reconnect failed or listener won't re-register | Surface "Reload notebook" in the banner with a one-click reload button | last resort; user loses nothing meaningful (CRDT is durable) |
+
+The third level is the new primitive. It's the missing piece: a
+webview-scoped reconnect that doesn't require the user to reload
+the whole window. Implementation would look roughly like:
+
+- Unlisten the current `notebook:frame` handler.
+- Call a new Tauri command — say `resubscribe_to_daemon_frames` —
+  that tears down and rebuilds the per-window frame subscription on
+  the Rust side.
+- Re-register the listener with a fresh callback.
+- Ask the daemon for its current heads for all three docs, compare
+  to ours, and do a fresh sync round.
+
+**Where to look:**
+- `apps/notebook/src/lib/tauri-transport.ts` — where `listen` is
+  called; needs an unlisten + relisten primitive.
+- `crates/notebook/src/lib.rs` — the Tauri command side; would need
+  a new command symmetric to `reconnect_to_daemon` but scoped per
+  window / per subscription rather than per daemon connection.
+- `packages/runtimed/src/sync-engine.ts` — `resetForBootstrap`
+  already exists; this is the same shape of reset, driven by a new
+  signal.
+
+**Why it's worth it:**
+- Eliminates the reload requirement for the failure mode we know
+  exists (listener death on a still-healthy daemon).
+- Works with (2) — heads gossip gives the unambiguous "inbound is
+  dead" trigger that moves us up the escalation hierarchy.
+- The watchdog in PR #1881 becomes level 2 of the hierarchy rather
+  than the terminal recovery.
+
+**Risk to investigate:** does Tauri actually support cleanly tearing
+down and rebuilding a `listen` handler for the same event name on
+the same window? If there's a hidden reference cycle or the drop
+doesn't fully release the underlying subscription, the "reconnect"
+would silently layer a new listener on top of the dead one.
+
 ## What not to revisit
 
 - **Moving runtime state off CRDT to broadcast.** Considered and
@@ -265,12 +385,14 @@ A new design is worth landing if:
 
 1. The reproducer (`@interact` slider hammered with arrow keys)
    doesn't stall under nominal transport conditions.
-2. Under adversarial transport (paused daemon, dropped frames),
-   stalls are detected within ~1s, surfaced to the user, and
-   recovered without a reload in at least the "drops then resumes"
-   case. Wedged-transport (persistent drops) can still require
-   reload — that's a transport problem, not a sync problem.
-3. The widget write path is fewer lines than today and has no
+2. When the stall *does* happen (listener dead, pipe wedged),
+   heads-gossip detects it within ~1s and the reconnect primitive
+   recovers without the user reloading. The banner tells them what
+   happened but doesn't require action.
+3. Only genuinely unrecoverable transport failures (daemon dead,
+   Tauri process gone) escalate to "Reload required" — and that
+   state is reachable with a one-click banner action.
+4. The widget write path is fewer lines than today and has no
    per-key bookkeeping that requires TTL or consume-on-match.
-4. Silent drops can't regress without a heads-gossip divergence
+5. Silent drops can't regress without a heads-gossip divergence
    showing up in logs.
