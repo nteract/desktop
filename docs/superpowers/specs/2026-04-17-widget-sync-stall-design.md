@@ -130,16 +130,22 @@ into one.
 
 ## Known limitations (follow-up)
 
-- **Linked widget targets tick at the throttle rate, not per-event.**
-  With CRDT writes throttled to 50 ms per comm for outbound flood
-  control, `widgets.jslink` / `widgets.jsdlink` targets update at
-  ~20 Hz during a continuous slider drag — pre-A2 they tracked every
-  tick because the source's store was written per-tick. A naive fix
-  (per-tick `store.updateModel`) reintroduces the echo-clobbering
-  class: stale kernel echoes overwrite in-flight drag values. A
-  proper fix likely requires an "acknowledge by value" filter —
-  drop an inbound key if its value matches a recently-written local
-  value within some tombstone window. Deferred.
+- **Rare echo-clobber from validator widgets.**
+  The local store is mirrored on every tick in
+  `WidgetUpdateManager.updateAndPersist` so slider thumbs move
+  smoothly even when CRDT writes are throttled to 50 ms/comm.
+  `projectLocalState → commChanges$ → diffResolvedState` makes the
+  normal round-trip a no-op against what we already wrote. If a
+  validator widget on the kernel side rewrites the incoming value
+  (e.g., clamps `value=150` to `max=100`), the kernel echo lands in
+  the CRDT as a distinct Automerge write and projects back through
+  `commChanges$` with a *different* value than the local store — so
+  the diff is non-empty and the user sees a momentary snap to the
+  validated value mid-drag. This is the expected correction in
+  practice; the only surprise is that it reaches the UI immediately
+  rather than after the drag settles. Documented here because the
+  earlier design pre-empted this class with explicit echo suppression
+  bookkeeping (`optimisticKeys`), which we removed in Track A.
 
 - **iframe jslink targets don't propagate to other views of the same
   widget.** Each output iframe runs its own `WidgetStore` shadow

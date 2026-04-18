@@ -1305,5 +1305,9 @@ export class SyncEngine {
     this.prevExecutions = {};
     this.commDiffState = { comms: {}, json: {} };
     this.lastRuntimeState = null;
+    // Drop any in-flight stall watchdog — the fresh handle it would
+    // have fired against is now gone, and letting it expire would
+    // raise a spurious sync-recovery banner during a healthy reconnect.
+    this.clearRuntimeStateStallWatchdog();
   }
 }

@@ -71,11 +71,20 @@ export class WidgetUpdateManager {
   /**
    * Persist a widget state update.
    *
-   * Throttled per comm so bursts (slider drags, text input) coalesce
-   * to one write per `THROTTLE_MS`. The first write in a burst fires
-   * immediately — the user sees instant feedback via the
-   * `projectLocalState` → `commChanges$` → WidgetStore path. Ticks
-   * within the window accumulate last-wins into the trailing flush.
+   * Every tick immediately mirrors `patch` into the local
+   * `WidgetStore` so UI components (slider thumbs, text inputs) move
+   * in lockstep with user input. The outbound CRDT write is
+   * throttled per comm so a continuous drag doesn't flood the daemon
+   * with ~60 writes/sec. The first write in a burst fires at the
+   * leading edge; ticks within the window accumulate last-wins into
+   * a trailing flush at `THROTTLE_MS`.
+   *
+   * The local-then-CRDT ordering is safe because `projectLocalState`
+   * re-emits the resolved state on `commChanges$`, and the App-level
+   * subscriber diffs that against the current store — so the local
+   * pre-write makes the projected echo a no-op rather than a
+   * duplicate update. Kernel echoes converge through Automerge merge
+   * rather than racing the local store.
    *
    * Binary buffers bypass throttling and are mirrored directly to
    * the local widget model (CRDT doesn't carry ArrayBuffers;
@@ -94,12 +103,19 @@ export class WidgetUpdateManager {
     // order, even if they landed minutes ago.
     this.drainBootstrap(writer);
 
+    // Mirror every tick to the local store so components see
+    // continuous motion during a drag even when CRDT writes are
+    // throttled. The projection from `writer → projectLocalState →
+    // commChanges$` later fans the same values back out for other
+    // views; the App-level subscriber's diff check makes that a
+    // no-op rather than a redundant re-render.
+    this.getStore()?.updateModel(commId, patch, buffers);
+
     if (buffers?.length) {
       // Buffers bypass the throttle: ArrayBuffers aren't patchable
       // through Automerge, and delaying them would corrupt
       // anywidget model.buffers ordering.
       writer(commId, patch);
-      this.getStore()?.updateModel(commId, {}, buffers);
       return;
     }
 

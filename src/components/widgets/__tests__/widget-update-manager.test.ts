@@ -99,17 +99,17 @@ describe("WidgetUpdateManager", () => {
       ]);
     });
 
-    it("does not write to the local store on the happy path", () => {
-      // The widget store is driven by the CRDT projection (via
-      // `engine.projectLocalState()` after `set_comm_state_batch`).
-      // The manager itself must not write to the store — otherwise
-      // we'd be back to the pre-A2 dual-source drift.
+    it("mirrors every tick into the local store for instant UI feedback", () => {
+      // Continuous drags need per-tick store updates so the slider
+      // thumb doesn't stutter at the 50 ms throttle boundary. The
+      // CRDT projection (via `engine.projectLocalState()`) still fans
+      // the same value back through `commChanges$`; the App-level
+      // diff check makes that a no-op rather than a redundant update.
       const { store, manager } = setup();
-      const beforeValue = store.getModel("comm-1")?.state.value;
 
       manager.updateAndPersist("comm-1", { value: 42 });
 
-      expect(store.getModel("comm-1")?.state.value).toBe(beforeValue);
+      expect(store.getModel("comm-1")?.state.value).toBe(42);
     });
   });
 
