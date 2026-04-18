@@ -38,9 +38,7 @@ test("slider drive vs kernel round-trip", async () => {
   app.process().stderr?.on("data", (d) => process.stderr.write(`[main!] ${d}`));
 
   const window = await app.firstWindow({ timeout: 15_000 });
-  window.on("pageerror", (err) =>
-    process.stderr.write(`[renderer pageerror] ${err.message}\n`),
-  );
+  window.on("pageerror", (err) => process.stderr.write(`[renderer pageerror] ${err.message}\n`));
 
   await window.waitForSelector("[data-cell-id]", { timeout: 30_000 });
   const cellCount = await window.locator("[data-cell-id]").count();
@@ -71,10 +69,8 @@ test("slider drive vs kernel round-trip", async () => {
     };
     for (const el of document.querySelectorAll("[data-cell-id]")) {
       const code = el.textContent ?? "";
-      if (code.includes("IntSlider("))
-        out.slider = el.getAttribute("data-cell-id");
-      if (code.includes("kernel_slider_value="))
-        out.probe = el.getAttribute("data-cell-id");
+      if (code.includes("IntSlider(")) out.slider = el.getAttribute("data-cell-id");
+      if (code.includes("kernel_slider_value=")) out.probe = el.getAttribute("data-cell-id");
     }
     return out;
   });
@@ -125,9 +121,7 @@ test("slider drive vs kernel round-trip", async () => {
   };
   const rounds: Round[] = [];
   const roundsToRun = Number(process.env.HARNESS_STALL_ROUNDS ?? "4");
-  const pressesPerRound = Number(
-    process.env.HARNESS_STALL_PRESSES ?? "500",
-  );
+  const pressesPerRound = Number(process.env.HARNESS_STALL_PRESSES ?? "500");
   // Randomize right/left bursts inside each round so the oscillation
   // pattern isn't a clean rhythm the sync engine can keep up with.
   const chaos = process.env.HARNESS_STALL_CHAOS === "1";
@@ -228,8 +222,7 @@ test("slider drive vs kernel round-trip", async () => {
       await window.waitForTimeout(250);
     }
 
-    const diverged =
-      Number.isFinite(displayed) && kernel !== null && displayed !== kernel;
+    const diverged = Number.isFinite(displayed) && kernel !== null && displayed !== kernel;
     rounds.push({
       round,
       presses: pressesPerRound,

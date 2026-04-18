@@ -85,10 +85,7 @@ function fetchDaemonStatus() {
     cachedDaemonStatus = JSON.parse(stdout);
     return cachedDaemonStatus;
   } catch (err) {
-    console.error(
-      "[dev-harness] failed to fetch daemon status:",
-      err.message,
-    );
+    console.error("[dev-harness] failed to fetch daemon status:", err.message);
     return null;
   }
 }
@@ -101,9 +98,7 @@ function discoverSocketPath() {
 
 function discoverBlobPort() {
   const status = fetchDaemonStatus();
-  return (
-    (status && status.daemon_info && status.daemon_info.blob_port) || null
-  );
+  return (status && status.daemon_info && status.daemon_info.blob_port) || null;
 }
 
 // ---------- Frame codec ----------
@@ -138,9 +133,7 @@ class FrameBuffer {
     }
     if (len > MAX_FRAME_SIZE) {
       return {
-        err: new Error(
-          `frame too large: ${len} bytes (max ${MAX_FRAME_SIZE})`,
-        ),
+        err: new Error(`frame too large: ${len} bytes (max ${MAX_FRAME_SIZE})`),
       };
     }
     if (this.buf.length < 4 + len) return null;
@@ -248,9 +241,7 @@ class DaemonConnection {
           // Unsolicited Response — e.g., stale frame from a request that
           // already timed out. Rust's relay drops these (relay_task.rs
           // `pipe_frame` filters type 0x02). Log and drop for parity.
-          console.warn(
-            "[dev-harness] unsolicited Response frame dropped (no pending request)",
-          );
+          console.warn("[dev-harness] unsolicited Response frame dropped (no pending request)");
         }
       } else {
         this.onTypedFrame({ typeByte, payload });
