@@ -1590,3 +1590,164 @@ async fn error_blob_spill_is_renderable_by_llm_resolver() {
     assert!(tb[1].contains("500"));
     assert!(tb[1].contains("traceback frames"));
 }
+
+/// Stall reproducer — hammers the daemon's sync path with rapid
+/// source edits to see whether the observed widget-sync stall class
+/// also shows up without any Tauri / webview / kernel in the loop.
+///
+/// Signature of the user's repro (`docs/superpowers/specs/2026-04-18-*.md`):
+/// outbound `RuntimeStateSync` frames grow one byte per message
+/// because `sent_hashes` accumulates unacknowledged changes; inbound
+/// frames dry up entirely. Reload fixes it.
+///
+/// If this test trips the same class of stall (client A keeps
+/// sending, the daemon stops responding, client B stops catching up),
+/// the wedge is daemon-side and reachable without Tauri in the loop.
+/// If this test runs clean, the wedge is specific to the Tauri relay,
+/// the RuntimeStateDoc path, or something kernel-driven — all useful
+/// narrowings.
+///
+/// Gated with `#[ignore]` because:
+/// - It's a stall SEEKER, not a correctness check. A pass tells us
+///   nothing definitive; a hang or a failure tells us a lot.
+/// - It hammers I/O for `HAMMER_DURATION_MS` — up to 3s of noise.
+///
+/// Run with `cargo test -p runtimed --test integration --
+/// reproduce_stall_via_rapid_edits --ignored --nocapture` plus
+/// `RUST_LOG=trace` for the full `[frame-trace]` output from the
+/// relay + connection layers.
+#[tokio::test]
+#[ignore = "stall reproducer; run with --ignored"]
+async fn reproduce_stall_via_rapid_edits() {
+    use std::time::Instant;
+
+    /// How long to hammer writes from client A.
+    const HAMMER_DURATION_MS: u64 = 3_000;
+    /// Target writes per second. The user's reproducer is arrow-key
+    /// driven, which tops out around 20–60 Hz depending on OS key
+    /// repeat. 120 Hz here over-samples.
+    const TARGET_HZ: u64 = 120;
+    /// How long to wait after hammering for client B to catch up.
+    const DRAIN_TIMEOUT_MS: u64 = 5_000;
+
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+
+    let daemon = Daemon::new(config).unwrap();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
+
+    // Two clients on the same notebook so we can observe fan-out.
+    let created = connect::connect_create(socket_path.clone(), "python", None, "stall-a", false)
+        .await
+        .expect("client A should connect");
+    let notebook_id = created.info.notebook_id.clone();
+    let client_a = created.handle;
+
+    let client_b = connect::connect(socket_path.clone(), notebook_id.clone(), "stall-b")
+        .await
+        .expect("client B should connect")
+        .handle;
+
+    // Wait until both clients see the `cells` map before adding a
+    // cell — matches the pattern in the other sync tests.
+    wait_for_cells_map(&client_a, Duration::from_secs(2)).await;
+
+    client_a.add_cell_after("cell-1", "code", None).unwrap();
+
+    // Let client B see the cell exists before the storm starts.
+    let b_watcher = client_b.subscribe();
+    let _ = tokio::time::timeout(Duration::from_secs(2), wait_for_cell(&client_b, "cell-1")).await;
+
+    // Hammer phase — one `update_source` per tick. Each call creates a
+    // fresh change, which turns into an outbound Automerge sync
+    // message after the debounced flush. A live daemon should keep
+    // round-trips under a few ms; a wedge should show sent_hashes
+    // growing and round-trips climbing.
+    let tick = Duration::from_micros(1_000_000 / TARGET_HZ);
+    let mut ticker = tokio::time::interval(tick);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    let start = Instant::now();
+    let mut write_count: u64 = 0;
+    while start.elapsed() < Duration::from_millis(HAMMER_DURATION_MS) {
+        ticker.tick().await;
+        // The source value doesn't matter; we just need each write to
+        // produce a distinct change so the sync protocol has work to
+        // do. Counter-on-a-string keeps the change small (hashes are
+        // what accumulate in the stall signature, not bytes).
+        write_count += 1;
+        let source = format!("x = {}\n", write_count);
+        client_a
+            .update_source("cell-1", &source)
+            .expect("update_source should succeed");
+    }
+    let wall_ms = start.elapsed().as_millis();
+    eprintln!(
+        "[stall-repro] hammered {} writes in {} ms ({:.1} Hz)",
+        write_count,
+        wall_ms,
+        (write_count as f64) * 1000.0 / (wall_ms as f64),
+    );
+
+    // Drain phase — wait for client B to see the last write. If this
+    // times out, the daemon is the stall site; if it converges
+    // quickly, the hot-write path itself is fine and the slider stall
+    // is elsewhere (Tauri, RuntimeStateDoc specifically, or
+    // kernel-driven).
+    let target = format!("x = {}\n", write_count);
+    let converge_started = Instant::now();
+    let mut last_seen = String::new();
+    let mut watcher = b_watcher;
+    let converged = tokio::time::timeout(Duration::from_millis(DRAIN_TIMEOUT_MS), async {
+        loop {
+            last_seen = client_b
+                .get_cell("cell-1")
+                .map(|c| c.source)
+                .unwrap_or_default();
+            if last_seen == target {
+                return true;
+            }
+            if watcher.changed().await.is_err() {
+                return false;
+            }
+        }
+    })
+    .await
+    .unwrap_or(false);
+
+    let drain_ms = converge_started.elapsed().as_millis();
+    eprintln!(
+        "[stall-repro] drain: converged={} after {} ms, last_seen={:?}",
+        converged,
+        drain_ms,
+        last_seen.trim_end(),
+    );
+
+    // We don't assert `converged` — the point of this test is to
+    // exercise the path under realistic load and let the frame-trace
+    // logs tell us where time went. If it starts asserting
+    // `converged == true` as a correctness guarantee, we've shifted
+    // it from "reproducer" to "regression test," which is a
+    // different purpose than what's scoped here.
+
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
+async fn wait_for_cell(handle: &notebook_sync::DocHandle, cell_id: &str) {
+    let mut watcher = handle.subscribe();
+    loop {
+        if handle.get_cell(cell_id).is_some() {
+            return;
+        }
+        if watcher.changed().await.is_err() {
+            return;
+        }
+    }
+}
