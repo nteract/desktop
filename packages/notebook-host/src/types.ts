@@ -22,8 +22,11 @@
  *   talking to main) are async and we want one signature everywhere.
  * - Event methods take a callback and return an `unlisten` function.
  *   This matches Tauri's `webview.listen()` shape.
- * - Optional namespaces (`updater`, `env`, `deps`) can be `undefined`
- *   when the host doesn't support them. Callers must null-check.
+ * - For PR 1 / PR 2 / PR 3 the interface commits to "Tauri and Electron
+ *   both implement every namespace end-to-end." If a future browser or
+ *   viewer host needs partial implementations, we'll introduce explicit
+ *   capability flags or mark individual namespaces optional at that
+ *   point — not pre-optional now, to keep the contract honest.
  */
 
 import type { NotebookTransport } from "runtimed";
@@ -91,20 +94,49 @@ export interface HostBlobs {
   port(): Promise<number>;
 }
 
-/** Notebook trust state. */
+/** Notebook trust state (attestation + approval, nothing else). */
 export interface HostTrust {
   verify(): Promise<TrustInfo>;
   approve(): Promise<void>;
+}
+
+/**
+ * Dependency-validation surface.
+ *
+ * This namespace will grow as we migrate dep-edit flows
+ * (useDependencies, useCondaDependencies, usePixiDependencies,
+ * useDenoDependencies) off direct `invoke(...)`. `checkTyposquats`
+ * lives here and not in `HostTrust` because it validates package
+ * names, not notebook attestation.
+ */
+export interface HostDeps {
   checkTyposquats(packages: string[]): Promise<TyposquatWarning[]>;
 }
 
-/** Lifecycle events that historically came through `webview.listen()`. */
+/**
+ * Subscribe-only daemon lifecycle events. These historically came
+ * through `webview.listen(...)`. Return an `Unlisten` from each
+ * subscription; outgoing signals belong on `HostRelay`, not here.
+ */
 export interface HostDaemonEvents {
   onReady(cb: (payload: DaemonReadyPayload) => void): Unlisten;
   onProgress(cb: (payload: DaemonProgressPayload) => void): Unlisten;
   onDisconnected(cb: () => void): Unlisten;
   onUnavailable(cb: (payload: DaemonUnavailablePayload) => void): Unlisten;
-  /** Frontend signal that the JS frame listener is attached; relay replays any buffered frames. */
+}
+
+/**
+ * Outbound signals the frontend sends up to the host for sync
+ * bookkeeping. Separate from `HostDaemonEvents` because these are
+ * commands, not subscriptions.
+ */
+export interface HostRelay {
+  /**
+   * Signal that the JS frame listener is attached and the Tauri-side
+   * relay may replay any buffered frames. Matches the existing
+   * `notify_sync_ready` Tauri command. No-op in hosts where the main
+   * process doesn't buffer (e.g., a browser-served host).
+   */
   notifySyncReady(): Promise<void>;
 }
 
@@ -136,17 +168,20 @@ export interface NotebookHost {
   readonly transport: NotebookTransport;
   readonly daemon: HostDaemon;
   readonly daemonEvents: HostDaemonEvents;
+  readonly relay: HostRelay;
   readonly blobs: HostBlobs;
   readonly trust: HostTrust;
+  readonly deps: HostDeps;
   readonly notebook: HostNotebook;
   readonly system: HostSystem;
   // Future namespaces (add in dedicated PRs):
-  //   settings:  HostSettings
-  //   env:       HostEnv        (detect_pyproject, detect_pixi_toml, …)
-  //   deps:      HostDeps       (uv / conda / pixi / deno dependency edits)
-  //   dialog:    HostDialog     (plugin-dialog: open/save file pickers)
-  //   shell:     HostShell      (plugin-shell: openExternal)
-  //   updater?:  HostUpdater    (optional; not all hosts auto-update)
-  //   window:    HostWindow     (onFocus, setTitle, …)
-  //   log:       HostLog        (plugin-log pipe — host.log.debug/info/…)
+  //   settings:   HostSettings
+  //   env:        HostEnv         (detect_pyproject, detect_pixi_toml, …)
+  //   deps (ext): dependency *edit* APIs — this PR only has validation
+  //   dialog:     HostDialog      (plugin-dialog: open/save file pickers)
+  //   externalLinks: HostExternalLinks (plugin-shell.open — opening URLs,
+  //                                     NOT a shell surface)
+  //   updater?:   HostUpdater     (optional; not all hosts auto-update)
+  //   window:     HostWindow      (onFocus, setTitle, …)
+  //   log:        HostLog         (plugin-log pipe — host.log.debug/info/…)
 }

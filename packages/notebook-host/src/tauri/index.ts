@@ -26,7 +26,9 @@ import type {
   HostBlobs,
   HostDaemon,
   HostDaemonEvents,
+  HostDeps,
   HostNotebook,
+  HostRelay,
   HostSystem,
   HostTrust,
   NotebookHost,
@@ -93,6 +95,9 @@ export function createTauriHost(opts: CreateTauriHostOptions): NotebookHost {
     async approve() {
       await invoke("approve_notebook_trust");
     },
+  };
+
+  const deps: HostDeps = {
     async checkTyposquats(packages) {
       return invoke<TyposquatWarning[]>("check_typosquats", { packages });
     },
@@ -103,6 +108,9 @@ export function createTauriHost(opts: CreateTauriHostOptions): NotebookHost {
     onProgress: (cb) => listenWebview<DaemonProgressPayload>("daemon:progress", cb),
     onDisconnected: (cb) => listenWebview<void>("daemon:disconnected", () => cb()),
     onUnavailable: (cb) => listenWebview<DaemonUnavailablePayload>("daemon:unavailable", cb),
+  };
+
+  const relay: HostRelay = {
     async notifySyncReady() {
       await invoke("notify_sync_ready");
     },
@@ -131,8 +139,10 @@ export function createTauriHost(opts: CreateTauriHostOptions): NotebookHost {
     transport: opts.transport,
     daemon,
     daemonEvents,
+    relay,
     blobs,
     trust,
+    deps,
     notebook,
     system,
   };

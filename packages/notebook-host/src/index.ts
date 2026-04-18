@@ -8,6 +8,8 @@ export type {
   HostDaemon,
   HostDaemonEvents,
   HostNotebook,
+  HostDeps,
+  HostRelay,
   HostSystem,
   HostTrust,
   NotebookHost,
