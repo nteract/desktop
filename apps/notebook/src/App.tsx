@@ -1411,18 +1411,31 @@ const updateManager = new WidgetUpdateManager({
   getCrdtWriter: getCrdtCommWriter,
 });
 
+/**
+ * Renderer for `application/vnd.jupyter.widget-view+json` outputs.
+ * Hoisted to module scope so its identity is stable across App renders —
+ * an inline component type would remount the entire widget subtree
+ * every time React re-ran the surrounding JSX.
+ */
+function WidgetViewRenderer({ data }: { data: unknown }) {
+  const { model_id } = data as { model_id: string };
+  return <WidgetView modelId={model_id} />;
+}
+
+/**
+ * Stable `renderers` object passed to `MediaProvider`. Same rationale —
+ * a fresh object literal on each App render would change the provider's
+ * props identity and cascade remounts through the output tree.
+ */
+const mediaRenderers = {
+  "application/vnd.jupyter.widget-view+json": WidgetViewRenderer,
+} as const;
+
 export default function App() {
   return (
     <ErrorBoundary fallback={AppErrorFallback}>
       <WidgetStoreProvider sendMessage={sendMessage} updateManager={updateManager}>
-        <MediaProvider
-          renderers={{
-            "application/vnd.jupyter.widget-view+json": ({ data }) => {
-              const { model_id } = data as { model_id: string };
-              return <WidgetView modelId={model_id} />;
-            },
-          }}
-        >
+        <MediaProvider renderers={mediaRenderers}>
           <AppContent />
         </MediaProvider>
       </WidgetStoreProvider>
