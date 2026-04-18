@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
+import type { NotebookHost } from "@nteract/notebook-host";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   _testGetGeneration,
@@ -7,19 +7,27 @@ import {
   getBlobPort,
   refreshBlobPort,
   resetBlobPort,
+  setBlobPortHost,
 } from "../blob-port";
 
-// Mock invoke — mockIPC delegates to this so tests can control return values
-const mockInvoke = vi.fn();
+const mockPort = vi.fn();
+
+/** Minimal host stub: only `blobs.port()` is exercised. */
+function makeHost(): NotebookHost {
+  return {
+    name: "test",
+    blobs: { port: mockPort },
+  } as unknown as NotebookHost;
+}
 
 beforeEach(() => {
   _testReset();
-  mockIPC((cmd, args) => mockInvoke(cmd, args));
+  setBlobPortHost(makeHost());
 });
 
 afterEach(() => {
-  mockInvoke.mockReset();
-  clearMocks();
+  mockPort.mockReset();
+  setBlobPortHost(null);
 });
 
 describe("blob-port store", () => {
@@ -28,14 +36,14 @@ describe("blob-port store", () => {
   });
 
   it("refreshBlobPort fetches and caches the port", async () => {
-    mockInvoke.mockResolvedValueOnce(12345);
+    mockPort.mockResolvedValueOnce(12345);
     const port = await refreshBlobPort();
     expect(port).toBe(12345);
     expect(getBlobPort()).toBe(12345);
   });
 
   it("deduplicates concurrent refresh calls", async () => {
-    mockInvoke.mockResolvedValueOnce(9999);
+    mockPort.mockResolvedValueOnce(9999);
     const [a, b, c] = await Promise.all([
       refreshBlobPort(),
       refreshBlobPort(),
@@ -44,12 +52,11 @@ describe("blob-port store", () => {
     expect(a).toBe(9999);
     expect(b).toBe(9999);
     expect(c).toBe(9999);
-    // Only one IPC call
-    expect(mockInvoke).toHaveBeenCalledTimes(1);
+    expect(mockPort).toHaveBeenCalledTimes(1);
   });
 
   it("resetBlobPort clears the port", async () => {
-    mockInvoke.mockResolvedValueOnce(12345);
+    mockPort.mockResolvedValueOnce(12345);
     await refreshBlobPort();
     expect(getBlobPort()).toBe(12345);
 
@@ -64,48 +71,44 @@ describe("blob-port store", () => {
   });
 
   it("discards stale refresh after reset", async () => {
-    // Simulate a slow refresh that resolves after a reset
-    let resolveInvoke: (v: number) => void;
-    mockInvoke.mockReturnValueOnce(
+    let resolveFetch: (v: number) => void;
+    mockPort.mockReturnValueOnce(
       new Promise<number>((r) => {
-        resolveInvoke = r;
+        resolveFetch = r;
       }),
     );
 
     const refreshPromise = refreshBlobPort();
 
-    // Reset while refresh is in flight
     resetBlobPort();
     expect(getBlobPort()).toBeNull();
 
-    // Now the slow invoke resolves with the OLD port
-    resolveInvoke!(54321);
+    resolveFetch!(54321);
     await refreshPromise;
 
-    // The stale result should be discarded — port stays null
     expect(getBlobPort()).toBeNull();
   });
 
   it("retries on failure", async () => {
-    mockInvoke
+    mockPort
       .mockRejectedValueOnce(new Error("not ready"))
       .mockRejectedValueOnce(new Error("not ready"))
       .mockResolvedValueOnce(7777);
 
     const port = await refreshBlobPort();
     expect(port).toBe(7777);
-    expect(mockInvoke).toHaveBeenCalledTimes(3);
+    expect(mockPort).toHaveBeenCalledTimes(3);
   });
 
   it("allows fresh refresh after reset", async () => {
-    mockInvoke.mockResolvedValueOnce(1111);
+    mockPort.mockResolvedValueOnce(1111);
     await refreshBlobPort();
     expect(getBlobPort()).toBe(1111);
 
     resetBlobPort();
     expect(getBlobPort()).toBeNull();
 
-    mockInvoke.mockResolvedValueOnce(2222);
+    mockPort.mockResolvedValueOnce(2222);
     await refreshBlobPort();
     expect(getBlobPort()).toBe(2222);
   });

@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import type { NotebookHost } from "@nteract/notebook-host";
 import { useSyncExternalStore } from "react";
 import { logger } from "./logger";
 
@@ -24,6 +24,17 @@ let _refreshPromise: Promise<number | null> | null = null;
 let _generation = 0;
 
 const _subscribers = new Set<() => void>();
+
+// Module-level host reference for fetching the blob port. Wired at boot
+// by main.tsx via `setBlobPortHost(host)`. Kept as a reference so the
+// module doesn't reach for Tauri directly; any host implementation
+// (Tauri, Electron, future browser) provides `host.blobs.port()`.
+let _host: NotebookHost | null = null;
+
+/** Install the `NotebookHost` this module fetches the blob port from. */
+export function setBlobPortHost(host: NotebookHost | null): void {
+  _host = host;
+}
 
 function emit(): void {
   for (const cb of _subscribers) cb();
@@ -71,7 +82,10 @@ export async function refreshBlobPort(): Promise<number | null> {
       if (_generation !== gen) return _blobPort;
 
       try {
-        const port = await invoke<number>("get_blob_port");
+        if (!_host) {
+          throw new Error("blob-port: no NotebookHost configured — call setBlobPortHost at boot");
+        }
+        const port = await _host.blobs.port();
 
         // Discard result if a reset happened since we started.
         if (_generation !== gen) return _blobPort;
