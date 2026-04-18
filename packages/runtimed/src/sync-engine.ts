@@ -108,6 +108,15 @@ const nullLogger: SyncEngineLogger = {
  */
 const TEXT_BLOB_RETRY_DELAYS_MS = [100, 300, 1000];
 
+/**
+ * Watchdog window after a runtime-state flush. If no inbound
+ * runtime-state frame arrives within this, assume the flush was
+ * silently dropped and force a full resync. 3s is generous for a
+ * loopback socket under load and short enough that a dropped flush
+ * doesn't leave the UI indefinitely stale.
+ */
+const RUNTIME_STATE_STALL_MS = 3_000;
+
 /** Sleep helper for `inlineTextBlobs` retry backoff. */
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -280,6 +289,23 @@ export class SyncEngine {
   private prevExecutions: Record<string, ExecutionState> = {};
   private commDiffState: CommDiffState = { comms: {}, json: {} };
   private lastRuntimeState: RuntimeState | null = null;
+
+  /**
+   * Runtime-state stall watchdog.
+   *
+   * Catches the failure mode the WASM `sync_error` recovery can't see:
+   * a flush that the transport drops silently (pipe buffer full,
+   * daemon slow) never produces an error to auto-recover from —
+   * `sent_hashes` has already advanced, so subsequent flushes think
+   * the frame is delivered and the state change is invisible forever.
+   *
+   * Each outbound `flush_runtime_state_sync` arms the timer; any
+   * inbound runtime-state frame (applied or error) clears it,
+   * because either proves the daemon is alive and talking. On
+   * timeout, we force `reset_sync_state()` to rewind `sent_hashes`,
+   * re-flush, and emit on `syncErrors$` for the UI banner.
+   */
+  private runtimeStateStallTimer: ReturnType<typeof setTimeout> | null = null;
   /**
    * Serial queue for async comm emissions.
    *
@@ -679,6 +705,9 @@ export class SyncEngine {
         log.warn(
           "[sync-engine] runtime_state_sync_error: state doc rebuilt, sync state normalized",
         );
+        // Any inbound runtime-state frame — error or applied — proves
+        // the daemon is talking, so clear the stall watchdog.
+        this.clearRuntimeStateStallWatchdog();
         if (e.reply) {
           this.opts.transport
             .sendFrame(FrameType.RUNTIME_STATE_SYNC, new Uint8Array(e.reply))
@@ -711,6 +740,11 @@ export class SyncEngine {
         .pipe(
           filter((e) => e.type === "runtime_state_sync_applied"),
           concatMap((e) => {
+            // Any inbound runtime-state traffic proves the daemon is
+            // responsive, so clear the stall watchdog. No finer
+            // signal needed: if the daemon is replying, sync isn't
+            // stuck.
+            this.clearRuntimeStateStallWatchdog();
             if (e.changed && e.state) {
               const state = e.state as RuntimeState;
 
@@ -883,6 +917,7 @@ export class SyncEngine {
     this.opts.logger.info("[sync-engine] Stopping");
     this.subscription.unsubscribe();
     this.subscription = null;
+    this.clearRuntimeStateStallWatchdog();
   }
 
   /** Whether the engine is currently running. */
@@ -918,6 +953,40 @@ export class SyncEngine {
    * is queued on `commEmitQueue` so emissions stay in order even when text
    * blob fetches from one batch outlive a later batch's fetches.
    */
+  // ── Runtime-state stall watchdog ────────────────────────────────
+
+  private armRuntimeStateStallWatchdog(): void {
+    // Reset on each arm, not arm-once. Sustained traffic would
+    // otherwise never refresh the timer and could trip the watchdog
+    // when the daemon is actually responsive.
+    if (this.runtimeStateStallTimer) clearTimeout(this.runtimeStateStallTimer);
+    this.runtimeStateStallTimer = setTimeout(() => {
+      this.runtimeStateStallTimer = null;
+      this.handleRuntimeStateStall();
+    }, RUNTIME_STATE_STALL_MS);
+  }
+
+  private clearRuntimeStateStallWatchdog(): void {
+    if (this.runtimeStateStallTimer) {
+      clearTimeout(this.runtimeStateStallTimer);
+      this.runtimeStateStallTimer = null;
+    }
+  }
+
+  private handleRuntimeStateStall(): void {
+    const handle = this.opts.getHandle();
+    if (!handle) return;
+    this.opts.logger.warn(
+      "[sync-engine] runtime-state flush stalled (no inbound frame within " +
+        `${RUNTIME_STATE_STALL_MS}ms) — resetting sync state and re-flushing`,
+    );
+    handle.reset_sync_state();
+    this._syncErrors$.next({ doc: "runtime_state", changed: false, ts: Date.now() });
+    // Immediately re-flush so the daemon can re-deliver any state it
+    // thinks we already have.
+    this.flush();
+  }
+
   private projectComms(state: RuntimeState): void {
     this.lastRuntimeState = state;
     const comms = state.comms ?? {};
@@ -1051,7 +1120,9 @@ export class SyncEngine {
     // stuck on "not_started" (#runtime-state-race).
     const stateMsg = handle.flush_runtime_state_sync();
     if (stateMsg) {
+      this.armRuntimeStateStallWatchdog();
       this.opts.transport.sendFrame(FrameType.RUNTIME_STATE_SYNC, stateMsg).catch((e: unknown) => {
+        this.clearRuntimeStateStallWatchdog();
         handle.cancel_last_runtime_state_flush();
         this.opts.logger.warn("[sync-engine] runtime state sync to relay failed:", e);
       });
@@ -1108,9 +1179,11 @@ export class SyncEngine {
     // Also flush RuntimeStateDoc sync.
     const stateMsg = handle.flush_runtime_state_sync();
     if (stateMsg) {
+      this.armRuntimeStateStallWatchdog();
       try {
         await this.opts.transport.sendFrame(FrameType.RUNTIME_STATE_SYNC, stateMsg);
       } catch (e) {
+        this.clearRuntimeStateStallWatchdog();
         handle.cancel_last_runtime_state_flush();
         this.opts.logger.warn("[sync-engine] flushAndWait: runtime state sync failed:", e);
       }
@@ -1163,5 +1236,9 @@ export class SyncEngine {
     this.prevExecutions = {};
     this.commDiffState = { comms: {}, json: {} };
     this.lastRuntimeState = null;
+    // Drop any in-flight stall watchdog — the handle it would fire
+    // against is about to be replaced, and letting it expire would
+    // raise a spurious recovery banner on a healthy reconnect.
+    this.clearRuntimeStateStallWatchdog();
   }
 }

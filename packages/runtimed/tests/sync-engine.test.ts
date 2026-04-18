@@ -1410,6 +1410,105 @@ describe("SyncEngine", () => {
       engine.stop();
     });
 
+    it("arms a stall watchdog on runtime-state flush, clears on inbound traffic", async () => {
+      vi.useFakeTimers();
+      try {
+        // receive_frame fires a runtime_state_sync_applied on inbound
+        // traffic — the signal the engine uses to clear the watchdog.
+        handle = createMockHandle({
+          flush_runtime_state_sync: vi.fn(() => new Uint8Array([0x01])),
+          receive_frame: vi.fn(() => [
+            { type: "runtime_state_sync_applied", changed: false } as FrameEvent,
+          ]),
+        });
+        const sendSpy = vi
+          .spyOn(transport, "sendFrame")
+          .mockResolvedValue(undefined as unknown as void);
+        const engine = createEngine();
+        engine.start();
+
+        const errors: Array<{ doc: string }> = [];
+        engine.syncErrors$.subscribe((e) => errors.push({ doc: e.doc }));
+
+        engine.flush();
+        await Promise.resolve();
+
+        // Inbound runtime-state frame fires the "applied" event that
+        // clears the watchdog.
+        transport.deliver([0x05, 0x99]);
+
+        // Advance past the watchdog window: no stall fire, because
+        // the inbound frame already cleared it.
+        vi.advanceTimersByTime(4_000);
+        expect(errors).toEqual([]);
+        expect(sendSpy).toHaveBeenCalledTimes(1);
+        engine.stop();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("resets sync state + re-flushes when the watchdog fires", async () => {
+      vi.useFakeTimers();
+      try {
+        const flushSpy = vi
+          .fn()
+          .mockReturnValueOnce(new Uint8Array([0x01]))
+          .mockReturnValueOnce(new Uint8Array([0x02]));
+        const resetSpy = vi.fn();
+        handle = createMockHandle({
+          flush_runtime_state_sync: flushSpy,
+          reset_sync_state: resetSpy,
+        });
+        vi.spyOn(transport, "sendFrame").mockResolvedValue(undefined as unknown as void);
+        const engine = createEngine();
+        engine.start();
+
+        const errors: Array<{ doc: string }> = [];
+        engine.syncErrors$.subscribe((e) => errors.push({ doc: e.doc }));
+
+        engine.flush();
+        await Promise.resolve();
+
+        // No inbound traffic → watchdog fires after the window.
+        vi.advanceTimersByTime(3_001);
+
+        expect(resetSpy).toHaveBeenCalled();
+        expect(errors).toEqual([{ doc: "runtime_state" }]);
+        // The re-flush after reset should issue a second
+        // `flush_runtime_state_sync`.
+        expect(flushSpy).toHaveBeenCalledTimes(2);
+        engine.stop();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("resetForBootstrap clears any armed watchdog", async () => {
+      vi.useFakeTimers();
+      try {
+        const resetSpy = vi.fn();
+        handle = createMockHandle({
+          flush_runtime_state_sync: vi.fn(() => new Uint8Array([0x01])),
+          reset_sync_state: resetSpy,
+        });
+        vi.spyOn(transport, "sendFrame").mockResolvedValue(undefined as unknown as void);
+        const engine = createEngine();
+        engine.start();
+        engine.flush();
+        await Promise.resolve();
+
+        engine.resetForBootstrap();
+        vi.advanceTimersByTime(5_000);
+
+        // Reset for bootstrap dropped the timer — no forced recovery.
+        expect(resetSpy).not.toHaveBeenCalled();
+        engine.stop();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("emits on syncErrors$ for each doc-specific recovery", () => {
       handle = createMockHandle({
         receive_frame: vi
