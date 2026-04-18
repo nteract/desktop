@@ -1705,6 +1705,96 @@ describe("SyncEngine", () => {
       }
     });
   });
+
+  // ── Runtime-state stall watchdog ───────────────────────────────
+
+  describe("runtime-state stall watchdog", () => {
+    it("resets sync state + re-flushes when daemon doesn't ack within 3s", () => {
+      vi.useFakeTimers();
+      try {
+        const stateMsg = new Uint8Array([0xaa, 0xbb]);
+        const flushSpy = vi.fn(() => stateMsg);
+        handle = createMockHandle({
+          flush_runtime_state_sync: flushSpy,
+        });
+        const sendSpy = vi.spyOn(transport, "sendFrame");
+        const engine = createEngine();
+        engine.start();
+
+        // Manual flush — arms the watchdog.
+        engine.flush();
+        expect(sendSpy).toHaveBeenCalledWith(FrameType.RUNTIME_STATE_SYNC, stateMsg);
+        const initialFlushCount = flushSpy.mock.calls.length;
+
+        // Advance past the 3s watchdog window without any inbound frame.
+        vi.advanceTimersByTime(3100);
+
+        expect(handle.reset_sync_state).toHaveBeenCalled();
+        // handleRuntimeStateStall kicks another flush to renegotiate.
+        expect(flushSpy.mock.calls.length).toBeGreaterThan(initialFlushCount);
+
+        engine.stop();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("clears the watchdog when a runtime_state_sync_applied event arrives", () => {
+      vi.useFakeTimers();
+      try {
+        const stateMsg = new Uint8Array([0xaa, 0xbb]);
+        handle = createMockHandle({
+          flush_runtime_state_sync: vi.fn(() => stateMsg),
+          receive_frame: vi.fn(() => [
+            { type: "runtime_state_sync_applied", changed: false } as FrameEvent,
+          ]),
+        });
+        const engine = createEngine();
+        engine.start();
+
+        engine.flush();
+        // Deliver an inbound frame — clears the watchdog.
+        transport.deliver([0x05, 0x01]);
+
+        vi.advanceTimersByTime(3100);
+
+        expect(handle.reset_sync_state).not.toHaveBeenCalled();
+        engine.stop();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("watchdog re-arms on later flushes after the first one was cleared", () => {
+      vi.useFakeTimers();
+      try {
+        const stateMsg = new Uint8Array([0xaa]);
+        handle = createMockHandle({
+          flush_runtime_state_sync: vi.fn(() => stateMsg),
+          receive_frame: vi.fn(() => [
+            { type: "runtime_state_sync_applied", changed: false } as FrameEvent,
+          ]),
+        });
+        const engine = createEngine();
+        engine.start();
+
+        // First round: flush, ack, watchdog cleared.
+        engine.flush();
+        transport.deliver([0x05, 0x01]);
+        vi.advanceTimersByTime(500);
+        expect(handle.reset_sync_state).not.toHaveBeenCalled();
+
+        // Second round: flush again, NO ack, watchdog fires.
+        engine.flush();
+        vi.advanceTimersByTime(3100);
+        expect(handle.reset_sync_state).toHaveBeenCalled();
+
+        engine.stop();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
 });
 
 // ── DirectTransport tests ──────────────────────────────────────────

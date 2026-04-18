@@ -98,6 +98,16 @@ const COALESCE_MS = 32;
 /** Timeout before retrying sync if initial sync hasn't produced cells (ms). */
 const SYNC_RETRY_MS = 3000;
 
+/**
+ * Watchdog: after sending an outbound RUNTIME_STATE_SYNC frame, how
+ * long do we wait for a corresponding inbound `runtime_state_sync_applied`
+ * (or `_error`) event before declaring the sync stalled and forcing a
+ * reset. Widget state updates normally round-trip under 100ms; even
+ * under heavy load a few hundred ms is plenty. 3s is a generous cap
+ * before we assume something silent has broken in the pipe or daemon.
+ */
+const RUNTIME_STATE_STALL_MS = 3000;
+
 /** Debounce interval for outbound source sync (ms). */
 const FLUSH_DEBOUNCE_MS = 20;
 
@@ -398,6 +408,16 @@ export class SyncEngine {
   private readonly _commChanges$ = new Subject<CommChanges>();
   private readonly _syncErrors$ = new Subject<SyncErrorEvent>();
 
+  /**
+   * Watchdog for an outstanding RUNTIME_STATE_SYNC flush. Armed when
+   * we send an outbound frame, cleared on any inbound
+   * `runtime_state_sync_applied` or `runtime_state_sync_error` event.
+   * If it fires, the daemon hasn't acknowledged our change in
+   * `RUNTIME_STATE_STALL_MS` — we assume silent failure in the pipe
+   * or daemon, reset the sync state, and re-flush.
+   */
+  private runtimeStateStallTimer: ReturnType<typeof setTimeout> | null = null;
+
   constructor(opts: SyncEngineOptions) {
     this.opts = {
       ...opts,
@@ -680,6 +700,10 @@ export class SyncEngine {
         log.warn(
           "[sync-engine] runtime_state_sync_error: state doc rebuilt, sync state normalized",
         );
+        // Error-recovery also counts as a response from the daemon —
+        // the WASM already did its own recovery. Clear the watchdog so
+        // we don't stack our reset on top.
+        this.clearRuntimeStateStallWatchdog();
         this._syncErrors$.next({
           doc: "runtime_state",
           changed: e.changed ?? false,
@@ -716,6 +740,10 @@ export class SyncEngine {
         .pipe(
           filter((e) => e.type === "runtime_state_sync_applied"),
           concatMap((e) => {
+            // Any inbound runtime-state sync frame acknowledges the
+            // daemon is responsive — even if nothing changed (pure
+            // convergence ack), that's still a liveness signal.
+            this.clearRuntimeStateStallWatchdog();
             if (e.changed && e.state) {
               const state = e.state as RuntimeState;
 
@@ -890,6 +918,7 @@ export class SyncEngine {
   stop(): void {
     if (!this.subscription) return;
     this.opts.logger.info("[sync-engine] Stopping");
+    this.clearRuntimeStateStallWatchdog();
     this.subscription.unsubscribe();
     this.subscription = null;
   }
@@ -927,6 +956,63 @@ export class SyncEngine {
    * is queued on `commEmitQueue` so emissions stay in order even when text
    * blob fetches from one batch outlive a later batch's fetches.
    */
+  // ── Runtime-state stall watchdog ─────────────────────────────────
+
+  /**
+   * Start (or extend) the runtime-state stall watchdog.
+   *
+   * Called when we send an outbound RUNTIME_STATE_SYNC frame. If the
+   * watchdog fires before the corresponding inbound applied/error event
+   * clears it, we assume the sync is silently stalled — the pipe dropped
+   * the frame, the daemon panicked mid-apply, or bloom-filter false
+   * positives convinced both sides they were in sync when they weren't.
+   * Recovery: `reset_sync_state` + flush. Heavy-handed (it blanks all
+   * three peer states) but reliably unsticks widget updates.
+   */
+  private armRuntimeStateStallWatchdog(): void {
+    if (this.runtimeStateStallTimer) {
+      // Already armed — don't reset. A burst of outbound writes should
+      // all land within a single watchdog window; resetting on each
+      // write would hide the stall.
+      return;
+    }
+    this.runtimeStateStallTimer = setTimeout(() => {
+      this.runtimeStateStallTimer = null;
+      this.handleRuntimeStateStall();
+    }, RUNTIME_STATE_STALL_MS);
+  }
+
+  private clearRuntimeStateStallWatchdog(): void {
+    if (this.runtimeStateStallTimer) {
+      clearTimeout(this.runtimeStateStallTimer);
+      this.runtimeStateStallTimer = null;
+    }
+  }
+
+  private handleRuntimeStateStall(): void {
+    const handle = this.opts.getHandle();
+    if (!handle) return;
+    this.opts.logger.warn(
+      `[sync-engine] runtime-state sync stall — no daemon response within ${RUNTIME_STATE_STALL_MS}ms. Resetting sync state and re-flushing.`,
+    );
+    // Blow away the peer state so the next flush renegotiates from
+    // scratch. This is the WASM equivalent of automerge-repo's "fresh
+    // peer" recovery — cheaper than reconnecting but guaranteed to
+    // produce a full sync message that includes anything the daemon
+    // claims to already have but actually doesn't.
+    handle.reset_sync_state();
+    // Emit on syncErrors$ so the UI surfaces a recovery signal
+    // consistent with WASM's own receive_sync_message recoveries.
+    this._syncErrors$.next({
+      doc: "runtime_state",
+      changed: false,
+      ts: Date.now(),
+    });
+    // Immediately re-flush so the daemon can re-deliver any state it
+    // thinks we already have.
+    this.flush();
+  }
+
   private projectComms(state: RuntimeState): void {
     this.lastRuntimeState = state;
     const comms = state.comms ?? {};
@@ -1060,7 +1146,9 @@ export class SyncEngine {
     // stuck on "not_started" (#runtime-state-race).
     const stateMsg = handle.flush_runtime_state_sync();
     if (stateMsg) {
+      this.armRuntimeStateStallWatchdog();
       this.opts.transport.sendFrame(FrameType.RUNTIME_STATE_SYNC, stateMsg).catch((e: unknown) => {
+        this.clearRuntimeStateStallWatchdog();
         handle.cancel_last_runtime_state_flush();
         this.opts.logger.warn("[sync-engine] runtime state sync to relay failed:", e);
       });
@@ -1117,9 +1205,11 @@ export class SyncEngine {
     // Also flush RuntimeStateDoc sync.
     const stateMsg = handle.flush_runtime_state_sync();
     if (stateMsg) {
+      this.armRuntimeStateStallWatchdog();
       try {
         await this.opts.transport.sendFrame(FrameType.RUNTIME_STATE_SYNC, stateMsg);
       } catch (e) {
+        this.clearRuntimeStateStallWatchdog();
         handle.cancel_last_runtime_state_flush();
         this.opts.logger.warn("[sync-engine] flushAndWait: runtime state sync failed:", e);
       }
