@@ -229,6 +229,26 @@ function writePath(obj: unknown, path: string[], value: unknown): void {
   (cursor as Record<string, unknown>)[path[path.length - 1]] = value;
 }
 
+// ── Sync error event ─────────────────────────────────────────────────
+
+/**
+ * Sync recovery event for `syncErrors$`.
+ *
+ * Fires each time the WASM sync layer rebuilds a doc after a failed
+ * `receive_sync_message` (or when the stall watchdog force-resets a
+ * silently dropped runtime-state flush). Purely diagnostic — the
+ * engine has already sent the recovery reply and restored sync state
+ * by the time this fires.
+ */
+export interface SyncErrorEvent {
+  /** Which doc recovered: the notebook, runtime state, or pool state. */
+  doc: "notebook" | "runtime_state" | "pool_state";
+  /** True when the doc advanced before the error (partial apply). */
+  changed: boolean;
+  /** Wall-clock ms of the recovery. */
+  ts: number;
+}
+
 // ── Options ──────────────────────────────────────────────────────────
 
 export interface SyncEngineOptions {
@@ -350,6 +370,22 @@ export class SyncEngine {
    */
   readonly initialSyncComplete$: Observable<void>;
 
+  /**
+   * Sync-layer recovery events.
+   *
+   * The WASM sync layer auto-recovers from failed `receive_sync_message`
+   * calls by rebuilding the doc from its snapshot bytes, normalizing
+   * sync state, and sending a fresh sync message back to the daemon.
+   * That recovery is silent to the user by default — useful for
+   * transient network hiccups but confusing when something's actually
+   * wrong.
+   *
+   * This observable surfaces each recovery as an event so the UI can
+   * show a banner, bump a counter, etc. It's diagnostic, not
+   * actionable: the engine has already done the repair.
+   */
+  readonly syncErrors$: Observable<SyncErrorEvent>;
+
   // Backing subjects for public observables
   private readonly _cellChanges$ = new Subject<CellChangeset | null>();
   private readonly _broadcasts$ = new Subject<unknown>();
@@ -359,6 +395,7 @@ export class SyncEngine {
   private readonly _executionTransitions$ = new Subject<ExecutionTransition[]>();
   private readonly _initialSyncComplete$ = new Subject<void>();
   private readonly _commChanges$ = new Subject<CommChanges>();
+  private readonly _syncErrors$ = new Subject<SyncErrorEvent>();
 
   constructor(opts: SyncEngineOptions) {
     this.opts = {
@@ -376,6 +413,7 @@ export class SyncEngine {
     this.executionTransitions$ = this._executionTransitions$.asObservable();
     this.initialSyncComplete$ = this._initialSyncComplete$.asObservable();
     this.commChanges$ = this._commChanges$.asObservable();
+    this.syncErrors$ = this._syncErrors$.asObservable();
     this.kernelStatus$ = deriveKernelStatus$(this.runtimeState$);
 
     // Typed broadcast sub-observables (derived from broadcasts$)
@@ -619,6 +657,7 @@ export class SyncEngine {
               log.warn("[sync-engine] recovery reply send failed:", err);
             });
         }
+        this._syncErrors$.next({ doc: "notebook", changed: e.changed, ts: Date.now() });
         // If the doc advanced before the error (partial apply),
         // trigger a full materialization so the UI reflects the
         // recovered state. Also complete initial sync if pending.
@@ -649,6 +688,7 @@ export class SyncEngine {
               log.warn("[sync-engine] state recovery reply send failed:", err);
             });
         }
+        this._syncErrors$.next({ doc: "runtime_state", changed: e.changed, ts: Date.now() });
         // If the state doc advanced, publish the recovered snapshot
         // so kernel status / queue / execution UI stays current.
         if (e.changed && e.state) {
@@ -817,6 +857,7 @@ export class SyncEngine {
               log.warn("[sync-engine] pool state recovery reply send failed:", err);
             });
         }
+        this._syncErrors$.next({ doc: "pool_state", changed: e.changed, ts: Date.now() });
         if (e.changed && e.state) {
           this._poolState$.next(e.state as PoolState);
         }

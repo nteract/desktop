@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { NotebookClient } from "runtimed";
+import { NotebookClient, type SyncErrorEvent } from "runtimed";
 import { IsolationTest } from "@/components/isolated";
 import { MediaProvider } from "@/components/outputs/media-provider";
 import { getCrdtCommWriter, setCrdtCommWriter } from "@/components/widgets/crdt-comm-writer";
@@ -18,6 +18,7 @@ import { ErrorBoundary } from "@/lib/error-boundary";
 import { CondaDependencyHeader } from "./components/CondaDependencyHeader";
 import { type DaemonStatus, DaemonStatusBanner } from "./components/DaemonStatusBanner";
 import { DebugBanner } from "./components/DebugBanner";
+import { SyncRecoveryBanner } from "./components/SyncRecoveryBanner";
 import { DenoDependencyHeader } from "./components/DenoDependencyHeader";
 import { DependencyHeader } from "./components/DependencyHeader";
 import { GlobalFindBar } from "./components/GlobalFindBar";
@@ -197,6 +198,10 @@ function AppContent() {
   // Track ready timeout so we can cancel it if status changes
   const readyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Latest sync-recovery event. Each emission replaces the reference so
+  // the banner's useEffect fires even when fields happen to be equal.
+  const [syncRecoveryEvent, setSyncRecoveryEvent] = useState<SyncErrorEvent | null>(null);
+
   // Pool state - prewarm pool errors from daemon (typo'd default packages, etc.)
   const {
     uvError: poolUvError,
@@ -349,6 +354,18 @@ function AppContent() {
       setCrdtCommWriter(null);
     };
   }, [getHandle, triggerSync]);
+
+  // ── Sync-layer recovery banner ─────────────────────────────────────
+  // The SyncEngine emits a SyncErrorEvent each time the WASM auto-
+  // recovers from a failed sync message. The recovery itself is
+  // already complete — we just surface it to the user so silent
+  // recovery doesn't mask a flapping connection.
+  useEffect(() => {
+    const engine = getEngine();
+    if (!engine) return;
+    const sub = engine.syncErrors$.subscribe((e) => setSyncRecoveryEvent(e));
+    return () => sub.unsubscribe();
+  }, [getEngine]);
 
   // ── CRDT → WidgetStore projection via SyncEngine.commChanges$ ──────
   // Replaces the old Jupyter message synthesis path. The SyncEngine diffs
@@ -1149,6 +1166,10 @@ function AppContent() {
                 });
               });
           }}
+        />
+        <SyncRecoveryBanner
+          event={syncRecoveryEvent}
+          onDismiss={() => setSyncRecoveryEvent(null)}
         />
         <PoolErrorBanner
           uvError={poolUvError}

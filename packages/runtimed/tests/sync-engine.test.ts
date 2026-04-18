@@ -1409,6 +1409,37 @@ describe("SyncEngine", () => {
       expect(sendSpy).not.toHaveBeenCalled();
       engine.stop();
     });
+
+    it("emits on syncErrors$ for each doc-specific recovery", () => {
+      handle = createMockHandle({
+        receive_frame: vi
+          .fn()
+          .mockReturnValueOnce([{ type: "sync_error", changed: true, reply: [0x01] } as FrameEvent])
+          .mockReturnValueOnce([
+            { type: "runtime_state_sync_error", changed: false, reply: [0x02] } as FrameEvent,
+          ])
+          .mockReturnValueOnce([
+            { type: "pool_state_sync_error", changed: true, reply: [0x03] } as FrameEvent,
+          ]),
+      });
+      const engine = createEngine();
+      engine.start();
+
+      const events: Array<{ doc: string; changed: boolean }> = [];
+      engine.syncErrors$.subscribe((e) => events.push({ doc: e.doc, changed: e.changed }));
+
+      transport.deliver([0x00, 0x99]);
+      transport.deliver([0x05, 0x99]);
+      transport.deliver([0x06, 0x99]);
+      advanceBy(scheduler, 1);
+
+      expect(events).toEqual([
+        { doc: "notebook", changed: true },
+        { doc: "runtime_state", changed: false },
+        { doc: "pool_state", changed: true },
+      ]);
+      engine.stop();
+    });
   });
 
   // ── Comm state projection + text-blob inlining ──────────────────

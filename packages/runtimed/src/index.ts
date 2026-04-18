@@ -7,7 +7,7 @@
 
 // Core
 export { SyncEngine } from "./sync-engine";
-export type { SyncEngineOptions, SyncEngineLogger } from "./sync-engine";
+export type { SyncEngineOptions, SyncEngineLogger, SyncErrorEvent } from "./sync-engine";
 
 // Transport
 export type { NotebookTransport, FrameListener } from "./transport";
