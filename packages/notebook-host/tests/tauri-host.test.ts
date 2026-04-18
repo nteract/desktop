@@ -117,6 +117,12 @@ vi.mock("@tauri-apps/plugin-shell", () => ({
   }),
 }));
 
+let updateCheckResult: { version: string } | null = null;
+
+vi.mock("@tauri-apps/plugin-updater", () => ({
+  check: vi.fn(async () => updateCheckResult),
+}));
+
 import type { NotebookTransport } from "runtimed";
 import { createTauriHost } from "../src/tauri";
 
@@ -137,6 +143,7 @@ beforeEach(() => {
   capturedShellOpens.length = 0;
   openDialogResult = null;
   saveDialogResult = null;
+  updateCheckResult = null;
   mockUnlisten.mockReset();
   mockWindowUnlisten.mockReset();
   capturedFocusCb = null;
@@ -420,6 +427,18 @@ describe("createTauriHost()", () => {
     const host = createTauriHost({ transport: stubTransport });
     await host.externalLinks.open("https://example.com");
     expect(capturedShellOpens).toEqual(["https://example.com"]);
+  });
+
+  it("updater.check returns { version } when plugin-updater reports an update", async () => {
+    updateCheckResult = { version: "2.3.0" };
+    const host = createTauriHost({ transport: stubTransport });
+    await expect(host.updater.check()).resolves.toEqual({ version: "2.3.0" });
+  });
+
+  it("updater.check returns null when the app is up to date", async () => {
+    updateCheckResult = null;
+    const host = createTauriHost({ transport: stubTransport });
+    await expect(host.updater.check()).resolves.toBe(null);
   });
 
   it("host.log forwards each level to plugin-log", () => {

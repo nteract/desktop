@@ -25,6 +25,7 @@ import {
   warn as pluginWarn,
 } from "@tauri-apps/plugin-log";
 import { open as pluginOpenShell } from "@tauri-apps/plugin-shell";
+import { check as pluginCheckUpdate } from "@tauri-apps/plugin-updater";
 import type { NotebookTransport } from "runtimed";
 import { createCommandRegistry } from "../commands";
 import { wireTauriMenuBridge } from "./menu-bridge";
@@ -47,6 +48,7 @@ import type {
   HostRelay,
   HostSystem,
   HostTrust,
+  HostUpdater,
   HostWindow,
   NotebookHost,
   TrustInfo,
@@ -243,6 +245,17 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
     },
   };
 
+  const updater: HostUpdater = {
+    async check() {
+      const update = await pluginCheckUpdate();
+      // plugin-updater returns an `Update` (with `.version` + install methods)
+      // or null when the app is current. We surface only `{ version }` — the
+      // install/relaunch flow stays Tauri-side behind the existing
+      // `begin_upgrade` command.
+      return update ? { version: update.version } : null;
+    },
+  };
+
   const commands = createCommandRegistry();
 
   // plugin-log always resolves; fire-and-forget so callers stay sync.
@@ -282,6 +295,7 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
     system,
     dialog,
     externalLinks,
+    updater,
     commands,
     log,
   };

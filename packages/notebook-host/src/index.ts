@@ -18,6 +18,8 @@ export type {
   HostRelay,
   HostSystem,
   HostTrust,
+  HostUpdateInfo,
+  HostUpdater,
   HostWindow,
   NotebookHost,
   TrustInfo,

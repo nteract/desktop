@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { check } from "@tauri-apps/plugin-updater";
+import { useNotebookHost } from "@nteract/notebook-host";
 import { useCallback, useEffect, useState } from "react";
 import { logger } from "../lib/logger";
 
@@ -14,6 +14,7 @@ interface UpdaterState {
 const CHECK_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
 
 export function useUpdater() {
+  const host = useNotebookHost();
   const [state, setState] = useState<UpdaterState>({
     status: "idle",
     version: null,
@@ -23,7 +24,7 @@ export function useUpdater() {
   const checkForUpdate = useCallback(async () => {
     try {
       setState((prev) => ({ ...prev, status: "checking", error: null }));
-      const update = await check();
+      const update = await host.updater.check();
       if (update) {
         setState({
           status: "available",
@@ -41,7 +42,7 @@ export function useUpdater() {
         error: String(e),
       }));
     }
-  }, []);
+  }, [host]);
 
   const restartToUpdate = useCallback(async () => {
     try {

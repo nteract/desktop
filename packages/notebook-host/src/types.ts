@@ -232,6 +232,24 @@ export interface HostExternalLinks {
 }
 
 /**
+ * Auto-update information for the host app itself.
+ *
+ * The notebook frontend polls `check()` to decide whether to show an
+ * "Update available" banner. Actually installing the update (downloading
+ * the payload, relaunching) is a coordinated operation that stays on
+ * the host side — the frontend signals "start the upgrade flow" via a
+ * separate command rather than driving download/install directly.
+ */
+export interface HostUpdater {
+  /** Returns available update info or null when the app is up to date. */
+  check(): Promise<HostUpdateInfo | null>;
+}
+
+export interface HostUpdateInfo {
+  version: string;
+}
+
+/**
  * Structured-log pipe shared across the frontend. Replaces the direct
  * `@tauri-apps/plugin-log` coupling in `apps/notebook/src/lib/logger.ts`.
  *
@@ -270,6 +288,7 @@ export interface NotebookHost {
   readonly system: HostSystem;
   readonly dialog: HostDialog;
   readonly externalLinks: HostExternalLinks;
+  readonly updater: HostUpdater;
   /**
    * Typed action bus shared between host UI surfaces (menus, keyboard,
    * future palette) and the app. Host-side wiring calls `run(id, payload)`;
