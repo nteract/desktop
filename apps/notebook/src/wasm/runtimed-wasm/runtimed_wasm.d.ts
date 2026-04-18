@@ -337,6 +337,24 @@ export class NotebookHandle {
      */
     constructor(notebook_id: string);
     /**
+     * Open a comm in the local RuntimeStateDoc — **test harnesses only**.
+     *
+     * Production code must not call this: comms are opened by the daemon
+     * in response to kernel `comm_open` IOPub messages. Exposing it here
+     * lets the WASM-backed sync harness simulate the daemon side end to
+     * end (push a comm_open, then drive comm_msg updates) without a real
+     * kernel. Without this, `set_comm_state_batch` is a no-op because
+     * the comm entry doesn't exist yet.
+     *
+     * Replaces the fresh RuntimeStateDoc on first call so the scaffolded
+     * `comms`/`queue`/`executions` maps are present — the WASM handle
+     * normally receives scaffolding over sync from the daemon.
+     *
+     * `state_json` must be a JSON object string of the initial widget
+     * state (same shape the daemon would receive from the kernel).
+     */
+    put_comm_for_test(comm_id: string, target_name: string, model_module: string, model_name: string, state_json: string, seq: number): void;
+    /**
      * Receive a typed frame from the daemon, demux by type byte, return events for the frontend.
      *
      * The input is the raw frame bytes from the `notebook:frame` Tauri event:
@@ -644,6 +662,7 @@ export interface InitOutput {
     readonly notebookhandle_load_state_doc: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_move_cell: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly notebookhandle_new: (a: number, b: number) => number;
+    readonly notebookhandle_put_comm_for_test: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number) => void;
     readonly notebookhandle_receive_frame: (a: number, b: number, c: number) => number;
     readonly notebookhandle_receive_sync_message: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_remove_conda_dependency: (a: number, b: number, c: number, d: number) => void;

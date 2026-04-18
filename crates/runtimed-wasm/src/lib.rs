@@ -1240,6 +1240,65 @@ impl NotebookHandle {
         any_written
     }
 
+    /// Open a comm in the local RuntimeStateDoc — **test harnesses only**.
+    ///
+    /// Production code must not call this: comms are opened by the daemon
+    /// in response to kernel `comm_open` IOPub messages. Exposing it here
+    /// lets the WASM-backed sync harness simulate the daemon side end to
+    /// end (push a comm_open, then drive comm_msg updates) without a real
+    /// kernel. Without this, `set_comm_state_batch` is a no-op because
+    /// the comm entry doesn't exist yet.
+    ///
+    /// Replaces the fresh RuntimeStateDoc on first call so the scaffolded
+    /// `comms`/`queue`/`executions` maps are present — the WASM handle
+    /// normally receives scaffolding over sync from the daemon.
+    ///
+    /// `state_json` must be a JSON object string of the initial widget
+    /// state (same shape the daemon would receive from the kernel).
+    pub fn put_comm_for_test(
+        &mut self,
+        comm_id: &str,
+        target_name: &str,
+        model_module: &str,
+        model_name: &str,
+        state_json: &str,
+        seq: u32,
+    ) -> Result<(), JsError> {
+        let state: serde_json::Value = serde_json::from_str(state_json)
+            .map_err(|e| JsError::new(&format!("invalid state_json: {}", e)))?;
+        // If the state_doc is still the empty bootstrap, swap it for a
+        // fully-scaffolded doc so `put_comm` can find the `comms` map.
+        use automerge::ReadDoc;
+        if self
+            .state_doc
+            .doc_mut()
+            .get(automerge::ROOT, "comms")
+            .ok()
+            .flatten()
+            .is_none()
+        {
+            let mut scaffolded = RuntimeStateDoc::new();
+            scaffolded
+                .doc_mut()
+                .merge(self.state_doc.doc_mut())
+                .map_err(|e| JsError::new(&format!("scaffold merge failed: {}", e)))?;
+            self.state_doc = scaffolded;
+            // The sync state is tied to the previous doc's history — reset
+            // so the next flush generates a fresh sync message against the
+            // scaffolded doc.
+            self.state_sync_state = automerge::sync::State::new();
+        }
+        self.state_doc.put_comm(
+            comm_id,
+            target_name,
+            model_module,
+            model_name,
+            &state,
+            seq as u64,
+        );
+        Ok(())
+    }
+
     /// Generate a sync reply for the RuntimeStateDoc.
     /// Called immediately after each `RuntimeStateSyncApplied` event
     /// so the daemon knows which state the client has received.

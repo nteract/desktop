@@ -42,6 +42,20 @@ export interface ServerHandle {
 
   /** Reset sync state (for reconnection simulation). */
   reset_sync_state(): void;
+
+  /**
+   * Generate a RuntimeStateDoc sync message for pending comm/queue/exec
+   * changes. Optional — only needed by tests that exercise widget sync.
+   */
+  flush_runtime_state_sync?(): Uint8Array | null | undefined;
+
+  /**
+   * Apply an inbound frame (typed 1-byte prefix + payload) from the
+   * client side. Optional — only needed by tests that exercise runtime
+   * state sync, since the client's initial flush sends a handshake that
+   * the server has to apply before it can reply.
+   */
+  receive_frame?(frame: Uint8Array): unknown;
 }
 
 // ── DirectTransport ──────────────────────────────────────────────────
@@ -101,8 +115,16 @@ export class DirectTransport implements NotebookTransport {
     // Route to server based on frame type.
     if (frameType === FrameType.AUTOMERGE_SYNC) {
       this.server.receive_sync_message(payload);
+    } else if (frameType === FrameType.RUNTIME_STATE_SYNC && this.server.receive_frame) {
+      // Forward RuntimeStateDoc sync by reconstructing the typed frame
+      // (1-byte prefix + payload) and dispatching via receive_frame. The
+      // server handle demuxes by frame type the same way the client does.
+      const frame = new Uint8Array(1 + payload.length);
+      frame[0] = FrameType.RUNTIME_STATE_SYNC;
+      frame.set(payload, 1);
+      this.server.receive_frame(frame);
     }
-    // RUNTIME_STATE_SYNC, PRESENCE, etc. — just record, no server action.
+    // POOL_STATE_SYNC, PRESENCE, etc. — just record, no server action.
   }
 
   onFrame(callback: FrameListener): () => void {
@@ -144,6 +166,28 @@ export class DirectTransport implements NotebookTransport {
     frame.set(msg, 1);
 
     // Deliver as number[] to match Tauri's event payload format.
+    this.deliver(Array.from(frame));
+    return true;
+  }
+
+  /**
+   * Push the server's pending RuntimeStateDoc changes to all client
+   * subscribers as a RUNTIME_STATE_SYNC frame (0x05).
+   *
+   * Mirrors `pushServerChanges()` for the runtime-state doc: generates
+   * a sync message from the server handle's runtime-state sync state
+   * and delivers it to subscribers. Returns true if a message was
+   * generated (server had changes to send).
+   */
+  pushServerRuntimeStateChanges(): boolean {
+    const flush = this.server.flush_runtime_state_sync;
+    if (!flush) return false;
+    const msg = flush.call(this.server);
+    if (!msg) return false;
+
+    const frame = new Uint8Array(1 + msg.length);
+    frame[0] = FrameType.RUNTIME_STATE_SYNC;
+    frame.set(msg, 1);
     this.deliver(Array.from(frame));
     return true;
   }

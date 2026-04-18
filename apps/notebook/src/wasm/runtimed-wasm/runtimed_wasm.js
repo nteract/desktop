@@ -1111,6 +1111,52 @@ export class NotebookHandle {
         return this;
     }
     /**
+     * Open a comm in the local RuntimeStateDoc — **test harnesses only**.
+     *
+     * Production code must not call this: comms are opened by the daemon
+     * in response to kernel `comm_open` IOPub messages. Exposing it here
+     * lets the WASM-backed sync harness simulate the daemon side end to
+     * end (push a comm_open, then drive comm_msg updates) without a real
+     * kernel. Without this, `set_comm_state_batch` is a no-op because
+     * the comm entry doesn't exist yet.
+     *
+     * Replaces the fresh RuntimeStateDoc on first call so the scaffolded
+     * `comms`/`queue`/`executions` maps are present — the WASM handle
+     * normally receives scaffolding over sync from the daemon.
+     *
+     * `state_json` must be a JSON object string of the initial widget
+     * state (same shape the daemon would receive from the kernel).
+     * @param {string} comm_id
+     * @param {string} target_name
+     * @param {string} model_module
+     * @param {string} model_name
+     * @param {string} state_json
+     * @param {number} seq
+     */
+    put_comm_for_test(comm_id, target_name, model_module, model_name, state_json, seq) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(comm_id, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(target_name, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+            const len1 = WASM_VECTOR_LEN;
+            const ptr2 = passStringToWasm0(model_module, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+            const len2 = WASM_VECTOR_LEN;
+            const ptr3 = passStringToWasm0(model_name, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+            const len3 = WASM_VECTOR_LEN;
+            const ptr4 = passStringToWasm0(state_json, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+            const len4 = WASM_VECTOR_LEN;
+            wasm.notebookhandle_put_comm_for_test(retptr, this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, seq);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            if (r1) {
+                throw takeObject(r0);
+            }
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
      * Receive a typed frame from the daemon, demux by type byte, return events for the frontend.
      *
      * The input is the raw frame bytes from the `notebook:frame` Tauri event:
