@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -1024,7 +1023,6 @@ function AppContent() {
 
   // Listen for daemon startup progress events
   useEffect(() => {
-    const webview = getCurrentWebview();
     // Helper to cancel any pending ready timeout
     const cancelReadyTimeout = () => {
       if (readyTimeoutRef.current) {
@@ -1033,8 +1031,8 @@ function AppContent() {
       }
     };
 
-    const unlistenProgress = listen<DaemonStatus>("daemon:progress", (event) => {
-      const status = event.payload;
+    const unlistenProgress = host.daemonEvents.onProgress((payload) => {
+      const status = payload as DaemonStatus;
 
       // Cancel any pending ready timeout before setting new status
       cancelReadyTimeout();
@@ -1051,7 +1049,7 @@ function AppContent() {
     });
 
     // Listen for daemon disconnection (mid-session)
-    const unlistenDisconnect = webview.listen("daemon:disconnected", () => {
+    const unlistenDisconnect = host.daemonEvents.onDisconnected(() => {
       cancelReadyTimeout();
       setDaemonStatus({
         status: "failed",
@@ -1060,33 +1058,29 @@ function AppContent() {
     });
 
     // Listen for daemon unavailable (startup failure, fires after sync timeout)
-    const unlistenUnavailable = listen<{
-      reason: string;
-      message: string;
-      guidance: string;
-    }>("daemon:unavailable", (event) => {
+    const unlistenUnavailable = host.daemonEvents.onUnavailable((payload) => {
       cancelReadyTimeout();
       setDaemonStatus({
         status: "failed",
-        error: `${event.payload.message} ${event.payload.guidance}`,
+        error: `${payload.message} ${payload.guidance}`,
       });
     });
 
     // Listen for daemon ready (reconnection success)
-    const unlistenReady = webview.listen<{ runtime?: string }>("daemon:ready", (event) => {
+    const unlistenReady = host.daemonEvents.onReady((payload) => {
       // Clear any status banner when daemon reconnects (failed, checking, etc.)
       cancelReadyTimeout();
       setDaemonStatus(null);
       // Set or clear the runtime hint — clearing prevents stale hints
       // when a window is reused to open a different notebook (Open path
       // sends runtime: null).
-      setRuntimeHint(event.payload?.runtime ?? null);
+      setRuntimeHint(payload?.runtime ?? null);
     });
 
     // Check daemon status on mount (in case events fired before React was ready)
     // Small delay to let initial events settle
     const checkTimeout = setTimeout(() => {
-      invoke<boolean>("is_daemon_connected").then((connected) => {
+      host.daemon.isConnected().then((connected) => {
         if (!connected) {
           setDaemonStatus((prev) => {
             // Only set if no status is already shown
@@ -1105,12 +1099,12 @@ function AppContent() {
     return () => {
       clearTimeout(checkTimeout);
       cancelReadyTimeout();
-      unlistenProgress.then((unlisten) => unlisten()).catch(() => {});
-      unlistenDisconnect.then((unlisten) => unlisten()).catch(() => {});
-      unlistenUnavailable.then((unlisten) => unlisten()).catch(() => {});
-      unlistenReady.then((unlisten) => unlisten()).catch(() => {});
+      unlistenProgress();
+      unlistenDisconnect();
+      unlistenUnavailable();
+      unlistenReady();
     };
-  }, []);
+  }, [host]);
 
   // Cmd+Shift+I to toggle isolation test panel (dev only)
   useEffect(() => {
@@ -1141,7 +1135,8 @@ function AppContent() {
           onDismiss={() => setDaemonStatus(null)}
           onRetry={() => {
             setDaemonStatus({ status: "checking" });
-            invoke("reconnect_to_daemon")
+            host.daemon
+              .reconnect()
               .then(() => {
                 // Success - daemon:ready event will clear the banner
               })
