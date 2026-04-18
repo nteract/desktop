@@ -1005,11 +1005,17 @@ export class SyncEngine {
    * three peer states) but reliably unsticks widget updates.
    */
   private armRuntimeStateStallWatchdog(): void {
+    // Each new outbound flush resets the deadline. A sustained burst of
+    // local writes (slider drag, play-widget loop, anywidget traits
+    // streaming) produces more outbound than the daemon can reply-null
+    // to; we'd rather give each new write a fresh 3s window than fire
+    // on a healthy-but-busy session. The stall case we do want to
+    // catch — pipe drops the frame, daemon panics, bloom filter false
+    // positive — shows up as "no more outbound to reset the timer
+    // AND no inbound arriving" within 3s of the last flush, which
+    // this still detects.
     if (this.runtimeStateStallTimer) {
-      // Already armed — don't reset. A burst of outbound writes should
-      // all land within a single watchdog window; resetting on each
-      // write would hide the stall.
-      return;
+      clearTimeout(this.runtimeStateStallTimer);
     }
     this.runtimeStateStallTimer = setTimeout(() => {
       this.runtimeStateStallTimer = null;

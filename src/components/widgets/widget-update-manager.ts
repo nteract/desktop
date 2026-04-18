@@ -12,11 +12,6 @@
  * to the CRDT, and the `WidgetStore` updates purely from
  * `commChanges$` — local writes included, because `SyncEngine.projectLocalState`
  * fires the projection synchronously after `set_comm_state_batch`.
- *
- * All that's left here is the fallback path for when the CRDT writer
- * isn't yet wired up (early bootstrap), plus binary buffer storage:
- * the CRDT doesn't carry ArrayBuffers, so we keep buffers on the local
- * widget model until outbound sync picks them up via another path.
  */
 
 import type { WidgetStore } from "./widget-store";
@@ -28,9 +23,25 @@ export interface WidgetUpdateManagerOptions {
   getCrdtWriter: () => CrdtCommWriter | null;
 }
 
+/**
+ * Poll interval for draining queued writes while the CRDT writer is
+ * still null. Keeps the drain small & bounded without needing the
+ * caller to explicitly kick the manager.
+ */
+const DRAIN_POLL_MS = 50;
+
 export class WidgetUpdateManager {
   private readonly getStore: () => WidgetStore | null;
   private readonly getCrdtWriter: () => CrdtCommWriter | null;
+
+  /**
+   * Patches that arrived before the CRDT writer was registered.
+   * Keyed by commId, last-wins on key collision (each patch is
+   * merged onto the previous with `{ ...existing, ...patch }`).
+   * Drained as soon as a writer becomes available.
+   */
+  private pendingQueue = new Map<string, Record<string, unknown>>();
+  private drainTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(opts: WidgetUpdateManagerOptions) {
     this.getStore = opts.getStore;
@@ -46,28 +57,34 @@ export class WidgetUpdateManager {
    * echo suppression — the CRDT is the single source of truth.
    *
    * If the CRDT writer isn't available yet (early bootstrap before
-   * `setCrdtCommWriter` has run), falls back to a direct store
-   * update so the UI isn't completely unresponsive during startup.
+   * `setCrdtCommWriter` has run), the patch is queued and the UI
+   * still gets an instant store mirror so the user isn't stuck on a
+   * blank control. When the writer shows up, queued patches flush in
+   * insertion order and the daemon receives them as if the user had
+   * acted slightly later.
    *
    * Binary buffers aren't representable in the Automerge CRDT, so we
-   * preserve the legacy behavior of stashing them on the local widget
-   * model. Kernel delivery of binary buffers goes through the
-   * SendComm RPC path in `use-comm-router.ts` (untouched by this
-   * refactor).
+   * mirror them into the local widget model. Kernel delivery of
+   * binary buffers goes through the SendComm RPC path in
+   * `use-comm-router.ts` (untouched by this refactor).
    */
   updateAndPersist(commId: string, patch: Record<string, unknown>, buffers?: ArrayBuffer[]): void {
     const writer = this.getCrdtWriter();
     if (writer) {
+      // Drain anything queued before this writer became available.
+      this.drainPending(writer);
       writer(commId, patch);
     } else {
-      // Bootstrap fallback: CRDT writer wasn't registered yet. Mirror
-      // the pre-A2 behavior so early-session widget interactions
-      // (before App.tsx's setCrdtCommWriter effect has run) still
-      // render. projectLocalState will pick up future writes.
+      // Bootstrap: accumulate on the pending queue until the CRDT
+      // writer shows up. We also mirror the patch to the local store
+      // so the UI doesn't stall — `projectLocalState` will re-emit
+      // the value once the writer drains our queue.
+      const existing = this.pendingQueue.get(commId) ?? {};
+      this.pendingQueue.set(commId, { ...existing, ...patch });
       this.getStore()?.updateModel(commId, patch, buffers);
-      return;
+      this.scheduleDrain();
     }
-    if (buffers?.length) {
+    if (writer && buffers?.length) {
       // Buffers ride alongside the CRDT state on the local widget
       // model. Kernel delivery is handled elsewhere (SendComm RPC).
       this.getStore()?.updateModel(commId, {}, buffers);
@@ -75,21 +92,61 @@ export class WidgetUpdateManager {
   }
 
   /**
-   * Reset any per-comm bookkeeping. Kept as a no-op for API
-   * compatibility with the pre-A2 manager, which tracked optimistic
-   * keys and debounce timers across kernel restarts. There is no
-   * per-comm state to reset anymore.
+   * Drain the pending queue through the supplied writer. Called
+   * opportunistically on the next `updateAndPersist` once the writer
+   * is registered, and on the polling timer for the "no new writes
+   * arrived but writer just became available" case.
    */
-  reset(): void {}
+  private drainPending(writer: CrdtCommWriter): void {
+    if (this.pendingQueue.size === 0) return;
+    for (const [commId, patch] of this.pendingQueue) {
+      writer(commId, patch);
+    }
+    this.pendingQueue.clear();
+    if (this.drainTimer) {
+      clearTimeout(this.drainTimer);
+      this.drainTimer = null;
+    }
+  }
+
+  private scheduleDrain(): void {
+    if (this.drainTimer) return;
+    this.drainTimer = setTimeout(() => {
+      this.drainTimer = null;
+      const writer = this.getCrdtWriter();
+      if (writer) {
+        this.drainPending(writer);
+      } else if (this.pendingQueue.size > 0) {
+        this.scheduleDrain();
+      }
+    }, DRAIN_POLL_MS);
+  }
 
   /**
-   * Tear down. Nothing to clean up post-A2 — no pending timers, no
-   * accumulated state.
+   * Reset any per-comm bookkeeping. Also drops the pending queue:
+   * a kernel restart invalidates optimistic state the old kernel was
+   * going to receive, so replaying queued writes into a fresh kernel
+   * would be worse than losing them.
    */
-  dispose(): void {}
+  reset(): void {
+    this.pendingQueue.clear();
+    if (this.drainTimer) {
+      clearTimeout(this.drainTimer);
+      this.drainTimer = null;
+    }
+  }
 
   /**
-   * Drop per-comm state on comm_close. Also a no-op post-A2.
+   * Tear down.
    */
-  clearComm(_commId: string): void {}
+  dispose(): void {
+    this.reset();
+  }
+
+  /**
+   * Drop pending state for a specific comm (called on comm_close).
+   */
+  clearComm(commId: string): void {
+    this.pendingQueue.delete(commId);
+  }
 }

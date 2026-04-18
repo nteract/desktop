@@ -94,18 +94,74 @@ describe("WidgetUpdateManager", () => {
     });
   });
 
-  describe("bootstrap fallback", () => {
-    it("falls back to direct store update when writer isn't ready", () => {
+  describe("bootstrap queue", () => {
+    it("queues patches when writer isn't ready and mirrors to local store", () => {
       // Early session state: CRDT writer hasn't been registered yet
-      // (App.tsx's `setCrdtCommWriter` useEffect hasn't run). We
-      // still want interaction to feel responsive — mirror the pre-
-      // refactor behavior so the UI doesn't stall during bootstrap.
+      // (App.tsx's `setCrdtCommWriter` useEffect hasn't run). The
+      // update is queued so nothing is lost; the store is mirrored
+      // so the UI doesn't stall during bootstrap.
       const { store, manager, writerCalls } = setup({ writerAvailable: false });
 
       manager.updateAndPersist("comm-1", { value: 42 });
 
       expect(writerCalls).toHaveLength(0);
       expect(store.getModel("comm-1")?.state.value).toBe(42);
+    });
+
+    it("drains queued patches into the writer on the next update", () => {
+      // Typical bootstrap race: user clicks a widget → writer isn't
+      // registered yet → patch queued. A later call (e.g. model
+      // echo or another interaction) finds the writer registered —
+      // drain the queue before processing the new write.
+      const store = createWidgetStore();
+      const writerCalls: Array<{ commId: string; patch: Record<string, unknown> }> = [];
+      const writer = (commId: string, patch: Record<string, unknown>) => {
+        writerCalls.push({ commId, patch });
+      };
+      let writerAvailable = false;
+      const manager = new WidgetUpdateManager({
+        getStore: () => store,
+        getCrdtWriter: () => (writerAvailable ? writer : null),
+      });
+      store.createModel("comm-1", { value: 0 });
+
+      // Bootstrap write — queued.
+      manager.updateAndPersist("comm-1", { value: 42 });
+      expect(writerCalls).toHaveLength(0);
+
+      // Writer becomes available.
+      writerAvailable = true;
+      manager.updateAndPersist("comm-1", { description: "ready" });
+
+      // Queued patch flushes first, then the new one.
+      expect(writerCalls).toEqual([
+        { commId: "comm-1", patch: { value: 42 } },
+        { commId: "comm-1", patch: { description: "ready" } },
+      ]);
+    });
+
+    it("coalesces multiple bootstrap writes on the same comm", () => {
+      const { manager, writerCalls } = setup({ writerAvailable: false });
+      manager.updateAndPersist("comm-1", { value: 1 });
+      manager.updateAndPersist("comm-1", { value: 2 });
+      manager.updateAndPersist("comm-1", { description: "hello" });
+
+      // Drain by providing a writer on the next call.
+      const writer = (commId: string, patch: Record<string, unknown>) => {
+        writerCalls.push({ commId, patch });
+      };
+      const managerRef = manager as unknown as {
+        getCrdtWriter: () => typeof writer | null;
+      };
+      managerRef.getCrdtWriter = () => writer;
+      manager.updateAndPersist("comm-2", { value: 99 });
+
+      // The coalesced patch has the last value for `value` plus the
+      // description — last-wins merge on key collision.
+      expect(writerCalls).toEqual([
+        { commId: "comm-1", patch: { value: 2, description: "hello" } },
+        { commId: "comm-2", patch: { value: 99 } },
+      ]);
     });
   });
 
