@@ -483,7 +483,13 @@ app.whenReady().then(async () => {
 
   ipcMain.handle("send-request", async (_event, request) => {
     try {
-      return await daemon.sendRequest(request);
+      // NotebookClient on the TS side builds `{ type: "launch_kernel", ... }`
+      // (see packages/runtimed/src/request-types.ts), but the wire protocol
+      // is serde-tagged with `action` (crates/notebook-protocol/src/
+      // protocol.rs `#[serde(tag = "action")]`). Rename here so we don't
+      // need to touch the transport-agnostic request types.
+      const wireRequest = toWireRequest(request);
+      return await daemon.sendRequest(wireRequest);
     } catch (err) {
       return { result: "error", error: err.message };
     }
@@ -509,6 +515,22 @@ app.whenReady().then(async () => {
 
   await createWindow(cli);
 });
+
+// Translate the TS-side NotebookRequest shape (`{ type, ... }`) into the
+// wire shape (`{ action, ... }`). Also accepts requests that already use
+// `action` so callers from the Tauri-shim path pass through unchanged.
+function toWireRequest(request) {
+  if (!request || typeof request !== "object") return request;
+  if ("action" in request) return request;
+  if ("type" in request) {
+    const { type, ...rest } = request;
+    // NotebookRequest::InterruptExecution uses `interrupt_execution` on the
+    // wire; the TS side uses `interrupt` for brevity.
+    const action = type === "interrupt" ? "interrupt_execution" : type;
+    return { action, ...rest };
+  }
+  return request;
+}
 
 // Translate Tauri command names to NotebookRequest payloads. The Rust side
 // of the Tauri app has one-off Tauri commands that each build and send a
