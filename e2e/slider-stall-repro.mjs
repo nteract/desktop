@@ -2,27 +2,44 @@
 /**
  * Widget-sync stall reproducer.
  *
- * Drives the same input pattern that reproduces the slider stall in
- * manual testing — a `matplotlib @interact FloatSlider` with rapid
- * arrow-key input — but does it headlessly via WebDriver so it can be
- * iterated on without someone sitting at a keyboard.
+ * Drives the slider-arrow-key input pattern that reproduces the
+ * widget-sync stall in manual testing, headlessly via WebDriver so
+ * it can be iterated on without someone at a keyboard.
+ *
+ * Scope:
+ *
+ *   This harness drives the *input* that causes the stall and
+ *   exits when the hammer phase completes. It does NOT try to
+ *   detect convergence itself. The diagnosis lives in the
+ *   `[frame-trace]` logs from the sibling instrumentation PRs
+ *   (#1884 app/webview/relay, #1886 daemon). After a run, grep
+ *   `notebook.log` + `runtimed.log` for `[frame-trace]` and
+ *   compare outbound vs inbound counts.
+ *
+ *   Why not detect convergence in-harness? The output widget is
+ *   rendered inside a sandboxed iframe (`allow-same-origin` is
+ *   specifically disallowed for security — see
+ *   `src/components/isolated/isolated-frame.tsx` SANDBOX_ATTRS).
+ *   Parent-side `contentDocument` access is blocked. WebDriver's
+ *   `switchToFrame` lets us click inside the iframe, but reliably
+ *   diffing "what the client thinks" vs "what the kernel produced"
+ *   from that vantage is fragile. Let the logs do the work.
  *
  * What it does:
  *
- * 1. Waits for the Tauri app + daemon + kernel to all be ready.
- * 2. Drops a `matplotlib @interact` cell into the first code cell.
- * 3. Executes the cell so the widget renders.
- * 4. Finds the FloatSlider thumb and hammers ArrowRight key presses
- *    at up to ~60Hz (matching OS key-repeat for arrow keys).
- * 5. Watches the rendered plot title (which shows `sin(X.YYx)`) and
- *    compares to the slider value. They should converge quickly
- *    after key presses stop. A gap that never closes is the stall.
+ *   1. Waits for the Tauri app + daemon + kernel to all be ready.
+ *   2. Rewrites the first cell to a minimal ipywidgets slider
+ *      scenario — no matplotlib, no numpy, no Agg backend. Just
+ *      a FloatSlider whose change handler prints a line, so we
+ *      know from the cell output whether the kernel is getting
+ *      updates at all.
+ *   3. Executes the cell so the widget renders.
+ *   4. switchToFrame into the output iframe, focuses the slider,
+ *      hammers ArrowRight key presses at ~60 Hz for the
+ *      configured duration, switches back.
+ *   5. Exits. Cell output + log traces tell you what happened.
  *
- * Paired with the `[frame-trace]` instrumentation in #1884 + #1886,
- * running this with `RUST_LOG=trace` gives a complete timeline of
- * where the stall happens when it does.
- *
- * Prereqs (see e2e/README.md for context):
+ * Prereqs:
  *
  *   # Build the app with the e2e-webdriver feature:
  *   cargo build --features e2e-webdriver -p notebook
@@ -30,26 +47,22 @@
  *   # Start the dev daemon (in a separate terminal):
  *   cargo xtask dev-daemon
  *
- *   # Start the app with a scratch notebook (in a separate terminal).
- *   # Path doesn't matter — we rewrite the first cell.
- *   RUST_LOG=trace ./target/debug/notebook notebooks/scratch.ipynb
+ *   # The target notebook's env must have ipywidgets. Scratch
+ *   # notebooks default to the prewarmed UV pool which does NOT
+ *   # include ipywidgets — either add it to the notebook's
+ *   # dependencies via the UI before running the harness, or use
+ *   # a notebook whose env already has it.
+ *
+ *   # Start the app with the target notebook (in a separate terminal).
+ *   RUST_LOG=trace ./target/debug/notebook <notebook.ipynb>
  *
  *   # Then run this harness:
  *   node e2e/slider-stall-repro.mjs
  *
  * Options:
  *
- *   --duration 30      How long to hammer the slider (seconds).
- *                      Default: 15.
- *   --presses-per-sec 60
- *                      Target arrow-key rate. Slower than real key
- *                      repeat to leave room for JS to process.
- *                      Default: 60.
- *   --converge-timeout 10
- *                      After the hammer phase ends, how long to
- *                      wait for the plot to catch up to the slider
- *                      value before declaring a stall.
- *                      Default: 10 seconds.
+ *   --duration 15        How long to hammer the slider (seconds).
+ *   --presses-per-sec 60 Target arrow-key rate.
  */
 
 import { remote } from "webdriverio";
@@ -57,34 +70,35 @@ import { remote } from "webdriverio";
 const WEBDRIVER_PORT = Number(process.env.WEBDRIVER_PORT || 4445);
 const DURATION_SECS = Number(argFlag("--duration", 15));
 const PRESSES_PER_SEC = Number(argFlag("--presses-per-sec", 60));
-const CONVERGE_TIMEOUT_SECS = Number(argFlag("--converge-timeout", 10));
 
 function argFlag(name, fallback) {
   const i = process.argv.indexOf(name);
   return i >= 0 ? process.argv[i + 1] : fallback;
 }
 
+// Minimal widget that exercises the RuntimeStateSync path without
+// needing matplotlib, numpy, an interactive backend, or anything
+// else beyond ipywidgets. The on_change handler emits a print line
+// so the cell output itself tells us whether the kernel is getting
+// updates.
 const SLIDER_CELL_SOURCE = `
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import numpy as np
-from ipywidgets import interact, FloatSlider
+from ipywidgets import FloatSlider, Output
+from IPython.display import display
 
-@interact(freq=FloatSlider(min=0.5, max=5.0, step=0.01, value=1.0, description="Frequency"))
-def plot(freq):
-    x = np.linspace(0, 2 * np.pi, 200)
-    plt.figure(figsize=(8, 4))
-    plt.plot(x, np.sin(freq * x))
-    plt.title(f"sin({freq:.2f}x)")
-    plt.ylim(-1.5, 1.5)
-    plt.show()
+_slider = FloatSlider(min=0.0, max=1000.0, step=1.0, value=0.0, description="drive")
+_out = Output()
+
+@_out.capture(clear_output=True, wait=True)
+def _on_change(change):
+    print(f"kernel_saw={int(change['new'])}")
+
+_slider.observe(_on_change, names='value')
+display(_slider, _out)
 `.trim();
 
 async function main() {
   console.log(`[slider-stall] WebDriver on port ${WEBDRIVER_PORT}`);
   console.log(`[slider-stall] hammer: ${DURATION_SECS}s @ ${PRESSES_PER_SEC} Hz`);
-  console.log(`[slider-stall] converge timeout: ${CONVERGE_TIMEOUT_SECS}s`);
 
   const browser = await remote({
     hostname: "localhost",
@@ -118,7 +132,7 @@ async function main() {
     );
     console.log("[slider-stall] kernel ready");
 
-    // 3. Drop the slider cell into the first code cell
+    // 3. Drop the widget cell source into the first code cell.
     const setOk = await browser.execute((src) => {
       const cells = document.querySelectorAll('[data-cell-type="code"]');
       const cell = cells[0];
@@ -132,9 +146,7 @@ async function main() {
       });
       return true;
     }, SLIDER_CELL_SOURCE);
-    if (!setOk) {
-      throw new Error("failed to set cell source");
-    }
+    if (!setOk) throw new Error("failed to set cell source");
     console.log("[slider-stall] cell source set");
 
     // 4. Execute
@@ -147,138 +159,89 @@ async function main() {
     });
     if (!execOk) throw new Error("failed to click execute");
 
-    // 5. Wait for the slider widget to render inside the cell's output
-    //    iframe. The widget is rendered inside the isolated iframe;
-    //    we find it by the FloatSlider component's `role="slider"`
-    //    attribute (ipywidgets renders an <input type="range"> which
-    //    reports that role natively).
+    // 5. The widget lives inside an isolated iframe. We can't see its
+    //    DOM from the parent (`allow-same-origin` is intentionally
+    //    off), but WebDriver's `switchToFrame` is a driver-level
+    //    operation that works regardless of the sandbox.
+    //
+    //    Wait for an iframe to appear at all, then switch into it
+    //    and wait for the slider to render.
     await browser.waitUntil(
-      async () => {
-        return await browser.execute(() => {
-          // Search inside all iframes for a slider input.
-          // biome-ignore lint/suspicious/noExplicitAny: iframe contentWindow is platform
-          const iframes = document.querySelectorAll("iframe");
-          for (const f of iframes) {
-            try {
-              const doc = f.contentDocument;
-              if (!doc) continue;
-              const slider = doc.querySelector('input[type="range"], [role="slider"]');
-              if (slider) return true;
-            } catch {
-              // cross-origin iframe, skip
-            }
-          }
-          return false;
-        });
-      },
-      { timeout: 60000, interval: 500, timeoutMsg: "slider not rendered" },
+      async () => (await browser.$$("iframe")).length > 0,
+      { timeout: 60000, interval: 500, timeoutMsg: "no output iframe" },
     );
+    console.log("[slider-stall] iframe present");
+
+    // Try each iframe; the right one has the slider. Fail loudly if
+    // none have it after the timeout — most likely cause is
+    // ipywidgets not being installed in the notebook env.
+    const iframeHandles = await browser.$$("iframe");
+    let sliderFrame = null;
+    for (const frame of iframeHandles) {
+      try {
+        await browser.switchToFrame(frame);
+        const sliderExists = await browser.execute(
+          () => !!document.querySelector('input[type="range"], [role="slider"]'),
+        );
+        if (sliderExists) {
+          sliderFrame = frame;
+          break;
+        }
+      } catch {
+        // cross-origin, driver can sometimes refuse the switch
+      } finally {
+        await browser.switchToParentFrame();
+      }
+    }
+
+    if (!sliderFrame) {
+      // Widget didn't render. Read the cell output to surface
+      // whatever actually happened (usually ModuleNotFoundError).
+      const outputText = await browser.execute(() => {
+        const cells = document.querySelectorAll('[data-cell-type="code"]');
+        return cells[0]?.textContent?.slice(0, 500) ?? "";
+      });
+      throw new Error(
+        `slider did not render within 60s. First cell text: ${outputText}`,
+      );
+    }
     console.log("[slider-stall] slider rendered");
 
-    // 6. Focus the slider and hammer ArrowRight keypresses.
-    //    We use `view.actions()` style keydowns on the input element
-    //    for genuine key events (not synthetic dispatchEvent, which
-    //    bypasses the React handler the real UI uses).
-    await browser.execute(() => {
-      // biome-ignore lint/suspicious/noExplicitAny: same escape hatch as above
-      const iframes = document.querySelectorAll("iframe");
-      for (const f of iframes) {
-        try {
-          const doc = f.contentDocument;
-          const slider = doc?.querySelector('input[type="range"], [role="slider"]');
-          if (slider instanceof HTMLElement) {
-            slider.focus();
-            return true;
-          }
-        } catch {}
-      }
-      return false;
-    });
+    // 6. Switch into the iframe, focus the slider, hammer keys.
+    await browser.switchToFrame(sliderFrame);
+    const sliderEl = await browser.$('input[type="range"], [role="slider"]');
+    await sliderEl.click();
 
     console.log("[slider-stall] hammer phase starting");
-    const intervalMs = Math.max(1, Math.floor(1000 / PRESSES_PER_SEC));
     const end = Date.now() + DURATION_SECS * 1000;
+    const intervalMs = Math.max(1, Math.floor(1000 / PRESSES_PER_SEC));
     let presses = 0;
     while (Date.now() < end) {
       await browser.keys(["ArrowRight"]);
       presses++;
-      // Yield so the event loop can drain React work between presses.
       if (presses % 10 === 0) await browser.pause(intervalMs);
     }
-    const hammerMs = Date.now() - (end - DURATION_SECS * 1000);
+    const hammerMs = DURATION_SECS * 1000;
     console.log(
       `[slider-stall] hammer done: ${presses} ArrowRight presses in ${hammerMs}ms` +
         ` (${((presses * 1000) / hammerMs).toFixed(1)} Hz)`,
     );
 
-    // 7. Convergence check. Read slider value + plot title. They
-    //    should match within a step or two of each other; if the
-    //    plot title is frozen at a low value while the slider is
-    //    high, the stall reproduced.
-    const readState = async () => {
-      return await browser.execute(() => {
-        // biome-ignore lint/suspicious/noExplicitAny: ditto
-        const iframes = document.querySelectorAll("iframe");
-        for (const f of iframes) {
-          try {
-            const doc = f.contentDocument;
-            if (!doc) continue;
-            const slider = doc.querySelector('input[type="range"], [role="slider"]');
-            if (!slider) continue;
-            const sliderValue = Number(
-              // biome-ignore lint/suspicious/noExplicitAny: ditto
-              (slider).getAttribute("aria-valuenow") ??
-                (slider).value ??
-                "NaN",
-            );
-            // Plot title rendered as SVG text usually; fall back to
-            // searching text content for "sin(".
-            const titleEl = doc.querySelector("svg text, .plot-title");
-            const titleText = titleEl?.textContent ?? doc.body?.textContent ?? "";
-            const match = titleText.match(/sin\(([-\d.]+)x\)/);
-            const plotValue = match ? Number(match[1]) : null;
-            return { sliderValue, plotValue, titleText: match?.[0] ?? null };
-          } catch {}
-        }
-        return null;
-      });
-    };
+    // Report the slider's post-hammer aria-valuenow for context.
+    const finalSliderValue = await browser.execute(() => {
+      const s = document.querySelector('input[type="range"], [role="slider"]');
+      // biome-ignore lint/suspicious/noExplicitAny: permissive DOM probe
+      return s?.getAttribute("aria-valuenow") ?? s?.value ?? null;
+    });
 
-    const convergeStart = Date.now();
-    const convergeDeadline = convergeStart + CONVERGE_TIMEOUT_SECS * 1000;
-    let lastState = null;
-    let converged = false;
-    while (Date.now() < convergeDeadline) {
-      const state = await readState();
-      if (state) {
-        lastState = state;
-        if (
-          state.plotValue != null &&
-          Math.abs(state.sliderValue - state.plotValue) < 0.05
-        ) {
-          converged = true;
-          break;
-        }
-      }
-      await browser.pause(100);
-    }
-    const convergeMs = Date.now() - convergeStart;
+    await browser.switchToParentFrame();
 
-    console.log("[slider-stall] ===================");
-    if (converged) {
-      console.log(
-        `[slider-stall] converged after ${convergeMs}ms: slider=${lastState?.sliderValue}, plot=${lastState?.plotValue}`,
-      );
-    } else {
-      console.log(
-        `[slider-stall] DID NOT CONVERGE within ${CONVERGE_TIMEOUT_SECS}s: ` +
-          `slider=${lastState?.sliderValue} plot=${lastState?.plotValue} title=${lastState?.titleText}`,
-      );
-      console.log(
-        "[slider-stall] this is the stall signature. Check runtimed.log + notebook.log for [frame-trace] lines.",
-      );
-      process.exitCode = 1;
-    }
+    console.log(
+      `[slider-stall] slider aria-valuenow after hammer: ${finalSliderValue}`,
+    );
+    console.log(
+      `[slider-stall] done. grep notebook.log + runtimed.log for '[frame-trace]' to see the sync traffic.`,
+    );
   } finally {
     await browser.deleteSession();
   }
