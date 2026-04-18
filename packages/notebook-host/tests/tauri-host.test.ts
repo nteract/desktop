@@ -46,6 +46,25 @@ vi.mock("@tauri-apps/api/webview", () => ({
       capturedListens.push({ event, cb });
       return mockUnlisten;
     }),
+    setZoom: vi.fn(),
+  }),
+}));
+
+const pluginLogCalls: Array<{ level: string; message: string }> = [];
+
+vi.mock("@tauri-apps/plugin-log", () => ({
+  attachConsole: vi.fn(async () => () => {}),
+  debug: vi.fn(async (message: string) => {
+    pluginLogCalls.push({ level: "debug", message });
+  }),
+  info: vi.fn(async (message: string) => {
+    pluginLogCalls.push({ level: "info", message });
+  }),
+  warn: vi.fn(async (message: string) => {
+    pluginLogCalls.push({ level: "warn", message });
+  }),
+  error: vi.fn(async (message: string) => {
+    pluginLogCalls.push({ level: "error", message });
   }),
 }));
 
@@ -64,6 +83,7 @@ const stubTransport: NotebookTransport = {
 beforeEach(() => {
   capturedInvokes.length = 0;
   capturedListens.length = 0;
+  pluginLogCalls.length = 0;
   mockUnlisten.mockReset();
 });
 
@@ -217,6 +237,20 @@ describe("createTauriHost()", () => {
     // Let the async run() call settle.
     await Promise.resolve();
     expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("host.log forwards each level to plugin-log", () => {
+    const host = createTauriHost({ transport: stubTransport });
+    host.log.debug("hello");
+    host.log.info("world");
+    host.log.warn("careful");
+    host.log.error("oops");
+    expect(pluginLogCalls).toEqual([
+      { level: "debug", message: "hello" },
+      { level: "info", message: "world" },
+      { level: "warn", message: "careful" },
+      { level: "error", message: "oops" },
+    ]);
   });
 
   it("menu bridge parses menu:insert-cell payload into { type }", async () => {

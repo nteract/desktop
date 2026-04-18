@@ -1,22 +1,16 @@
 /**
  * Unified logger for the notebook app.
  *
- * Routes frontend logs through @tauri-apps/plugin-log so they appear
- * in notebook.log alongside Rust-side log::* entries. Also forwards
- * to the browser console in development for devtools convenience.
+ * Delegates to the `NotebookHost` installed at boot (`setLoggerHost`).
+ * The host's `log` namespace decides where entries actually go — Tauri's
+ * impl pipes to `@tauri-apps/plugin-log` so they appear in notebook.log
+ * alongside Rust-side `log::*` entries; other hosts pick their own sink.
  *
  * All methods are synchronous (fire-and-forget) so callers don't need
- * to await — the IPC call happens in the background.
+ * to await — the transport to the sink happens in the background.
  */
 
-import { isTauri } from "@tauri-apps/api/core";
-import {
-  attachConsole,
-  debug as logDebug,
-  error as logError,
-  info as logInfo,
-  warn as logWarn,
-} from "@tauri-apps/plugin-log";
+import type { NotebookHost } from "@nteract/notebook-host";
 
 /** Serialize arguments to a single log message string. */
 function formatArgs(args: unknown[]): string {
@@ -35,17 +29,26 @@ function formatArgs(args: unknown[]): string {
     .join(" ");
 }
 
-/** Whether Tauri IPC is available (false in Vitest, Storybook, etc.) */
-const hasTauri = isTauri();
+// Host is installed by `apps/notebook/src/main.tsx` right after
+// `createTauriHost()`. Until then — and in tests, SSR, Storybook — we
+// fall back to the console. Never throw from logger; it's used at the
+// error-handling boundary.
+let _host: NotebookHost | null = null;
 
-/** Fire-and-forget wrapper — log calls are async IPC but callers stay sync. */
-function send(fn: (message: string) => Promise<void>, args: unknown[]): void {
-  if (!hasTauri) {
-    // Fall back to console when Tauri isn't available (tests, SSR)
-    console.log(formatArgs(args));
-    return;
+/** Install the `NotebookHost` whose `log` surface this logger writes to. */
+export function setLoggerHost(host: NotebookHost | null): void {
+  _host = host;
+}
+
+function emit(level: "debug" | "info" | "warn" | "error", args: unknown[]): void {
+  const message = formatArgs(args);
+  if (_host) {
+    _host.log[level](message);
+  } else {
+    // Pre-host or non-host contexts: mirror to console with a level tag.
+    // eslint-disable-next-line no-console
+    console.log(`[${level}] ${message}`);
   }
-  fn(formatArgs(args)).catch(() => {});
 }
 
 export const logger = {
@@ -53,38 +56,23 @@ export const logger = {
    * Debug-level logging. Visible in notebook.log when RUST_LOG=debug.
    * Use for routine operations, per-cell execution, retry attempts, etc.
    */
-  debug: (...args: unknown[]): void => {
-    send(logDebug, args);
-  },
+  debug: (...args: unknown[]): void => emit("debug", args),
 
   /**
    * Info-level logging. Always enabled.
    * Use for significant user-triggered actions (shutdown, sync, etc.)
    */
-  info: (...args: unknown[]): void => {
-    send(logInfo, args);
-  },
+  info: (...args: unknown[]): void => emit("info", args),
 
   /**
    * Warning-level logging. Always enabled.
    * Use for recoverable issues that may indicate problems.
    */
-  warn: (...args: unknown[]): void => {
-    send(logWarn, args);
-  },
+  warn: (...args: unknown[]): void => emit("warn", args),
 
   /**
    * Error-level logging. Always enabled.
    * Use for failures that affect functionality.
    */
-  error: (...args: unknown[]): void => {
-    send(logError, args);
-  },
+  error: (...args: unknown[]): void => emit("error", args),
 };
-
-// In development, also forward all logs to the browser console so
-// devtools show them alongside the file output. Guard against test
-// environments where Tauri internals aren't available.
-if (import.meta.env.DEV && hasTauri) {
-  attachConsole();
-}

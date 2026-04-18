@@ -155,6 +155,22 @@ export interface HostSystem {
   getUsername(): Promise<string>;
 }
 
+/**
+ * Structured-log pipe shared across the frontend. Replaces the direct
+ * `@tauri-apps/plugin-log` coupling in `apps/notebook/src/lib/logger.ts`.
+ *
+ * Messages arrive pre-formatted (single string); callers serialize their
+ * arguments in a way that matters to them. The Tauri impl forwards each
+ * level to plugin-log; an Electron impl can pipe to the main process log
+ * file; a browser impl can use `console.*` or a remote sink.
+ */
+export interface HostLog {
+  debug(message: string): void;
+  info(message: string): void;
+  warn(message: string): void;
+  error(message: string): void;
+}
+
 // ── Host ──────────────────────────────────────────────────────────────────
 
 /**
@@ -182,6 +198,12 @@ export interface NotebookHost {
    * for the command map.
    */
   readonly commands: CommandRegistry;
+  /**
+   * Structured logging pipe. Tauri routes through plugin-log so entries
+   * appear in notebook.log alongside Rust-side log::* entries; other hosts
+   * pick their own sink.
+   */
+  readonly log: HostLog;
   // Future namespaces (add in dedicated PRs):
   //   settings:   HostSettings
   //   env:        HostEnv         (detect_pyproject, detect_pixi_toml, …)

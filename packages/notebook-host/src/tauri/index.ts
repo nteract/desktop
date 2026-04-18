@@ -13,8 +13,15 @@
  * and tighten the import direction.
  */
 
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import {
+  attachConsole as pluginAttachConsole,
+  debug as pluginDebug,
+  error as pluginError,
+  info as pluginInfo,
+  warn as pluginWarn,
+} from "@tauri-apps/plugin-log";
 import type { NotebookTransport } from "runtimed";
 import { createCommandRegistry } from "../commands";
 import { wireTauriMenuBridge } from "./menu-bridge";
@@ -30,6 +37,7 @@ import type {
   HostDaemon,
   HostDaemonEvents,
   HostDeps,
+  HostLog,
   HostNotebook,
   HostRelay,
   HostSystem,
@@ -144,6 +152,29 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
 
   const commands = createCommandRegistry();
 
+  // plugin-log always resolves; fire-and-forget so callers stay sync.
+  // `isTauri()` guards the one-time `attachConsole()` for tests and SSR.
+  const log: HostLog = {
+    debug(message) {
+      pluginDebug(message).catch(() => {});
+    },
+    info(message) {
+      pluginInfo(message).catch(() => {});
+    },
+    warn(message) {
+      pluginWarn(message).catch(() => {});
+    },
+    error(message) {
+      pluginError(message).catch(() => {});
+    },
+  };
+  // In a real Tauri window, mirror plugin-log output to the browser console
+  // so devtools shows it alongside Rust-side entries. Safe to call outside
+  // Tauri — the plugin no-ops when IPC isn't available.
+  if (isTauri() && import.meta.env.DEV) {
+    pluginAttachConsole().catch(() => {});
+  }
+
   const host: NotebookHost = {
     name: "tauri",
     transport,
@@ -156,6 +187,7 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
     notebook,
     system,
     commands,
+    log,
   };
 
   // Wire Tauri menu events into the command registry. The bridge is
