@@ -132,31 +132,65 @@ async function main() {
     );
     console.log("[slider-stall] kernel ready");
 
-    // 3. Drop the widget cell source into the first code cell.
-    const setOk = await browser.execute((src) => {
-      const cells = document.querySelectorAll('[data-cell-type="code"]');
-      const cell = cells[0];
-      if (!cell) return false;
-      const cm = cell.querySelector(".cm-content");
-      // biome-ignore lint/suspicious/noExplicitAny: CodeMirror view escape hatch
-      const view = cm?.cmView?.view;
-      if (!view) return false;
-      view.dispatch({
-        changes: { from: 0, to: view.state.doc.length, insert: src },
-      });
-      return true;
-    }, SLIDER_CELL_SOURCE);
+    // 3. Find the visually-topmost code cell and hold onto its
+    //    `data-cell-id`. NotebookView keeps DOM order stable by
+    //    cell id (for iframe-reload avoidance) and uses CSS
+    //    `order` for the visual position the user sees, so
+    //    NodeList index is NOT the visual order. Additionally, if
+    //    the notebook starts with a markdown cell, the code cell
+    //    is not the first `<div>` sibling — `:first-of-type`
+    //    selectors won't match. Scope everything by cell id
+    //    instead so the rewrite, execute, and iframe lookup all
+    //    target the same cell.
+    const targetCellId = await browser.execute(() => {
+      const codeCells = Array.from(
+        document.querySelectorAll('[data-cell-type="code"]'),
+      );
+      if (codeCells.length === 0) return null;
+      // Pick the lowest CSS `order` value. Ties break by DOM order.
+      const withOrder = codeCells.map((el, i) => ({
+        id: el.getAttribute("data-cell-id"),
+        order: Number.parseInt(getComputedStyle(el).order, 10) || 0,
+        i,
+      }));
+      withOrder.sort((a, b) => a.order - b.order || a.i - b.i);
+      return withOrder[0]?.id ?? null;
+    });
+    if (!targetCellId) {
+      throw new Error("no code cells found");
+    }
+    console.log(`[slider-stall] target cell: ${targetCellId}`);
+
+    const cellSelector = `[data-cell-id="${targetCellId}"]`;
+
+    // Drop the widget cell source into the target cell.
+    const setOk = await browser.execute(
+      (sel, src) => {
+        const cell = document.querySelector(sel);
+        if (!cell) return false;
+        const cm = cell.querySelector(".cm-content");
+        // biome-ignore lint/suspicious/noExplicitAny: CodeMirror view escape hatch
+        const view = cm?.cmView?.view;
+        if (!view) return false;
+        view.dispatch({
+          changes: { from: 0, to: view.state.doc.length, insert: src },
+        });
+        return true;
+      },
+      cellSelector,
+      SLIDER_CELL_SOURCE,
+    );
     if (!setOk) throw new Error("failed to set cell source");
     console.log("[slider-stall] cell source set");
 
     // 4. Execute
-    const execOk = await browser.execute(() => {
-      const cells = document.querySelectorAll('[data-cell-type="code"]');
-      const btn = cells[0].querySelector('[data-testid="execute-button"]');
+    const execOk = await browser.execute((sel) => {
+      const cell = document.querySelector(sel);
+      const btn = cell?.querySelector('[data-testid="execute-button"]');
       if (!btn) return false;
       btn.click();
       return true;
-    });
+    }, cellSelector);
     if (!execOk) throw new Error("failed to click execute");
 
     // 5. The widget lives inside an isolated iframe. We can't see its
@@ -171,9 +205,11 @@ async function main() {
     const deadline = Date.now() + 60000;
     let sliderFrame = null;
     while (Date.now() < deadline) {
-      const cellIframes = await browser.$$(
-        '[data-cell-type="code"]:first-of-type iframe',
-      );
+      // Scope strictly to the cell we just rewrote — not by DOM
+      // position (`:first-of-type` fails when a non-code cell
+      // precedes this one) or global iframe scan (could pick up a
+      // stale render from another cell).
+      const cellIframes = await browser.$$(`${cellSelector} iframe`);
       for (const frame of cellIframes) {
         try {
           await browser.switchToFrame(frame);
@@ -196,19 +232,21 @@ async function main() {
     }
 
     if (!sliderFrame) {
-      // Widget didn't render in the first cell. Read the cell text
+      // Widget didn't render in the target cell. Read the cell text
       // to surface whatever actually happened (usually
       // ModuleNotFoundError for ipywidgets).
-      const outputText = await browser.execute(() => {
-        const cells = document.querySelectorAll('[data-cell-type="code"]');
-        return cells[0]?.textContent?.slice(0, 500) ?? "";
-      });
+      const outputText = await browser.execute((sel) => {
+        const cell = document.querySelector(sel);
+        return cell?.textContent?.slice(0, 500) ?? "";
+      }, cellSelector);
       throw new Error(
-        `slider did not render within 60s in the first cell. ` +
+        `slider did not render within 60s in target cell ${targetCellId}. ` +
           `Cell text: ${outputText}`,
       );
     }
-    console.log("[slider-stall] slider rendered (in first cell's iframe)");
+    console.log(
+      `[slider-stall] slider rendered (inside cell ${targetCellId}'s iframe)`,
+    );
 
     // 6. Focus the slider, hammer keys. Already in the iframe
     //    context from the discovery loop above.
