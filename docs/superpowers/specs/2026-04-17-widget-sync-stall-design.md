@@ -128,6 +128,19 @@ into one.
   so Deno harnesses, Python clients, and future frontends wire up
   identically. Each commit in Track A naturally produces a candidate.
 
+## Known limitations (follow-up)
+
+- **Linked widget targets tick at the throttle rate, not per-event.**
+  With CRDT writes throttled to 50 ms per comm for outbound flood
+  control, `widgets.jslink` / `widgets.jsdlink` targets update at
+  ~20 Hz during a continuous slider drag — pre-A2 they tracked every
+  tick because the source's store was written per-tick. A naive fix
+  (per-tick `store.updateModel`) reintroduces the echo-clobbering
+  class: stale kernel echoes overwrite in-flight drag values. A
+  proper fix likely requires an "acknowledge by value" filter —
+  drop an inbound key if its value matches a recently-written local
+  value within some tombstone window. Deferred.
+
 ## What this is NOT
 
 - Not persisting the sync state across reloads (would be nice; deferred).
