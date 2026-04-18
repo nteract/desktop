@@ -2357,7 +2357,7 @@ async fn run_sync_loop_v2<R, W>(
     writer: &mut W,
     room: &Arc<NotebookRoom>,
     _rooms: NotebookRooms,
-    _notebook_id: String,
+    notebook_id: String,
     daemon: std::sync::Arc<crate::daemon::Daemon>,
     needs_load: Option<&Path>,
     peer_id: &str,
@@ -2559,6 +2559,17 @@ where
             result = connection::recv_typed_frame(reader) => {
                 match result? {
                     Some(frame) => {
+                        // Daemon-side frame-boundary trace. Paired with the
+                        // Tauri-side `[frame-trace] relay outbound socket write`
+                        // log; gap between those two means the frame is lost
+                        // between app socket write and daemon socket read.
+                        tracing::trace!(
+                            "[frame-trace] daemon recv: peer={} notebook={} type={:?} len={}",
+                            peer_id,
+                            notebook_id,
+                            frame.frame_type,
+                            frame.payload.len(),
+                        );
                         match frame.frame_type {
                             NotebookFrameType::AutomergeSync => {
                                 // Handle Automerge sync message
@@ -2776,15 +2787,29 @@ where
                                 // to comms/*/state/* for widget state updates).
                                 let message = sync::Message::decode(&frame.payload)
                                     .map_err(|e| anyhow::anyhow!("decode state sync: {}", e))?;
+                                // Per-stage trace for the frame type that stalls on
+                                // arrow-key slider drags. If `lock_ms` is ever
+                                // seconds long, some other task is holding
+                                // `state_doc.write()` — that's the wedge site.
+                                let stage_start = std::time::Instant::now();
                                 let reply_encoded = {
                                     let mut state_doc = room.state_doc.write().await;
+                                    let lock_ms = stage_start.elapsed().as_millis();
 
+                                    let recv_started = std::time::Instant::now();
                                     let recv_result = catch_automerge_panic("state-receive-sync", || {
                                         state_doc.receive_sync_message_with_changes(
                                             &mut state_peer_state,
                                             message,
                                         )
                                     });
+                                    let recv_ms = recv_started.elapsed().as_millis();
+                                    tracing::trace!(
+                                        "[frame-trace] daemon state-sync apply: peer={} lock_ms={} recv_ms={}",
+                                        peer_id,
+                                        lock_ms,
+                                        recv_ms,
+                                    );
                                     let had_changes = match recv_result {
                                         Ok(Ok(changed)) => changed,
                                         Ok(Err(e)) => {
@@ -2824,12 +2849,28 @@ where
                                     }
                                 };
                                 if let Some(encoded) = reply_encoded {
+                                    let send_started = std::time::Instant::now();
                                     connection::send_typed_frame(
                                         writer,
                                         NotebookFrameType::RuntimeStateSync,
                                         &encoded,
                                     )
                                     .await?;
+                                    tracing::trace!(
+                                        "[frame-trace] daemon state-sync reply sent: peer={} len={} write_ms={}",
+                                        peer_id,
+                                        encoded.len(),
+                                        send_started.elapsed().as_millis(),
+                                    );
+                                } else {
+                                    // Sync-protocol converged — nothing to reply with. If this
+                                    // fires while the client keeps sending, the daemon thinks
+                                    // we're in sync but the client doesn't. That's the
+                                    // "sent_hashes accumulating, daemon silent" shape.
+                                    tracing::trace!(
+                                        "[frame-trace] daemon state-sync no reply: peer={} (sync converged on receive)",
+                                        peer_id,
+                                    );
                                 }
                             }
 
