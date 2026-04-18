@@ -6,6 +6,7 @@
  */
 
 import { useSyncExternalStore } from "react";
+import { logger } from "./logger";
 
 // Re-export all types from the package so existing imports work.
 export type {
@@ -37,8 +38,11 @@ function notifySubscribers(): void {
   for (const cb of subscribers) {
     try {
       cb();
-    } catch {
-      // Subscriber errors must not break the dispatch loop
+    } catch (err) {
+      // A throwing `useSyncExternalStore` callback used to fail silently
+      // and leave components displaying stale runtime state. Log loudly
+      // so the failure is diagnosable.
+      logger.error("[runtime-state] subscriber threw:", err);
     }
   }
 }

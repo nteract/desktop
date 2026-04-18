@@ -147,11 +147,26 @@ async function inlineTextBlobs(
 }
 
 /**
+ * Per-attempt timeout for a single blob fetch.
+ *
+ * `projectComms` serializes async comm emissions on `commEmitQueue` to
+ * preserve ordering, which means any hung fetch stalls *all* subsequent
+ * widget state updates behind it. 5s is generous for a loopback HTTP blob
+ * server but short enough that a broken/slow server never silently blocks
+ * widget sync indefinitely.
+ */
+const TEXT_BLOB_FETCH_TIMEOUT_MS = 5_000;
+
+/**
  * Fetch `url` as text, retrying transient failures.
  *
  * Returns the decoded body on success, or `null` after all retries are
  * exhausted. 4xx responses are treated as permanent and returned
  * immediately without retry (the daemon doesn't know about that hash).
+ *
+ * Each attempt has a hard timeout via `AbortController` — without it, a
+ * fetch that hangs (connection established, body never completes) would
+ * poison the serial comm-emit queue forever.
  */
 async function fetchTextBlobWithRetry(
   url: string,
@@ -162,8 +177,10 @@ async function fetchTextBlobWithRetry(
     if (attempt > 0) {
       await delay(TEXT_BLOB_RETRY_DELAYS_MS[attempt - 1]);
     }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TEXT_BLOB_FETCH_TIMEOUT_MS);
     try {
-      const res = await fetch(url);
+      const res = await fetch(url, { signal: controller.signal });
       if (res.ok) {
         return await res.text();
       }
@@ -174,7 +191,14 @@ async function fetchTextBlobWithRetry(
         return null;
       }
     } catch (err) {
-      lastReason = err instanceof Error ? err.message : String(err);
+      lastReason =
+        err instanceof Error
+          ? err.name === "AbortError"
+            ? `timeout after ${TEXT_BLOB_FETCH_TIMEOUT_MS}ms`
+            : err.message
+          : String(err);
+    } finally {
+      clearTimeout(timer);
     }
   }
   logger.warn(
