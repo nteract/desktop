@@ -160,7 +160,20 @@ impl RelayHandle {
     /// decoding or processing it. Used for Automerge sync messages and
     /// presence frames originating from the WASM frontend.
     pub async fn forward_frame(&self, frame_type: u8, payload: Vec<u8>) -> Result<(), SyncError> {
+        // Frame-boundary trace (relay layer). Paired with the
+        // `[frame-trace] relay` logs in relay_task. Shows up at
+        // `trace!` level only — no cost in normal dev mode.
+        let payload_len = payload.len();
+        let queue_cap = self.cmd_tx.capacity();
         let (reply_tx, reply_rx) = oneshot::channel();
+        log::trace!(
+            "[frame-trace] relay forward_frame enter: type=0x{:02x} len={} queue_cap={}",
+            frame_type,
+            payload_len,
+            queue_cap,
+        );
+
+        let send_started = std::time::Instant::now();
         self.cmd_tx
             .send(RelayCommand::ForwardFrame {
                 frame_type,
@@ -169,6 +182,24 @@ impl RelayHandle {
             })
             .await
             .map_err(|_| SyncError::Disconnected)?;
-        reply_rx.await.map_err(|_| SyncError::Disconnected)?
+        let send_elapsed = send_started.elapsed();
+        log::trace!(
+            "[frame-trace] relay forward_frame queued: type=0x{:02x} len={} send_wait_ms={}",
+            frame_type,
+            payload_len,
+            send_elapsed.as_millis(),
+        );
+
+        let reply_started = std::time::Instant::now();
+        let result = reply_rx.await.map_err(|_| SyncError::Disconnected)?;
+        let reply_elapsed = reply_started.elapsed();
+        log::trace!(
+            "[frame-trace] relay forward_frame done: type=0x{:02x} len={} reply_wait_ms={} ok={}",
+            frame_type,
+            payload_len,
+            reply_elapsed.as_millis(),
+            result.is_ok(),
+        );
+        result
     }
 }

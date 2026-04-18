@@ -106,7 +106,17 @@ where
                     payload,
                     reply,
                 } => {
+                    // Frame-boundary trace (relay task, outbound arm).
+                    // Logs before and after the socket write so a stall
+                    // on the daemon-side pipe is attributable here.
+                    let payload_len = payload.len();
+                    log::trace!(
+                        "[frame-trace] relay outbound: type=0x{:02x} len={}",
+                        frame_type,
+                        payload_len,
+                    );
                     let ft = NotebookFrameType::try_from(frame_type);
+                    let write_started = std::time::Instant::now();
                     let result = match ft {
                         Ok(ft) => connection::send_typed_frame(&mut writer, ft, &payload)
                             .await
@@ -116,12 +126,29 @@ where
                             frame_type,
                         ))),
                     };
+                    log::trace!(
+                        "[frame-trace] relay outbound socket write: type=0x{:02x} len={} write_ms={} ok={}",
+                        frame_type,
+                        payload_len,
+                        write_started.elapsed().as_millis(),
+                        result.is_ok(),
+                    );
                     let _ = reply.send(result);
                 }
             },
 
             // ─── Incoming frame from daemon → pipe to frontend ─────────
             SelectResult::Frame(Ok(Some(frame))) => {
+                // Frame-boundary trace (relay task, inbound arm).
+                // Logs what the relay received from the daemon socket
+                // before it's piped to the frontend's `notebook:frame`
+                // event. Use this to distinguish "daemon isn't sending"
+                // from "Tauri isn't delivering to webview."
+                log::trace!(
+                    "[frame-trace] relay inbound: type={:?} len={}",
+                    frame.frame_type,
+                    frame.payload.len(),
+                );
                 pipe_frame(&config.frame_tx, &frame);
             }
 
