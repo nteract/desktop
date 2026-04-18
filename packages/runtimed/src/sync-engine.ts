@@ -740,17 +740,27 @@ export class SyncEngine {
         log.warn(
           "[sync-engine] runtime_state_sync_error: state doc rebuilt, sync state normalized",
         );
-        // Any inbound runtime-state frame — error or applied — proves
-        // the daemon is talking, so clear the stall watchdog.
-        this.clearRuntimeStateStallWatchdog();
         if (e.reply) {
+          // Re-arm the watchdog around the recovery reply. If we
+          // clear it too early and the reply send fails, there's no
+          // timer left to retry — the engine silently gives up, and
+          // the half-broken transport leaves runtime state stuck
+          // until some unrelated future mutation.
+          this.armRuntimeStateStallWatchdog();
+          const gen = ++this.runtimeStateFlushGen;
           this.opts.transport
             .sendFrame(FrameType.RUNTIME_STATE_SYNC, new Uint8Array(e.reply))
             .catch((err: unknown) => {
+              if (gen !== this.runtimeStateFlushGen) return;
+              this.clearRuntimeStateStallWatchdog();
               const handle = this.opts.getHandle();
               if (handle) handle.cancel_last_runtime_state_flush();
               log.warn("[sync-engine] state recovery reply send failed:", err);
             });
+        } else {
+          // No reply to send — the inbound error frame itself proves
+          // the daemon is talking, so we can clear any armed watchdog.
+          this.clearRuntimeStateStallWatchdog();
         }
         this._syncErrors$.next({
           doc: "runtime_state",
