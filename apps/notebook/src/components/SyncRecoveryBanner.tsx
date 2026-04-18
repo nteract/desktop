@@ -63,17 +63,23 @@ export function SyncRecoveryBanner({ event, onDismiss }: SyncRecoveryBannerProps
 
   if (!visible || !event) return null;
 
-  const detail =
-    count > 1
+  const isStall = event.kind === "stall_detected";
+  const headline = isStall ? "Sync stalled" : "Sync recovered";
+  const detail = isStall
+    ? "No response from daemon — forcing a resync."
+    : count > 1
       ? `Recovered ${count} times recently — connection may be unhealthy.`
       : "Rebuilt from daemon snapshot.";
+  const bg = isStall ? "bg-amber-600/90" : "bg-sky-600/90";
+  const dot = isStall ? "text-amber-200" : "text-sky-200";
+  const body = isStall ? "text-amber-100" : "text-sky-100";
 
   return (
-    <div className="flex items-center gap-2 bg-sky-600/90 px-3 py-1 text-xs text-white">
+    <div className={`flex items-center gap-2 ${bg} px-3 py-1 text-xs text-white`}>
       <RefreshCw className="h-3 w-3 flex-shrink-0" />
-      <span className="font-medium flex-shrink-0">Sync recovered</span>
-      <span className="text-sky-200 flex-shrink-0">—</span>
-      <span className="text-sky-100 truncate">
+      <span className="font-medium flex-shrink-0">{headline}</span>
+      <span className={`${dot} flex-shrink-0`}>—</span>
+      <span className={`${body} truncate`}>
         {docLabel(event.doc)} {detail}
       </span>
       <div className="ml-auto flex items-center gap-1 flex-shrink-0">
@@ -84,7 +90,9 @@ export function SyncRecoveryBanner({ event, onDismiss }: SyncRecoveryBannerProps
               setVisible(false);
               onDismiss();
             }}
-            className="rounded p-0.5 hover:bg-sky-500/50 transition-colors"
+            className={`rounded p-0.5 transition-colors ${
+              isStall ? "hover:bg-amber-500/50" : "hover:bg-sky-500/50"
+            }`}
             aria-label="Dismiss"
           >
             <X className="h-3 w-3" />

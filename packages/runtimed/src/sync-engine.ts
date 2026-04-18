@@ -250,11 +250,27 @@ function writePath(obj: unknown, path: string[], value: unknown): void {
  * by the time this fires.
  */
 export interface SyncErrorEvent {
-  /** Which doc recovered: the notebook, runtime state, or pool state. */
+  /** Which doc this event is about. */
   doc: "notebook" | "runtime_state" | "pool_state";
+  /**
+   * What the engine did in response:
+   *
+   * - `auto_recovered` — the WASM sync layer rebuilt the doc from
+   *   its snapshot bytes after `receive_sync_message` failed, and
+   *   the engine forwarded the recovery reply. The daemon has
+   *   heard from us; the sync state is repaired.
+   *
+   * - `stall_detected` — the watchdog expired without inbound
+   *   runtime-state traffic. The engine called `reset_sync_state()`
+   *   and scheduled a re-flush, but the daemon may still be wedged.
+   *   Until a later `auto_recovered` or inbound frame lands, sync
+   *   is not known to be healthy — this is *detection*, not
+   *   completion.
+   */
+  kind: "auto_recovered" | "stall_detected";
   /** True when the doc advanced before the error (partial apply). */
   changed: boolean;
-  /** Wall-clock ms of the recovery. */
+  /** Wall-clock ms of the event. */
   ts: number;
 }
 
@@ -306,6 +322,20 @@ export class SyncEngine {
    * re-flush, and emit on `syncErrors$` for the UI banner.
    */
   private runtimeStateStallTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * Generation counter for outbound runtime-state flushes.
+   *
+   * Incremented each time we attempt a flush. The `sendFrame` catch
+   * closure captures the generation at send time and only rolls back
+   * sync state (or clears the watchdog) when the current generation
+   * still matches. Without this, a slow `sendFrame` that rejects
+   * *after* the watchdog already fired a recovery flush would wipe
+   * the recovery's watchdog and cancel its flush — the exact
+   * opposite of what we want in the failure mode the watchdog
+   * exists to handle.
+   */
+  private runtimeStateFlushGen = 0;
   /**
    * Serial queue for async comm emissions.
    *
@@ -683,7 +713,12 @@ export class SyncEngine {
               log.warn("[sync-engine] recovery reply send failed:", err);
             });
         }
-        this._syncErrors$.next({ doc: "notebook", changed: e.changed, ts: Date.now() });
+        this._syncErrors$.next({
+          doc: "notebook",
+          kind: "auto_recovered",
+          changed: e.changed,
+          ts: Date.now(),
+        });
         // If the doc advanced before the error (partial apply),
         // trigger a full materialization so the UI reflects the
         // recovered state. Also complete initial sync if pending.
@@ -717,7 +752,12 @@ export class SyncEngine {
               log.warn("[sync-engine] state recovery reply send failed:", err);
             });
         }
-        this._syncErrors$.next({ doc: "runtime_state", changed: e.changed, ts: Date.now() });
+        this._syncErrors$.next({
+          doc: "runtime_state",
+          kind: "auto_recovered",
+          changed: e.changed,
+          ts: Date.now(),
+        });
         // If the state doc advanced, publish the recovered snapshot
         // so kernel status / queue / execution UI stays current.
         if (e.changed && e.state) {
@@ -891,7 +931,12 @@ export class SyncEngine {
               log.warn("[sync-engine] pool state recovery reply send failed:", err);
             });
         }
-        this._syncErrors$.next({ doc: "pool_state", changed: e.changed, ts: Date.now() });
+        this._syncErrors$.next({
+          doc: "pool_state",
+          kind: "auto_recovered",
+          changed: e.changed,
+          ts: Date.now(),
+        });
         if (e.changed && e.state) {
           this._poolState$.next(e.state as PoolState);
         }
@@ -981,7 +1026,12 @@ export class SyncEngine {
         `${RUNTIME_STATE_STALL_MS}ms) — resetting sync state and re-flushing`,
     );
     handle.reset_sync_state();
-    this._syncErrors$.next({ doc: "runtime_state", changed: false, ts: Date.now() });
+    this._syncErrors$.next({
+      doc: "runtime_state",
+      kind: "stall_detected",
+      changed: false,
+      ts: Date.now(),
+    });
     // Immediately re-flush so the daemon can re-deliver any state it
     // thinks we already have.
     this.flush();
@@ -1121,7 +1171,17 @@ export class SyncEngine {
     const stateMsg = handle.flush_runtime_state_sync();
     if (stateMsg) {
       this.armRuntimeStateStallWatchdog();
+      const gen = ++this.runtimeStateFlushGen;
       this.opts.transport.sendFrame(FrameType.RUNTIME_STATE_SYNC, stateMsg).catch((e: unknown) => {
+        // Only roll back if the generation hasn't advanced. A later
+        // watchdog-triggered recovery flush carries its own gen; a
+        // stale rejection from the hung original must not wipe it.
+        if (gen !== this.runtimeStateFlushGen) {
+          this.opts.logger.debug(
+            "[sync-engine] runtime state sync rejection belongs to a superseded flush; ignoring",
+          );
+          return;
+        }
         this.clearRuntimeStateStallWatchdog();
         handle.cancel_last_runtime_state_flush();
         this.opts.logger.warn("[sync-engine] runtime state sync to relay failed:", e);
@@ -1180,12 +1240,19 @@ export class SyncEngine {
     const stateMsg = handle.flush_runtime_state_sync();
     if (stateMsg) {
       this.armRuntimeStateStallWatchdog();
+      const gen = ++this.runtimeStateFlushGen;
       try {
         await this.opts.transport.sendFrame(FrameType.RUNTIME_STATE_SYNC, stateMsg);
       } catch (e) {
-        this.clearRuntimeStateStallWatchdog();
-        handle.cancel_last_runtime_state_flush();
-        this.opts.logger.warn("[sync-engine] flushAndWait: runtime state sync failed:", e);
+        if (gen === this.runtimeStateFlushGen) {
+          this.clearRuntimeStateStallWatchdog();
+          handle.cancel_last_runtime_state_flush();
+          this.opts.logger.warn("[sync-engine] flushAndWait: runtime state sync failed:", e);
+        } else {
+          this.opts.logger.debug(
+            "[sync-engine] flushAndWait: runtime state rejection superseded; ignoring",
+          );
+        }
       }
     }
 

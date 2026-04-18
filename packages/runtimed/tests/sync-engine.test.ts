@@ -1427,8 +1427,8 @@ describe("SyncEngine", () => {
         const engine = createEngine();
         engine.start();
 
-        const errors: Array<{ doc: string }> = [];
-        engine.syncErrors$.subscribe((e) => errors.push({ doc: e.doc }));
+        const errors: Array<{ doc: string; kind: string }> = [];
+        engine.syncErrors$.subscribe((e) => errors.push({ doc: e.doc, kind: e.kind }));
 
         engine.flush();
         await Promise.resolve();
@@ -1464,8 +1464,8 @@ describe("SyncEngine", () => {
         const engine = createEngine();
         engine.start();
 
-        const errors: Array<{ doc: string }> = [];
-        engine.syncErrors$.subscribe((e) => errors.push({ doc: e.doc }));
+        const errors: Array<{ doc: string; kind: string }> = [];
+        engine.syncErrors$.subscribe((e) => errors.push({ doc: e.doc, kind: e.kind }));
 
         engine.flush();
         await Promise.resolve();
@@ -1474,7 +1474,7 @@ describe("SyncEngine", () => {
         vi.advanceTimersByTime(3_001);
 
         expect(resetSpy).toHaveBeenCalled();
-        expect(errors).toEqual([{ doc: "runtime_state" }]);
+        expect(errors).toEqual([{ doc: "runtime_state", kind: "stall_detected" }]);
         // The re-flush after reset should issue a second
         // `flush_runtime_state_sync`.
         expect(flushSpy).toHaveBeenCalledTimes(2);
@@ -1509,7 +1509,7 @@ describe("SyncEngine", () => {
       }
     });
 
-    it("emits on syncErrors$ for each doc-specific recovery", () => {
+    it("emits auto_recovered on syncErrors$ for each doc-specific recovery", () => {
       handle = createMockHandle({
         receive_frame: vi
           .fn()
@@ -1524,8 +1524,10 @@ describe("SyncEngine", () => {
       const engine = createEngine();
       engine.start();
 
-      const events: Array<{ doc: string; changed: boolean }> = [];
-      engine.syncErrors$.subscribe((e) => events.push({ doc: e.doc, changed: e.changed }));
+      const events: Array<{ doc: string; kind: string; changed: boolean }> = [];
+      engine.syncErrors$.subscribe((e) =>
+        events.push({ doc: e.doc, kind: e.kind, changed: e.changed }),
+      );
 
       transport.deliver([0x00, 0x99]);
       transport.deliver([0x05, 0x99]);
@@ -1533,11 +1535,88 @@ describe("SyncEngine", () => {
       advanceBy(scheduler, 1);
 
       expect(events).toEqual([
-        { doc: "notebook", changed: true },
-        { doc: "runtime_state", changed: false },
-        { doc: "pool_state", changed: true },
+        { doc: "notebook", kind: "auto_recovered", changed: true },
+        { doc: "runtime_state", kind: "auto_recovered", changed: false },
+        { doc: "pool_state", kind: "auto_recovered", changed: true },
       ]);
       engine.stop();
+    });
+
+    it("emits stall_detected (not auto_recovered) when the watchdog fires", async () => {
+      vi.useFakeTimers();
+      try {
+        handle = createMockHandle({
+          flush_runtime_state_sync: vi
+            .fn()
+            .mockReturnValueOnce(new Uint8Array([0x01]))
+            .mockReturnValueOnce(new Uint8Array([0x02])),
+        });
+        vi.spyOn(transport, "sendFrame").mockResolvedValue(undefined as unknown as void);
+        const engine = createEngine();
+        engine.start();
+
+        const events: Array<{ kind: string }> = [];
+        engine.syncErrors$.subscribe((e) => events.push({ kind: e.kind }));
+
+        engine.flush();
+        await Promise.resolve();
+        vi.advanceTimersByTime(3_001);
+
+        // Only the stall_detected event: the banner should read "stalled,
+        // retrying" rather than a misleading "recovered" before the retry
+        // has actually been acknowledged.
+        expect(events).toEqual([{ kind: "stall_detected" }]);
+        engine.stop();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("ignores late sendFrame rejection from a superseded runtime-state flush", async () => {
+      vi.useFakeTimers();
+      try {
+        handle = createMockHandle({
+          flush_runtime_state_sync: vi
+            .fn()
+            .mockReturnValueOnce(new Uint8Array([0x01]))
+            .mockReturnValueOnce(new Uint8Array([0x02])),
+        });
+        let rejectFirst: (err: unknown) => void = () => {};
+        const firstPromise = new Promise<void>((_resolve, reject) => {
+          rejectFirst = reject;
+        });
+        const sendSpy = vi
+          .spyOn(transport, "sendFrame")
+          .mockImplementationOnce(() => firstPromise)
+          .mockResolvedValue(undefined as unknown as void);
+        const engine = createEngine();
+        engine.start();
+
+        engine.flush();
+        await Promise.resolve();
+
+        // Watchdog fires while the first sendFrame is still hung —
+        // runtime-state flush generation advances inside the retry.
+        vi.advanceTimersByTime(3_001);
+        // Recovery flush should have been issued.
+        expect(sendSpy).toHaveBeenCalledTimes(2);
+
+        // NOW the stale sendFrame rejects. If the catch blindly ran,
+        // it would clear the recovery's watchdog and roll back its
+        // flush. Generation check should make it a no-op.
+        rejectFirst(new Error("pipe closed — stale"));
+        await Promise.resolve();
+        await Promise.resolve();
+
+        // Retry's cancel was NOT called (once from the original nothing,
+        // or never). reset_sync_state was called exactly once (by the
+        // watchdog). The recovery's watchdog is still live, so no extra
+        // stall_detected should fire inside 1ms.
+        expect(handle.cancel_last_runtime_state_flush).not.toHaveBeenCalled();
+        engine.stop();
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 
