@@ -148,6 +148,26 @@ describe("WidgetUpdateManager", () => {
       expect(manager.isEchoOfPendingWrite("comm-1", "value", [1, 2, 4])).toBe(false);
     });
 
+    it("recognizes older in-flight values as echoes during rapid bursts", () => {
+      // A rapid drag writes 10 → 11 → 12 inside one throttle window.
+      // projectLocalState fires a microtask per writer call, so the
+      // projection of 10 (from the leading-edge CRDT write) can land
+      // after the store is already at 12. The filter must still
+      // recognize the 10 echo as ours, not treat it as authoritative.
+      const { manager } = setup();
+
+      manager.updateAndPersist("comm-1", { value: 10 });
+      manager.updateAndPersist("comm-1", { value: 11 });
+      manager.updateAndPersist("comm-1", { value: 12 });
+
+      expect(manager.isEchoOfPendingWrite("comm-1", "value", 10)).toBe(true);
+      expect(manager.isEchoOfPendingWrite("comm-1", "value", 11)).toBe(true);
+      expect(manager.isEchoOfPendingWrite("comm-1", "value", 12)).toBe(true);
+      // Authoritative values (kernel validator, peer edit) not in
+      // the history still pass through.
+      expect(manager.isEchoOfPendingWrite("comm-1", "value", 99)).toBe(false);
+    });
+
     it("clears pending-key marks after the TTL elapses", () => {
       const { manager } = setup();
 

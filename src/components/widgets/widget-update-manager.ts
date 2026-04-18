@@ -54,9 +54,7 @@ interface CommThrottleState {
 const PENDING_TTL_MS = 500;
 
 interface PendingValue {
-  /** The exact value we last wrote locally for this key. */
-  value: unknown;
-  /** Cached JSON serialization of `value` for cheap equality. */
+  /** Cached JSON serialization of the value we wrote. */
   json: string;
   /** Wall-clock ms when the write happened. */
   ts: number;
@@ -74,16 +72,23 @@ export class WidgetUpdateManager {
   private throttles = new Map<string, CommThrottleState>();
 
   /**
-   * Per-comm per-key record of the last value we wrote locally
-   * and when. Consulted by the App-level `commChanges$` subscriber
-   * via `isEchoOfPendingWrite`: a projected value matching what we
-   * just wrote is dropped as a stale echo of our own in-flight
-   * write. A projected value *differing* from our pending value is
-   * treated as authoritative (kernel validator, peer edit, etc.)
-   * and still applied — so a clamped or collaboratively-updated
-   * key can't get stuck on the optimistic local value.
+   * Per-comm per-key history of values we've written locally within
+   * the TTL window. Consulted by the App-level `commChanges$`
+   * subscriber via `isEchoOfPendingWrite`: a projected value that
+   * matches *any* recent local write is dropped as a stale echo of
+   * our own in-flight writes. A projected value that doesn't
+   * appear in the history is authoritative (kernel validator clamp,
+   * peer edit) and still applied.
+   *
+   * We must remember the whole recent history, not just the latest
+   * value: `projectLocalState()` runs synchronously after the writer
+   * call, but the `commChanges$` emission it produces lands on a
+   * microtask. A rapid burst can walk the pending value from 10 →
+   * 11 → 12 before the leading-edge projection of 10 is handled; a
+   * latest-only check would misclassify that queued echo as
+   * authoritative and snap the UI backward.
    */
-  private pendingKeys = new Map<string, Map<string, PendingValue>>();
+  private pendingKeys = new Map<string, Map<string, PendingValue[]>>();
 
   /**
    * Patches that arrived before the CRDT writer was registered.
@@ -99,30 +104,40 @@ export class WidgetUpdateManager {
 
   /**
    * Is the projected `candidate` value for `(commId, key)` a stale
-   * echo of a local write we just made? Returns true only when the
-   * candidate matches the most recently written local value within
-   * the TTL. A mismatch indicates the daemon or a peer authoritatively
-   * changed the key (e.g., kernel validator clamp, another tab's edit)
-   * and the caller should still apply the update.
+   * echo of any local write we made within the TTL? True for any
+   * value that appears in our recent write history for this key.
+   * A candidate that doesn't appear in the history is treated as
+   * authoritative — kernel validator clamp, peer edit, etc. — and
+   * the caller still applies it.
    */
   isEchoOfPendingWrite(commId: string, key: string, candidate: unknown): boolean {
     const keys = this.pendingKeys.get(commId);
     if (!keys) return false;
-    const entry = keys.get(key);
-    if (!entry) return false;
-    if (Date.now() - entry.ts > PENDING_TTL_MS) {
+    const history = keys.get(key);
+    if (!history || history.length === 0) return false;
+
+    const cutoff = Date.now() - PENDING_TTL_MS;
+    let i = 0;
+    while (i < history.length && history[i].ts < cutoff) i++;
+    if (i > 0) history.splice(0, i);
+    if (history.length === 0) {
       keys.delete(key);
       if (keys.size === 0) this.pendingKeys.delete(commId);
       return false;
     }
-    if (entry.value === candidate) return true;
+
+    let candidateJson: string;
     try {
-      return JSON.stringify(candidate) === entry.json;
+      candidateJson = JSON.stringify(candidate);
     } catch {
       // Non-serializable candidate → can't confirm it's our echo; err
       // on the side of applying the update.
       return false;
     }
+    for (const entry of history) {
+      if (entry.json === candidateJson) return true;
+    }
+    return false;
   }
 
   private markPending(commId: string, patch: Record<string, unknown>): void {
@@ -142,7 +157,20 @@ export class WidgetUpdateManager {
         // write, which is benign.
         continue;
       }
-      keys.set(key, { value, json, ts: now });
+      let history = keys.get(key);
+      if (!history) {
+        history = [];
+        keys.set(key, history);
+      }
+      // Dedup: if we just wrote the same value, bump the timestamp
+      // rather than growing the list. Keeps a quick AB-AB toggle
+      // from ballooning the history.
+      const last = history[history.length - 1];
+      if (last && last.json === json) {
+        last.ts = now;
+      } else {
+        history.push({ json, ts: now });
+      }
     }
   }
 
