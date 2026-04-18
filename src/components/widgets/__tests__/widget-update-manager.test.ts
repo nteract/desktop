@@ -160,12 +160,28 @@ describe("WidgetUpdateManager", () => {
       manager.updateAndPersist("comm-1", { value: 11 });
       manager.updateAndPersist("comm-1", { value: 12 });
 
+      // consume-on-match: each call drains the matching entry.
       expect(manager.isEchoOfPendingWrite("comm-1", "value", 10)).toBe(true);
       expect(manager.isEchoOfPendingWrite("comm-1", "value", 11)).toBe(true);
       expect(manager.isEchoOfPendingWrite("comm-1", "value", 12)).toBe(true);
       // Authoritative values (kernel validator, peer edit) not in
       // the history still pass through.
       expect(manager.isEchoOfPendingWrite("comm-1", "value", 99)).toBe(false);
+    });
+
+    it("consumes matches so a peer writing the same value afterward lands", () => {
+      // Collaborative case: we write 10, our own echo arrives and
+      // gets consumed. If a peer later writes 10 as an authoritative
+      // update, it must not be suppressed — history is already
+      // empty once our own echo has been absorbed.
+      const { manager } = setup();
+
+      manager.updateAndPersist("comm-1", { value: 10 });
+      // First call represents our own projected echo.
+      expect(manager.isEchoOfPendingWrite("comm-1", "value", 10)).toBe(true);
+      // Second call represents a peer write of the same value — not
+      // suppressed because the matching entry was consumed.
+      expect(manager.isEchoOfPendingWrite("comm-1", "value", 10)).toBe(false);
     });
 
     it("clears pending-key marks after the TTL elapses", () => {

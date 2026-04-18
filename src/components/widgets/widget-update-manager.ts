@@ -103,12 +103,21 @@ export class WidgetUpdateManager {
   }
 
   /**
-   * Is the projected `candidate` value for `(commId, key)` a stale
-   * echo of any local write we made within the TTL? True for any
-   * value that appears in our recent write history for this key.
-   * A candidate that doesn't appear in the history is treated as
-   * authoritative — kernel validator clamp, peer edit, etc. — and
-   * the caller still applies it.
+   * Consume-and-match: is the projected `candidate` value for
+   * `(commId, key)` a stale echo of any local write we made within
+   * the TTL? Returns true for any value that appears in our recent
+   * write history — and removes the matched entry, so the same
+   * value can only absorb one echo.
+   *
+   * The consume step matters for collaborative correctness: if
+   * another peer happens to write the same value we recently wrote,
+   * only the first emission carrying that value is treated as our
+   * echo. The peer's subsequent emission (or a re-write of the same
+   * value) falls through and lands in the store.
+   *
+   * Candidates that never appeared in the history — kernel
+   * validator clamp, peer edit with a different value — are
+   * applied unchanged.
    */
   isEchoOfPendingWrite(commId: string, key: string, candidate: unknown): boolean {
     const keys = this.pendingKeys.get(commId);
@@ -117,9 +126,9 @@ export class WidgetUpdateManager {
     if (!history || history.length === 0) return false;
 
     const cutoff = Date.now() - PENDING_TTL_MS;
-    let i = 0;
-    while (i < history.length && history[i].ts < cutoff) i++;
-    if (i > 0) history.splice(0, i);
+    let firstLive = 0;
+    while (firstLive < history.length && history[firstLive].ts < cutoff) firstLive++;
+    if (firstLive > 0) history.splice(0, firstLive);
     if (history.length === 0) {
       keys.delete(key);
       if (keys.size === 0) this.pendingKeys.delete(commId);
@@ -134,8 +143,15 @@ export class WidgetUpdateManager {
       // on the side of applying the update.
       return false;
     }
-    for (const entry of history) {
-      if (entry.json === candidateJson) return true;
+    for (let i = 0; i < history.length; i++) {
+      if (history[i].json === candidateJson) {
+        history.splice(i, 1);
+        if (history.length === 0) {
+          keys.delete(key);
+          if (keys.size === 0) this.pendingKeys.delete(commId);
+        }
+        return true;
+      }
     }
     return false;
   }
@@ -297,6 +313,13 @@ export class WidgetUpdateManager {
   private drainBootstrap(writer: CrdtCommWriter): void {
     if (this.bootstrapQueue.size === 0) return;
     for (const [commId, patch] of this.bootstrapQueue) {
+      // Mark the bootstrap value as a pending local write BEFORE
+      // firing the writer. `projectLocalState` will schedule a
+      // microtask emission for this value — without the mark, that
+      // emission would be treated as authoritative and could roll
+      // the store back from a newer user value written after
+      // bootstrap.
+      this.markPending(commId, patch);
       writer(commId, patch);
     }
     this.bootstrapQueue.clear();
