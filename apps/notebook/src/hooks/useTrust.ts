@@ -1,26 +1,16 @@
-import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { useNotebookHost } from "@nteract/notebook-host";
+import type { TrustInfo, TyposquatWarning } from "@nteract/notebook-host";
 import { useCallback, useEffect, useState } from "react";
 import { logger } from "../lib/logger";
 import { useRuntimeState } from "../lib/runtime-state";
 
+export type { TrustInfo, TyposquatWarning };
+
 /** Trust status from the backend */
-export type TrustStatusType = "trusted" | "untrusted" | "signature_invalid" | "no_dependencies";
-
-export interface TrustInfo {
-  status: TrustStatusType;
-  uv_dependencies: string[];
-  conda_dependencies: string[];
-  conda_channels: string[];
-}
-
-export interface TyposquatWarning {
-  package: string;
-  similar_to: string;
-  distance: number;
-}
+export type TrustStatusType = TrustInfo["status"];
 
 export function useTrust() {
+  const host = useNotebookHost();
   const runtimeState = useRuntimeState();
   const runtimeTrustNeedsApproval = runtimeState.trust.needs_approval;
 
@@ -34,15 +24,13 @@ export function useTrust() {
     setLoading(true);
     setError(null);
     try {
-      const info = await invoke<TrustInfo>("verify_notebook_trust");
+      const info = await host.trust.verify();
       setTrustInfo(info);
 
       // Check for typosquats in all dependencies
       const allDeps = [...info.uv_dependencies, ...info.conda_dependencies];
       if (allDeps.length > 0) {
-        const warnings = await invoke<TyposquatWarning[]>("check_typosquats", {
-          packages: allDeps,
-        });
+        const warnings = await host.deps.checkTyposquats(allDeps);
         setTyposquatWarnings(warnings);
       } else {
         setTyposquatWarnings([]);
@@ -61,14 +49,14 @@ export function useTrust() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [host]);
 
   // Approve the notebook (sign dependencies)
   const approveTrust = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      await invoke("approve_notebook_trust");
+      await host.trust.approve();
       // Re-check trust status after approval
       await checkTrust();
       return true;
@@ -80,7 +68,7 @@ export function useTrust() {
     } finally {
       setLoading(false);
     }
-  }, [checkTrust]);
+  }, [host, checkTrust]);
 
   // Check trust on mount
   useEffect(() => {
@@ -90,14 +78,10 @@ export function useTrust() {
   // Re-check trust when daemon (re)connects — handles the startup race where
   // the initial mount-time check fires before the relay handle is stored.
   useEffect(() => {
-    const webview = getCurrentWebview();
-    const unlistenReady = webview.listen("daemon:ready", () => {
+    return host.daemonEvents.onReady(() => {
       checkTrust();
     });
-    return () => {
-      unlistenReady.then((unlisten) => unlisten()).catch(() => {});
-    };
-  }, [checkTrust]);
+  }, [host, checkTrust]);
 
   // Computed properties
   const isTrusted = trustInfo?.status === "trusted" || trustInfo?.status === "no_dependencies";
