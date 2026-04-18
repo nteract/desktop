@@ -45,6 +45,7 @@
     "rehype-raw": "^7.0.0",
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
+    "@nteract/notebook-host": "workspace:*",
     "runtimed": "workspace:*",
     "rxjs": "^7.8.2",
     "tailwind-merge": "^3.4.0"

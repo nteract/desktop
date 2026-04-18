@@ -1,8 +1,11 @@
+import { NotebookHostProvider } from "@nteract/notebook-host";
+import { createTauriHost } from "@nteract/notebook-host/tauri";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import "./index.css";
 import { IsolatedRendererProvider } from "@/components/isolated/isolated-renderer-context";
+import { TauriTransport } from "./lib/tauri-transport";
 
 // Register built-in widget components
 import "@/components/widgets/controls";
@@ -21,10 +24,19 @@ const loadRendererBundle = async () => {
   return { rendererCode, rendererCss };
 };
 
+// Tauri host is constructed once at boot — every host-platform side
+// effect flows through it (see @nteract/notebook-host types). The
+// transport here is a dedicated instance for the host; the existing
+// useAutomergeNotebook + NotebookClient transports are migrated to use
+// `host.transport` in a follow-up PR.
+const host = createTauriHost({ transport: new TauriTransport() });
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <IsolatedRendererProvider loader={loadRendererBundle}>
-      <App />
-    </IsolatedRendererProvider>
+    <NotebookHostProvider host={host}>
+      <IsolatedRendererProvider loader={loadRendererBundle}>
+        <App />
+      </IsolatedRendererProvider>
+    </NotebookHostProvider>
   </StrictMode>,
 );

@@ -1,0 +1,30 @@
+{
+  "name": "@nteract/notebook-host",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./tauri": "./src/tauri/index.ts"
+  },
+  "dependencies": {
+    "runtimed": "workspace:*"
+  },
+  "peerDependencies": {
+    "@tauri-apps/api": "^2.10.0",
+    "@tauri-apps/plugin-dialog": "^2.6.0",
+    "@tauri-apps/plugin-log": "^2.8.0",
+    "@tauri-apps/plugin-shell": "^2.3.0",
+    "@tauri-apps/plugin-updater": "^2.10.0",
+    "react": "^19.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@tauri-apps/api": { "optional": true },
+    "@tauri-apps/plugin-dialog": { "optional": true },
+    "@tauri-apps/plugin-log": { "optional": true },
+    "@tauri-apps/plugin-shell": { "optional": true },
+    "@tauri-apps/plugin-updater": { "optional": true }
+  }
+}
