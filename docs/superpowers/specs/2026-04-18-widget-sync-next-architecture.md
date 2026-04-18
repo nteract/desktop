@@ -70,32 +70,47 @@ modes visible:
   `reset_sync_state()` and re-flushes.
 
 Real-world repro confirms the watchdog catches the stall class. It
-does **not** fully recover from it — `reset_sync_state()` rewinds
-`sent_hashes` on the client, but the user's evidence shows the
-watchdog firing every 3s in a loop, which means the underlying
-transport is wedged at a level client-side reset can't repair. The
-banner narrows the user's gap from "is it stuck?" to "yes, stuck —
-reload." Real recovery is out of scope for that PR.
+does **not** fully recover from it — `reset_sync_state()` rebuilds
+`sync::State` for all three docs (sent hashes and bloom filter are
+implicitly rebuilt with it), but the user's evidence shows the
+watchdog firing every 3s in a loop. Rebuilding sync state doesn't
+help when the underlying channel isn't delivering in the first
+place. The banner narrows the user's gap from "is it stuck?" to
+"yes, stuck — reload." Real recovery is out of scope for that PR.
 
 ## Where we've been fighting Automerge
 
 Honest assessment of why the above composes poorly:
 
-1. **Reinvented authorship detection.** Automerge knows which actor
-   wrote which op. The entire `isEchoOfPendingWrite` / pending-value
-   TTL / consume-on-match machinery exists because we look at merged
-   state and try to reconstruct "was this my write or a peer's?"
-   The answer is recorded at the change level — we just aren't
-   asking.
+1. **Reinvented authorship detection.** On current main,
+   `WidgetUpdateManager.shouldSuppressEcho` is a set membership
+   check on `optimisticKeys` — ~15 lines of filter. It's small
+   today, and it works for the happy path. What the #1880
+   review threads demonstrated is what that filter grows into
+   under load: the trajectory was `optimisticKeys` → pending-value
+   tracking → value-history (microtask race) → consume-on-match
+   (peer collaboration) → direct-writer hooks (anywidget) →
+   buffer/throttle ordering. Each step was defensible individually;
+   the aggregate was ~100 lines of reconciliation machinery
+   reinventing authorship detection from merged state.
 
-2. **Reinvented heads gossip with a timeout proxy.** Automerge's
-   sync protocol is structured around `heads`. Silent-drop detection
-   in that model is: "I announced my heads moved to X; your next
-   heads report still doesn't reach X → you didn't get my change."
-   Our watchdog times out on "any inbound frame" — a proxy signal
-   that false-positives in converged-idle state (as codex round 2
-   noted and the real-world log shows by firing every 3s without
-   recovery converging).
+   Automerge already records authorship at the change level. The
+   filter keeps growing corners because we're looking at merged
+   JSON and reconstructing what the CRDT already knows. The fix
+   isn't to make the filter smarter — it's to stop needing it.
+
+2. **Watchdog times out on a proxy signal.** Our watchdog arms on
+   any outbound runtime-state flush and clears on any inbound
+   runtime-state frame. Neither edge of that bound is tightly
+   correlated with "did the peer actually receive what I sent."
+   The false-positive shape (fire on converged-idle) is well
+   understood; the false-*negative* shape matters more here — the
+   real-world repro shows the watchdog firing every 3s while
+   recovery never converges, because the signal we're timing out on
+   ("inbound traffic") isn't the signal we care about ("my change
+   was received"). See investigation (2) for one way to close that
+   gap, and the caveat there about whether it's worth the surface
+   area.
 
 3. **Three sync protocols, three recovery paths.** NotebookDoc,
    RuntimeStateDoc, PoolDoc each have their own `sent_hashes`, their
@@ -173,101 +188,147 @@ A new implementer should be able to reproduce the stall and then:
 
 ## Proposed investigations
 
-Three directions, orthogonal to each other. Any can be pursued
-independently; none require the others.
+Four items. Investigation 0 is a 30-minute experiment that gates
+the scope of (2) and (3). Investigation 1 is high-leverage on its
+own regardless of 0's result.
+
+### 0. Confirm the listener-death diagnosis
+
+Before committing to a reconnect primitive or a heads-gossip
+protocol, run one experiment: wrap the `listen("notebook:frame")`
+callback in `apps/notebook/src/lib/tauri-transport.ts` with a
+`try / catch` that logs to `console.error` and reproduces the
+stall.
+
+- If an exception shows up in the log right before the stall,
+  the diagnosis holds and (3) is the right shape. The specific
+  exception also tells you the malformed-frame or decoder
+  assertion to harden against.
+- If no exception appears and the listener still stops delivering,
+  the theory is wrong. (3) would be building a reconnect for the
+  wrong problem; revise from there.
+
+This is cheap and de-risks the larger investigations. Do it first.
+
+**Where to look:**
+- `apps/notebook/src/lib/tauri-transport.ts` — the `listen`
+  callback currently has no `try / catch`; frame decoding happens
+  downstream in WASM which has its own error handling, but any
+  exception between `listen` and the WASM call will unregister the
+  listener silently.
 
 ### 1. Actor-ID-based echo detection
 
-**Thesis:** the widget write path's complexity is entirely in
-reconstructing authorship. Automerge has actor IDs. Use them.
+**Thesis:** the widget write path's complexity is in reconstructing
+authorship. Automerge has actor IDs. Use them.
 
 Sketch:
 
-- Each frontend window gets a stable actor ID (we effectively already
-  have one — it's baked into every Automerge op it generates).
-- When `commChanges$` emits an updated comm, inspect the change
-  metadata for each affected key: was the last op from *our* actor
-  ID?
-- If yes, it's our echo — the local store already has this value
-  (we just wrote it). Skip.
-- If no, it's an authoritative remote write (daemon, peer, kernel
-  validator). Apply.
-- Delete: `pendingKeys`, `markPending`, `isEchoOfPendingWrite`,
-  `recordLocalWrite`, `diffResolvedState`'s pending hook, the whole
-  value-history TTL + consume-on-match dance.
-- Keep: per-tick local store mirror for UI responsiveness. Keep:
+- Each frontend window gets a stable actor ID (already baked into
+  every Automerge op it generates).
+- For each key in a projected comm update, ask the CRDT: what's
+  the actor of the most recent op on this key?
+- If it's our actor, the change originated here — local store
+  already has it (we just wrote it). Skip.
+- If it's a different actor, it's an authoritative write (daemon,
+  peer, kernel validator). Apply.
+- Delete: `optimisticKeys`, `shouldSuppressEcho`, and the whole
+  category of bookkeeping #1880 tried to make defensible.
+- Keep: per-tick local store mirror for UI responsiveness; keep
   throttled outbound CRDT writes for flood control.
 
 **Where to look:**
-- `crates/runtimed-wasm/src/lib.rs` — currently exposes `resolve_comm_state`
-  which produces merged output state. Would need a richer emission
-  that carries per-key actor info, or a separate query
-  ("what's the last actor for key K on comm C?").
-- `packages/runtimed/src/comm-diff.ts` — today diffs full-comm state
-  JSON. With actor info per key, this becomes a principled diff.
-- `packages/runtimed/src/sync-engine.ts` — `projectComms` is where
-  the actor check would land in the emission path.
+- `crates/notebook-doc/` — the attribution code already walks
+  `Change::actor_id()` (see attribution plumbing). The same primitive
+  extended to "most-recent actor per comm key" is a small addition,
+  not new territory.
+- `crates/runtimed-wasm/src/lib.rs` — needs a new export, either a
+  richer `resolve_comm_state` that carries per-key actor info in
+  the result, or a standalone `get_comm_authorship(comm_id)` map.
+- `packages/runtimed/src/comm-diff.ts` — **structural change**:
+  today this diffs whole-comm state JSON (`comm-diff.ts:146-191`).
+  Per-key actor checks require a per-key diff. Downstream
+  subscribers of `commChanges$` will feel this change; expect to
+  touch the emission shape, not just add a hook.
+- `src/components/widgets/link-subscriptions.ts` — **not gated on
+  this refactor**. jslink is pure local-store sync and doesn't
+  touch the CRDT. Don't let this investigation conflate the two.
+
+**Rust-forward angle:** the authorship query belongs in
+`notebook-doc` / `runtimed-wasm` regardless of who consumes it. A
+`get_comm_authorship` Rust API gives both the WASM binding (for
+the notebook frontend) and `runt mcp` (for agent tooling that
+wants to know "who wrote this widget state") the same answer from
+the same code path. This fits the pattern repr-llm, sift-wasm, and
+nteract-predicate already use: one Rust crate serving WASM and MCP
+symmetrically.
 
 **Why it's worth it:**
-- Removes the pending-write filter, which is the machinery that kept
-  growing corners through PR #1880's review rounds.
-- Handles collaborative peers correctly by construction. Two peers
-  writing the same value concurrently is no longer ambiguous — their
-  actor IDs differ.
-- No TTL. No microtask ordering. No "first match consumed." Just
-  a direct authorship check.
+- Deletes the machinery that kept growing corners through #1880.
+- Handles collaborative peers correctly by construction — two
+  peers writing the same value concurrently have different actor
+  IDs, no ambiguity.
+- No TTL, no microtask ordering, no consume-on-match. Direct
+  authorship check.
+- Useful beyond the notebook frontend: MCP gets the same
+  information for free.
 
-**Risk to investigate:** how expensive is it to query the most-recent
-actor for a key? Automerge-core has this; the WASM surface may need
-extension. If it's cheap enough to do per-emission, the whole design
-simplifies. If not, we'd need a subscription-style API.
+**Risks to investigate:**
+- How expensive is "most-recent actor for a key"? Automerge-core
+  has this (attribution code walks it), but the cost profile for
+  per-emission use isn't characterized.
+- `automerge` 0.8 has `get_changes(from_heads)` but not
+  `get_changes_added` — which API shape you land on affects how
+  the per-key query composes.
+- The comm-diff restructure is not purely additive; it's
+  structural. Budget for that.
 
-### 2. Heads-gossip for stall detection
+### 2. Heads-gossip for stall detection (speculative)
 
-**Thesis:** the stall watchdog should be structured around actual
-sync progress, not a timeout on proxy traffic.
+**Thesis:** the stall watchdog should signal on actual sync
+progress, not a proxy.
 
 Sketch:
 
-- Both peers (frontend, daemon) periodically publish their current
-  heads for each doc — notebook, runtime-state, pool. Cheap: a
-  heartbeat frame every 1–2 s carrying three hashes.
+- Both peers periodically publish current heads for each doc.
 - Frontend tracks: "last I announced my heads moved to X"
   + "last I saw peer's heads were Y."
-- Stall detection: when we announce heads moving to X, if the
-  peer's next heartbeat still shows their heads not including X,
-  the change we sent was dropped.
-- Recovery is then targeted: identify the change the peer is missing,
-  re-send those specific changes (`Automerge.getChangesAdded(theirs, ours)`).
-- No per-doc watchdog timer. No "any inbound frame" proxy. The
-  signal is the thing we actually care about: "did the peer receive
-  what we sent."
+- Divergence over a window → silent-drop detected.
+- Recovery: re-send the specific changes the peer is missing via
+  `get_changes(from_heads)`.
 
-**Where to look:**
-- `crates/runtimed-wasm/src/lib.rs` — would need to expose
-  `get_heads()` and `get_changes_added(heads)` per doc.
-- `crates/runtimed/src/notebook_sync_server.rs` — daemon-side would
-  symmetrically announce heads.
-- `packages/runtimed/src/transport.ts` — new frame type
-  `HEADS_ANNOUNCE` with `{doc_kind, heads[]}`.
-- automerge-repo's `DocSynchronizer` is the closest prior art for
-  this model (heads-based with retry). Worth reading even if we
-  don't adopt the library wholesale.
+**Important caveats before building this:**
 
-**Why it's worth it:**
-- Detects the exact failure mode we care about: "sent but not
-  received." Does not false-positive on converged-idle (the peer's
-  heads match; no stall).
-- Works uniformly for all three docs. No doc-specific watchdog code.
-- Recovery can be surgical — re-send the specific changes the peer
-  is missing — instead of the sledgehammer `reset_sync_state()`.
-- Detects the class of bug `reset_sync_state()` can't fix: a wedged
-  transport that accepts our frames but doesn't deliver them. Heads
-  gossip would show the daemon's heads flatlining while ours advance.
+- **Not standard Automerge.** Sync messages carry heads, but
+  periodic out-of-band gossip is a design choice, not a convention.
+  `samod` (automerge-repo's Rust port) has a `RemoteHeadsChanged`
+  wire message and deliberately drops it in `samod-core` —
+  it's reserved for persistent-storage coordination, not
+  liveness probing. If we build heads-gossip we'd be originating
+  the pattern, not adopting it.
+- **Rides the same dead pipe as the thing it's detecting.** If the
+  Tauri listener is dead (the diagnosed failure mode), the daemon's
+  heads announcement can't arrive either. Heads-gossip detects the
+  stall faster than the 3s watchdog, but detection speed was never
+  the gap — recovery was, and (3) addresses that directly.
+- **Rust-forward framing cuts against this one.** The current
+  sketch is frontend-authored timers + new frame types in both
+  Rust and JS. If we do build a liveness probe, it should be a
+  daemon-side "am I caught up with peer X's heads?" query exposed
+  through both WASM and MCP — not a frontend-originated heartbeat.
 
-**Risk to investigate:** heartbeat bandwidth. Three hashes every 1–2s
-per window is small but non-zero. Could be adaptive — faster when
-there's in-flight traffic, slow when idle.
+**Recommendation:** defer this until (0) + (1) + (3) land. If the
+stall class is genuinely solved by listener reconnect + actor-ID
+echo detection, the remaining need for liveness detection is
+small and can be satisfied by something simpler (e.g., "no frames
+in 5s → try reconnecting" without heads).
+
+**If built anyway, where to look:**
+- `crates/runtimed-wasm/src/lib.rs` — would need `get_heads()` and
+  a per-doc change export (note: `automerge` 0.8 has
+  `get_changes(from_heads)` not `get_changes_added`).
+- automerge-repo's `DocSynchronizer` for prior art on heads-based
+  sync — reference only.
 
 ### 3. Escalating recovery with a reconnect primitive
 
@@ -291,41 +352,58 @@ Proposed recovery hierarchy:
 | Heads diverged + reset didn't help after N rounds | Tear down the `listen("notebook:frame")` handler; re-register it; re-handshake from the daemon's current heads | moderate — full sync round, but no UI state loss |
 | Reconnect failed or listener won't re-register | Surface "Reload notebook" in the banner with a one-click reload button | last resort; user loses nothing meaningful (CRDT is durable) |
 
-The third level is the new primitive. It's the missing piece: a
-webview-scoped reconnect that doesn't require the user to reload
-the whole window. Implementation would look roughly like:
+The third level is the missing recovery step. It's also cheaper
+than it first looks — the building blocks already exist:
 
-- Unlisten the current `notebook:frame` handler.
-- Call a new Tauri command — say `resubscribe_to_daemon_frames` —
-  that tears down and rebuilds the per-window frame subscription on
-  the Rust side.
-- Re-register the listener with a fresh callback.
-- Ask the daemon for its current heads for all three docs, compare
-  to ours, and do a fresh sync round.
+- `TauriTransport.disconnect()` already unlistens the
+  `notebook:frame` handler.
+- `SyncEngine.start()` already re-registers the listener via the
+  transport and reinitializes the sync pipeline.
+- `SyncEngine.resetForBootstrap()` already clears engine-side state
+  that would be stale across a reconnect.
+
+So this investigation is largely about **wiring** these existing
+primitives to a new trigger, plus making sure the listener can be
+cleanly re-registered for the same event on the same window.
+
+Implementation sketch:
+
+- New signal on escalation (N consecutive stall_detected events,
+  or a one-shot "Reconnect" action in the banner).
+- Call `transport.disconnect()`; `engine.stop()`.
+- Instantiate a fresh transport (or reset the existing one's
+  listener state); `engine.start()` to re-register.
+- On the WASM handle: `reset_sync_state()` so the next flush does
+  a full handshake from the daemon's current heads.
 
 **Where to look:**
-- `apps/notebook/src/lib/tauri-transport.ts` — where `listen` is
-  called; needs an unlisten + relisten primitive.
-- `crates/notebook/src/lib.rs` — the Tauri command side; would need
-  a new command symmetric to `reconnect_to_daemon` but scoped per
-  window / per subscription rather than per daemon connection.
+- `apps/notebook/src/lib/tauri-transport.ts` — contains the `listen`
+  call and `disconnect`. Add explicit handler-exception trapping
+  here (investigation 0's experiment graduates to production
+  hardening).
 - `packages/runtimed/src/sync-engine.ts` — `resetForBootstrap`
-  already exists; this is the same shape of reset, driven by a new
-  signal.
+  is the same shape of reset already driven by `daemon:ready`.
+  Reuse rather than build anew.
+- `apps/notebook/src/components/SyncRecoveryBanner.tsx` — an
+  escalated state with a "Reconnect" button wired to the trigger.
 
 **Why it's worth it:**
-- Eliminates the reload requirement for the failure mode we know
-  exists (listener death on a still-healthy daemon).
-- Works with (2) — heads gossip gives the unambiguous "inbound is
-  dead" trigger that moves us up the escalation hierarchy.
+- Eliminates the reload requirement for the failure mode we
+  actually observed (listener death on a still-healthy daemon).
+- Reuses the existing `disconnect` + `start` + `resetForBootstrap`
+  infrastructure — small code footprint for a big user-visible win.
 - The watchdog in PR #1881 becomes level 2 of the hierarchy rather
   than the terminal recovery.
+- Tauri-specific and not shared with `runt mcp` (which uses a
+  different transport entirely) — that's fine; this investigation
+  has no useful MCP angle.
 
-**Risk to investigate:** does Tauri actually support cleanly tearing
-down and rebuilding a `listen` handler for the same event name on
-the same window? If there's a hidden reference cycle or the drop
-doesn't fully release the underlying subscription, the "reconnect"
-would silently layer a new listener on top of the dead one.
+**Risk to investigate:** does Tauri cleanly release the underlying
+subscription when an `unlisten` promise resolves? If there's a
+hidden reference cycle or the drop doesn't fully release, the
+"reconnect" could silently layer a new listener on top of the
+dead one. Verify with the listener-counter instrumentation from
+investigation 0.
 
 ## What not to revisit
 
@@ -378,6 +456,19 @@ observability primitives (abort hung fetches, log subscriber errors)
 and the recovery banner are small and useful as-is; the watchdog
 itself is exactly what investigation (2) replaces, and the pending-
 write filter is exactly what investigation (1) replaces.
+
+## Recommended ordering
+
+- **Do (0) first.** 30 minutes. Confirms or kills the
+  listener-death theory and sizes (3).
+- **Do (1) regardless.** It stops the reconciliation-filter drift
+  and lands a shared Rust API that benefits both the notebook
+  frontend and `runt mcp`. Independent of what (0) finds.
+- **Do (3) if (0) confirmed.** Uses mostly existing primitives;
+  modest implementation surface for a real recovery path.
+- **Defer (2).** Speculative and rides the same dead pipe as the
+  thing it would detect. Revisit only if (1) + (3) land and a
+  concrete liveness gap remains.
 
 ## Success criteria
 
