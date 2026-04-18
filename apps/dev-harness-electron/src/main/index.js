@@ -19,6 +19,7 @@ const { execFileSync } = require("node:child_process");
 
 const MAGIC = Buffer.from([0xc0, 0xde, 0x01, 0xac]);
 const PROTOCOL_VERSION = 2;
+const PROTOCOL_V2 = "v2";
 const PREAMBLE = Buffer.concat([MAGIC, Buffer.from([PROTOCOL_VERSION])]);
 
 const FRAME_TYPE = {
@@ -30,6 +31,17 @@ const FRAME_TYPE = {
   RUNTIME_STATE_SYNC: 0x05,
   POOL_STATE_SYNC: 0x06,
 };
+
+// Per connection.rs: outer ceiling 100 MiB, Presence 1 MiB.
+// Any longer length prefix from a desynced stream is dropped before we
+// try to allocate for it.
+const MAX_FRAME_SIZE = 100 * 1024 * 1024;
+const MAX_PRESENCE_FRAME_SIZE = 1024 * 1024;
+
+function maxPayloadSizeForFrameType(typeByte) {
+  if (typeByte === FRAME_TYPE.PRESENCE) return MAX_PRESENCE_FRAME_SIZE;
+  return MAX_FRAME_SIZE;
+}
 
 const OUTBOUND_FRAME_ALLOWED = new Set([
   FRAME_TYPE.AUTOMERGE_SYNC,
@@ -117,13 +129,38 @@ class FrameBuffer {
   push(chunk) {
     this.buf = this.buf.length === 0 ? chunk : Buffer.concat([this.buf, chunk]);
   }
+  // Returns { body } on success, { err } on desync, null when waiting for more bytes.
   tryTakeOne() {
     if (this.buf.length < 4) return null;
     const len = this.buf.readUInt32BE(0);
+    if (len === 0) {
+      return { err: new Error("empty frame") };
+    }
+    if (len > MAX_FRAME_SIZE) {
+      return {
+        err: new Error(
+          `frame too large: ${len} bytes (max ${MAX_FRAME_SIZE})`,
+        ),
+      };
+    }
     if (this.buf.length < 4 + len) return null;
     const body = this.buf.subarray(4, 4 + len);
+    // Per-type ceiling: inspect the 1-byte discriminator when present.
+    if (body.length > 0) {
+      const typeByte = body[0];
+      const bodyLen = body.length - 1;
+      const cap = maxPayloadSizeForFrameType(typeByte);
+      if (bodyLen > cap) {
+        this.buf = this.buf.subarray(4 + len);
+        return {
+          err: new Error(
+            `frame too large for type 0x${typeByte.toString(16)}: ${bodyLen} bytes (max ${cap})`,
+          ),
+        };
+      }
+    }
     this.buf = this.buf.subarray(4 + len);
-    return body;
+    return { body };
   }
 }
 
@@ -170,8 +207,17 @@ class DaemonConnection {
   _handleData(chunk) {
     this.buf.push(chunk);
     while (true) {
-      const body = this.buf.tryTakeOne();
-      if (!body) return;
+      const next = this.buf.tryTakeOne();
+      if (!next) return;
+      if (next.err) {
+        console.error("[dev-harness] frame decode error:", next.err.message);
+        this._handleClose(next.err);
+        try {
+          this.socket.destroy(next.err);
+        } catch {}
+        return;
+      }
+      const body = next.body;
 
       if (!this.handshakeResolved) {
         this.handshakeResolved = true;
@@ -188,15 +234,24 @@ class DaemonConnection {
       const typeByte = body.length > 0 ? body[0] : 0;
       const payload = body.subarray(1);
 
-      if (typeByte === FRAME_TYPE.RESPONSE && this.pendingResponse) {
-        const { resolve } = this.pendingResponse;
-        this.pendingResponse = null;
-        try {
-          resolve(JSON.parse(payload.toString("utf8")));
-        } catch (e) {
-          resolve({ result: "error", error: `response parse: ${e.message}` });
+      if (typeByte === FRAME_TYPE.RESPONSE) {
+        if (this.pendingResponse) {
+          const { resolve } = this.pendingResponse;
+          this.pendingResponse = null;
+          try {
+            resolve(JSON.parse(payload.toString("utf8")));
+          } catch (e) {
+            resolve({ result: "error", error: `response parse: ${e.message}` });
+          }
+          this._drainRequestQueue();
+        } else {
+          // Unsolicited Response — e.g., stale frame from a request that
+          // already timed out. Rust's relay drops these (relay_task.rs
+          // `pipe_frame` filters type 0x02). Log and drop for parity.
+          console.warn(
+            "[dev-harness] unsolicited Response frame dropped (no pending request)",
+          );
         }
-        this._drainRequestQueue();
       } else {
         this.onTypedFrame({ typeByte, payload });
       }
@@ -266,6 +321,7 @@ function buildHandshake(cli) {
     return {
       channel: "notebook_sync",
       notebook_id: cli.notebookId,
+      protocol: PROTOCOL_V2,
       working_dir: cli.workingDir,
     };
   }
@@ -276,9 +332,29 @@ function buildHandshake(cli) {
   };
 }
 
+// `--renderer-url` is a convenience for pointing the harness at a different
+// dev port; anything non-loopback would be a confused-deputy: the preload
+// bridges full daemon access to whatever origin loads. Restrict to localhost.
+function isLocalhostUrl(url) {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "http:" && u.protocol !== "https:" && u.protocol !== "file:") {
+      return false;
+    }
+    return u.hostname === "localhost" || u.hostname === "127.0.0.1" || u.hostname === "[::1]";
+  } catch {
+    return false;
+  }
+}
+
 async function createWindow(cli) {
   const vitePort = process.env.RUNTIMED_VITE_PORT || process.env.CONDUCTOR_PORT || "5174";
   const rendererUrl = cli.rendererUrl || `http://localhost:${vitePort}/`;
+  if (!isLocalhostUrl(rendererUrl)) {
+    throw new Error(
+      `--renderer-url must point to localhost (got ${rendererUrl}). The harness exposes daemon IPC via preload; loading a remote origin would hand it daemon access.`,
+    );
+  }
 
   mainWindow = new BrowserWindow({
     width: 1400,
@@ -292,6 +368,21 @@ async function createWindow(cli) {
     },
   });
 
+  // Block navigation and window.open away from the permitted origin. Without
+  // this the renderer could load a remote origin in-place and inherit the
+  // preload's electronAPI surface (see codex review, finding #4).
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    if (!isLocalhostUrl(url)) {
+      console.warn(`[dev-harness] blocked navigation to non-localhost: ${url}`);
+      event.preventDefault();
+    }
+  });
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (isLocalhostUrl(url)) return { action: "allow" };
+    console.warn(`[dev-harness] blocked window.open to non-localhost: ${url}`);
+    return { action: "deny" };
+  });
+
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
@@ -299,11 +390,28 @@ async function createWindow(cli) {
   await mainWindow.loadURL(rendererUrl);
 }
 
+// Until the renderer calls `dev-harness:ready`, inbound frames are buffered
+// here and replayed once the window is listening. Mirrors Tauri's
+// `notify_sync_ready` gate (crates/notebook/src/lib.rs notifyReady flag)
+// which prevents frame loss during WASM init on first connect.
+let rendererReady = false;
+const pendingFrames = [];
+
 function sendFrameToRenderer(typeByte, payload) {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
   const buf = Buffer.concat([Buffer.from([typeByte]), payload]);
-  // Wire parity with Tauri's `notebook:frame` event, which delivers number[].
-  mainWindow.webContents.send("notebook-frame", Array.from(buf));
+  const bytes = Array.from(buf);
+  if (!rendererReady || !mainWindow || mainWindow.isDestroyed()) {
+    pendingFrames.push(bytes);
+    return;
+  }
+  mainWindow.webContents.send("notebook-frame", bytes);
+}
+
+function drainPendingFramesToRenderer() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  while (pendingFrames.length > 0) {
+    mainWindow.webContents.send("notebook-frame", pendingFrames.shift());
+  }
 }
 
 app.whenReady().then(async () => {
@@ -353,6 +461,15 @@ app.whenReady().then(async () => {
     notebookId: connectionInfo && connectionInfo.notebook_id,
     cellCount: connectionInfo && connectionInfo.cell_count,
   }));
+
+  // The renderer calls this once ElectronTransport has its onFrame
+  // listener attached. Until then, inbound frames are buffered in
+  // `pendingFrames` rather than sent into the void.
+  ipcMain.handle("dev-harness:ready", () => {
+    rendererReady = true;
+    drainPendingFramesToRenderer();
+    return { ok: true };
+  });
 
   ipcMain.handle("send-frame", (_event, { type, payload }) => {
     try {

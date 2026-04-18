@@ -63,6 +63,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
   info() {
     return ipcRenderer.invoke("dev-harness:info");
   },
+
+  // Signal to main that the frame listener is attached and it's safe to
+  // replay buffered frames. Mirrors Tauri's `notify_sync_ready`.
+  signalReady() {
+    return ipcRenderer.invoke("dev-harness:ready");
+  },
 });
 
 // ── Tauri shim ─────────────────────────────────────────────────────────────

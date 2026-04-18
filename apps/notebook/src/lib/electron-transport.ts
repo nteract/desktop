@@ -23,6 +23,7 @@ interface ElectronAPI {
   onFrame(callback: (bytes: number[] | { __daemonDisconnected: true }) => void): () => void;
   sendRequest(request: unknown): Promise<unknown>;
   info(): Promise<{ notebookId: string | null; cellCount: number | null }>;
+  signalReady(): Promise<{ ok: boolean }>;
 }
 
 declare global {
@@ -73,6 +74,11 @@ export class ElectronTransport implements NotebookTransport {
         // frame kill the listener.
         logger.error("[electron-transport] notebook-frame handler threw:", err);
       }
+    });
+    // Tell main it's safe to replay any frames that arrived before we
+    // subscribed. Idempotent on the main side.
+    window.electronAPI.signalReady().catch((err) => {
+      logger.warn("[electron-transport] signalReady failed:", err);
     });
     this.unlisteners.push(unlisten);
     return unlisten;
