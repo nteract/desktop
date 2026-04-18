@@ -1,8 +1,18 @@
 /**
- * Tests for WidgetUpdateManager — debounced CRDT persistence + echo suppression.
+ * Tests for WidgetUpdateManager — CRDT-first widget state persistence.
+ *
+ * Post-A2 semantics: no optimistic store update, no debounce, no echo
+ * suppression. Every update goes straight to the injected CRDT writer
+ * and the widget store is updated by the commChanges$ projection
+ * (verified end-to-end in `packages/runtimed/tests/widget-sync-stall.test.ts`).
+ *
+ * The manager's remaining responsibilities are narrow: bootstrap
+ * fallback when the writer isn't registered yet, and mirroring binary
+ * buffers into the local widget model since the CRDT doesn't carry
+ * ArrayBuffers.
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { describe, expect, it } from "vite-plus/test";
 import { createWidgetStore } from "../widget-store";
 import { WidgetUpdateManager } from "../widget-update-manager";
 
@@ -21,7 +31,6 @@ function setup(opts?: { writerAvailable?: boolean }) {
     getCrdtWriter: () => (writerAvailable ? writer : null),
   });
 
-  // Pre-create a model so updateModel works
   store.createModel("comm-1", { value: 0, description: "test" });
 
   return { store, manager, writerCalls };
@@ -30,290 +39,100 @@ function setup(opts?: { writerAvailable?: boolean }) {
 // ── Tests ────────────────────────────────────────────────────────────
 
 describe("WidgetUpdateManager", () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  // ── Debouncing ──────────────────────────────────────────────────
-
-  describe("debouncing", () => {
-    it("updates store immediately", () => {
-      const { store, manager } = setup();
-
-      manager.updateAndPersist("comm-1", { value: 42 });
-
-      expect(store.getModel("comm-1")?.state.value).toBe(42);
-    });
-
-    it("debounces CRDT writes at 50ms", () => {
+  describe("happy path", () => {
+    it("routes every update straight to the CRDT writer", () => {
       const { manager, writerCalls } = setup();
 
       manager.updateAndPersist("comm-1", { value: 10 });
       manager.updateAndPersist("comm-1", { value: 20 });
       manager.updateAndPersist("comm-1", { value: 30 });
 
-      // No CRDT writes yet
-      expect(writerCalls).toHaveLength(0);
-
-      // Advance past debounce
-      vi.advanceTimersByTime(50);
-
-      // Single merged write
-      expect(writerCalls).toHaveLength(1);
-      expect(writerCalls[0]).toEqual({
-        commId: "comm-1",
-        patch: { value: 30 },
-      });
+      expect(writerCalls).toEqual([
+        { commId: "comm-1", patch: { value: 10 } },
+        { commId: "comm-1", patch: { value: 20 } },
+        { commId: "comm-1", patch: { value: 30 } },
+      ]);
     });
 
-    it("merges multiple keys in debounce window", () => {
+    it("does not touch the local store on the happy path", () => {
+      // The widget store is driven by the CRDT projection (via
+      // `engine.projectLocalState()` after `set_comm_state_batch`).
+      // The manager itself must not write to the store — otherwise
+      // we'd be back to the pre-A2 dual-source drift.
+      const { store, manager } = setup();
+      const beforeValue = store.getModel("comm-1")?.state.value;
+
+      manager.updateAndPersist("comm-1", { value: 42 });
+
+      // Store state is unchanged — projection happens downstream.
+      expect(store.getModel("comm-1")?.state.value).toBe(beforeValue);
+    });
+
+    it("passes disjoint patches through untouched", () => {
       const { manager, writerCalls } = setup();
 
       manager.updateAndPersist("comm-1", { value: 42 });
       manager.updateAndPersist("comm-1", { description: "updated" });
 
-      vi.advanceTimersByTime(50);
-
-      expect(writerCalls).toHaveLength(1);
-      expect(writerCalls[0].patch).toEqual({
-        value: 42,
-        description: "updated",
-      });
+      expect(writerCalls).toEqual([
+        { commId: "comm-1", patch: { value: 42 } },
+        { commId: "comm-1", patch: { description: "updated" } },
+      ]);
     });
 
-    it("debounces independently per comm", () => {
+    it("keeps different comms independent", () => {
       const { store, manager, writerCalls } = setup();
       store.createModel("comm-2", { value: 0 });
 
-      manager.updateAndPersist("comm-1", { value: 10 });
+      manager.updateAndPersist("comm-1", { value: 1 });
+      manager.updateAndPersist("comm-2", { value: 2 });
 
-      vi.advanceTimersByTime(30);
-
-      manager.updateAndPersist("comm-2", { value: 20 });
-
-      vi.advanceTimersByTime(20);
-
-      // comm-1 flushed at t=50, comm-2 still pending
-      expect(writerCalls).toHaveLength(1);
-      expect(writerCalls[0].commId).toBe("comm-1");
-
-      vi.advanceTimersByTime(30);
-
-      // comm-2 flushed at t=80
-      expect(writerCalls).toHaveLength(2);
-      expect(writerCalls[1].commId).toBe("comm-2");
+      expect(writerCalls).toEqual([
+        { commId: "comm-1", patch: { value: 1 } },
+        { commId: "comm-2", patch: { value: 2 } },
+      ]);
     });
+  });
 
-    it("resets debounce timer on new update", () => {
-      const { manager, writerCalls } = setup();
+  describe("bootstrap fallback", () => {
+    it("falls back to direct store update when writer isn't ready", () => {
+      // Early session state: CRDT writer hasn't been registered yet
+      // (App.tsx's `setCrdtCommWriter` useEffect hasn't run). We
+      // still want interaction to feel responsive — mirror the pre-
+      // refactor behavior so the UI doesn't stall during bootstrap.
+      const { store, manager, writerCalls } = setup({ writerAvailable: false });
 
-      manager.updateAndPersist("comm-1", { value: 10 });
-      vi.advanceTimersByTime(40);
+      manager.updateAndPersist("comm-1", { value: 42 });
 
-      // Another update before 50ms — resets the timer
-      manager.updateAndPersist("comm-1", { value: 20 });
-      vi.advanceTimersByTime(40);
-
-      // Still no flush (only 40ms since last update)
       expect(writerCalls).toHaveLength(0);
-
-      vi.advanceTimersByTime(10);
-
-      // Now flushed with the latest value
-      expect(writerCalls).toHaveLength(1);
-      expect(writerCalls[0].patch).toEqual({ value: 20 });
+      expect(store.getModel("comm-1")?.state.value).toBe(42);
     });
+  });
 
-    it("flushes immediately for binary buffers", () => {
-      const { manager, writerCalls } = setup();
-
+  describe("binary buffers", () => {
+    it("sends patch through CRDT writer and buffers into local store", () => {
+      // CRDT doesn't carry ArrayBuffers; keep the legacy behavior of
+      // stashing buffers on the local widget model so anywidgets can
+      // read back from `model.buffers`. Kernel delivery of the buffers
+      // themselves is handled elsewhere (SendComm RPC).
+      const { store, manager, writerCalls } = setup();
       const buffer = new ArrayBuffer(8);
+
       manager.updateAndPersist("comm-1", { value: 42 }, [buffer]);
 
-      // Flushed immediately, no debounce
-      expect(writerCalls).toHaveLength(1);
-      expect(writerCalls[0].patch).toEqual({ value: 42 });
+      expect(writerCalls).toEqual([{ commId: "comm-1", patch: { value: 42 } }]);
+      expect(store.getModel("comm-1")?.buffers).toContain(buffer);
     });
   });
 
-  // ── Echo suppression ────────────────────────────────────────────
-
-  describe("echo suppression", () => {
-    it("suppresses echoes for optimistic keys", () => {
+  describe("lifecycle", () => {
+    it("reset / dispose / clearComm are all no-ops post-A2", () => {
+      // Kept on the API so the calling sites in App.tsx don't have
+      // to change. Assert they don't throw — no state to reset.
       const { manager } = setup();
-
-      manager.updateAndPersist("comm-1", { value: 42 });
-
-      const result = manager.shouldSuppressEcho("comm-1", { value: 10 });
-      expect(result).toBeNull();
-    });
-
-    it("passes through non-optimistic keys", () => {
-      const { manager } = setup();
-
-      manager.updateAndPersist("comm-1", { value: 42 });
-
-      const result = manager.shouldSuppressEcho("comm-1", {
-        value: 10,
-        description: "from kernel",
-      });
-      expect(result).toEqual({ description: "from kernel" });
-    });
-
-    it("passes everything when no optimistic keys", () => {
-      const { manager } = setup();
-
-      const result = manager.shouldSuppressEcho("comm-1", {
-        value: 10,
-        description: "from kernel",
-      });
-      expect(result).toEqual({ value: 10, description: "from kernel" });
-    });
-
-    it("clears optimistic keys after flush", () => {
-      const { manager } = setup();
-
-      manager.updateAndPersist("comm-1", { value: 42 });
-
-      // During debounce window — suppressed
-      expect(manager.shouldSuppressEcho("comm-1", { value: 10 })).toBeNull();
-
-      // Flush
-      vi.advanceTimersByTime(50);
-
-      // After flush — passes through
-      const result = manager.shouldSuppressEcho("comm-1", { value: 10 });
-      expect(result).toEqual({ value: 10 });
-    });
-
-    it("suppresses during continuous drag", () => {
-      const { manager } = setup();
-
-      // Simulate continuous slider drag
-      manager.updateAndPersist("comm-1", { value: 10 });
-      vi.advanceTimersByTime(16);
-      manager.updateAndPersist("comm-1", { value: 15 });
-      vi.advanceTimersByTime(16);
-      manager.updateAndPersist("comm-1", { value: 20 });
-
-      // Stale echo from earlier value — suppressed
-      expect(manager.shouldSuppressEcho("comm-1", { value: 5 })).toBeNull();
-
-      // Non-value keys still pass through
-      expect(manager.shouldSuppressEcho("comm-1", { value: 5, _view_name: "x" })).toEqual({
-        _view_name: "x",
-      });
-    });
-  });
-
-  // ── clearComm ──────────────────────────────────────────────────
-
-  describe("clearComm", () => {
-    it("cancels pending flush", () => {
-      const { manager, writerCalls } = setup();
-
-      manager.updateAndPersist("comm-1", { value: 42 });
-      manager.clearComm("comm-1");
-
-      vi.advanceTimersByTime(50);
-
-      expect(writerCalls).toHaveLength(0);
-    });
-
-    it("clears optimistic keys", () => {
-      const { manager } = setup();
-
-      manager.updateAndPersist("comm-1", { value: 42 });
-      manager.clearComm("comm-1");
-
-      // Echo passes through after clearComm
-      const result = manager.shouldSuppressEcho("comm-1", { value: 10 });
-      expect(result).toEqual({ value: 10 });
-    });
-  });
-
-  // ── reset ──────────────────────────────────────────────────────
-
-  describe("reset", () => {
-    it("cancels all pending flushes", () => {
-      const { store, manager, writerCalls } = setup();
-      store.createModel("comm-2", { value: 0 });
-
-      manager.updateAndPersist("comm-1", { value: 10 });
-      manager.updateAndPersist("comm-2", { value: 20 });
-      manager.reset();
-
-      vi.advanceTimersByTime(50);
-
-      expect(writerCalls).toHaveLength(0);
-    });
-
-    it("clears all optimistic keys", () => {
-      const { manager } = setup();
-
-      manager.updateAndPersist("comm-1", { value: 42 });
-      manager.reset();
-
-      const result = manager.shouldSuppressEcho("comm-1", { value: 10 });
-      expect(result).toEqual({ value: 10 });
-    });
-  });
-
-  // ── Writer unavailable ─────────────────────────────────────────
-
-  describe("writer unavailable", () => {
-    it("retries flush when CRDT writer is null", () => {
-      let writerAvailable = false;
-      const writerCalls: Array<{
-        commId: string;
-        patch: Record<string, unknown>;
-      }> = [];
-      const store = createWidgetStore();
-      store.createModel("comm-1", { value: 0 });
-
-      const manager = new WidgetUpdateManager({
-        getStore: () => store,
-        getCrdtWriter: () =>
-          writerAvailable
-            ? (commId: string, patch: Record<string, unknown>) => {
-                writerCalls.push({ commId, patch });
-              }
-            : null,
-      });
-
-      manager.updateAndPersist("comm-1", { value: 42 });
-
-      // First flush attempt — writer not available, retries
-      vi.advanceTimersByTime(50);
-      expect(writerCalls).toHaveLength(0);
-
-      // Make writer available
-      writerAvailable = true;
-
-      // Retry fires after another 50ms
-      vi.advanceTimersByTime(50);
-      expect(writerCalls).toHaveLength(1);
-      expect(writerCalls[0].patch).toEqual({ value: 42 });
-    });
-
-    it("keeps optimistic keys while retrying", () => {
-      const store = createWidgetStore();
-      store.createModel("comm-1", { value: 0 });
-
-      const manager = new WidgetUpdateManager({
-        getStore: () => store,
-        getCrdtWriter: () => null,
-      });
-
-      manager.updateAndPersist("comm-1", { value: 42 });
-      vi.advanceTimersByTime(50);
-
-      // Still optimistic since flush failed
-      expect(manager.shouldSuppressEcho("comm-1", { value: 10 })).toBeNull();
+      expect(() => manager.reset()).not.toThrow();
+      expect(() => manager.clearComm("comm-1")).not.toThrow();
+      expect(() => manager.dispose()).not.toThrow();
     });
   });
 });

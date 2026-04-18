@@ -380,12 +380,12 @@ function AppContent() {
         }
       }
       for (const comm of changes.updated) {
-        // Suppress CRDT echoes for keys with pending optimistic values
-        // (e.g. slider being dragged — don't clobber with stale echo).
-        const filtered = updateManager.shouldSuppressEcho(comm.commId, comm.state);
-        if (filtered) {
-          widgetStore.updateModel(comm.commId, filtered);
-        }
+        // CRDT is the single source of truth — no echo suppression
+        // needed (see Track A in the widget-sync stall design doc).
+        // Local writes flow through the same pipeline via
+        // `engine.projectLocalState()`, so every update visible to
+        // the user is also visible in this emission.
+        widgetStore.updateModel(comm.commId, comm.state);
         if (comm.unresolvedOutputs) {
           resolveCommOutputs(comm.commId, comm.unresolvedOutputs, widgetStore);
         }

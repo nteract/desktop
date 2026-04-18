@@ -1,23 +1,27 @@
 /**
- * Widget Update Manager — debounced CRDT persistence with echo suppression.
+ * Widget Update Manager — CRDT-first widget state persistence.
  *
- * Separates local store updates (instant, for UI responsiveness) from CRDT
- * persistence (debounced, for daemon/kernel sync). During the debounce window,
- * incoming CRDT echoes for optimistic keys are suppressed to prevent stale
- * values from clobbering the user's in-progress interaction.
+ * Historical note (was #1580): this used to be a dual-write path —
+ * synchronous optimistic `store.updateModel` for instant UI feedback,
+ * plus debounced CRDT writes with echo-suppression bookkeeping to
+ * prevent in-flight drags from being clobbered by stale daemon echoes.
+ * That reconciliation grew the widget-sync stall described in
+ * `docs/superpowers/specs/2026-04-17-widget-sync-stall-design.md`.
  *
- * This solves three problems:
- * 1. jslink feedback loops (CRDT echo triggers re-propagation)
- * 2. Slider CRDT flooding (~60 writes/sec during drag)
- * 3. Stale CRDT echoes overwriting optimistic state
+ * Track A collapses it into a single source of truth: every write goes
+ * to the CRDT, and the `WidgetStore` updates purely from
+ * `commChanges$` — local writes included, because `SyncEngine.projectLocalState`
+ * fires the projection synchronously after `set_comm_state_batch`.
+ *
+ * All that's left here is the fallback path for when the CRDT writer
+ * isn't yet wired up (early bootstrap), plus binary buffer storage:
+ * the CRDT doesn't carry ArrayBuffers, so we keep buffers on the local
+ * widget model until outbound sync picks them up via another path.
  */
 
 import type { WidgetStore } from "./widget-store";
 
 type CrdtCommWriter = (commId: string, patch: Record<string, unknown>) => void;
-
-/** Debounce interval for CRDT writes (ms). */
-const DEBOUNCE_MS = 50;
 
 export interface WidgetUpdateManagerOptions {
   getStore: () => WidgetStore | null;
@@ -28,148 +32,64 @@ export class WidgetUpdateManager {
   private readonly getStore: () => WidgetStore | null;
   private readonly getCrdtWriter: () => CrdtCommWriter | null;
 
-  /** Accumulated patches waiting for debounced flush, per comm. */
-  private pendingState = new Map<string, Record<string, unknown>>();
-  /** Keys with local-only values not yet flushed to CRDT. */
-  private optimisticKeys = new Map<string, Set<string>>();
-  /** Per-comm debounce timers. */
-  private flushTimers = new Map<string, ReturnType<typeof setTimeout>>();
-
   constructor(opts: WidgetUpdateManagerOptions) {
     this.getStore = opts.getStore;
     this.getCrdtWriter = opts.getCrdtWriter;
   }
 
   /**
-   * Update store immediately + schedule debounced CRDT write.
+   * Persist a widget state update.
    *
-   * Called by sendUpdate for all widget state changes (sliders, dropdowns,
-   * text input, etc.). The store update fires subscriptions instantly for
-   * responsive UI. The CRDT write is batched per-comm at 50ms.
+   * Writes the patch to the CRDT via the injected writer (which also
+   * fires `projectLocalState` on the sync engine, so the widget store
+   * sees the update in the same tick). No optimistic store write, no
+   * echo suppression — the CRDT is the single source of truth.
    *
-   * Binary buffers bypass debouncing and flush immediately.
+   * If the CRDT writer isn't available yet (early bootstrap before
+   * `setCrdtCommWriter` has run), falls back to a direct store
+   * update so the UI isn't completely unresponsive during startup.
+   *
+   * Binary buffers aren't representable in the Automerge CRDT, so we
+   * preserve the legacy behavior of stashing them on the local widget
+   * model. Kernel delivery of binary buffers goes through the
+   * SendComm RPC path in `use-comm-router.ts` (untouched by this
+   * refactor).
    */
   updateAndPersist(commId: string, patch: Record<string, unknown>, buffers?: ArrayBuffer[]): void {
-    // 1. Instant store update — UI reflects change immediately
-    this.getStore()?.updateModel(commId, patch, buffers);
-
-    // 2. Track optimistic keys
-    let keys = this.optimisticKeys.get(commId);
-    if (!keys) {
-      keys = new Set();
-      this.optimisticKeys.set(commId, keys);
-    }
-    for (const key of Object.keys(patch)) {
-      keys.add(key);
-    }
-
-    // 3. Accumulate patch
-    const existing = this.pendingState.get(commId);
-    this.pendingState.set(commId, existing ? { ...existing, ...patch } : { ...patch });
-
-    // 4. Binary buffers — flush immediately (can't merge ArrayBuffers)
-    if (buffers?.length) {
-      this.flushComm(commId);
-      return;
-    }
-
-    // 5. Debounced flush — reset timer on each update
-    const existing_timer = this.flushTimers.get(commId);
-    if (existing_timer !== undefined) {
-      clearTimeout(existing_timer);
-    }
-    this.flushTimers.set(
-      commId,
-      setTimeout(() => this.flushComm(commId), DEBOUNCE_MS),
-    );
-  }
-
-  /**
-   * Filter an incoming CRDT echo, suppressing keys that have pending
-   * optimistic values.
-   *
-   * Returns the filtered patch to apply, or null if entirely suppressed.
-   */
-  shouldSuppressEcho(
-    commId: string,
-    incomingPatch: Record<string, unknown>,
-  ): Record<string, unknown> | null {
-    const keys = this.optimisticKeys.get(commId);
-    if (!keys || keys.size === 0) return incomingPatch;
-
-    const filtered: Record<string, unknown> = {};
-    let hasKeys = false;
-    for (const [key, value] of Object.entries(incomingPatch)) {
-      if (!keys.has(key)) {
-        filtered[key] = value;
-        hasKeys = true;
-      }
-    }
-    return hasKeys ? filtered : null;
-  }
-
-  /**
-   * Reset all state. Call on kernel restart to ensure fresh echoes
-   * from the new session aren't suppressed.
-   */
-  reset(): void {
-    for (const timer of this.flushTimers.values()) {
-      clearTimeout(timer);
-    }
-    this.flushTimers.clear();
-    this.pendingState.clear();
-    this.optimisticKeys.clear();
-  }
-
-  /** Tear down all timers. */
-  dispose(): void {
-    this.reset();
-  }
-
-  // ── Internal ──────────────────────────────────────────────────────
-
-  /**
-   * Cancel pending state and timers for a specific comm.
-   * Call when a comm is closed to avoid flushing stale state.
-   */
-  clearComm(commId: string): void {
-    const timer = this.flushTimers.get(commId);
-    if (timer !== undefined) {
-      clearTimeout(timer);
-      this.flushTimers.delete(commId);
-    }
-    this.pendingState.delete(commId);
-    this.optimisticKeys.delete(commId);
-  }
-
-  private flushComm(commId: string): void {
-    // Clear timer
-    const timer = this.flushTimers.get(commId);
-    if (timer !== undefined) {
-      clearTimeout(timer);
-      this.flushTimers.delete(commId);
-    }
-
-    const patch = this.pendingState.get(commId);
-    if (!patch) return;
-
-    // If the CRDT writer isn't available yet (early startup), keep the
-    // patch queued and retry after the next debounce interval.
     const writer = this.getCrdtWriter();
-    if (!writer) {
-      this.flushTimers.set(
-        commId,
-        setTimeout(() => this.flushComm(commId), DEBOUNCE_MS),
-      );
+    if (writer) {
+      writer(commId, patch);
+    } else {
+      // Bootstrap fallback: CRDT writer wasn't registered yet. Mirror
+      // the pre-A2 behavior so early-session widget interactions
+      // (before App.tsx's setCrdtCommWriter effect has run) still
+      // render. projectLocalState will pick up future writes.
+      this.getStore()?.updateModel(commId, patch, buffers);
       return;
     }
-
-    this.pendingState.delete(commId);
-    writer(commId, patch);
-
-    // Clear optimistic keys after flush. Echoes arriving after this
-    // point carry the value we just wrote (or a kernel-validated value)
-    // and should pass through.
-    this.optimisticKeys.delete(commId);
+    if (buffers?.length) {
+      // Buffers ride alongside the CRDT state on the local widget
+      // model. Kernel delivery is handled elsewhere (SendComm RPC).
+      this.getStore()?.updateModel(commId, {}, buffers);
+    }
   }
+
+  /**
+   * Reset any per-comm bookkeeping. Kept as a no-op for API
+   * compatibility with the pre-A2 manager, which tracked optimistic
+   * keys and debounce timers across kernel restarts. There is no
+   * per-comm state to reset anymore.
+   */
+  reset(): void {}
+
+  /**
+   * Tear down. Nothing to clean up post-A2 — no pending timers, no
+   * accumulated state.
+   */
+  dispose(): void {}
+
+  /**
+   * Drop per-comm state on comm_close. Also a no-op post-A2.
+   */
+  clearComm(_commId: string): void {}
 }
