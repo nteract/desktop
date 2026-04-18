@@ -123,10 +123,27 @@ test("drive an ipywidgets IntSlider and observe frame flow", async () => {
   //      React components registered in src/components/widgets/controls/,
   //      rendered directly into the parent tree with
   //      data-widget-type="IntSlider".
-  const isIframeRendered = await window.evaluate(
-    (id) => !!document.querySelector(`[data-cell-id="${id}"] iframe`),
-    sliderCellId,
-  );
+  const iframeInfo = await window.evaluate((id) => {
+    const frame = document.querySelector(`[data-cell-id="${id}"] iframe`);
+    if (!frame) return { present: false };
+    return {
+      present: true,
+      src: (frame as HTMLIFrameElement).src?.slice(0, 120),
+      sandbox: (frame as HTMLIFrameElement).getAttribute("sandbox"),
+      width: (frame as HTMLIFrameElement).clientWidth,
+      height: (frame as HTMLIFrameElement).clientHeight,
+      // Whether the iframe's document reports a body element
+      hasBody: (() => {
+        try {
+          return !!(frame as HTMLIFrameElement).contentDocument?.body;
+        } catch {
+          return "cross-origin";
+        }
+      })(),
+    };
+  }, sliderCellId);
+  process.stdout.write(`[test] iframe info: ${JSON.stringify(iframeInfo)}\n`);
+
   const hasDirectWidget = await window.evaluate(
     (id) =>
       !!document.querySelector(
@@ -135,7 +152,7 @@ test("drive an ipywidgets IntSlider and observe frame flow", async () => {
     sliderCellId,
   );
   process.stdout.write(
-    `[test] slider host: iframe=${isIframeRendered} direct=${hasDirectWidget}\n`,
+    `[test] slider host: iframe=${iframeInfo.present} direct=${hasDirectWidget}\n`,
   );
 
   const slider = hasDirectWidget
