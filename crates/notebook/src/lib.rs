@@ -791,10 +791,26 @@ async fn setup_sync_receivers(
                 );
                 break;
             }
+            // Frame-boundary trace. Enabled with `RUST_LOG=debug`; grep
+            // `[frame-trace] in` to see every inbound frame emitted to
+            // the webview. Widget-sync stall investigation uses these
+            // logs paired with the JS-side counter to localize which
+            // side of the Tauri boundary stops moving.
+            let frame_type = frame_bytes.first().copied().unwrap_or(0xff);
+            let frame_len = frame_bytes.len();
+            debug!(
+                "[frame-trace] in window={} type=0x{:02x} len={}",
+                window.label(),
+                frame_type,
+                frame_len,
+            );
             if let Err(e) =
                 emit_to_label::<_, _, _>(&window, window.label(), "notebook:frame", &frame_bytes)
             {
-                warn!("[notebook-sync] Failed to emit notebook:frame: {}", e);
+                warn!(
+                    "[notebook-sync] Failed to emit notebook:frame (type=0x{:02x} len={}): {}",
+                    frame_type, frame_len, e,
+                );
             }
         }
         warn!(
@@ -3022,6 +3038,17 @@ async fn send_frame_bytes(
 
     let frame_type = frame_data[0];
     let payload = &frame_data[1..];
+
+    // Frame-boundary trace (outbound). Pairs with `[frame-trace] in`
+    // on inbound and the JS-side counters. `RUST_LOG=debug` to see.
+    // `len` is the full frame byte count including the type prefix so
+    // it directly compares to `[frame-trace] in` on the other side.
+    debug!(
+        "[frame-trace] out window={} type=0x{:02x} len={}",
+        window.label(),
+        frame_type,
+        frame_data.len(),
+    );
 
     match frame_type {
         frame_types::AUTOMERGE_SYNC

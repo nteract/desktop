@@ -27,6 +27,14 @@ export class TauriTransport implements NotebookTransport {
     const frame = new Uint8Array(1 + payload.length);
     frame[0] = frameType;
     frame.set(payload, 1);
+    // Frame-boundary trace (JS outbound). Pairs with Rust's
+    // `[frame-trace] out` in `send_frame_bytes`. If this log fires
+    // but the Rust log doesn't, the break is in the Tauri invoke
+    // path itself. `len` is the full frame byte count so it
+    // compares directly across both sides of the boundary.
+    logger.debug(
+      `[frame-trace] js-out type=0x${frameType.toString(16).padStart(2, "0")} len=${frame.length}`,
+    );
     return invoke("send_frame", frame);
   }
 
@@ -49,8 +57,19 @@ export class TauriTransport implements NotebookTransport {
     const unlistenPromise = webview.listen<number[]>(
       "notebook:frame",
       (event) => {
+        // Frame-boundary trace (JS inbound). Pairs with Rust's
+        // `[frame-trace] in` in the relay's emit loop. If the Rust
+        // log fires but this one doesn't, the break is between
+        // Tauri's event emit and the webview's listen delivery.
+        // Log before entering the try/catch so an exception thrown
+        // by the downstream handler doesn't hide the arrival.
+        const payload = event.payload;
+        const frameType = payload.length > 0 ? payload[0] : 0xff;
+        logger.debug(
+          `[frame-trace] js-in type=0x${frameType.toString(16).padStart(2, "0")} len=${payload.length}`,
+        );
         try {
-          callback(event.payload);
+          callback(payload);
         } catch (err) {
           logger.error("[tauri-transport] notebook:frame handler threw:", err);
         }
