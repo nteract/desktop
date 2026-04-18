@@ -111,6 +111,18 @@ export interface SyncableHandle {
   cell_count(): number;
 
   /**
+   * Read the current local `RuntimeState` snapshot as a native JS
+   * object (same shape consumed by `RuntimeStateSyncApplied` events).
+   *
+   * Optional — implementations that don't support runtime-state
+   * projection (e.g. minimal test mocks) may omit this method. The
+   * sync engine uses it to re-run `projectComms` after a
+   * frontend-initiated `set_comm_state_batch`, so the widget store
+   * sees local writes without waiting for a daemon round-trip.
+   */
+  get_runtime_state?(): unknown;
+
+  /**
    * Resolve ContentRef values in a comm's state.
    *
    * Returns `{ state, buffer_paths, text_paths }` where blob ContentRefs are

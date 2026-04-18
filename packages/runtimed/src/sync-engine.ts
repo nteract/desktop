@@ -952,6 +952,35 @@ export class SyncEngine {
   }
 
   /**
+   * Project local comm state after a frontend-initiated write.
+   *
+   * The widget store is a projection of RuntimeStateDoc. Remote changes
+   * land via `runtime_state_sync_applied` → `projectComms` → emit on
+   * `commChanges$`. Local writes (user drags a slider, sets an
+   * anywidget trait) mutate the WASM state doc directly via
+   * `set_comm_state_batch` — they don't go through `receive_frame`, so
+   * the projection pipeline never fires and the widget store only
+   * observes the change once the daemon's echo makes the round trip.
+   *
+   * Call this immediately after a local `set_comm_state_batch` to run
+   * the same projection step against the handle's current state. The
+   * UI sees the change in the same tick, from the same pipeline as
+   * remote changes — a single source of truth. Closes the gap that
+   * today's optimistic store writes bridge via a separate dual-write
+   * path.
+   */
+  projectLocalState(): void {
+    const handle = this.opts.getHandle();
+    if (!handle) return;
+    // `get_runtime_state` returns the full native-object snapshot the
+    // same way `RuntimeStateSyncApplied` does — feed it to the same
+    // projection used for remote inbound frames.
+    const state = handle.get_runtime_state?.() as RuntimeState | undefined;
+    if (!state) return;
+    this.projectComms(state);
+  }
+
+  /**
    * Project comm state from a RuntimeState snapshot.
    *
    * Diffs against previous state, resolves ContentRefs via the WASM handle,

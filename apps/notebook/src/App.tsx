@@ -347,17 +347,22 @@ function AppContent() {
 
   // Set up CRDT comm writer for widget state updates.
   // Writes directly to RuntimeStateDoc via WASM — no SendComm round-trip.
+  // After the local write, project it through `commChanges$` so the
+  // WidgetStore sees the change in the same tick, without waiting for
+  // the daemon to echo. This makes the widget-store a true projection
+  // of the CRDT for both local and remote writes.
   useEffect(() => {
     setCrdtCommWriter((commId: string, patch: Record<string, unknown>) => {
       const handle = getHandle();
       if (!handle) return;
       handle.set_comm_state_batch(commId, JSON.stringify(patch));
+      getEngine()?.projectLocalState();
       triggerSync();
     });
     return () => {
       setCrdtCommWriter(null);
     };
-  }, [getHandle, triggerSync]);
+  }, [getHandle, getEngine, triggerSync]);
 
   // ── CRDT → WidgetStore projection via SyncEngine.commChanges$ ──────
   // Replaces the old Jupyter message synthesis path. The SyncEngine diffs

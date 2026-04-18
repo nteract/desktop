@@ -181,6 +181,31 @@ describe("widget sync: real WASM comm-state pipeline", { retry: 2 }, () => {
     expect(afterCount - beforeCount).toBe(2);
   });
 
+  it("projectLocalState emits commChanges$ for a client-side write", async () => {
+    // Regression harness for Track A1: after `set_comm_state_batch`
+    // on the client handle, `projectLocalState()` must fire commChanges$
+    // without waiting for the daemon to echo. This is the local-first
+    // path that the CRDT-first refactor depends on.
+    h.serverOpenComm(SLIDER_COMM, sliderOpts);
+    await h.syncRuntimeState();
+
+    const beforeUpdateCount = emissions.filter((e) => e.updated.length > 0).length;
+
+    // Client-side write — mirrors what the app's CrdtCommWriter does.
+    h.client.set_comm_state_batch(SLIDER_COMM, JSON.stringify({ value: 4.2 }));
+    h.engine.projectLocalState();
+    // Microtask flush so commEmitQueue settles.
+    for (let i = 0; i < 4; i++) await Promise.resolve();
+
+    const afterUpdateCount = emissions.filter((e) => e.updated.length > 0).length;
+    expect(afterUpdateCount).toBeGreaterThan(beforeUpdateCount);
+
+    // The most recent update emission carries the client's new value.
+    const latestUpdate = [...emissions].reverse().find((e) => e.updated.length > 0);
+    const updatedComm = latestUpdate?.updated.find((c) => c.commId === SLIDER_COMM);
+    expect(updatedComm?.state.value).toBe(4.2);
+  });
+
   it("resolved state projects native scalars 1:1 from the CRDT", async () => {
     // The WASM resolver turns Automerge-native maps/lists into plain JS
     // objects/arrays. Verify for a minimal slider — no ContentRefs in
