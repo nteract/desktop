@@ -150,6 +150,49 @@ into one.
   frame. After Track A: no drift possible; optimistic path and
   suppression heuristic both deleted.
 
+## How we got here — jslink archaeology
+
+The optimistic dual-write was introduced in
+[PR #1580](https://github.com/nteract/desktop/pull/1580)
+(`feat(widgets): debounced CRDT writes + jslink echo suppression`).
+`WidgetUpdateManager` landed as part of that PR with three concurrent
+goals:
+
+1. **Slider flooding**: raw slider drags generated ~60 CRDT writes/sec.
+   Debouncing to 50 ms per comm cut that to ~20/sec — healthier sync
+   traffic without losing interactivity.
+2. **Instant UI feedback**: waiting for a round-trip echo before
+   showing the new slider value would feel laggy. Synchronous
+   `store.updateModel` gives the user unmistakable feedback during a
+   drag.
+3. **jslink feedback loops**: two linked widgets (e.g., paired
+   min/max sliders) used to oscillate because each local change
+   echoed back through the CRDT and re-triggered the link handler.
+   `shouldSuppressEcho` filters the echo of optimistic keys out of the
+   incoming CRDT projection so the link doesn't bounce.
+
+All three are legitimate concerns. Track A doesn't retreat on any of
+them — it addresses them from a different angle:
+
+1. Slider flooding → the debounce stays (pure outbound coalescer), it
+   just loses the reconciliation bookkeeping it currently does against
+   the optimistic store.
+2. Instant UI feedback → achieved by making the local CRDT write fire
+   `projectComms` synchronously in the same tick (Track A1). The UI
+   updates from the same pipeline as remote changes, at local-write
+   speed.
+3. jslink loops → solved by deriving targets from the CRDT on each
+   `projectComms` emission rather than cascading through the store.
+   The source's CRDT value is the single source of truth for the
+   link's computation; no oscillation possible because there's no
+   parallel optimistic state to drift from.
+
+The stall that motivated this investigation isn't a regression in
+#1580 — it's an emergent interaction between the echo-suppression's
+bookkeeping and edge cases (silent sync failures, `!writer` early
+returns leaving `optimisticKeys` populated indefinitely). The fix is
+to remove the need for the bookkeeping entirely, not to patch it.
+
 ## References
 
 - `crates/runtimed-wasm/src/lib.rs` — `receive_frame`, `reset_sync_state`,
