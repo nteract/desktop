@@ -190,12 +190,29 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
     log,
   };
 
-  // Wire Tauri menu events into the command registry. The bridge is
-  // fire-and-forget for the life of the host; no disposer exposed because
-  // the host itself lives the whole session.
-  wireTauriMenuBridge(host);
+  // Wire Tauri menu events into the command registry. Stash the disposer
+  // on the module so hot-reload / multi-host test teardown can reclaim
+  // the listeners. For production single-session lifetime this is
+  // unreachable, but dropping the disposer entirely leaks on any future
+  // lifecycle change.
+  _lastMenuBridgeDispose?.();
+  _lastMenuBridgeDispose = wireTauriMenuBridge(host);
 
   return host;
+}
+
+/**
+ * Internal: last menu-bridge disposer. If `createTauriHost()` is called
+ * more than once (hot reload, tests), we dispose the previous bridge
+ * before wiring a new one. Intentionally module-scoped — the host API
+ * stays clean until we add a full `host.dispose()` lifecycle.
+ */
+let _lastMenuBridgeDispose: (() => void) | undefined;
+
+/** @internal Test helper — forget the most recent menu bridge disposer. */
+export function _resetMenuBridgeForTests(): void {
+  _lastMenuBridgeDispose?.();
+  _lastMenuBridgeDispose = undefined;
 }
 
 export { TauriTransport } from "./transport";

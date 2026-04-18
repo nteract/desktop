@@ -164,6 +164,10 @@ describe("createTauriHost()", () => {
 
   it("daemonEvents.onReady subscribes to 'daemon:ready' and returns a working unlisten", async () => {
     const host = createTauriHost({ transport: stubTransport });
+    // Reset the unlisten mock after construction — the menu bridge wires up
+    // many listeners whose disposers also share mockUnlisten. We only care
+    // about the daemon-ready listener this test installed.
+    mockUnlisten.mockClear();
     const received: unknown[] = [];
     const unlisten = host.daemonEvents.onReady((p) => received.push(p));
     // Flush the listen() promise so the callback is registered.
@@ -253,23 +257,28 @@ describe("createTauriHost()", () => {
     ]);
   });
 
-  it("menu bridge parses menu:insert-cell payload into { type }", async () => {
+  it("menu bridge accepts code/markdown/raw payloads on menu:insert-cell and drops the rest", async () => {
     const host = createTauriHost({ transport: stubTransport });
     const handler = vi.fn();
     host.commands.register("notebook.insertCell", handler);
     const entry = capturedListens.find((x) => x.event === "menu:insert-cell");
     await Promise.resolve();
+
     entry?.cb({ payload: "markdown" });
-    await Promise.resolve();
-    expect(handler).toHaveBeenCalledWith({ type: "markdown" });
-
     entry?.cb({ payload: "code" });
+    entry?.cb({ payload: "raw" });
     await Promise.resolve();
-    expect(handler).toHaveBeenLastCalledWith({ type: "code" });
+    expect(handler).toHaveBeenCalledTimes(3);
+    expect(handler).toHaveBeenNthCalledWith(1, { type: "markdown" });
+    expect(handler).toHaveBeenNthCalledWith(2, { type: "code" });
+    expect(handler).toHaveBeenNthCalledWith(3, { type: "raw" });
 
-    // Unknown payload defaults to "code".
+    // Unknown payload is dropped rather than silently coerced to "code".
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     entry?.cb({ payload: "gibberish" });
     await Promise.resolve();
-    expect(handler).toHaveBeenLastCalledWith({ type: "code" });
+    expect(handler).toHaveBeenCalledTimes(3); // still 3 — the 4th was skipped
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 });

@@ -882,48 +882,13 @@ function AppContent() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [openNotebook]);
 
-  // Register every notebook-level command the menu bridge can invoke. One
-  // effect replaces the per-menu-item webview.listen useEffects that used
-  // to live here. The host owns the registry; `host.commands.run(id)` is
-  // what Tauri menu clicks, and eventually keyboard shortcuts / a command
-  // palette / a remote MCP-style invoker, will all call.
-  useEffect(() => {
-    const disposables = [
-      host.commands.register("notebook.save", () => {
-        save();
-      }),
-      host.commands.register("notebook.open", () => {
-        openNotebook();
-      }),
-      host.commands.register("notebook.clone", () => {
-        cloneNotebook();
-      }),
-      host.commands.register("notebook.insertCell", ({ type }) => {
-        handleAddCell(type, focusedCellId);
-      }),
-      host.commands.register("notebook.clearOutputs", async () => {
-        if (!focusedCellId) return;
-        const cell = getNotebookCellsSnapshot().find((c) => c.id === focusedCellId);
-        if (!cell || cell.cell_type !== "code") return;
-        await clearOutputs(focusedCellId);
-      }),
-      host.commands.register("notebook.clearAllOutputs", async () => {
-        const codeCells = getNotebookCellsSnapshot().filter((c) => c.cell_type === "code");
-        await Promise.all(codeCells.map((cell) => clearOutputs(cell.id)));
-      }),
-      host.commands.register("notebook.runAll", () => {
-        handleRunAllCells();
-      }),
-      host.commands.register("notebook.restartAndRunAll", () => {
-        handleRestartAndRunAll();
-      }),
-      host.commands.register("updater.check", () => {
-        checkForUpdate();
-      }),
-    ];
-    return () => disposables.forEach((d) => d());
-  }, [
-    host,
+  // Route all notebook-level commands to their latest implementations via
+  // a single ref. The ref is updated every render; the host-level registration
+  // below runs only once per host, so a native menu event that lands during
+  // a state-driven re-render never finds the slot empty — the previous
+  // design re-registered every command on focusedCellId change, which
+  // opened a "no handler" window any menu click could fall into.
+  const commandHandlersRef = useRef({
     save,
     openNotebook,
     cloneNotebook,
@@ -933,7 +898,58 @@ function AppContent() {
     handleRunAllCells,
     handleRestartAndRunAll,
     checkForUpdate,
-  ]);
+  });
+  commandHandlersRef.current = {
+    save,
+    openNotebook,
+    cloneNotebook,
+    handleAddCell,
+    focusedCellId,
+    clearOutputs,
+    handleRunAllCells,
+    handleRestartAndRunAll,
+    checkForUpdate,
+  };
+
+  useEffect(() => {
+    const disposables = [
+      host.commands.register("notebook.save", () => {
+        commandHandlersRef.current.save();
+      }),
+      host.commands.register("notebook.open", () => {
+        commandHandlersRef.current.openNotebook();
+      }),
+      host.commands.register("notebook.clone", () => {
+        commandHandlersRef.current.cloneNotebook();
+      }),
+      host.commands.register("notebook.insertCell", ({ type }) => {
+        const h = commandHandlersRef.current;
+        h.handleAddCell(type, h.focusedCellId);
+      }),
+      host.commands.register("notebook.clearOutputs", async () => {
+        const h = commandHandlersRef.current;
+        if (!h.focusedCellId) return;
+        const cell = getNotebookCellsSnapshot().find((c) => c.id === h.focusedCellId);
+        if (!cell || cell.cell_type !== "code") return;
+        await h.clearOutputs(h.focusedCellId);
+      }),
+      host.commands.register("notebook.clearAllOutputs", async () => {
+        const h = commandHandlersRef.current;
+        const codeCells = getNotebookCellsSnapshot().filter((c) => c.cell_type === "code");
+        await Promise.all(codeCells.map((cell) => h.clearOutputs(cell.id)));
+      }),
+      host.commands.register("notebook.runAll", () => {
+        commandHandlersRef.current.handleRunAllCells();
+      }),
+      host.commands.register("notebook.restartAndRunAll", () => {
+        commandHandlersRef.current.handleRestartAndRunAll();
+      }),
+      host.commands.register("updater.check", () => {
+        commandHandlersRef.current.checkForUpdate();
+      }),
+    ];
+    return () => disposables.forEach((d) => d());
+  }, [host]);
 
   // Listen for daemon startup progress events
   useEffect(() => {

@@ -304,7 +304,17 @@ export async function setMetadataSnapshot(
  * state consumption race from #1067.
  */
 async function syncToRelay(): Promise<void> {
-  if (!_handle || !_transport) return;
+  if (!_handle) return;
+  if (!_transport) {
+    // Mutations above returned success; a missing transport silently
+    // drops the outbound sync. Log loudly so the misconfiguration is
+    // obvious to anyone running tests or wiring a new host.
+    logger.warn(
+      "[notebook-metadata] syncToRelay: no transport configured — " +
+        "call setMetadataTransport(host.transport) at boot",
+    );
+    return;
+  }
   const msg = _handle.flush_local_changes();
   if (msg) {
     try {

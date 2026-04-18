@@ -321,7 +321,11 @@ export function useAutomergeNotebook() {
       // Flush pending local changes before stopping.
       engine.flush();
       engine.stop();
-      transport.disconnect();
+      // Do NOT call `transport.disconnect()`. The transport is owned by
+      // the host (one shared instance across NotebookClient, SyncEngine,
+      // frame-types outbound helpers, etc.) and must outlive this hook's
+      // rehearsal unmount under React StrictMode. `engine.stop()` already
+      // unsubscribes the frame listener this hook installed.
 
       initialSyncSub.unsubscribe();
       cellChangesSub.unsubscribe();

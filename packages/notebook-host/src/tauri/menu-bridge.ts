@@ -14,7 +14,13 @@ import type { NotebookHost } from "../types";
 type BindEntry<K extends CommandId> = {
   menuEvent: string;
   commandId: K;
-  parse?: (ev: unknown) => CommandPayloads[K];
+  /**
+   * Transform the raw event payload into the command's payload. Return
+   * `null` to ignore the event entirely (e.g., an unrecognized
+   * `menu:insert-cell` cell type). `undefined` is a valid payload for
+   * void commands and is passed through.
+   */
+  parse?: (ev: unknown) => CommandPayloads[K] | null;
 };
 
 /** Fire-and-forget subscription to a Tauri webview event. */
@@ -50,9 +56,18 @@ function listenMenu(eventName: string, cb: (payload: unknown) => void): () => vo
 export function wireTauriMenuBridge(host: NotebookHost): () => void {
   function bind<K extends CommandId>(entry: BindEntry<K>): () => void {
     return listenMenu(entry.menuEvent, (payload) => {
-      const cmdPayload = entry.parse
-        ? entry.parse(payload)
-        : (undefined as unknown as CommandPayloads[K]);
+      let cmdPayload: CommandPayloads[K];
+      if (entry.parse) {
+        const parsed = entry.parse(payload);
+        if (parsed === null) {
+          // Malformed payload — skip rather than silently coerce.
+          console.warn(`[menu-bridge] ${entry.menuEvent}: unrecognized payload, skipping`, payload);
+          return;
+        }
+        cmdPayload = parsed;
+      } else {
+        cmdPayload = undefined as unknown as CommandPayloads[K];
+      }
       host.commands.run(entry.commandId, cmdPayload).catch((err) => {
         console.error(`[menu-bridge] ${entry.menuEvent} → ${entry.commandId} failed:`, err);
       });
@@ -67,8 +82,8 @@ export function wireTauriMenuBridge(host: NotebookHost): () => void {
       menuEvent: "menu:insert-cell",
       commandId: "notebook.insertCell",
       parse: (ev) => {
-        const type = ev === "markdown" || ev === "raw" ? ev : "code";
-        return { type };
+        if (ev === "code" || ev === "markdown" || ev === "raw") return { type: ev };
+        return null; // unknown cell type — drop the event
       },
     }),
     bind({ menuEvent: "menu:clear-outputs", commandId: "notebook.clearOutputs" }),
