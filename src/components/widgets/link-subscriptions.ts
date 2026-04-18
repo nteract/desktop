@@ -3,13 +3,14 @@ import { parseModelRef, type WidgetStore } from "./widget-store";
 /**
  * Dispatch a widget state patch for a linked target.
  *
- * `createLinkManager` accepts this callback instead of writing to the
- * store directly (the pre-A2 behavior). Routing link-propagated
- * updates through the CRDT writer means the target's state stays in
- * sync with the kernel — the old store-only path left targets
- * diverged from the authoritative RuntimeStateDoc, which was fine
- * pre-A2 when the store was itself a dual-write optimistic mirror,
- * but wrong post-A2 (store is a projection; kernel needs the write).
+ * `createLinkManager` accepts this callback so the app can choose the
+ * scope of the propagation. In practice this is a store-only write:
+ * `widgets.jslink` / `widgets.jsdlink` are the ipywidgets
+ * frontend-only link primitives — they mirror a source property into
+ * a target property in the browser without involving the kernel. The
+ * kernel-side equivalent (`widgets.link`) uses Python traitlet
+ * `observe`/`notify`, which flows through the normal CRDT round-trip
+ * without touching this code.
  */
 export type LinkWriter = (commId: string, patch: Record<string, unknown>) => void;
 
@@ -63,10 +64,7 @@ function setupDirectionalLink(
     }
     isSetUp = true;
 
-    // Initial sync: read source value, write to target through the
-    // CRDT writer so the kernel learns the target's new value. The
-    // store will update when `projectLocalState` fires the commChanges$
-    // emission for the target's write.
+    // Initial sync: read source value, propagate to the target.
     const sourceModel = store.getModel(sourceModelId);
     if (sourceModel) {
       const currentValue = sourceModel.state[sourceAttr];
@@ -144,7 +142,7 @@ function setupBidirectionalLink(
     }
     isSetUp = true;
 
-    // Initial sync: source → target via the CRDT writer.
+    // Initial sync: source → target via the injected writer.
     const sourceModel = store.getModel(sourceModelId);
     if (sourceModel) {
       const currentValue = sourceModel.state[sourceAttr];
@@ -203,11 +201,10 @@ function setupBidirectionalLink(
  * Create a link manager that monitors the store for LinkModel and
  * DirectionalLinkModel widgets and manages their property subscriptions.
  *
- * Post-A2 semantics: link-propagated updates go through `writer`
- * (the CRDT commit path) rather than `store.updateModel` directly.
- * The store picks up the target's new value from the projectLocalState
- * emission that follows the write. Keeps the link's target state in
- * agreement with the kernel's view.
+ * Link-propagated updates go through the injected `writer` callback.
+ * The normal wiring is a store-only write — jslink/jsdlink are
+ * frontend-only by design — but the callback is abstract so iframe
+ * isolation and test harnesses can route it however they need.
  *
  * Returns a cleanup function that tears down all active link subscriptions.
  *
@@ -216,7 +213,7 @@ function setupBidirectionalLink(
  * creating the store.
  *
  * @param store - The widget store instance
- * @param writer - CRDT writer for propagating updates to linked comms
+ * @param writer - Dispatch callback for propagating updates to linked comms
  */
 export function createLinkManager(store: WidgetStore, writer: LinkWriter): () => void {
   const activeLinks = new Map<string, () => void>();

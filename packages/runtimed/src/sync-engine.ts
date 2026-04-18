@@ -813,18 +813,21 @@ export class SyncEngine {
               this.projectComms(state);
             }
 
-            // Send sync reply so the daemon knows our heads.
-            //
-            // `generate_runtime_state_sync_reply` returns `null` IFF
-            // we and the daemon have fully converged — nothing left to
-            // send in either direction. That's the precise signal we
-            // want for the stall watchdog: clear it only when our own
-            // outstanding writes have been incorporated, not on every
-            // inbound runtime-state frame (which fires often for
-            // daemon-authored queue / execution / status changes even
-            // when our widget update was silently dropped).
+            // Any inbound runtime-state frame proves the daemon is
+            // responsive, so clear the stall watchdog. Earlier
+            // iterations tried a stricter signal (clear only when
+            // `generate_runtime_state_sync_reply()` returns null =
+            // fully converged) but that fires the watchdog after
+            // every normal single interaction: daemon applies our
+            // write, responds once, then goes quiet — and our ack
+            // reply is non-null so the watchdog stays armed. The
+            // weaker "any inbound clears" heuristic misses the
+            // narrow case where the daemon is busy with unrelated
+            // traffic AND our specific write was dropped, but that's
+            // preferable to spurious resets on every widget click.
             const handle = this.opts.getHandle();
             if (handle) {
+              this.clearRuntimeStateStallWatchdog();
               try {
                 const reply = handle.generate_runtime_state_sync_reply();
                 if (reply) {
@@ -836,7 +839,6 @@ export class SyncEngine {
                       ),
                   );
                 }
-                this.clearRuntimeStateStallWatchdog();
               } catch (err) {
                 log.warn("[sync-engine] generate_runtime_state_sync_reply failed:", err);
               }

@@ -1739,137 +1739,42 @@ describe("SyncEngine", () => {
       }
     });
 
-    it("clears the watchdog only when the daemon has fully ack'd our writes", async () => {
-      // Regression: inbound RuntimeStateDoc traffic from the daemon
-      // (queue / execution / status changes) must NOT count as an ack
-      // for a previously-sent client flush. The real signal is that
-      // `generate_runtime_state_sync_reply()` returns null — meaning
-      // both peers are fully converged.
+    it("any inbound runtime-state frame clears the watchdog", async () => {
+      // The watchdog's job is to detect a dead pipe / unresponsive
+      // daemon — not "daemon hasn't caught up yet." Any inbound
+      // frame proves the daemon is alive, so clear. The stricter
+      // "wait for full convergence" variant fired the watchdog
+      // after every normal single interaction: daemon applies our
+      // write, responds once, then goes quiet while our ack reply
+      // is still non-null, leaving the timer running.
       vi.useFakeTimers();
       try {
         const stateMsg = new Uint8Array([0xaa, 0xbb]);
-        // Reply returns non-null (still pending) for the first two
-        // calls, then null (converged) on the third.
-        const replies: (Uint8Array | null)[] = [
-          new Uint8Array([0x11]),
-          new Uint8Array([0x22]),
-          null,
-        ];
-        const replyFn = vi.fn(() => replies.shift() ?? null);
         handle = createMockHandle({
           flush_runtime_state_sync: vi.fn(() => stateMsg),
-          generate_runtime_state_sync_reply: replyFn,
+          // Reply always non-null (single healthy round: daemon
+          // applied, sent us a state update, and we need to ack).
+          generate_runtime_state_sync_reply: vi.fn(() => new Uint8Array([0x11])),
           receive_frame: vi.fn(() => [
-            {
-              type: "runtime_state_sync_applied",
-              changed: true,
-              state: {
-                kernel: {
-                  status: "idle",
-                  starting_phase: "",
-                  name: "",
-                  language: "",
-                  env_source: "",
-                },
-                queue: {
-                  executing: null,
-                  executing_execution_id: null,
-                  queued: [],
-                  queued_execution_ids: [],
-                },
-                env: { in_sync: true, added: [], removed: [] },
-                trust: { status: "trusted", needs_approval: false },
-                last_saved: null,
-                executions: {},
-                comms: {},
-              },
-            } as FrameEvent,
+            { type: "runtime_state_sync_applied", changed: false } as FrameEvent,
           ]),
         });
         const engine = createEngine();
         engine.start();
 
-        // Outbound flush arms the watchdog.
         engine.flush();
 
-        // First inbound: reply is non-null (daemon hasn't caught up
-        // yet). Watchdog should stay armed.
+        // One inbound arrives — clears the watchdog regardless of
+        // whether our ack reply is null or non-null.
         transport.deliver([0x05, 0x01]);
         await vi.advanceTimersByTimeAsync(100);
         expect(handle.reset_sync_state).not.toHaveBeenCalled();
 
-        // Second inbound: reply still non-null. Still armed.
-        transport.deliver([0x05, 0x01]);
-        await vi.advanceTimersByTimeAsync(100);
-        expect(handle.reset_sync_state).not.toHaveBeenCalled();
-
-        // Third inbound: reply is null — converged. Clear watchdog.
-        transport.deliver([0x05, 0x01]);
-        await vi.advanceTimersByTimeAsync(10);
-
+        // Daemon goes quiet. No further frames. Watchdog should not
+        // fire — the interaction completed cleanly.
         await vi.advanceTimersByTimeAsync(3100);
         expect(handle.reset_sync_state).not.toHaveBeenCalled();
-        engine.stop();
-      } finally {
-        vi.useRealTimers();
-      }
-    });
 
-    it("inbound traffic without full convergence does NOT clear the watchdog", async () => {
-      // The active-kernel case codex flagged: the daemon emits
-      // unrelated runtime-state frames (execution status, queue) that
-      // advance the doc but don't ack the client's widget patch.
-      // `generate_runtime_state_sync_reply()` still returns non-null
-      // in that case because our local change isn't in shared_heads
-      // yet. The watchdog must still fire.
-      vi.useFakeTimers();
-      try {
-        const stateMsg = new Uint8Array([0xaa]);
-        handle = createMockHandle({
-          flush_runtime_state_sync: vi.fn(() => stateMsg),
-          // Reply always non-null — daemon never catches up with us.
-          generate_runtime_state_sync_reply: vi.fn(() => new Uint8Array([0x99])),
-          receive_frame: vi.fn(() => [
-            {
-              type: "runtime_state_sync_applied",
-              changed: true,
-              state: {
-                kernel: {
-                  status: "idle",
-                  starting_phase: "",
-                  name: "",
-                  language: "",
-                  env_source: "",
-                },
-                queue: {
-                  executing: null,
-                  executing_execution_id: null,
-                  queued: [],
-                  queued_execution_ids: [],
-                },
-                env: { in_sync: true, added: [], removed: [] },
-                trust: { status: "trusted", needs_approval: false },
-                last_saved: null,
-                executions: {},
-                comms: {},
-              },
-            } as FrameEvent,
-          ]),
-        });
-        const engine = createEngine();
-        engine.start();
-
-        engine.flush();
-
-        // Several rounds of daemon traffic — but our reply is still
-        // pending, so none of them ack our write.
-        for (let i = 0; i < 3; i++) {
-          transport.deliver([0x05, 0x01]);
-          await vi.advanceTimersByTimeAsync(500);
-        }
-
-        await vi.advanceTimersByTimeAsync(2000);
-        expect(handle.reset_sync_state).toHaveBeenCalled();
         engine.stop();
       } finally {
         vi.useRealTimers();

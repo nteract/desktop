@@ -89,21 +89,21 @@ export function WidgetStoreProvider({
   // Headless widgets like LinkModel have _view_name: null and won't be
   // in any container's children, so they need store-level subscriptions.
   //
-  // Post-A2 the link writer routes through `updateManager.updateAndPersist`
-  // so link-propagated target updates go to the CRDT (and thus the
-  // kernel), not just the local store. If no manager is wired up — e.g.
-  // isolated-renderer iframe where the comm bridge manages widgets
-  // directly — fall back to a local-only store write.
-  useEffect(() => {
-    const writer = updateManager
-      ? (commId: string, patch: Record<string, unknown>) => {
-          updateManager.updateAndPersist(commId, patch);
-        }
-      : (commId: string, patch: Record<string, unknown>) => {
-          store.updateModel(commId, patch);
-        };
-    return createLinkManager(store, writer);
-  }, [store, updateManager]);
+  // `widgets.jslink` / `widgets.jsdlink` are the frontend-only ipywidgets
+  // links — they mirror a property from one widget view to another in
+  // the browser without the kernel ever seeing the target's value. The
+  // write here is deliberately local-store-only (not routed through
+  // `updateManager.updateAndPersist`); the CRDT/daemon/kernel don't
+  // track jslink targets. Python-side equivalents use `widgets.link`
+  // which already flows through the normal kernel traitlet
+  // observe/notify path.
+  useEffect(
+    () =>
+      createLinkManager(store, (commId, patch) => {
+        store.updateModel(commId, patch);
+      }),
+    [store],
+  );
   useEffect(() => createCanvasManagerRouter(store), [store]);
 
   const value = useMemo(
