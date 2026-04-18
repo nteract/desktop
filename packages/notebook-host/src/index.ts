@@ -13,6 +13,7 @@ export type {
   HostRelay,
   HostSystem,
   HostTrust,
+  HostWindow,
   NotebookHost,
   TrustInfo,
   TyposquatWarning,

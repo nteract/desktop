@@ -19,8 +19,8 @@
  * flicker (no paint occurs between the synchronous blur and focus calls).
  */
 
+import type { NotebookHost } from "@nteract/notebook-host";
 import { EditorView } from "@codemirror/view";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { logger } from "./logger";
 
 // ── State ────────────────────────────────────────────────────────────
@@ -168,7 +168,7 @@ function restoreEditorFocus(): void {
  * Call once at app startup. Returns a cleanup function.
  * Follows the same pattern as {@link startCursorDispatch}.
  */
-export function startWindowFocusHandler(): () => void {
+export function startWindowFocusHandler(host: NotebookHost): () => void {
   // Track which CM editor has focus (capture phase for earliest signal).
   document.addEventListener("focusin", trackEditorFocus, true);
 
@@ -178,18 +178,13 @@ export function startWindowFocusHandler(): () => void {
   window.addEventListener("focus", handleWindowFocus);
   window.addEventListener("blur", handleWindowBlur);
 
-  // Tauri-specific window focus signal as a belt-and-suspenders layer.
-  // Goes through the IPC bridge so it may arrive slightly after the DOM
-  // events, but it's authoritative for Tauri-managed windows.
-  const tauriUnlistenPromise = getCurrentWindow().onFocusChanged(
-    ({ payload: focused }) => {
-      if (focused) {
-        handleWindowFocus();
-      } else {
-        handleWindowBlur();
-      }
-    },
-  );
+  // Host-level focus signal as a belt-and-suspenders layer. May arrive
+  // slightly after the DOM events (IPC hop) but is authoritative for
+  // OS-managed window focus, including transitions DOM events miss.
+  const hostUnlisten = host.window.onFocusChange((focused) => {
+    if (focused) handleWindowFocus();
+    else handleWindowBlur();
+  });
 
   // Visibility change covers minimize / restore and (on some platforms)
   // Mission Control transitions that don't fire window blur/focus.
@@ -209,7 +204,7 @@ export function startWindowFocusHandler(): () => void {
     window.removeEventListener("focus", handleWindowFocus);
     window.removeEventListener("blur", handleWindowBlur);
     document.removeEventListener("visibilitychange", handleVisibility);
-    tauriUnlistenPromise.then((fn) => fn()).catch(() => {});
+    hostUnlisten();
     savedView = null;
     savedSelection = null;
     logger.info("[window-focus] Handler stopped");

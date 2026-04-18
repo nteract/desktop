@@ -15,6 +15,7 @@
 
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   attachConsole as pluginAttachConsole,
   debug as pluginDebug,
@@ -42,6 +43,7 @@ import type {
   HostRelay,
   HostSystem,
   HostTrust,
+  HostWindow,
   NotebookHost,
   TrustInfo,
   TyposquatWarning,
@@ -96,6 +98,9 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
     async getInfo() {
       return invoke<DaemonInfo | null>("get_daemon_info");
     },
+    async getReadyInfo() {
+      return invoke<DaemonReadyPayload | null>("get_daemon_ready_info");
+    },
   };
 
   const blobs: HostBlobs = {
@@ -120,7 +125,37 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
   };
 
   const daemonEvents: HostDaemonEvents = {
-    onReady: (cb) => listenWebview<DaemonReadyPayload>("daemon:ready", cb),
+    // `onReady` subscribes to future emissions AND backfills from the
+    // Rust-side cache. Tauri webview events aren't sticky — if the Rust
+    // sync task emitted `daemon:ready` before this listener was attached,
+    // that specific event is lost. The cache (populated by
+    // `setup_sync_receivers` before emit, and refreshed on path changes)
+    // lets late subscribers catch up.
+    //
+    // Both IPCs are queued on the same channel: `webview.listen(...)`
+    // issues `invoke("plugin:event|listen", ...)` which Rust processes
+    // before the subsequent `get_daemon_ready_info`. By the time the
+    // cached value reaches us, the listener is attached, so a live event
+    // can't land in a gap and be dropped.
+    onReady: (cb) => {
+      // Track cancellation across both the live-event subscription and the
+      // cache backfill. If the subscriber unmounts before either async
+      // operation resolves, neither path invokes the callback on a dead
+      // component. React StrictMode's double-mount exercises this path.
+      let cancelled = false;
+      const unlistenLive = listenWebview<DaemonReadyPayload>("daemon:ready", (p) => {
+        if (!cancelled) cb(p);
+      });
+      invoke<DaemonReadyPayload | null>("get_daemon_ready_info")
+        .then((info) => {
+          if (!cancelled && info) cb(info);
+        })
+        .catch(() => {});
+      return () => {
+        cancelled = true;
+        unlistenLive();
+      };
+    },
     onProgress: (cb) => listenWebview<DaemonProgressPayload>("daemon:progress", cb),
     onDisconnected: (cb) => listenWebview<void>("daemon:disconnected", () => cb()),
     onUnavailable: (cb) => listenWebview<DaemonUnavailablePayload>("daemon:unavailable", cb),
@@ -138,6 +173,35 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
     },
     async markClean() {
       await invoke("mark_notebook_clean");
+    },
+  };
+
+  const windowNs: HostWindow = {
+    async getTitle() {
+      return getCurrentWindow().title();
+    },
+    async setTitle(title) {
+      await getCurrentWindow().setTitle(title);
+    },
+    onFocusChange(cb) {
+      let unlisten: Unlisten | null = null;
+      let cancelled = false;
+      getCurrentWindow()
+        .onFocusChanged(({ payload: focused }) => {
+          cb(focused);
+        })
+        .then((fn) => {
+          if (cancelled) fn();
+          else unlisten = fn;
+        })
+        .catch(() => {});
+      return () => {
+        cancelled = true;
+        if (unlisten) {
+          unlisten();
+          unlisten = null;
+        }
+      };
     },
   };
 
@@ -185,6 +249,7 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
     trust,
     deps,
     notebook,
+    window: windowNs,
     system,
     commands,
     log,
