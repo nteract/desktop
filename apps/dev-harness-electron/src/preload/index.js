@@ -130,3 +130,11 @@ contextBridge.exposeInMainWorld("__TAURI_EVENT_PLUGIN_INTERNALS__", {
 // `isTauri()` reads `(globalThis || window).isTauri`. We return true so code
 // that feature-gates on it still runs — the shim handles the downstream calls.
 contextBridge.exposeInMainWorld("isTauri", true);
+
+// Opt the notebook UI out of iframe isolation for widget-view+json outputs
+// when running under this harness. The iframe's postMessage bootstrap hasn't
+// been fully shimmed through to Electron, so built-in widgets never mount.
+// Rendering `<WidgetView />` directly in the parent DOM (via the MediaProvider
+// renderer in apps/notebook/src/App.tsx) sidesteps the issue entirely and
+// lets Playwright drive sliders natively. Scope: dev harness only.
+contextBridge.exposeInMainWorld("__NTERACT_DEV_HARNESS_INLINE_WIDGETS__", true);

@@ -172,6 +172,22 @@ function hasWidgetOutputs(
 }
 
 /**
+ * Check if an output would render as a widget (selected MIME ==
+ * `application/vnd.jupyter.widget-view+json`). Supports the dev-harness
+ * inline-widgets escape hatch in OutputArea.
+ */
+function outputIsWidgetOnly(
+  output: JupyterOutput,
+  priority: readonly string[] = DEFAULT_PRIORITY,
+): boolean {
+  if (output.output_type !== "execute_result" && output.output_type !== "display_data") {
+    return false;
+  }
+  const mimeType = selectMimeType(output.data, priority);
+  return mimeType === "application/vnd.jupyter.widget-view+json";
+}
+
+/**
  * Render a single Jupyter output based on its type.
  */
 function renderOutput(
@@ -268,9 +284,24 @@ export function OutputArea({
   // Get widget store context (may be null if not in provider)
   const widgetContext = useWidgetStore();
 
-  // Determine if we should use isolation (when we have outputs)
+  // Determine if we should use isolation (when we have outputs).
+  //
+  // Dev-harness escape hatch (`__NTERACT_DEV_HARNESS_INLINE_WIDGETS__`): the
+  // Electron harness in `apps/dev-harness-electron/` sets this flag in its
+  // preload to render widget-view+json outputs directly via the parent
+  // MediaProvider instead of the sandboxed iframe. The iframe's postMessage
+  // bootstrap has not been fully shimmed under Electron yet, so skipping it
+  // is the quickest route to a driveable UI in Playwright. The flag is
+  // never set in production — Tauri's preload doesn't expose it.
+  const harnessInlineWidgets =
+    typeof window !== "undefined" &&
+    (window as { __NTERACT_DEV_HARNESS_INLINE_WIDGETS__?: boolean })
+      .__NTERACT_DEV_HARNESS_INLINE_WIDGETS__ === true;
+  const onlyWidgetOutputs =
+    outputs.length > 0 && outputs.every((o) => outputIsWidgetOnly(o, priority));
   const shouldIsolate =
     outputs.length > 0 &&
+    !(harnessInlineWidgets && onlyWidgetOutputs) &&
     (isolated === true || (isolated === "auto" && anyOutputNeedsIsolation(outputs, priority)));
 
   // When preloading, we render the iframe even with no outputs (hidden)

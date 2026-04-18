@@ -75,14 +75,18 @@ test("drive an ipywidgets IntSlider and observe frame flow", async () => {
     return;
   }
 
-  // Execute the slider cell. Wait for cell_queued → then for output iframe.
-  const execResult = await window.evaluate(async (cellId) => {
-    return window.electronAPI?.sendRequest({
-      action: "execute_cell",
+  // Clear any stale outputs (cached from prior runs) then run ALL cells in
+  // order so `import ipywidgets as widgets` lands before the slider cell.
+  await window.evaluate(async (cellId) => {
+    await window.electronAPI?.sendRequest({
+      action: "clear_outputs",
       cell_id: cellId,
     });
   }, sliderCellId);
-  process.stdout.write(`[test] execute_cell → ${JSON.stringify(execResult)}\n`);
+  const execResult = await window.evaluate(async () => {
+    return window.electronAPI?.sendRequest({ action: "run_all_cells" });
+  });
+  process.stdout.write(`[test] run_all_cells → ${JSON.stringify(execResult)}\n`);
 
   // Wait for widget output. Widgets render either inside an isolated
   // iframe (heavy renderers) OR directly in the DOM as built-in controls
@@ -123,6 +127,57 @@ test("drive an ipywidgets IntSlider and observe frame flow", async () => {
   //      React components registered in src/components/widgets/controls/,
   //      rendered directly into the parent tree with
   //      data-widget-type="IntSlider".
+  // MediaProvider in App.tsx registers a direct renderer for
+   // `application/vnd.jupyter.widget-view+json` → `<WidgetView />`, so the
+   // control should mount in the parent DOM. The iframe we saw earlier is
+   // for some OTHER output channel (heavy renderers via isolated-frame).
+  const allWidgets = await window.evaluate(() => {
+    const els = Array.from(document.querySelectorAll("[data-widget-type]"));
+    return els.map((el) => ({
+      type: el.getAttribute("data-widget-type"),
+      id: el.getAttribute("data-widget-id"),
+      cellParent: el.closest("[data-cell-id]")?.getAttribute("data-cell-id") ?? null,
+    }));
+  });
+  process.stdout.write(
+    `[test] widgets rendered in parent DOM: ${JSON.stringify(allWidgets)}\n`,
+  );
+
+  // Sanity check: harness flag should be set from the preload.
+  const flag = await window.evaluate(
+    () => (window as unknown as { __NTERACT_DEV_HARNESS_INLINE_WIDGETS__?: boolean })
+      .__NTERACT_DEV_HARNESS_INLINE_WIDGETS__,
+  );
+  process.stdout.write(`[test] harness inline-widgets flag=${flag}\n`);
+
+  // Wait for actual output-item(s) to appear in the slider cell. That's the
+  // signal that the kernel has returned a display_data message and the sync
+  // engine has materialized it. Up to 60s — first-run ipywidgets import can
+  // be slow.
+  const outputsInfo = await window.evaluate(async (id) => {
+    const deadline = Date.now() + 60_000;
+    while (Date.now() < deadline) {
+      const cellEl = document.querySelector(`[data-cell-id="${id}"]`);
+      const items = cellEl
+        ? cellEl.querySelectorAll("[data-slot='output-item'], [data-widget-type]")
+        : null;
+      if (items && items.length > 0) {
+        return {
+          itemCount: items.length,
+          selectors: Array.from(items).map((el) => ({
+            slot: el.getAttribute("data-slot"),
+            widget: el.getAttribute("data-widget-type"),
+            tag: el.tagName,
+            classes: el.className?.slice?.(0, 80),
+          })),
+        };
+      }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    return { error: "no output-item within 60s" };
+  }, sliderCellId);
+  process.stdout.write(`[test] cell outputs info: ${JSON.stringify(outputsInfo)}\n`);
+
   const iframeInfo = await window.evaluate((id) => {
     const frame = document.querySelector(`[data-cell-id="${id}"] iframe`);
     if (!frame) return { present: false };
@@ -132,17 +187,20 @@ test("drive an ipywidgets IntSlider and observe frame flow", async () => {
       sandbox: (frame as HTMLIFrameElement).getAttribute("sandbox"),
       width: (frame as HTMLIFrameElement).clientWidth,
       height: (frame as HTMLIFrameElement).clientHeight,
-      // Whether the iframe's document reports a body element
-      hasBody: (() => {
-        try {
-          return !!(frame as HTMLIFrameElement).contentDocument?.body;
-        } catch {
-          return "cross-origin";
-        }
-      })(),
     };
   }, sliderCellId);
   process.stdout.write(`[test] iframe info: ${JSON.stringify(iframeInfo)}\n`);
+
+  // Look inside the iframe via frameLocator + evaluate. If a slider has
+  // rendered the DOM will include a [role="slider"] element.
+  const iframeContents = await window
+    .frameLocator(`[data-cell-id="${sliderCellId}"] iframe`)
+    .locator("body")
+    .innerHTML()
+    .catch((err: unknown) => `<error: ${(err as Error).message}>`);
+  process.stdout.write(
+    `[test] iframe body length=${iframeContents.length} preview:\n${iframeContents.slice(0, 800)}\n`,
+  );
 
   const hasDirectWidget = await window.evaluate(
     (id) =>
