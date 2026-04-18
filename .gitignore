@@ -52,6 +52,11 @@ dist/
 **/dist/
 *.tsbuildinfo
 
+# Dev-only Electron harness artifacts
+apps/dev-harness-electron/test-results/
+apps/dev-harness-electron/playwright-report/
+apps/dev-harness-electron/.cache/
+
 # Generated isolated-renderer bundle (built from src/isolated-renderer)
 apps/notebook/public/isolated/
 

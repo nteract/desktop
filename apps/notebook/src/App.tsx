@@ -57,7 +57,7 @@ import { KERNEL_STATUS } from "./lib/kernel-status";
 import { logger } from "./lib/logger";
 import { getNotebookCellsSnapshot } from "./lib/notebook-cells";
 import { useDetectRuntime } from "./lib/notebook-metadata";
-import { TauriTransport } from "./lib/tauri-transport";
+import { createTransport } from "./lib/transport";
 import { startWindowFocusHandler } from "./lib/window-focus";
 import type { JupyterOutput } from "./types";
 
@@ -292,7 +292,7 @@ function AppContent() {
   }, []);
 
   // NotebookClient for sending kernel commands via transport
-  const notebookClient = useMemo(() => new NotebookClient({ transport: new TauriTransport() }), []);
+  const notebookClient = useMemo(() => new NotebookClient({ transport: createTransport() }), []);
 
   // Daemon-owned kernel execution
   const {

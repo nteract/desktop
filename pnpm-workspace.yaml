@@ -5,6 +5,8 @@ packages:
 onlyBuiltDependencies:
   - '@fortawesome/fontawesome-free'
   - esbuild
+  - electron
+  - '@playwright/test'
 catalog:
   vite: npm:@voidzero-dev/vite-plus-core@latest
   vitest: npm:@voidzero-dev/vite-plus-test@latest

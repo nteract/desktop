@@ -1,0 +1,17 @@
+{
+  "name": "@nteract/dev-harness-electron",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Dev-only Electron harness for driving the notebook frontend under Playwright. Never shipped.",
+  "main": "src/main/index.js",
+  "scripts": {
+    "dev": "electron src/main/index.js",
+    "test:e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0",
+    "@types/node": "^22.9.0",
+    "electron": "^33.2.0",
+    "typescript": "~5.8.3"
+  }
+}

@@ -26,7 +26,8 @@ import { notifyMetadataChanged, setNotebookHandle } from "../lib/notebook-metada
 import { type PoolState, resetPoolState, setPoolState } from "../lib/pool-state";
 import { type RuntimeState, resetRuntimeState, setRuntimeState } from "../lib/runtime-state";
 import { fromTauriEvent } from "../lib/tauri-rx";
-import { TauriTransport } from "../lib/tauri-transport";
+import type { NotebookTransport } from "runtimed";
+import { createTransport } from "../lib/transport";
 import type { DaemonBroadcast, JupyterOutput } from "../types";
 import init, { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 
@@ -58,7 +59,7 @@ export function useAutomergeNotebook() {
 
   // SyncEngine and transport refs — stable across re-renders.
   const engineRef = useRef<SyncEngine | null>(null);
-  const transportRef = useRef<TauriTransport | null>(null);
+  const transportRef = useRef<NotebookTransport | null>(null);
 
   // Refresh blob port on mount.
   useEffect(() => {
@@ -190,7 +191,7 @@ export function useAutomergeNotebook() {
     let cancelled = false;
 
     // Create transport and engine for this lifecycle.
-    const transport = new TauriTransport();
+    const transport = createTransport();
     const engine = new SyncEngine({
       getHandle: () => handleRef.current as SyncableHandle | null,
       transport,
