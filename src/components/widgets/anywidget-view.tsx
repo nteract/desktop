@@ -289,11 +289,17 @@ export function createAFMModelProxy(
       // Try CRDT path first (writes directly to RuntimeStateDoc,
       // no SendComm round-trip). Falls back to SendComm if CRDT
       // writer isn't available yet.
+      //
+      // The CRDT writer in App.tsx calls `projectLocalState()` after
+      // the write, so the WidgetStore picks up the patch via
+      // `commChanges$` in the same tick. No need for a separate
+      // `store.updateModel(...)` here — that produced duplicate
+      // `change` notifications (one from the optimistic write, one
+      // from the projected emission), causing anywidget listeners
+      // to fire twice per `save_changes`.
       const writer = getCrdtCommWriter();
       if (writer) {
         writer(model.id, patch);
-        // Optimistically update the WidgetStore for instant feedback
-        store.updateModel(model.id, patch);
       } else {
         // Fallback: Send comm_msg with update method to kernel
         sendMessage({

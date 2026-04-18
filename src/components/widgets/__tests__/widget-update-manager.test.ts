@@ -1,18 +1,15 @@
 /**
  * Tests for WidgetUpdateManager — CRDT-first widget state persistence.
  *
- * Post-A2 semantics: no optimistic store update, no debounce, no echo
- * suppression. Every update goes straight to the injected CRDT writer
- * and the widget store is updated by the commChanges$ projection
- * (verified end-to-end in `packages/runtimed/tests/widget-sync-stall.test.ts`).
- *
- * The manager's remaining responsibilities are narrow: bootstrap
- * fallback when the writer isn't registered yet, and mirroring binary
- * buffers into the local widget model since the CRDT doesn't carry
- * ArrayBuffers.
+ * Post-A2 semantics: no optimistic store update, no echo suppression.
+ * Every non-buffer update goes through the injected CRDT writer,
+ * throttled at 50ms per comm so continuous slider drags don't flood
+ * the CRDT. First tick in a burst fires immediately (instant UI via
+ * the projectLocalState → commChanges$ emission); ticks within the
+ * throttle window coalesce into a single trailing flush.
  */
 
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { createWidgetStore } from "../widget-store";
 import { WidgetUpdateManager } from "../widget-update-manager";
 
@@ -39,44 +36,52 @@ function setup(opts?: { writerAvailable?: boolean }) {
 // ── Tests ────────────────────────────────────────────────────────────
 
 describe("WidgetUpdateManager", () => {
-  describe("happy path", () => {
-    it("routes every update straight to the CRDT writer", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  describe("throttling", () => {
+    it("fires the first tick of a burst immediately", () => {
+      const { manager, writerCalls } = setup();
+
+      manager.updateAndPersist("comm-1", { value: 10 });
+
+      expect(writerCalls).toEqual([{ commId: "comm-1", patch: { value: 10 } }]);
+    });
+
+    it("coalesces subsequent ticks within the throttle window", () => {
       const { manager, writerCalls } = setup();
 
       manager.updateAndPersist("comm-1", { value: 10 });
       manager.updateAndPersist("comm-1", { value: 20 });
       manager.updateAndPersist("comm-1", { value: 30 });
 
+      // First tick fired immediately; 20 and 30 are pending.
+      expect(writerCalls).toEqual([{ commId: "comm-1", patch: { value: 10 } }]);
+
+      vi.advanceTimersByTime(60);
+
+      // Trailing flush coalesced the in-window writes into one.
       expect(writerCalls).toEqual([
         { commId: "comm-1", patch: { value: 10 } },
-        { commId: "comm-1", patch: { value: 20 } },
         { commId: "comm-1", patch: { value: 30 } },
       ]);
     });
 
-    it("does not touch the local store on the happy path", () => {
-      // The widget store is driven by the CRDT projection (via
-      // `engine.projectLocalState()` after `set_comm_state_batch`).
-      // The manager itself must not write to the store — otherwise
-      // we'd be back to the pre-A2 dual-source drift.
-      const { store, manager } = setup();
-      const beforeValue = store.getModel("comm-1")?.state.value;
-
-      manager.updateAndPersist("comm-1", { value: 42 });
-
-      // Store state is unchanged — projection happens downstream.
-      expect(store.getModel("comm-1")?.state.value).toBe(beforeValue);
-    });
-
-    it("passes disjoint patches through untouched", () => {
+    it("a write after the throttle window fires immediately again", () => {
       const { manager, writerCalls } = setup();
 
-      manager.updateAndPersist("comm-1", { value: 42 });
-      manager.updateAndPersist("comm-1", { description: "updated" });
+      manager.updateAndPersist("comm-1", { value: 1 });
+      vi.advanceTimersByTime(100);
+      manager.updateAndPersist("comm-1", { value: 2 });
 
       expect(writerCalls).toEqual([
-        { commId: "comm-1", patch: { value: 42 } },
-        { commId: "comm-1", patch: { description: "updated" } },
+        { commId: "comm-1", patch: { value: 1 } },
+        { commId: "comm-1", patch: { value: 2 } },
       ]);
     });
 
@@ -87,19 +92,29 @@ describe("WidgetUpdateManager", () => {
       manager.updateAndPersist("comm-1", { value: 1 });
       manager.updateAndPersist("comm-2", { value: 2 });
 
+      // Both comms get a leading-tick fire — one throttle per comm.
       expect(writerCalls).toEqual([
         { commId: "comm-1", patch: { value: 1 } },
         { commId: "comm-2", patch: { value: 2 } },
       ]);
     });
+
+    it("does not write to the local store on the happy path", () => {
+      // The widget store is driven by the CRDT projection (via
+      // `engine.projectLocalState()` after `set_comm_state_batch`).
+      // The manager itself must not write to the store — otherwise
+      // we'd be back to the pre-A2 dual-source drift.
+      const { store, manager } = setup();
+      const beforeValue = store.getModel("comm-1")?.state.value;
+
+      manager.updateAndPersist("comm-1", { value: 42 });
+
+      expect(store.getModel("comm-1")?.state.value).toBe(beforeValue);
+    });
   });
 
   describe("bootstrap queue", () => {
-    it("queues patches when writer isn't ready and mirrors to local store", () => {
-      // Early session state: CRDT writer hasn't been registered yet
-      // (App.tsx's `setCrdtCommWriter` useEffect hasn't run). The
-      // update is queued so nothing is lost; the store is mirrored
-      // so the UI doesn't stall during bootstrap.
+    it("queues and mirrors when writer isn't ready", () => {
       const { store, manager, writerCalls } = setup({ writerAvailable: false });
 
       manager.updateAndPersist("comm-1", { value: 42 });
@@ -108,11 +123,7 @@ describe("WidgetUpdateManager", () => {
       expect(store.getModel("comm-1")?.state.value).toBe(42);
     });
 
-    it("drains queued patches into the writer on the next update", () => {
-      // Typical bootstrap race: user clicks a widget → writer isn't
-      // registered yet → patch queued. A later call (e.g. model
-      // echo or another interaction) finds the writer registered —
-      // drain the queue before processing the new write.
+    it("drains queued patches on the next update once writer is ready", () => {
       const store = createWidgetStore();
       const writerCalls: Array<{ commId: string; patch: Record<string, unknown> }> = [];
       const writer = (commId: string, patch: Record<string, unknown>) => {
@@ -125,69 +136,79 @@ describe("WidgetUpdateManager", () => {
       });
       store.createModel("comm-1", { value: 0 });
 
-      // Bootstrap write — queued.
       manager.updateAndPersist("comm-1", { value: 42 });
       expect(writerCalls).toHaveLength(0);
 
-      // Writer becomes available.
       writerAvailable = true;
       manager.updateAndPersist("comm-1", { description: "ready" });
 
-      // Queued patch flushes first, then the new one.
+      // Queued patch flushes first, then the new one (leading-tick
+      // fires immediately because the throttle state is fresh).
       expect(writerCalls).toEqual([
         { commId: "comm-1", patch: { value: 42 } },
         { commId: "comm-1", patch: { description: "ready" } },
       ]);
     });
-
-    it("coalesces multiple bootstrap writes on the same comm", () => {
-      const { manager, writerCalls } = setup({ writerAvailable: false });
-      manager.updateAndPersist("comm-1", { value: 1 });
-      manager.updateAndPersist("comm-1", { value: 2 });
-      manager.updateAndPersist("comm-1", { description: "hello" });
-
-      // Drain by providing a writer on the next call.
-      const writer = (commId: string, patch: Record<string, unknown>) => {
-        writerCalls.push({ commId, patch });
-      };
-      const managerRef = manager as unknown as {
-        getCrdtWriter: () => typeof writer | null;
-      };
-      managerRef.getCrdtWriter = () => writer;
-      manager.updateAndPersist("comm-2", { value: 99 });
-
-      // The coalesced patch has the last value for `value` plus the
-      // description — last-wins merge on key collision.
-      expect(writerCalls).toEqual([
-        { commId: "comm-1", patch: { value: 2, description: "hello" } },
-        { commId: "comm-2", patch: { value: 99 } },
-      ]);
-    });
   });
 
   describe("binary buffers", () => {
-    it("sends patch through CRDT writer and buffers into local store", () => {
-      // CRDT doesn't carry ArrayBuffers; keep the legacy behavior of
-      // stashing buffers on the local widget model so anywidgets can
-      // read back from `model.buffers`. Kernel delivery of the buffers
-      // themselves is handled elsewhere (SendComm RPC).
+    it("bypasses the throttle and mirrors buffers to the store", () => {
       const { store, manager, writerCalls } = setup();
-      const buffer = new ArrayBuffer(8);
+      const buf1 = new ArrayBuffer(4);
+      const buf2 = new ArrayBuffer(4);
 
-      manager.updateAndPersist("comm-1", { value: 42 }, [buffer]);
+      manager.updateAndPersist("comm-1", { value: 1 }, [buf1]);
+      manager.updateAndPersist("comm-1", { value: 2 }, [buf2]);
 
-      expect(writerCalls).toEqual([{ commId: "comm-1", patch: { value: 42 } }]);
-      expect(store.getModel("comm-1")?.buffers).toContain(buffer);
+      // Both writes fired immediately — buffers can't be merged and
+      // delaying them would corrupt anywidget model.buffers order.
+      expect(writerCalls).toEqual([
+        { commId: "comm-1", patch: { value: 1 } },
+        { commId: "comm-1", patch: { value: 2 } },
+      ]);
+      expect(store.getModel("comm-1")?.buffers).toContain(buf2);
     });
   });
 
   describe("lifecycle", () => {
-    it("reset / dispose / clearComm are all no-ops post-A2", () => {
-      // Kept on the API so the calling sites in App.tsx don't have
-      // to change. Assert they don't throw — no state to reset.
+    it("reset clears pending throttle state", () => {
+      const { manager, writerCalls } = setup();
+
+      manager.updateAndPersist("comm-1", { value: 1 });
+      manager.updateAndPersist("comm-1", { value: 2 });
+
+      // Reset before the trailing edge fires — the pending write
+      // must be dropped so it doesn't reach a (potentially new) kernel.
+      manager.reset();
+      vi.advanceTimersByTime(100);
+
+      expect(writerCalls).toEqual([{ commId: "comm-1", patch: { value: 1 } }]);
+    });
+
+    it("clearComm drops only that comm's state", () => {
+      const { store, manager, writerCalls } = setup();
+      store.createModel("comm-2", { value: 0 });
+
+      manager.updateAndPersist("comm-1", { value: 1 });
+      manager.updateAndPersist("comm-2", { value: 2 });
+      manager.updateAndPersist("comm-1", { value: 10 });
+      manager.updateAndPersist("comm-2", { value: 20 });
+
+      manager.clearComm("comm-1");
+      vi.advanceTimersByTime(100);
+
+      // comm-1's trailing write was dropped; comm-2's fired.
+      expect(writerCalls).toEqual([
+        { commId: "comm-1", patch: { value: 1 } },
+        { commId: "comm-2", patch: { value: 2 } },
+        { commId: "comm-2", patch: { value: 20 } },
+      ]);
+    });
+
+    it("dispose is idempotent and clears everything", () => {
       const { manager } = setup();
-      expect(() => manager.reset()).not.toThrow();
-      expect(() => manager.clearComm("comm-1")).not.toThrow();
+      manager.updateAndPersist("comm-1", { value: 1 });
+      expect(() => manager.dispose()).not.toThrow();
       expect(() => manager.dispose()).not.toThrow();
     });
   });

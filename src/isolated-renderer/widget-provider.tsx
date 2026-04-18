@@ -85,10 +85,18 @@ export function IframeWidgetStoreProvider({ children }: IframeWidgetStoreProvide
     };
   }, [client]);
 
-  // Set up link subscriptions (jslink/jsdlink)
+  // Set up link subscriptions (jslink/jsdlink). Frontend-only by
+  // ipywidgets semantics — mirrored into the local iframe store
+  // without bouncing back through `client.sendUpdate` (which would
+  // post the change to the parent / daemon / kernel). Python-side
+  // `widgets.link` already flows through the normal traitlet path
+  // and needs no frontend special-casing.
   useEffect(
-    () => createLinkManager(client.store, client.sendUpdate),
-    [client.store, client.sendUpdate],
+    () =>
+      createLinkManager(client.store, (commId, patch) => {
+        client.store.updateModel(commId, patch);
+      }),
+    [client.store],
   );
 
   // Set up canvas manager router (ipycanvas)

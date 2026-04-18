@@ -8,10 +8,17 @@
  * That reconciliation grew the widget-sync stall described in
  * `docs/superpowers/specs/2026-04-17-widget-sync-stall-design.md`.
  *
- * Track A collapses it into a single source of truth: every write goes
+ * Track A collapsed it into a single source of truth: every write goes
  * to the CRDT, and the `WidgetStore` updates purely from
- * `commChanges$` — local writes included, because `SyncEngine.projectLocalState`
- * fires the projection synchronously after `set_comm_state_batch`.
+ * `commChanges$`. Local writes arrive via the same path because
+ * `SyncEngine.projectLocalState` fires the projection synchronously
+ * after `set_comm_state_batch`.
+ *
+ * The outbound write rate is throttled per comm so a continuous slider
+ * drag doesn't produce ~60 CRDT writes/sec. First tick fires
+ * immediately (instant UI feedback via the projected emission);
+ * subsequent ticks within the throttle window accumulate into a single
+ * trailing write.
  */
 
 import type { WidgetStore } from "./widget-store";
@@ -23,24 +30,37 @@ export interface WidgetUpdateManagerOptions {
   getCrdtWriter: () => CrdtCommWriter | null;
 }
 
-/**
- * Poll interval for draining queued writes while the CRDT writer is
- * still null. Keeps the drain small & bounded without needing the
- * caller to explicitly kick the manager.
- */
+/** Throttle window for outbound CRDT writes per comm (ms). */
+const THROTTLE_MS = 50;
+
+/** Poll interval for draining the pending queue while no writer is set. */
 const DRAIN_POLL_MS = 50;
+
+interface CommThrottleState {
+  /** Latest accumulated patch waiting to be flushed, or null. */
+  pending: Record<string, unknown> | null;
+  /** Wall-clock ms of the last successful flush for this comm. */
+  lastFlushAt: number;
+  /** Trailing-edge flush timer handle, or null. */
+  trailingTimer: ReturnType<typeof setTimeout> | null;
+}
 
 export class WidgetUpdateManager {
   private readonly getStore: () => WidgetStore | null;
   private readonly getCrdtWriter: () => CrdtCommWriter | null;
 
   /**
-   * Patches that arrived before the CRDT writer was registered.
-   * Keyed by commId, last-wins on key collision (each patch is
-   * merged onto the previous with `{ ...existing, ...patch }`).
-   * Drained as soon as a writer becomes available.
+   * Per-comm throttle bookkeeping. Leading tick fires immediately,
+   * subsequent ticks within `THROTTLE_MS` accumulate into `pending`
+   * and fire together on the trailing-edge timer.
    */
-  private pendingQueue = new Map<string, Record<string, unknown>>();
+  private throttles = new Map<string, CommThrottleState>();
+
+  /**
+   * Patches that arrived before the CRDT writer was registered.
+   * Separate from `throttles` because the writer isn't callable yet.
+   */
+  private bootstrapQueue = new Map<string, Record<string, unknown>>();
   private drainTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(opts: WidgetUpdateManagerOptions) {
@@ -51,58 +71,107 @@ export class WidgetUpdateManager {
   /**
    * Persist a widget state update.
    *
-   * Writes the patch to the CRDT via the injected writer (which also
-   * fires `projectLocalState` on the sync engine, so the widget store
-   * sees the update in the same tick). No optimistic store write, no
-   * echo suppression — the CRDT is the single source of truth.
+   * Throttled per comm so bursts (slider drags, text input) coalesce
+   * to one write per `THROTTLE_MS`. The first write in a burst fires
+   * immediately — the user sees instant feedback via the
+   * `projectLocalState` → `commChanges$` → WidgetStore path. Ticks
+   * within the window accumulate last-wins into the trailing flush.
    *
-   * If the CRDT writer isn't available yet (early bootstrap before
-   * `setCrdtCommWriter` has run), the patch is queued and the UI
-   * still gets an instant store mirror so the user isn't stuck on a
-   * blank control. When the writer shows up, queued patches flush in
-   * insertion order and the daemon receives them as if the user had
-   * acted slightly later.
-   *
-   * Binary buffers aren't representable in the Automerge CRDT, so we
-   * mirror them into the local widget model. Kernel delivery of
-   * binary buffers goes through the SendComm RPC path in
-   * `use-comm-router.ts` (untouched by this refactor).
+   * Binary buffers bypass throttling and are mirrored directly to
+   * the local widget model (CRDT doesn't carry ArrayBuffers;
+   * kernel delivery of buffers goes through the SendComm RPC path
+   * elsewhere).
    */
   updateAndPersist(commId: string, patch: Record<string, unknown>, buffers?: ArrayBuffer[]): void {
     const writer = this.getCrdtWriter();
-    if (writer) {
-      // Drain anything queued before this writer became available.
-      this.drainPending(writer);
-      writer(commId, patch);
-    } else {
-      // Bootstrap: accumulate on the pending queue until the CRDT
-      // writer shows up. We also mirror the patch to the local store
-      // so the UI doesn't stall — `projectLocalState` will re-emit
-      // the value once the writer drains our queue.
-      const existing = this.pendingQueue.get(commId) ?? {};
-      this.pendingQueue.set(commId, { ...existing, ...patch });
-      this.getStore()?.updateModel(commId, patch, buffers);
-      this.scheduleDrain();
+    if (!writer) {
+      this.queueForBootstrap(commId, patch, buffers);
+      return;
     }
-    if (writer && buffers?.length) {
-      // Buffers ride alongside the CRDT state on the local widget
-      // model. Kernel delivery is handled elsewhere (SendComm RPC).
+
+    // Drain any bootstrap-queue leftovers before processing new
+    // writes. Ensures pre-writer patches reach the CRDT in insertion
+    // order, even if they landed minutes ago.
+    this.drainBootstrap(writer);
+
+    if (buffers?.length) {
+      // Buffers bypass the throttle: ArrayBuffers aren't patchable
+      // through Automerge, and delaying them would corrupt
+      // anywidget model.buffers ordering.
+      writer(commId, patch);
       this.getStore()?.updateModel(commId, {}, buffers);
+      return;
+    }
+
+    this.scheduleThrottled(commId, patch, writer);
+  }
+
+  private scheduleThrottled(
+    commId: string,
+    patch: Record<string, unknown>,
+    writer: CrdtCommWriter,
+  ): void {
+    const now = Date.now();
+    let state = this.throttles.get(commId);
+    if (!state) {
+      state = { pending: null, lastFlushAt: 0, trailingTimer: null };
+      this.throttles.set(commId, state);
+    }
+
+    const sinceLast = now - state.lastFlushAt;
+    if (sinceLast >= THROTTLE_MS && state.trailingTimer === null) {
+      // Leading tick — flush immediately.
+      writer(commId, patch);
+      state.lastFlushAt = now;
+      return;
+    }
+
+    // Burst in progress — accumulate and schedule the trailing fire.
+    state.pending = state.pending ? { ...state.pending, ...patch } : { ...patch };
+    if (state.trailingTimer === null) {
+      const wait = Math.max(0, THROTTLE_MS - sinceLast);
+      state.trailingTimer = setTimeout(() => this.fireTrailing(commId), wait);
     }
   }
 
-  /**
-   * Drain the pending queue through the supplied writer. Called
-   * opportunistically on the next `updateAndPersist` once the writer
-   * is registered, and on the polling timer for the "no new writes
-   * arrived but writer just became available" case.
-   */
-  private drainPending(writer: CrdtCommWriter): void {
-    if (this.pendingQueue.size === 0) return;
-    for (const [commId, patch] of this.pendingQueue) {
+  private fireTrailing(commId: string): void {
+    const state = this.throttles.get(commId);
+    if (!state) return;
+    state.trailingTimer = null;
+    const patch = state.pending;
+    state.pending = null;
+    if (!patch) return;
+    const writer = this.getCrdtWriter();
+    if (!writer) {
+      // Writer vanished mid-throttle (reset, unmount). Redirect to
+      // the bootstrap queue so the change isn't lost if a new
+      // writer shows up later.
+      this.queueForBootstrap(commId, patch);
+      return;
+    }
+    writer(commId, patch);
+    state.lastFlushAt = Date.now();
+  }
+
+  private queueForBootstrap(
+    commId: string,
+    patch: Record<string, unknown>,
+    buffers?: ArrayBuffer[],
+  ): void {
+    const existing = this.bootstrapQueue.get(commId) ?? {};
+    this.bootstrapQueue.set(commId, { ...existing, ...patch });
+    // Mirror the patch to the local store so the UI isn't stuck on
+    // the pre-interaction value during bootstrap.
+    this.getStore()?.updateModel(commId, patch, buffers);
+    this.scheduleDrain();
+  }
+
+  private drainBootstrap(writer: CrdtCommWriter): void {
+    if (this.bootstrapQueue.size === 0) return;
+    for (const [commId, patch] of this.bootstrapQueue) {
       writer(commId, patch);
     }
-    this.pendingQueue.clear();
+    this.bootstrapQueue.clear();
     if (this.drainTimer) {
       clearTimeout(this.drainTimer);
       this.drainTimer = null;
@@ -115,38 +184,40 @@ export class WidgetUpdateManager {
       this.drainTimer = null;
       const writer = this.getCrdtWriter();
       if (writer) {
-        this.drainPending(writer);
-      } else if (this.pendingQueue.size > 0) {
+        this.drainBootstrap(writer);
+      } else if (this.bootstrapQueue.size > 0) {
         this.scheduleDrain();
       }
     }, DRAIN_POLL_MS);
   }
 
   /**
-   * Reset any per-comm bookkeeping. Also drops the pending queue:
-   * a kernel restart invalidates optimistic state the old kernel was
-   * going to receive, so replaying queued writes into a fresh kernel
-   * would be worse than losing them.
+   * Reset all bookkeeping — called on kernel restart. Drops pending
+   * throttle state and the bootstrap queue: patches the old kernel
+   * would have received shouldn't reach a freshly-launched one.
    */
   reset(): void {
-    this.pendingQueue.clear();
+    for (const state of this.throttles.values()) {
+      if (state.trailingTimer) clearTimeout(state.trailingTimer);
+    }
+    this.throttles.clear();
+    this.bootstrapQueue.clear();
     if (this.drainTimer) {
       clearTimeout(this.drainTimer);
       this.drainTimer = null;
     }
   }
 
-  /**
-   * Tear down.
-   */
+  /** Tear down. */
   dispose(): void {
     this.reset();
   }
 
-  /**
-   * Drop pending state for a specific comm (called on comm_close).
-   */
+  /** Drop per-comm state on comm_close. */
   clearComm(commId: string): void {
-    this.pendingQueue.delete(commId);
+    const state = this.throttles.get(commId);
+    if (state?.trailingTimer) clearTimeout(state.trailingTimer);
+    this.throttles.delete(commId);
+    this.bootstrapQueue.delete(commId);
   }
 }
