@@ -1,5 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { NotebookClient } from "runtimed";
 import { IsolationTest } from "@/components/isolated";
@@ -42,6 +40,7 @@ import { useTrust } from "./hooks/useTrust";
 import { useUpdater } from "./hooks/useUpdater";
 import { startAttributionDispatch } from "./lib/attribution-registry";
 import { getBlobPort, useBlobPort } from "./lib/blob-port";
+import { subscribeBroadcast } from "./lib/notebook-frame-bus";
 import {
   flushCellUIState,
   setExecutingCellIds as storeSetExecutingCellIds,
@@ -126,6 +125,7 @@ function resolveCommOutputs(
 }
 
 function AppContent() {
+  const host = useNotebookHost();
   const gitInfo = useGitInfo();
   const daemonInfo = useDaemonInfo();
 
@@ -151,8 +151,8 @@ function AppContent() {
   // Re-establish CodeMirror input context on window reactivation.
   // Without this, WKWebView may drop the first few keystrokes after Cmd+Tab.
   useEffect(() => {
-    return startWindowFocusHandler();
-  }, []);
+    return startWindowFocusHandler(host);
+  }, [host]);
 
   const {
     cellIds,
@@ -230,6 +230,19 @@ function AppContent() {
   const [runtimeHint, setRuntimeHint] = useState<string | null>(null);
   const runtime = detectedRuntime ?? runtimeHint;
 
+  // `true` when the room is in-memory only (untitled); reported by the daemon
+  // via `daemon:ready`. Drives the always-dirty titlebar asterisk. Null until
+  // the first ready event lands — treated conservatively as "unknown, assume
+  // persisted" so we don't flash an asterisk on open-from-disk notebooks.
+  const [ephemeral, setEphemeral] = useState<boolean | null>(null);
+
+  // Canonical window-title base. Bootstrapped from the host on mount (Rust
+  // sets it to the filename or "Untitled.ipynb" at window creation), then
+  // updated on `path_changed` broadcasts. Used to compute the title asterisk
+  // without a getTitle-then-setTitle round-trip that would race with the
+  // concurrent Rust-side title update from `applyPathChanged`.
+  const [titleBase, setTitleBase] = useState<string | null>(null);
+
   // Auto-clear justSynced after 3 seconds
   useEffect(() => {
     if (!justSynced) return;
@@ -292,7 +305,6 @@ function AppContent() {
   // NotebookClient for sending kernel commands via transport. The host's
   // transport is the single instance shared with the SyncEngine in
   // useAutomergeNotebook — no more separate connection per consumer.
-  const host = useNotebookHost();
   const notebookClient = useMemo(() => new NotebookClient({ transport: host.transport }), [host]);
 
   // Daemon-owned kernel execution
@@ -834,28 +846,43 @@ function AppContent() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [save]);
 
-  // Show asterisk in window title when notebook has unsaved changes.
-  // Untitled notebooks (no file path) always show the asterisk.
+  // Derive a filename + ephemeral flag from a path (or its absence). Shared
+  // between the mount-time `getReadyInfo` pull, the `daemon:ready` event, and
+  // the `path_changed` broadcast. Keeping all three paths identical prevents
+  // "one of them forgot to update titleBase" bugs.
+  const applyNotebookPath = useCallback((path: string | null | undefined) => {
+    if (path) {
+      const parts = path.split(/[\\/]/);
+      setTitleBase(parts[parts.length - 1] || "Untitled.ipynb");
+      setEphemeral(false);
+    } else {
+      setTitleBase("Untitled.ipynb");
+      setEphemeral(true);
+    }
+  }, []);
+
+  // Path transitions. `path_changed` with a non-null path means the room is
+  // now file-backed — flip ephemeral false and update the title base. A null
+  // path puts the room back into untitled state.
   useEffect(() => {
-    let cancelled = false;
-    const win = getCurrentWindow();
-    (async () => {
-      try {
-        const currentTitle = await win.title();
-        if (cancelled) return;
-        const base = currentTitle.replace(/^\* /, "");
-        const hasPath = await invoke<boolean>("has_notebook_path");
-        if (cancelled) return;
-        const showDirty = dirty || !hasPath;
-        await win.setTitle(showDirty ? `* ${base}` : base);
-      } catch {
-        // Window may have been closed between rapid dirty toggles
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [dirty]);
+    return subscribeBroadcast((payload) => {
+      const b = payload as { event?: string; path?: string | null };
+      if (b.event !== "path_changed") return;
+      applyNotebookPath(b.path);
+    });
+  }, [applyNotebookPath]);
+
+  // Render the asterisk purely from frontend state. `titleBase` is the
+  // filename, `dirty || ephemeral` adds the prefix. One setTitle per change;
+  // no read-then-write race against `applyPathChanged`.
+  useEffect(() => {
+    if (titleBase == null) return;
+    const showDirty = dirty || ephemeral === true;
+    const next = showDirty ? `* ${titleBase}` : titleBase;
+    host.window.setTitle(next).catch(() => {
+      // Window may have been closed between rapid dirty toggles
+    });
+  }, [host, dirty, ephemeral, titleBase]);
 
   // Cmd+F to open global find
   useEffect(() => {
@@ -996,16 +1023,40 @@ function AppContent() {
       });
     });
 
-    // Listen for daemon ready (reconnection success)
-    const unlistenReady = host.daemonEvents.onReady((payload) => {
-      // Clear any status banner when daemon reconnects (failed, checking, etc.)
+    // Shared handler for both the live event and the cached backfill below.
+    // Factored out so the two paths can never drift.
+    const handleReady = (
+      payload:
+        | {
+            runtime?: string;
+            ephemeral?: boolean;
+            notebook_path?: string | null;
+          }
+        | null
+        | undefined,
+    ) => {
       cancelReadyTimeout();
       setDaemonStatus(null);
       // Set or clear the runtime hint — clearing prevents stale hints
       // when a window is reused to open a different notebook (Open path
       // sends runtime: null).
       setRuntimeHint(payload?.runtime ?? null);
-    });
+      // Sync titlebar: derive filename + ephemeral from the path carried
+      // on the ready payload.
+      if (payload) {
+        if (typeof payload.ephemeral === "boolean") {
+          applyNotebookPath(payload.ephemeral ? null : (payload.notebook_path ?? null));
+        } else if (payload.notebook_path !== undefined) {
+          applyNotebookPath(payload.notebook_path);
+        }
+      }
+    };
+
+    // Listen for daemon ready (reconnection success, Finder-reuse of an
+    // untitled window into a file-backed one, etc.). `onReady` internally
+    // also backfills from the Rust-side cache, so a `daemon:ready` that
+    // fired before this subscription still hydrates the state.
+    const unlistenReady = host.daemonEvents.onReady(handleReady);
 
     // Check daemon status on mount (in case events fired before React was ready)
     // Small delay to let initial events settle
@@ -1034,7 +1085,7 @@ function AppContent() {
       unlistenUnavailable();
       unlistenReady();
     };
-  }, [host]);
+  }, [host, applyNotebookPath]);
 
   // Cmd+Shift+I to toggle isolation test panel (dev only)
   useEffect(() => {

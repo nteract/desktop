@@ -60,6 +60,13 @@ export interface TyposquatWarning {
 }
 
 export interface DaemonReadyPayload {
+  notebook_id?: string;
+  cell_count?: number;
+  needs_trust_approval?: boolean;
+  /** In-memory-only notebook (no on-disk path). Drives the always-dirty asterisk. */
+  ephemeral?: boolean;
+  /** On-disk path if the notebook is file-backed. Derives the titlebar filename. */
+  notebook_path?: string | null;
   runtime?: string;
 }
 
@@ -87,6 +94,13 @@ export interface HostDaemon {
   reconnect(): Promise<void>;
   /** Daemon diagnostics for banners / debug UI. */
   getInfo(): Promise<DaemonInfo | null>;
+  /**
+   * Pull the most-recent `daemon:ready` payload for this window, or null if
+   * one hasn't landed yet. Used by late-mounted consumers to backfill state
+   * that was emitted before any JS listener was attached — Tauri webview
+   * events aren't sticky, so the event-based path can miss the first fire.
+   */
+  getReadyInfo(): Promise<DaemonReadyPayload | null>;
 }
 
 /** Blob store — the daemon's HTTP blob server port. */
@@ -141,12 +155,37 @@ export interface HostRelay {
   notifySyncReady(): Promise<void>;
 }
 
-/** Notebook-scoped state transitions the UI sometimes has to announce to the host. */
+/**
+ * Notebook-scoped state transitions the UI sometimes has to announce to the host.
+ *
+ * NOTE: the `applyPathChanged` / `markClean` pair is a legacy shadow of state
+ * the daemon already owns (last-saved heads vs current heads for dirty; the
+ * `NotebookSession` for path). We keep them on the host for now because the
+ * Tauri Rust side still maintains a `WindowNotebookRegistry` that the window
+ * title setter reads from. Once the frontend reads path + dirty directly from
+ * daemon state / RuntimeStateDoc, these two methods and their Tauri commands
+ * (`apply_path_changed`, `mark_notebook_clean`, `has_notebook_path`) all go.
+ */
 export interface HostNotebook {
   /** Daemon's path for this room changed (save / save-as); flushed to window state. */
   applyPathChanged(path: string): Promise<void>;
   /** Daemon autosaved the doc; clear frontend dirty marker. */
   markClean(): Promise<void>;
+}
+
+/**
+ * OS window chrome. Read/write the title (for the dirty asterisk) and
+ * subscribe to focus changes (for keyboard-input-context restoration on
+ * WKWebView reactivation).
+ *
+ * `onFocusChange` is the host-level / OS-attributed focus signal. The
+ * frontend also listens to the DOM-level `window.addEventListener("focus")`
+ * for a fast path; these are belt-and-suspenders layers.
+ */
+export interface HostWindow {
+  getTitle(): Promise<string>;
+  setTitle(title: string): Promise<void>;
+  onFocusChange(cb: (focused: boolean) => void): Unlisten;
 }
 
 /** Non-specific system metadata. */
@@ -190,6 +229,7 @@ export interface NotebookHost {
   readonly trust: HostTrust;
   readonly deps: HostDeps;
   readonly notebook: HostNotebook;
+  readonly window: HostWindow;
   readonly system: HostSystem;
   /**
    * Typed action bus shared between host UI surfaces (menus, keyboard,

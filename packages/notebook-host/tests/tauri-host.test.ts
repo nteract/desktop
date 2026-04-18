@@ -33,6 +33,15 @@ vi.mock("@tauri-apps/api/core", () => ({
         return Promise.resolve([]);
       case "get_username":
         return Promise.resolve("kyle");
+      case "get_daemon_ready_info":
+        return Promise.resolve({
+          notebook_id: "nb-1",
+          cell_count: 2,
+          needs_trust_approval: false,
+          ephemeral: true,
+          notebook_path: null,
+          runtime: "python",
+        });
       default:
         return Promise.resolve(undefined);
     }
@@ -47,6 +56,23 @@ vi.mock("@tauri-apps/api/webview", () => ({
       return mockUnlisten;
     }),
     setZoom: vi.fn(),
+  }),
+}));
+
+const mockWindowUnlisten = vi.fn();
+let capturedFocusCb: ((ev: { payload: boolean }) => void) | null = null;
+let mockWindowTitle = "notebook";
+
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({
+    title: vi.fn(async () => mockWindowTitle),
+    setTitle: vi.fn(async (t: string) => {
+      mockWindowTitle = t;
+    }),
+    onFocusChanged: vi.fn(async (cb: (ev: { payload: boolean }) => void) => {
+      capturedFocusCb = cb;
+      return mockWindowUnlisten;
+    }),
   }),
 }));
 
@@ -85,6 +111,9 @@ beforeEach(() => {
   capturedListens.length = 0;
   pluginLogCalls.length = 0;
   mockUnlisten.mockReset();
+  mockWindowUnlisten.mockReset();
+  capturedFocusCb = null;
+  mockWindowTitle = "notebook";
 });
 
 describe("createTauriHost()", () => {
@@ -115,6 +144,15 @@ describe("createTauriHost()", () => {
       is_dev_mode: true,
     });
     expect(capturedInvokes.at(-1)?.cmd).toBe("get_daemon_info");
+  });
+
+  it("routes daemon.getReadyInfo to get_daemon_ready_info and passes ephemeral + path through", async () => {
+    const host = createTauriHost({ transport: stubTransport });
+    const info = await host.daemon.getReadyInfo();
+    expect(capturedInvokes.at(-1)?.cmd).toBe("get_daemon_ready_info");
+    expect(info?.ephemeral).toBe(true);
+    expect(info?.notebook_path).toBe(null);
+    expect(info?.runtime).toBe("python");
   });
 
   it("routes blobs.port to get_blob_port", async () => {
@@ -175,10 +213,59 @@ describe("createTauriHost()", () => {
     const entry = capturedListens.find((x) => x.event === "daemon:ready");
     expect(entry).toBeTruthy();
     entry?.cb({ payload: { runtime: "python" } });
-    expect(received).toEqual([{ runtime: "python" }]);
+    expect(received).toContainEqual({ runtime: "python" });
     unlisten();
     await Promise.resolve();
     expect(mockUnlisten).toHaveBeenCalledTimes(1);
+  });
+
+  it("daemonEvents.onReady also backfills cached payload from get_daemon_ready_info", async () => {
+    const host = createTauriHost({ transport: stubTransport });
+    const received: unknown[] = [];
+    host.daemonEvents.onReady((p) => received.push(p));
+    // Let both the listen() promise and the get_daemon_ready_info invoke
+    // settle. Two awaits covers the two-step promise chain inside onReady.
+    await Promise.resolve();
+    await Promise.resolve();
+    // Mock returns the canned ready info (ephemeral=true, runtime=python).
+    expect(received).toContainEqual({
+      notebook_id: "nb-1",
+      cell_count: 2,
+      needs_trust_approval: false,
+      ephemeral: true,
+      notebook_path: null,
+      runtime: "python",
+    });
+  });
+
+  it("daemonEvents.onReady drops the cached backfill when unlistened before resolution", async () => {
+    const host = createTauriHost({ transport: stubTransport });
+    const received: unknown[] = [];
+    const unlisten = host.daemonEvents.onReady((p) => received.push(p));
+    // Unlisten BEFORE any promises resolve. StrictMode's double-mount
+    // dispose exercises exactly this timing.
+    unlisten();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(received).toEqual([]);
+  });
+
+  it("daemonEvents.onReady ignores live emissions after unlisten", async () => {
+    const host = createTauriHost({ transport: stubTransport });
+    const received: unknown[] = [];
+    const unlisten = host.daemonEvents.onReady((p) => received.push(p));
+    // Let both the cache backfill and listen() promise settle before the
+    // interesting part of the test.
+    await Promise.resolve();
+    await Promise.resolve();
+    const entry = capturedListens.find((x) => x.event === "daemon:ready");
+    // Reset before testing post-unlisten behavior specifically.
+    const countBefore = received.length;
+    unlisten();
+    // Simulate a late live emission (Tauri-side unlisten hasn't been
+    // processed yet). The JS-side wrapper must gate on `cancelled`.
+    entry?.cb({ payload: { runtime: "deno" } });
+    expect(received.length).toBe(countBefore);
   });
 
   it("relay.notifySyncReady invokes notify_sync_ready (not on daemonEvents)", async () => {
@@ -241,6 +328,28 @@ describe("createTauriHost()", () => {
     // Let the async run() call settle.
     await Promise.resolve();
     expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("window.getTitle / setTitle route to getCurrentWindow", async () => {
+    const host = createTauriHost({ transport: stubTransport });
+    await expect(host.window.getTitle()).resolves.toBe("notebook");
+    await host.window.setTitle("* notebook");
+    await expect(host.window.getTitle()).resolves.toBe("* notebook");
+  });
+
+  it("window.onFocusChange forwards focused boolean and returns a working unlisten", async () => {
+    const host = createTauriHost({ transport: stubTransport });
+    const seen: boolean[] = [];
+    const unlisten = host.window.onFocusChange((focused) => seen.push(focused));
+    // Flush the onFocusChanged() promise so the cb is registered.
+    await Promise.resolve();
+    expect(capturedFocusCb).toBeTruthy();
+    capturedFocusCb?.({ payload: true });
+    capturedFocusCb?.({ payload: false });
+    expect(seen).toEqual([true, false]);
+    unlisten();
+    await Promise.resolve();
+    expect(mockWindowUnlisten).toHaveBeenCalledTimes(1);
   });
 
   it("host.log forwards each level to plugin-log", () => {

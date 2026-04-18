@@ -178,9 +178,16 @@ struct DaemonStatusState(Arc<Mutex<Option<runtimed::client::DaemonProgress>>>);
 ///
 /// On the first connection the relay blocks until the JS calls `notify_sync_ready`.
 /// On reconnection the flag is already `true`, so frames flow immediately.
+///
+/// Also caches the most-recent `daemon:ready` payload per window so that
+/// `notify_sync_ready` can re-emit it for late-mounted JS listeners. Tauri
+/// webview events aren't sticky — if Rust emits `daemon:ready` before the
+/// React tree has called `host.daemonEvents.onReady(...)`, the event is lost.
+/// Re-emitting on sync-ready closes that race.
 #[derive(Clone, Default)]
 struct SyncReadyState {
     senders: Arc<Mutex<HashMap<String, tokio::sync::watch::Sender<bool>>>>,
+    last_ready: Arc<Mutex<HashMap<String, DaemonReadyPayload>>>,
 }
 
 impl SyncReadyState {
@@ -219,6 +226,53 @@ impl SyncReadyState {
             .or_insert_with(|| tokio::sync::watch::channel(false).0);
         tx.subscribe()
     }
+
+    /// Record the most-recent `daemon:ready` payload for this window, so
+    /// late-mounted JS listeners can pull it via `get_daemon_ready_info`.
+    fn record_ready(&self, label: &str, payload: DaemonReadyPayload) {
+        let mut cache = match self.last_ready.lock() {
+            Ok(c) => c,
+            Err(e) => e.into_inner(),
+        };
+        cache.insert(label.to_string(), payload);
+    }
+
+    /// Look up the cached payload on demand. Idempotent — multiple callers
+    /// during startup all see the same value.
+    fn get_cached_ready(&self, label: &str) -> Option<DaemonReadyPayload> {
+        let cache = match self.last_ready.lock() {
+            Ok(c) => c,
+            Err(e) => e.into_inner(),
+        };
+        cache.get(label).cloned()
+    }
+
+    /// Update the cached payload's `ephemeral` + `notebook_path` fields to
+    /// reflect a path transition. Called from `apply_path_changed` so a
+    /// React remount (error boundary, HMR) that hits `get_daemon_ready_info`
+    /// after a save-as/rename sees the *current* path instead of the one
+    /// that happened to be authoritative at initial connect.
+    fn update_cached_path(&self, label: &str, path: Option<&str>) {
+        let mut cache = match self.last_ready.lock() {
+            Ok(c) => c,
+            Err(e) => e.into_inner(),
+        };
+        if let Some(p) = cache.get_mut(label) {
+            p.notebook_path = path.map(|s| s.to_string());
+            p.ephemeral = path.is_none();
+        }
+    }
+
+    /// Drop the cached payload for this window. Called on daemon disconnect
+    /// so a late-mounting `host.daemonEvents.onReady` doesn't see a stale
+    /// "ready" payload while the relay is actually down.
+    fn clear_cached_ready(&self, label: &str) {
+        let mut cache = match self.last_ready.lock() {
+            Ok(c) => c,
+            Err(e) => e.into_inner(),
+        };
+        cache.remove(label);
+    }
 }
 
 use std::path::{Path, PathBuf};
@@ -235,6 +289,16 @@ struct DaemonReadyPayload {
     notebook_id: String,
     cell_count: usize,
     needs_trust_approval: bool,
+    /// Whether this notebook is in-memory only (no on-disk path).
+    /// Drives the always-dirty titlebar asterisk for untitled notebooks
+    /// without a Tauri round-trip.
+    ephemeral: bool,
+    /// On-disk path if the notebook is file-backed. Used by the frontend
+    /// to derive the titlebar filename, including after a Finder-reuse flow
+    /// (macOS opens a file into an existing untitled window — no
+    /// `PathChanged` broadcast fires because the path was set before the
+    /// room was reconnected).
+    notebook_path: Option<String>,
     /// Runtime hint so the frontend can show the correct UI before metadata syncs.
     /// Only set for Create (where we know the exact runtime); None for Open
     /// (where the actual runtime is determined from the file's metadata).
@@ -596,6 +660,7 @@ async fn initialize_notebook_sync_open(
 
     let (frame_tx, raw_frame_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
 
+    let path_for_payload = path.to_string_lossy().to_string();
     let result = notebook_sync::connect::connect_open_relay(socket_path, path, frame_tx)
         .await
         .map_err(|e| format!("sync connect (open): {}", e))?;
@@ -617,6 +682,8 @@ async fn initialize_notebook_sync_open(
         notebook_id: info.notebook_id.clone(),
         cell_count: info.cell_count,
         needs_trust_approval: info.needs_trust_approval,
+        ephemeral: info.ephemeral,
+        notebook_path: Some(path_for_payload),
         runtime: None,
     };
 
@@ -687,6 +754,10 @@ async fn initialize_notebook_sync_create(
         notebook_id: info.notebook_id.clone(),
         cell_count: info.cell_count,
         needs_trust_approval: info.needs_trust_approval,
+        ephemeral: info.ephemeral,
+        // Create mode has no on-disk path. If the room was created from a
+        // restored untitled-session snapshot it still has no file backing.
+        notebook_path: None,
         runtime: Some(runtime),
     };
 
@@ -809,6 +880,13 @@ async fn setup_sync_receivers(
                 notebook_id_for_relay, current_generation,
             );
             *notebook_sync_for_disconnect.lock().await = None;
+            // Invalidate the cached `daemon:ready` payload so that a React
+            // remount (HMR / error boundary) while disconnected can't pull
+            // a stale "everything's fine" payload via `get_daemon_ready_info`.
+            window
+                .app_handle()
+                .state::<SyncReadyState>()
+                .clear_cached_ready(window.label());
             if let Err(e) =
                 emit_to_label::<_, _, _>(&window, window.label(), "daemon:disconnected", ())
             {
@@ -826,6 +904,14 @@ async fn setup_sync_receivers(
         "[notebook-sync] Sync receivers established for {}",
         notebook_id,
     );
+
+    // Stash the payload so `notify_sync_ready` can re-emit it for late JS
+    // listeners (Tauri webview events aren't sticky — if `daemon:ready` fires
+    // before React has attached its `onReady` handler, the event is lost).
+    window_for_ready
+        .app_handle()
+        .state::<SyncReadyState>()
+        .record_ready(window_for_ready.label(), ready_payload.clone());
 
     // Emit daemon:ready with connection info so frontend can show loading state / trust prompt
     if let Err(e) = emit_to_label::<_, _, _>(
@@ -1821,6 +1907,7 @@ fn apply_path_changed(
     path: Option<String>,
     window: tauri::Window,
     registry: tauri::State<'_, WindowNotebookRegistry>,
+    sync_ready: tauri::State<'_, SyncReadyState>,
 ) -> Result<(), String> {
     info!(
         "[path-changed] apply_path_changed invoked: path={:?} window={}",
@@ -1840,13 +1927,17 @@ fn apply_path_changed(
         *p = new_path.clone();
     }
 
-    // Update window title to match the new path (or "Untitled" if cleared).
-    let title = new_path
-        .as_deref()
-        .and_then(|p| p.file_name())
-        .and_then(|n| n.to_str())
-        .unwrap_or("Untitled.ipynb");
-    let _ = window.set_title(title);
+    // Keep the cached `daemon:ready` payload's `notebook_path` + `ephemeral`
+    // fields in sync with the new path. Without this, a React remount (error
+    // boundary, HMR) after a save-as would pull stale "untitled" state from
+    // `get_daemon_ready_info` and flip the titlebar back to Untitled.ipynb.
+    sync_ready.update_cached_path(window.label(), path.as_deref());
+
+    // Note: the window title is owned by the frontend (computed from
+    // `titleBase` + `dirty` / `ephemeral` state). We intentionally do NOT
+    // touch `window.set_title(...)` here — a Rust-side write would race
+    // against the frontend's concurrent title update from the same
+    // `path_changed` broadcast and could clobber the dirty asterisk.
 
     Ok(())
 }
@@ -1978,13 +2069,10 @@ async fn save_notebook_as(
         }
     };
 
-    // Update local state — the room is the same, just aliased to a file path now.
-    let filename = saved_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("Untitled.ipynb");
-    let _ = window.set_title(filename);
-
+    // Note: the window title is owned by the frontend — see the
+    // `apply_path_changed` command for the rationale. The frontend's
+    // `path_changed` broadcast subscriber updates `titleBase` and the
+    // title-render effect writes the correct dirty-adjusted title.
     if let Ok(mut p) = context_path.lock() {
         info!(
             "[save-as] context.path mutation: {:?} -> {:?} (window={})",
@@ -2969,6 +3057,24 @@ fn notify_sync_ready(window: tauri::Window, sync_ready: tauri::State<'_, SyncRea
         window.label()
     );
     sync_ready.set_ready(window.label());
+    // Note: we do NOT re-emit `daemon:ready` here. `notifySyncReady()` is
+    // called from `useAutomergeNotebook`, whose useEffect runs BEFORE the
+    // App.tsx useEffects that subscribe to `host.daemonEvents.onReady(...)`.
+    // Replaying on this path would still miss late-mounted listeners.
+    // Instead, `get_daemon_ready_info` lets the frontend pull the cached
+    // payload on demand, after the listener is attached.
+}
+
+/// Returns the most-recent cached `daemon:ready` payload for this window.
+/// Used by the frontend on mount to backfill `ephemeral` / runtime hint /
+/// trust-approval state that may have been emitted before any JS listener
+/// was attached (Tauri webview events are not sticky).
+#[tauri::command]
+fn get_daemon_ready_info(
+    window: tauri::Window,
+    sync_ready: tauri::State<'_, SyncReadyState>,
+) -> Option<DaemonReadyPayload> {
+    sync_ready.get_cached_ready(window.label())
 }
 
 /// Send a typed frame to the daemon.
@@ -4321,6 +4427,7 @@ pub fn run(
             complete_via_daemon,
             reconnect_to_daemon,
             notify_sync_ready,
+            get_daemon_ready_info,
             send_frame,
             // App update support
             begin_upgrade,
