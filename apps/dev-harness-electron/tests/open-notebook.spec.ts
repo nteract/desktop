@@ -40,22 +40,11 @@ test("open ipywidgets-demo.ipynb and render cells", async () => {
 
   await window.waitForSelector("#root", { timeout: 15_000 });
 
-  // Wait for the handshake to complete with a non-zero cell count — the
-  // daemon reads the file and returns NotebookConnectionInfo.cell_count.
-  await expect
-    .poll(
-      async () => {
-        const info = await window.evaluate(() => window.electronAPI?.info());
-        return info?.cellCount ?? 0;
-      },
-      { timeout: 15_000, intervals: [200, 500, 1000] },
-    )
-    .toBeGreaterThan(0);
-
-  // Cell materialization goes through WASM after initial sync. Wait for the
-  // first rendered cell to show up in the DOM. `data-cell-id` is the stable
-  // attribute the NotebookView uses for every cell.
-  await window.waitForSelector("[data-cell-id]", { timeout: 20_000 });
+  // Daemon's cell_count in NotebookConnectionInfo is 0 at handshake time —
+  // the file is stream-loaded only once the client starts Automerge sync
+  // (crates/runtimed/src/daemon.rs:1773-1780). So don't assert on cached
+  // info; wait for cells to materialize in the DOM instead.
+  await window.waitForSelector("[data-cell-id]", { timeout: 30_000 });
   const cellCount = await window.locator("[data-cell-id]").count();
   process.stdout.write(`[test] visible cells in DOM: ${cellCount}\n`);
   expect(cellCount).toBeGreaterThan(0);
