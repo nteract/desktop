@@ -1,19 +1,17 @@
 /**
- * TauriTransport — NotebookTransport implementation for the Tauri desktop app.
+ * `TauriTransport` — `NotebookTransport` implementation for the Tauri desktop app.
  *
- * Bridges the runtimed SyncEngine to the daemon via Tauri IPC:
- *   - sendFrame → invoke("send_frame", bytes)
- *   - onFrame → getCurrentWebview().listen("notebook:frame")
+ * Bridges the `runtimed` `SyncEngine` to the daemon via Tauri IPC:
+ *   - `sendFrame` → `invoke("send_frame", bytes)`
+ *   - `onFrame` → `getCurrentWebview().listen("notebook:frame")`
+ *
+ * Lives in this package (not in `apps/notebook`) so other hosts can depend
+ * on a single canonical Tauri transport rather than re-implementing it.
  */
 
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import type {
-  FrameListener,
-  NotebookRequest,
-  NotebookTransport,
-} from "runtimed";
-import { logger } from "./logger";
+import type { FrameListener, NotebookRequest, NotebookTransport } from "runtimed";
 
 export class TauriTransport implements NotebookTransport {
   private _connected = true;
@@ -33,29 +31,22 @@ export class TauriTransport implements NotebookTransport {
   onFrame(callback: FrameListener): () => void {
     const webview = getCurrentWebview();
 
-    // webview.listen returns Promise<UnlistenFn>. We track it for cleanup.
     let unlistenFn: (() => void) | null = null;
     let cancelled = false;
 
-    // IMPORTANT: wrap the callback in try/catch. Tauri's event system
-    // drops listeners whose handlers throw — a single exception
-    // escaping here silently unsubscribes the webview for the rest of
-    // its lifetime, and the daemon's subsequent frames land nowhere.
-    // That's the class of bug behind the widget-sync stall we were
-    // chasing: the daemon keeps talking, nothing is listening, the
-    // only recovery is reload. Catching here preserves the listener
-    // across a bad frame and surfaces the exception to the log so
-    // the underlying issue is fixable.
-    const unlistenPromise = webview.listen<number[]>(
-      "notebook:frame",
-      (event) => {
-        try {
-          callback(event.payload);
-        } catch (err) {
-          logger.error("[tauri-transport] notebook:frame handler threw:", err);
-        }
-      },
-    );
+    // IMPORTANT: wrap the callback in try/catch. Tauri's event system drops
+    // listeners whose handlers throw — a single exception escaping here
+    // silently unsubscribes the webview for the rest of its lifetime, and
+    // the daemon's subsequent frames land nowhere. Catching preserves the
+    // listener across a bad frame and surfaces the exception to the console
+    // so the underlying issue is fixable.
+    const unlistenPromise = webview.listen<number[]>("notebook:frame", (event) => {
+      try {
+        callback(event.payload);
+      } catch (err) {
+        console.error("[tauri-transport] notebook:frame handler threw:", err);
+      }
+    });
 
     unlistenPromise
       .then((fn) => {
@@ -66,10 +57,7 @@ export class TauriTransport implements NotebookTransport {
         }
       })
       .catch((err) => {
-        // Registration failure is worth knowing about even if there's
-        // no recovery for it here — the caller will see the transport
-        // behaving as if it never attached any listener.
-        logger.error("[tauri-transport] failed to register notebook:frame listener:", err);
+        console.error("[tauri-transport] failed to register notebook:frame listener:", err);
       });
 
     const unlisten = () => {
@@ -108,9 +96,7 @@ export class TauriTransport implements NotebookTransport {
       case "send_comm":
         return invoke("send_comm_via_daemon", { message: req.message });
       default:
-        throw new Error(
-          `TauriTransport: unknown request type: ${(req as { type: string }).type}`,
-        );
+        throw new Error(`TauriTransport: unknown request type: ${(req as { type: string }).type}`);
     }
   }
 

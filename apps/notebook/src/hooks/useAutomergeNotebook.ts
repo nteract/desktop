@@ -1,6 +1,6 @@
-import { invoke } from "@tauri-apps/api/core";
+import { useNotebookHost } from "@nteract/notebook-host";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { SyncableHandle } from "runtimed";
+import type { NotebookTransport, SyncableHandle } from "runtimed";
 import { DEFAULT_MIME_PRIORITY, SyncEngine } from "runtimed";
 import { concatMap, from, switchMap } from "rxjs";
 import { needsPlugin, preWarmForMimes } from "@/components/isolated/iframe-libraries";
@@ -26,7 +26,6 @@ import { notifyMetadataChanged, setNotebookHandle } from "../lib/notebook-metada
 import { type PoolState, resetPoolState, setPoolState } from "../lib/pool-state";
 import { type RuntimeState, resetRuntimeState, setRuntimeState } from "../lib/runtime-state";
 import { fromTauriEvent } from "../lib/tauri-rx";
-import { TauriTransport } from "../lib/tauri-transport";
 import type { DaemonBroadcast, JupyterOutput } from "../types";
 import init, { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 
@@ -44,9 +43,10 @@ const wasmReady: Promise<void> = init().then(() => {
  *
  * All document mutations execute instantly inside the WASM Automerge
  * document. The external store is derived from the doc. Sync messages
- * flow through the SyncEngine → TauriTransport to the daemon.
+ * flow through the SyncEngine → host.transport to the daemon.
  */
 export function useAutomergeNotebook() {
+  const host = useNotebookHost();
   const cellIds = useCellIds();
   const [focusedCellId, setFocusedCellId] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
@@ -58,7 +58,7 @@ export function useAutomergeNotebook() {
 
   // SyncEngine and transport refs — stable across re-renders.
   const engineRef = useRef<SyncEngine | null>(null);
-  const transportRef = useRef<TauriTransport | null>(null);
+  const transportRef = useRef<NotebookTransport | null>(null);
 
   // Refresh blob port on mount.
   useEffect(() => {
@@ -73,12 +73,14 @@ export function useAutomergeNotebook() {
       const broadcast = payload as DaemonBroadcast;
       if (broadcast.event === "notebook_autosaved") {
         setDirty(false);
-        invoke("mark_notebook_clean").catch(() => {});
+        host.notebook.markClean().catch(() => {});
       } else if (broadcast.event === "path_changed") {
-        invoke("apply_path_changed", { path: broadcast.path }).catch(() => {});
+        if (broadcast.path != null) {
+          host.notebook.applyPathChanged(broadcast.path).catch(() => {});
+        }
       }
     });
-  }, []);
+  }, [host]);
 
   // ── Core helpers ───────────────────────────────────────────────────
 
@@ -189,8 +191,9 @@ export function useAutomergeNotebook() {
   useEffect(() => {
     let cancelled = false;
 
-    // Create transport and engine for this lifecycle.
-    const transport = new TauriTransport();
+    // Use the host's transport — shared with the NotebookClient in App.tsx
+    // and any other consumer. One socket, one listener path.
+    const transport = host.transport;
     const engine = new SyncEngine({
       getHandle: () => handleRef.current as SyncableHandle | null,
       transport,
@@ -206,7 +209,7 @@ export function useAutomergeNotebook() {
     // Signal the Rust relay that the JS frame listener is active.
     // The relay buffers daemon frames until this fires, preventing
     // frame loss during WASM init (see #1421).
-    invoke("notify_sync_ready").catch((e: unknown) => {
+    host.relay.notifySyncReady().catch((e: unknown) => {
       logger.warn("[automerge-notebook] Failed to signal sync ready:", e);
     });
 
@@ -339,7 +342,7 @@ export function useAutomergeNotebook() {
       handleRef.current?.free();
       handleRef.current = null;
     };
-  }, [bootstrap, materializeCells]);
+  }, [bootstrap, host, materializeCells]);
 
   // ── Cell mutations ─────────────────────────────────────────────────
 

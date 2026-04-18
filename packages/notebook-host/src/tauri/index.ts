@@ -16,6 +16,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import type { NotebookTransport } from "runtimed";
+import { TauriTransport } from "./transport";
 
 import type {
   DaemonInfo,
@@ -38,8 +39,12 @@ import type {
 } from "../types";
 
 export interface CreateTauriHostOptions {
-  /** The `NotebookTransport` instance to expose at `host.transport`. */
-  transport: NotebookTransport;
+  /**
+   * Override the `NotebookTransport`. Defaults to a fresh `TauriTransport`
+   * construction, which is what the desktop app should use at boot.
+   * Provide a custom instance for tests or multi-transport scenarios.
+   */
+  transport?: NotebookTransport;
 }
 
 /** Helper: subscribe to a Tauri webview event with a sync unlisten. */
@@ -65,7 +70,8 @@ function listenWebview<T>(eventName: string, cb: (payload: T) => void): Unlisten
   };
 }
 
-export function createTauriHost(opts: CreateTauriHostOptions): NotebookHost {
+export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost {
+  const transport = opts.transport ?? new TauriTransport();
   const daemon: HostDaemon = {
     async isConnected() {
       try {
@@ -136,7 +142,7 @@ export function createTauriHost(opts: CreateTauriHostOptions): NotebookHost {
 
   return {
     name: "tauri",
-    transport: opts.transport,
+    transport,
     daemon,
     daemonEvents,
     relay,
@@ -147,3 +153,5 @@ export function createTauriHost(opts: CreateTauriHostOptions): NotebookHost {
     system,
   };
 }
+
+export { TauriTransport } from "./transport";
