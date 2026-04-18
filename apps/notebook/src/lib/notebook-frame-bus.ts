@@ -12,6 +12,8 @@
  * subscribers without a webview round-trip.
  */
 
+import { logger } from "./logger";
+
 // ── Types ────────────────────────────────────────────────────────────
 
 /** Callback for broadcast events (kernel status, output, env progress, etc.) */
@@ -65,8 +67,12 @@ export function emitBroadcast(payload: unknown): void {
   for (const cb of broadcastSubscribers) {
     try {
       cb(payload);
-    } catch {
-      // Subscriber errors must not break the dispatch loop
+    } catch (err) {
+      // A thrown subscriber must not break the dispatch loop for the
+      // remaining subscribers. We used to swallow silently, but that meant
+      // a component could stop receiving state updates while the rest of
+      // the pipeline kept ticking — very hard to diagnose. Log loudly.
+      logger.error("[frame-bus] broadcast subscriber threw:", err);
     }
   }
 }
@@ -81,8 +87,8 @@ export function emitPresence(payload: unknown): void {
   for (const cb of presenceSubscribers) {
     try {
       cb(payload);
-    } catch {
-      // Subscriber errors must not break the dispatch loop
+    } catch (err) {
+      logger.error("[frame-bus] presence subscriber threw:", err);
     }
   }
 }
