@@ -66,6 +66,30 @@ import {
 import { FrameType } from "./transport";
 import type { NotebookTransport } from "./transport";
 
+// ── SyncError event ──────────────────────────────────────────────────
+
+/**
+ * Emitted on `syncErrors$` whenever WASM auto-recovers from a failed
+ * `receive_sync_message` on one of the three synced docs.
+ *
+ * The engine has already forwarded the recovery reply and republished
+ * the resulting state before this fires — consumers only need to
+ * surface a UI signal that a reset happened. A burst of events in
+ * quick succession probably means the connection is unhealthy;
+ * consumers may want to debounce.
+ */
+export interface SyncErrorEvent {
+  /** Which of the three synced documents hit the error. */
+  doc: "notebook" | "runtime_state" | "pool_state";
+  /**
+   * Whether the doc's heads advanced before the error (partial apply).
+   * When true, the engine has already republished the recovered state.
+   */
+  changed: boolean;
+  /** Unix ms timestamp of when the error event fired. */
+  ts: number;
+}
+
 // ── Constants ────────────────────────────────────────────────────────
 
 /** Coalescing window for incoming sync frames (ms). */
@@ -350,6 +374,19 @@ export class SyncEngine {
    */
   readonly initialSyncComplete$: Observable<void>;
 
+  /**
+   * Fires when WASM auto-recovers from a failed `receive_sync_message`.
+   *
+   * The WASM layer rebuilds the doc + normalizes the sync state and
+   * returns a fresh sync reply as a `FrameEvent::*SyncError`. The engine
+   * already forwards the reply to the daemon and republishes the
+   * recovered state; this observable exists so the UI can surface a
+   * transient "sync recovered" signal — silent recovery would otherwise
+   * be invisible, exactly the class of bug the widget-sync stall
+   * investigation was trying to chase down.
+   */
+  readonly syncErrors$: Observable<SyncErrorEvent>;
+
   // Backing subjects for public observables
   private readonly _cellChanges$ = new Subject<CellChangeset | null>();
   private readonly _broadcasts$ = new Subject<unknown>();
@@ -359,6 +396,7 @@ export class SyncEngine {
   private readonly _executionTransitions$ = new Subject<ExecutionTransition[]>();
   private readonly _initialSyncComplete$ = new Subject<void>();
   private readonly _commChanges$ = new Subject<CommChanges>();
+  private readonly _syncErrors$ = new Subject<SyncErrorEvent>();
 
   constructor(opts: SyncEngineOptions) {
     this.opts = {
@@ -376,6 +414,7 @@ export class SyncEngine {
     this.executionTransitions$ = this._executionTransitions$.asObservable();
     this.initialSyncComplete$ = this._initialSyncComplete$.asObservable();
     this.commChanges$ = this._commChanges$.asObservable();
+    this.syncErrors$ = this._syncErrors$.asObservable();
     this.kernelStatus$ = deriveKernelStatus$(this.runtimeState$);
 
     // Typed broadcast sub-observables (derived from broadcasts$)
@@ -610,6 +649,7 @@ export class SyncEngine {
     sub.add(
       frameEvents$.pipe(filter((e) => e.type === "sync_error")).subscribe((e) => {
         log.warn("[sync-engine] sync_error: doc rebuilt, sync state normalized");
+        this._syncErrors$.next({ doc: "notebook", changed: e.changed ?? false, ts: Date.now() });
         if (e.reply) {
           this.opts.transport
             .sendFrame(FrameType.AUTOMERGE_SYNC, new Uint8Array(e.reply))
@@ -640,6 +680,11 @@ export class SyncEngine {
         log.warn(
           "[sync-engine] runtime_state_sync_error: state doc rebuilt, sync state normalized",
         );
+        this._syncErrors$.next({
+          doc: "runtime_state",
+          changed: e.changed ?? false,
+          ts: Date.now(),
+        });
         if (e.reply) {
           this.opts.transport
             .sendFrame(FrameType.RUNTIME_STATE_SYNC, new Uint8Array(e.reply))
@@ -808,6 +853,11 @@ export class SyncEngine {
     sub.add(
       frameEvents$.pipe(filter((e) => e.type === "pool_state_sync_error")).subscribe((e) => {
         log.warn("[sync-engine] pool_state_sync_error: pool doc rebuilt, sync state normalized");
+        this._syncErrors$.next({
+          doc: "pool_state",
+          changed: e.changed ?? false,
+          ts: Date.now(),
+        });
         if (e.reply) {
           this.opts.transport
             .sendFrame(FrameType.POOL_STATE_SYNC, new Uint8Array(e.reply))

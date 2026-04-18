@@ -1270,6 +1270,30 @@ describe("SyncEngine", () => {
       engine.stop();
     });
 
+    it("emits syncErrors$ for notebook, runtime_state, and pool_state recoveries", () => {
+      handle = createMockHandle({
+        receive_frame: vi.fn(() => [
+          { type: "sync_error", changed: false } as FrameEvent,
+          { type: "runtime_state_sync_error", changed: true } as FrameEvent,
+          { type: "pool_state_sync_error", changed: false } as FrameEvent,
+        ]),
+      });
+      const engine = createEngine();
+      engine.start();
+      const events: { doc: string; changed: boolean }[] = [];
+      engine.syncErrors$.subscribe((ev) => events.push({ doc: ev.doc, changed: ev.changed }));
+
+      transport.deliver([0x00, 0x99]);
+      advanceBy(scheduler, 1);
+
+      expect(events).toEqual([
+        { doc: "notebook", changed: false },
+        { doc: "runtime_state", changed: true },
+        { doc: "pool_state", changed: false },
+      ]);
+      engine.stop();
+    });
+
     it("triggers full materialization when sync_error has changed=true", () => {
       handle = createMockHandle({
         receive_frame: vi.fn(() => [

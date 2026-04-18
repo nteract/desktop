@@ -17,6 +17,7 @@ import { useSyncedTheme } from "@/hooks/useSyncedSettings";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { CondaDependencyHeader } from "./components/CondaDependencyHeader";
 import { type DaemonStatus, DaemonStatusBanner } from "./components/DaemonStatusBanner";
+import { SyncRecoveryBanner } from "./components/SyncRecoveryBanner";
 import { DebugBanner } from "./components/DebugBanner";
 import { DenoDependencyHeader } from "./components/DenoDependencyHeader";
 import { DependencyHeader } from "./components/DependencyHeader";
@@ -196,6 +197,14 @@ function AppContent() {
   const [daemonStatus, setDaemonStatus] = useState<DaemonStatus>(null);
   // Track ready timeout so we can cancel it if status changes
   const readyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Latest sync recovery event — fed by SyncEngine.syncErrors$ and
+  // consumed by SyncRecoveryBanner. WASM auto-recovers on failed
+  // receive_sync_message; this surfaces the event so it doesn't happen
+  // silently.
+  const [syncRecoveryEvent, setSyncRecoveryEvent] = useState<
+    import("runtimed").SyncErrorEvent | null
+  >(null);
 
   // Pool state - prewarm pool errors from daemon (typo'd default packages, etc.)
   const {
@@ -420,6 +429,19 @@ function AppContent() {
       getEngine()?.reProjectComms();
     }
   }, [blobPort, getEngine]);
+
+  // Surface WASM sync recovery events in the top-level banner.
+  useEffect(() => {
+    const engine = getEngine();
+    if (!engine) return;
+    const sub = engine.syncErrors$.subscribe((ev) => {
+      logger.warn(
+        `[app] sync recovery: ${ev.doc} doc rebuilt (changed=${ev.changed}) at ${new Date(ev.ts).toISOString()}`,
+      );
+      setSyncRecoveryEvent(ev);
+    });
+    return () => sub.unsubscribe();
+  }, [getEngine]);
 
   // Split queue state into executing (currently running) and queued (waiting).
   const executingCellIds = new Set(queueState.executing ? [queueState.executing.cell_id] : []);
@@ -1149,6 +1171,10 @@ function AppContent() {
                 });
               });
           }}
+        />
+        <SyncRecoveryBanner
+          event={syncRecoveryEvent}
+          onDismiss={() => setSyncRecoveryEvent(null)}
         />
         <PoolErrorBanner
           uvError={poolUvError}
