@@ -33,14 +33,12 @@ test("iframe bootstrap handshake (inline bypass disabled)", async () => {
   app.process().stdout?.on("data", (d) => process.stdout.write(`[main] ${d}`));
   app.process().stderr?.on("data", (d) => process.stderr.write(`[main!] ${d}`));
 
-  const window = await app.firstWindow({ timeout: 15_000 });
-
-  await window.waitForSelector("[data-cell-id]", { timeout: 30_000 });
-
-  // Install a postMessage tap after the page is ready. `addInitScript`
-  // runs in the page context before scripts, but with Electron's
-  // contextBridge isolation, a runtime inject keeps things simple.
-  await window.evaluate(() => {
+  // Install the message tap BEFORE the page loads so we catch the very
+  // first bootstrap frames. `addInitScript` is the Playwright equivalent
+  // of page.evaluateOnNewDocument — it runs before any page script.
+  // Attaching later misses the early "ready" handshake traffic exactly
+  // when the bootstrap localization is most useful.
+  await app.context().addInitScript(() => {
     type Entry = {
       t: number;
       direction: string;
@@ -49,18 +47,26 @@ test("iframe bootstrap handshake (inline bypass disabled)", async () => {
     };
     const log: Entry[] = [];
     (window as unknown as { __harnessMessageLog: Entry[] }).__harnessMessageLog = log;
-    window.addEventListener("message", (ev) => {
-      try {
-        const d = ev.data as Record<string, unknown> | null;
-        log.push({
-          t: performance.now(),
-          direction: "parent-received",
-          type: d && typeof d === "object" && "type" in d ? d.type : typeof ev.data,
-          method: d && typeof d === "object" && "method" in d ? d.method : undefined,
-        });
-      } catch {}
-    });
+    window.addEventListener(
+      "message",
+      (ev) => {
+        try {
+          const d = ev.data as Record<string, unknown> | null;
+          log.push({
+            t: performance.now(),
+            direction: "parent-received",
+            type: d && typeof d === "object" && "type" in d ? d.type : typeof ev.data,
+            method: d && typeof d === "object" && "method" in d ? d.method : undefined,
+          });
+        } catch {}
+      },
+      true, // use capture so we see events before any other handler
+    );
   });
+
+  const window = await app.firstWindow({ timeout: 15_000 });
+
+  await window.waitForSelector("[data-cell-id]", { timeout: 30_000 });
 
   await window.evaluate(async () => {
     await (

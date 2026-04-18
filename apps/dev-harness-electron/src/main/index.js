@@ -606,6 +606,12 @@ function tauriShimNoop(cmd, _args) {
     case "get_username":
       return process.env.USER || process.env.USERNAME || "dev-harness";
 
+    // App.tsx polls this 500ms after mount — returning undefined makes it
+    // show "Runtime daemon not available". We connected at startup and
+    // won't lose the connection mid-session.
+    case "is_daemon_connected":
+      return daemon?.connected === true;
+
     // Fire-and-forget frontend signals (relay gates, window-title sync, etc.).
     case "notify_sync_ready":
     case "reconnect_to_daemon":
