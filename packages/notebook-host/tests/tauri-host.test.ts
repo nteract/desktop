@@ -94,6 +94,35 @@ vi.mock("@tauri-apps/plugin-log", () => ({
   }),
 }));
 
+const capturedDialogCalls: Array<{ kind: "open" | "save"; opts: unknown }> = [];
+let openDialogResult: string | string[] | null = null;
+let saveDialogResult: string | null = null;
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: vi.fn(async (opts?: unknown) => {
+    capturedDialogCalls.push({ kind: "open", opts });
+    return openDialogResult;
+  }),
+  save: vi.fn(async (opts?: unknown) => {
+    capturedDialogCalls.push({ kind: "save", opts });
+    return saveDialogResult;
+  }),
+}));
+
+const capturedShellOpens: string[] = [];
+
+vi.mock("@tauri-apps/plugin-shell", () => ({
+  open: vi.fn(async (url: string) => {
+    capturedShellOpens.push(url);
+  }),
+}));
+
+let updateCheckResult: { version: string } | null = null;
+
+vi.mock("@tauri-apps/plugin-updater", () => ({
+  check: vi.fn(async () => updateCheckResult),
+}));
+
 import type { NotebookTransport } from "runtimed";
 import { createTauriHost } from "../src/tauri";
 
@@ -110,6 +139,11 @@ beforeEach(() => {
   capturedInvokes.length = 0;
   capturedListens.length = 0;
   pluginLogCalls.length = 0;
+  capturedDialogCalls.length = 0;
+  capturedShellOpens.length = 0;
+  openDialogResult = null;
+  saveDialogResult = null;
+  updateCheckResult = null;
   mockUnlisten.mockReset();
   mockWindowUnlisten.mockReset();
   capturedFocusCb = null;
@@ -350,6 +384,61 @@ describe("createTauriHost()", () => {
     unlisten();
     await Promise.resolve();
     expect(mockWindowUnlisten).toHaveBeenCalledTimes(1);
+  });
+
+  it("dialog.openFile routes to plugin-dialog.open with the chosen filters", async () => {
+    openDialogResult = "/tmp/a.ipynb";
+    const host = createTauriHost({ transport: stubTransport });
+    const path = await host.dialog.openFile({
+      filters: [{ name: "Jupyter Notebook", extensions: ["ipynb"] }],
+    });
+    expect(path).toBe("/tmp/a.ipynb");
+    expect(capturedDialogCalls).toEqual([
+      {
+        kind: "open",
+        opts: {
+          multiple: false,
+          filters: [{ name: "Jupyter Notebook", extensions: ["ipynb"] }],
+          defaultPath: undefined,
+        },
+      },
+    ]);
+  });
+
+  it("dialog.openFile returns null when the plugin returns an array (defensive)", async () => {
+    openDialogResult = ["/tmp/a.ipynb"];
+    const host = createTauriHost({ transport: stubTransport });
+    await expect(host.dialog.openFile()).resolves.toBe(null);
+  });
+
+  it("dialog.saveFile routes to plugin-dialog.save and surfaces cancellation as null", async () => {
+    saveDialogResult = null;
+    const host = createTauriHost({ transport: stubTransport });
+    await expect(host.dialog.saveFile({ defaultPath: "/tmp/Untitled.ipynb" })).resolves.toBe(null);
+    expect(capturedDialogCalls).toEqual([
+      {
+        kind: "save",
+        opts: { filters: undefined, defaultPath: "/tmp/Untitled.ipynb" },
+      },
+    ]);
+  });
+
+  it("externalLinks.open forwards to plugin-shell.open", async () => {
+    const host = createTauriHost({ transport: stubTransport });
+    await host.externalLinks.open("https://example.com");
+    expect(capturedShellOpens).toEqual(["https://example.com"]);
+  });
+
+  it("updater.check returns { version } when plugin-updater reports an update", async () => {
+    updateCheckResult = { version: "2.3.0" };
+    const host = createTauriHost({ transport: stubTransport });
+    await expect(host.updater.check()).resolves.toEqual({ version: "2.3.0" });
+  });
+
+  it("updater.check returns null when the app is up to date", async () => {
+    updateCheckResult = null;
+    const host = createTauriHost({ transport: stubTransport });
+    await expect(host.updater.check()).resolves.toBe(null);
   });
 
   it("host.log forwards each level to plugin-log", () => {

@@ -16,6 +16,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { open as pluginOpenDialog, save as pluginSaveDialog } from "@tauri-apps/plugin-dialog";
 import {
   attachConsole as pluginAttachConsole,
   debug as pluginDebug,
@@ -23,6 +24,8 @@ import {
   info as pluginInfo,
   warn as pluginWarn,
 } from "@tauri-apps/plugin-log";
+import { open as pluginOpenShell } from "@tauri-apps/plugin-shell";
+import { check as pluginCheckUpdate } from "@tauri-apps/plugin-updater";
 import type { NotebookTransport } from "runtimed";
 import { createCommandRegistry } from "../commands";
 import { wireTauriMenuBridge } from "./menu-bridge";
@@ -38,11 +41,14 @@ import type {
   HostDaemon,
   HostDaemonEvents,
   HostDeps,
+  HostDialog,
+  HostExternalLinks,
   HostLog,
   HostNotebook,
   HostRelay,
   HostSystem,
   HostTrust,
+  HostUpdater,
   HostWindow,
   NotebookHost,
   TrustInfo,
@@ -214,6 +220,42 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
     },
   };
 
+  const dialog: HostDialog = {
+    async openFile(options) {
+      const result = await pluginOpenDialog({
+        multiple: false,
+        filters: options?.filters,
+        defaultPath: options?.defaultPath,
+      });
+      // `pluginOpenDialog` returns string | null for single-file mode.
+      return typeof result === "string" ? result : null;
+    },
+    async saveFile(options) {
+      const result = await pluginSaveDialog({
+        filters: options?.filters,
+        defaultPath: options?.defaultPath,
+      });
+      return result ?? null;
+    },
+  };
+
+  const externalLinks: HostExternalLinks = {
+    async open(url) {
+      await pluginOpenShell(url);
+    },
+  };
+
+  const updater: HostUpdater = {
+    async check() {
+      const update = await pluginCheckUpdate();
+      // plugin-updater returns an `Update` (with `.version` + install methods)
+      // or null when the app is current. We surface only `{ version }` — the
+      // install/relaunch flow stays Tauri-side behind the existing
+      // `begin_upgrade` command.
+      return update ? { version: update.version } : null;
+    },
+  };
+
   const commands = createCommandRegistry();
 
   // plugin-log always resolves; fire-and-forget so callers stay sync.
@@ -251,6 +293,9 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
     notebook,
     window: windowNs,
     system,
+    dialog,
+    externalLinks,
+    updater,
     commands,
     log,
   };

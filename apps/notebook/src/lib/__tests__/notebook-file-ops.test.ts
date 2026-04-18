@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
+import type { NotebookHost } from "@nteract/notebook-host";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   cloneNotebookFile,
@@ -7,16 +8,19 @@ import {
   saveNotebook,
 } from "../notebook-file-ops";
 
-// Mock the dialog plugin — these don't go through mockIPC
-vi.mock("@tauri-apps/plugin-dialog", () => ({
-  open: vi.fn(),
-  save: vi.fn(),
-}));
+const mockOpenDialog = vi.fn<
+  (opts?: { filters?: unknown; defaultPath?: string }) => Promise<string | null>
+>();
+const mockSaveDialog = vi.fn<
+  (opts?: { filters?: unknown; defaultPath?: string }) => Promise<string | null>
+>();
 
-// Lazily import so the mock is in place
-const dialogMod = await import("@tauri-apps/plugin-dialog");
-const mockOpenDialog = vi.mocked(dialogMod.open);
-const mockSaveDialog = vi.mocked(dialogMod.save);
+const stubHost = {
+  dialog: {
+    openFile: (opts?: { filters?: unknown; defaultPath?: string }) => mockOpenDialog(opts),
+    saveFile: (opts?: { filters?: unknown; defaultPath?: string }) => mockSaveDialog(opts),
+  },
+} as unknown as NotebookHost;
 
 const mockInvoke = vi.fn();
 
@@ -48,7 +52,7 @@ describe("saveNotebook", () => {
       return undefined;
     });
 
-    const result = await saveNotebook(flushSync);
+    const result = await saveNotebook(stubHost, flushSync);
 
     expect(result).toBe(true);
     expect(flushSync).toHaveBeenCalledTimes(1);
@@ -69,7 +73,7 @@ describe("saveNotebook", () => {
       "/home/user/notebooks/MyNotebook.ipynb",
     );
 
-    const result = await saveNotebook(flushSync);
+    const result = await saveNotebook(stubHost, flushSync);
 
     expect(result).toBe(true);
     expect(mockSaveDialog).toHaveBeenCalledTimes(1);
@@ -89,7 +93,7 @@ describe("saveNotebook", () => {
     });
     mockSaveDialog.mockResolvedValueOnce(null);
 
-    const result = await saveNotebook(flushSync);
+    const result = await saveNotebook(stubHost, flushSync);
 
     expect(result).toBe(false);
     // save_notebook_as should NOT be called
@@ -102,7 +106,7 @@ describe("saveNotebook", () => {
   it("returns false and logs on error", async () => {
     mockInvoke.mockRejectedValue(new Error("disk full"));
 
-    const result = await saveNotebook(flushSync);
+    const result = await saveNotebook(stubHost, flushSync);
 
     expect(result).toBe(false);
   });
@@ -110,7 +114,7 @@ describe("saveNotebook", () => {
   it("always flushes sync before checking path", async () => {
     mockInvoke.mockRejectedValue(new Error("fail"));
 
-    await saveNotebook(flushSync);
+    await saveNotebook(stubHost, flushSync);
 
     expect(flushSync).toHaveBeenCalledTimes(1);
   });
@@ -125,7 +129,7 @@ describe("openNotebookFile", () => {
     mockOpenDialog.mockResolvedValueOnce("/path/to/notebook.ipynb");
     mockInvoke.mockResolvedValue(undefined);
 
-    await openNotebookFile();
+    await openNotebookFile(stubHost);
 
     expect(mockOpenDialog).toHaveBeenCalledTimes(1);
     expect(mockInvoke).toHaveBeenCalledWith(
@@ -137,7 +141,7 @@ describe("openNotebookFile", () => {
   it("does nothing when the dialog is cancelled", async () => {
     mockOpenDialog.mockResolvedValueOnce(null);
 
-    await openNotebookFile();
+    await openNotebookFile(stubHost);
 
     expect(mockInvoke).not.toHaveBeenCalled();
   });
@@ -146,7 +150,7 @@ describe("openNotebookFile", () => {
     mockOpenDialog.mockRejectedValueOnce(new Error("permission denied"));
 
     // Should not throw — errors are logged internally
-    await expect(openNotebookFile()).resolves.toBeUndefined();
+    await expect(openNotebookFile(stubHost)).resolves.toBeUndefined();
   });
 });
 
@@ -162,7 +166,7 @@ describe("cloneNotebookFile", () => {
     });
     mockSaveDialog.mockResolvedValueOnce("/home/user/notebooks/Clone.ipynb");
 
-    await cloneNotebookFile();
+    await cloneNotebookFile(stubHost);
 
     expect(mockInvoke).toHaveBeenCalledWith(
       "clone_notebook_to_path",
@@ -181,7 +185,7 @@ describe("cloneNotebookFile", () => {
     });
     mockSaveDialog.mockResolvedValueOnce(null);
 
-    await cloneNotebookFile();
+    await cloneNotebookFile(stubHost);
 
     const cloneCalls = mockInvoke.mock.calls.filter(
       ([cmd]) => cmd === "clone_notebook_to_path",
@@ -192,6 +196,6 @@ describe("cloneNotebookFile", () => {
   it("does not throw on error", async () => {
     mockInvoke.mockRejectedValue(new Error("clone failed"));
 
-    await expect(cloneNotebookFile()).resolves.toBeUndefined();
+    await expect(cloneNotebookFile(stubHost)).resolves.toBeUndefined();
   });
 });
