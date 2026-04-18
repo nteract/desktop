@@ -1,6 +1,7 @@
 import { useMemo, useSyncExternalStore } from "react";
+import type { NotebookTransport } from "runtimed";
 import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
-import { frame_types, sendFrame } from "./frame-types";
+import { frame_types } from "./frame-types";
 import { logger } from "./logger";
 
 // ---------------------------------------------------------------------------
@@ -18,6 +19,16 @@ let _handle: NotebookHandle | null = null;
 let _snapshotCache: NotebookMetadataSnapshot | null = null;
 let _fingerprint: string | null = null;
 const _subscribers = new Set<() => void>();
+
+// Module-level transport reference for the outbound sync helper below.
+// Wired at boot by main.tsx via setMetadataTransport(host.transport) so the
+// non-React syncToRelay helper doesn't reach for Tauri directly.
+let _transport: NotebookTransport | null = null;
+
+/** Install the `NotebookTransport` this module uses for outbound frames. */
+export function setMetadataTransport(transport: NotebookTransport | null): void {
+  _transport = transport;
+}
 
 /**
  * Read the current metadata snapshot from the WASM handle as a typed object.
@@ -293,11 +304,11 @@ export async function setMetadataSnapshot(
  * state consumption race from #1067.
  */
 async function syncToRelay(): Promise<void> {
-  if (!_handle) return;
+  if (!_handle || !_transport) return;
   const msg = _handle.flush_local_changes();
   if (msg) {
     try {
-      await sendFrame(frame_types.AUTOMERGE_SYNC, msg);
+      await _transport.sendFrame(frame_types.AUTOMERGE_SYNC, msg);
     } catch {
       _handle.cancel_last_flush();
     }

@@ -1,11 +1,13 @@
-import { invoke } from "@tauri-apps/api/core";
-
 /**
  * Frame type constants matching `notebook_doc::frame_types` in Rust.
  *
  * These correspond to the first byte of each typed frame payload on
  * notebook sync connections. Defined here so the frontend can reference
  * them without magic numbers.
+ *
+ * Outbound frames flow through `host.transport.sendFrame(frameType, payload)`
+ * — there's no longer a top-level `sendFrame()` helper that reaches for
+ * Tauri directly.
  */
 export const frame_types = {
   /** Automerge sync message (binary). */
@@ -23,21 +25,3 @@ export const frame_types = {
   /** PoolStateSync message (binary Automerge sync for PoolDoc, global). */
   POOL_STATE_SYNC: 0x06,
 } as const;
-
-/**
- * Send a typed frame to the daemon via the Tauri relay.
- *
- * Prepends the frame type byte to the payload and sends the resulting
- * `Uint8Array` as a raw binary IPC payload — no JSON serialization.
- * The Rust `send_frame` command accepts `tauri::ipc::Request` and
- * extracts the bytes directly from `InvokeBody::Raw`.
- */
-export function sendFrame(
-  frameType: number,
-  payload: Uint8Array,
-): Promise<void> {
-  const frame = new Uint8Array(1 + payload.length);
-  frame[0] = frameType;
-  frame.set(payload, 1);
-  return invoke("send_frame", frame);
-}

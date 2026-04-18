@@ -1,5 +1,6 @@
+import { useNotebookHost } from "@nteract/notebook-host";
 import { useCallback } from "react";
-import { frame_types, sendFrame } from "../lib/frame-types";
+import { frame_types } from "../lib/frame-types";
 import { logger } from "../lib/logger";
 import {
   encode_cursor_presence,
@@ -26,15 +27,18 @@ export function usePresence(
   peerLabel: string = "",
   actorLabel: string = "",
 ) {
+  const host = useNotebookHost();
+  const transport = host.transport;
+
   const setCursor = useCallback(
     (cellId: string, line: number, column: number) => {
       if (!peerId) return;
       const payload = encode_cursor_presence(peerId, peerLabel, actorLabel, cellId, line, column);
-      sendFrame(frame_types.PRESENCE, payload).catch((e: unknown) =>
-        logger.warn("[presence] send cursor failed:", e),
-      );
+      transport
+        .sendFrame(frame_types.PRESENCE, payload)
+        .catch((e: unknown) => logger.warn("[presence] send cursor failed:", e));
     },
-    [peerId, peerLabel, actorLabel],
+    [peerId, peerLabel, actorLabel, transport],
   );
 
   const setSelection = useCallback(
@@ -50,22 +54,22 @@ export function usePresence(
         headLine,
         headCol,
       );
-      sendFrame(frame_types.PRESENCE, payload).catch((e: unknown) =>
-        logger.warn("[presence] send selection failed:", e),
-      );
+      transport
+        .sendFrame(frame_types.PRESENCE, payload)
+        .catch((e: unknown) => logger.warn("[presence] send selection failed:", e));
     },
-    [peerId, peerLabel, actorLabel],
+    [peerId, peerLabel, actorLabel, transport],
   );
 
   const setFocus = useCallback(
     (cellId: string) => {
       if (!peerId) return;
       const payload = encode_focus_presence(peerId, peerLabel, actorLabel, cellId);
-      sendFrame(frame_types.PRESENCE, payload).catch((e: unknown) =>
-        logger.warn("[presence] send focus failed:", e),
-      );
+      transport
+        .sendFrame(frame_types.PRESENCE, payload)
+        .catch((e: unknown) => logger.warn("[presence] send focus failed:", e));
     },
-    [peerId, peerLabel, actorLabel],
+    [peerId, peerLabel, actorLabel, transport],
   );
 
   return {

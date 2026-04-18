@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import App from "./App";
 import "./index.css";
 import { IsolatedRendererProvider } from "@/components/isolated/isolated-renderer-context";
+import { setMetadataTransport } from "./lib/notebook-metadata";
 
 // Register built-in widget components
 import "@/components/widgets/controls";
@@ -28,6 +29,9 @@ const loadRendererBundle = async () => {
 // transport is part of the host and shared by the SyncEngine,
 // NotebookClient, and anything else that needs to talk to the daemon.
 const host = createTauriHost();
+// notebook-metadata's syncToRelay helper runs at module scope (not inside a
+// React tree) so it can't useNotebookHost(). Hand it the transport directly.
+setMetadataTransport(host.transport);
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
