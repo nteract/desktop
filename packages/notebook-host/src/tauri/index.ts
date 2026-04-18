@@ -16,6 +16,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import type { NotebookTransport } from "runtimed";
+import { createCommandRegistry } from "../commands";
+import { wireTauriMenuBridge } from "./menu-bridge";
 import { TauriTransport } from "./transport";
 
 import type {
@@ -140,7 +142,9 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
     },
   };
 
-  return {
+  const commands = createCommandRegistry();
+
+  const host: NotebookHost = {
     name: "tauri",
     transport,
     daemon,
@@ -151,7 +155,15 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
     deps,
     notebook,
     system,
+    commands,
   };
+
+  // Wire Tauri menu events into the command registry. The bridge is
+  // fire-and-forget for the life of the host; no disposer exposed because
+  // the host itself lives the whole session.
+  wireTauriMenuBridge(host);
+
+  return host;
 }
 
 export { TauriTransport } from "./transport";

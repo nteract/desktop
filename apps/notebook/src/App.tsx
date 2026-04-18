@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { NotebookClient } from "runtimed";
@@ -822,15 +821,9 @@ function AppContent() {
     await restartAndRunAll();
   }, [restartAndRunAll]);
 
-  // Cmd+S to save (keyboard and native menu)
+  // Cmd+S keyboard shortcut. The native menu item is routed through
+  // host.commands.run("notebook.save") by the Tauri menu bridge.
   useEffect(() => {
-    const webview = getCurrentWebview();
-    // Listen for native menu save event
-    const unlistenPromise = webview.listen("menu:save", () => {
-      save();
-    });
-
-    // Keep keyboard shortcut as fallback
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "s") {
         e.preventDefault();
@@ -838,11 +831,7 @@ function AppContent() {
       }
     };
     window.addEventListener("keydown", handleKeyDown);
-
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-      unlistenPromise.then((unlisten) => unlisten());
-    };
+    return () => window.removeEventListener("keydown", handleKeyDown);
   }, [save]);
 
   // Show asterisk in window title when notebook has unsaved changes.
@@ -880,15 +869,9 @@ function AppContent() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [globalFind.open]);
 
-  // Cmd+O to open (keyboard and native menu)
+  // Cmd+O keyboard shortcut. Menu item routes through
+  // host.commands.run("notebook.open") via the Tauri menu bridge.
   useEffect(() => {
-    const webview = getCurrentWebview();
-    // Listen for native menu open event
-    const unlistenPromise = webview.listen("menu:open", () => {
-      openNotebook();
-    });
-
-    // Keep keyboard shortcut as fallback
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "o") {
         e.preventDefault();
@@ -896,130 +879,61 @@ function AppContent() {
       }
     };
     window.addEventListener("keydown", handleKeyDown);
-
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-      unlistenPromise.then((unlisten) => unlisten());
-    };
+    return () => window.removeEventListener("keydown", handleKeyDown);
   }, [openNotebook]);
 
-  // Clone notebook via native menu
+  // Register every notebook-level command the menu bridge can invoke. One
+  // effect replaces the per-menu-item webview.listen useEffects that used
+  // to live here. The host owns the registry; `host.commands.run(id)` is
+  // what Tauri menu clicks, and eventually keyboard shortcuts / a command
+  // palette / a remote MCP-style invoker, will all call.
   useEffect(() => {
-    const webview = getCurrentWebview();
-    const unlistenPromise = webview.listen("menu:clone", () => {
-      cloneNotebook();
-    });
-
-    return () => {
-      unlistenPromise.then((unlisten) => unlisten());
-    };
-  }, [cloneNotebook]);
-
-  // Cell menu: Insert cell
-  useEffect(() => {
-    const webview = getCurrentWebview();
-    const validCellTypes = ["code", "markdown", "raw"] as const;
-    const unlistenPromise = webview.listen<string>("menu:insert-cell", (event) => {
-      const payload = event.payload;
-      if (validCellTypes.includes(payload as (typeof validCellTypes)[number])) {
-        handleAddCell(payload as "code" | "markdown" | "raw", focusedCellId);
-      }
-    });
-    return () => {
-      unlistenPromise.then((unlisten) => unlisten()).catch(() => {});
-    };
-  }, [handleAddCell, focusedCellId]);
-
-  // Cell menu: Clear Outputs (focused cell)
-  useEffect(() => {
-    const webview = getCurrentWebview();
-    const unlistenPromise = webview.listen("menu:clear-outputs", async () => {
-      if (!focusedCellId) return;
-      const cell = getNotebookCellsSnapshot().find((c) => c.id === focusedCellId);
-      if (!cell || cell.cell_type !== "code") return;
-      await clearOutputs(focusedCellId);
-    });
-    return () => {
-      unlistenPromise.then((unlisten) => unlisten()).catch(() => {});
-    };
-  }, [focusedCellId, clearOutputs]);
-
-  // Cell menu: Clear All Outputs
-  useEffect(() => {
-    const webview = getCurrentWebview();
-    const unlistenPromise = webview.listen("menu:clear-all-outputs", async () => {
-      // Tell daemon to clear kernel output tracking for each cell
-      const codeCells = getNotebookCellsSnapshot().filter((c) => c.cell_type === "code");
-      await Promise.all(codeCells.map((cell) => clearOutputs(cell.id)));
-    });
-    return () => {
-      unlistenPromise.then((unlisten) => unlisten()).catch(() => {});
-    };
-  }, [clearOutputs]);
-
-  // Kernel menu: Run All Cells
-  useEffect(() => {
-    const webview = getCurrentWebview();
-    const unlistenPromise = webview.listen("menu:run-all", () => {
-      handleRunAllCells();
-    });
-    return () => {
-      unlistenPromise.then((unlisten) => unlisten());
-    };
-  }, [handleRunAllCells]);
-
-  // Kernel menu: Restart & Run All Cells
-  useEffect(() => {
-    const webview = getCurrentWebview();
-    const unlistenPromise = webview.listen("menu:restart-and-run-all", () => {
-      handleRestartAndRunAll();
-    });
-    return () => {
-      unlistenPromise.then((unlisten) => unlisten());
-    };
-  }, [handleRestartAndRunAll]);
-
-  // Check for updates via native menu
-  useEffect(() => {
-    const webview = getCurrentWebview();
-    const unlistenPromise = webview.listen("menu:check-for-updates", () => {
-      checkForUpdate();
-    });
-    return () => {
-      unlistenPromise.then((unlisten) => unlisten());
-    };
-  }, [checkForUpdate]);
-
-  // Zoom controls via native menu
-  useEffect(() => {
-    const webview = getCurrentWebview();
-    let currentZoom = 1.0;
-
-    const handleZoomIn = () => {
-      currentZoom = Math.min(3.0, currentZoom + 0.1);
-      webview.setZoom(currentZoom);
-    };
-
-    const handleZoomOut = () => {
-      currentZoom = Math.max(0.5, currentZoom - 0.1);
-      webview.setZoom(currentZoom);
-    };
-
-    const handleZoomReset = () => {
-      currentZoom = 1.0;
-      webview.setZoom(1.0);
-    };
-
-    const unlistenIn = webview.listen("menu:zoom-in", handleZoomIn);
-    const unlistenOut = webview.listen("menu:zoom-out", handleZoomOut);
-    const unlistenReset = webview.listen("menu:zoom-reset", handleZoomReset);
-
-    return () => {
-      unlistenIn.then((u) => u());
-      unlistenOut.then((u) => u());
-      unlistenReset.then((u) => u());
-    };
-  }, []);
+    const disposables = [
+      host.commands.register("notebook.save", () => {
+        save();
+      }),
+      host.commands.register("notebook.open", () => {
+        openNotebook();
+      }),
+      host.commands.register("notebook.clone", () => {
+        cloneNotebook();
+      }),
+      host.commands.register("notebook.insertCell", ({ type }) => {
+        handleAddCell(type, focusedCellId);
+      }),
+      host.commands.register("notebook.clearOutputs", async () => {
+        if (!focusedCellId) return;
+        const cell = getNotebookCellsSnapshot().find((c) => c.id === focusedCellId);
+        if (!cell || cell.cell_type !== "code") return;
+        await clearOutputs(focusedCellId);
+      }),
+      host.commands.register("notebook.clearAllOutputs", async () => {
+        const codeCells = getNotebookCellsSnapshot().filter((c) => c.cell_type === "code");
+        await Promise.all(codeCells.map((cell) => clearOutputs(cell.id)));
+      }),
+      host.commands.register("notebook.runAll", () => {
+        handleRunAllCells();
+      }),
+      host.commands.register("notebook.restartAndRunAll", () => {
+        handleRestartAndRunAll();
+      }),
+      host.commands.register("updater.check", () => {
+        checkForUpdate();
+      }),
+    ];
+    return () => disposables.forEach((d) => d());
+  }, [
+    host,
+    save,
+    openNotebook,
+    cloneNotebook,
+    handleAddCell,
+    focusedCellId,
+    clearOutputs,
+    handleRunAllCells,
+    handleRestartAndRunAll,
+    checkForUpdate,
+  ]);
 
   // Listen for daemon startup progress events
   useEffect(() => {

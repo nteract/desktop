@@ -18,4 +18,12 @@ export type {
   Unlisten,
 } from "./types";
 
+export {
+  type CommandHandler,
+  type CommandId,
+  type CommandPayloads,
+  type CommandRegistry,
+  createCommandRegistry,
+} from "./commands";
+
 export { NotebookHostProvider, type NotebookHostProviderProps, useNotebookHost } from "./react";

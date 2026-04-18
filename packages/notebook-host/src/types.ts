@@ -30,6 +30,7 @@
  */
 
 import type { NotebookTransport } from "runtimed";
+import type { CommandRegistry } from "./commands";
 
 // ── Shared types ─────────────────────────────────────────────────────────
 
@@ -174,6 +175,13 @@ export interface NotebookHost {
   readonly deps: HostDeps;
   readonly notebook: HostNotebook;
   readonly system: HostSystem;
+  /**
+   * Typed action bus shared between host UI surfaces (menus, keyboard,
+   * future palette) and the app. Host-side wiring calls `run(id, payload)`;
+   * the app registers handlers via `register(id, fn)`. See `./commands.ts`
+   * for the command map.
+   */
+  readonly commands: CommandRegistry;
   // Future namespaces (add in dedicated PRs):
   //   settings:   HostSettings
   //   env:        HostEnv         (detect_pyproject, detect_pixi_toml, …)

@@ -174,4 +174,68 @@ describe("createTauriHost()", () => {
     await expect(host.daemon.isConnected()).resolves.toBe(false);
     rejectOnce.mockRestore();
   });
+
+  it("exposes a command registry", () => {
+    const host = createTauriHost({ transport: stubTransport });
+    expect(host.commands).toBeTruthy();
+    expect(typeof host.commands.register).toBe("function");
+    expect(typeof host.commands.run).toBe("function");
+  });
+
+  it("menu bridge subscribes to every known menu:* event", () => {
+    createTauriHost({ transport: stubTransport });
+    const events = capturedListens.map((x) => x.event);
+    // Notebook-scoped commands.
+    expect(events).toEqual(
+      expect.arrayContaining([
+        "menu:save",
+        "menu:open",
+        "menu:clone",
+        "menu:insert-cell",
+        "menu:clear-outputs",
+        "menu:clear-all-outputs",
+        "menu:run-all",
+        "menu:restart-and-run-all",
+        "menu:check-for-updates",
+      ]),
+    );
+    // Zoom handled host-side (no command id).
+    expect(events).toEqual(
+      expect.arrayContaining(["menu:zoom-in", "menu:zoom-out", "menu:zoom-reset"]),
+    );
+  });
+
+  it("menu bridge routes menu:save to host.commands.run('notebook.save')", async () => {
+    const host = createTauriHost({ transport: stubTransport });
+    const handler = vi.fn();
+    host.commands.register("notebook.save", handler);
+    const saveEntry = capturedListens.find((x) => x.event === "menu:save");
+    expect(saveEntry).toBeTruthy();
+    // Flush the listen() promise before dispatching.
+    await Promise.resolve();
+    saveEntry?.cb({ payload: undefined });
+    // Let the async run() call settle.
+    await Promise.resolve();
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("menu bridge parses menu:insert-cell payload into { type }", async () => {
+    const host = createTauriHost({ transport: stubTransport });
+    const handler = vi.fn();
+    host.commands.register("notebook.insertCell", handler);
+    const entry = capturedListens.find((x) => x.event === "menu:insert-cell");
+    await Promise.resolve();
+    entry?.cb({ payload: "markdown" });
+    await Promise.resolve();
+    expect(handler).toHaveBeenCalledWith({ type: "markdown" });
+
+    entry?.cb({ payload: "code" });
+    await Promise.resolve();
+    expect(handler).toHaveBeenLastCalledWith({ type: "code" });
+
+    // Unknown payload defaults to "code".
+    entry?.cb({ payload: "gibberish" });
+    await Promise.resolve();
+    expect(handler).toHaveBeenLastCalledWith({ type: "code" });
+  });
 });
