@@ -88,8 +88,22 @@ export function WidgetStoreProvider({
   // Manage link subscriptions (jslink/jsdlink) at the store level.
   // Headless widgets like LinkModel have _view_name: null and won't be
   // in any container's children, so they need store-level subscriptions.
-  // Links use store.updateModel directly (client-side only, no CRDT write).
-  useEffect(() => createLinkManager(store), [store]);
+  //
+  // Post-A2 the link writer routes through `updateManager.updateAndPersist`
+  // so link-propagated target updates go to the CRDT (and thus the
+  // kernel), not just the local store. If no manager is wired up — e.g.
+  // isolated-renderer iframe where the comm bridge manages widgets
+  // directly — fall back to a local-only store write.
+  useEffect(() => {
+    const writer = updateManager
+      ? (commId: string, patch: Record<string, unknown>) => {
+          updateManager.updateAndPersist(commId, patch);
+        }
+      : (commId: string, patch: Record<string, unknown>) => {
+          store.updateModel(commId, patch);
+        };
+    return createLinkManager(store, writer);
+  }, [store, updateManager]);
   useEffect(() => createCanvasManagerRouter(store), [store]);
 
   const value = useMemo(
