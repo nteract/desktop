@@ -1,11 +1,71 @@
-# Widget sync — next architecture (proposal)
+# Widget sync: immediate fix + cleanup plan
 
-**Status:** Design proposal for a fresh investigation. The two
-existing PRs (#1880, #1881) remain available as reference, but this
-note frames the space for someone starting clean rather than
-continuing to iterate on either of them.
+**Status:** Proposal. Two existing PRs are open as reference
+(#1880, #1881); neither is merged. Don't treat them as current
+state — main has no watchdog, no `SyncRecoveryBanner`, no
+`syncErrors$` observable. What main has is a 15-line
+`shouldSuppressEcho` filter in `WidgetUpdateManager` and a raw
+`listen("notebook:frame")` handler with no exception trapping.
 
-## Problem
+## Lead with the bug
+
+Under rapid widget interaction (matplotlib `@interact`
+`FloatSlider` driven with arrow keys), the notebook app
+occasionally stops reflecting kernel-side changes. Slider thumb
+moves in the UI; plot underneath freezes mid-drag. Reloading fixes
+it instantly.
+
+The best hypothesis from the evidence is that the webview's
+`listen("notebook:frame")` handler unsubscribes after an
+uncaught exception. Tauri's event system drops callbacks whose
+handlers throw. Daemon keeps sending frames; nothing is listening.
+The outbound path (WASM → Tauri invoke) still works, which is why
+flushes complete without error — only the return channel is dead.
+
+**The fix is five lines.** `apps/notebook/src/lib/tauri-transport.ts`
+today has no `try` / `catch` around the listener callback. Adding
+one — plus a `console.error` log — both confirms the theory and
+prevents the listener from dying. Reproduce the stall before and
+after, look for the exception in the log, harden against whatever
+shows up.
+
+This should ship first, before any of the larger investigations
+below. If it turns out the listener doesn't die (no exception
+logged, stall still happens), the theory is wrong and the
+cleanup plan below needs revisiting. Either way, the experiment
+takes 30 minutes and de-risks everything that follows.
+
+## Cleanup worth doing around the fix
+
+With the bug patched, what's still worth cleaning up? Two
+orthogonal things:
+
+1. **A real recovery path (investigation 3)** — so the user can
+   recover without a full reload if the bug ever regresses or a
+   different failure mode produces a similar wedge. The building
+   blocks exist (`TauriTransport.disconnect`, `SyncEngine.start`,
+   `resetForBootstrap`); this is wiring them to a trigger, plus
+   verifying Tauri actually releases subscriptions cleanly
+   (investigation 0.5, a 15-minute verification).
+
+2. **Stop reconstructing authorship from merged JSON
+   (investigation 1)** — a code-smell refactor justified on its
+   own merits, not on the stall. The current `shouldSuppressEcho`
+   works today; the argument for replacing it is that we already
+   have an actor-based precedent in `useCrdtBridge.tsx:154` and
+   the filter's trajectory under load (#1880's review history)
+   points at trouble. This is refactor-on-its-own-merits, not
+   part of the bug fix.
+
+A third investigation — heads-gossip as a liveness probe — stays
+deferred. The dead-pipe argument is already enough to shelve it.
+
+PR #1881's watchdog could be dropped entirely once (0) + (3)
+land: if the listener is protected *and* we have a reconnect
+primitive, the watchdog is detecting a failure mode that can't
+occur. That's a decision for when those PRs actually land.
+
+## Problem (in detail)
 
 Under rapid widget interaction (the canonical reproducer is a
 matplotlib `@interact` `FloatSlider` driven with arrow keys), the
@@ -19,7 +79,7 @@ silently stopped delivering updates the UI can render.
 
 See `2026-04-17-widget-sync-stall-design.md` for the original
 investigation write-up and `2026-04-18-widget-sync-recovery-design.md`
-for what the current shipping PR addresses.
+for what PR #1881 proposes to address.
 
 ## What we've tried
 
@@ -56,7 +116,7 @@ machinery that reinvents authorship detection from merged state.
 *level* — Automerge already tracks authorship at the change level;
 we were reconstructing it.
 
-### PR #1881 (shipping): detection + recovery safety net
+### PR #1881 (also open): detection + recovery safety net
 
 Orthogonal to the write-path question. Makes two silent failure
 modes visible:
@@ -217,42 +277,102 @@ This is cheap and de-risks the larger investigations. Do it first.
   exception between `listen` and the WASM call will unregister the
   listener silently.
 
+### 0.5. Verify Tauri's unlisten actually releases
+
+Before committing to investigation (3)'s reconnect primitive,
+verify that Tauri's `unlisten` fully releases the underlying
+subscription rather than leaving a zombie handler that a new
+`listen` would layer on top of.
+
+- Add a counter to the `notebook:frame` handler. Register, then
+  unlisten, then re-register. Fire frames from the daemon while
+  doing this and watch the count.
+- Expected clean release: counter stops incrementing during the
+  unlistened window, resumes from zero after re-register.
+- Failure shape: counter continues incrementing via the "dead"
+  subscription during the unlistened window, or double-fires after
+  re-register.
+
+15 minutes. Determines whether (3) is "wiring" or "wiring +
+working around Tauri internals." If the latter, (3) needs a
+fallback plan: for example, recreate the `Webview` entirely, or
+expose a Tauri Rust command that drops and rebuilds the per-window
+event subscription.
+
 ### 1. Actor-ID-based echo detection
 
-**Thesis:** the widget write path's complexity is in reconstructing
-authorship. Automerge has actor IDs. Use them.
+**Justification upfront:** this is a refactor, not a bug fix.
+Today `shouldSuppressEcho` is ~15 lines and works. The case for
+replacing it rests on two things: (a) there's already an
+actor-based precedent that widget code should probably have been
+using originally, and (b) #1880's review history suggests the
+current filter grows corners under load. It should be pursued on
+those merits, independent of the stall class (0) + (3) are
+fixing.
+
+**The precedent:** `apps/notebook/src/hooks/useCrdtBridge.tsx:154`
+already does actor-based echo filtering for text edits:
+
+```ts
+if (attr.actors.length === 1 && attr.actors[0] === localActor) {
+  continue;
+}
+```
+
+This is the same shape widget code should use. The text path has
+the `attributions` payload from `text_attribution` broadcasts
+giving it this info cheaply. Widget code doesn't — the authorship
+information exists in the CRDT, but isn't surfaced to JS. That gap
+is what investigation 1 closes.
 
 Sketch:
 
-- Each frontend window gets a stable actor ID (already baked into
+- Each frontend window already has a stable actor ID (baked into
   every Automerge op it generates).
-- For each key in a projected comm update, ask the CRDT: what's
+- For each key in a projected comm update, query the CRDT: what's
   the actor of the most recent op on this key?
-- If it's our actor, the change originated here — local store
-  already has it (we just wrote it). Skip.
-- If it's a different actor, it's an authoritative write (daemon,
-  peer, kernel validator). Apply.
-- Delete: `optimisticKeys`, `shouldSuppressEcho`, and the whole
-  category of bookkeeping #1880 tried to make defensible.
-- Keep: per-tick local store mirror for UI responsiveness; keep
-  throttled outbound CRDT writes for flood control.
+- If it's our actor, skip (our echo).
+- If it's a different actor, apply (authoritative — daemon, peer,
+  kernel validator).
+- Delete: `optimisticKeys`, `shouldSuppressEcho`.
+- Keep: per-tick local store mirror; throttled outbound CRDT
+  writes.
+
+**Load-bearing unknown — prototype this before committing:**
+`automerge` 0.8 has no indexed "who last wrote key K" query.
+Answering authorship per key requires walking
+`doc.get_changes(&heads)` and filtering for ops touching K —
+O(total history). Per widget tick, per key, on every incoming
+diff. On a long session with hammered sliders, history grows
+unbounded. **Before committing to this investigation**, write a
+~50-line Rust prototype that measures the walk cost on a
+realistic doc (10k changes, hammered-slider workload). If it's
+microseconds per key, ship. If it's milliseconds, the whole
+direction needs to change shape — either an indexed query in
+notebook-doc (more work), a coarse-grained authorship snapshot
+taken less often, or accepting that the current filter stays.
 
 **Where to look:**
+- `apps/notebook/src/hooks/useCrdtBridge.tsx:150-156` — the
+  existing actor-filter precedent.
 - `crates/notebook-doc/` — the attribution code already walks
-  `Change::actor_id()` (see attribution plumbing). The same primitive
-  extended to "most-recent actor per comm key" is a small addition,
-  not new territory.
-- `crates/runtimed-wasm/src/lib.rs` — needs a new export, either a
-  richer `resolve_comm_state` that carries per-key actor info in
-  the result, or a standalone `get_comm_authorship(comm_id)` map.
-- `packages/runtimed/src/comm-diff.ts` — **structural change**:
-  today this diffs whole-comm state JSON (`comm-diff.ts:146-191`).
-  Per-key actor checks require a per-key diff. Downstream
-  subscribers of `commChanges$` will feel this change; expect to
-  touch the emission shape, not just add a hook.
+  `Change::actor_id()` for text. Per-key comm authorship is the
+  same primitive against the comms map.
+- `crates/runtimed-wasm/src/lib.rs` — needs a new export. Options:
+  richer `resolve_comm_state` carrying per-key actor info, or a
+  standalone `get_comm_authorship(comm_id)` map. Shape depends on
+  the prototype's cost profile.
+- `packages/runtimed/src/comm-diff.ts:146-191` — **structural
+  change**. Today diffs whole-comm state JSON via
+  `JSON.stringify` + string compare. Per-key actor checks require
+  a per-key diff, so the emission shape of `commChanges$` changes.
+  Downstream consumers of `commChanges$` (`App.tsx`'s widget-store
+  subscriber, any test harness using the observable, the isolated
+  renderer's widget bridge) all read the whole-state payload
+  today — audit call sites before committing.
 - `src/components/widgets/link-subscriptions.ts` — **not gated on
   this refactor**. jslink is pure local-store sync and doesn't
-  touch the CRDT. Don't let this investigation conflate the two.
+  touch the CRDT.
 
 **Rust-forward angle:** the authorship query belongs in
 `notebook-doc` / `runtimed-wasm` regardless of who consumes it. A
@@ -299,13 +419,12 @@ Sketch:
 
 **Important caveats before building this:**
 
-- **Not standard Automerge.** Sync messages carry heads, but
-  periodic out-of-band gossip is a design choice, not a convention.
-  `samod` (automerge-repo's Rust port) has a `RemoteHeadsChanged`
-  wire message and deliberately drops it in `samod-core` —
-  it's reserved for persistent-storage coordination, not
-  liveness probing. If we build heads-gossip we'd be originating
-  the pattern, not adopting it.
+- **Not a standard Automerge primitive.** Sync messages carry
+  heads, but "periodic out-of-band gossip for liveness probing" is
+  a design choice, not a convention. If we build it we'd be
+  originating the pattern for our purposes, not picking up
+  something the Automerge ecosystem already does this way. That's
+  allowed, just honestly scoped.
 - **Rides the same dead pipe as the thing it's detecting.** If the
   Tauri listener is dead (the diagnosed failure mode), the daemon's
   heads announcement can't arrive either. Heads-gossip detects the
@@ -437,7 +556,7 @@ Read, roughly in order:
 
 1. `2026-04-17-widget-sync-stall-design.md` — the stall symptom and
    why the dual-write was brittle.
-2. `2026-04-18-widget-sync-recovery-design.md` — what the shipping
+2. `2026-04-18-widget-sync-recovery-design.md` — what the proposed
    detection/recovery PR does and explicitly doesn't.
 3. `crates/runtimed-wasm/src/lib.rs`, particularly the
    `FrameEvent::SyncError` variants and `reset_sync_state` — how
@@ -459,31 +578,42 @@ write filter is exactly what investigation (1) replaces.
 
 ## Recommended ordering
 
-- **Do (0) first.** 30 minutes. Confirms or kills the
-  listener-death theory and sizes (3).
-- **Do (1) regardless.** It stops the reconciliation-filter drift
-  and lands a shared Rust API that benefits both the notebook
-  frontend and `runt mcp`. Independent of what (0) finds.
-- **Do (3) if (0) confirmed.** Uses mostly existing primitives;
-  modest implementation surface for a real recovery path.
-- **Defer (2).** Speculative and rides the same dead pipe as the
-  thing it would detect. Revisit only if (1) + (3) land and a
-  concrete liveness gap remains.
+Fix the bug, then do the cleanup:
+
+1. **(0)** — try/catch around the listener + reproduce. 30 min.
+   Ships the actual fix and confirms the diagnosis in one motion.
+2. **(0.5)** — verify Tauri unlisten cleanly releases. 15 min.
+   Gates whether (3) is wiring or a larger Tauri workaround.
+3. **(3)** — escalating recovery, conditional on (0) + (0.5).
+   Mostly wiring of existing primitives; surfaces a real
+   non-reload recovery path.
+4. **(1)** — actor-ID echo refactor, independent. Start with the
+   cost-profile prototype before committing. Parallelizable with
+   the above or can wait.
+5. **(2)** — deferred. Revisit only if (0) + (3) close the stall
+   and a distinct liveness gap remains.
+
+PR #1881's watchdog ceases to earn its surface area once (0) +
+(3) land. Drop it; the watchdog was detecting a class that won't
+occur with a protected listener + reconnect primitive.
 
 ## Success criteria
 
-A new design is worth landing if:
+A successful set of changes, in order of importance:
 
-1. The reproducer (`@interact` slider hammered with arrow keys)
-   doesn't stall under nominal transport conditions.
-2. When the stall *does* happen (listener dead, pipe wedged),
-   heads-gossip detects it within ~1s and the reconnect primitive
-   recovers without the user reloading. The banner tells them what
-   happened but doesn't require action.
-3. Only genuinely unrecoverable transport failures (daemon dead,
-   Tauri process gone) escalate to "Reload required" — and that
-   state is reachable with a one-click banner action.
-4. The widget write path is fewer lines than today and has no
-   per-key bookkeeping that requires TTL or consume-on-match.
-5. Silent drops can't regress without a heads-gossip divergence
-   showing up in logs.
+1. **(0)** — the reproducer (`@interact` slider hammered with
+   arrow keys) doesn't stall. If an exception shows up in the log,
+   it's been hardened against. The specific failure mode behind
+   the user's repro is closed.
+2. **(3)** — if some future failure mode produces a similar wedge,
+   the user recovers via a "Reconnect" action rather than
+   reloading. The CRDT has no state to lose, so the action is
+   safe by construction.
+3. **(1)** — the widget write path is smaller than today and
+   relies on the CRDT's native authorship information, not a
+   reconstructed filter. `get_comm_authorship` (or whatever shape
+   the prototype validates) is consumed from both the WASM binding
+   and `runt mcp`.
+4. Reload requirement is reserved for genuinely unrecoverable
+   states (daemon dead, Tauri process gone) and surfaced with a
+   one-click banner action.
