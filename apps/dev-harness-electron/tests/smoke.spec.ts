@@ -47,5 +47,14 @@ test("electron harness opens a window and loads the notebook UI", async () => {
     throw e;
   }
 
+  // Confirm the harness main process actually established a daemon
+  // handshake — if the shim paths diverge we'll see a null notebookId.
+  const info = await window.evaluate(() => window.electronAPI?.info());
+  process.stdout.write(`[test] harness info=${JSON.stringify(info)}\n`);
+  expect(info).toBeTruthy();
+  expect(info?.notebookId).toMatch(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+  );
+
   await app.close();
 });
