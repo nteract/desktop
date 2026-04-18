@@ -142,7 +142,42 @@ test("slider drive vs kernel round-trip", async () => {
     // so a full round is expected to end at a non-zero value. If displayed
     // vs kernel diverge, it means some comm_msgs got dropped or reordered.
     const mode = process.env.HARNESS_STALL_MODE ?? "keyboard";
-    if (mode === "mouse") {
+    if (mode === "jagged") {
+      // Kyle's manual repro pattern: jagged rights, then jagged lefts,
+      // back and forth until it breaks. "Jagged" = irregular micro-bursts
+      // within each direction, not smooth key-repeat. Each macro burst
+      // is one direction (50-150 keys), decomposed into micro-bursts of
+      // 3-15 keys with tiny random pauses between them. Between macro
+      // bursts, a longer pause lets sync "almost settle" before the next
+      // direction slams.
+      let presses = 0;
+      const target = pressesPerRound;
+      let goingRight = true;
+      while (presses < target) {
+        const macroCount = 50 + Math.floor(Math.random() * 100);
+        const key = goingRight ? "ArrowRight" : "ArrowLeft";
+        let macroDone = 0;
+        while (macroDone < macroCount && presses < target) {
+          const micro = 3 + Math.floor(Math.random() * 12);
+          for (let j = 0; j < micro && macroDone < macroCount; j++) {
+            // eslint-disable-next-line no-await-in-loop
+            await window.keyboard.press(key);
+            macroDone++;
+            presses++;
+          }
+          // tiny inter-micro pause 0-15ms
+          if (Math.random() < 0.6) {
+            // eslint-disable-next-line no-await-in-loop
+            await window.waitForTimeout(Math.floor(Math.random() * 15));
+          }
+        }
+        // inter-macro pause 50-250ms — lets the CRDT / comm_msg queue try
+        // to catch up before the opposite direction slams.
+        // eslint-disable-next-line no-await-in-loop
+        await window.waitForTimeout(50 + Math.floor(Math.random() * 200));
+        goingRight = !goingRight;
+      }
+    } else if (mode === "mouse") {
       // Mouse drag across the slider thumb — closer to the actual manual
       // repro (dragging back and forth with a trackpad). Alternates
       // direction every ~300ms.
