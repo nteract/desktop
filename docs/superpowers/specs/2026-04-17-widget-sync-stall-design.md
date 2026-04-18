@@ -141,6 +141,22 @@ into one.
   drop an inbound key if its value matches a recently-written local
   value within some tombstone window. Deferred.
 
+- **iframe jslink targets don't propagate to other views of the same
+  widget.** Each output iframe runs its own `WidgetStore` shadow
+  (see `src/isolated-renderer/widget-provider.tsx`) that the parent
+  `CommBridgeManager` syncs into. jslink is frontend-only by
+  ipywidgets semantics, so its target writes deliberately skip the
+  kernel — but they currently also skip the parent store. If the
+  same model is rendered in multiple cells (multiple iframes), only
+  the iframe where the source tick fired sees the target update.
+  The shipping compromise: iframe-local-only is correct for the
+  common case (one cell per model) and matches how Jupyter Lab
+  handles jslink within a single output area. A cross-iframe fix
+  would need either a new "local-only" bridge RPC that updates the
+  parent store without forwarding to the kernel, or routing jslink
+  through the CRDT (blocked on the throttle-stutter follow-up
+  above). Deferred.
+
 ## What this is NOT
 
 - Not persisting the sync state across reloads (would be nice; deferred).
