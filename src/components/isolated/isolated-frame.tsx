@@ -30,6 +30,7 @@ import {
   NTERACT_MOUSE_DOWN,
   NTERACT_WIDGET_COMM_CLOSE,
   NTERACT_WIDGET_COMM_MSG,
+  NTERACT_WIDGET_LOCAL_UPDATE,
   NTERACT_WIDGET_READY,
   NTERACT_WIDGET_STATE,
   NTERACT_WIDGET_UPDATE,
@@ -576,6 +577,12 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
               transport.onNotification(NTERACT_WIDGET_COMM_MSG, (params) => {
                 onMessageRef.current?.({
                   type: "widget_comm_msg",
+                  payload: params,
+                } as IframeToParentMessage);
+              });
+              transport.onNotification(NTERACT_WIDGET_LOCAL_UPDATE, (params) => {
+                onMessageRef.current?.({
+                  type: "widget_local_update",
                   payload: params,
                 } as IframeToParentMessage);
               });

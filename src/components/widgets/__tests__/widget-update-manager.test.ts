@@ -111,6 +111,39 @@ describe("WidgetUpdateManager", () => {
 
       expect(store.getModel("comm-1")?.state.value).toBe(42);
     });
+
+    it("marks written keys as pending so stale projected echoes can be dropped", () => {
+      // While the trailing throttle flush is in flight, the daemon's
+      // sync frames still carry its pre-flush view of the state. The
+      // App-level `commChanges$` subscriber consults
+      // `hasPendingKey(commId, key)` to drop those stale echoes, so
+      // an in-flight drag value doesn't snap back mid-burst.
+      const { manager } = setup();
+
+      manager.updateAndPersist("comm-1", { value: 42 });
+
+      expect(manager.hasPendingKey("comm-1", "value")).toBe(true);
+      expect(manager.hasPendingKey("comm-1", "description")).toBe(false);
+    });
+
+    it("clears pending-key marks after the TTL elapses", () => {
+      const { manager } = setup();
+
+      manager.updateAndPersist("comm-1", { value: 42 });
+      expect(manager.hasPendingKey("comm-1", "value")).toBe(true);
+
+      vi.advanceTimersByTime(600); // past PENDING_TTL_MS (500)
+      expect(manager.hasPendingKey("comm-1", "value")).toBe(false);
+    });
+
+    it("clears pending keys on clearComm (comm_close)", () => {
+      const { manager } = setup();
+
+      manager.updateAndPersist("comm-1", { value: 42 });
+      manager.clearComm("comm-1");
+
+      expect(manager.hasPendingKey("comm-1", "value")).toBe(false);
+    });
   });
 
   describe("bootstrap queue", () => {

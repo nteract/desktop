@@ -114,6 +114,7 @@ const _outputResolveGen = new Map<string, number>();
 function diffResolvedState(
   existing: Record<string, unknown>,
   next: Record<string, unknown>,
+  isPendingKey?: (key: string) => boolean,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(next)) {
@@ -128,6 +129,11 @@ function diffResolvedState(
     } catch {
       // Non-serializable values (rare in comm state) → treat as changed.
     }
+    // Drop keys with a pending local write. The projected echo
+    // carries the daemon's pre-flush view of the CRDT — the store's
+    // newer in-flight value wins until the throttle trailing-edge
+    // flush reaches the daemon and the daemon's sync frame catches up.
+    if (isPendingKey?.(key)) continue;
     out[key] = value;
   }
   return out;
@@ -422,7 +428,11 @@ function AppContent() {
         // synchronously before the projection hopped through a
         // microtask.
         const existing = widgetStore.getModel(comm.commId);
-        const diff = existing ? diffResolvedState(existing.state, comm.state) : comm.state;
+        const diff = existing
+          ? diffResolvedState(existing.state, comm.state, (key) =>
+              updateManager.hasPendingKey(comm.commId, key),
+            )
+          : comm.state;
         if (Object.keys(diff).length > 0) {
           widgetStore.updateModel(comm.commId, diff);
         }

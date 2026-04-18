@@ -45,6 +45,14 @@ interface CommThrottleState {
   trailingTimer: ReturnType<typeof setTimeout> | null;
 }
 
+/**
+ * Narrow TTL window for keeping pending-local marks alive after
+ * a CRDT flush. The daemon's echo of our last-written value can
+ * take a full sync round-trip to arrive; during that gap we still
+ * want the local store to win over the projected echo.
+ */
+const PENDING_TTL_MS = 500;
+
 export class WidgetUpdateManager {
   private readonly getStore: () => WidgetStore | null;
   private readonly getCrdtWriter: () => CrdtCommWriter | null;
@@ -57,6 +65,17 @@ export class WidgetUpdateManager {
   private throttles = new Map<string, CommThrottleState>();
 
   /**
+   * Per-comm per-key timestamps of local writes that haven't yet
+   * round-tripped through the CRDT. Consulted by the App-level
+   * `commChanges$` subscriber: if a projected echo carries a key
+   * that was written locally within `PENDING_TTL_MS`, the store's
+   * current value wins and the echo is dropped. Prevents the
+   * daemon's lagged view of the throttle window from clobbering
+   * the in-flight drag.
+   */
+  private pendingKeys = new Map<string, Map<string, number>>();
+
+  /**
    * Patches that arrived before the CRDT writer was registered.
    * Separate from `throttles` because the writer isn't callable yet.
    */
@@ -66,6 +85,38 @@ export class WidgetUpdateManager {
   constructor(opts: WidgetUpdateManagerOptions) {
     this.getStore = opts.getStore;
     this.getCrdtWriter = opts.getCrdtWriter;
+  }
+
+  /**
+   * Is there a pending local write for this key that the daemon's
+   * projected echo shouldn't clobber? Consulted by the `commChanges$`
+   * subscriber to drop stale projected values during the throttle
+   * window (and briefly after, until the daemon's merged view catches
+   * up).
+   */
+  hasPendingKey(commId: string, key: string): boolean {
+    const keys = this.pendingKeys.get(commId);
+    if (!keys) return false;
+    const ts = keys.get(key);
+    if (ts === undefined) return false;
+    if (Date.now() - ts > PENDING_TTL_MS) {
+      keys.delete(key);
+      if (keys.size === 0) this.pendingKeys.delete(commId);
+      return false;
+    }
+    return true;
+  }
+
+  private markPending(commId: string, patch: Record<string, unknown>): void {
+    let keys = this.pendingKeys.get(commId);
+    if (!keys) {
+      keys = new Map();
+      this.pendingKeys.set(commId, keys);
+    }
+    const now = Date.now();
+    for (const key of Object.keys(patch)) {
+      keys.set(key, now);
+    }
   }
 
   /**
@@ -110,6 +161,12 @@ export class WidgetUpdateManager {
     // views; the App-level subscriber's diff check makes that a
     // no-op rather than a redundant re-render.
     this.getStore()?.updateModel(commId, patch, buffers);
+
+    // Mark these keys as pending-local. The `commChanges$`
+    // subscriber consults `hasPendingKey` before applying projected
+    // values, so a daemon sync frame that carries the pre-flush
+    // CRDT view won't roll the local store back mid-drag.
+    this.markPending(commId, patch);
 
     if (buffers?.length) {
       // Buffers bypass the throttle: ArrayBuffers aren't patchable
@@ -218,6 +275,7 @@ export class WidgetUpdateManager {
     }
     this.throttles.clear();
     this.bootstrapQueue.clear();
+    this.pendingKeys.clear();
     if (this.drainTimer) {
       clearTimeout(this.drainTimer);
       this.drainTimer = null;
@@ -235,5 +293,6 @@ export class WidgetUpdateManager {
     if (state?.trailingTimer) clearTimeout(state.trailingTimer);
     this.throttles.delete(commId);
     this.bootstrapQueue.delete(commId);
+    this.pendingKeys.delete(commId);
   }
 }

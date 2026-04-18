@@ -24,6 +24,7 @@ import {
   NTERACT_WIDGET_SNAPSHOT,
   NTERACT_WIDGET_COMM_CLOSE,
   NTERACT_WIDGET_COMM_MSG,
+  NTERACT_WIDGET_LOCAL_UPDATE,
   NTERACT_WIDGET_READY,
 } from "@/components/isolated/rpc-methods";
 import { createWidgetStore, type WidgetStore } from "@/components/widgets/widget-store";
@@ -101,6 +102,14 @@ export interface WidgetBridgeClient {
    * Used for widget-specific protocols (e.g., ipycanvas draw commands).
    */
   sendCustom: (commId: string, content: Record<string, unknown>, buffers?: ArrayBuffer[]) => void;
+
+  /**
+   * Propagate a frontend-only state change to the parent (so sibling
+   * iframes see it) WITHOUT forwarding to the kernel. Used for
+   * `widgets.jslink` / `widgets.jsdlink` target writes, which are
+   * frontend-only by ipywidgets semantics.
+   */
+  sendLocal: (commId: string, patch: Record<string, unknown>) => void;
 
   /**
    * Request to close a comm (to be forwarded to kernel).
@@ -205,6 +214,16 @@ export function createWidgetBridgeClient(transport: JsonRpcTransport): WidgetBri
         method: "custom",
         data: content,
         buffers,
+      });
+    },
+
+    sendLocal(commId: string, patch: Record<string, unknown>) {
+      // Update iframe store immediately so the triggering view
+      // reflects the change without waiting for a round-trip echo.
+      store.updateModel(commId, patch);
+      transport.notify(NTERACT_WIDGET_LOCAL_UPDATE, {
+        commId,
+        data: patch,
       });
     },
 

@@ -3,6 +3,7 @@ import type {
   CommCloseMessage,
   CommMsgMessage,
   CommOpenMessage,
+  WidgetLocalUpdateMessage,
   WidgetSnapshotMessage,
   IframeToParentMessage,
 } from "./frame-bridge";
@@ -96,6 +97,10 @@ export class CommBridgeManager {
 
       case "widget_comm_msg":
         this.handleWidgetCommMsg(message.payload);
+        break;
+
+      case "widget_local_update":
+        this.handleWidgetLocalUpdate(message.payload);
         break;
 
       case "widget_comm_close":
@@ -293,6 +298,23 @@ export class CommBridgeManager {
       // Custom messages go directly to kernel (no store update)
       this.sendCustomToKernel(commId, data, buffers);
     }
+  }
+
+  private handleWidgetLocalUpdate(payload: WidgetLocalUpdateMessage["payload"]): void {
+    const { commId, data } = payload;
+    // Apply to parent store ONLY — no kernel forwarding. jslink /
+    // jsdlink targets are frontend-only by ipywidgets semantics.
+    //
+    // We update `previousState` for THIS iframe's bridge so the
+    // store-subscriber's `syncModels` pass doesn't redundantly echo
+    // the change back to the originating iframe (which already has
+    // it — the iframe pre-wrote its local store before sending).
+    // Sibling iframes each have their own `CommBridgeManager` with
+    // their own `previousState`, so they still see the update and
+    // propagate it through their bridges.
+    const current = this.previousState.get(commId) ?? {};
+    this.previousState.set(commId, this.cloneStateSnapshot({ ...current, ...data }));
+    this.store.updateModel(commId, data);
   }
 
   private handleWidgetCommClose(payload: { commId: string }): void {

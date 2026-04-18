@@ -46,6 +46,7 @@ export const NTERACT_DOUBLE_CLICK = "nteract/doubleClick" as const;
 export const NTERACT_ERROR = "nteract/error" as const;
 export const NTERACT_WIDGET_READY = "nteract/widgetReady" as const;
 export const NTERACT_WIDGET_COMM_MSG = "nteract/widgetCommMsg" as const;
+export const NTERACT_WIDGET_LOCAL_UPDATE = "nteract/widgetLocalUpdate" as const;
 export const NTERACT_WIDGET_COMM_CLOSE = "nteract/widgetCommClose" as const;
 export const NTERACT_WIDGET_UPDATE = "nteract/widgetUpdate" as const;
 export const NTERACT_EVAL_RESULT = "nteract/evalResult" as const;
@@ -148,6 +149,17 @@ export interface NteractWidgetCommMsgParams {
   data: Record<string, unknown>;
   bufferPaths?: string[][];
   buffers?: ArrayBuffer[];
+}
+
+/**
+ * Iframe → Host: jslink/jsdlink target update. Parent updates its
+ * WidgetStore (so sibling iframes see the change) but does NOT
+ * forward to the kernel — these are frontend-only by ipywidgets
+ * semantics.
+ */
+export interface NteractWidgetLocalUpdateParams {
+  commId: string;
+  data: Record<string, unknown>;
 }
 
 export interface NteractWidgetCommCloseParams {

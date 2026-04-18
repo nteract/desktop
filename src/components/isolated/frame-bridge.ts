@@ -387,6 +387,22 @@ export interface WidgetCommCloseMessage {
   };
 }
 
+/**
+ * Frontend-only state update from the iframe (`widgets.jslink` /
+ * `widgets.jsdlink` target writes). Parent updates its WidgetStore
+ * so sibling iframes see the change, but does NOT forward to the
+ * kernel — these are frontend-only by ipywidgets semantics.
+ */
+export interface WidgetLocalUpdateMessage {
+  type: "widget_local_update";
+  payload: {
+    /** Comm ID of the widget */
+    commId: string;
+    /** State patch */
+    data: Record<string, unknown>;
+  };
+}
+
 // --- Global Find: Iframe → Parent ---
 
 /**
@@ -417,6 +433,7 @@ export type IframeToParentMessage =
   | RendererReadyMessage
   | WidgetReadyMessage
   | WidgetCommMsgMessage
+  | WidgetLocalUpdateMessage
   | WidgetCommCloseMessage
   | SearchResultsMessage;
 
@@ -453,6 +470,7 @@ export function isIframeMessage(data: unknown): data is IframeToParentMessage {
       "renderer_ready",
       "widget_ready",
       "widget_comm_msg",
+      "widget_local_update",
       "widget_comm_close",
       "search_results",
     ].includes(msg.type)
