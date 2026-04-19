@@ -2238,10 +2238,12 @@ fn resolve_project_root() -> std::io::Result<PathBuf> {
         }
     }
     // Walk up from current dir looking for Cargo.toml with [workspace].
-    // If we hit the filesystem root without finding one, return the original
-    // cwd — the caller can decide whether that's acceptable. If `current_dir`
-    // itself fails (cwd was deleted, permission denied, etc.) propagate the
-    // io::Error rather than panicking; main decides how to surface it.
+    // If `current_dir` itself fails (cwd was deleted, permission denied, etc.)
+    // propagate the io::Error rather than panicking. If we walk to the
+    // filesystem root without finding a workspace Cargo.toml, fail with
+    // NotFound — silently returning cwd would leave the supervisor pointed
+    // at a non-repo directory and every downstream `project_root.join(...)`
+    // would resolve to garbage.
     let start = std::env::current_dir()?;
     let mut dir = start.clone();
     loop {
@@ -2254,10 +2256,14 @@ fn resolve_project_root() -> std::io::Result<PathBuf> {
             }
         }
         if !dir.pop() {
-            // No workspace Cargo.toml found above cwd. Return cwd so the
-            // caller can log it and fail fast rather than silently walking
-            // with `PathBuf::from(".")`.
-            return Ok(start);
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!(
+                    "no workspace Cargo.toml found above {}; \
+                     set RUNTIMED_WORKSPACE_PATH to the repo root",
+                    start.display()
+                ),
+            ));
         }
     }
 }
