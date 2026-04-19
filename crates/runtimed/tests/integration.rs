@@ -628,6 +628,96 @@ async fn test_untitled_notebook_persists_through_eviction() {
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
 }
 
+/// Regression test for the eviction/debouncer race (PR follow-up).
+///
+/// The race: the daemon's eviction task used to remove a room from the
+/// `notebook_rooms` HashMap, then run async teardown (kernel shutdown,
+/// env cleanup, etc.), and only finally drop the room's `Arc` — which
+/// in turn closed the `watch` channel feeding the persist debouncer,
+/// triggering its shutdown flush. A fast reconnect in the window
+/// between HashMap removal and Arc drop would hit `get_or_create_room`
+/// with the room gone, instantiate a fresh one, and load the still-stale
+/// `.automerge` from disk — silently dropping the user's edits.
+///
+/// The fix makes the eviction task send a flush request to the debouncer
+/// and await its ack *before* touching the HashMap. This test drives a
+/// rapid disconnect/reconnect cycle to cover the happy path end-to-end.
+/// The existing `test_untitled_notebook_persists_through_eviction` covers
+/// the slower-reconnect case with an explicit file-size wait.
+#[tokio::test]
+async fn test_eviction_flushes_before_reconnect() {
+    let temp_dir = TempDir::new().unwrap();
+    let mut config = test_config(&temp_dir);
+    // Instant eviction — the fix must guarantee the flush runs before the
+    // HashMap removal regardless of the eviction timer.
+    config.room_eviction_delay_ms = Some(0);
+    let socket_path = config.socket_path.clone();
+
+    let daemon = Daemon::new(config).unwrap();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
+
+    // Create an untitled notebook with a few cells, then drop the client to
+    // trigger eviction. No autosave path exists for untitled notebooks, so
+    // the `.automerge` debouncer is the only thing keeping content durable.
+    let notebook_id;
+    {
+        let result = connect::connect_create(socket_path.clone(), "python", None, "test", false)
+            .await
+            .unwrap();
+        notebook_id = result.info.notebook_id.clone();
+        let client = result.handle;
+
+        client.add_cell_after("c1", "code", None).unwrap();
+        client.update_source("c1", "race_test = 1").unwrap();
+        client.add_cell_after("c2", "code", Some("c1")).unwrap();
+        client.update_source("c2", "race_test = 2").unwrap();
+        client.add_cell_after("c3", "markdown", Some("c2")).unwrap();
+        client
+            .update_source("c3", "# Race regression guard")
+            .unwrap();
+    }
+
+    // Reconnect fast — no sleep. The fix's flush-and-ack ensures the room's
+    // latest doc bytes are on disk before the HashMap drop, so regardless of
+    // whether the reconnect hits the still-evicting room or spawns a fresh
+    // one from disk, all three cells must be visible.
+    let client2 = connect::connect(socket_path.clone(), notebook_id.clone(), "test")
+        .await
+        .expect("reconnect should succeed")
+        .handle;
+
+    let mut watcher = client2.subscribe();
+    let mut cells = client2.get_cells();
+    for _ in 0..30 {
+        if cells.len() == 3 {
+            break;
+        }
+        match tokio::time::timeout(Duration::from_millis(250), watcher.changed()).await {
+            Ok(Ok(())) => cells = client2.get_cells(),
+            _ => break,
+        }
+    }
+
+    assert_eq!(
+        cells.len(),
+        3,
+        "reconnected client must see all 3 cells, got {}: {:?}",
+        cells.len(),
+        cells
+    );
+    assert_eq!(cells[0].source, "race_test = 1");
+    assert_eq!(cells[1].source, "race_test = 2");
+    assert_eq!(cells[2].source, "# Race regression guard");
+
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
 #[tokio::test]
 async fn test_notebook_cell_delete_propagation() {
     let temp_dir = TempDir::new().unwrap();
