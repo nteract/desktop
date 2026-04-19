@@ -7076,7 +7076,9 @@ dependencies = [
 name = "runtimed-node"
 version = "0.1.0"
 dependencies = [
+ "arrow",
  "base64 0.22.1",
+ "bytes",
  "log",
  "napi",
  "napi-build",
@@ -7084,6 +7086,8 @@ dependencies = [
  "notebook-doc",
  "notebook-protocol",
  "notebook-sync",
+ "nteract-predicate",
+ "parquet",
  "runt-workspace",
  "runtimed-client",
  "serde",
