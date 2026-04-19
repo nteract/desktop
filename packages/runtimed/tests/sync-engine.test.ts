@@ -1650,9 +1650,7 @@ describe("SyncEngine", () => {
       let portReady = false;
       handle = createMockHandle({
         resolve_comm_state: vi.fn((_id: unknown) =>
-          portReady
-            ? { state: { value: 42 }, buffer_paths: [], text_paths: [] }
-            : undefined,
+          portReady ? { state: { value: 42 }, buffer_paths: [], text_paths: [] } : undefined,
         ),
       });
 
