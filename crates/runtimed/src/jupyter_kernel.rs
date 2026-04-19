@@ -221,13 +221,13 @@ impl KernelConnection for JupyterKernel {
                             "[jupyter-kernel] Starting Python kernel with cached inline env at {:?}",
                             pooled_env.python_path
                         );
+                        let launcher_module = if bootstrap_dx_enabled() {
+                            "nteract_kernel_launcher"
+                        } else {
+                            "ipykernel_launcher"
+                        };
                         let mut cmd = tokio::process::Command::new(&pooled_env.python_path);
-                        cmd.args([
-                            "-Xfrozen_modules=off",
-                            "-m",
-                            "nteract_kernel_launcher",
-                            "-f",
-                        ]);
+                        cmd.args(["-Xfrozen_modules=off", "-m", launcher_module, "-f"]);
                         cmd.arg(&connection_file_path);
                         cmd.stdout(Stdio::null());
                         cmd.stderr(Stdio::piped());
@@ -245,22 +245,24 @@ impl KernelConnection for JupyterKernel {
                             env_source
                         );
                         let mut cmd = tokio::process::Command::new(&uv_path);
-                        cmd.args([
-                            "run",
-                            "--with",
-                            "ipykernel",
-                            "--with",
-                            "uv",
-                            "--with",
-                            "nteract-kernel-launcher",
-                            "--with",
-                            "dx",
+                        let mut args: Vec<&str> =
+                            vec!["run", "--with", "ipykernel", "--with", "uv"];
+                        if bootstrap_dx_enabled() {
+                            args.extend(["--with", "nteract-kernel-launcher", "--with", "dx"]);
+                        }
+                        let launcher_module = if bootstrap_dx_enabled() {
+                            "nteract_kernel_launcher"
+                        } else {
+                            "ipykernel_launcher"
+                        };
+                        args.extend([
                             "python",
                             "-Xfrozen_modules=off",
                             "-m",
-                            "nteract_kernel_launcher",
+                            launcher_module,
                             "-f",
                         ]);
+                        cmd.args(&args);
                         cmd.arg(&connection_file_path);
                         cmd.stdout(Stdio::null());
                         cmd.stderr(Stdio::piped());
@@ -469,14 +471,15 @@ impl KernelConnection for JupyterKernel {
                             "[jupyter-kernel] Starting Python kernel from env at {:?}",
                             pooled_env.python_path
                         );
-                        // Prewarmed UV envs have our kernel bootstrap wrapper installed;
-                        // conda and other prewarmed envs do not, so fall back to
-                        // plain ipykernel_launcher there.
-                        let launcher_module = if pooled_env.env_type == EnvType::Uv {
-                            "nteract_kernel_launcher"
-                        } else {
-                            "ipykernel_launcher"
-                        };
+                        // When RUNT_BOOTSTRAP_DX is set, prewarmed UV envs have
+                        // `nteract-kernel-launcher` installed; conda/pixi prewarmed envs
+                        // do not, so fall back to ipykernel_launcher there.
+                        let launcher_module =
+                            if bootstrap_dx_enabled() && pooled_env.env_type == EnvType::Uv {
+                                "nteract_kernel_launcher"
+                            } else {
+                                "ipykernel_launcher"
+                            };
                         let mut cmd = tokio::process::Command::new(&pooled_env.python_path);
                         cmd.args(["-Xfrozen_modules=off", "-m", launcher_module, "-f"]);
                         cmd.arg(&connection_file_path);
@@ -2533,4 +2536,14 @@ fn prepend_to_path(dir: &std::path::Path) -> String {
         Ok(existing) => format!("{}:{}", dir_str, existing),
         Err(_) => dir_str.to_string(),
     }
+}
+
+/// Whether nteract kernel bootstrap is enabled for UV-based kernels.
+///
+/// Gated by `RUNT_BOOTSTRAP_DX`. When set, UV kernels launch via
+/// `nteract_kernel_launcher` (shipped by the `nteract-kernel-launcher` pypi
+/// package) which runs `dx.install()` before handing off to ipykernel.
+/// When unset, kernels launch via `ipykernel_launcher` as before.
+fn bootstrap_dx_enabled() -> bool {
+    std::env::var_os("RUNT_BOOTSTRAP_DX").is_some()
 }

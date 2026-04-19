@@ -253,6 +253,10 @@ fn uv_prewarmed_packages(extra: &[String]) -> Vec<String> {
         "nbformat".to_string(),
         "uv".to_string(),
     ];
+    if std::env::var_os("RUNT_BOOTSTRAP_DX").is_some() {
+        packages.push("nteract-kernel-launcher".to_string());
+        packages.push("dx".to_string());
+    }
     packages.extend(extra.iter().cloned());
     packages
 }

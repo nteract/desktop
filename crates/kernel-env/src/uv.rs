@@ -203,10 +203,14 @@ pub async fn prepare_environment_in(
         "ipywidgets".to_string(),
         "anywidget".to_string(),
         "nbformat".to_string(),
-        "uv".to_string(),                      // For %uv magic in notebooks
-        "nteract-kernel-launcher".to_string(), // Runs kernel bootstrap before ipykernel starts
-        "dx".to_string(), // nteract data-experience library; enabled via RUNT_BOOTSTRAP_DX
+        "uv".to_string(), // For %uv magic in notebooks
     ];
+    // nteract kernel bootstrap (feature-flagged, default off): includes a custom
+    // launcher module and dx so `dx.install()` can fire before ipykernel starts.
+    if std::env::var_os("RUNT_BOOTSTRAP_DX").is_some() {
+        packages.push("nteract-kernel-launcher".to_string());
+        packages.push("dx".to_string());
+    }
     packages.extend(deps.dependencies.iter().cloned());
 
     // Build install command args.
@@ -463,10 +467,13 @@ pub async fn create_prewarmed_environment_in(
         python_path.to_string_lossy().to_string(),
         "ipykernel".to_string(),
         "ipywidgets".to_string(),
-        "uv".to_string(),                      // For %uv magic in notebooks
-        "nteract-kernel-launcher".to_string(), // Runs kernel bootstrap before ipykernel starts
-        "dx".to_string(), // nteract data-experience library; enabled via RUNT_BOOTSTRAP_DX
+        "uv".to_string(), // For %uv magic in notebooks
     ];
+    // Opt-in kernel bootstrap (see prepare_environment_in above).
+    if std::env::var_os("RUNT_BOOTSTRAP_DX").is_some() {
+        install_args.push("nteract-kernel-launcher".to_string());
+        install_args.push("dx".to_string());
+    }
     if !extra_packages.is_empty() {
         info!("[prewarm] Including extra packages: {:?}", extra_packages);
         install_args.extend(extra_packages.iter().cloned());
