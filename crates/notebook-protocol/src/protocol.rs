@@ -733,15 +733,14 @@ impl RuntimeAgentRequest {
     /// Returns true if this request is a command (fire-and-forget).
     /// Commands don't get a response — state flows back via CRDT.
     ///
-    /// Currently: Interrupt, Shutdown, SendComm. Launch/Restart/SyncEnvironment
-    /// remain queries because the daemon needs response data (env_source,
-    /// launched_config, error handling).
+    /// Currently: Interrupt, SendComm. Shutdown is a sync query because
+    /// the daemon must confirm the kernel is dead before LaunchKernel
+    /// sends RestartKernel — otherwise CRDT-queued cells can race onto
+    /// the dying kernel.
     pub fn is_command(&self) -> bool {
         matches!(
             self,
-            RuntimeAgentRequest::InterruptExecution
-                | RuntimeAgentRequest::ShutdownKernel
-                | RuntimeAgentRequest::SendComm { .. }
+            RuntimeAgentRequest::InterruptExecution | RuntimeAgentRequest::SendComm { .. }
         )
     }
 }
@@ -1068,7 +1067,7 @@ mod tests {
     #[test]
     fn runtime_agent_is_command() {
         assert!(RuntimeAgentRequest::InterruptExecution.is_command());
-        assert!(RuntimeAgentRequest::ShutdownKernel.is_command());
+        assert!(!RuntimeAgentRequest::ShutdownKernel.is_command());
         assert!(!RuntimeAgentRequest::Complete {
             code: String::new(),
             cursor_pos: 0,

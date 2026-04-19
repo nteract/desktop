@@ -125,8 +125,8 @@ fn runtime_agent_query_timeout(
 
 /// Send a fire-and-forget command to the runtime agent.
 ///
-/// Commands (Interrupt, Shutdown, SendComm, Launch, Restart, SyncEnvironment)
-/// don't wait for a response — state flows back via RuntimeStateDoc CRDT.
+/// Commands (Interrupt, SendComm) don't wait for a response — state
+/// flows back via RuntimeStateDoc CRDT.
 pub(crate) async fn send_runtime_agent_command(
     room: &NotebookRoom,
     request: notebook_protocol::protocol::RuntimeAgentRequest,
