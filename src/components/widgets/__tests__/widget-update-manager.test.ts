@@ -174,20 +174,26 @@ describe("WidgetUpdateManager", () => {
       expect(result).toEqual({ value: 10, description: "from kernel" });
     });
 
-    it("clears optimistic keys after flush", () => {
+    it("keeps optimistic keys for a grace period after flush, then clears", () => {
       const { manager } = setup();
 
       manager.updateAndPersist("comm-1", { value: 42 });
 
-      // During debounce window — suppressed
+      // During debounce window — suppressed.
       expect(manager.shouldSuppressEcho("comm-1", { value: 10 })).toBeNull();
 
-      // Flush
+      // Flush — CRDT write happens, but optimistic keys stay alive for
+      // a grace period so in-flight echoes of the value we just wrote
+      // (and earlier stale ones) don't clobber the user's state while
+      // the round trip to the kernel + back completes.
       vi.advanceTimersByTime(50);
+      expect(manager.shouldSuppressEcho("comm-1", { value: 10 })).toBeNull();
 
-      // After flush — passes through
-      const result = manager.shouldSuppressEcho("comm-1", { value: 10 });
-      expect(result).toEqual({ value: 10 });
+      // After the grace period — echoes pass through.
+      vi.advanceTimersByTime(500);
+      expect(manager.shouldSuppressEcho("comm-1", { value: 10 })).toEqual({
+        value: 10,
+      });
     });
 
     it("suppresses during continuous drag", () => {

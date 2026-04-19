@@ -19,6 +19,16 @@ type CrdtCommWriter = (commId: string, patch: Record<string, unknown>) => void;
 /** Debounce interval for CRDT writes (ms). */
 const DEBOUNCE_MS = 50;
 
+/**
+ * Grace period after CRDT flush before clearing optimistic keys (ms).
+ *
+ * Covers the full round trip: CRDT write → sync flush (20ms) → daemon
+ * receives sync → diffs → sends comm_msg to kernel → kernel processes
+ * @interact callback → echoes on IOPub → 16ms coalesce → CRDT write →
+ * sync back to frontend. With a slow callback this can take 200–500ms.
+ */
+const ECHO_GRACE_MS = 500;
+
 export interface WidgetUpdateManagerOptions {
   getStore: () => WidgetStore | null;
   getCrdtWriter: () => CrdtCommWriter | null;
@@ -34,6 +44,8 @@ export class WidgetUpdateManager {
   private optimisticKeys = new Map<string, Set<string>>();
   /** Per-comm debounce timers. */
   private flushTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Per-comm grace timers for delayed optimistic key cleanup. */
+  private echoGraceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(opts: WidgetUpdateManagerOptions) {
     this.getStore = opts.getStore;
@@ -116,7 +128,11 @@ export class WidgetUpdateManager {
     for (const timer of this.flushTimers.values()) {
       clearTimeout(timer);
     }
+    for (const timer of this.echoGraceTimers.values()) {
+      clearTimeout(timer);
+    }
     this.flushTimers.clear();
+    this.echoGraceTimers.clear();
     this.pendingState.clear();
     this.optimisticKeys.clear();
   }
@@ -137,6 +153,11 @@ export class WidgetUpdateManager {
     if (timer !== undefined) {
       clearTimeout(timer);
       this.flushTimers.delete(commId);
+    }
+    const graceTimer = this.echoGraceTimers.get(commId);
+    if (graceTimer !== undefined) {
+      clearTimeout(graceTimer);
+      this.echoGraceTimers.delete(commId);
     }
     this.pendingState.delete(commId);
     this.optimisticKeys.delete(commId);
@@ -167,9 +188,21 @@ export class WidgetUpdateManager {
     this.pendingState.delete(commId);
     writer(commId, patch);
 
-    // Clear optimistic keys after flush. Echoes arriving after this
-    // point carry the value we just wrote (or a kernel-validated value)
-    // and should pass through.
-    this.optimisticKeys.delete(commId);
+    // Keep optimistic keys alive for a grace period after flush.
+    // The CRDT write triggers a sync chain (frontend → daemon →
+    // kernel → IOPub echo → CRDT → frontend) that can take 200-500ms.
+    // If we cleared immediately, the stale kernel echo would pass
+    // through shouldSuppressEcho and clobber the user's value.
+    const existingGrace = this.echoGraceTimers.get(commId);
+    if (existingGrace !== undefined) {
+      clearTimeout(existingGrace);
+    }
+    this.echoGraceTimers.set(
+      commId,
+      setTimeout(() => {
+        this.optimisticKeys.delete(commId);
+        this.echoGraceTimers.delete(commId);
+      }, ECHO_GRACE_MS),
+    );
   }
 }

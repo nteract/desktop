@@ -1965,6 +1965,33 @@ impl RuntimeStateDoc {
         let heads_after = self.doc.get_heads();
         Ok(heads_before != heads_after)
     }
+
+    /// Like `receive_sync_message_with_changes`, but also returns the
+    /// actor IDs that authored the newly-applied changes.
+    ///
+    /// Callers use this to distinguish foreign-authored changes (what a
+    /// remote peer just sent us) from any changes that were already in
+    /// the document. Specifically, the runtime agent uses it to skip
+    /// forwarding kernel echoes back to the kernel — an echo written by
+    /// the runtime agent's own iopub actor must not re-enter the
+    /// "frontend said something" forwarding path.
+    pub fn receive_sync_message_capture_actors(
+        &mut self,
+        peer_state: &mut sync::State,
+        message: sync::Message,
+    ) -> Result<Vec<ActorId>, AutomergeError> {
+        let heads_before = self.doc.get_heads();
+        self.doc.sync().receive_sync_message(peer_state, message)?;
+        // Collect authors of changes that advanced the doc past
+        // `heads_before`. If no heads moved, returns an empty Vec.
+        let applied_actors: Vec<ActorId> = self
+            .doc
+            .get_changes(&heads_before)
+            .into_iter()
+            .map(|c| c.actor_id().clone())
+            .collect();
+        Ok(applied_actors)
+    }
 }
 
 // ── Output diff utility ─────────────────────────────────────────────
@@ -3331,5 +3358,63 @@ mod tests {
         // Object values are always written (no deep comparison)
         let delta = serde_json::json!({"nested": {"a": 1}});
         assert!(doc.merge_comm_state_delta("w1", &delta));
+    }
+
+    #[test]
+    fn receive_sync_capture_actors_reports_change_authors() {
+        // Receiver (e.g. the runtime agent) starts fresh.
+        let mut receiver = RuntimeStateDoc::new();
+        receiver.set_actor("rt:kernel:deadbeef");
+        let mut receiver_sync = sync::State::new();
+
+        // Peer A (e.g. frontend) writes a comm change on a fork with a
+        // distinct actor, syncs to the receiver.
+        let mut peer_a = receiver.fork();
+        peer_a.set_actor("human:peer-a");
+        peer_a.put_comm("w1", "jupyter.widget", "", "", &serde_json::json!({}), 0);
+        let mut peer_a_sync = sync::State::new();
+        // Drive the sync handshake to convergence (bloom-filter based,
+        // needs a couple of round-trips).
+        for _ in 0..3 {
+            if let Some(msg) = peer_a.doc.sync().generate_sync_message(&mut peer_a_sync) {
+                let actors = receiver
+                    .receive_sync_message_capture_actors(&mut receiver_sync, msg)
+                    .expect("receive");
+                if !actors.is_empty() {
+                    assert!(
+                        actors.iter().any(|a| a.to_bytes().starts_with(b"human:")),
+                        "expected a human:* authored change, got {:?}",
+                        actors
+                    );
+                    return;
+                }
+            }
+            if let Some(reply) = receiver.generate_sync_message(&mut receiver_sync) {
+                let _ = peer_a
+                    .doc
+                    .sync()
+                    .receive_sync_message(&mut peer_a_sync, reply);
+            }
+        }
+        panic!("sync never converged to report an applied change");
+    }
+
+    #[test]
+    fn receive_sync_capture_actors_empty_on_handshake() {
+        let mut receiver = RuntimeStateDoc::new();
+        let mut receiver_sync = sync::State::new();
+        let mut peer = RuntimeStateDoc::new();
+        let mut peer_sync = sync::State::new();
+
+        // First message is just a handshake (no new changes).
+        if let Some(msg) = peer.generate_sync_message(&mut peer_sync) {
+            let actors = receiver
+                .receive_sync_message_capture_actors(&mut receiver_sync, msg)
+                .expect("handshake");
+            assert!(
+                actors.is_empty(),
+                "handshake should not report applied actors"
+            );
+        }
     }
 }

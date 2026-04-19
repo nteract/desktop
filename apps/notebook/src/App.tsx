@@ -363,6 +363,24 @@ function AppContent() {
     };
   }, [getHandle, triggerSync]);
 
+  // Dev-only bridge for E2E tests to drive widget updates through the
+  // real pipeline (WidgetUpdateManager → debounced CRDT write → daemon
+  // → kernel) without reaching into the security-isolated iframe. Gated
+  // on `import.meta.env.DEV` so production bundles don't expose these
+  // on `window`.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const w = window as unknown as Record<string, unknown>;
+    w.__nteractWidgetUpdate = (commId: string, patch: Record<string, unknown>) => {
+      updateManager.updateAndPersist(commId, patch);
+    };
+    w.__nteractWidgetStore = widgetStore;
+    return () => {
+      delete w.__nteractWidgetUpdate;
+      delete w.__nteractWidgetStore;
+    };
+  }, [widgetStore]);
+
   // ── CRDT → WidgetStore projection via SyncEngine.commChanges$ ──────
   // Replaces the old Jupyter message synthesis path. The SyncEngine diffs
   // RuntimeStateDoc.comms, resolves ContentRefs via WASM, and emits
