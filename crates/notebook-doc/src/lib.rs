@@ -201,6 +201,37 @@ impl NotebookDoc {
         }
     }
 
+    /// Fork the document and set a distinct actor ID on the fork in one step.
+    ///
+    /// Forks inherit the parent's actor ID, and Automerge tracks ops by
+    /// `(actor, seq)`. Two concurrent forks that share an actor will each
+    /// produce ops at seq `N`, `N+1`, …; the first merge lands and the
+    /// second returns `DuplicateSeqNumber` — silently dropping writes if
+    /// the error is ignored. See the regression test
+    /// `merging_two_forks_with_shared_actor_returns_duplicate_seq_error`
+    /// in `runtime_state.rs`.
+    ///
+    /// Use this for any fork whose merge crosses an `.await` point. The
+    /// `actor` argument is set verbatim — the caller controls whether
+    /// the actor is stable per task (e.g. `"rt:kernel:abc:iopub"`) or
+    /// unique per fork (e.g. `format!("runtimed:assets:{}", Uuid::new_v4())`).
+    ///
+    /// Prefer a stable per-task actor for long-running loops that fork
+    /// many times in sequence — each unique actor consumes space in
+    /// Automerge's internal actor list. Use a UUID suffix for one-shot
+    /// sites where concurrent forks from the same logical task can
+    /// overlap across the async gap.
+    ///
+    /// For synchronous fork+merge blocks, use
+    /// [`fork_and_merge`](Self::fork_and_merge) — actor collisions are
+    /// harmless there because the merge completes before any other fork
+    /// of the same parent can exist.
+    pub fn fork_with_actor(&mut self, actor: impl AsRef<str>) -> Self {
+        let mut fork = self.fork();
+        fork.set_actor(actor.as_ref());
+        fork
+    }
+
     /// Get the current document heads (change hashes at the tip).
     pub fn get_heads(&mut self) -> Vec<automerge::ChangeHash> {
         self.doc.get_heads()

@@ -820,9 +820,7 @@ impl KernelConnection for JupyterKernel {
 
                                     let mut fork = {
                                         let mut sd = state_doc_for_iopub.write().await;
-                                        let mut f = sd.fork();
-                                        f.set_actor(&iopub_actor_id);
-                                        f
+                                        sd.fork_with_actor(&iopub_actor_id)
                                     };
 
                                     let upsert_result = fork.upsert_stream_output(
@@ -1024,9 +1022,7 @@ impl KernelConnection for JupyterKernel {
 
                                         let mut fork = {
                                             let mut sd = state_doc_for_iopub.write().await;
-                                            let mut f = sd.fork();
-                                            f.set_actor(&iopub_actor_id);
-                                            f
+                                            sd.fork_with_actor(&iopub_actor_id)
                                         };
 
                                         if let Err(e) = fork.append_output(&eid, &manifest_json) {
@@ -1070,9 +1066,7 @@ impl KernelConnection for JupyterKernel {
                                 if let Some(ref display_id) = update.transient.display_id {
                                     let mut fork = {
                                         let mut sd = state_doc_for_iopub.write().await;
-                                        let mut f = sd.fork();
-                                        f.set_actor(&iopub_actor_id);
-                                        f
+                                        sd.fork_with_actor(&iopub_actor_id)
                                     };
 
                                     let updated = update_output_by_display_id_with_manifests(
@@ -1242,9 +1236,7 @@ impl KernelConnection for JupyterKernel {
 
                                         let mut fork = {
                                             let mut sd = state_doc_for_iopub.write().await;
-                                            let mut f = sd.fork();
-                                            f.set_actor(&iopub_actor_id);
-                                            f
+                                            sd.fork_with_actor(&iopub_actor_id)
                                         };
 
                                         if let Err(e) = fork.append_output(&eid, &manifest_json) {
@@ -1679,9 +1671,7 @@ impl KernelConnection for JupyterKernel {
                                             let eid = execution_id.clone().unwrap_or_default();
                                             let mut fork = {
                                                 let mut sd = shell_state_doc.write().await;
-                                                let mut f = sd.fork();
-                                                f.set_actor(&shell_actor_id);
-                                                f
+                                                sd.fork_with_actor(&shell_actor_id)
                                             };
 
                                             if let Err(e) = fork.append_output(&eid, &manifest_json)

@@ -639,8 +639,7 @@ async fn process_markdown_assets(room: &NotebookRoom) {
             .filter(|cell| cell.cell_type == "markdown")
             .map(|cell| (cell.id, cell.source, cell.resolved_assets))
             .collect();
-        let mut fork = doc.fork();
-        fork.set_actor(&unique_fork_actor("runtimed:assets"));
+        let fork = doc.fork_with_actor(format!("runtimed:assets:{}", uuid::Uuid::new_v4()));
         (cells, fork)
     };
 
@@ -814,9 +813,7 @@ pub(crate) async fn apply_interrupt_to_state_doc(
     // Fork state_doc so mutations compose with any concurrent writes.
     let mut fork = {
         let mut sd = room_state_doc.write().await;
-        let mut f = sd.fork();
-        f.set_actor(&unique_fork_actor("runtimed:state:interrupt"));
-        f
+        sd.fork_with_actor(format!("runtimed:state:interrupt:{}", uuid::Uuid::new_v4()))
     };
 
     // Read the currently-executing entry from the CRDT (it stays — the
@@ -5937,9 +5934,17 @@ async fn handle_notebook_request(
                     tokio::spawn(async move {
                         if let Some(runtime) = detect_room_runtime(&room_clone).await {
                             if let Some(formatted) = format_source(&source_clone, &runtime).await {
+                                // Actor is assigned here (not via fork_with_actor)
+                                // because the formatter identity depends on the
+                                // runtime, which is detected after the fork was
+                                // created. The UUID suffix keeps concurrent
+                                // formatter forks from colliding on `(actor, seq)`.
                                 let mut fork = fork;
-                                let actor = unique_fork_actor(&formatter_actor(&runtime));
-                                fork.set_actor(&actor);
+                                fork.set_actor(&format!(
+                                    "{}:{}",
+                                    formatter_actor(&runtime),
+                                    uuid::Uuid::new_v4()
+                                ));
                                 if fork.update_source(&cell_id_clone, &formatted).is_ok() {
                                     let mut doc = room_clone.doc.write().await;
                                     if let Err(e) = catch_automerge_panic("format-merge", || {
@@ -7184,22 +7189,6 @@ fn formatter_actor(runtime: &str) -> String {
     format!("runtimed:{tool}")
 }
 
-/// Append a UUID suffix to an Automerge actor base string.
-///
-/// Every concurrent fork+merge cycle MUST have a distinct actor ID.
-/// Automerge rejects merges whose `(actor, seq)` pairs collide with a
-/// previously-merged fork's, which manifests as a silent
-/// `DuplicateSeqNumber` under `catch_automerge_panic` — see #1905 for
-/// the IOPub variant of this bug. This helper is the fix for the other
-/// fork sites in this file (assets, interrupt, formatter) where two
-/// triggers can overlap in the async gap between fork and merge.
-///
-/// The base prefix is preserved so any downstream attribution filter
-/// that matches on e.g. `"runtimed:"` still works.
-fn unique_fork_actor(base: &str) -> String {
-    format!("{}:{}", base, uuid::Uuid::new_v4())
-}
-
 /// Detect the runtime from room metadata, returning "python", "deno", or None.
 async fn detect_room_runtime(room: &NotebookRoom) -> Option<String> {
     let doc = room.doc.read().await;
@@ -7240,9 +7229,11 @@ async fn format_notebook_cells(room: &NotebookRoom) -> Result<usize, String> {
     // live doc, and Automerge's text CRDT merges them cleanly.
     let mut fork = {
         let mut doc = room.doc.write().await;
-        let mut f = doc.fork();
-        f.set_actor(&unique_fork_actor(&formatter_actor(&runtime)));
-        f
+        doc.fork_with_actor(format!(
+            "{}:{}",
+            formatter_actor(&runtime),
+            uuid::Uuid::new_v4()
+        ))
     };
 
     let mut formatted_count = 0;
@@ -9069,8 +9060,10 @@ async fn apply_ipynb_changes(
         // saved_sources `.await`s (deadlock prevention).
         let deferred_executions = {
             let mut doc = room.doc.write().await;
-            let mut fork = doc.fork();
-            fork.set_actor("runtimed:filesystem");
+            // Synchronous fork+merge inside the write guard — no `.await`
+            // between fork and merge. A stable actor is safe here because
+            // no other fork of this doc can exist concurrently.
+            let mut fork = doc.fork_with_actor("runtimed:filesystem");
 
             // Delete all current cells and re-add in external order on the fork
             for cell in &current_cells {
@@ -9268,11 +9261,10 @@ async fn apply_ipynb_changes(
         // the user's recent edits. Only genuine external changes (git pull,
         // external editor) — where the disk content differs from what we
         // last saved — trigger a source update.
-        let mut source_fork = {
-            let mut f = doc.fork();
-            f.set_actor("runtimed:filesystem");
-            Some(f)
-        };
+        // Synchronous fork+merge inside the write guard — a stable actor
+        // is safe here because no other fork of this doc can exist
+        // concurrently.
+        let mut source_fork = Some(doc.fork_with_actor("runtimed:filesystem"));
 
         let mut deferred_execs: Vec<DeferredExecution> = Vec::new();
         // Track cells whose execution_id should be cleared (no new outputs)
