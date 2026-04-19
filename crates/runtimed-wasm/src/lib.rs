@@ -5,11 +5,9 @@
 //! this WASM module instead of `@automerge/automerge` to avoid
 //! version mismatch issues that produce phantom cells.
 
-use automerge::patches::PatchAction;
 use automerge::sync;
 use automerge::sync::SyncDoc;
-use automerge::Prop;
-use notebook_doc::diff::{diff_cells, CellChangeset};
+use notebook_doc::diff::{diff_doc, CellChangeset, TextPatch};
 use notebook_doc::mime::{is_binary_mime, ResolvedContentRef};
 use notebook_doc::pool_state::{PoolDoc, PoolState};
 use notebook_doc::presence;
@@ -1487,24 +1485,21 @@ impl NotebookHandle {
                 let heads_after = self.doc.doc_mut().get_heads();
                 let changed = heads_before != heads_after;
 
-                if changed {
-                    // Invalidate cached fingerprint — metadata may have changed.
-                    // TODO: This invalidates on ANY doc change (including cell/output
-                    // streaming), which forces re-serialization ~30/sec during active
-                    // execution. The frontend's fingerprint comparison still saves the
-                    // expensive work (snapshot deserialization + subscriber notifications),
-                    // but ideally we'd only invalidate when non-cell patches exist.
-                    // Options: extend CellChangeset with a `metadata_changed` flag,
-                    // or compare the new fingerprint to the cached one here and keep
-                    // the cache if metadata didn't actually change.
-                    self.metadata_fingerprint_cache = None;
-                }
-
                 let (changeset, attributions) = if changed {
-                    let cs = diff_cells(self.doc.doc_mut(), &heads_before, &heads_after);
-                    let attrs =
-                        compute_text_attributions(self.doc.doc_mut(), &heads_before, &heads_after);
-                    (Some(cs), attrs)
+                    // One doc.diff() walk covers cells + metadata + text patches.
+                    let doc_changeset = diff_doc(self.doc.doc_mut(), &heads_before, &heads_after);
+                    // Invalidate the fingerprint cache only when the notebook
+                    // metadata actually moved — cell source edits and output
+                    // streaming no longer bust the cache.
+                    if doc_changeset.metadata_changed {
+                        self.metadata_fingerprint_cache = None;
+                    }
+                    let attrs = build_text_attributions(
+                        self.doc.doc_mut(),
+                        &heads_before,
+                        &doc_changeset.text_patches,
+                    );
+                    (Some(doc_changeset.cells), attrs)
                 } else {
                     (None, Vec::new())
                 };
@@ -1687,23 +1682,23 @@ impl NotebookHandle {
 
 // ── Attribution extraction ───────────────────────────────────────────
 
-/// Compute text attribution ranges from the diff between two document states.
+/// Combine raw text patches with actor attribution to produce
+/// `TextAttribution` ranges for the frontend.
 ///
-/// Walks the Automerge patches produced by `diff(before, after)` and extracts
-/// `SpliceText` and `DeleteSeq` actions on cell source `Text` objects.
-/// The actors are determined from the new changes in the diff range.
-///
-/// Performance: `diff()` and `get_changes()` only examine the delta — they
-/// do not walk the entire document.  The cost is proportional to the number
-/// of operations in the new changes, which is typically small per sync cycle.
-fn compute_text_attributions(
+/// The text patches come from a single `diff_doc` walk, so this function
+/// only does the actor-extraction query (`get_changes`) and zips the two
+/// streams together. `diff()` no longer runs here — the caller already
+/// paid for that walk.
+fn build_text_attributions(
     doc: &mut automerge::AutoCommit,
     before: &[automerge::ChangeHash],
-    after: &[automerge::ChangeHash],
+    text_patches: &[TextPatch],
 ) -> Vec<TextAttribution> {
-    use std::collections::BTreeSet;
+    if text_patches.is_empty() {
+        return Vec::new();
+    }
 
-    // Determine which actors contributed the new changes
+    use std::collections::BTreeSet;
     let new_changes = doc.get_changes(before);
     let actors: Vec<String> = new_changes
         .iter()
@@ -1716,76 +1711,16 @@ fn compute_text_attributions(
         return Vec::new();
     }
 
-    // Compute the structural diff — only the delta, not the whole doc
-    let patches = doc.diff(before, after);
-
-    let mut result = Vec::new();
-    for patch in &patches {
-        // Extract cell_id from the patch path.
-        //
-        // For a source text splice the path looks like:
-        //   [(ROOT, "cells"), (cells_map, "<cell-id>"), (cell_obj, "source")]
-        //
-        // We need at least 2 path elements, and the second must be a Map
-        // key (the cell ID).  The last element should be "source".
-        let cell_id = match extract_cell_source_id(&patch.path) {
-            Some(id) => id,
-            None => continue,
-        };
-
-        match &patch.action {
-            PatchAction::SpliceText { index, value, .. } => {
-                let text = value.make_string();
-                if !text.is_empty() {
-                    result.push(TextAttribution {
-                        cell_id: cell_id.clone(),
-                        index: *index,
-                        text,
-                        deleted: 0,
-                        actors: actors.clone(),
-                    });
-                }
-            }
-            PatchAction::DeleteSeq { index, length } => {
-                result.push(TextAttribution {
-                    cell_id: cell_id.clone(),
-                    index: *index,
-                    text: String::new(),
-                    deleted: *length,
-                    actors: actors.clone(),
-                });
-            }
-            _ => {}
-        }
-    }
-    result
-}
-
-/// Extract the cell ID from a patch path if it points to a cell's source text.
-///
-/// Returns `Some(cell_id)` when the path contains the 3-element window:
-///   `[..., (_, "cells"), (_, <cell_id>), (_, "source")]`
-///
-/// Scans backwards for this exact sequence so we don't match unrelated
-/// paths that happen to end in `"source"` (e.g., nested metadata maps).
-fn extract_cell_source_id(path: &[(automerge::ObjId, Prop)]) -> Option<String> {
-    // Scan backwards for a 3-element window: "cells" → <cell_id> → "source"
-    if path.len() < 3 {
-        return None;
-    }
-
-    for window in path.windows(3).rev() {
-        let is_cells = matches!(&window[0].1, Prop::Map(k) if k == "cells");
-        let is_source = matches!(&window[2].1, Prop::Map(k) if k == "source");
-
-        if is_cells && is_source {
-            if let Prop::Map(cell_id) = &window[1].1 {
-                return Some(cell_id.clone());
-            }
-        }
-    }
-
-    None
+    text_patches
+        .iter()
+        .map(|tp| TextAttribution {
+            cell_id: tp.cell_id.clone(),
+            index: tp.index,
+            text: tp.text.clone(),
+            deleted: tp.deleted,
+            actors: actors.clone(),
+        })
+        .collect()
 }
 
 // ── Presence encoding (free functions for wasm_bindgen export) ────────

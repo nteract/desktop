@@ -147,6 +147,248 @@ impl ChangedFields {
     }
 }
 
+/// A splice or deletion on a cell's source text, extracted from an
+/// Automerge diff.
+///
+/// Accompanies [`DocChangeset::text_patches`] so consumers can build text
+/// attribution ranges without re-walking the patches themselves.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextPatch {
+    /// The cell whose source was modified.
+    pub cell_id: String,
+    /// Character index where the splice/delete occurred.
+    pub index: usize,
+    /// Text that was inserted (empty for pure deletions).
+    pub text: String,
+    /// Number of characters deleted at this index (0 for pure inserts).
+    pub deleted: usize,
+}
+
+/// Full structural classification of a diff between two sets of Automerge
+/// heads.
+///
+/// Produced by [`diff_doc`]. One `doc.diff()` call, one pass over the
+/// patches, every downstream consumer satisfied:
+///
+/// - WASM's `receive_frame` reads `cells` + `text_patches` (combined with
+///   a separate `extract_change_actors` call to tag ownership).
+/// - The daemon reads `metadata_changed` to decide whether to broadcast
+///   env-sync state.
+/// - Future patch categories (per-cell execution state, trust, etc.) can
+///   extend this struct without any extra `doc.diff()` calls.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DocChangeset {
+    /// Cell-level structural changeset — what cells changed and which
+    /// fields within them.
+    pub cells: CellChangeset,
+
+    /// True if any patch touched the top-level `metadata` map (notebook
+    /// metadata, not per-cell metadata).
+    pub metadata_changed: bool,
+
+    /// Raw source-text splice/delete events, one per Automerge
+    /// SpliceText or DeleteSeq on a cell's source. Pair with actors
+    /// from [`extract_change_actors`] to build `TextAttribution`s.
+    pub text_patches: Vec<TextPatch>,
+}
+
+impl DocChangeset {
+    /// Returns true if nothing of interest changed.
+    pub fn is_empty(&self) -> bool {
+        self.cells.is_empty() && !self.metadata_changed && self.text_patches.is_empty()
+    }
+}
+
+/// Single-pass diff: walk `doc.diff(before, after)` once and classify
+/// every patch into cells / metadata / text-patch buckets.
+///
+/// Replaces the pattern where consumers called `diff_cells`,
+/// `diff_metadata_touched`, and `compute_text_attributions` in sequence
+/// and each re-ran `doc.diff` on the same heads. Cost goes from O(N*3)
+/// to O(N) where N is the number of patches.
+///
+/// # Arguments
+///
+/// Same semantics as [`diff_cells`] — `before == &[]` or `before == after`
+/// returns an empty changeset.
+pub fn diff_doc(doc: &mut AutoCommit, before: &[ChangeHash], after: &[ChangeHash]) -> DocChangeset {
+    // No previous state — caller should do full materialization.
+    if before.is_empty() {
+        return DocChangeset::default();
+    }
+
+    // Nothing changed.
+    if before == after {
+        return DocChangeset::default();
+    }
+
+    let patches = doc.diff(before, after);
+
+    let mut cell_fields: BTreeMap<String, ChangedFields> = BTreeMap::new();
+    let mut added: BTreeSet<String> = BTreeSet::new();
+    let mut removed: BTreeSet<String> = BTreeSet::new();
+    let mut order_changed = false;
+    let mut metadata_changed = false;
+    let mut text_patches: Vec<TextPatch> = Vec::new();
+
+    for patch in &patches {
+        // 1. Top-level metadata — either the path starts with "metadata"
+        //    (we're inside the metadata subtree) or the action is a
+        //    put/delete on the "metadata" key at ROOT (no path).
+        let starts_with_metadata = patch
+            .path
+            .first()
+            .is_some_and(|(_, prop)| matches!(prop, Prop::Map(k) if k == "metadata"));
+        if starts_with_metadata {
+            metadata_changed = true;
+        } else if patch.path.is_empty() {
+            match &patch.action {
+                PatchAction::PutMap { key, .. } if key == "metadata" => {
+                    metadata_changed = true;
+                }
+                PatchAction::DeleteMap { key } if key == "metadata" => {
+                    metadata_changed = true;
+                }
+                _ => {}
+            }
+        }
+
+        // 2. Cells subtree — extract cell field changes and collect
+        //    source-text splice/delete actions as TextPatches.
+        let cells_idx = patch
+            .path
+            .iter()
+            .position(|(_, prop)| matches!(prop, Prop::Map(k) if k == "cells"));
+
+        let Some(cells_idx) = cells_idx else {
+            continue;
+        };
+
+        let path_after_cells = &patch.path[(cells_idx + 1)..];
+
+        match path_after_cells.len() {
+            0 => {
+                // Path ends at "cells" — the action is on the cells map itself.
+                match &patch.action {
+                    PatchAction::PutMap { key, .. } => {
+                        added.insert(key.clone());
+                        order_changed = true;
+                    }
+                    PatchAction::DeleteMap { key } => {
+                        removed.insert(key.clone());
+                        order_changed = true;
+                    }
+                    _ => {}
+                }
+            }
+            _ => {
+                let cell_id = match &path_after_cells[0].1 {
+                    Prop::Map(id) => id.clone(),
+                    _ => continue,
+                };
+
+                let is_added = added.contains(&cell_id);
+
+                // Source-text splice/delete always produces a TextPatch,
+                // even for cells that were added in this same diff
+                // window — the frontend wants attribution overlays on
+                // every freshly-arrived character, regardless of
+                // whether the cell itself is new. Matches the pre-
+                // refactor `compute_text_attributions` contract.
+                if path_after_cells.len() >= 2 {
+                    if let Prop::Map(f) = &path_after_cells[1].1 {
+                        if f == "source" {
+                            match &patch.action {
+                                PatchAction::SpliceText { index, value, .. } => {
+                                    let text = value.make_string();
+                                    if !text.is_empty() {
+                                        text_patches.push(TextPatch {
+                                            cell_id: cell_id.clone(),
+                                            index: *index,
+                                            text,
+                                            deleted: 0,
+                                        });
+                                    }
+                                }
+                                PatchAction::DeleteSeq { index, length } => {
+                                    text_patches.push(TextPatch {
+                                        cell_id: cell_id.clone(),
+                                        index: *index,
+                                        text: String::new(),
+                                        deleted: *length,
+                                    });
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+
+                // Field-level change tracking. Skip when the cell was
+                // just added in this same diff — the caller will read
+                // the whole cell fresh from the doc anyway, so there's
+                // no benefit to ALSO marking individual fields as
+                // changed. This also matches the pre-refactor
+                // `diff_cells` behavior.
+                if is_added {
+                    continue;
+                }
+
+                if path_after_cells.len() == 1 {
+                    match &patch.action {
+                        PatchAction::PutMap { key, .. } => {
+                            let fields = cell_fields.entry(cell_id).or_default();
+                            fields.set_field(key);
+                            if key == "position" {
+                                order_changed = true;
+                            }
+                        }
+                        PatchAction::DeleteMap { key } => {
+                            let fields = cell_fields.entry(cell_id).or_default();
+                            fields.set_field(key);
+                        }
+                        _ => {}
+                    }
+                } else {
+                    let field_name = match &path_after_cells[1].1 {
+                        Prop::Map(f) => f.as_str(),
+                        _ => continue,
+                    };
+
+                    let fields = cell_fields.entry(cell_id).or_default();
+                    fields.set_field(field_name);
+
+                    if field_name == "position" {
+                        order_changed = true;
+                    }
+                }
+            }
+        }
+    }
+
+    for id in &added {
+        cell_fields.remove(id);
+    }
+    for id in &removed {
+        cell_fields.remove(id);
+    }
+
+    DocChangeset {
+        cells: CellChangeset {
+            changed: cell_fields
+                .into_iter()
+                .filter(|(_, fields)| !fields.is_empty())
+                .map(|(cell_id, fields)| ChangedCell { cell_id, fields })
+                .collect(),
+            added: added.into_iter().collect(),
+            removed: removed.into_iter().collect(),
+            order_changed,
+        },
+        metadata_changed,
+        text_patches,
+    }
+}
+
 /// Compute which cells changed between two sets of Automerge heads.
 ///
 /// Walks `doc.diff(before, after)` patches and extracts cell IDs and field
@@ -170,152 +412,7 @@ pub fn diff_cells(
     before: &[ChangeHash],
     after: &[ChangeHash],
 ) -> CellChangeset {
-    // No previous state — caller should do full materialization.
-    if before.is_empty() {
-        return CellChangeset::default();
-    }
-
-    // Nothing changed.
-    if before == after {
-        return CellChangeset::default();
-    }
-
-    let patches = doc.diff(before, after);
-
-    // Accumulate per-cell field changes. BTreeMap for deterministic ordering.
-    let mut cell_fields: BTreeMap<String, ChangedFields> = BTreeMap::new();
-    // Track cells added/removed at the cells map level.
-    let mut added: BTreeSet<String> = BTreeSet::new();
-    let mut removed: BTreeSet<String> = BTreeSet::new();
-    let mut order_changed = false;
-
-    for patch in &patches {
-        // We care about patches rooted at the "cells" map.
-        // Path structure for cell field changes:
-        //   [(ROOT, "cells"), (cells_map, "<cell-id>"), ...]
-        //
-        // The patch.path gives us the path from root to the *parent* of the
-        // modified property. The action tells us what happened at that location.
-        //
-        // Cases:
-        //
-        // 1. Path = [..., "cells"] + action PutMap { key: cell_id }
-        //    → A cell object was created/replaced in the cells map (cell added).
-        //
-        // 2. Path = [..., "cells"] + action DeleteMap { key: cell_id }
-        //    → A cell was removed from the cells map.
-        //
-        // 3. Path = [..., "cells", cell_id] + action PutMap { key: field_name }
-        //    → A scalar field was set on the cell (execution_count, cell_type, position).
-        //
-        // 4. Path = [..., "cells", cell_id, "source"] + action SpliceText/DeleteSeq
-        //    → Source text was edited.
-        //
-        // 5. Path = [..., "cells", cell_id, "outputs"] + action Insert/DeleteSeq/PutSeq
-        //    → Outputs list was modified.
-        //
-        // 6. Path = [..., "cells", cell_id, "metadata", ...] + any action
-        //    → Metadata was modified.
-        //
-        // 7. Path = [..., "cells", cell_id, "resolved_assets"] + PutMap/DeleteMap
-        //    → Resolved assets were modified.
-
-        // Find the "cells" segment in the path.
-        let cells_idx = patch
-            .path
-            .iter()
-            .position(|(_, prop)| matches!(prop, Prop::Map(k) if k == "cells"));
-
-        let Some(cells_idx) = cells_idx else {
-            // Not a cells-related patch (e.g., notebook metadata change).
-            continue;
-        };
-
-        let path_after_cells = &patch.path[(cells_idx + 1)..];
-
-        match path_after_cells.len() {
-            0 => {
-                // Path ends at "cells" — the action is on the cells map itself.
-                match &patch.action {
-                    PatchAction::PutMap { key, .. } => {
-                        added.insert(key.clone());
-                        order_changed = true;
-                    }
-                    PatchAction::DeleteMap { key } => {
-                        removed.insert(key.clone());
-                        order_changed = true;
-                    }
-                    _ => {}
-                }
-            }
-            _ => {
-                // Path has at least one element after "cells" — extract cell ID.
-                let cell_id = match &path_after_cells[0].1 {
-                    Prop::Map(id) => id.clone(),
-                    _ => continue,
-                };
-
-                // If this cell was just added, skip field-level tracking —
-                // the caller will do a full read for added cells.
-                if added.contains(&cell_id) {
-                    continue;
-                }
-
-                if path_after_cells.len() == 1 {
-                    // Path is [..., "cells", cell_id] — action is on the cell map.
-                    match &patch.action {
-                        PatchAction::PutMap { key, .. } => {
-                            let fields = cell_fields.entry(cell_id).or_default();
-                            fields.set_field(key);
-                            if key == "position" {
-                                order_changed = true;
-                            }
-                        }
-                        PatchAction::DeleteMap { key } => {
-                            let fields = cell_fields.entry(cell_id).or_default();
-                            fields.set_field(key);
-                        }
-                        _ => {}
-                    }
-                } else {
-                    // Path is [..., "cells", cell_id, field_name, ...]
-                    // The field is identified by path_after_cells[1].
-                    let field_name = match &path_after_cells[1].1 {
-                        Prop::Map(f) => f.as_str(),
-                        // Sequence index — shouldn't happen at this level.
-                        _ => continue,
-                    };
-
-                    let fields = cell_fields.entry(cell_id).or_default();
-                    fields.set_field(field_name);
-
-                    if field_name == "position" {
-                        order_changed = true;
-                    }
-                }
-            }
-        }
-    }
-
-    // Remove cells from `changed` if they were also added or removed —
-    // those are handled separately.
-    for id in &added {
-        cell_fields.remove(id);
-    }
-    for id in &removed {
-        cell_fields.remove(id);
-    }
-
-    CellChangeset {
-        changed: cell_fields
-            .into_iter()
-            .filter(|(_, fields)| !fields.is_empty())
-            .map(|(cell_id, fields)| ChangedCell { cell_id, fields })
-            .collect(),
-        added: added.into_iter().collect(),
-        removed: removed.into_iter().collect(),
-        order_changed,
-    }
+    diff_doc(doc, before, after).cells
 }
 
 /// Extract actor labels from the changes between two head sets.
@@ -530,47 +627,7 @@ pub fn diff_metadata_touched(
     before: &[ChangeHash],
     after: &[ChangeHash],
 ) -> bool {
-    // Initial sync — caller should do full materialization separately.
-    if before.is_empty() {
-        return false;
-    }
-
-    // Nothing changed.
-    if before == after {
-        return false;
-    }
-
-    let patches = doc.diff(before, after);
-
-    for patch in &patches {
-        // Check the patch path for any segment that references "metadata" at the root level.
-        // The path structure for notebook metadata changes:
-        //   [(ROOT, "metadata"), ...] — the patch is inside the metadata map
-        //
-        // We specifically look for "metadata" as the first map key after ROOT,
-        // which means it's the top-level notebook metadata, not per-cell metadata
-        // (which would be at path [..., "cells", cell_id, "metadata", ...]).
-
-        // Check if the path starts with a "metadata" segment (i.e., patch is
-        // inside the metadata subtree).
-        if let Some((_, first_prop)) = patch.path.first() {
-            if matches!(first_prop, Prop::Map(k) if k == "metadata") {
-                return true;
-            }
-        }
-
-        // Check if the action targets "metadata" at root level (path is empty
-        // = action is on ROOT).
-        if patch.path.is_empty() {
-            match &patch.action {
-                PatchAction::PutMap { key, .. } if key == "metadata" => return true,
-                PatchAction::DeleteMap { key } if key == "metadata" => return true,
-                _ => {}
-            }
-        }
-    }
-
-    false
+    diff_doc(doc, before, after).metadata_changed
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -756,6 +813,199 @@ mod tests {
         assert!(ids.contains(&"cell-c"));
         // cell-b should not appear
         assert!(!ids.contains(&"cell-b"));
+    }
+
+    // ── diff_doc (unified) coverage ──────────────────────────────────
+    //
+    // The thin wrappers `diff_cells` and `diff_metadata_touched` are
+    // covered above. These tests exercise the fields that only appear
+    // on `DocChangeset` — `text_patches` and `metadata_changed` — and
+    // the combined single-walk behavior.
+
+    #[test]
+    fn test_diff_doc_source_edit_populates_text_patches() {
+        let mut doc = NotebookDoc::new("nb1");
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        let before = doc.doc_mut().get_heads();
+
+        doc.update_source("cell-1", "print('hello')").unwrap();
+        let after = doc.doc_mut().get_heads();
+
+        let changeset = diff_doc(doc.doc_mut(), &before, &after);
+        assert!(changeset.cells.is_source_only());
+        assert_eq!(changeset.text_patches.len(), 1);
+        assert_eq!(changeset.text_patches[0].cell_id, "cell-1");
+        assert_eq!(changeset.text_patches[0].index, 0);
+        assert_eq!(changeset.text_patches[0].text, "print('hello')");
+        assert_eq!(changeset.text_patches[0].deleted, 0);
+        assert!(!changeset.metadata_changed);
+    }
+
+    #[test]
+    fn test_diff_doc_source_delete_produces_delete_patch() {
+        let mut doc = NotebookDoc::new("nb1");
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        doc.update_source("cell-1", "abcdef").unwrap();
+        let before = doc.doc_mut().get_heads();
+
+        // Delete "cd" — splice out 2 characters at index 2.
+        doc.splice_source("cell-1", 2, 2, "").unwrap();
+        let after = doc.doc_mut().get_heads();
+
+        let changeset = diff_doc(doc.doc_mut(), &before, &after);
+        assert_eq!(changeset.text_patches.len(), 1);
+        let tp = &changeset.text_patches[0];
+        assert_eq!(tp.cell_id, "cell-1");
+        assert_eq!(tp.index, 2);
+        assert_eq!(tp.text, "");
+        assert_eq!(tp.deleted, 2);
+    }
+
+    #[test]
+    fn test_diff_doc_metadata_only_edit_sets_flag_only() {
+        // A notebook-metadata-only edit should set `metadata_changed`
+        // without populating cells or text_patches.
+        let mut doc = NotebookDoc::new("nb1");
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        let before = doc.doc_mut().get_heads();
+
+        doc.add_uv_dependency("numpy").unwrap();
+        let after = doc.doc_mut().get_heads();
+
+        let changeset = diff_doc(doc.doc_mut(), &before, &after);
+        assert!(changeset.metadata_changed);
+        assert!(changeset.cells.is_empty());
+        assert!(changeset.text_patches.is_empty());
+    }
+
+    #[test]
+    fn test_diff_doc_combined_source_and_metadata_single_walk() {
+        // Cell source edit + notebook metadata edit in one diff window
+        // — both should surface from a single `diff_doc` call.
+        let mut doc = NotebookDoc::new("nb1");
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        let before = doc.doc_mut().get_heads();
+
+        doc.update_source("cell-1", "x = 1").unwrap();
+        doc.add_uv_dependency("polars").unwrap();
+        let after = doc.doc_mut().get_heads();
+
+        let changeset = diff_doc(doc.doc_mut(), &before, &after);
+        assert!(
+            changeset.metadata_changed,
+            "metadata edit should be captured"
+        );
+        assert_eq!(
+            changeset.text_patches.len(),
+            1,
+            "source edit should be captured"
+        );
+        assert!(
+            !changeset.cells.is_empty(),
+            "cells.changed should record source edit"
+        );
+    }
+
+    // Equivalence tests: the new `diff_doc` is the single source of
+    // truth for the three old entry points. These tests assert that
+    // `diff_cells(...) == diff_doc(...).cells` and `diff_metadata_touched(...) ==
+    // diff_doc(...).metadata_changed` across the full classifier
+    // matrix, so a future change to diff_doc that silently drops a
+    // category fails loudly here.
+
+    fn build_diverse_diff(doc: &mut NotebookDoc) -> (Vec<ChangeHash>, Vec<ChangeHash>) {
+        doc.add_cell(0, "cell-a", "code").unwrap();
+        doc.add_cell(1, "cell-b", "markdown").unwrap();
+        let before = doc.doc_mut().get_heads();
+
+        // Every classifier case in one window: source edit,
+        // per-cell metadata, notebook-level metadata, removal,
+        // execution_count, cell_type change.
+        doc.update_source("cell-a", "print('ok')").unwrap();
+        let _ = doc.set_cell_source_hidden("cell-a", true);
+        doc.add_uv_dependency("numpy").unwrap();
+        doc.delete_cell("cell-b").unwrap();
+        let cell_a_obj = doc.cell_obj_for("cell-a").unwrap();
+        doc.doc_mut()
+            .put(&cell_a_obj, "execution_count", 5_i64)
+            .unwrap();
+
+        let after = doc.doc_mut().get_heads();
+        (before, after)
+    }
+
+    #[test]
+    fn test_diff_doc_cells_matches_diff_cells() {
+        let mut doc = NotebookDoc::new("nb1");
+        let (before, after) = build_diverse_diff(&mut doc);
+
+        let unified = diff_doc(doc.doc_mut(), &before, &after).cells;
+        let legacy = diff_cells(doc.doc_mut(), &before, &after);
+        assert_eq!(unified, legacy);
+    }
+
+    #[test]
+    fn test_diff_doc_metadata_changed_matches_diff_metadata_touched() {
+        // Case 1: notebook-metadata edit — both agree.
+        let mut doc = NotebookDoc::new("nb1");
+        doc.add_cell(0, "cell-a", "code").unwrap();
+        let before = doc.doc_mut().get_heads();
+        doc.add_uv_dependency("polars").unwrap();
+        let after = doc.doc_mut().get_heads();
+        assert!(diff_doc(doc.doc_mut(), &before, &after).metadata_changed);
+        assert!(diff_metadata_touched(doc.doc_mut(), &before, &after));
+
+        // Case 2: cell-only edit — both say false.
+        let mut doc2 = NotebookDoc::new("nb2");
+        doc2.add_cell(0, "cell-a", "code").unwrap();
+        let before = doc2.doc_mut().get_heads();
+        doc2.update_source("cell-a", "x = 1").unwrap();
+        let after = doc2.doc_mut().get_heads();
+        assert!(!diff_doc(doc2.doc_mut(), &before, &after).metadata_changed);
+        assert!(!diff_metadata_touched(doc2.doc_mut(), &before, &after));
+
+        // Case 3: per-cell metadata — the nested "metadata" under
+        // cells/<id>/metadata is NOT notebook metadata. Both agree.
+        let mut doc3 = NotebookDoc::new("nb3");
+        doc3.add_cell(0, "cell-a", "code").unwrap();
+        let before = doc3.doc_mut().get_heads();
+        let _ = doc3.set_cell_source_hidden("cell-a", true);
+        let after = doc3.doc_mut().get_heads();
+        assert!(!diff_doc(doc3.doc_mut(), &before, &after).metadata_changed);
+        assert!(!diff_metadata_touched(doc3.doc_mut(), &before, &after));
+    }
+
+    #[test]
+    fn test_diff_doc_added_cell_still_emits_text_patches() {
+        // Add-then-edit in a single diff window: the cell is in
+        // `added` AND there are SpliceText patches on its source.
+        // The frontend still wants attribution overlays on the
+        // freshly-arrived characters — matches the pre-refactor
+        // `compute_text_attributions` contract, which had no
+        // added-cell filter.
+        //
+        // Field-level tracking IS skipped for added cells (the
+        // caller will do a full read), but text_patches are NOT.
+        let mut doc = NotebookDoc::new("nb1");
+        let before = doc.doc_mut().get_heads();
+
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        doc.update_source("cell-1", "x = 1").unwrap();
+        let after = doc.doc_mut().get_heads();
+
+        let changeset = diff_doc(doc.doc_mut(), &before, &after);
+        assert_eq!(changeset.cells.added, vec!["cell-1".to_string()]);
+        // The cell is in `added`, not `changed` — field tracking
+        // skipped (old diff_cells behavior).
+        assert!(
+            changeset.cells.changed.is_empty(),
+            "added cell should not appear in cells.changed, got {:?}",
+            changeset.cells.changed
+        );
+        // But text_patches ARE emitted so attribution still works.
+        assert_eq!(changeset.text_patches.len(), 1);
+        assert_eq!(changeset.text_patches[0].cell_id, "cell-1");
+        assert_eq!(changeset.text_patches[0].text, "x = 1");
     }
 
     #[test]
