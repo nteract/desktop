@@ -2169,41 +2169,35 @@ where
                 // cells and edits.
                 //
                 // Request/ack over a dedicated channel. The debouncer has a
-                // select! arm that writes the latest doc bytes and replies on the
-                // oneshot.
+                // select! arm that writes the latest doc bytes and replies on
+                // the oneshot with the I/O result.
                 //
-                // On timeout we back off and retry. Proceeding with HashMap
-                // removal would reopen the race (the write may still be in
-                // flight; reconnect would create a fresh room from a partial
-                // file). Retrying keeps the room live so reconnects see the
-                // in-memory doc, and gives the write another shot — bounded
-                // retries prevent a permanently-wedged filesystem from leaking
-                // rooms forever.
+                // On timeout or write failure we back off and retry indefinitely.
+                // Proceeding with HashMap removal on a failed flush reopens the
+                // race: either the write is still in flight, or the latest bytes
+                // are only in the soon-to-be-dropped room. We'd rather leak a
+                // room than silently lose user edits. A reconnect still finds
+                // the live in-memory room and recovers; a genuinely wedged
+                // filesystem will surface through other signals, and daemon
+                // shutdown still tries a last flush on persist_tx drop.
                 const FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
                 const FLUSH_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(30);
-                const MAX_FLUSH_RETRIES: u32 = 4;
                 let mut flush_ok = true;
+                let mut flush_failure_kind: Option<&'static str> = None;
                 if let Some(ref flush_tx) = room_for_eviction.flush_request_tx {
                     let (ack_tx, ack_rx) = oneshot::channel::<bool>();
                     if flush_tx.send(ack_tx).is_ok() {
                         match tokio::time::timeout(FLUSH_TIMEOUT, ack_rx).await {
                             Ok(Ok(true)) => {}
                             Ok(Ok(false)) => {
-                                // Write returned an I/O error (ENOSPC, EIO, perm).
-                                // Retry — the filesystem may recover, and forcing
-                                // teardown now would leave the user's latest
-                                // bytes only in the soon-to-be-dropped room.
-                                warn!(
-                                    "[notebook-sync] Eviction flush reported write failure for {}",
-                                    notebook_id_for_eviction
-                                );
                                 flush_ok = false;
+                                flush_failure_kind = Some("write error");
                             }
                             Ok(Err(_)) => {
-                                // Debouncer dropped the ack sender without replying —
-                                // task already exited (e.g. previous eviction
-                                // flushed and closed). Any pending bytes went
-                                // through the shutdown path.
+                                // Debouncer dropped the ack sender without
+                                // replying — task already exited (e.g. a
+                                // previous eviction flushed and closed). Any
+                                // pending bytes went through the shutdown path.
                                 debug!(
                                     "[notebook-sync] Eviction flush ack dropped for {} (debouncer exited)",
                                     notebook_id_for_eviction
@@ -2211,29 +2205,22 @@ where
                             }
                             Err(_) => {
                                 flush_ok = false;
+                                flush_failure_kind = Some("timeout");
                             }
                         }
                     }
                 }
                 if !flush_ok {
-                    if flush_retries >= MAX_FLUSH_RETRIES {
-                        // Give up and force teardown. After ~2 minutes of
-                        // wedged flushes we prefer a leaked .automerge over
-                        // a leaked room+kernel; the daemon's shutdown flush
-                        // (on process exit) is the last line of defense.
-                        warn!(
-                            "[notebook-sync] Eviction flush wedged for {} after {} retries; forcing teardown",
-                            notebook_id_for_eviction, flush_retries
-                        );
-                    } else {
-                        flush_retries += 1;
-                        warn!(
-                            "[notebook-sync] Eviction flush timed out for {} (retry {}/{}); keeping room resident",
-                            notebook_id_for_eviction, flush_retries, MAX_FLUSH_RETRIES
-                        );
-                        delay = FLUSH_RETRY_DELAY;
-                        continue;
-                    }
+                    flush_retries += 1;
+                    warn!(
+                        "[notebook-sync] Eviction flush failed for {} ({}; attempt {}); keeping room resident, retrying in {:?}",
+                        notebook_id_for_eviction,
+                        flush_failure_kind.unwrap_or("unknown"),
+                        flush_retries,
+                        FLUSH_RETRY_DELAY
+                    );
+                    delay = FLUSH_RETRY_DELAY;
+                    continue;
                 }
                 break;
             }
