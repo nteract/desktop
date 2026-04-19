@@ -5900,14 +5900,9 @@ async fn handle_notebook_request(
                         .next_queue_seq
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-                    // Stamp execution_id on the cell in NotebookDoc
-                    {
-                        let mut doc = room.doc.write().await;
-                        let _ = doc.set_execution_id(&cell_id, Some(&execution_id));
-                        let _ = room.changed_tx.send(());
-                    }
-
-                    // Write execution entry with source to RuntimeStateDoc
+                    // Write execution entry with source to RuntimeStateDoc first
+                    // so that NotebookDoc's cell→execution_id pointer never
+                    // dangles. If this fails we bail before stamping the cell.
                     {
                         let mut sd = room.state_doc.write().await;
                         if let Err(e) =
@@ -5917,8 +5912,18 @@ async fn handle_notebook_request(
                                 "[notebook-sync] Failed to create_execution_with_source for {}: {}",
                                 execution_id, e
                             );
+                            return NotebookResponse::Error {
+                                error: format!("failed to queue execution: {e}"),
+                            };
                         }
                         let _ = room.state_changed_tx.send(());
+                    }
+
+                    // Stamp execution_id on the cell in NotebookDoc
+                    {
+                        let mut doc = room.doc.write().await;
+                        let _ = doc.set_execution_id(&cell_id, Some(&execution_id));
+                        let _ = room.changed_tx.send(());
                     }
 
                     // Best-effort background formatting via fork+merge
@@ -6167,6 +6172,9 @@ async fn handle_notebook_request(
                             });
                         }
                     }
+                    // Write RuntimeStateDoc entries first; on failure bail
+                    // before stamping NotebookDoc so cell→execution_id pointers
+                    // cannot dangle. Any single failure aborts the whole batch.
                     {
                         let mut sd = room.state_doc.write().await;
                         for (execution_id, cell_id, source, seq) in &entries {
@@ -6177,6 +6185,9 @@ async fn handle_notebook_request(
                                     "[notebook-sync] Failed to create_execution_with_source for {}: {}",
                                     execution_id, e
                                 );
+                                return NotebookResponse::Error {
+                                    error: format!("failed to queue execution: {e}"),
+                                };
                             }
                         }
                         let _ = room.state_changed_tx.send(());
