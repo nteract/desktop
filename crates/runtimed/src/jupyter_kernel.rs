@@ -35,6 +35,7 @@ use crate::kernel_manager::{
 use crate::output_store::{self, ContentRef, OutputManifest, DEFAULT_INLINE_THRESHOLD};
 use crate::protocol::{CompletionItem, HistoryEntry, NotebookBroadcast};
 use crate::stream_terminal::{StreamOutputState, StreamTerminals};
+use crate::task_supervisor::{spawn_best_effort, spawn_supervised};
 use crate::terminal_size::{TERMINAL_COLUMNS_STR, TERMINAL_LINES_STR};
 use crate::EnvType;
 use notebook_protocol::protocol::LaunchedEnvConfig;
@@ -473,7 +474,7 @@ impl KernelConnection for JupyterKernel {
         // Capture kernel stderr for diagnostics
         if let Some(stderr) = process.stderr.take() {
             let kid = kernel_id.clone();
-            tokio::spawn(async move {
+            spawn_best_effort("kernel-stderr", async move {
                 use tokio::io::{AsyncBufReadExt, BufReader};
                 let mut lines = BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
@@ -546,22 +547,29 @@ impl KernelConnection for JupyterKernel {
 
         // Spawn process watcher — detects process exit and signals via oneshot
         let process_cmd_tx = cmd_tx.clone();
+        let panic_cmd_tx = cmd_tx.clone();
         let (died_tx, died_rx) = tokio::sync::oneshot::channel::<String>();
-        let process_watcher_task = tokio::spawn(async move {
-            let status = process.wait().await;
-            let msg = match status {
-                Ok(exit_status) => {
-                    warn!("[jupyter-kernel] Kernel process exited: {}", exit_status);
-                    format!("Kernel process exited: {}", exit_status)
-                }
-                Err(e) => {
-                    error!("[jupyter-kernel] Error waiting for kernel process: {}", e);
-                    format!("Error waiting for kernel process: {}", e)
-                }
-            };
-            let _ = died_tx.send(msg);
-            let _ = process_cmd_tx.try_send(QueueCommand::KernelDied);
-        });
+        let process_watcher_task = spawn_supervised(
+            "process-watcher",
+            async move {
+                let status = process.wait().await;
+                let msg = match status {
+                    Ok(exit_status) => {
+                        warn!("[jupyter-kernel] Kernel process exited: {}", exit_status);
+                        format!("Kernel process exited: {}", exit_status)
+                    }
+                    Err(e) => {
+                        error!("[jupyter-kernel] Error waiting for kernel process: {}", e);
+                        format!("Error waiting for kernel process: {}", e)
+                    }
+                };
+                let _ = died_tx.send(msg);
+                let _ = process_cmd_tx.try_send(QueueCommand::KernelDied);
+            },
+            move |_| {
+                let _ = panic_cmd_tx.try_send(QueueCommand::KernelDied);
+            },
+        );
 
         // ── IOPub listener task ──────────────────────────────────────────
 
@@ -585,337 +593,135 @@ impl KernelConnection for JupyterKernel {
         let (coalesce_tx, coalesce_rx) = mpsc::unbounded_channel::<(String, serde_json::Value)>();
         let comm_coalesce_tx_for_iopub = Some(coalesce_tx.clone());
 
-        let iopub_task = tokio::spawn(async move {
-            // Track Output widgets with pending clear_output(wait=true).
-            let mut pending_clear_widgets: std::collections::HashSet<String> =
-                std::collections::HashSet::new();
+        let iopub_panic_cmd_tx = cmd_tx.clone();
+        let iopub_task = spawn_supervised(
+            "iopub",
+            async move {
+                // Track Output widgets with pending clear_output(wait=true).
+                let mut pending_clear_widgets: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
 
-            // Capture routing cache: msg_id -> comm_id.
-            let mut capture_cache: std::collections::HashMap<String, String> =
-                std::collections::HashMap::new();
+                // Capture routing cache: msg_id -> comm_id.
+                let mut capture_cache: std::collections::HashMap<String, String> =
+                    std::collections::HashMap::new();
 
-            // Local comm_id -> target_name map, populated on comm_open and
-            // removed on comm_close. Used by the dx comm filter in CommMsg
-            // and CommClose arms so we can route without a CRDT read on the
-            // hot path.
-            let mut comm_targets: std::collections::HashMap<String, String> =
-                std::collections::HashMap::new();
+                // Local comm_id -> target_name map, populated on comm_open and
+                // removed on comm_close. Used by the dx comm filter in CommMsg
+                // and CommClose arms so we can route without a CRDT read on the
+                // hot path.
+                let mut comm_targets: std::collections::HashMap<String, String> =
+                    std::collections::HashMap::new();
 
-            let comm_coalesce_tx = comm_coalesce_tx_for_iopub;
+                let comm_coalesce_tx = comm_coalesce_tx_for_iopub;
 
-            loop {
-                match iopub.read().await {
-                    Ok(message) => {
-                        let iopub_start = std::time::Instant::now();
-                        let msg_type = message.header.msg_type.clone();
-                        debug!(
-                            "[iopub] type={} parent_msg_id={:?}",
-                            msg_type,
-                            message.parent_header.as_ref().map(|h| &h.msg_id)
-                        );
+                loop {
+                    match iopub.read().await {
+                        Ok(message) => {
+                            let iopub_start = std::time::Instant::now();
+                            let msg_type = message.header.msg_type.clone();
+                            debug!(
+                                "[iopub] type={} parent_msg_id={:?}",
+                                msg_type,
+                                message.parent_header.as_ref().map(|h| &h.msg_id)
+                            );
 
-                        // Look up (cell_id, execution_id) from msg_id
-                        let cell_entry: Option<(String, String)> = message
-                            .parent_header
-                            .as_ref()
-                            .and_then(|h| iopub_cell_id_map.lock().ok()?.get(&h.msg_id).cloned());
-                        let cell_id = cell_entry.as_ref().map(|(cid, _)| cid.clone());
-                        let execution_id = cell_entry.as_ref().map(|(_, eid)| eid.clone());
-
-                        // Handle different message types
-                        match &message.content {
-                            JupyterMessageContent::Status(status) => {
-                                let status_str = match status.execution_state {
-                                    jupyter_protocol::ExecutionState::Busy => "busy",
-                                    jupyter_protocol::ExecutionState::Idle => "idle",
-                                    jupyter_protocol::ExecutionState::Starting => "starting",
-                                    jupyter_protocol::ExecutionState::Restarting => "starting",
-                                    jupyter_protocol::ExecutionState::Terminating
-                                    | jupyter_protocol::ExecutionState::Dead => "shutdown",
-                                    _ => "unknown",
-                                };
-
-                                let _ = broadcast_tx.send(NotebookBroadcast::KernelStatus {
-                                    status: status_str.to_string(),
-                                    cell_id: cell_id.clone(),
+                            // Look up (cell_id, execution_id) from msg_id
+                            let cell_entry: Option<(String, String)> =
+                                message.parent_header.as_ref().and_then(|h| {
+                                    iopub_cell_id_map.lock().ok()?.get(&h.msg_id).cloned()
                                 });
+                            let cell_id = cell_entry.as_ref().map(|(cid, _)| cid.clone());
+                            let execution_id = cell_entry.as_ref().map(|(_, eid)| eid.clone());
 
-                                if status_str != "unknown" {
-                                    let is_transient = cell_entry.is_none()
-                                        && (status_str == "busy" || status_str == "idle");
-
-                                    if !is_transient {
-                                        let mut sd = state_doc_for_iopub.write().await;
-                                        if sd.set_kernel_status(status_str) {
-                                            let _ = state_changed_for_iopub.send(());
-                                        }
-                                    }
-                                }
-
-                                if status.execution_state == jupyter_protocol::ExecutionState::Idle
-                                {
-                                    if let Some((cid, eid)) = cell_entry.clone() {
-                                        let _ =
-                                            iopub_cmd_tx.try_send(QueueCommand::ExecutionDone {
-                                                cell_id: cid,
-                                                execution_id: eid,
-                                            });
-                                    }
-                                }
-                            }
-
-                            JupyterMessageContent::ExecuteInput(input) => {
-                                if let Some(ref cid) = cell_id {
-                                    let execution_count = input.execution_count.0 as i64;
-
-                                    if let Some(ref eid) = execution_id {
-                                        let mut sd = state_doc_for_iopub.write().await;
-                                        if sd.set_execution_count(eid, execution_count) {
-                                            let _ = state_changed_for_iopub.send(());
-                                        }
-                                    }
-
-                                    let _ =
-                                        broadcast_tx.send(NotebookBroadcast::ExecutionStarted {
-                                            cell_id: cid.clone(),
-                                            execution_id: execution_id.clone().unwrap_or_default(),
-                                            execution_count,
-                                        });
-                                }
-                            }
-
-                            JupyterMessageContent::StreamContent(stream) => {
-                                // Check if this output should go to an Output widget
-                                let parent_msg_id = message
-                                    .parent_header
-                                    .as_ref()
-                                    .map(|h| h.msg_id.as_str())
-                                    .unwrap_or("");
-                                if let Some(widget_comm_id) =
-                                    capture_cache.get(parent_msg_id).cloned()
-                                {
-                                    let stream_name = match stream.name {
-                                        jupyter_protocol::Stdio::Stdout => "stdout",
-                                        jupyter_protocol::Stdio::Stderr => "stderr",
+                            // Handle different message types
+                            match &message.content {
+                                JupyterMessageContent::Status(status) => {
+                                    let status_str = match status.execution_state {
+                                        jupyter_protocol::ExecutionState::Busy => "busy",
+                                        jupyter_protocol::ExecutionState::Idle => "idle",
+                                        jupyter_protocol::ExecutionState::Starting => "starting",
+                                        jupyter_protocol::ExecutionState::Restarting => "starting",
+                                        jupyter_protocol::ExecutionState::Terminating
+                                        | jupyter_protocol::ExecutionState::Dead => "shutdown",
+                                        _ => "unknown",
                                     };
-                                    let output = serde_json::json!({
-                                        "output_type": "stream",
-                                        "name": stream_name,
-                                        "text": stream.text
+
+                                    let _ = broadcast_tx.send(NotebookBroadcast::KernelStatus {
+                                        status: status_str.to_string(),
+                                        cell_id: cell_id.clone(),
                                     });
 
-                                    if let Ok(manifest) = crate::output_store::create_manifest(
-                                        &output,
-                                        &blob_store,
-                                        crate::output_store::DEFAULT_INLINE_THRESHOLD,
-                                    )
-                                    .await
-                                    {
-                                        let manifest_json = manifest.to_json();
-                                        let output_manifests = {
+                                    if status_str != "unknown" {
+                                        let is_transient = cell_entry.is_none()
+                                            && (status_str == "busy" || status_str == "idle");
+
+                                        if !is_transient {
                                             let mut sd = state_doc_for_iopub.write().await;
-                                            if pending_clear_widgets.remove(&widget_comm_id) {
-                                                sd.clear_comm_outputs(&widget_comm_id);
-                                            }
-                                            if sd
-                                                .append_comm_output(&widget_comm_id, &manifest_json)
-                                            {
+                                            if sd.set_kernel_status(status_str) {
                                                 let _ = state_changed_for_iopub.send(());
                                             }
-
-                                            if let Some(entry) = sd.get_comm(&widget_comm_id) {
-                                                let manifests = entry.outputs.clone();
-                                                let manifests_json =
-                                                    serde_json::Value::Array(manifests.clone());
-                                                sd.set_comm_state_property(
-                                                    &widget_comm_id,
-                                                    "outputs",
-                                                    &manifests_json,
-                                                );
-                                                Some(manifests)
-                                            } else {
-                                                None
-                                            }
-                                        };
-                                        if let Some(output_manifests) = output_manifests {
-                                            let mut resolved_outputs = Vec::new();
-                                            for m in &output_manifests {
-                                                if let Ok(manifest) =
-                                                    serde_json::from_value::<OutputManifest>(
-                                                        m.clone(),
-                                                    )
-                                                {
-                                                    if let Ok(resolved) =
-                                                        output_store::resolve_manifest(
-                                                            &manifest,
-                                                            &blob_store,
-                                                        )
-                                                        .await
-                                                    {
-                                                        resolved_outputs.push(resolved);
-                                                    }
-                                                }
-                                            }
-                                            let _ = iopub_cmd_tx
-                                                .send(QueueCommand::SendCommUpdate {
-                                                    comm_id: widget_comm_id.clone(),
-                                                    state: serde_json::json!({
-                                                        "outputs": resolved_outputs,
-                                                    }),
-                                                })
-                                                .await;
                                         }
                                     }
-                                    continue;
-                                }
 
-                                if let Some(ref cid) = cell_id {
-                                    let stream_name = match stream.name {
-                                        jupyter_protocol::Stdio::Stdout => "stdout",
-                                        jupyter_protocol::Stdio::Stderr => "stderr",
-                                    };
-                                    let eid = execution_id.clone().unwrap_or_default();
-
-                                    let (rendered_text, known_state) = {
-                                        let mut terminals = iopub_stream_terminals.lock().await;
-                                        let text = terminals.feed(&eid, stream_name, &stream.text);
-                                        let state =
-                                            terminals.get_output_state(&eid, stream_name).cloned();
-                                        (text, state)
-                                    };
-
-                                    let nbformat_value = serde_json::json!({
-                                        "output_type": "stream",
-                                        "name": stream_name,
-                                        "text": rendered_text
-                                    });
-
-                                    let manifest = match output_store::create_manifest(
-                                        &nbformat_value,
-                                        &blob_store,
-                                        DEFAULT_INLINE_THRESHOLD,
-                                    )
-                                    .await
+                                    if status.execution_state
+                                        == jupyter_protocol::ExecutionState::Idle
                                     {
-                                        Ok(m) => m,
-                                        Err(e) => {
-                                            warn!(
-                                                "[jupyter-kernel] Failed to create stream manifest: {}",
-                                                e
+                                        if let Some((cid, eid)) = cell_entry.clone() {
+                                            let _ = iopub_cmd_tx.try_send(
+                                                QueueCommand::ExecutionDone {
+                                                    cell_id: cid,
+                                                    execution_id: eid,
+                                                },
                                             );
-                                            continue;
                                         }
-                                    };
-                                    let manifest_json = manifest.to_json();
-
-                                    let blob_hash =
-                                        if let OutputManifest::Stream { ref text, .. } = manifest {
-                                            match text {
-                                                ContentRef::Blob { blob, .. } => blob.clone(),
-                                                ContentRef::Inline { inline } => inline.clone(),
-                                            }
-                                        } else {
-                                            String::new()
-                                        };
-
-                                    let mut fork = {
-                                        let mut sd = state_doc_for_iopub.write().await;
-                                        sd.fork_with_actor(&iopub_actor_id)
-                                    };
-
-                                    let upsert_result = fork.upsert_stream_output(
-                                        &eid,
-                                        stream_name,
-                                        &manifest_json,
-                                        known_state.as_ref(),
-                                    );
-
-                                    let merge_ok = {
-                                        let mut sd = state_doc_for_iopub.write().await;
-                                        if let Err(e) =
-                                            crate::notebook_sync_server::catch_automerge_panic(
-                                                "iopub-stream-output-merge",
-                                                || sd.merge(&mut fork),
-                                            )
-                                        {
-                                            warn!("{}", e);
-                                            sd.rebuild_from_save();
-                                            false
-                                        } else {
-                                            true
-                                        }
-                                    };
-
-                                    if merge_ok {
-                                        let broadcast_output_index = match &upsert_result {
-                                            Ok((updated, output_index)) => {
-                                                let mut terminals =
-                                                    iopub_stream_terminals.lock().await;
-                                                terminals.set_output_state(
-                                                    &eid,
-                                                    stream_name,
-                                                    StreamOutputState {
-                                                        index: *output_index,
-                                                        blob_hash: blob_hash.clone(),
-                                                    },
-                                                );
-                                                if *updated {
-                                                    Some(*output_index)
-                                                } else {
-                                                    None
-                                                }
-                                            }
-                                            Err(e) => {
-                                                warn!(
-                                                    "[jupyter-kernel] Failed to upsert stream output: {}",
-                                                    e
-                                                );
-                                                None
-                                            }
-                                        };
-
-                                        let _ = state_changed_for_iopub.send(());
-                                        let _ = broadcast_tx.send(NotebookBroadcast::Output {
-                                            cell_id: cid.clone(),
-                                            execution_id: eid,
-                                            output_type: "stream".to_string(),
-                                            output_json: manifest_json.to_string(),
-                                            output_index: broadcast_output_index,
-                                        });
                                     }
                                 }
-                            }
 
-                            JupyterMessageContent::DisplayData(_)
-                            | JupyterMessageContent::ExecuteResult(_) => {
-                                let parent_msg_id = message
-                                    .parent_header
-                                    .as_ref()
-                                    .map(|h| h.msg_id.as_str())
-                                    .unwrap_or("");
+                                JupyterMessageContent::ExecuteInput(input) => {
+                                    if let Some(ref cid) = cell_id {
+                                        let execution_count = input.execution_count.0 as i64;
 
-                                // Dx blob-ref buffer preflight: if the kernel emitted a
-                                // display_data carrying raw bytes as trailing ZMQ
-                                // buffer frames plus a BLOB_REF_MIME entry, write each
-                                // referenced buffer to the blob store before the
-                                // manifest is built.
-                                let iopub_buffers: Vec<Vec<u8>> =
-                                    message.buffers.iter().map(|b| b.to_vec()).collect();
+                                        if let Some(ref eid) = execution_id {
+                                            let mut sd = state_doc_for_iopub.write().await;
+                                            if sd.set_execution_count(eid, execution_count) {
+                                                let _ = state_changed_for_iopub.send(());
+                                            }
+                                        }
 
-                                if let Some(widget_comm_id) =
-                                    capture_cache.get(parent_msg_id).cloned()
-                                {
-                                    if let Some(nbformat_value) =
-                                        message_content_to_nbformat(&message.content)
+                                        let _ = broadcast_tx.send(
+                                            NotebookBroadcast::ExecutionStarted {
+                                                cell_id: cid.clone(),
+                                                execution_id: execution_id
+                                                    .clone()
+                                                    .unwrap_or_default(),
+                                                execution_count,
+                                            },
+                                        );
+                                    }
+                                }
+
+                                JupyterMessageContent::StreamContent(stream) => {
+                                    // Check if this output should go to an Output widget
+                                    let parent_msg_id = message
+                                        .parent_header
+                                        .as_ref()
+                                        .map(|h| h.msg_id.as_str())
+                                        .unwrap_or("");
+                                    if let Some(widget_comm_id) =
+                                        capture_cache.get(parent_msg_id).cloned()
                                     {
-                                        crate::output_store::preflight_ref_buffers(
-                                            &nbformat_value,
-                                            &iopub_buffers,
-                                            &blob_store,
-                                        )
-                                        .await;
+                                        let stream_name = match stream.name {
+                                            jupyter_protocol::Stdio::Stdout => "stdout",
+                                            jupyter_protocol::Stdio::Stderr => "stderr",
+                                        };
+                                        let output = serde_json::json!({
+                                            "output_type": "stream",
+                                            "name": stream_name,
+                                            "text": stream.text
+                                        });
+
                                         if let Ok(manifest) = crate::output_store::create_manifest(
-                                            &nbformat_value,
+                                            &output,
                                             &blob_store,
                                             crate::output_store::DEFAULT_INLINE_THRESHOLD,
                                         )
@@ -956,14 +762,14 @@ impl KernelConnection for JupyterKernel {
                                                             m.clone(),
                                                         )
                                                     {
-                                                        if let Ok(r) =
+                                                        if let Ok(resolved) =
                                                             output_store::resolve_manifest(
                                                                 &manifest,
                                                                 &blob_store,
                                                             )
                                                             .await
                                                         {
-                                                            resolved_outputs.push(r);
+                                                            resolved_outputs.push(resolved);
                                                         }
                                                     }
                                                 }
@@ -971,70 +777,294 @@ impl KernelConnection for JupyterKernel {
                                                     .send(QueueCommand::SendCommUpdate {
                                                         comm_id: widget_comm_id.clone(),
                                                         state: serde_json::json!({
-                                                            "outputs": resolved_outputs
+                                                            "outputs": resolved_outputs,
                                                         }),
                                                     })
                                                     .await;
                                             }
                                         }
-                                    }
-                                    continue;
-                                }
-
-                                if let Some(ref cid) = cell_id {
-                                    let output_type = match &message.content {
-                                        JupyterMessageContent::DisplayData(_) => "display_data",
-                                        JupyterMessageContent::ExecuteResult(_) => "execute_result",
-                                        _ => "unknown",
-                                    };
-                                    let eid = execution_id.clone().unwrap_or_default();
-
-                                    {
-                                        let mut terminals = iopub_stream_terminals.lock().await;
-                                        terminals.clear(&eid);
+                                        continue;
                                     }
 
-                                    if let Some(nbformat_value) =
-                                        message_content_to_nbformat(&message.content)
-                                    {
-                                        crate::output_store::preflight_ref_buffers(
-                                            &nbformat_value,
-                                            &iopub_buffers,
-                                            &blob_store,
-                                        )
-                                        .await;
-                                        let manifest_json = match output_store::create_manifest(
+                                    if let Some(ref cid) = cell_id {
+                                        let stream_name = match stream.name {
+                                            jupyter_protocol::Stdio::Stdout => "stdout",
+                                            jupyter_protocol::Stdio::Stderr => "stderr",
+                                        };
+                                        let eid = execution_id.clone().unwrap_or_default();
+
+                                        let (rendered_text, known_state) = {
+                                            let mut terminals = iopub_stream_terminals.lock().await;
+                                            let text =
+                                                terminals.feed(&eid, stream_name, &stream.text);
+                                            let state = terminals
+                                                .get_output_state(&eid, stream_name)
+                                                .cloned();
+                                            (text, state)
+                                        };
+
+                                        let nbformat_value = serde_json::json!({
+                                            "output_type": "stream",
+                                            "name": stream_name,
+                                            "text": rendered_text
+                                        });
+
+                                        let manifest = match output_store::create_manifest(
                                             &nbformat_value,
                                             &blob_store,
                                             DEFAULT_INLINE_THRESHOLD,
                                         )
                                         .await
                                         {
-                                            Ok(manifest) => manifest.to_json(),
+                                            Ok(m) => m,
                                             Err(e) => {
                                                 warn!(
-                                                        "[jupyter-kernel] Failed to create manifest: {}",
-                                                        e
-                                                    );
-                                                nbformat_value.clone()
+                                                "[jupyter-kernel] Failed to create stream manifest: {}",
+                                                e
+                                            );
+                                                continue;
                                             }
                                         };
+                                        let manifest_json = manifest.to_json();
+
+                                        let blob_hash =
+                                            if let OutputManifest::Stream { ref text, .. } =
+                                                manifest
+                                            {
+                                                match text {
+                                                    ContentRef::Blob { blob, .. } => blob.clone(),
+                                                    ContentRef::Inline { inline } => inline.clone(),
+                                                }
+                                            } else {
+                                                String::new()
+                                            };
 
                                         let mut fork = {
                                             let mut sd = state_doc_for_iopub.write().await;
                                             sd.fork_with_actor(&iopub_actor_id)
                                         };
 
-                                        if let Err(e) = fork.append_output(&eid, &manifest_json) {
-                                            warn!(
-                                                "[jupyter-kernel] Failed to append output to state doc: {}",
-                                                e
-                                            );
-                                        }
+                                        let upsert_result = fork.upsert_stream_output(
+                                            &eid,
+                                            stream_name,
+                                            &manifest_json,
+                                            known_state.as_ref(),
+                                        );
 
                                         let merge_ok = {
                                             let mut sd = state_doc_for_iopub.write().await;
                                             if let Err(e) =
+                                                crate::notebook_sync_server::catch_automerge_panic(
+                                                    "iopub-stream-output-merge",
+                                                    || sd.merge(&mut fork),
+                                                )
+                                            {
+                                                warn!("{}", e);
+                                                sd.rebuild_from_save();
+                                                false
+                                            } else {
+                                                true
+                                            }
+                                        };
+
+                                        if merge_ok {
+                                            let broadcast_output_index = match &upsert_result {
+                                                Ok((updated, output_index)) => {
+                                                    let mut terminals =
+                                                        iopub_stream_terminals.lock().await;
+                                                    terminals.set_output_state(
+                                                        &eid,
+                                                        stream_name,
+                                                        StreamOutputState {
+                                                            index: *output_index,
+                                                            blob_hash: blob_hash.clone(),
+                                                        },
+                                                    );
+                                                    if *updated {
+                                                        Some(*output_index)
+                                                    } else {
+                                                        None
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    warn!(
+                                                    "[jupyter-kernel] Failed to upsert stream output: {}",
+                                                    e
+                                                );
+                                                    None
+                                                }
+                                            };
+
+                                            let _ = state_changed_for_iopub.send(());
+                                            let _ = broadcast_tx.send(NotebookBroadcast::Output {
+                                                cell_id: cid.clone(),
+                                                execution_id: eid,
+                                                output_type: "stream".to_string(),
+                                                output_json: manifest_json.to_string(),
+                                                output_index: broadcast_output_index,
+                                            });
+                                        }
+                                    }
+                                }
+
+                                JupyterMessageContent::DisplayData(_)
+                                | JupyterMessageContent::ExecuteResult(_) => {
+                                    let parent_msg_id = message
+                                        .parent_header
+                                        .as_ref()
+                                        .map(|h| h.msg_id.as_str())
+                                        .unwrap_or("");
+
+                                    // Dx blob-ref buffer preflight: if the kernel emitted a
+                                    // display_data carrying raw bytes as trailing ZMQ
+                                    // buffer frames plus a BLOB_REF_MIME entry, write each
+                                    // referenced buffer to the blob store before the
+                                    // manifest is built.
+                                    let iopub_buffers: Vec<Vec<u8>> =
+                                        message.buffers.iter().map(|b| b.to_vec()).collect();
+
+                                    if let Some(widget_comm_id) =
+                                        capture_cache.get(parent_msg_id).cloned()
+                                    {
+                                        if let Some(nbformat_value) =
+                                            message_content_to_nbformat(&message.content)
+                                        {
+                                            crate::output_store::preflight_ref_buffers(
+                                                &nbformat_value,
+                                                &iopub_buffers,
+                                                &blob_store,
+                                            )
+                                            .await;
+                                            if let Ok(manifest) =
+                                                crate::output_store::create_manifest(
+                                                    &nbformat_value,
+                                                    &blob_store,
+                                                    crate::output_store::DEFAULT_INLINE_THRESHOLD,
+                                                )
+                                                .await
+                                            {
+                                                let manifest_json = manifest.to_json();
+                                                let output_manifests = {
+                                                    let mut sd = state_doc_for_iopub.write().await;
+                                                    if pending_clear_widgets.remove(&widget_comm_id)
+                                                    {
+                                                        sd.clear_comm_outputs(&widget_comm_id);
+                                                    }
+                                                    if sd.append_comm_output(
+                                                        &widget_comm_id,
+                                                        &manifest_json,
+                                                    ) {
+                                                        let _ = state_changed_for_iopub.send(());
+                                                    }
+
+                                                    if let Some(entry) =
+                                                        sd.get_comm(&widget_comm_id)
+                                                    {
+                                                        let manifests = entry.outputs.clone();
+                                                        let manifests_json =
+                                                            serde_json::Value::Array(
+                                                                manifests.clone(),
+                                                            );
+                                                        sd.set_comm_state_property(
+                                                            &widget_comm_id,
+                                                            "outputs",
+                                                            &manifests_json,
+                                                        );
+                                                        Some(manifests)
+                                                    } else {
+                                                        None
+                                                    }
+                                                };
+                                                if let Some(output_manifests) = output_manifests {
+                                                    let mut resolved_outputs = Vec::new();
+                                                    for m in &output_manifests {
+                                                        if let Ok(manifest) = serde_json::from_value::<
+                                                            OutputManifest,
+                                                        >(
+                                                            m.clone()
+                                                        ) {
+                                                            if let Ok(r) =
+                                                                output_store::resolve_manifest(
+                                                                    &manifest,
+                                                                    &blob_store,
+                                                                )
+                                                                .await
+                                                            {
+                                                                resolved_outputs.push(r);
+                                                            }
+                                                        }
+                                                    }
+                                                    let _ = iopub_cmd_tx
+                                                        .send(QueueCommand::SendCommUpdate {
+                                                            comm_id: widget_comm_id.clone(),
+                                                            state: serde_json::json!({
+                                                                "outputs": resolved_outputs
+                                                            }),
+                                                        })
+                                                        .await;
+                                                }
+                                            }
+                                        }
+                                        continue;
+                                    }
+
+                                    if let Some(ref cid) = cell_id {
+                                        let output_type = match &message.content {
+                                            JupyterMessageContent::DisplayData(_) => "display_data",
+                                            JupyterMessageContent::ExecuteResult(_) => {
+                                                "execute_result"
+                                            }
+                                            _ => "unknown",
+                                        };
+                                        let eid = execution_id.clone().unwrap_or_default();
+
+                                        {
+                                            let mut terminals = iopub_stream_terminals.lock().await;
+                                            terminals.clear(&eid);
+                                        }
+
+                                        if let Some(nbformat_value) =
+                                            message_content_to_nbformat(&message.content)
+                                        {
+                                            crate::output_store::preflight_ref_buffers(
+                                                &nbformat_value,
+                                                &iopub_buffers,
+                                                &blob_store,
+                                            )
+                                            .await;
+                                            let manifest_json = match output_store::create_manifest(
+                                                &nbformat_value,
+                                                &blob_store,
+                                                DEFAULT_INLINE_THRESHOLD,
+                                            )
+                                            .await
+                                            {
+                                                Ok(manifest) => manifest.to_json(),
+                                                Err(e) => {
+                                                    warn!(
+                                                        "[jupyter-kernel] Failed to create manifest: {}",
+                                                        e
+                                                    );
+                                                    nbformat_value.clone()
+                                                }
+                                            };
+
+                                            let mut fork = {
+                                                let mut sd = state_doc_for_iopub.write().await;
+                                                sd.fork_with_actor(&iopub_actor_id)
+                                            };
+
+                                            if let Err(e) = fork.append_output(&eid, &manifest_json)
+                                            {
+                                                warn!(
+                                                "[jupyter-kernel] Failed to append output to state doc: {}",
+                                                e
+                                            );
+                                            }
+
+                                            let merge_ok = {
+                                                let mut sd = state_doc_for_iopub.write().await;
+                                                if let Err(e) =
                                                 crate::notebook_sync_server::catch_automerge_panic(
                                                     "iopub-output-merge",
                                                     || sd.merge(&mut fork),
@@ -1047,40 +1077,41 @@ impl KernelConnection for JupyterKernel {
                                                 let _ = state_changed_for_iopub.send(());
                                                 true
                                             }
-                                        };
+                                            };
 
-                                        if merge_ok {
-                                            let _ = broadcast_tx.send(NotebookBroadcast::Output {
-                                                cell_id: cid.clone(),
-                                                execution_id: eid,
-                                                output_type: output_type.to_string(),
-                                                output_json: manifest_json.to_string(),
-                                                output_index: None,
-                                            });
+                                            if merge_ok {
+                                                let _ =
+                                                    broadcast_tx.send(NotebookBroadcast::Output {
+                                                        cell_id: cid.clone(),
+                                                        execution_id: eid,
+                                                        output_type: output_type.to_string(),
+                                                        output_json: manifest_json.to_string(),
+                                                        output_index: None,
+                                                    });
+                                            }
                                         }
                                     }
                                 }
-                            }
 
-                            JupyterMessageContent::UpdateDisplayData(update) => {
-                                if let Some(ref display_id) = update.transient.display_id {
-                                    let mut fork = {
-                                        let mut sd = state_doc_for_iopub.write().await;
-                                        sd.fork_with_actor(&iopub_actor_id)
-                                    };
+                                JupyterMessageContent::UpdateDisplayData(update) => {
+                                    if let Some(ref display_id) = update.transient.display_id {
+                                        let mut fork = {
+                                            let mut sd = state_doc_for_iopub.write().await;
+                                            sd.fork_with_actor(&iopub_actor_id)
+                                        };
 
-                                    let updated = update_output_by_display_id_with_manifests(
-                                        &mut fork,
-                                        display_id,
-                                        &serde_json::to_value(&update.data).unwrap_or_default(),
-                                        &update.metadata,
-                                        &blob_store,
-                                    )
-                                    .await;
+                                        let updated = update_output_by_display_id_with_manifests(
+                                            &mut fork,
+                                            display_id,
+                                            &serde_json::to_value(&update.data).unwrap_or_default(),
+                                            &update.metadata,
+                                            &blob_store,
+                                        )
+                                        .await;
 
-                                    let merge_ok = {
-                                        let mut sd = state_doc_for_iopub.write().await;
-                                        match updated {
+                                        let merge_ok = {
+                                            let mut sd = state_doc_for_iopub.write().await;
+                                            match updated {
                                             Ok(true) => {
                                                 if let Err(e) = crate::notebook_sync_server::catch_automerge_panic(
                                                     "iopub-display-update-merge",
@@ -1112,143 +1143,151 @@ impl KernelConnection for JupyterKernel {
                                                 false
                                             }
                                         }
-                                    };
+                                        };
 
-                                    if merge_ok {
-                                        let _ = state_changed_for_iopub.send(());
-                                        let _ =
-                                            broadcast_tx.send(NotebookBroadcast::DisplayUpdate {
-                                                display_id: display_id.clone(),
-                                                data: serde_json::to_value(&update.data)
-                                                    .unwrap_or_default(),
-                                                metadata: update.metadata.clone(),
-                                            });
-                                    }
-                                }
-                            }
-
-                            JupyterMessageContent::ErrorOutput(_) => {
-                                let parent_msg_id = message
-                                    .parent_header
-                                    .as_ref()
-                                    .map(|h| h.msg_id.as_str())
-                                    .unwrap_or("");
-                                if let Some(widget_comm_id) =
-                                    capture_cache.get(parent_msg_id).cloned()
-                                {
-                                    if let Some(nbformat_value) =
-                                        message_content_to_nbformat(&message.content)
-                                    {
-                                        if let Ok(manifest) = crate::output_store::create_manifest(
-                                            &nbformat_value,
-                                            &blob_store,
-                                            crate::output_store::DEFAULT_INLINE_THRESHOLD,
-                                        )
-                                        .await
-                                        {
-                                            let manifest_json = manifest.to_json();
-                                            let output_manifests = {
-                                                let mut sd = state_doc_for_iopub.write().await;
-                                                if pending_clear_widgets.remove(&widget_comm_id) {
-                                                    sd.clear_comm_outputs(&widget_comm_id);
-                                                }
-                                                if sd.append_comm_output(
-                                                    &widget_comm_id,
-                                                    &manifest_json,
-                                                ) {
-                                                    let _ = state_changed_for_iopub.send(());
-                                                }
-
-                                                if let Some(entry) = sd.get_comm(&widget_comm_id) {
-                                                    let manifests = entry.outputs.clone();
-                                                    let manifests_json =
-                                                        serde_json::Value::Array(manifests.clone());
-                                                    sd.set_comm_state_property(
-                                                        &widget_comm_id,
-                                                        "outputs",
-                                                        &manifests_json,
-                                                    );
-                                                    Some(manifests)
-                                                } else {
-                                                    None
-                                                }
-                                            };
-                                            if let Some(output_manifests) = output_manifests {
-                                                let mut resolved_outputs = Vec::new();
-                                                for m in &output_manifests {
-                                                    if let Ok(manifest) =
-                                                        serde_json::from_value::<OutputManifest>(
-                                                            m.clone(),
-                                                        )
-                                                    {
-                                                        if let Ok(r) =
-                                                            output_store::resolve_manifest(
-                                                                &manifest,
-                                                                &blob_store,
-                                                            )
-                                                            .await
-                                                        {
-                                                            resolved_outputs.push(r);
-                                                        }
-                                                    }
-                                                }
-                                                let _ = iopub_cmd_tx
-                                                    .send(QueueCommand::SendCommUpdate {
-                                                        comm_id: widget_comm_id.clone(),
-                                                        state: serde_json::json!({
-                                                            "outputs": resolved_outputs
-                                                        }),
-                                                    })
-                                                    .await;
-                                            }
+                                        if merge_ok {
+                                            let _ = state_changed_for_iopub.send(());
+                                            let _ = broadcast_tx.send(
+                                                NotebookBroadcast::DisplayUpdate {
+                                                    display_id: display_id.clone(),
+                                                    data: serde_json::to_value(&update.data)
+                                                        .unwrap_or_default(),
+                                                    metadata: update.metadata.clone(),
+                                                },
+                                            );
                                         }
                                     }
-                                    continue;
                                 }
 
-                                if let Some(ref cid) = cell_id {
-                                    let eid = execution_id.clone().unwrap_or_default();
-
+                                JupyterMessageContent::ErrorOutput(_) => {
+                                    let parent_msg_id = message
+                                        .parent_header
+                                        .as_ref()
+                                        .map(|h| h.msg_id.as_str())
+                                        .unwrap_or("");
+                                    if let Some(widget_comm_id) =
+                                        capture_cache.get(parent_msg_id).cloned()
                                     {
-                                        let mut terminals = iopub_stream_terminals.lock().await;
-                                        terminals.clear(&eid);
+                                        if let Some(nbformat_value) =
+                                            message_content_to_nbformat(&message.content)
+                                        {
+                                            if let Ok(manifest) =
+                                                crate::output_store::create_manifest(
+                                                    &nbformat_value,
+                                                    &blob_store,
+                                                    crate::output_store::DEFAULT_INLINE_THRESHOLD,
+                                                )
+                                                .await
+                                            {
+                                                let manifest_json = manifest.to_json();
+                                                let output_manifests = {
+                                                    let mut sd = state_doc_for_iopub.write().await;
+                                                    if pending_clear_widgets.remove(&widget_comm_id)
+                                                    {
+                                                        sd.clear_comm_outputs(&widget_comm_id);
+                                                    }
+                                                    if sd.append_comm_output(
+                                                        &widget_comm_id,
+                                                        &manifest_json,
+                                                    ) {
+                                                        let _ = state_changed_for_iopub.send(());
+                                                    }
+
+                                                    if let Some(entry) =
+                                                        sd.get_comm(&widget_comm_id)
+                                                    {
+                                                        let manifests = entry.outputs.clone();
+                                                        let manifests_json =
+                                                            serde_json::Value::Array(
+                                                                manifests.clone(),
+                                                            );
+                                                        sd.set_comm_state_property(
+                                                            &widget_comm_id,
+                                                            "outputs",
+                                                            &manifests_json,
+                                                        );
+                                                        Some(manifests)
+                                                    } else {
+                                                        None
+                                                    }
+                                                };
+                                                if let Some(output_manifests) = output_manifests {
+                                                    let mut resolved_outputs = Vec::new();
+                                                    for m in &output_manifests {
+                                                        if let Ok(manifest) = serde_json::from_value::<
+                                                            OutputManifest,
+                                                        >(
+                                                            m.clone()
+                                                        ) {
+                                                            if let Ok(r) =
+                                                                output_store::resolve_manifest(
+                                                                    &manifest,
+                                                                    &blob_store,
+                                                                )
+                                                                .await
+                                                            {
+                                                                resolved_outputs.push(r);
+                                                            }
+                                                        }
+                                                    }
+                                                    let _ = iopub_cmd_tx
+                                                        .send(QueueCommand::SendCommUpdate {
+                                                            comm_id: widget_comm_id.clone(),
+                                                            state: serde_json::json!({
+                                                                "outputs": resolved_outputs
+                                                            }),
+                                                        })
+                                                        .await;
+                                                }
+                                            }
+                                        }
+                                        continue;
                                     }
 
-                                    if let Some(nbformat_value) =
-                                        message_content_to_nbformat(&message.content)
-                                    {
-                                        let manifest_json = match output_store::create_manifest(
-                                            &nbformat_value,
-                                            &blob_store,
-                                            DEFAULT_INLINE_THRESHOLD,
-                                        )
-                                        .await
+                                    if let Some(ref cid) = cell_id {
+                                        let eid = execution_id.clone().unwrap_or_default();
+
                                         {
-                                            Ok(manifest) => manifest.to_json(),
-                                            Err(e) => {
-                                                warn!(
+                                            let mut terminals = iopub_stream_terminals.lock().await;
+                                            terminals.clear(&eid);
+                                        }
+
+                                        if let Some(nbformat_value) =
+                                            message_content_to_nbformat(&message.content)
+                                        {
+                                            let manifest_json = match output_store::create_manifest(
+                                                &nbformat_value,
+                                                &blob_store,
+                                                DEFAULT_INLINE_THRESHOLD,
+                                            )
+                                            .await
+                                            {
+                                                Ok(manifest) => manifest.to_json(),
+                                                Err(e) => {
+                                                    warn!(
                                                         "[jupyter-kernel] Failed to create error manifest: {}",
                                                         e
                                                     );
-                                                nbformat_value.clone()
-                                            }
-                                        };
+                                                    nbformat_value.clone()
+                                                }
+                                            };
 
-                                        let mut fork = {
-                                            let mut sd = state_doc_for_iopub.write().await;
-                                            sd.fork_with_actor(&iopub_actor_id)
-                                        };
+                                            let mut fork = {
+                                                let mut sd = state_doc_for_iopub.write().await;
+                                                sd.fork_with_actor(&iopub_actor_id)
+                                            };
 
-                                        if let Err(e) = fork.append_output(&eid, &manifest_json) {
-                                            warn!(
+                                            if let Err(e) = fork.append_output(&eid, &manifest_json)
+                                            {
+                                                warn!(
                                                 "[jupyter-kernel] Failed to append error output to state doc: {}",
                                                 e
                                             );
-                                        }
+                                            }
 
-                                        let merge_ok = {
-                                            let mut sd = state_doc_for_iopub.write().await;
-                                            if let Err(e) =
+                                            let merge_ok = {
+                                                let mut sd = state_doc_for_iopub.write().await;
+                                                if let Err(e) =
                                                 crate::notebook_sync_server::catch_automerge_panic(
                                                     "iopub-error-output-merge",
                                                     || sd.merge(&mut fork),
@@ -1261,315 +1300,335 @@ impl KernelConnection for JupyterKernel {
                                                 let _ = state_changed_for_iopub.send(());
                                                 true
                                             }
-                                        };
+                                            };
 
-                                        if merge_ok {
-                                            let _ = broadcast_tx.send(NotebookBroadcast::Output {
-                                                cell_id: cid.clone(),
-                                                execution_id: eid.clone(),
-                                                output_type: "error".to_string(),
-                                                output_json: manifest_json.to_string(),
-                                                output_index: None,
-                                            });
-                                        }
-                                    }
-
-                                    let _ = iopub_cmd_tx.try_send(QueueCommand::CellError {
-                                        cell_id: cid.clone(),
-                                        execution_id: eid,
-                                    });
-                                }
-                            }
-
-                            JupyterMessageContent::ClearOutput(clear) => {
-                                let parent_msg_id = message
-                                    .parent_header
-                                    .as_ref()
-                                    .map(|h| h.msg_id.as_str())
-                                    .unwrap_or("");
-                                if let Some(widget_comm_id) =
-                                    capture_cache.get(parent_msg_id).cloned()
-                                {
-                                    if clear.wait {
-                                        pending_clear_widgets.insert(widget_comm_id.clone());
-                                    } else {
-                                        pending_clear_widgets.remove(&widget_comm_id);
-                                        {
-                                            let mut sd = state_doc_for_iopub.write().await;
-                                            if sd.clear_comm_outputs(&widget_comm_id) {
-                                                let _ = state_changed_for_iopub.send(());
+                                            if merge_ok {
+                                                let _ =
+                                                    broadcast_tx.send(NotebookBroadcast::Output {
+                                                        cell_id: cid.clone(),
+                                                        execution_id: eid.clone(),
+                                                        output_type: "error".to_string(),
+                                                        output_json: manifest_json.to_string(),
+                                                        output_index: None,
+                                                    });
                                             }
-                                            sd.set_comm_state_property(
-                                                &widget_comm_id,
-                                                "outputs",
-                                                &serde_json::json!([]),
-                                            );
                                         }
-                                        let _ = iopub_cmd_tx
-                                            .send(QueueCommand::SendCommUpdate {
-                                                comm_id: widget_comm_id.clone(),
-                                                state: serde_json::json!({ "outputs": [] }),
-                                            })
-                                            .await;
+
+                                        let _ = iopub_cmd_tx.try_send(QueueCommand::CellError {
+                                            cell_id: cid.clone(),
+                                            execution_id: eid,
+                                        });
                                     }
                                 }
-                            }
 
-                            JupyterMessageContent::CommOpen(open) => {
-                                // Record the comm_id -> target_name mapping early so
-                                // subsequent CommMsg / CommClose arms can route without
-                                // reading the CRDT.
-                                comm_targets
-                                    .insert(open.comm_id.0.clone(), open.target_name.clone());
-
-                                // Short-circuit reserved nteract.dx.* comms: they carry
-                                // kernel-side protocol traffic (dx blob uploads, future
-                                // dx.query / dx.stream) that must NOT land in
-                                // RuntimeStateDoc::comms. The payload is handled in the
-                                // CommMsg arm below.
-                                if crate::dx_blob_comm::is_dx_target(&open.target_name) {
-                                    debug!(
-                                        "[dx] comm_open comm_id={} target={} (not persisted)",
-                                        open.comm_id.0, open.target_name
-                                    );
-                                    continue;
-                                }
-
-                                let buffers: Vec<Vec<u8>> =
-                                    message.buffers.iter().map(|b| b.to_vec()).collect();
-
-                                let data = serde_json::to_value(&open.data).unwrap_or_default();
-
-                                let comm_open_start = std::time::Instant::now();
-                                let state_json_size =
-                                    serde_json::to_string(&data).map(|s| s.len()).unwrap_or(0);
-                                debug!(
-                                    "[comm_open] comm_id={} target={} state_size={} bytes",
-                                    open.comm_id.0, open.target_name, state_json_size
-                                );
-
-                                let empty_obj = serde_json::json!({});
-                                let state = data.get("state").unwrap_or(&empty_obj);
-                                let buffer_paths = extract_buffer_paths(&data);
-                                let (state_with_blobs, _used_paths) = store_widget_buffers(
-                                    state,
-                                    &buffer_paths,
-                                    &buffers,
-                                    &blob_store,
-                                )
-                                .await;
-
-                                let blob_elapsed = comm_open_start.elapsed();
-                                if blob_elapsed > std::time::Duration::from_millis(10) {
-                                    warn!(
-                                        "[iopub-timing] comm_open blob store took {:?} for comm_id={}",
-                                        blob_elapsed, open.comm_id.0
-                                    );
-                                }
-
-                                let state_with_blobs =
-                                    blob_store_large_state_values(&state_with_blobs, &blob_store)
-                                        .await;
-
-                                {
-                                    let lock_start = std::time::Instant::now();
-                                    let model_module = state_with_blobs
-                                        .get("_model_module")
-                                        .and_then(|v| v.as_str())
+                                JupyterMessageContent::ClearOutput(clear) => {
+                                    let parent_msg_id = message
+                                        .parent_header
+                                        .as_ref()
+                                        .map(|h| h.msg_id.as_str())
                                         .unwrap_or("");
-                                    let model_name = state_with_blobs
-                                        .get("_model_name")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("");
-                                    let seq = iopub_comm_seq.fetch_add(1, Ordering::Relaxed);
-                                    let mut sd = state_doc_for_iopub.write().await;
-                                    let lock_wait = lock_start.elapsed();
-                                    if lock_wait > std::time::Duration::from_millis(5) {
-                                        warn!(
-                                            "[iopub-timing] comm_open state_doc write lock waited {:?} for comm_id={}",
-                                            lock_wait, open.comm_id.0
-                                        );
-                                    }
-                                    let crdt_start = std::time::Instant::now();
-                                    sd.put_comm(
-                                        &open.comm_id.0,
-                                        &open.target_name,
-                                        model_module,
-                                        model_name,
-                                        &state_with_blobs,
-                                        seq,
-                                    );
-                                    let crdt_elapsed = crdt_start.elapsed();
-                                    if crdt_elapsed > std::time::Duration::from_millis(10) {
-                                        warn!(
-                                            "[iopub-timing] comm_open put_comm CRDT write took {:?} for comm_id={}, state_size={} bytes",
-                                            crdt_elapsed, open.comm_id.0, state_json_size
-                                        );
-                                    }
-
-                                    if model_name == "OutputModel" {
-                                        if let Some(msg_id) = state_with_blobs
-                                            .get("msg_id")
-                                            .and_then(|v| v.as_str())
-                                            .filter(|s| !s.is_empty())
-                                        {
-                                            sd.set_comm_capture_msg_id(&open.comm_id.0, msg_id);
-                                            capture_cache
-                                                .insert(msg_id.to_string(), open.comm_id.0.clone());
-                                        }
-                                    }
-
-                                    let _ = state_changed_for_iopub.send(());
-                                }
-
-                                let total = comm_open_start.elapsed();
-                                if total > std::time::Duration::from_millis(50) {
-                                    warn!(
-                                        "[iopub-timing] comm_open TOTAL {:?} for comm_id={} target={} state_size={} bytes",
-                                        total, open.comm_id.0, open.target_name, state_json_size
-                                    );
-                                }
-                            }
-
-                            JupyterMessageContent::CommMsg(msg) => {
-                                let content =
-                                    serde_json::to_value(&message.content).unwrap_or_default();
-                                let buffers: Vec<Vec<u8>> =
-                                    message.buffers.iter().map(|b| b.to_vec()).collect();
-
-                                let data = serde_json::to_value(&msg.data).unwrap_or_default();
-                                let method = data.get("method").and_then(|m| m.as_str());
-
-                                // dx-namespace comms short-circuit before any widget
-                                // state handling. v1 has no live handler — all reserved
-                                // nteract.dx.* targets drop with a warn log carrying the
-                                // raw target name for observability (future kernels
-                                // opening reserved targets we haven't implemented yet).
-                                if let Some(target) = comm_targets.get(&msg.comm_id.0).cloned() {
-                                    if let Some(crate::dx_blob_comm::DxTarget::Unknown(raw)) =
-                                        crate::dx_blob_comm::classify_dx_target(&target)
+                                    if let Some(widget_comm_id) =
+                                        capture_cache.get(parent_msg_id).cloned()
                                     {
-                                        warn!(
-                                            "[dx] comm_msg on reserved target {} (dropped; filtered from RuntimeStateDoc)",
-                                            raw
+                                        if clear.wait {
+                                            pending_clear_widgets.insert(widget_comm_id.clone());
+                                        } else {
+                                            pending_clear_widgets.remove(&widget_comm_id);
+                                            {
+                                                let mut sd = state_doc_for_iopub.write().await;
+                                                if sd.clear_comm_outputs(&widget_comm_id) {
+                                                    let _ = state_changed_for_iopub.send(());
+                                                }
+                                                sd.set_comm_state_property(
+                                                    &widget_comm_id,
+                                                    "outputs",
+                                                    &serde_json::json!([]),
+                                                );
+                                            }
+                                            let _ = iopub_cmd_tx
+                                                .send(QueueCommand::SendCommUpdate {
+                                                    comm_id: widget_comm_id.clone(),
+                                                    state: serde_json::json!({ "outputs": [] }),
+                                                })
+                                                .await;
+                                        }
+                                    }
+                                }
+
+                                JupyterMessageContent::CommOpen(open) => {
+                                    // Record the comm_id -> target_name mapping early so
+                                    // subsequent CommMsg / CommClose arms can route without
+                                    // reading the CRDT.
+                                    comm_targets
+                                        .insert(open.comm_id.0.clone(), open.target_name.clone());
+
+                                    // Short-circuit reserved nteract.dx.* comms: they carry
+                                    // kernel-side protocol traffic (dx blob uploads, future
+                                    // dx.query / dx.stream) that must NOT land in
+                                    // RuntimeStateDoc::comms. The payload is handled in the
+                                    // CommMsg arm below.
+                                    if crate::dx_blob_comm::is_dx_target(&open.target_name) {
+                                        debug!(
+                                            "[dx] comm_open comm_id={} target={} (not persisted)",
+                                            open.comm_id.0, open.target_name
                                         );
                                         continue;
                                     }
+
+                                    let buffers: Vec<Vec<u8>> =
+                                        message.buffers.iter().map(|b| b.to_vec()).collect();
+
+                                    let data = serde_json::to_value(&open.data).unwrap_or_default();
+
+                                    let comm_open_start = std::time::Instant::now();
+                                    let state_json_size =
+                                        serde_json::to_string(&data).map(|s| s.len()).unwrap_or(0);
+                                    debug!(
+                                        "[comm_open] comm_id={} target={} state_size={} bytes",
+                                        open.comm_id.0, open.target_name, state_json_size
+                                    );
+
+                                    let empty_obj = serde_json::json!({});
+                                    let state = data.get("state").unwrap_or(&empty_obj);
+                                    let buffer_paths = extract_buffer_paths(&data);
+                                    let (state_with_blobs, _used_paths) = store_widget_buffers(
+                                        state,
+                                        &buffer_paths,
+                                        &buffers,
+                                        &blob_store,
+                                    )
+                                    .await;
+
+                                    let blob_elapsed = comm_open_start.elapsed();
+                                    if blob_elapsed > std::time::Duration::from_millis(10) {
+                                        warn!(
+                                        "[iopub-timing] comm_open blob store took {:?} for comm_id={}",
+                                        blob_elapsed, open.comm_id.0
+                                    );
+                                    }
+
+                                    let state_with_blobs = blob_store_large_state_values(
+                                        &state_with_blobs,
+                                        &blob_store,
+                                    )
+                                    .await;
+
+                                    {
+                                        let lock_start = std::time::Instant::now();
+                                        let model_module = state_with_blobs
+                                            .get("_model_module")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("");
+                                        let model_name = state_with_blobs
+                                            .get("_model_name")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("");
+                                        let seq = iopub_comm_seq.fetch_add(1, Ordering::Relaxed);
+                                        let mut sd = state_doc_for_iopub.write().await;
+                                        let lock_wait = lock_start.elapsed();
+                                        if lock_wait > std::time::Duration::from_millis(5) {
+                                            warn!(
+                                            "[iopub-timing] comm_open state_doc write lock waited {:?} for comm_id={}",
+                                            lock_wait, open.comm_id.0
+                                        );
+                                        }
+                                        let crdt_start = std::time::Instant::now();
+                                        sd.put_comm(
+                                            &open.comm_id.0,
+                                            &open.target_name,
+                                            model_module,
+                                            model_name,
+                                            &state_with_blobs,
+                                            seq,
+                                        );
+                                        let crdt_elapsed = crdt_start.elapsed();
+                                        if crdt_elapsed > std::time::Duration::from_millis(10) {
+                                            warn!(
+                                            "[iopub-timing] comm_open put_comm CRDT write took {:?} for comm_id={}, state_size={} bytes",
+                                            crdt_elapsed, open.comm_id.0, state_json_size
+                                        );
+                                        }
+
+                                        if model_name == "OutputModel" {
+                                            if let Some(msg_id) = state_with_blobs
+                                                .get("msg_id")
+                                                .and_then(|v| v.as_str())
+                                                .filter(|s| !s.is_empty())
+                                            {
+                                                sd.set_comm_capture_msg_id(&open.comm_id.0, msg_id);
+                                                capture_cache.insert(
+                                                    msg_id.to_string(),
+                                                    open.comm_id.0.clone(),
+                                                );
+                                            }
+                                        }
+
+                                        let _ = state_changed_for_iopub.send(());
+                                    }
+
+                                    let total = comm_open_start.elapsed();
+                                    if total > std::time::Duration::from_millis(50) {
+                                        warn!(
+                                        "[iopub-timing] comm_open TOTAL {:?} for comm_id={} target={} state_size={} bytes",
+                                        total, open.comm_id.0, open.target_name, state_json_size
+                                    );
+                                    }
                                 }
 
-                                let comm_msg_start = std::time::Instant::now();
-                                debug!("[comm_msg] comm_id={} method={:?}", msg.comm_id.0, method);
-                                if method == Some("update") {
-                                    if let Some(state_delta) = data.get("state") {
-                                        if let Some(new_msg_id) =
-                                            state_delta.get("msg_id").and_then(|v| v.as_str())
+                                JupyterMessageContent::CommMsg(msg) => {
+                                    let content =
+                                        serde_json::to_value(&message.content).unwrap_or_default();
+                                    let buffers: Vec<Vec<u8>> =
+                                        message.buffers.iter().map(|b| b.to_vec()).collect();
+
+                                    let data = serde_json::to_value(&msg.data).unwrap_or_default();
+                                    let method = data.get("method").and_then(|m| m.as_str());
+
+                                    // dx-namespace comms short-circuit before any widget
+                                    // state handling. v1 has no live handler — all reserved
+                                    // nteract.dx.* targets drop with a warn log carrying the
+                                    // raw target name for observability (future kernels
+                                    // opening reserved targets we haven't implemented yet).
+                                    if let Some(target) = comm_targets.get(&msg.comm_id.0).cloned()
+                                    {
+                                        if let Some(crate::dx_blob_comm::DxTarget::Unknown(raw)) =
+                                            crate::dx_blob_comm::classify_dx_target(&target)
                                         {
-                                            capture_cache.retain(|_, cid| cid != &msg.comm_id.0);
-                                            if !new_msg_id.is_empty() {
-                                                if let Some(existing) =
-                                                    capture_cache.get(new_msg_id)
-                                                {
-                                                    warn!(
+                                            warn!(
+                                            "[dx] comm_msg on reserved target {} (dropped; filtered from RuntimeStateDoc)",
+                                            raw
+                                        );
+                                            continue;
+                                        }
+                                    }
+
+                                    let comm_msg_start = std::time::Instant::now();
+                                    debug!(
+                                        "[comm_msg] comm_id={} method={:?}",
+                                        msg.comm_id.0, method
+                                    );
+                                    if method == Some("update") {
+                                        if let Some(state_delta) = data.get("state") {
+                                            if let Some(new_msg_id) =
+                                                state_delta.get("msg_id").and_then(|v| v.as_str())
+                                            {
+                                                capture_cache
+                                                    .retain(|_, cid| cid != &msg.comm_id.0);
+                                                if !new_msg_id.is_empty() {
+                                                    if let Some(existing) =
+                                                        capture_cache.get(new_msg_id)
+                                                    {
+                                                        warn!(
                                                         "[comm_msg] Nested capture: {} overrides {} for msg_id={}",
                                                         msg.comm_id.0, existing, new_msg_id
                                                     );
+                                                    }
+                                                    capture_cache.insert(
+                                                        new_msg_id.to_string(),
+                                                        msg.comm_id.0.clone(),
+                                                    );
                                                 }
-                                                capture_cache.insert(
-                                                    new_msg_id.to_string(),
-                                                    msg.comm_id.0.clone(),
+
+                                                let mut sd = state_doc_for_iopub.write().await;
+                                                sd.set_comm_capture_msg_id(
+                                                    &msg.comm_id.0,
+                                                    new_msg_id,
                                                 );
+                                                let _ = state_changed_for_iopub.send(());
                                             }
 
-                                            let mut sd = state_doc_for_iopub.write().await;
-                                            sd.set_comm_capture_msg_id(&msg.comm_id.0, new_msg_id);
-                                            let _ = state_changed_for_iopub.send(());
-                                        }
-
-                                        let coalesce_delta = if !buffers.is_empty() {
-                                            let buffer_paths = extract_buffer_paths(&data);
-                                            let (state_with_blobs, _) = store_widget_buffers(
-                                                state_delta,
-                                                &buffer_paths,
-                                                &buffers,
-                                                &blob_store,
-                                            )
-                                            .await;
-                                            state_with_blobs
-                                        } else {
-                                            state_delta.clone()
-                                        };
-                                        if let Some(ref tx) = comm_coalesce_tx {
-                                            let _ =
-                                                tx.send((msg.comm_id.0.clone(), coalesce_delta));
+                                            let coalesce_delta = if !buffers.is_empty() {
+                                                let buffer_paths = extract_buffer_paths(&data);
+                                                let (state_with_blobs, _) = store_widget_buffers(
+                                                    state_delta,
+                                                    &buffer_paths,
+                                                    &buffers,
+                                                    &blob_store,
+                                                )
+                                                .await;
+                                                state_with_blobs
+                                            } else {
+                                                state_delta.clone()
+                                            };
+                                            if let Some(ref tx) = comm_coalesce_tx {
+                                                let _ = tx
+                                                    .send((msg.comm_id.0.clone(), coalesce_delta));
+                                            }
                                         }
                                     }
-                                }
 
-                                let comm_msg_elapsed = comm_msg_start.elapsed();
-                                if comm_msg_elapsed > std::time::Duration::from_millis(10) {
-                                    warn!(
+                                    let comm_msg_elapsed = comm_msg_start.elapsed();
+                                    if comm_msg_elapsed > std::time::Duration::from_millis(10) {
+                                        warn!(
                                         "[iopub-timing] comm_msg took {:?} for comm_id={} method={:?}",
                                         comm_msg_elapsed, msg.comm_id.0, method
                                     );
-                                }
+                                    }
 
-                                if method != Some("update") {
-                                    let _ = broadcast_tx.send(NotebookBroadcast::Comm {
-                                        msg_type: message.header.msg_type.clone(),
-                                        content: content.clone(),
-                                        buffers: buffers.clone(),
-                                    });
-                                }
-                            }
-
-                            JupyterMessageContent::CommClose(close) => {
-                                debug!("[jupyter-kernel] comm_close: comm_id={}", close.comm_id.0);
-
-                                let iopub_elapsed = iopub_start.elapsed();
-                                if iopub_elapsed > std::time::Duration::from_millis(50) {
-                                    warn!(
-                                        "[iopub-timing] message type={} took {:?} total",
-                                        msg_type, iopub_elapsed
-                                    );
-                                }
-
-                                // Drop the comm_id -> target_name mapping. If this was
-                                // a dx-namespace comm, skip the RuntimeStateDoc write.
-                                let was_dx_target = comm_targets
-                                    .remove(&close.comm_id.0)
-                                    .map(|t| crate::dx_blob_comm::is_dx_target(&t))
-                                    .unwrap_or(false);
-                                if was_dx_target {
-                                    continue;
-                                }
-
-                                capture_cache.retain(|_, cid| cid != &close.comm_id.0);
-
-                                {
-                                    let mut sd = state_doc_for_iopub.write().await;
-                                    if sd.remove_comm(&close.comm_id.0) {
-                                        let _ = state_changed_for_iopub.send(());
+                                    if method != Some("update") {
+                                        let _ = broadcast_tx.send(NotebookBroadcast::Comm {
+                                            msg_type: message.header.msg_type.clone(),
+                                            content: content.clone(),
+                                            buffers: buffers.clone(),
+                                        });
                                     }
                                 }
-                            }
 
-                            _ => {
-                                debug!(
-                                    "[jupyter-kernel] Unhandled iopub message: {}",
-                                    message.header.msg_type
-                                );
+                                JupyterMessageContent::CommClose(close) => {
+                                    debug!(
+                                        "[jupyter-kernel] comm_close: comm_id={}",
+                                        close.comm_id.0
+                                    );
+
+                                    let iopub_elapsed = iopub_start.elapsed();
+                                    if iopub_elapsed > std::time::Duration::from_millis(50) {
+                                        warn!(
+                                            "[iopub-timing] message type={} took {:?} total",
+                                            msg_type, iopub_elapsed
+                                        );
+                                    }
+
+                                    // Drop the comm_id -> target_name mapping. If this was
+                                    // a dx-namespace comm, skip the RuntimeStateDoc write.
+                                    let was_dx_target = comm_targets
+                                        .remove(&close.comm_id.0)
+                                        .map(|t| crate::dx_blob_comm::is_dx_target(&t))
+                                        .unwrap_or(false);
+                                    if was_dx_target {
+                                        continue;
+                                    }
+
+                                    capture_cache.retain(|_, cid| cid != &close.comm_id.0);
+
+                                    {
+                                        let mut sd = state_doc_for_iopub.write().await;
+                                        if sd.remove_comm(&close.comm_id.0) {
+                                            let _ = state_changed_for_iopub.send(());
+                                        }
+                                    }
+                                }
+
+                                _ => {
+                                    debug!(
+                                        "[jupyter-kernel] Unhandled iopub message: {}",
+                                        message.header.msg_type
+                                    );
+                                }
                             }
                         }
-                    }
-                    Err(e) => {
-                        error!("[jupyter-kernel] iopub read error: {}", e);
-                        break;
+                        Err(e) => {
+                            error!("[jupyter-kernel] iopub read error: {}", e);
+                            break;
+                        }
                     }
                 }
-            }
-            warn!("[jupyter-kernel] iopub loop exited, signaling KernelDied");
-            let _ = iopub_cmd_tx.try_send(QueueCommand::KernelDied);
-        });
+                warn!("[jupyter-kernel] iopub loop exited, signaling KernelDied");
+                let _ = iopub_cmd_tx.try_send(QueueCommand::KernelDied);
+            },
+            move |_| {
+                let _ = iopub_panic_cmd_tx.try_send(QueueCommand::KernelDied);
+            },
+        );
 
         // ── Shell connection ─────────────────────────────────────────────
 
@@ -1628,63 +1687,71 @@ impl KernelConnection for JupyterKernel {
         let shell_blob_store = shared.blob_store.clone();
         let shell_actor_id = format!("{kernel_actor_id}:shell");
 
-        let shell_reader_task = tokio::spawn(async move {
-            loop {
-                match shell_reader.read().await {
-                    Ok(msg) => {
-                        let _parent_msg_id = msg.parent_header.as_ref().map(|h| h.msg_id.clone());
+        let shell_panic_cmd_tx = cmd_tx.clone();
+        let shell_reader_task = spawn_supervised(
+            "shell-reader",
+            async move {
+                loop {
+                    match shell_reader.read().await {
+                        Ok(msg) => {
+                            let _parent_msg_id =
+                                msg.parent_header.as_ref().map(|h| h.msg_id.clone());
 
-                        match msg.content {
-                            JupyterMessageContent::ExecuteReply(ref reply) => {
-                                let cell_entry: Option<(String, String)> =
-                                    msg.parent_header.as_ref().and_then(|h| {
-                                        shell_cell_id_map.lock().ok()?.get(&h.msg_id).cloned()
-                                    });
-                                let cell_id = cell_entry.as_ref().map(|(cid, _)| cid.clone());
-                                let execution_id = cell_entry.as_ref().map(|(_, eid)| eid.clone());
+                            match msg.content {
+                                JupyterMessageContent::ExecuteReply(ref reply) => {
+                                    let cell_entry: Option<(String, String)> =
+                                        msg.parent_header.as_ref().and_then(|h| {
+                                            shell_cell_id_map.lock().ok()?.get(&h.msg_id).cloned()
+                                        });
+                                    let cell_id = cell_entry.as_ref().map(|(cid, _)| cid.clone());
+                                    let execution_id =
+                                        cell_entry.as_ref().map(|(_, eid)| eid.clone());
 
-                                // Process page payloads
-                                if let Some(ref cid) = cell_id {
-                                    for payload in &reply.payload {
-                                        if let jupyter_protocol::Payload::Page { data, .. } =
-                                            payload
-                                        {
-                                            let nbformat_value = media_to_display_data(data);
-
-                                            let manifest_json = match output_store::create_manifest(
-                                                &nbformat_value,
-                                                &shell_blob_store,
-                                                DEFAULT_INLINE_THRESHOLD,
-                                            )
-                                            .await
+                                    // Process page payloads
+                                    if let Some(ref cid) = cell_id {
+                                        for payload in &reply.payload {
+                                            if let jupyter_protocol::Payload::Page {
+                                                data, ..
+                                            } = payload
                                             {
-                                                Ok(manifest) => manifest.to_json(),
-                                                Err(e) => {
-                                                    warn!(
+                                                let nbformat_value = media_to_display_data(data);
+
+                                                let manifest_json =
+                                                    match output_store::create_manifest(
+                                                        &nbformat_value,
+                                                        &shell_blob_store,
+                                                        DEFAULT_INLINE_THRESHOLD,
+                                                    )
+                                                    .await
+                                                    {
+                                                        Ok(manifest) => manifest.to_json(),
+                                                        Err(e) => {
+                                                            warn!(
                                                             "[jupyter-kernel] Failed to create page manifest: {}",
                                                             e
                                                         );
-                                                    nbformat_value.clone()
-                                                }
-                                            };
+                                                            nbformat_value.clone()
+                                                        }
+                                                    };
 
-                                            let eid = execution_id.clone().unwrap_or_default();
-                                            let mut fork = {
-                                                let mut sd = shell_state_doc.write().await;
-                                                sd.fork_with_actor(&shell_actor_id)
-                                            };
+                                                let eid = execution_id.clone().unwrap_or_default();
+                                                let mut fork = {
+                                                    let mut sd = shell_state_doc.write().await;
+                                                    sd.fork_with_actor(&shell_actor_id)
+                                                };
 
-                                            if let Err(e) = fork.append_output(&eid, &manifest_json)
-                                            {
-                                                warn!(
+                                                if let Err(e) =
+                                                    fork.append_output(&eid, &manifest_json)
+                                                {
+                                                    warn!(
                                                     "[jupyter-kernel] Failed to append page output to state doc: {}",
                                                     e
                                                 );
-                                            }
+                                                }
 
-                                            let merge_ok = {
-                                                let mut sd = shell_state_doc.write().await;
-                                                if let Err(e) = crate::notebook_sync_server::catch_automerge_panic(
+                                                let merge_ok = {
+                                                    let mut sd = shell_state_doc.write().await;
+                                                    if let Err(e) = crate::notebook_sync_server::catch_automerge_panic(
                                                     "shell-output-merge",
                                                     || sd.merge(&mut fork),
                                                 ) {
@@ -1696,47 +1763,48 @@ impl KernelConnection for JupyterKernel {
                                                         shell_state_changed_tx.send(());
                                                     true
                                                 }
-                                            };
+                                                };
 
-                                            if merge_ok {
-                                                let _ = shell_broadcast_tx.send(
-                                                    NotebookBroadcast::Output {
-                                                        cell_id: cid.clone(),
-                                                        execution_id: execution_id
-                                                            .clone()
-                                                            .unwrap_or_default(),
-                                                        output_type: "display_data".to_string(),
-                                                        output_json: manifest_json.to_string(),
-                                                        output_index: None,
-                                                    },
-                                                );
+                                                if merge_ok {
+                                                    let _ = shell_broadcast_tx.send(
+                                                        NotebookBroadcast::Output {
+                                                            cell_id: cid.clone(),
+                                                            execution_id: execution_id
+                                                                .clone()
+                                                                .unwrap_or_default(),
+                                                            output_type: "display_data".to_string(),
+                                                            output_json: manifest_json.to_string(),
+                                                            output_index: None,
+                                                        },
+                                                    );
+                                                }
                                             }
                                         }
                                     }
-                                }
 
-                                if reply.status != jupyter_protocol::ReplyStatus::Ok {
-                                    if let Some(ref cid) = cell_id {
-                                        let _ = shell_broadcast_tx.send(
-                                            NotebookBroadcast::ExecutionDone {
-                                                cell_id: cid.clone(),
-                                                execution_id: execution_id
-                                                    .clone()
-                                                    .unwrap_or_default(),
-                                            },
-                                        );
+                                    if reply.status != jupyter_protocol::ReplyStatus::Ok {
+                                        if let Some(ref cid) = cell_id {
+                                            let _ = shell_broadcast_tx.send(
+                                                NotebookBroadcast::ExecutionDone {
+                                                    cell_id: cid.clone(),
+                                                    execution_id: execution_id
+                                                        .clone()
+                                                        .unwrap_or_default(),
+                                                },
+                                            );
+                                        }
                                     }
                                 }
-                            }
-                            JupyterMessageContent::HistoryReply(ref reply) => {
-                                if let Some(ref parent) = msg.parent_header {
-                                    let msg_id = &parent.msg_id;
-                                    if let Ok(mut pending) = shell_pending_history.lock() {
-                                        if let Some(tx) = pending.remove(msg_id) {
-                                            let entries: Vec<HistoryEntry> = reply
-                                                .history
-                                                .iter()
-                                                .map(|item| match item {
+                                JupyterMessageContent::HistoryReply(ref reply) => {
+                                    if let Some(ref parent) = msg.parent_header {
+                                        let msg_id = &parent.msg_id;
+                                        if let Ok(mut pending) = shell_pending_history.lock() {
+                                            if let Some(tx) = pending.remove(msg_id) {
+                                                let entries: Vec<HistoryEntry> = reply
+                                                    .history
+                                                    .iter()
+                                                    .map(|item| {
+                                                        match item {
                                                     jupyter_protocol::HistoryEntry::Input(
                                                         session,
                                                         line,
@@ -1755,96 +1823,108 @@ impl KernelConnection for JupyterKernel {
                                                         line: *line as i32,
                                                         source: source.clone(),
                                                     },
-                                                })
-                                                .collect();
+                                                }
+                                                    })
+                                                    .collect();
 
-                                            debug!(
+                                                debug!(
                                                 "[jupyter-kernel] Resolved history request: {} entries",
                                                 entries.len()
                                             );
-                                            let _ = tx.send(entries);
+                                                let _ = tx.send(entries);
+                                            }
                                         }
                                     }
                                 }
-                            }
-                            JupyterMessageContent::CompleteReply(ref reply) => {
-                                if let Some(ref parent) = msg.parent_header {
-                                    let msg_id = &parent.msg_id;
-                                    if let Ok(mut pending) = shell_pending_completions.lock() {
-                                        if let Some(tx) = pending.remove(msg_id) {
-                                            let items: Vec<CompletionItem> = reply
-                                                .matches
-                                                .iter()
-                                                .map(|m| CompletionItem {
-                                                    label: m.clone(),
-                                                    kind: None,
-                                                    detail: None,
-                                                    source: Some("kernel".to_string()),
-                                                })
-                                                .collect();
+                                JupyterMessageContent::CompleteReply(ref reply) => {
+                                    if let Some(ref parent) = msg.parent_header {
+                                        let msg_id = &parent.msg_id;
+                                        if let Ok(mut pending) = shell_pending_completions.lock() {
+                                            if let Some(tx) = pending.remove(msg_id) {
+                                                let items: Vec<CompletionItem> = reply
+                                                    .matches
+                                                    .iter()
+                                                    .map(|m| CompletionItem {
+                                                        label: m.clone(),
+                                                        kind: None,
+                                                        detail: None,
+                                                        source: Some("kernel".to_string()),
+                                                    })
+                                                    .collect();
 
-                                            debug!(
+                                                debug!(
                                                 "[jupyter-kernel] Resolved completion request: {} items",
                                                 items.len()
                                             );
-                                            let _ = tx.send((
-                                                items,
-                                                reply.cursor_start,
-                                                reply.cursor_end,
-                                            ));
+                                                let _ = tx.send((
+                                                    items,
+                                                    reply.cursor_start,
+                                                    reply.cursor_end,
+                                                ));
+                                            }
                                         }
                                     }
                                 }
-                            }
-                            _ => {
-                                debug!(
-                                    "[jupyter-kernel] shell reply: type={}",
-                                    msg.header.msg_type
-                                );
+                                _ => {
+                                    debug!(
+                                        "[jupyter-kernel] shell reply: type={}",
+                                        msg.header.msg_type
+                                    );
+                                }
                             }
                         }
-                    }
-                    Err(e) => {
-                        error!("[jupyter-kernel] shell read error: {}", e);
-                        break;
+                        Err(e) => {
+                            error!("[jupyter-kernel] shell read error: {}", e);
+                            break;
+                        }
                     }
                 }
-            }
-        });
+            },
+            move |_| {
+                let _ = shell_panic_cmd_tx.try_send(QueueCommand::KernelDied);
+            },
+        );
 
         // ── Heartbeat monitor ────────────────────────────────────────────
 
         let hb_cmd_tx = cmd_tx.clone();
+        let hb_panic_cmd_tx = cmd_tx.clone();
         let hb_conn_info = connection_info.clone();
-        let heartbeat_task = tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-
-            loop {
+        let heartbeat_task = spawn_supervised(
+            "heartbeat",
+            async move {
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
-                let check = async {
-                    let mut hb =
-                        runtimelib::create_client_heartbeat_connection(&hb_conn_info).await?;
-                    hb.single_heartbeat().await
-                };
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
-                match tokio::time::timeout(std::time::Duration::from_secs(3), check).await {
-                    Ok(Ok(())) => {
-                        // Kernel is alive
-                    }
-                    Ok(Err(e)) => {
-                        warn!("[jupyter-kernel] Heartbeat connection error: {}", e);
-                        let _ = hb_cmd_tx.try_send(QueueCommand::KernelDied);
-                        break;
-                    }
-                    Err(_) => {
-                        warn!("[jupyter-kernel] Heartbeat timeout, kernel unresponsive");
-                        let _ = hb_cmd_tx.try_send(QueueCommand::KernelDied);
-                        break;
+                    let check = async {
+                        let mut hb =
+                            runtimelib::create_client_heartbeat_connection(&hb_conn_info).await?;
+                        hb.single_heartbeat().await
+                    };
+
+                    match tokio::time::timeout(std::time::Duration::from_secs(3), check).await {
+                        Ok(Ok(())) => {
+                            // Kernel is alive
+                        }
+                        Ok(Err(e)) => {
+                            warn!("[jupyter-kernel] Heartbeat connection error: {}", e);
+                            let _ = hb_cmd_tx.try_send(QueueCommand::KernelDied);
+                            break;
+                        }
+                        Err(_) => {
+                            warn!("[jupyter-kernel] Heartbeat timeout, kernel unresponsive");
+                            let _ = hb_cmd_tx.try_send(QueueCommand::KernelDied);
+                            break;
+                        }
                     }
                 }
-            }
-        });
+            },
+            move |_| {
+                let _ = hb_panic_cmd_tx.try_send(QueueCommand::KernelDied);
+            },
+        );
 
         // ── Coalesced comm state writer ──────────────────────────────────
 
@@ -1859,54 +1939,61 @@ impl KernelConnection for JupyterKernel {
         // doc's default actor (`runtimed:state`) and the filter lets
         // them through, re-triggering the amplification loop.
         let coalesce_actor_id = format!("{kernel_actor_id}:coalesce");
-        let comm_coalesce_task = tokio::spawn(async move {
-            let mut pending: HashMap<String, serde_json::Value> = HashMap::new();
-            let mut timer = tokio::time::interval(std::time::Duration::from_millis(16));
-            timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let coalesce_panic_cmd_tx = cmd_tx.clone();
+        let comm_coalesce_task = spawn_supervised(
+            "comm-coalesce",
+            async move {
+                let mut pending: HashMap<String, serde_json::Value> = HashMap::new();
+                let mut timer = tokio::time::interval(std::time::Duration::from_millis(16));
+                timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-            loop {
-                tokio::select! {
-                    msg = coalesce_rx.recv() => {
-                        match msg {
-                            Some((comm_id, delta)) => {
-                                let entry = pending.entry(comm_id)
-                                    .or_insert_with(|| serde_json::json!({}));
-                                if let (Some(existing), Some(new)) =
-                                    (entry.as_object_mut(), delta.as_object())
-                                {
-                                    for (k, v) in new {
-                                        existing.insert(k.clone(), v.clone());
+                loop {
+                    tokio::select! {
+                        msg = coalesce_rx.recv() => {
+                            match msg {
+                                Some((comm_id, delta)) => {
+                                    let entry = pending.entry(comm_id)
+                                        .or_insert_with(|| serde_json::json!({}));
+                                    if let (Some(existing), Some(new)) =
+                                        (entry.as_object_mut(), delta.as_object())
+                                    {
+                                        for (k, v) in new {
+                                            existing.insert(k.clone(), v.clone());
+                                        }
                                     }
                                 }
+                                None => break,
                             }
-                            None => break,
                         }
-                    }
-                    _ = timer.tick() => {
-                        if pending.is_empty() {
-                            continue;
-                        }
-                        let mut batch = std::mem::take(&mut pending);
-                        for delta in batch.values_mut() {
-                            *delta = blob_store_large_state_values(delta, &coalesce_blob_store).await;
-                        }
-                        let mut sd = coalesce_state_doc.write().await;
-                        let mut any_changed = false;
-                        sd.fork_and_merge(|f| {
-                            f.set_actor(&coalesce_actor_id);
-                            for (comm_id, delta) in &batch {
-                                if f.merge_comm_state_delta(comm_id, delta) {
-                                    any_changed = true;
+                        _ = timer.tick() => {
+                            if pending.is_empty() {
+                                continue;
+                            }
+                            let mut batch = std::mem::take(&mut pending);
+                            for delta in batch.values_mut() {
+                                *delta = blob_store_large_state_values(delta, &coalesce_blob_store).await;
+                            }
+                            let mut sd = coalesce_state_doc.write().await;
+                            let mut any_changed = false;
+                            sd.fork_and_merge(|f| {
+                                f.set_actor(&coalesce_actor_id);
+                                for (comm_id, delta) in &batch {
+                                    if f.merge_comm_state_delta(comm_id, delta) {
+                                        any_changed = true;
+                                    }
                                 }
+                            });
+                            if any_changed {
+                                let _ = coalesce_state_changed.send(());
                             }
-                        });
-                        if any_changed {
-                            let _ = coalesce_state_changed.send(());
                         }
                     }
                 }
-            }
-        });
+            },
+            move |_| {
+                let _ = coalesce_panic_cmd_tx.try_send(QueueCommand::KernelDied);
+            },
+        );
 
         // ── Construct the kernel struct ──────────────────────────────────
 
