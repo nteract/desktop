@@ -24,7 +24,7 @@ pub async fn emit_cursor(
     peer_label: &str,
 ) {
     let actor = actor_label(handle);
-    let data = presence::encode_cursor_update_labeled(
+    match presence::encode_cursor_update_labeled(
         "local",
         Some(peer_label),
         actor.as_deref(),
@@ -33,8 +33,12 @@ pub async fn emit_cursor(
             line,
             column,
         },
-    );
-    let _ = handle.send_presence(data).await;
+    ) {
+        Ok(data) => {
+            let _ = handle.send_presence(data).await;
+        }
+        Err(e) => tracing::debug!("emit_cursor: failed to encode: {}", e),
+    }
 }
 
 /// Emit a cell focus (agent is working on this cell, no specific cursor).
@@ -43,9 +47,17 @@ pub async fn emit_cursor(
 /// `peer_label` is the MCP client's display name (e.g. "Claude Code").
 pub async fn emit_focus(handle: &DocHandle, cell_id: &str, peer_label: &str) {
     let actor = actor_label(handle);
-    let data =
-        presence::encode_focus_update_labeled("local", Some(peer_label), actor.as_deref(), cell_id);
-    let _ = handle.send_presence(data).await;
+    match presence::encode_focus_update_labeled(
+        "local",
+        Some(peer_label),
+        actor.as_deref(),
+        cell_id,
+    ) {
+        Ok(data) => {
+            let _ = handle.send_presence(data).await;
+        }
+        Err(e) => tracing::debug!("emit_focus: failed to encode: {}", e),
+    }
 }
 
 /// Announce presence immediately after connecting to a notebook.
@@ -54,12 +66,17 @@ pub async fn emit_focus(handle: &DocHandle, cell_id: &str, peer_label: &str) {
 /// an action that emits presence (e.g. editing a cell).
 pub async fn announce(handle: &DocHandle, peer_label: &str) {
     let actor = actor_label(handle);
-    let data = if let Some(cell_id) = handle.first_cell_id() {
+    let encoded = if let Some(cell_id) = handle.first_cell_id() {
         presence::encode_focus_update_labeled("local", Some(peer_label), actor.as_deref(), &cell_id)
     } else {
         presence::encode_custom_update_labeled("local", Some(peer_label), actor.as_deref(), &[])
     };
-    let _ = handle.send_presence(data).await;
+    match encoded {
+        Ok(data) => {
+            let _ = handle.send_presence(data).await;
+        }
+        Err(e) => tracing::debug!("announce: failed to encode: {}", e),
+    }
 }
 
 /// Convert a character offset in source to (line, column) — both 0-based.

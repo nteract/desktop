@@ -217,7 +217,7 @@ pub(crate) async fn announce_presence(state: &SessionState) {
     let actor_label = state.actor_label.as_deref();
     let first_cell_id = handle.first_cell_id();
 
-    let data = if let Some(cell_id) = first_cell_id {
+    let encoded = if let Some(cell_id) = first_cell_id {
         notebook_doc::presence::encode_focus_update_labeled(
             "local",
             peer_label,
@@ -227,7 +227,12 @@ pub(crate) async fn announce_presence(state: &SessionState) {
     } else {
         notebook_doc::presence::encode_custom_update_labeled("local", peer_label, actor_label, &[])
     };
-    let _ = handle.send_presence(data).await;
+    match encoded {
+        Ok(data) => {
+            let _ = handle.send_presence(data).await;
+        }
+        Err(e) => log::debug!("announce_presence: failed to encode: {}", e),
+    }
 }
 
 /// Populate `kernel_started`, `kernel_type`, and `env_source` from the
@@ -1578,7 +1583,8 @@ pub(crate) async fn set_cursor(
                 line,
                 column,
             },
-        );
+        )
+        .map_err(to_py_err)?;
         let handle = st
             .handle
             .clone()
@@ -1611,7 +1617,8 @@ pub(crate) async fn set_selection(
                 head_line,
                 head_col,
             },
-        );
+        )
+        .map_err(to_py_err)?;
         let handle = st
             .handle
             .clone()
@@ -1680,7 +1687,7 @@ async fn emit_cursor_presence_internal(
                 line,
                 column,
             },
-        );
+        )?;
         let handle = st.handle.clone().ok_or("Not connected")?;
         (data, handle)
     };
@@ -1706,7 +1713,7 @@ async fn emit_focus_presence_internal(
             peer_label.as_deref(),
             actor_label.as_deref(),
             cell_id,
-        );
+        )?;
         let handle = st.handle.clone().ok_or("Not connected")?;
         (data, handle)
     };
@@ -1728,7 +1735,7 @@ async fn emit_clear_channel_internal(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (data, handle) = {
         let st = state.lock().await;
-        let data = notebook_doc::presence::encode_clear_channel("local", channel);
+        let data = notebook_doc::presence::encode_clear_channel("local", channel)?;
         let handle = st.handle.clone().ok_or("Not connected")?;
         (data, handle)
     };
@@ -1749,7 +1756,8 @@ pub(crate) async fn set_focus(
             peer_label,
             st.actor_label.as_deref(),
             cell_id,
-        );
+        )
+        .map_err(to_py_err)?;
         let handle = st
             .handle
             .clone()
@@ -1764,7 +1772,8 @@ pub(crate) async fn clear_cursor(state: &Arc<Mutex<SessionState>>) -> PyResult<(
     let data = notebook_doc::presence::encode_clear_channel(
         "local",
         notebook_doc::presence::Channel::Cursor,
-    );
+    )
+    .map_err(to_py_err)?;
     let st = state.lock().await;
     let handle = st
         .handle
@@ -1778,7 +1787,8 @@ pub(crate) async fn clear_selection(state: &Arc<Mutex<SessionState>>) -> PyResul
     let data = notebook_doc::presence::encode_clear_channel(
         "local",
         notebook_doc::presence::Channel::Selection,
-    );
+    )
+    .map_err(to_py_err)?;
     let st = state.lock().await;
     let handle = st
         .handle

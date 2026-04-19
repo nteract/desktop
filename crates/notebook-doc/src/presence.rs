@@ -230,7 +230,7 @@ pub fn decode_message(data: &[u8]) -> Result<PresenceMessage, PresenceError> {
 // ── Convenience encoders ─────────────────────────────────────────────
 
 /// Encode a cursor update message.
-pub fn encode_cursor_update(peer_id: &str, pos: &CursorPosition) -> Vec<u8> {
+pub fn encode_cursor_update(peer_id: &str, pos: &CursorPosition) -> Result<Vec<u8>, PresenceError> {
     encode_cursor_update_labeled(peer_id, None, None, pos)
 }
 
@@ -240,19 +240,20 @@ pub fn encode_cursor_update_labeled(
     peer_label: Option<&str>,
     actor_label: Option<&str>,
     pos: &CursorPosition,
-) -> Vec<u8> {
-    // Cursor encoding is infallible for valid types — unwrap is safe here.
+) -> Result<Vec<u8>, PresenceError> {
     encode_message(&PresenceMessage::Update {
         peer_id: peer_id.to_string(),
         peer_label: peer_label.map(|s| s.to_string()),
         actor_label: actor_label.map(|s| s.to_string()),
         data: ChannelData::Cursor(pos.clone()),
     })
-    .expect("CBOR encoding of cursor should not fail")
 }
 
 /// Encode a selection update message.
-pub fn encode_selection_update(peer_id: &str, sel: &SelectionRange) -> Vec<u8> {
+pub fn encode_selection_update(
+    peer_id: &str,
+    sel: &SelectionRange,
+) -> Result<Vec<u8>, PresenceError> {
     encode_selection_update_labeled(peer_id, None, None, sel)
 }
 
@@ -262,18 +263,17 @@ pub fn encode_selection_update_labeled(
     peer_label: Option<&str>,
     actor_label: Option<&str>,
     sel: &SelectionRange,
-) -> Vec<u8> {
+) -> Result<Vec<u8>, PresenceError> {
     encode_message(&PresenceMessage::Update {
         peer_id: peer_id.to_string(),
         peer_label: peer_label.map(|s| s.to_string()),
         actor_label: actor_label.map(|s| s.to_string()),
         data: ChannelData::Selection(sel.clone()),
     })
-    .expect("CBOR encoding of selection should not fail")
 }
 
 /// Encode a focus update message (cell-level presence without cursor).
-pub fn encode_focus_update(peer_id: &str, cell_id: &str) -> Vec<u8> {
+pub fn encode_focus_update(peer_id: &str, cell_id: &str) -> Result<Vec<u8>, PresenceError> {
     encode_focus_update_labeled(peer_id, None, None, cell_id)
 }
 
@@ -283,7 +283,7 @@ pub fn encode_focus_update_labeled(
     peer_label: Option<&str>,
     actor_label: Option<&str>,
     cell_id: &str,
-) -> Vec<u8> {
+) -> Result<Vec<u8>, PresenceError> {
     encode_message(&PresenceMessage::Update {
         peer_id: peer_id.to_string(),
         peer_label: peer_label.map(|s| s.to_string()),
@@ -292,27 +292,27 @@ pub fn encode_focus_update_labeled(
             cell_id: cell_id.to_string(),
         }),
     })
-    .expect("CBOR encoding of focus should not fail")
 }
 
 /// Encode a clear-channel message (remove a single channel from a peer).
-pub fn encode_clear_channel(peer_id: &str, channel: Channel) -> Vec<u8> {
+pub fn encode_clear_channel(peer_id: &str, channel: Channel) -> Result<Vec<u8>, PresenceError> {
     encode_message(&PresenceMessage::ClearChannel {
         peer_id: peer_id.to_string(),
         channel,
     })
-    .expect("CBOR encoding of clear_channel should not fail")
 }
 
 /// Encode a kernel state update message (daemon-owned).
-pub fn encode_kernel_state_update(peer_id: &str, state: &KernelStateData) -> Vec<u8> {
+pub fn encode_kernel_state_update(
+    peer_id: &str,
+    state: &KernelStateData,
+) -> Result<Vec<u8>, PresenceError> {
     encode_message(&PresenceMessage::Update {
         peer_id: peer_id.to_string(),
         peer_label: None,
         actor_label: None,
         data: ChannelData::KernelState(state.clone()),
     })
-    .expect("CBOR encoding of kernel state should not fail")
 }
 
 /// Encode a custom channel update message (arbitrary bytes).
@@ -333,39 +333,38 @@ pub fn encode_custom_update_labeled(
     peer_label: Option<&str>,
     actor_label: Option<&str>,
     data: &[u8],
-) -> Vec<u8> {
+) -> Result<Vec<u8>, PresenceError> {
     encode_message(&PresenceMessage::Update {
         peer_id: peer_id.to_string(),
         peer_label: peer_label.map(|s| s.to_string()),
         actor_label: actor_label.map(|s| s.to_string()),
         data: ChannelData::Custom(data.to_vec()),
     })
-    .expect("CBOR encoding of custom update should not fail")
 }
 
 /// Encode a heartbeat message.
-pub fn encode_heartbeat(peer_id: &str) -> Vec<u8> {
+pub fn encode_heartbeat(peer_id: &str) -> Result<Vec<u8>, PresenceError> {
     encode_message(&PresenceMessage::Heartbeat {
         peer_id: peer_id.to_string(),
     })
-    .expect("CBOR encoding of heartbeat should not fail")
 }
 
 /// Encode a "peer left" message.
-pub fn encode_left(peer_id: &str) -> Vec<u8> {
+pub fn encode_left(peer_id: &str) -> Result<Vec<u8>, PresenceError> {
     encode_message(&PresenceMessage::Left {
         peer_id: peer_id.to_string(),
     })
-    .expect("CBOR encoding of left should not fail")
 }
 
 /// Encode a full snapshot of all peers' presence state.
-pub fn encode_snapshot(sender_peer_id: &str, peers: &[PeerSnapshot]) -> Vec<u8> {
+pub fn encode_snapshot(
+    sender_peer_id: &str,
+    peers: &[PeerSnapshot],
+) -> Result<Vec<u8>, PresenceError> {
     encode_message(&PresenceMessage::Snapshot {
         peer_id: sender_peer_id.to_string(),
         peers: peers.to_vec(),
     })
-    .expect("CBOR encoding of snapshot should not fail")
 }
 
 /// Validate that a presence frame payload is within the size limit.
@@ -518,7 +517,7 @@ impl PresenceState {
     }
 
     /// Build a snapshot of all peers' current state, encoded as CBOR bytes.
-    pub fn encode_snapshot(&self, sender_peer_id: &str) -> Vec<u8> {
+    pub fn encode_snapshot(&self, sender_peer_id: &str) -> Result<Vec<u8>, PresenceError> {
         let snapshots: Vec<PeerSnapshot> = self
             .peers
             .values()
@@ -607,7 +606,7 @@ mod tests {
             line: 42,
             column: 7,
         };
-        let encoded = encode_cursor_update("peer-1", &pos);
+        let encoded = encode_cursor_update("peer-1", &pos).unwrap();
         let msg = decode_message(&encoded).unwrap();
         match msg {
             PresenceMessage::Update {
@@ -631,7 +630,7 @@ mod tests {
             line: 10,
             column: 3,
         };
-        let encoded = encode_cursor_update_labeled("peer-1", Some("Codex"), None, &pos);
+        let encoded = encode_cursor_update_labeled("peer-1", Some("Codex"), None, &pos).unwrap();
         let msg = decode_message(&encoded).unwrap();
         match msg {
             PresenceMessage::Update {
@@ -657,7 +656,8 @@ mod tests {
             head_line: 3,
             head_col: 10,
         };
-        let encoded = encode_selection_update_labeled("agent-1", Some("Claude"), None, &sel);
+        let encoded =
+            encode_selection_update_labeled("agent-1", Some("Claude"), None, &sel).unwrap();
         let msg = decode_message(&encoded).unwrap();
         match msg {
             PresenceMessage::Update {
@@ -683,7 +683,7 @@ mod tests {
             head_line: 5,
             head_col: 20,
         };
-        let encoded = encode_selection_update("editor-2", &sel);
+        let encoded = encode_selection_update("editor-2", &sel).unwrap();
         let msg = decode_message(&encoded).unwrap();
         match msg {
             PresenceMessage::Update {
@@ -706,7 +706,7 @@ mod tests {
             status: KernelStatus::Idle,
             env_source: "uv:prewarmed".into(),
         };
-        let encoded = encode_kernel_state_update("daemon", &ks);
+        let encoded = encode_kernel_state_update("daemon", &ks).unwrap();
         let msg = decode_message(&encoded).unwrap();
         match msg {
             PresenceMessage::Update { peer_id, data, .. } => {
@@ -719,7 +719,7 @@ mod tests {
 
     #[test]
     fn test_heartbeat_roundtrip() {
-        let encoded = encode_heartbeat("peer-3");
+        let encoded = encode_heartbeat("peer-3").unwrap();
         let msg = decode_message(&encoded).unwrap();
         match msg {
             PresenceMessage::Heartbeat { peer_id } => assert_eq!(peer_id, "peer-3"),
@@ -729,7 +729,7 @@ mod tests {
 
     #[test]
     fn test_left_roundtrip() {
-        let encoded = encode_left("peer-gone");
+        let encoded = encode_left("peer-gone").unwrap();
         let msg = decode_message(&encoded).unwrap();
         match msg {
             PresenceMessage::Left { peer_id } => assert_eq!(peer_id, "peer-gone"),
@@ -761,7 +761,7 @@ mod tests {
             },
         ];
 
-        let encoded = encode_snapshot("daemon", &peers);
+        let encoded = encode_snapshot("daemon", &peers).unwrap();
         let msg = decode_message(&encoded).unwrap();
         match msg {
             PresenceMessage::Snapshot { peer_id, peers } => {
@@ -800,7 +800,8 @@ mod tests {
                 line: 0,
                 column: 0,
             },
-        );
+        )
+        .unwrap();
         assert!(validate_frame_size(&small).is_ok());
 
         let oversized = vec![0u8; MAX_PRESENCE_FRAME_SIZE + 1];
@@ -814,7 +815,7 @@ mod tests {
             line: 10,
             column: 5,
         };
-        let encoded = encode_cursor_update("p1", &pos);
+        let encoded = encode_cursor_update("p1", &pos).unwrap();
         // CBOR is slightly larger than hand-rolled but still compact.
         // Exact size depends on CBOR overhead but should be well under 100 bytes.
         assert!(
@@ -984,7 +985,7 @@ mod tests {
         state1.update_peer("user", "human", None, cursor, 1000);
         state1.update_peer("daemon", "daemon", None, ks, 1000);
 
-        let snapshot_bytes = state1.encode_snapshot("daemon");
+        let snapshot_bytes = state1.encode_snapshot("daemon").unwrap();
 
         // Decode and apply to a fresh state
         let msg = decode_message(&snapshot_bytes).unwrap();
@@ -1073,7 +1074,7 @@ mod tests {
 
     #[test]
     fn test_focus_roundtrip() {
-        let encoded = encode_focus_update("peer-1", "cell-abc");
+        let encoded = encode_focus_update("peer-1", "cell-abc").unwrap();
         let msg = decode_message(&encoded).unwrap();
         match msg {
             PresenceMessage::Update {
@@ -1097,7 +1098,8 @@ mod tests {
 
     #[test]
     fn test_focus_labeled_roundtrip() {
-        let encoded = encode_focus_update_labeled("agent-1", Some("Claude"), None, "cell-xyz");
+        let encoded =
+            encode_focus_update_labeled("agent-1", Some("Claude"), None, "cell-xyz").unwrap();
         let msg = decode_message(&encoded).unwrap();
         match msg {
             PresenceMessage::Update {
@@ -1121,7 +1123,7 @@ mod tests {
 
     #[test]
     fn test_focus_update_is_compact() {
-        let encoded = encode_focus_update("p1", "c1");
+        let encoded = encode_focus_update("p1", "c1").unwrap();
         // Focus has fewer fields than cursor (no line/column), should be very small.
         assert!(
             encoded.len() < 80,
@@ -1134,7 +1136,7 @@ mod tests {
 
     #[test]
     fn test_clear_channel_roundtrip() {
-        let encoded = encode_clear_channel("peer-1", Channel::Cursor);
+        let encoded = encode_clear_channel("peer-1", Channel::Cursor).unwrap();
         let msg = decode_message(&encoded).unwrap();
         match msg {
             PresenceMessage::ClearChannel { peer_id, channel } => {
@@ -1147,7 +1149,7 @@ mod tests {
 
     #[test]
     fn test_clear_channel_selection_roundtrip() {
-        let encoded = encode_clear_channel("peer-2", Channel::Selection);
+        let encoded = encode_clear_channel("peer-2", Channel::Selection).unwrap();
         let msg = decode_message(&encoded).unwrap();
         match msg {
             PresenceMessage::ClearChannel { peer_id, channel } => {
@@ -1160,7 +1162,7 @@ mod tests {
 
     #[test]
     fn test_clear_channel_focus_roundtrip() {
-        let encoded = encode_clear_channel("peer-3", Channel::Focus);
+        let encoded = encode_clear_channel("peer-3", Channel::Focus).unwrap();
         let msg = decode_message(&encoded).unwrap();
         match msg {
             PresenceMessage::ClearChannel { peer_id, channel } => {
@@ -1173,7 +1175,7 @@ mod tests {
 
     #[test]
     fn test_clear_channel_compact() {
-        let encoded = encode_clear_channel("p1", Channel::Cursor);
+        let encoded = encode_clear_channel("p1", Channel::Cursor).unwrap();
         assert!(
             encoded.len() < 60,
             "clear_channel should be compact, got {} bytes",
@@ -1245,7 +1247,7 @@ mod tests {
 
         // Clear selection, snapshot should only have cursor
         state.clear_channel("peer-1", Channel::Selection);
-        let snapshot_bytes = state.encode_snapshot("daemon");
+        let snapshot_bytes = state.encode_snapshot("daemon").unwrap();
         let msg = decode_message(&snapshot_bytes).unwrap();
         match msg {
             PresenceMessage::Snapshot { peers, .. } => {
@@ -1265,7 +1267,7 @@ mod tests {
         });
         state.update_peer("agent", "Claude", None, focus, 1000);
 
-        let snapshot_bytes = state.encode_snapshot("daemon");
+        let snapshot_bytes = state.encode_snapshot("daemon").unwrap();
         let msg = decode_message(&snapshot_bytes).unwrap();
         match msg {
             PresenceMessage::Snapshot { peers, .. } => {
@@ -1294,7 +1296,8 @@ mod tests {
                 line: 5,
                 column: 10,
             },
-        );
+        )
+        .unwrap();
         let msg = decode_message(&encoded).unwrap();
         match msg {
             PresenceMessage::Update {
@@ -1324,7 +1327,8 @@ mod tests {
                 line: 0,
                 column: 0,
             },
-        );
+        )
+        .unwrap();
         let msg = decode_message(&encoded).unwrap();
         match msg {
             PresenceMessage::Update { actor_label, .. } => {
@@ -1356,7 +1360,7 @@ mod tests {
         assert_eq!(peer.actor_label, Some("agent:claude:abc123".to_string()));
 
         // Encode snapshot and decode into fresh state
-        let snapshot_bytes = state1.encode_snapshot("daemon");
+        let snapshot_bytes = state1.encode_snapshot("daemon").unwrap();
         let msg = decode_message(&snapshot_bytes).unwrap();
         let mut state2 = PresenceState::new();
         if let PresenceMessage::Snapshot { peers, .. } = msg {
@@ -1467,7 +1471,8 @@ mod tests {
             Some("Claude"),
             Some("agent:claude:xyz"),
             &[1, 2, 3],
-        );
+        )
+        .unwrap();
         let msg = decode_message(&encoded).unwrap();
         match msg {
             PresenceMessage::Update {
