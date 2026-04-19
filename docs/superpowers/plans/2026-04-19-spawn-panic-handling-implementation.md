@@ -2,7 +2,7 @@
 
 Date: 2026-04-19
 Design doc: PR #1926 (`docs/superpowers/plans/2026-04-19-spawn-panic-handling.md`)
-Status: Implementation plan — pending review.
+Status: Implementation plan — approved with revisions (see § Review Feedback).
 
 ## Context
 
@@ -69,8 +69,10 @@ impl Drop for WarmingGuard {
 }
 ```
 
-Using `tokio::spawn` in Drop is safe: we're inside a spawned task on the
-multi-threaded runtime, and during shutdown pool accounting is irrelevant.
+Using `tokio::spawn` in Drop is safe on the multi-threaded runtime. During
+shutdown, pool accounting is irrelevant — the guard checks
+`daemon.is_shutting_down()` and skips the spawn if the runtime is winding
+down (review feedback item #1).
 
 **Files modified:**
 - `crates/runtimed/src/daemon.rs`
@@ -165,7 +167,7 @@ JoinHandle usage for `.abort()` is preserved since `spawn_supervised` returns
 | Site | File:Line | Task | `on_panic` action |
 |------|-----------|------|-------------------|
 | #1 | `runtime_agent_handle.rs:88` | Child process watcher | Log + set `alive = false` |
-| #2 | `blob_server.rs:42` | Blob accept loop | `trigger_shutdown()` |
+| #2 | `blob_server.rs:42` | Blob accept loop | Respawn with counter (see below) |
 | #4 | `main.rs:439` | Signal handler | Log only |
 | #12 | `daemon.rs:783` | `uv_warming_loop` | Respawn (see below) |
 | #13 | `daemon.rs:788` | `conda_warming_loop` | Respawn (see below) |
@@ -173,15 +175,23 @@ JoinHandle usage for `.abort()` is preserved since `spawn_supervised` returns
 | #15 | `daemon.rs:799` | `env_gc_loop` | Log only |
 | #16 | `daemon.rs:805` | `watch_settings_json` | Log only |
 
+**Blob server respawn:** Site #2 uses respawn-with-counter (same pattern as
+warming loops). The blob server is stateless and content-addressed, so
+restarting it is safe. Second panic escalates to `trigger_shutdown()`.
+Add `blob_server_respawns: AtomicU32` to `Daemon`. The `on_panic` handler
+uses `compare_exchange` to atomically check-and-increment the counter
+(review feedback item #2 — avoids race with concurrent panics).
+
 **Warming loop respawn (Q2):** For sites #12-14, the `on_panic` handler:
 1. Calls `warming_failed_with_error(Some(panic_marker))` on the pool
 2. Logs `error!`
-3. Checks an `AtomicU32` respawn counter per warming task. If count < 1,
-   increments and spawns a single replacement. If count >= 1, calls
-   `daemon.trigger_shutdown()`.
+3. Uses `compare_exchange(0, 1, SeqCst, Relaxed)` on a per-task `AtomicU32`
+   respawn counter. If CAS succeeds (was 0), spawns a single replacement.
+   If CAS fails (already >= 1), calls `daemon.trigger_shutdown()`.
+   (Review feedback item #2 — CAS prevents double-respawn race.)
 
-Add three `AtomicU32` fields to `Daemon`: `uv_warming_respawns`,
-`conda_warming_respawns`, `pixi_warming_respawns`.
+Add four `AtomicU32` fields to `Daemon`: `blob_server_respawns`,
+`uv_warming_respawns`, `conda_warming_respawns`, `pixi_warming_respawns`.
 
 **Files modified:**
 - `crates/runtimed/src/daemon.rs` — 10 spawn sites + 3 new `AtomicU32` fields
@@ -262,12 +272,27 @@ call `trigger_shutdown()` in the `on_panic` handler.
    no `tokio::sync::Mutex` guards held across `.await`. `AssertUnwindSafe` is
    correct.
 2. **`on_panic` must not panic:** Callbacks are trivial: `tx.try_send()`,
-   `store()`, `trigger_shutdown()`.
+   `store()`, `trigger_shutdown()`. Wrap each `on_panic` body in a secondary
+   `catch_unwind` for defense-in-depth.
 3. **`spawn_best_effort` is `spawn_supervised` with no-op `on_panic`.**
-4. **WarmingGuard uses `tokio::spawn` in Drop:** Safe on multi-threaded
-   runtime; during shutdown pool accounting is irrelevant.
-5. **Warming loop respawn:** `AtomicU32` counter, second panic escalates to
-   `trigger_shutdown()`.
+4. **WarmingGuard checks shutdown before spawning in Drop:** If the daemon is
+   shutting down, the guard skips the async cleanup spawn (pool accounting is
+   irrelevant during shutdown and the runtime may be winding down).
+5. **Respawn counters use `compare_exchange`:** Atomic CAS prevents
+   double-respawn races when two panics occur concurrently.
+6. **Blob server respawns instead of shutting down:** The blob server is
+   stateless and content-addressed — safe to restart. Second panic escalates.
+
+## Review Feedback (incorporated)
+
+Independent review by DeepSeek V3.2, 2026-04-19. Three items accepted:
+
+1. **WarmingGuard::drop shutdown race** — guard checks `daemon.is_shutting_down()`
+   before `tokio::spawn`. Prevents spawning into a winding-down runtime.
+2. **Warming respawn counter race** — use `compare_exchange` (CAS) instead of
+   relaxed load-then-increment. Prevents double-respawn if two panics race.
+3. **Blob server (site #2)** — changed from `trigger_shutdown()` to
+   respawn-with-counter. Blob server is stateless, safe to restart.
 
 ## Risks
 
