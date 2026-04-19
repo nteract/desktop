@@ -873,6 +873,10 @@ impl RuntimeStateDoc {
     /// source is stored as an audit log, and `seq` determines execution order.
     /// The runtime agent discovers new entries via CRDT sync and processes them
     /// in `seq` order.
+    // Allow reason: identical rationale to `create_execution` above — the
+    // `executions` map and the object handle we just created are guaranteed to
+    // exist, so the Automerge put operations cannot fail in practice.
+    #[allow(clippy::expect_used)]
     pub fn create_execution_with_source(
         &mut self,
         execution_id: &str,

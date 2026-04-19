@@ -1573,6 +1573,10 @@ impl NotebookDoc {
     /// Note: This performs a read-modify-write on the JSON string. Concurrent updates
     /// to different paths may conflict (last-write-wins), but this is rare in practice
     /// since metadata updates are typically user-initiated actions.
+    // Allow reason: the `expect` calls below are safe by construction —
+    // each is guarded by an `is_object()` check or a `contains_key` insertion
+    // on the immediately preceding line, so the `Option` is provably `Some`.
+    #[allow(clippy::expect_used)]
     pub fn update_cell_metadata_at(
         &mut self,
         cell_id: &str,
@@ -1593,11 +1597,15 @@ impl NotebookDoc {
             if !current.is_object() {
                 *current = serde_json::json!({});
             }
-            let obj = current.as_object_mut().unwrap();
+            let obj = current
+                .as_object_mut()
+                .expect("current was just set to an object above");
             if !obj.contains_key(*key) {
                 obj.insert((*key).to_string(), serde_json::json!({}));
             }
-            current = obj.get_mut(*key).unwrap();
+            current = obj
+                .get_mut(*key)
+                .expect("key was just inserted above if missing");
         }
 
         // Set the final key
@@ -1607,7 +1615,7 @@ impl NotebookDoc {
         let final_key = path[path.len() - 1];
         current
             .as_object_mut()
-            .unwrap()
+            .expect("current was just set to an object above")
             .insert(final_key.to_string(), value);
 
         self.set_cell_metadata(cell_id, &metadata)

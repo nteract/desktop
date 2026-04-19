@@ -228,6 +228,14 @@ pub fn decode_message(data: &[u8]) -> Result<PresenceMessage, PresenceError> {
 }
 
 // ── Convenience encoders ─────────────────────────────────────────────
+//
+// The encoders below serialize fixed-shape structs into a `Vec<u8>` via
+// `ciborium::ser::into_writer`. Serialization failure requires either a
+// writer I/O error (impossible for `Vec<u8>`) or an unserializable type
+// (ruled out at compile time by the struct definitions). A panic here
+// would indicate a bug in ciborium or a breaking schema change, not a
+// runtime condition callers can handle, so these paths use `expect` with
+// a `#[allow(clippy::expect_used)]` opt-out.
 
 /// Encode a cursor update message.
 pub fn encode_cursor_update(peer_id: &str, pos: &CursorPosition) -> Vec<u8> {
@@ -235,6 +243,7 @@ pub fn encode_cursor_update(peer_id: &str, pos: &CursorPosition) -> Vec<u8> {
 }
 
 /// Encode a cursor update with optional peer and actor labels.
+#[allow(clippy::expect_used)]
 pub fn encode_cursor_update_labeled(
     peer_id: &str,
     peer_label: Option<&str>,
@@ -257,6 +266,7 @@ pub fn encode_selection_update(peer_id: &str, sel: &SelectionRange) -> Vec<u8> {
 }
 
 /// Encode a selection update with optional peer and actor labels.
+#[allow(clippy::expect_used)]
 pub fn encode_selection_update_labeled(
     peer_id: &str,
     peer_label: Option<&str>,
@@ -278,6 +288,7 @@ pub fn encode_focus_update(peer_id: &str, cell_id: &str) -> Vec<u8> {
 }
 
 /// Encode a focus update with optional peer and actor labels.
+#[allow(clippy::expect_used)]
 pub fn encode_focus_update_labeled(
     peer_id: &str,
     peer_label: Option<&str>,
@@ -296,6 +307,7 @@ pub fn encode_focus_update_labeled(
 }
 
 /// Encode a clear-channel message (remove a single channel from a peer).
+#[allow(clippy::expect_used)]
 pub fn encode_clear_channel(peer_id: &str, channel: Channel) -> Vec<u8> {
     encode_message(&PresenceMessage::ClearChannel {
         peer_id: peer_id.to_string(),
@@ -305,6 +317,7 @@ pub fn encode_clear_channel(peer_id: &str, channel: Channel) -> Vec<u8> {
 }
 
 /// Encode a kernel state update message (daemon-owned).
+#[allow(clippy::expect_used)]
 pub fn encode_kernel_state_update(peer_id: &str, state: &KernelStateData) -> Vec<u8> {
     encode_message(&PresenceMessage::Update {
         peer_id: peer_id.to_string(),
@@ -328,6 +341,7 @@ pub fn encode_custom_update(peer_id: &str, data: &[u8]) -> Result<Vec<u8>, Prese
 }
 
 /// Encode a custom channel update message with optional peer and actor labels.
+#[allow(clippy::expect_used)]
 pub fn encode_custom_update_labeled(
     peer_id: &str,
     peer_label: Option<&str>,
@@ -344,6 +358,7 @@ pub fn encode_custom_update_labeled(
 }
 
 /// Encode a heartbeat message.
+#[allow(clippy::expect_used)]
 pub fn encode_heartbeat(peer_id: &str) -> Vec<u8> {
     encode_message(&PresenceMessage::Heartbeat {
         peer_id: peer_id.to_string(),
@@ -352,6 +367,7 @@ pub fn encode_heartbeat(peer_id: &str) -> Vec<u8> {
 }
 
 /// Encode a "peer left" message.
+#[allow(clippy::expect_used)]
 pub fn encode_left(peer_id: &str) -> Vec<u8> {
     encode_message(&PresenceMessage::Left {
         peer_id: peer_id.to_string(),
@@ -360,6 +376,7 @@ pub fn encode_left(peer_id: &str) -> Vec<u8> {
 }
 
 /// Encode a full snapshot of all peers' presence state.
+#[allow(clippy::expect_used)]
 pub fn encode_snapshot(sender_peer_id: &str, peers: &[PeerSnapshot]) -> Vec<u8> {
     encode_message(&PresenceMessage::Snapshot {
         peer_id: sender_peer_id.to_string(),

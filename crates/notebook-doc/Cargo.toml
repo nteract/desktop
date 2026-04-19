@@ -29,3 +29,6 @@ default = []
 # Enable file persistence methods (load_or_create, save_to_file, notebook_doc_filename)
 # and logging. Not available for wasm32 targets.
 persistence = ["dep:log", "dep:sha2", "dep:hex"]
+
+[lints]
+workspace = true
