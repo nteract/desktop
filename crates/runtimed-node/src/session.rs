@@ -13,13 +13,15 @@ use napi_derive::napi;
 use serde::Serialize;
 use tokio::sync::Mutex;
 
-use notebook_doc::runtime_state::CommDocEntry;
 use notebook_protocol::protocol::{NotebookRequest, NotebookResponse};
-use notebook_sync::DocHandle;
+use notebook_sync::{BroadcastReceiver, DocHandle};
 use runtimed_client::output_resolver as shared_resolver;
 use runtimed_client::resolved_output::DataValue as SharedDataValue;
 
 use crate::error::to_napi_err;
+
+/// Valid cell types accepted by `runCell`.
+const VALID_CELL_TYPES: &[&str] = &["code", "markdown", "raw"];
 
 // ── Options ────────────────────────────────────────────────────────────
 
@@ -88,6 +90,9 @@ pub struct CellResult {
 
 struct SessionState {
     handle: Option<DocHandle>,
+    /// Kept alive so the daemon doesn't close the broadcast channel.
+    /// Dropped on `close()` to allow clean teardown.
+    _broadcast_rx: Option<BroadcastReceiver>,
     kernel_started: bool,
     runtime: String,
     blob_base_url: Option<String>,
@@ -119,6 +124,7 @@ impl Session {
     pub async fn close(&self) -> Result<()> {
         let mut st = self.state.lock().await;
         st.handle = None;
+        st._broadcast_rx = None;
         st.kernel_started = false;
         Ok(())
     }
@@ -177,6 +183,12 @@ impl Session {
     ) -> Result<CellResult> {
         let opts = options.unwrap_or_default();
         let cell_type = opts.cell_type.unwrap_or_else(|| "code".to_string());
+        if !VALID_CELL_TYPES.contains(&cell_type.as_str()) {
+            return Err(Error::from_reason(format!(
+                "Invalid cell_type {cell_type:?}. Must be one of: {}",
+                VALID_CELL_TYPES.join(", ")
+            )));
+        }
         let timeout = Duration::from_millis(opts.timeout_ms.unwrap_or(120_000) as u64);
 
         // 1. Ensure kernel started (lazy).
@@ -245,6 +257,7 @@ pub async fn create_notebook(options: Option<CreateNotebookOptions>) -> Result<S
 
     let state = SessionState {
         handle: Some(result.handle),
+        _broadcast_rx: Some(result.broadcast_rx),
         kernel_started: false,
         runtime,
         blob_base_url,
@@ -252,11 +265,6 @@ pub async fn create_notebook(options: Option<CreateNotebookOptions>) -> Result<S
         socket_path,
         working_dir: working_dir.map(|p| p.to_string_lossy().to_string()),
     };
-    // Keep broadcast_rx alive for the session. We don't use it directly
-    // in Phase 1 — collect_outputs reads the Automerge doc — but dropping
-    // it would close the broadcast channel on the daemon side. Leak-into-Arc
-    // is the simplest way.
-    std::mem::forget(result.broadcast_rx);
 
     Ok(Session {
         notebook_id,
@@ -303,6 +311,7 @@ pub async fn open_notebook(
 
     let state = SessionState {
         handle: Some(result.handle),
+        _broadcast_rx: Some(result.broadcast_rx),
         kernel_started,
         runtime,
         blob_base_url,
@@ -310,7 +319,6 @@ pub async fn open_notebook(
         socket_path,
         working_dir: None,
     };
-    std::mem::forget(result.broadcast_rx);
 
     Ok(Session {
         notebook_id,
@@ -433,7 +441,7 @@ async fn collect_outputs(
         )
     };
 
-    let helper_timeout = Duration::from_secs(60 * 60 * 24);
+    let helper_timeout = Duration::from_secs(60 * 60); // 1 hour ceiling; caller's tokio::time::timeout is the real bound
     let terminal =
         notebook_sync::await_execution_terminal(&handle, execution_id, helper_timeout, None).await;
 
@@ -447,7 +455,10 @@ async fn collect_outputs(
                 comms.as_ref(),
             )
             .await;
-            let outputs: Vec<JsOutput> = resolved.into_iter().map(to_js_output).collect();
+            let outputs: Vec<JsOutput> = resolved
+                .into_iter()
+                .map(to_js_output)
+                .collect::<napi::Result<Vec<_>>>()?;
             let success = terminal_state.status == "done"
                 && terminal_state.success
                 && !outputs.iter().any(|o| o.output_type == "error");
@@ -492,31 +503,40 @@ enum DataValueJson {
     Json(serde_json::Value),
 }
 
-fn to_js_output(o: runtimed_client::resolved_output::Output) -> JsOutput {
-    let data_json = o.data.map(|d| {
-        let map: std::collections::HashMap<String, DataValueJson> = d
-            .into_iter()
-            .map(|(k, v)| {
-                let dv = match v {
-                    SharedDataValue::Text(s) => DataValueJson::Text(s),
-                    SharedDataValue::Binary(b) => {
-                        use base64::{engine::general_purpose::STANDARD, Engine as _};
-                        DataValueJson::Binary(STANDARD.encode(&b))
-                    }
-                    SharedDataValue::Json(j) => DataValueJson::Json(j),
-                };
-                (k, dv)
-            })
-            .collect();
-        serde_json::to_string(&map).unwrap_or_else(|_| "{}".to_string())
-    });
+fn to_js_output(o: runtimed_client::resolved_output::Output) -> napi::Result<JsOutput> {
+    let data_json = match o.data {
+        Some(d) => {
+            let map: std::collections::HashMap<String, DataValueJson> = d
+                .into_iter()
+                .map(|(k, v)| {
+                    let dv = match v {
+                        SharedDataValue::Text(s) => DataValueJson::Text(s),
+                        SharedDataValue::Binary(b) => {
+                            use base64::{engine::general_purpose::STANDARD, Engine as _};
+                            DataValueJson::Binary(STANDARD.encode(&b))
+                        }
+                        SharedDataValue::Json(j) => DataValueJson::Json(j),
+                    };
+                    (k, dv)
+                })
+                .collect();
+            Some(serde_json::to_string(&map).map_err(|e| {
+                napi::Error::from_reason(format!("Failed to serialize output data: {e}"))
+            })?)
+        }
+        None => None,
+    };
     let blob_urls_json = o
         .blob_urls
-        .map(|m| serde_json::to_string(&m).unwrap_or_default());
+        .map(|m| serde_json::to_string(&m))
+        .transpose()
+        .map_err(|e| napi::Error::from_reason(format!("Failed to serialize blob_urls: {e}")))?;
     let blob_paths_json = o
         .blob_paths
-        .map(|m| serde_json::to_string(&m).unwrap_or_default());
-    JsOutput {
+        .map(|m| serde_json::to_string(&m))
+        .transpose()
+        .map_err(|e| napi::Error::from_reason(format!("Failed to serialize blob_paths: {e}")))?;
+    Ok(JsOutput {
         output_type: o.output_type,
         name: o.name,
         text: o.text,
@@ -527,9 +547,5 @@ fn to_js_output(o: runtimed_client::resolved_output::Output) -> JsOutput {
         execution_count: o.execution_count,
         blob_urls_json,
         blob_paths_json,
-    }
+    })
 }
-
-// Suppress unused warning; the helper is invoked by to_js_output via impl.
-#[allow(dead_code)]
-fn _comm_keeper(_c: &CommDocEntry) {}
