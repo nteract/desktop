@@ -177,7 +177,10 @@ pub fn get_pixi_metadata(
 pub fn compute_signature(key: &[u8; 32], metadata: &HashMap<String, serde_json::Value>) -> String {
     let content = extract_signable_content(metadata);
 
-    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC can accept any key size");
+    // Safety: HMAC-SHA256 accepts keys of any length via `new_from_slice`; the
+    // underlying `KeyInit::new_from_slice` is infallible for `SimpleHmac`/`Hmac`.
+    #[allow(clippy::expect_used)]
+    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
     mac.update(content.as_bytes());
     let result = mac.finalize();
 
@@ -206,7 +209,9 @@ pub fn verify_signature(
     // Compute current signature
     let content = extract_signable_content(metadata);
 
-    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC can accept any key size");
+    // Safety: see `compute_signature` - HMAC-SHA256 accepts any key length.
+    #[allow(clippy::expect_used)]
+    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
     mac.update(content.as_bytes());
 
     // Constant-time comparison
