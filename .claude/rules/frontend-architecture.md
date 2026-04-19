@@ -53,9 +53,56 @@ Put code in `src/` (shared) when:
 - It is a generic utility (cn(), theme helpers)
 
 Put code in `apps/notebook/src/` when:
-- It uses Tauri APIs (`@tauri-apps/api`)
+- It uses the `NotebookHost` interface (see below)
 - It interacts with the daemon (kernel execution, notebook sync)
 - It is specific to the notebook editing experience
+
+## NotebookHost (the Tauri/Electron abstraction)
+
+The frontend goes through `@nteract/notebook-host` for every host-platform
+side effect. **Do not import `@tauri-apps/*` directly** — that's what the
+host abstraction exists to prevent. The only places that may import
+`@tauri-apps/*` are `packages/notebook-host/src/tauri/` and the daemon
+relay glue in `apps/notebook/src/lib/` (frame-types.ts, tauri-transport).
+
+| Namespace | Role |
+|-----------|------|
+| `host.transport` | `NotebookTransport` shared by SyncEngine / NotebookClient |
+| `host.daemon` | `isConnected`, `reconnect`, `getInfo`, `getReadyInfo` (cached `daemon:ready` payload) |
+| `host.daemonEvents` | `onReady` / `onProgress` / `onDisconnected` / `onUnavailable` subscriptions (webview events) |
+| `host.relay` | `notifySyncReady()` outbound signal |
+| `host.blobs` | `port()` — daemon blob-server port |
+| `host.trust` | `verify()`, `approve()` |
+| `host.deps` | `checkTyposquats()` (deps-edit API will grow) |
+| `host.notebook` | `applyPathChanged` / `markClean` (legacy shadow, going away) |
+| `host.window` | `getTitle` / `setTitle` / `onFocusChange` |
+| `host.system` | `getGitInfo`, `getUsername` |
+| `host.dialog` | `openFile` / `saveFile` (plugin-dialog wrap) |
+| `host.externalLinks` | `open(url)` (plugin-shell wrap) |
+| `host.updater` | `check()` (plugin-updater wrap) |
+| `host.commands` | Typed command bus — menus + keyboard + (future) palette |
+| `host.log` | `debug/info/warn/error` (plugin-log wrap) |
+
+**React code** — use `const host = useNotebookHost();` from `@nteract/notebook-host`.
+
+**Module-level helpers** (can't call hooks) — use the setter pattern:
+- `setLoggerHost(host)` in `logger.ts`
+- `setBlobPortHost(host)` in `blob-port.ts`
+- `setOpenUrlHost(host)` in `open-url.ts`
+- `setMetadataTransport(host.transport)` in `notebook-metadata.ts`
+
+All setters are called once from `main.tsx` right after `createTauriHost()`.
+
+**Still-direct `invoke(...)` calls** live in `notebook-file-ops.ts`,
+`useUpdater.ts`, `useDaemonKernel.ts`, `useDependencies{,Conda,Pixi,Deno}.ts`,
+`useHistorySearch.ts`, `kernel-completion.ts`, `PoolErrorBanner.tsx`.
+These are the `*_via_daemon` thin wrappers + env-detection + save/clone
+helpers. They'll migrate to `transport.sendRequest(NotebookRequest)` /
+daemon-owned detection in subsequent PRs. See
+`.context/tauri-daemon-audit.md` for the full queue.
+
+**Canonical surface**: `packages/notebook-host/src/types.ts`.
+**Tauri implementation**: `packages/notebook-host/src/tauri/index.ts`.
 
 ## Key Shared Components
 
@@ -120,7 +167,7 @@ The frontend has a single ingress point for daemon frames. All data flows throug
 
 Cell mutations go through the WASM handle for instant response. Source edits are batched via `engine.scheduleFlush()` (20ms debounce), with `engine.flush()` before execute/save. Fast path for typing: `updateCellSource()` -> WASM `update_source()` -> `updateCellById()` (one cell, one subscriber) -> debounced sync.
 
-Execution requests go to the daemon via dedicated Tauri commands (`execute_cell_via_daemon`, etc.).
+Execution requests go to the daemon via dedicated Tauri commands (`execute_cell_via_daemon`, etc.). These are scheduled to migrate onto `host.transport.sendRequest(NotebookRequest)` in a follow-up; for now they still `invoke(...)` directly.
 
 ## CellChangeset Types
 
