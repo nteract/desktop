@@ -58,8 +58,8 @@
 //! ```
 
 use automerge::{
-    sync, sync::SyncDoc, transaction::Transactable, ActorId, AutoCommit, AutomergeError, ObjType,
-    ReadDoc, ScalarValue, Value, ROOT,
+    sync, sync::SyncDoc, transaction::Transactable, ActorId, AutoCommit, AutomergeError, ObjId,
+    ObjType, ReadDoc, ScalarValue, Value, ROOT,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -1966,32 +1966,127 @@ impl RuntimeStateDoc {
         Ok(heads_before != heads_after)
     }
 
-    /// Like `receive_sync_message_with_changes`, but also returns the
-    /// actor IDs that authored the newly-applied changes.
+    /// Apply a sync message and return both the list of applied-change
+    /// authors AND a view of `comms` as it would look if only changes
+    /// authored by "foreign" actors had been applied.
     ///
-    /// Callers use this to distinguish foreign-authored changes (what a
-    /// remote peer just sent us) from any changes that were already in
-    /// the document. Specifically, the runtime agent uses it to skip
-    /// forwarding kernel echoes back to the kernel — an echo written by
-    /// the runtime agent's own iopub actor must not re-enter the
-    /// "frontend said something" forwarding path.
-    pub fn receive_sync_message_capture_actors(
+    /// This is the key primitive for the runtime agent's echo-suppression:
+    /// if a single `RuntimeStateSync` frame coalesces a kernel-authored
+    /// echo together with a frontend widget update, diffing the full
+    /// post-sync doc against `comms_before` would re-forward the echo to
+    /// the kernel. Diffing against `foreign_comms` sees only the
+    /// frontend's changes, breaking the amplification loop at
+    /// per-change granularity instead of per-frame.
+    ///
+    /// Implementation: fork at `heads_before`, apply only non-self
+    /// changes on the fork, read `comms` from it. The main doc still
+    /// absorbs every applied change (including kernel echoes) so local
+    /// state stays consistent — only the `foreign_comms` view is filtered.
+    ///
+    /// `is_foreign(&ActorId) -> bool` decides which applied changes to
+    /// include in the fork. Runtime agent passes a closure that returns
+    /// `false` for actors starting with `rt:kernel:`.
+    pub fn receive_sync_and_foreign_comms<F>(
         &mut self,
         peer_state: &mut sync::State,
         message: sync::Message,
-    ) -> Result<Vec<ActorId>, AutomergeError> {
+        is_foreign: F,
+    ) -> Result<ForeignSyncView, AutomergeError>
+    where
+        F: Fn(&ActorId) -> bool,
+    {
         let heads_before = self.doc.get_heads();
         self.doc.sync().receive_sync_message(peer_state, message)?;
-        // Collect authors of changes that advanced the doc past
-        // `heads_before`. If no heads moved, returns an empty Vec.
-        let applied_actors: Vec<ActorId> = self
-            .doc
-            .get_changes(&heads_before)
-            .into_iter()
-            .map(|c| c.actor_id().clone())
-            .collect();
-        Ok(applied_actors)
+
+        let applied = self.doc.get_changes(&heads_before);
+        if applied.is_empty() {
+            // Handshake / ack — nothing moved.
+            return Ok(ForeignSyncView {
+                applied_actors: Vec::new(),
+                foreign_comms: None,
+            });
+        }
+
+        let applied_actors: Vec<ActorId> = applied.iter().map(|c| c.actor_id().clone()).collect();
+
+        if !applied_actors.iter().any(&is_foreign) {
+            // Every applied change was self-authored (e.g., our own
+            // kernel echoes reflected back). No foreign view to build.
+            return Ok(ForeignSyncView {
+                applied_actors,
+                foreign_comms: None,
+            });
+        }
+
+        // Per-field authorship view: walk each comm's `state` and
+        // retain only fields whose current LWW winner was written by a
+        // foreign actor. Fields last-written by the kernel (either
+        // directly or via the coalesced-echo writer, which carries the
+        // kernel's actor ID) are stripped — the runtime agent must not
+        // forward them back to the kernel and trigger amplification.
+        //
+        // `fork_at(heads_before) + apply_changes(foreign_only)` is *not*
+        // safe here: when frontend writes are causally after kernel
+        // writes (the common case during continuous slider drag), the
+        // frontend change's dependencies include kernel-authored
+        // parents, and applying the foreign subset alone orphans them.
+        // Per-field authorship sidesteps causality entirely.
+        let comms_obj = match self.doc.get(ROOT, "comms")? {
+            Some((Value::Object(ObjType::Map), obj)) => obj,
+            _ => {
+                return Ok(ForeignSyncView {
+                    applied_actors,
+                    foreign_comms: Some(HashMap::new()),
+                });
+            }
+        };
+
+        let mut foreign_comms: HashMap<String, CommDocEntry> = HashMap::new();
+        let all = self.read_state().comms;
+        for (comm_id, mut entry) in all {
+            let Some((_, entry_obj)) = self.doc.get(&comms_obj, comm_id.as_str())? else {
+                continue;
+            };
+            let Some((Value::Object(ObjType::Map), state_obj)) =
+                self.doc.get(&entry_obj, "state")?
+            else {
+                continue;
+            };
+            let Some(state_map) = entry.state.as_object_mut() else {
+                continue;
+            };
+            let keys: Vec<String> = state_map.keys().cloned().collect();
+            for key in keys {
+                let authored_by_foreign = match self.doc.get(&state_obj, key.as_str())? {
+                    Some((_, ObjId::Id(_, actor, _))) => is_foreign(&actor),
+                    _ => false,
+                };
+                if !authored_by_foreign {
+                    state_map.remove(&key);
+                }
+            }
+            if !state_map.is_empty() {
+                foreign_comms.insert(comm_id, entry);
+            }
+        }
+
+        Ok(ForeignSyncView {
+            applied_actors,
+            foreign_comms: Some(foreign_comms),
+        })
     }
+}
+
+/// Result of [`RuntimeStateDoc::receive_sync_and_foreign_comms`].
+#[derive(Debug)]
+pub struct ForeignSyncView {
+    /// All actors that authored changes applied by the sync message.
+    /// Empty when the message was a handshake / ack.
+    pub applied_actors: Vec<ActorId>,
+    /// `comms` as it would appear if only foreign-authored applied
+    /// changes were in the doc. `None` when the message applied no
+    /// foreign changes (handshake, or every change was self-authored).
+    pub foreign_comms: Option<HashMap<String, CommDocEntry>>,
 }
 
 // ── Output diff utility ─────────────────────────────────────────────
@@ -3361,60 +3456,210 @@ mod tests {
     }
 
     #[test]
-    fn receive_sync_capture_actors_reports_change_authors() {
-        // Receiver (e.g. the runtime agent) starts fresh.
+    fn foreign_sync_view_filters_self_authored_fields() {
+        // Two comms in one sync frame: kernel-widget's "value" was
+        // last-written by the kernel actor (a self-echo); human-widget's
+        // "value" was last-written by a frontend actor. The per-field
+        // filter should strip the kernel echo and retain the frontend
+        // write, even though both changes ride the same sync message.
+        //
+        // Production writes go through `fork_and_merge`, so each write
+        // creates an independent change tagged with the fork's actor.
+        // We model that here by forking the donor separately for each
+        // actor identity.
         let mut receiver = RuntimeStateDoc::new();
         receiver.set_actor("rt:kernel:deadbeef");
         let mut receiver_sync = sync::State::new();
 
-        // Peer A (e.g. frontend) writes a comm change on a fork with a
-        // distinct actor, syncs to the receiver.
-        let mut peer_a = receiver.fork();
-        peer_a.set_actor("human:peer-a");
-        peer_a.put_comm("w1", "jupyter.widget", "", "", &serde_json::json!({}), 0);
-        let mut peer_a_sync = sync::State::new();
-        // Drive the sync handshake to convergence (bloom-filter based,
-        // needs a couple of round-trips).
-        for _ in 0..3 {
-            if let Some(msg) = peer_a.doc.sync().generate_sync_message(&mut peer_a_sync) {
-                let actors = receiver
-                    .receive_sync_message_capture_actors(&mut receiver_sync, msg)
+        let mut donor = receiver.fork();
+        // Kernel-authored comm: self-echo.
+        donor.fork_and_merge(|f| {
+            f.set_actor("rt:kernel:deadbeef");
+            f.put_comm(
+                "kernel-widget",
+                "j.w",
+                "",
+                "",
+                &serde_json::json!({"value": 1}),
+                0,
+            );
+        });
+        // Frontend-authored comm: legitimate write.
+        donor.fork_and_merge(|f| {
+            f.set_actor("human:peer");
+            f.put_comm(
+                "human-widget",
+                "j.w",
+                "",
+                "",
+                &serde_json::json!({"value": 2}),
+                0,
+            );
+        });
+
+        let mut donor_sync = sync::State::new();
+        for _ in 0..4 {
+            if let Some(msg) = donor.doc.sync().generate_sync_message(&mut donor_sync) {
+                let view = receiver
+                    .receive_sync_and_foreign_comms(&mut receiver_sync, msg, |actor| {
+                        !actor.to_bytes().starts_with(b"rt:kernel:")
+                    })
                     .expect("receive");
-                if !actors.is_empty() {
-                    assert!(
-                        actors.iter().any(|a| a.to_bytes().starts_with(b"human:")),
-                        "expected a human:* authored change, got {:?}",
-                        actors
-                    );
-                    return;
+                if let Some(foreign_comms) = view.foreign_comms {
+                    if foreign_comms.contains_key("human-widget") {
+                        assert!(
+                            !foreign_comms.contains_key("kernel-widget"),
+                            "foreign view must not contain kernel-authored echo: {:?}",
+                            foreign_comms.keys().collect::<Vec<_>>()
+                        );
+                        assert!(
+                            view.applied_actors
+                                .iter()
+                                .any(|a| a.to_bytes().starts_with(b"human:")),
+                            "applied_actors should include human: entry"
+                        );
+                        return;
+                    }
                 }
             }
             if let Some(reply) = receiver.generate_sync_message(&mut receiver_sync) {
-                let _ = peer_a
+                let _ = donor
                     .doc
                     .sync()
-                    .receive_sync_message(&mut peer_a_sync, reply);
+                    .receive_sync_message(&mut donor_sync, reply);
             }
         }
-        panic!("sync never converged to report an applied change");
+        panic!("sync never converged to produce a foreign view");
     }
 
     #[test]
-    fn receive_sync_capture_actors_empty_on_handshake() {
+    fn foreign_sync_view_strips_kernel_overwrites_on_shared_field() {
+        // Frontend wrote `value=15`, kernel subsequently echoed
+        // `value=10` on the same comm.state key. The per-field filter
+        // must recognize the current LWW winner was authored by the
+        // kernel actor and OMIT that key from the foreign view so the
+        // runtime agent does not forward the kernel echo back.
+        let mut receiver = RuntimeStateDoc::new();
+        receiver.set_actor("rt:kernel:deadbeef");
+        let mut receiver_sync = sync::State::new();
+
+        let mut donor = receiver.fork();
+        donor.fork_and_merge(|f| {
+            f.set_actor("human:peer");
+            f.put_comm(
+                "slider",
+                "j.w",
+                "",
+                "",
+                &serde_json::json!({"value": 15}),
+                0,
+            );
+        });
+        // Kernel echoes a different value on the same key AFTER the
+        // frontend's write — causally later, so LWW winner is the
+        // kernel's 10.
+        donor.fork_and_merge(|f| {
+            f.set_actor("rt:kernel:deadbeef");
+            f.merge_comm_state_delta("slider", &serde_json::json!({"value": 10}));
+        });
+
+        let mut donor_sync = sync::State::new();
+        for _ in 0..4 {
+            if let Some(msg) = donor.doc.sync().generate_sync_message(&mut donor_sync) {
+                let view = receiver
+                    .receive_sync_and_foreign_comms(&mut receiver_sync, msg, |actor| {
+                        !actor.to_bytes().starts_with(b"rt:kernel:")
+                    })
+                    .expect("receive");
+                if let Some(foreign_comms) = view.foreign_comms {
+                    // Applied both the frontend open and the kernel
+                    // echo? The current LWW winner on `value` is the
+                    // kernel's 10, so the slider comm is either absent
+                    // from the foreign view entirely (no foreign fields
+                    // remain) or present with `value` stripped.
+                    if view
+                        .applied_actors
+                        .iter()
+                        .any(|a| a.to_bytes().starts_with(b"rt:kernel:"))
+                        && view
+                            .applied_actors
+                            .iter()
+                            .any(|a| a.to_bytes().starts_with(b"human:"))
+                    {
+                        match foreign_comms.get("slider") {
+                            None => return,
+                            Some(entry) => {
+                                let state = entry.state.as_object().expect("state");
+                                assert!(
+                                    !state.contains_key("value"),
+                                    "kernel-authored value must be stripped, got {:?}",
+                                    state
+                                );
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(reply) = receiver.generate_sync_message(&mut receiver_sync) {
+                let _ = donor
+                    .doc
+                    .sync()
+                    .receive_sync_message(&mut donor_sync, reply);
+            }
+        }
+        panic!("sync never converged");
+    }
+
+    #[test]
+    fn foreign_sync_view_none_for_handshake() {
         let mut receiver = RuntimeStateDoc::new();
         let mut receiver_sync = sync::State::new();
         let mut peer = RuntimeStateDoc::new();
         let mut peer_sync = sync::State::new();
 
-        // First message is just a handshake (no new changes).
         if let Some(msg) = peer.generate_sync_message(&mut peer_sync) {
-            let actors = receiver
-                .receive_sync_message_capture_actors(&mut receiver_sync, msg)
+            let view = receiver
+                .receive_sync_and_foreign_comms(&mut receiver_sync, msg, |_| true)
                 .expect("handshake");
-            assert!(
-                actors.is_empty(),
-                "handshake should not report applied actors"
-            );
+            assert!(view.applied_actors.is_empty());
+            assert!(view.foreign_comms.is_none());
         }
+    }
+
+    #[test]
+    fn foreign_sync_view_none_when_all_self_authored() {
+        let mut receiver = RuntimeStateDoc::new();
+        receiver.set_actor("rt:kernel:deadbeef");
+        let mut receiver_sync = sync::State::new();
+
+        let mut donor = receiver.fork();
+        donor.set_actor("rt:kernel:deadbeef");
+        donor.put_comm("w", "j.w", "", "", &serde_json::json!({}), 0);
+
+        let mut donor_sync = sync::State::new();
+        for _ in 0..4 {
+            if let Some(msg) = donor.doc.sync().generate_sync_message(&mut donor_sync) {
+                let view = receiver
+                    .receive_sync_and_foreign_comms(&mut receiver_sync, msg, |actor| {
+                        !actor.to_bytes().starts_with(b"rt:kernel:")
+                    })
+                    .expect("receive");
+                if !view.applied_actors.is_empty() {
+                    assert!(
+                        view.foreign_comms.is_none(),
+                        "all-self-authored message should produce no foreign view"
+                    );
+                    return;
+                }
+            }
+            if let Some(reply) = receiver.generate_sync_message(&mut receiver_sync) {
+                let _ = donor
+                    .doc
+                    .sync()
+                    .receive_sync_message(&mut donor_sync, reply);
+            }
+        }
+        panic!("sync never converged");
     }
 }

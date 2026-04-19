@@ -143,13 +143,35 @@ describe("WidgetUpdateManager", () => {
   // ── Echo suppression ────────────────────────────────────────────
 
   describe("echo suppression", () => {
-    it("suppresses echoes for optimistic keys", () => {
+    it("suppresses echoes that match the last-written value", () => {
       const { manager } = setup();
 
       manager.updateAndPersist("comm-1", { value: 42 });
 
-      const result = manager.shouldSuppressEcho("comm-1", { value: 10 });
+      // Kernel bounces back the same value — pure echo.
+      const result = manager.shouldSuppressEcho("comm-1", { value: 42 });
       expect(result).toBeNull();
+    });
+
+    it("lets kernel corrections pass through even for optimistic keys", () => {
+      const { manager } = setup();
+
+      // Frontend sends 5.1 (out of bounds for a max-5.0 slider).
+      manager.updateAndPersist("comm-1", { value: 5.1 });
+
+      // Kernel clamps to 5.0 and echoes the corrected value.
+      const result = manager.shouldSuppressEcho("comm-1", { value: 5.0 });
+      expect(result).toEqual({ value: 5.0 });
+    });
+
+    it("uses structural equality for array/object values", () => {
+      const { manager } = setup();
+
+      manager.updateAndPersist("comm-1", { value: [1, 2, 3] });
+      expect(manager.shouldSuppressEcho("comm-1", { value: [1, 2, 3] })).toBeNull();
+      expect(manager.shouldSuppressEcho("comm-1", { value: [1, 2] })).toEqual({
+        value: [1, 2],
+      });
     });
 
     it("passes through non-optimistic keys", () => {
@@ -157,8 +179,10 @@ describe("WidgetUpdateManager", () => {
 
       manager.updateAndPersist("comm-1", { value: 42 });
 
+      // value matches last-written and is suppressed; description is
+      // not an optimistic key so passes through.
       const result = manager.shouldSuppressEcho("comm-1", {
-        value: 10,
+        value: 42,
         description: "from kernel",
       });
       expect(result).toEqual({ description: "from kernel" });
@@ -174,29 +198,28 @@ describe("WidgetUpdateManager", () => {
       expect(result).toEqual({ value: 10, description: "from kernel" });
     });
 
-    it("keeps optimistic keys for a grace period after flush, then clears", () => {
+    it("keeps optimistic values for a grace period after flush, then clears", () => {
       const { manager } = setup();
 
       manager.updateAndPersist("comm-1", { value: 42 });
 
-      // During debounce window — suppressed.
-      expect(manager.shouldSuppressEcho("comm-1", { value: 10 })).toBeNull();
+      // During debounce window — echo of the written value is suppressed.
+      expect(manager.shouldSuppressEcho("comm-1", { value: 42 })).toBeNull();
 
-      // Flush — CRDT write happens, but optimistic keys stay alive for
-      // a grace period so in-flight echoes of the value we just wrote
-      // (and earlier stale ones) don't clobber the user's state while
-      // the round trip to the kernel + back completes.
+      // Flush — CRDT write happens, but optimistic values stay alive
+      // for a grace period so in-flight echoes of what we just wrote
+      // don't flicker the user's state while the round trip completes.
       vi.advanceTimersByTime(50);
-      expect(manager.shouldSuppressEcho("comm-1", { value: 10 })).toBeNull();
+      expect(manager.shouldSuppressEcho("comm-1", { value: 42 })).toBeNull();
 
       // After the grace period — echoes pass through.
       vi.advanceTimersByTime(500);
-      expect(manager.shouldSuppressEcho("comm-1", { value: 10 })).toEqual({
-        value: 10,
+      expect(manager.shouldSuppressEcho("comm-1", { value: 42 })).toEqual({
+        value: 42,
       });
     });
 
-    it("suppresses during continuous drag", () => {
+    it("suppresses echoes of the latest write during continuous drag", () => {
       const { manager } = setup();
 
       // Simulate continuous slider drag
@@ -206,11 +229,18 @@ describe("WidgetUpdateManager", () => {
       vi.advanceTimersByTime(16);
       manager.updateAndPersist("comm-1", { value: 20 });
 
-      // Stale echo from earlier value — suppressed
-      expect(manager.shouldSuppressEcho("comm-1", { value: 5 })).toBeNull();
+      // Echo of the most recent value — suppressed
+      expect(manager.shouldSuppressEcho("comm-1", { value: 20 })).toBeNull();
+
+      // Stale echo from an earlier drag step — passes through. In
+      // practice the coalescing writer only forwards the latest state,
+      // but the filter must not silently drop non-matching values.
+      expect(manager.shouldSuppressEcho("comm-1", { value: 5 })).toEqual({
+        value: 5,
+      });
 
       // Non-value keys still pass through
-      expect(manager.shouldSuppressEcho("comm-1", { value: 5, _view_name: "x" })).toEqual({
+      expect(manager.shouldSuppressEcho("comm-1", { value: 20, _view_name: "x" })).toEqual({
         _view_name: "x",
       });
     });
@@ -318,8 +348,8 @@ describe("WidgetUpdateManager", () => {
       manager.updateAndPersist("comm-1", { value: 42 });
       vi.advanceTimersByTime(50);
 
-      // Still optimistic since flush failed
-      expect(manager.shouldSuppressEcho("comm-1", { value: 10 })).toBeNull();
+      // Still optimistic since flush failed — echo of last-written suppressed
+      expect(manager.shouldSuppressEcho("comm-1", { value: 42 })).toBeNull();
     });
   });
 });

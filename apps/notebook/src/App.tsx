@@ -363,13 +363,13 @@ function AppContent() {
     };
   }, [getHandle, triggerSync]);
 
-  // Dev-only bridge for E2E tests to drive widget updates through the
-  // real pipeline (WidgetUpdateManager → debounced CRDT write → daemon
-  // → kernel) without reaching into the security-isolated iframe. Gated
-  // on `import.meta.env.DEV` so production bundles don't expose these
-  // on `window`.
+  // E2E-only bridge for driving widget updates through the real pipeline
+  // (WidgetUpdateManager → debounced CRDT write → daemon → kernel) from
+  // a WebDriver spec, without reaching into the security-isolated iframe.
+  // Gated on `VITE_E2E` — `cargo xtask e2e build` sets it, production
+  // builds don't, so these globals aren't exposed to end users.
   useEffect(() => {
-    if (!import.meta.env.DEV) return;
+    if (!import.meta.env.VITE_E2E) return;
     const w = window as unknown as Record<string, unknown>;
     w.__nteractWidgetUpdate = (commId: string, patch: Record<string, unknown>) => {
       updateManager.updateAndPersist(commId, patch);

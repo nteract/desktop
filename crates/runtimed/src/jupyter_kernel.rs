@@ -1856,6 +1856,13 @@ impl KernelConnection for JupyterKernel {
         let coalesce_state_doc = shared.state_doc.clone();
         let coalesce_state_changed = shared.state_changed_tx.clone();
         let coalesce_blob_store = shared.blob_store.clone();
+        // Coalesced comm writes must carry the kernel actor ID so the
+        // runtime agent's actor filter in `receive_sync_and_foreign_comms`
+        // recognizes them as self-authored echoes and doesn't forward
+        // them back to the kernel. Without this, writes inherit the
+        // doc's default actor (`runtimed:state`) and the filter lets
+        // them through, re-triggering the amplification loop.
+        let coalesce_actor_id = kernel_actor_id.clone();
         let comm_coalesce_task = tokio::spawn(async move {
             let mut pending: HashMap<String, serde_json::Value> = HashMap::new();
             let mut timer = tokio::time::interval(std::time::Duration::from_millis(16));
@@ -1889,11 +1896,14 @@ impl KernelConnection for JupyterKernel {
                         }
                         let mut sd = coalesce_state_doc.write().await;
                         let mut any_changed = false;
-                        for (comm_id, delta) in &batch {
-                            if sd.merge_comm_state_delta(comm_id, delta) {
-                                any_changed = true;
+                        sd.fork_and_merge(|f| {
+                            f.set_actor(&coalesce_actor_id);
+                            for (comm_id, delta) in &batch {
+                                if f.merge_comm_state_delta(comm_id, delta) {
+                                    any_changed = true;
+                                }
                             }
-                        }
+                        });
                         if any_changed {
                             let _ = coalesce_state_changed.send(());
                         }

@@ -157,42 +157,38 @@ pub async fn run_runtime_agent(
                                     // detect frontend-originated widget state changes.
                                     let comms_before = sd.read_state().comms;
 
-                                    match sd.receive_sync_message_capture_actors(
+                                    // Per-change actor filter: diff comm state against a
+                                    // foreign-only view of the post-sync doc. If the
+                                    // coordinator coalesces a kernel-authored echo with a
+                                    // frontend widget write into one RuntimeStateSync frame,
+                                    // the foreign view omits the echo so we don't re-forward
+                                    // it back to the kernel and trigger amplification.
+                                    // Actors are opaque byte strings; the kernel-side writer
+                                    // uses a UTF-8 `rt:kernel:<session>` prefix (see
+                                    // `jupyter_kernel.rs`), so `starts_with` on the raw
+                                    // bytes is sufficient.
+                                    match sd.receive_sync_and_foreign_comms(
                                         &mut coordinator_sync_state,
                                         msg,
+                                        |actor| !actor.to_bytes().starts_with(b"rt:kernel:"),
                                     ) {
-                                        Ok(applied_actors) if !applied_actors.is_empty() => {
+                                        Ok(view) if !view.applied_actors.is_empty() => {
                                             let _ = state_changed_tx.send(());
 
-                                            // Actor-based filter for the echo-amplification loop:
-                                            // if every applied change was authored by the runtime
-                                            // agent's own kernel-writer actor (`rt:kernel:*`),
-                                            // the sync only reflected our own echoes bouncing
-                                            // back through the coordinator. Forwarding those to
-                                            // the kernel re-sends the value the kernel already
-                                            // set and triggers exponential message growth on
-                                            // the ZMQ shell channel during rapid slider input.
-                                            // Actors are opaque byte strings; the kernel-side
-                                            // writer uses a UTF-8 `rt:kernel:<session>` prefix
-                                            // (see `jupyter_kernel.rs`), so a straight
-                                            // `starts_with` on the raw bytes is sufficient.
-                                            let any_foreign = applied_actors.iter().any(|a| {
-                                                !a.to_bytes().starts_with(b"rt:kernel:")
-                                            });
-
-                                            // Diff comm state -- forward changes to kernel
-                                            let comms_after = sd.read_state().comms;
                                             let queued = sd.get_queued_executions();
                                             drop(sd); // release write lock before kernel interaction
 
-                                            let comm_updates = if any_foreign {
-                                                diff_comm_state(&comms_before, &comms_after)
-                                            } else {
-                                                debug!(
-                                                    "[runtime-agent] Skipping comm forward: {} applied change(s) were all self-kernel echoes",
-                                                    applied_actors.len()
-                                                );
-                                                Vec::new()
+                                            let comm_updates = match view.foreign_comms {
+                                                Some(foreign_comms) => {
+                                                    diff_comm_state(&comms_before, &foreign_comms)
+                                                }
+                                                None => {
+                                                    debug!(
+                                                        "[runtime-agent] Skipping comm forward: {} applied change(s) were all self-kernel echoes",
+                                                        view.applied_actors.len()
+                                                    );
+                                                    Vec::new()
+                                                }
                                             };
                                             if !comm_updates.is_empty() {
                                                 if let Some(ref mut k) = kernel {
