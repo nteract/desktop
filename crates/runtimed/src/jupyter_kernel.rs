@@ -39,25 +39,6 @@ use crate::terminal_size::{TERMINAL_COLUMNS_STR, TERMINAL_LINES_STR};
 use crate::EnvType;
 use notebook_protocol::protocol::LaunchedEnvConfig;
 
-/// Generate a unique Automerge actor ID for an IOPub / shell fork while
-/// preserving the kernel attribution prefix.
-///
-/// Every fork+merge cycle MUST use a distinct Automerge actor ID. Reusing
-/// the same actor across concurrent forks (e.g. shell task and iopub task
-/// each holding a fork derived from the same main heads) produces ops that
-/// share an `(actor, seq)` namespace. When the second fork merges back,
-/// Automerge deduplicates by `(actor, seq)` and silently drops the newer
-/// ops — which manifests as output entries disappearing from the CRDT
-/// list even though the insert ran to completion on the fork.
-///
-/// The widget-echo filter in the runtime agent matches on the
-/// `rt:kernel:` prefix, so we keep that prefix and append a UUID suffix
-/// per fork. Attribution still works; each fork has its own (actor, seq)
-/// series and merges are guaranteed disjoint.
-fn unique_kernel_actor(base: &str) -> String {
-    format!("{}:{}", base, Uuid::new_v4())
-}
-
 /// Type alias for pending completion response channels.
 type PendingCompletions =
     Arc<StdMutex<HashMap<String, oneshot::Sender<(Vec<CompletionItem>, usize, usize)>>>>;
@@ -592,7 +573,13 @@ impl KernelConnection for JupyterKernel {
         let iopub_stream_terminals = stream_terminals.clone();
         let state_doc_for_iopub = shared.state_doc.clone();
         let state_changed_for_iopub = shared.state_changed_tx.clone();
-        let iopub_actor_id = kernel_actor_id.clone();
+        // Stable per-task actor IDs. Each long-running task (iopub, shell,
+        // coalesce) processes messages sequentially within its own loop, so
+        // one actor per task is sufficient — Automerge's `(actor, seq)`
+        // invariant holds as long as no two concurrent forks share an actor.
+        // The widget-echo filter matches on the `rt:kernel:` prefix, which
+        // all three still carry.
+        let iopub_actor_id = format!("{kernel_actor_id}:iopub");
 
         // Create coalescing channel early so the IOPub task can capture the sender.
         let (coalesce_tx, coalesce_rx) = mpsc::unbounded_channel::<(String, serde_json::Value)>();
@@ -834,7 +821,7 @@ impl KernelConnection for JupyterKernel {
                                     let mut fork = {
                                         let mut sd = state_doc_for_iopub.write().await;
                                         let mut f = sd.fork();
-                                        f.set_actor(&unique_kernel_actor(&iopub_actor_id));
+                                        f.set_actor(&iopub_actor_id);
                                         f
                                     };
 
@@ -1038,7 +1025,7 @@ impl KernelConnection for JupyterKernel {
                                         let mut fork = {
                                             let mut sd = state_doc_for_iopub.write().await;
                                             let mut f = sd.fork();
-                                            f.set_actor(&unique_kernel_actor(&iopub_actor_id));
+                                            f.set_actor(&iopub_actor_id);
                                             f
                                         };
 
@@ -1084,7 +1071,7 @@ impl KernelConnection for JupyterKernel {
                                     let mut fork = {
                                         let mut sd = state_doc_for_iopub.write().await;
                                         let mut f = sd.fork();
-                                        f.set_actor(&unique_kernel_actor(&iopub_actor_id));
+                                        f.set_actor(&iopub_actor_id);
                                         f
                                     };
 
@@ -1256,7 +1243,7 @@ impl KernelConnection for JupyterKernel {
                                         let mut fork = {
                                             let mut sd = state_doc_for_iopub.write().await;
                                             let mut f = sd.fork();
-                                            f.set_actor(&unique_kernel_actor(&iopub_actor_id));
+                                            f.set_actor(&iopub_actor_id);
                                             f
                                         };
 
@@ -1647,7 +1634,7 @@ impl KernelConnection for JupyterKernel {
         let shell_state_doc = shared.state_doc.clone();
         let shell_state_changed_tx = shared.state_changed_tx.clone();
         let shell_blob_store = shared.blob_store.clone();
-        let shell_actor_id = kernel_actor_id.clone();
+        let shell_actor_id = format!("{kernel_actor_id}:shell");
 
         let shell_reader_task = tokio::spawn(async move {
             loop {
@@ -1693,7 +1680,7 @@ impl KernelConnection for JupyterKernel {
                                             let mut fork = {
                                                 let mut sd = shell_state_doc.write().await;
                                                 let mut f = sd.fork();
-                                                f.set_actor(&unique_kernel_actor(&shell_actor_id));
+                                                f.set_actor(&shell_actor_id);
                                                 f
                                             };
 
@@ -1881,7 +1868,7 @@ impl KernelConnection for JupyterKernel {
         // them back to the kernel. Without this, writes inherit the
         // doc's default actor (`runtimed:state`) and the filter lets
         // them through, re-triggering the amplification loop.
-        let coalesce_actor_id = kernel_actor_id.clone();
+        let coalesce_actor_id = format!("{kernel_actor_id}:coalesce");
         let comm_coalesce_task = tokio::spawn(async move {
             let mut pending: HashMap<String, serde_json::Value> = HashMap::new();
             let mut timer = tokio::time::interval(std::time::Duration::from_millis(16));
