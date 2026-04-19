@@ -4766,7 +4766,14 @@ async fn handle_notebook_request(
                         let fallback = match auto_scope {
                             Some("conda") => "conda:prewarmed",
                             Some("pixi") => "pixi:prewarmed",
-                            _ => "uv:prewarmed",
+                            _ => {
+                                let default_env = daemon.default_python_env().await;
+                                match default_env {
+                                    crate::settings_doc::PythonEnvType::Conda => "conda:prewarmed",
+                                    crate::settings_doc::PythonEnvType::Pixi => "pixi:prewarmed",
+                                    _ => "uv:prewarmed",
+                                }
+                            }
                         };
                         info!(
                             "[notebook-sync] No project file detected, using {}",
