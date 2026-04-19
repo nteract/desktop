@@ -1,0 +1,37 @@
+{
+  "name": "@nteract/runtimed-node",
+  "version": "0.1.0",
+  "description": "Node.js bindings for the runtimed daemon client (napi-rs).",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.cjs",
+  "types": "./src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "require": "./src/index.cjs",
+      "default": "./src/index.cjs"
+    }
+  },
+  "files": [
+    "src/index.cjs",
+    "src/index.d.ts",
+    "src/binding.cjs",
+    "src/binding.d.ts",
+    "src/runtimed-node.*.node"
+  ],
+  "napi": {
+    "binaryName": "runtimed-node",
+    "targets": [
+      "x86_64-unknown-linux-gnu"
+    ]
+  },
+  "scripts": {
+    "build": "napi build --platform --release --js binding.cjs --dts binding.d.ts --manifest-path ../../crates/runtimed-node/Cargo.toml --output-dir src",
+    "build:debug": "napi build --platform --js binding.cjs --dts binding.d.ts --manifest-path ../../crates/runtimed-node/Cargo.toml --output-dir src",
+    "smoke": "node -e \"const m = require('./src/index.cjs'); console.log('defaultSocketPath:', m.defaultSocketPath());\""
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^3.6.2"
+  }
+}
