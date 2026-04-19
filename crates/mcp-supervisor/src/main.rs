@@ -1326,6 +1326,43 @@ struct StopProcessParams {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct EmptyParams {}
 
+/// Build a JSON Schema object for the given params type.
+///
+/// The `schemars` schema is guaranteed to be a JSON object at the top level,
+/// but the conversion through `serde_json::to_value` is fallible in principle.
+/// Propagate any failure as an `McpError::internal_error` so list_tools can
+/// return it to the client rather than silently advertising an empty schema.
+fn schema_object<T: schemars::JsonSchema>() -> Result<serde_json::Map<String, Value>, McpError> {
+    let schema = schemars::schema_for!(T);
+    let value = serde_json::to_value(&schema).map_err(|e| {
+        McpError::internal_error(
+            format!(
+                "failed to serialize JSON schema for {}: {e}",
+                std::any::type_name::<T>()
+            ),
+            None,
+        )
+    })?;
+    match value {
+        Value::Object(map) => Ok(map),
+        other => Err(McpError::internal_error(
+            format!(
+                "JSON schema for {} was not an object (got {}): this indicates a schemars/serde_json bug",
+                std::any::type_name::<T>(),
+                match other {
+                    Value::Null => "null",
+                    Value::Bool(_) => "bool",
+                    Value::Number(_) => "number",
+                    Value::String(_) => "string",
+                    Value::Array(_) => "array",
+                    Value::Object(_) => "object",
+                }
+            ),
+            None,
+        )),
+    }
+}
+
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[allow(dead_code)] // `mode` is read via serde deserialization, not directly
 struct SetModeParams {
@@ -1402,28 +1439,15 @@ impl ServerHandler for Supervisor {
     ) -> Result<ListToolsResult, McpError> {
         let mut tools = Vec::new();
 
-        // Supervisor's own tools
-        let empty_schema = serde_json::to_value(schemars::schema_for!(EmptyParams))
-            .unwrap()
-            .as_object()
-            .cloned()
-            .unwrap_or_default();
-
-        let up_schema = serde_json::to_value(schemars::schema_for!(UpParams))
-            .unwrap()
-            .as_object()
-            .cloned()
-            .unwrap_or_default();
-        let down_schema = serde_json::to_value(schemars::schema_for!(DownParams))
-            .unwrap()
-            .as_object()
-            .cloned()
-            .unwrap_or_default();
-        let logs_schema = serde_json::to_value(schemars::schema_for!(SupervisorLogsParams))
-            .unwrap()
-            .as_object()
-            .cloned()
-            .unwrap_or_default();
+        // Supervisor's own tools. Schema generation is fallible in principle
+        // (serde_json::to_value can return Err on a type whose Serialize impl
+        // misbehaves). Propagate the error rather than unwrapping — a broken
+        // schema means a broken tool registration, and it's better to fail
+        // the list_tools call than to silently advertise an empty schema.
+        let empty_schema = schema_object::<EmptyParams>()?;
+        let up_schema = schema_object::<UpParams>()?;
+        let down_schema = schema_object::<DownParams>()?;
+        let logs_schema = schema_object::<SupervisorLogsParams>()?;
 
         tools.push(Tool::new(
             "up",
@@ -2204,29 +2228,36 @@ fn start_file_watcher(
     Ok(rx)
 }
 
-fn resolve_project_root() -> PathBuf {
+fn resolve_project_root() -> std::io::Result<PathBuf> {
     // Allow explicit override via env var — required when launched from a
     // context where cwd is not the repo (e.g. Claude Desktop sets cwd to /).
     if let Ok(path) = std::env::var("RUNTIMED_WORKSPACE_PATH") {
         let p = PathBuf::from(path);
         if p.join("Cargo.toml").exists() {
-            return p;
+            return Ok(p);
         }
     }
-    // Walk up from current dir looking for Cargo.toml with [workspace]
-    let mut dir = std::env::current_dir().expect("Failed to get current directory");
+    // Walk up from current dir looking for Cargo.toml with [workspace].
+    // If we hit the filesystem root without finding one, return the original
+    // cwd — the caller can decide whether that's acceptable. If `current_dir`
+    // itself fails (cwd was deleted, permission denied, etc.) propagate the
+    // io::Error rather than panicking; main decides how to surface it.
+    let start = std::env::current_dir()?;
+    let mut dir = start.clone();
     loop {
         let cargo_toml = dir.join("Cargo.toml");
         if cargo_toml.exists() {
             if let Ok(contents) = std::fs::read_to_string(&cargo_toml) {
                 if contents.contains("[workspace]") {
-                    return dir;
+                    return Ok(dir);
                 }
             }
         }
         if !dir.pop() {
-            // Fallback to current dir
-            return std::env::current_dir().expect("Failed to get current directory");
+            // No workspace Cargo.toml found above cwd. Return cwd so the
+            // caller can log it and fail fast rather than silently walking
+            // with `PathBuf::from(".")`.
+            return Ok(start);
         }
     }
 }
@@ -2236,7 +2267,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Log to both stderr and a file (.context/nteract-dev.log)
     // stderr goes to whatever the MCP client captures; the file is
     // readable via supervisor tools for debugging.
-    let project_root_for_log = resolve_project_root();
+    // Resolve the project root up front. If cwd is unreadable there's nothing
+    // sensible we can do — fail fast with a clear message so the MCP client
+    // sees a startup error instead of a silently-misconfigured supervisor.
+    let project_root_for_log = resolve_project_root().map_err(|e| {
+        format!(
+            "failed to resolve project root (could not read current directory): {e}. \
+             Set RUNTIMED_WORKSPACE_PATH to the repo root to override."
+        )
+    })?;
     let log_dir = project_root_for_log.join(".context");
     let _ = std::fs::create_dir_all(&log_dir);
 
@@ -2284,7 +2323,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("Starting in release mode (RUNTIMED_RELEASE=1)");
     }
 
-    let project_root = resolve_project_root();
+    let project_root = resolve_project_root().map_err(|e| {
+        format!(
+            "failed to resolve project root: {e}. \
+             Set RUNTIMED_WORKSPACE_PATH to the repo root to override."
+        )
+    })?;
     info!("Project root: {}", project_root.display());
 
     // Step 1: Start the stdio MCP server IMMEDIATELY so the client doesn't
