@@ -39,6 +39,25 @@ use crate::terminal_size::{TERMINAL_COLUMNS_STR, TERMINAL_LINES_STR};
 use crate::EnvType;
 use notebook_protocol::protocol::LaunchedEnvConfig;
 
+/// Generate a unique Automerge actor ID for an IOPub / shell fork while
+/// preserving the kernel attribution prefix.
+///
+/// Every fork+merge cycle MUST use a distinct Automerge actor ID. Reusing
+/// the same actor across concurrent forks (e.g. shell task and iopub task
+/// each holding a fork derived from the same main heads) produces ops that
+/// share an `(actor, seq)` namespace. When the second fork merges back,
+/// Automerge deduplicates by `(actor, seq)` and silently drops the newer
+/// ops — which manifests as output entries disappearing from the CRDT
+/// list even though the insert ran to completion on the fork.
+///
+/// The widget-echo filter in the runtime agent matches on the
+/// `rt:kernel:` prefix, so we keep that prefix and append a UUID suffix
+/// per fork. Attribution still works; each fork has its own (actor, seq)
+/// series and merges are guaranteed disjoint.
+fn unique_kernel_actor(base: &str) -> String {
+    format!("{}:{}", base, Uuid::new_v4())
+}
+
 /// Type alias for pending completion response channels.
 type PendingCompletions =
     Arc<StdMutex<HashMap<String, oneshot::Sender<(Vec<CompletionItem>, usize, usize)>>>>;
@@ -815,7 +834,7 @@ impl KernelConnection for JupyterKernel {
                                     let mut fork = {
                                         let mut sd = state_doc_for_iopub.write().await;
                                         let mut f = sd.fork();
-                                        f.set_actor(&iopub_actor_id);
+                                        f.set_actor(&unique_kernel_actor(&iopub_actor_id));
                                         f
                                     };
 
@@ -1019,7 +1038,7 @@ impl KernelConnection for JupyterKernel {
                                         let mut fork = {
                                             let mut sd = state_doc_for_iopub.write().await;
                                             let mut f = sd.fork();
-                                            f.set_actor(&iopub_actor_id);
+                                            f.set_actor(&unique_kernel_actor(&iopub_actor_id));
                                             f
                                         };
 
@@ -1065,7 +1084,7 @@ impl KernelConnection for JupyterKernel {
                                     let mut fork = {
                                         let mut sd = state_doc_for_iopub.write().await;
                                         let mut f = sd.fork();
-                                        f.set_actor(&iopub_actor_id);
+                                        f.set_actor(&unique_kernel_actor(&iopub_actor_id));
                                         f
                                     };
 
@@ -1237,7 +1256,7 @@ impl KernelConnection for JupyterKernel {
                                         let mut fork = {
                                             let mut sd = state_doc_for_iopub.write().await;
                                             let mut f = sd.fork();
-                                            f.set_actor(&iopub_actor_id);
+                                            f.set_actor(&unique_kernel_actor(&iopub_actor_id));
                                             f
                                         };
 
@@ -1674,7 +1693,7 @@ impl KernelConnection for JupyterKernel {
                                             let mut fork = {
                                                 let mut sd = shell_state_doc.write().await;
                                                 let mut f = sd.fork();
-                                                f.set_actor(&shell_actor_id);
+                                                f.set_actor(&unique_kernel_actor(&shell_actor_id));
                                                 f
                                             };
 
