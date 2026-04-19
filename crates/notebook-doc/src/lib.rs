@@ -58,7 +58,9 @@ use std::collections::HashMap;
 /// - **3** — Outputs moved to RuntimeStateDoc: cell outputs are no longer stored in the notebook
 ///   doc. Existing outputs are extracted during migration so the caller can create synthetic
 ///   execution entries in RuntimeStateDoc.
-pub const SCHEMA_VERSION: u64 = 3;
+/// - **4** — Addressable outputs: `OutputManifest` gains a required `output_id` (UUIDv4) field.
+///   Daemon mints IDs on emission; legacy outputs get IDs on first load.
+pub const SCHEMA_VERSION: u64 = 4;
 
 use automerge::sync;
 use automerge::sync::SyncDoc;
@@ -797,6 +799,22 @@ impl NotebookDoc {
         Ok(())
     }
 
+    /// Migrate from schema v3 to v4: addressable outputs with `output_id`.
+    ///
+    /// The notebook doc itself doesn't change — outputs live in RuntimeStateDoc.
+    /// This just bumps the schema version so the daemon knows to mint `output_id`s
+    /// for legacy outputs during RuntimeStateDoc population.
+    pub fn migrate_v3_to_v4(&mut self) -> Result<(), AutomergeError> {
+        if self.schema_version().unwrap_or(0) >= 4 {
+            return Ok(());
+        }
+        self.doc
+            .put(automerge::ROOT, "schema_version", SCHEMA_VERSION)?;
+        #[cfg(feature = "persistence")]
+        info!("[notebook-doc] Migrated schema v3 → v4 (addressable outputs with output_id)");
+        Ok(())
+    }
+
     /// Extract cell outputs from the notebook doc for migration.
     ///
     /// Returns `(cell_id, outputs)` pairs for every cell that has outputs.
@@ -967,6 +985,15 @@ impl NotebookDoc {
                                 if let Err(e) = loaded.migrate_v2_to_v3() {
                                     warn!(
                                         "[notebook-doc] v2→v3 migration failed for {}: {}. Creating fresh doc.",
+                                        notebook_id, e
+                                    );
+                                    ok = false;
+                                }
+                            }
+                            if ok && version < 4 {
+                                if let Err(e) = loaded.migrate_v3_to_v4() {
+                                    warn!(
+                                        "[notebook-doc] v3→v4 migration failed for {}: {}. Creating fresh doc.",
                                         notebook_id, e
                                     );
                                     ok = false;

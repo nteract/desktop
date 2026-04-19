@@ -60,15 +60,24 @@ enum ContentRef {
 #[serde(tag = "output_type")]
 enum OutputManifest {
     #[serde(rename = "stream")]
-    Stream { name: String, text: ContentRef },
+    Stream {
+        #[serde(default)]
+        output_id: String,
+        name: String,
+        text: ContentRef,
+    },
     #[serde(rename = "error")]
     Error {
+        #[serde(default)]
+        output_id: String,
         ename: String,
         evalue: String,
         traceback: ContentRef,
     },
     #[serde(rename = "execute_result")]
     ExecuteResult {
+        #[serde(default)]
+        output_id: String,
         data: BTreeMap<String, ContentRef>,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         metadata: BTreeMap<String, Value>,
@@ -76,6 +85,8 @@ enum OutputManifest {
     },
     #[serde(rename = "display_data")]
     DisplayData {
+        #[serde(default)]
+        output_id: String,
         data: BTreeMap<String, ContentRef>,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         metadata: BTreeMap<String, Value>,
@@ -230,6 +241,7 @@ fn scenario_output_streaming() {
 
     for line in &lines {
         let manifest = OutputManifest::Stream {
+            output_id: String::new(),
             name: "stdout".to_string(),
             text: inline(line),
         };
@@ -304,6 +316,7 @@ fn scenario_execution_with_error() {
     let traceback_json = serde_json::to_string(&traceback).unwrap();
 
     let manifest = OutputManifest::Error {
+        output_id: String::new(),
         ename: "ZeroDivisionError".to_string(),
         evalue: "division by zero".to_string(),
         traceback: inline(&traceback_json),
@@ -350,6 +363,7 @@ fn scenario_re_execution() {
     // First execution
     set_execution_count_raw(&mut daemon, "cell-1", "1");
     let first_manifest = OutputManifest::Stream {
+        output_id: String::new(),
         name: "stdout".to_string(),
         text: inline("hello\n"),
     };
@@ -368,6 +382,7 @@ fn scenario_re_execution() {
     let mut data = BTreeMap::new();
     data.insert("text/plain".to_string(), inline("42"));
     let second_manifest = OutputManifest::ExecuteResult {
+        output_id: String::new(),
         data,
         metadata: BTreeMap::new(),
         execution_count: Some(2),
@@ -421,6 +436,7 @@ fn scenario_multi_cell_execution() {
     // Execute cell-2 (stream output)
     set_execution_count_raw(&mut daemon, "cell-2", "2");
     let manifest = OutputManifest::Stream {
+        output_id: String::new(),
         name: "stdout".to_string(),
         text: inline("42\n"),
     };
@@ -484,6 +500,7 @@ fn scenario_display_data_output() {
         },
     );
     let manifest = OutputManifest::DisplayData {
+        output_id: String::new(),
         data,
         metadata: BTreeMap::new(),
     };

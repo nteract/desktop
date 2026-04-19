@@ -26,6 +26,7 @@
 //!       success: Bool|null
 //!       outputs: List[Map]  (inline manifests with blob refs)
 //!         {output}/
+//!           output_id: Str  (UUIDv4, stable addressable identity)
 //!           output_type: Str
 //!           data: Map { mime_type: Map { blob: Str, size: Uint } }  (display_data/execute_result)
 //!           metadata: Map (JSON)
@@ -45,6 +46,8 @@
 //!   trust/
 //!     status: Str          ("trusted" | "untrusted" | "signature_invalid" | "no_dependencies")
 //!     needs_approval: bool
+//!   display_index/          Map (keyed by display_id)
+//!     {display_id}: List[Str]  (entries: "execution_id\0output_id")
 //!   comms/                 Map (keyed by comm_id)
 //!     {comm_id}/           Map
 //!       target_name: Str
@@ -316,6 +319,10 @@ impl RuntimeStateDoc {
         doc.put_object(&ROOT, "comms", ObjType::Map)
             .expect("scaffold comms");
 
+        // display_index/ — Map<display_id, List<Str>> for O(1) display_id lookup
+        doc.put_object(&ROOT, "display_index", ObjType::Map)
+            .expect("scaffold display_index");
+
         // last_saved
         doc.put(&ROOT, "last_saved", ScalarValue::Null)
             .expect("scaffold last_saved");
@@ -390,6 +397,8 @@ impl RuntimeStateDoc {
 
         doc.put_object(&ROOT, "comms", ObjType::Map)
             .expect("scaffold comms");
+        doc.put_object(&ROOT, "display_index", ObjType::Map)
+            .expect("scaffold display_index");
         doc.put(&ROOT, "last_saved", automerge::ScalarValue::Null)
             .expect("scaffold last_saved");
 
@@ -1168,6 +1177,7 @@ impl RuntimeStateDoc {
     ///
     /// The manifest is written as an Automerge Map at the list position.
     /// Creates the `outputs/{execution_id}` list if it doesn't exist.
+    /// Also updates `display_index` if the manifest has a `display_id`.
     /// Returns the output index.
     #[allow(clippy::expect_used)]
     pub fn append_output(
@@ -1178,6 +1188,20 @@ impl RuntimeStateDoc {
         let list_id = self.ensure_output_list(execution_id);
         let len = self.doc.length(&list_id);
         crate::insert_json_at_index(&mut self.doc, &list_id, len, manifest)?;
+
+        // Update display_index if the manifest has a display_id and output_id
+        if let Some(display_id) = manifest
+            .get("transient")
+            .and_then(|t| t.get("display_id"))
+            .and_then(|d| d.as_str())
+        {
+            if let Some(output_id) = manifest.get("output_id").and_then(|o| o.as_str()) {
+                if !output_id.is_empty() {
+                    self.add_display_index_entry(display_id, execution_id, output_id);
+                }
+            }
+        }
+
         Ok(len)
     }
 
@@ -1201,10 +1225,23 @@ impl RuntimeStateDoc {
             .expect("execution entry must exist");
 
         // Delete existing list and create fresh
+        self.remove_display_index_entries_for_execution(execution_id);
         let _ = self.doc.delete(&entry, "outputs");
         let list_id = self.doc.put_object(&entry, "outputs", ObjType::List)?;
         for (i, manifest) in manifests.iter().enumerate() {
             crate::insert_json_at_index(&mut self.doc, &list_id, i, manifest)?;
+            // Update display_index for manifests with display_id
+            if let Some(display_id) = manifest
+                .get("transient")
+                .and_then(|t| t.get("display_id"))
+                .and_then(|d| d.as_str())
+            {
+                if let Some(output_id) = manifest.get("output_id").and_then(|o| o.as_str()) {
+                    if !output_id.is_empty() {
+                        self.add_display_index_entry(display_id, execution_id, output_id);
+                    }
+                }
+            }
         }
         Ok(true)
     }
@@ -1227,6 +1264,8 @@ impl RuntimeStateDoc {
         let Some((_, entry)) = self.doc.get(&executions, execution_id).ok().flatten() else {
             return Ok(false);
         };
+        // Remove display_index entries for this execution before clearing outputs
+        self.remove_display_index_entries_for_execution(execution_id);
         // Replace with empty list
         let _ = self.doc.delete(&entry, "outputs");
         self.doc.put_object(&entry, "outputs", ObjType::List)?;
@@ -1235,6 +1274,92 @@ impl RuntimeStateDoc {
         self.doc.put(&entry, "execution_count", ScalarValue::Null)?;
         self.doc.put(&entry, "success", ScalarValue::Null)?;
         Ok(true)
+    }
+
+    // ── display_index management ─────────────────────────────────────
+
+    /// Add an entry to the display_index for a given display_id.
+    ///
+    /// Each entry is stored as a JSON string `"execution_id\0output_id"` in
+    /// an Automerge List under `display_index/{display_id}`.
+    pub fn add_display_index_entry(
+        &mut self,
+        display_id: &str,
+        execution_id: &str,
+        output_id: &str,
+    ) {
+        let Some(index_map) = self.get_map("display_index") else {
+            return;
+        };
+        let list_id = match self.doc.get(&index_map, display_id).ok().flatten() {
+            Some((Value::Object(ObjType::List), id)) => id,
+            _ => {
+                let Ok(id) = self.doc.put_object(&index_map, display_id, ObjType::List) else {
+                    return;
+                };
+                id
+            }
+        };
+        let entry = format!("{}\0{}", execution_id, output_id);
+        let len = self.doc.length(&list_id);
+        let _ = self.doc.insert(&list_id, len, entry);
+    }
+
+    /// Remove all display_index entries that reference the given execution_id.
+    ///
+    /// Called when an execution's outputs are cleared.
+    pub fn remove_display_index_entries_for_execution(&mut self, execution_id: &str) {
+        let Some(index_map) = self.get_map("display_index") else {
+            return;
+        };
+        let display_ids: Vec<String> = self.doc.keys(&index_map).collect();
+        for display_id in display_ids {
+            let Some((Value::Object(ObjType::List), list_id)) =
+                self.doc.get(&index_map, &display_id).ok().flatten()
+            else {
+                continue;
+            };
+            let prefix = format!("{}\0", execution_id);
+            let mut to_remove = Vec::new();
+            for i in 0..self.doc.length(&list_id) {
+                if let Some((Value::Scalar(s), _)) = self.doc.get(&list_id, i).ok().flatten() {
+                    if let automerge::ScalarValue::Str(entry) = s.as_ref() {
+                        if entry.starts_with(&prefix) {
+                            to_remove.push(i);
+                        }
+                    }
+                }
+            }
+            for i in to_remove.into_iter().rev() {
+                let _ = self.doc.delete(&list_id, i);
+            }
+            if self.doc.length(&list_id) == 0 {
+                let _ = self.doc.delete(&index_map, &display_id);
+            }
+        }
+    }
+
+    /// Look up all (execution_id, output_id) pairs for a given display_id.
+    pub fn get_display_index_entries(&self, display_id: &str) -> Vec<(String, String)> {
+        let Some(index_map) = self.get_map("display_index") else {
+            return Vec::new();
+        };
+        let Some((Value::Object(ObjType::List), list_id)) =
+            self.doc.get(&index_map, display_id).ok().flatten()
+        else {
+            return Vec::new();
+        };
+        let mut entries = Vec::new();
+        for i in 0..self.doc.length(&list_id) {
+            if let Some((Value::Scalar(s), _)) = self.doc.get(&list_id, i).ok().flatten() {
+                if let automerge::ScalarValue::Str(entry) = s.as_ref() {
+                    if let Some((eid, oid)) = entry.split_once('\0') {
+                        entries.push((eid.to_string(), oid.to_string()));
+                    }
+                }
+            }
+        }
+        entries
     }
 
     /// Update or insert a stream output for an execution.
@@ -1400,6 +1525,7 @@ impl RuntimeStateDoc {
             if last_per_cell.get(cell_id.as_str()) == Some(&i) {
                 continue;
             }
+            self.remove_display_index_entries_for_execution(exec_id);
             self.doc
                 .delete(&executions, exec_id.as_str())
                 .expect("delete execution entry");
@@ -3747,5 +3873,131 @@ mod tests {
             }
         }
         panic!("sync never converged");
+    }
+
+    #[test]
+    fn display_index_add_and_lookup() {
+        let mut sd = RuntimeStateDoc::new();
+        sd.add_display_index_entry("disp-1", "exec-a", "out-1");
+        sd.add_display_index_entry("disp-1", "exec-b", "out-2");
+        sd.add_display_index_entry("disp-2", "exec-a", "out-3");
+
+        let entries1 = sd.get_display_index_entries("disp-1");
+        assert_eq!(entries1.len(), 2);
+        assert_eq!(entries1[0], ("exec-a".to_string(), "out-1".to_string()));
+        assert_eq!(entries1[1], ("exec-b".to_string(), "out-2".to_string()));
+
+        let entries2 = sd.get_display_index_entries("disp-2");
+        assert_eq!(entries2.len(), 1);
+        assert_eq!(entries2[0], ("exec-a".to_string(), "out-3".to_string()));
+
+        assert!(sd.get_display_index_entries("no-such").is_empty());
+    }
+
+    #[test]
+    fn display_index_remove_for_execution() {
+        let mut sd = RuntimeStateDoc::new();
+        sd.add_display_index_entry("disp-1", "exec-a", "out-1");
+        sd.add_display_index_entry("disp-1", "exec-b", "out-2");
+        sd.add_display_index_entry("disp-2", "exec-a", "out-3");
+
+        sd.remove_display_index_entries_for_execution("exec-a");
+
+        let entries1 = sd.get_display_index_entries("disp-1");
+        assert_eq!(entries1.len(), 1);
+        assert_eq!(entries1[0], ("exec-b".to_string(), "out-2".to_string()));
+
+        // disp-2 key should be entirely removed (no entries left)
+        assert!(sd.get_display_index_entries("disp-2").is_empty());
+    }
+
+    #[test]
+    fn append_output_populates_display_index() {
+        let mut sd = RuntimeStateDoc::new();
+        sd.create_execution("exec-1", "cell-1");
+
+        let manifest = serde_json::json!({
+            "output_type": "display_data",
+            "output_id": "oid-1",
+            "data": {"text/plain": {"inline": "hello"}},
+            "transient": {"display_id": "disp-A"}
+        });
+        sd.append_output("exec-1", &manifest).unwrap();
+
+        let entries = sd.get_display_index_entries("disp-A");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0], ("exec-1".to_string(), "oid-1".to_string()));
+    }
+
+    #[test]
+    fn clear_execution_outputs_cleans_display_index() {
+        let mut sd = RuntimeStateDoc::new();
+        sd.create_execution("exec-1", "cell-1");
+
+        let manifest = serde_json::json!({
+            "output_type": "display_data",
+            "output_id": "oid-1",
+            "data": {"text/plain": {"inline": "hello"}},
+            "transient": {"display_id": "disp-A"}
+        });
+        sd.append_output("exec-1", &manifest).unwrap();
+        assert_eq!(sd.get_display_index_entries("disp-A").len(), 1);
+
+        sd.clear_execution_outputs("exec-1").unwrap();
+        assert!(sd.get_display_index_entries("disp-A").is_empty());
+    }
+
+    #[test]
+    fn output_id_in_append_round_trips_through_crdt() {
+        let mut sd = RuntimeStateDoc::new();
+        sd.create_execution("exec-1", "cell-1");
+
+        let manifest = serde_json::json!({
+            "output_type": "stream",
+            "output_id": "my-uuid-123",
+            "name": "stdout",
+            "text": {"inline": "hi\n"}
+        });
+        sd.append_output("exec-1", &manifest).unwrap();
+
+        let outputs = sd.get_outputs("exec-1");
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0]["output_id"], "my-uuid-123");
+    }
+
+    #[test]
+    fn stream_coalescence_preserves_distinct_output_ids() {
+        let mut sd = RuntimeStateDoc::new();
+        sd.create_execution("exec-1", "cell-1");
+
+        let m1 = serde_json::json!({
+            "output_type": "stream",
+            "output_id": "oid-stdout-1",
+            "name": "stdout",
+            "text": {"inline": "line1\n"}
+        });
+        let m2 = serde_json::json!({
+            "output_type": "stream",
+            "output_id": "oid-stderr-1",
+            "name": "stderr",
+            "text": {"inline": "err\n"}
+        });
+        let m3 = serde_json::json!({
+            "output_type": "stream",
+            "output_id": "oid-stdout-2",
+            "name": "stdout",
+            "text": {"inline": "line2\n"}
+        });
+        sd.append_output("exec-1", &m1).unwrap();
+        sd.append_output("exec-1", &m2).unwrap();
+        sd.append_output("exec-1", &m3).unwrap();
+
+        let outputs = sd.get_outputs("exec-1");
+        assert_eq!(outputs.len(), 3);
+        assert_eq!(outputs[0]["output_id"], "oid-stdout-1");
+        assert_eq!(outputs[1]["output_id"], "oid-stderr-1");
+        assert_eq!(outputs[2]["output_id"], "oid-stdout-2");
+        // Two stdout chunks must have distinct IDs
+        assert_ne!(outputs[0]["output_id"], outputs[2]["output_id"]);
     }
 }

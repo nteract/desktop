@@ -428,6 +428,8 @@ pub struct ErrorManifest {
 pub enum OutputManifest {
     #[serde(rename = "display_data")]
     DisplayData {
+        #[serde(default)]
+        output_id: String,
         data: HashMap<String, ContentRef>,
         #[serde(default, skip_serializing_if = "HashMap::is_empty")]
         metadata: HashMap<String, Value>,
@@ -436,6 +438,8 @@ pub enum OutputManifest {
     },
     #[serde(rename = "execute_result")]
     ExecuteResult {
+        #[serde(default)]
+        output_id: String,
         data: HashMap<String, ContentRef>,
         #[serde(default, skip_serializing_if = "HashMap::is_empty")]
         metadata: HashMap<String, Value>,
@@ -445,6 +449,8 @@ pub enum OutputManifest {
     },
     #[serde(rename = "stream")]
     Stream {
+        #[serde(default)]
+        output_id: String,
         name: String,
         text: ContentRef,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -452,6 +458,8 @@ pub enum OutputManifest {
     },
     #[serde(rename = "error")]
     Error {
+        #[serde(default)]
+        output_id: String,
         ename: String,
         evalue: String,
         traceback: ContentRef,
@@ -465,6 +473,30 @@ impl OutputManifest {
     #[allow(clippy::expect_used)]
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::to_value(self).expect("OutputManifest should always serialize to JSON")
+    }
+
+    /// Return a reference to the `output_id` field.
+    pub fn output_id(&self) -> &str {
+        match self {
+            OutputManifest::DisplayData { output_id, .. }
+            | OutputManifest::ExecuteResult { output_id, .. }
+            | OutputManifest::Stream { output_id, .. }
+            | OutputManifest::Error { output_id, .. } => output_id,
+        }
+    }
+
+    /// Mint a new UUIDv4 `output_id` if the current one is empty.
+    /// Used during legacy-output migration.
+    pub fn ensure_output_id(&mut self) {
+        let id = match self {
+            OutputManifest::DisplayData { output_id, .. }
+            | OutputManifest::ExecuteResult { output_id, .. }
+            | OutputManifest::Stream { output_id, .. }
+            | OutputManifest::Error { output_id, .. } => output_id,
+        };
+        if id.is_empty() {
+            *id = uuid::Uuid::new_v4().to_string();
+        }
     }
 }
 
@@ -497,6 +529,7 @@ pub async fn create_manifest(
             let metadata = extract_metadata(output.get("metadata"));
             let transient = extract_transient(output.get("transient"));
             OutputManifest::DisplayData {
+                output_id: uuid::Uuid::new_v4().to_string(),
                 data,
                 metadata,
                 transient,
@@ -511,6 +544,7 @@ pub async fn create_manifest(
                 .and_then(|v| v.as_i64())
                 .map(|n| n as i32);
             OutputManifest::ExecuteResult {
+                output_id: uuid::Uuid::new_v4().to_string(),
                 data,
                 metadata,
                 execution_count,
@@ -535,6 +569,7 @@ pub async fn create_manifest(
                 ContentRef::Inline { .. } => None,
             };
             OutputManifest::Stream {
+                output_id: uuid::Uuid::new_v4().to_string(),
                 name,
                 text,
                 llm_preview,
@@ -567,6 +602,7 @@ pub async fn create_manifest(
                 ContentRef::Inline { .. } => None,
             };
             OutputManifest::Error {
+                output_id: uuid::Uuid::new_v4().to_string(),
                 ename,
                 evalue,
                 traceback,
@@ -690,12 +726,17 @@ pub async fn update_manifest_display_data(
         return Ok(None);
     }
 
-    // Create updated manifest with new data
+    // Create updated manifest with new data (preserves output_id)
     match manifest {
-        OutputManifest::DisplayData { transient, .. } => {
+        OutputManifest::DisplayData {
+            output_id,
+            transient,
+            ..
+        } => {
             let data = convert_value_to_content_refs(new_data, blob_store, threshold).await?;
             let metadata = new_metadata.clone().into_iter().collect();
             let updated = OutputManifest::DisplayData {
+                output_id: output_id.clone(),
                 data,
                 metadata,
                 transient: transient.clone(),
@@ -703,6 +744,7 @@ pub async fn update_manifest_display_data(
             Ok(Some(updated))
         }
         OutputManifest::ExecuteResult {
+            output_id,
             execution_count,
             transient,
             ..
@@ -710,6 +752,7 @@ pub async fn update_manifest_display_data(
             let data = convert_value_to_content_refs(new_data, blob_store, threshold).await?;
             let metadata = new_metadata.clone().into_iter().collect();
             let updated = OutputManifest::ExecuteResult {
+                output_id: output_id.clone(),
                 data,
                 metadata,
                 execution_count: *execution_count,
@@ -764,6 +807,7 @@ pub async fn resolve_manifest(
             data,
             metadata,
             transient,
+            ..
         } => {
             let resolved_data = resolve_data_bundle(data, blob_store).await?;
             let mut output = serde_json::json!({
@@ -790,6 +834,7 @@ pub async fn resolve_manifest(
             metadata,
             execution_count,
             transient,
+            ..
         } => {
             let resolved_data = resolve_data_bundle(data, blob_store).await?;
             let mut output = serde_json::json!({
@@ -1948,6 +1993,7 @@ mod tests {
             },
         );
         let manifest_a = OutputManifest::DisplayData {
+            output_id: uuid::Uuid::new_v4().to_string(),
             data,
             metadata: HashMap::new(),
             transient: TransientData::default(),
@@ -2115,5 +2161,71 @@ mod tests {
             panic!("expected Stream");
         };
         assert!(llm_preview.is_none());
+    }
+
+    #[tokio::test]
+    async fn output_id_uniqueness_across_manifest_types() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+        let mut ids = std::collections::HashSet::new();
+
+        let outputs = vec![
+            serde_json::json!({"output_type": "stream", "name": "stdout", "text": "a\n"}),
+            serde_json::json!({"output_type": "stream", "name": "stderr", "text": "b\n"}),
+            serde_json::json!({"output_type": "display_data", "data": {"text/plain": "c"}, "metadata": {}}),
+            serde_json::json!({"output_type": "execute_result", "data": {"text/plain": "d"}, "metadata": {}, "execution_count": 1}),
+            serde_json::json!({"output_type": "error", "ename": "E", "evalue": "v", "traceback": []}),
+        ];
+        for out in &outputs {
+            let m = create_manifest(out, &store, DEFAULT_INLINE_THRESHOLD)
+                .await
+                .unwrap();
+            let id = m.output_id().to_string();
+            assert!(!id.is_empty(), "output_id must be non-empty");
+            assert!(ids.insert(id), "output_id must be unique");
+        }
+        assert_eq!(ids.len(), 5);
+    }
+
+    #[test]
+    fn ensure_output_id_mints_for_empty() {
+        let mut m = OutputManifest::Stream {
+            output_id: String::new(),
+            name: "stdout".to_string(),
+            text: ContentRef::Inline {
+                inline: "hi".to_string(),
+            },
+            llm_preview: None,
+        };
+        assert!(m.output_id().is_empty());
+        m.ensure_output_id();
+        assert!(!m.output_id().is_empty());
+        let first_id = m.output_id().to_string();
+        m.ensure_output_id();
+        assert_eq!(m.output_id(), first_id, "must be idempotent");
+    }
+
+    #[test]
+    fn legacy_manifest_without_output_id_deserializes() {
+        let legacy = serde_json::json!({
+            "output_type": "display_data",
+            "data": {"text/plain": {"inline": "x"}},
+        });
+        let m: OutputManifest = serde_json::from_value(legacy).unwrap();
+        assert!(m.output_id().is_empty());
+    }
+
+    #[tokio::test]
+    async fn output_id_survives_json_round_trip() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+        let out = serde_json::json!({"output_type": "stream", "name": "stdout", "text": "hi\n"});
+        let m = create_manifest(&out, &store, DEFAULT_INLINE_THRESHOLD)
+            .await
+            .unwrap();
+        let id = m.output_id().to_string();
+        let json = m.to_json();
+        let m2: OutputManifest = serde_json::from_value(json).unwrap();
+        assert_eq!(m2.output_id(), id);
     }
 }

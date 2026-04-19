@@ -292,11 +292,12 @@ pub(crate) fn media_to_display_data(media: &jupyter_protocol::Media) -> serde_js
 
 /// Update an output by display_id when outputs are inline manifests.
 ///
-/// Iterates through all executions' outputs in the RuntimeStateDoc,
-/// deserializes each as an OutputManifest, checks for a matching display_id,
-/// and replaces the manifest with updated data when found.
+/// Updates all outputs matching a display_id with new data and metadata.
 ///
-/// Returns true if an output was found and updated, false otherwise.
+/// Uses the `display_index` for O(1) lookup of matching outputs. Falls back
+/// to a full scan if the index has no entries (legacy outputs before indexing).
+///
+/// Returns true if at least one output was updated, false otherwise.
 pub(crate) async fn update_output_by_display_id_with_manifests(
     state_doc: &mut RuntimeStateDoc,
     display_id: &str,
@@ -304,35 +305,61 @@ pub(crate) async fn update_output_by_display_id_with_manifests(
     new_metadata: &serde_json::Map<String, serde_json::Value>,
     blob_store: &BlobStore,
 ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-    // Get all outputs from the RuntimeStateDoc (keyed by execution_id)
-    let outputs = state_doc.get_all_outputs();
-    let mut found = false;
+    let index_entries = state_doc.get_display_index_entries(display_id);
 
-    for (exec_id, output_idx, output_value) in outputs {
-        // Deserialize the inline manifest JSON Value as an OutputManifest
-        let manifest: OutputManifest = match serde_json::from_value(output_value) {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-
-        // Check if this manifest has the matching display_id and update it
-        if let Some(updated_manifest) = output_store::update_manifest_display_data(
-            &manifest,
-            display_id,
-            new_data,
-            new_metadata,
-            blob_store,
-            DEFAULT_INLINE_THRESHOLD,
-        )
-        .await?
-        {
-            // Write the updated manifest back as a JSON Value
-            state_doc.replace_output(&exec_id, output_idx, &updated_manifest.to_json())?;
-            found = true;
+    if !index_entries.is_empty() {
+        let mut found = false;
+        for (exec_id, target_output_id) in &index_entries {
+            let outputs = state_doc.get_outputs(exec_id);
+            for (output_idx, output_value) in outputs.into_iter().enumerate() {
+                let manifest: OutputManifest = match serde_json::from_value(output_value) {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+                if manifest.output_id() != target_output_id {
+                    continue;
+                }
+                if let Some(updated) = output_store::update_manifest_display_data(
+                    &manifest,
+                    display_id,
+                    new_data,
+                    new_metadata,
+                    blob_store,
+                    DEFAULT_INLINE_THRESHOLD,
+                )
+                .await?
+                {
+                    state_doc.replace_output(exec_id, output_idx, &updated.to_json())?;
+                    found = true;
+                }
+            }
         }
+        Ok(found)
+    } else {
+        // Fallback: full scan for outputs without display_index entries
+        let outputs = state_doc.get_all_outputs();
+        let mut found = false;
+        for (exec_id, output_idx, output_value) in outputs {
+            let manifest: OutputManifest = match serde_json::from_value(output_value) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            if let Some(updated) = output_store::update_manifest_display_data(
+                &manifest,
+                display_id,
+                new_data,
+                new_metadata,
+                blob_store,
+                DEFAULT_INLINE_THRESHOLD,
+            )
+            .await?
+            {
+                state_doc.replace_output(&exec_id, output_idx, &updated.to_json())?;
+                found = true;
+            }
+        }
+        Ok(found)
     }
-
-    Ok(found)
 }
 
 /// A cell queued for execution.

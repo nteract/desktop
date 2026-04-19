@@ -1321,8 +1321,18 @@ impl NotebookRoom {
                     let json_outputs: Vec<serde_json::Value> = outputs
                         .iter()
                         .map(|s| {
-                            serde_json::from_str(s)
-                                .unwrap_or_else(|_| serde_json::Value::String(s.clone()))
+                            let mut val = serde_json::from_str(s)
+                                .unwrap_or_else(|_| serde_json::Value::String(s.clone()));
+                            // Mint output_id for legacy outputs that lack one
+                            if let serde_json::Value::Object(ref mut map) = val {
+                                if !map.contains_key("output_id") {
+                                    map.insert(
+                                        "output_id".to_string(),
+                                        serde_json::Value::String(uuid::Uuid::new_v4().to_string()),
+                                    );
+                                }
+                            }
+                            val
                         })
                         .collect();
                     let _ = sd.set_outputs(&synthetic_eid, &json_outputs);
