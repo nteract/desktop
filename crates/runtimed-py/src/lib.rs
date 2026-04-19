@@ -4,9 +4,7 @@
 //! - `NativeAsyncClient`: Async daemon operations (status, ping, list active notebooks)
 //! - `AsyncSession`: Async notebook interaction with kernel management
 
-// Tests are allowed to use unwrap()/expect()—they're how you assert
-// preconditions and keep test failures informative. Workspace-wide
-// `clippy::unwrap_used = "warn"` applies to non-test code.
+// Allow `expect()` and `unwrap()` in tests
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 extern crate runtimed_client as runtimed;
