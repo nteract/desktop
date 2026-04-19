@@ -96,10 +96,19 @@ type RuntimeAgentRequestSender = tokio::sync::mpsc::Sender<(
 /// The runtime agent's sync handler receives the request as a frame 0x01 and
 /// sends the response as frame 0x02. Returns error if no runtime agent is
 /// connected.
+///
+/// Bounded by a per-request timeout so that a stuck or overloaded runtime
+/// agent cannot block the daemon's request-handling path indefinitely.
+/// The timeout is chosen per request type: fast for interrupt/shutdown
+/// (which must respond quickly), generous for launch/sync (which do real
+/// work). The daemon-side sync loop serialises RPCs (`pending_reply`
+/// guard), so a slow RPC also delays subsequent ones — the timeout
+/// prevents that cascade from exceeding the client-side 30 s window.
 pub(crate) async fn send_runtime_agent_request(
     room: &NotebookRoom,
     request: notebook_protocol::protocol::RuntimeAgentRequest,
 ) -> anyhow::Result<notebook_protocol::protocol::RuntimeAgentResponse> {
+    let timeout = runtime_agent_request_timeout(&request);
     let tx = {
         let guard = room.runtime_agent_request_tx.lock().await;
         guard
@@ -110,9 +119,32 @@ pub(crate) async fn send_runtime_agent_request(
     tx.send((request, reply_tx))
         .await
         .map_err(|_| anyhow::anyhow!("Runtime agent disconnected"))?;
-    reply_rx
-        .await
-        .map_err(|_| anyhow::anyhow!("Runtime agent dropped reply"))
+    match tokio::time::timeout(timeout, reply_rx).await {
+        Ok(Ok(response)) => Ok(response),
+        Ok(Err(_)) => Err(anyhow::anyhow!("Runtime agent dropped reply")),
+        Err(_) => Err(anyhow::anyhow!("Runtime agent request timed out")),
+    }
+}
+
+/// Per-request timeout for runtime agent RPCs.
+///
+/// Must be shorter than the client-side relay timeout (30 s for most
+/// requests, 300 s for LaunchKernel/SyncEnvironment) so that the daemon
+/// always responds before the client gives up.
+fn runtime_agent_request_timeout(
+    request: &notebook_protocol::protocol::RuntimeAgentRequest,
+) -> std::time::Duration {
+    use notebook_protocol::protocol::RuntimeAgentRequest;
+    match request {
+        RuntimeAgentRequest::InterruptExecution => std::time::Duration::from_secs(10),
+        RuntimeAgentRequest::ShutdownKernel => std::time::Duration::from_secs(10),
+        RuntimeAgentRequest::LaunchKernel { .. } => std::time::Duration::from_secs(240),
+        RuntimeAgentRequest::RestartKernel { .. } => std::time::Duration::from_secs(240),
+        RuntimeAgentRequest::SyncEnvironment(_) => std::time::Duration::from_secs(240),
+        RuntimeAgentRequest::SendComm { .. } => std::time::Duration::from_secs(10),
+        RuntimeAgentRequest::Complete { .. } => std::time::Duration::from_secs(10),
+        RuntimeAgentRequest::GetHistory { .. } => std::time::Duration::from_secs(10),
+    }
 }
 
 /// Trust state for a notebook room.
