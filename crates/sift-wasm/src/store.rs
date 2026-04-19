@@ -75,7 +75,9 @@ fn with_stores<F, R>(f: F) -> R
 where
     F: FnOnce(&mut HashMap<u32, DataStore>) -> R,
 {
-    let mut guard = STORES.lock().unwrap();
+    #[allow(clippy::expect_used)]
+    // wasm32 is single-threaded; mutex can only be poisoned by a prior panic while holding the lock
+    let mut guard = STORES.lock().expect("STORES mutex poisoned");
     let stores = guard.get_or_insert_with(HashMap::new);
     f(stores)
 }
@@ -110,7 +112,9 @@ fn store_batches(batches: Vec<RecordBatch>, schema: &arrow::datatypes::Schema) -
     }
 
     let handle = {
-        let mut h = NEXT_HANDLE.lock().unwrap();
+        #[allow(clippy::expect_used)]
+        // wasm32 is single-threaded; mutex can only be poisoned by a prior panic while holding the lock
+        let mut h = NEXT_HANDLE.lock().expect("NEXT_HANDLE mutex poisoned");
         let id = *h;
         *h += 1;
         id
@@ -461,8 +465,17 @@ pub fn store_temporal_histogram(handle: u32, col: usize) -> Result<JsValue, JsVa
             return JsValue::from(js_sys::Array::new());
         }
 
-        let min_ms = *ms_values.iter().min().unwrap();
-        let max_ms = *ms_values.iter().max().unwrap();
+        // Safe: ms_values is non-empty (guarded by the is_empty() early return above).
+        #[allow(clippy::expect_used)] // non-emptiness verified above
+        let min_ms = *ms_values
+            .iter()
+            .min()
+            .expect("ms_values is non-empty (checked above)");
+        #[allow(clippy::expect_used)] // non-emptiness verified above
+        let max_ms = *ms_values
+            .iter()
+            .max()
+            .expect("ms_values is non-empty (checked above)");
         let range_ms = max_ms - min_ms;
 
         // Auto-detect granularity
@@ -1378,9 +1391,11 @@ pub fn cast_column(handle: u32, col: usize, target_type: &str) -> Result<(), JsV
                         Some(s) => {
                             if let Ok(dt) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
                                 // and_hms_opt(0,0,0) only fails for invalid h/m/s, which are hardcoded valid
+                                #[allow(clippy::expect_used)]
+                                // and_hms_opt only fails for invalid h/m/s; 0,0,0 is always valid
                                 let ts = dt
                                     .and_hms_opt(0, 0, 0)
-                                    .unwrap()
+                                    .expect("and_hms_opt(0, 0, 0) is always valid (midnight)")
                                     .and_utc()
                                     .timestamp_millis();
                                 builder.append_value(ts);
