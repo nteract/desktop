@@ -5,6 +5,10 @@
 //! this WASM module instead of `@automerge/automerge` to avoid
 //! version mismatch issues that produce phantom cells.
 
+// Allow `expect()` and `unwrap()` in tests
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
+use automerge::patches::PatchAction;
 use automerge::sync;
 use automerge::sync::SyncDoc;
 use notebook_doc::diff::{diff_doc, CellChangeset, TextPatch};

@@ -1390,7 +1390,6 @@ impl NotebookRoom {
     /// For normal operation, `new_fresh` is used to ensure the .ipynb file
     /// is the source of truth.
     #[cfg(test)]
-    #[allow(clippy::unwrap_used, clippy::expect_used)]
     pub fn load_or_create(notebook_id: &str, docs_dir: &Path, blob_store: Arc<BlobStore>) -> Self {
         // Derive UUID from notebook_id if it parses as a UUID, else mint a fresh one.
         let id = uuid::Uuid::parse_str(notebook_id).unwrap_or_else(|_| uuid::Uuid::new_v4());
@@ -9551,7 +9550,6 @@ pub(crate) fn spawn_notebook_file_watcher(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use serial_test::serial;

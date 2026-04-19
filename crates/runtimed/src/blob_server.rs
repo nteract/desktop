@@ -152,7 +152,6 @@ fn text_response(status: StatusCode, body: &str) -> Response<Full<Bytes>> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use tempfile::TempDir;

@@ -932,7 +932,6 @@ fn ensure_shell_path(bin_dir: &std::path::Path) -> Result<(), String> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

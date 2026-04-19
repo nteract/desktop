@@ -1003,7 +1003,6 @@ pub fn read_nested_list(doc: &AutoCommit, map_key: &str, sub_key: &str) -> Vec<S
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use tempfile::TempDir;

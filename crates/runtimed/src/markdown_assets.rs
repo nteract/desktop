@@ -260,7 +260,6 @@ fn estimated_base64_decoded_len(payload: &str) -> usize {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use tempfile::TempDir;

@@ -3,6 +3,11 @@
 //! Implements the MCP protocol using `rmcp`, backed by `runtimed-client`
 //! for daemon IPC and `notebook-sync` for Automerge document operations.
 
+// Tests are allowed to use unwrap()/expect()—they're how you assert
+// preconditions and keep test failures informative. Workspace-wide
+// `clippy::unwrap_used = "warn"` applies to non-test code.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 use std::path::PathBuf;
 use std::sync::Arc;
 

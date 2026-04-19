@@ -1,3 +1,8 @@
+// Tests are allowed to use unwrap()/expect()—they're how you assert
+// preconditions and keep test failures informative. Workspace-wide
+// `clippy::unwrap_used = "warn"` applies to non-test code.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 extern crate runtimed_client as runtimed;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -5383,7 +5388,6 @@ async fn inspect_notebook(path: &PathBuf, full_outputs: bool, json_output: bool)
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     /// Test that the shutdown command correctly identifies UUIDs vs file paths.
     /// This is critical for handling both saved notebooks (paths) and untitled

@@ -3,6 +3,11 @@
 //! This crate provides utilities for detecting development mode and managing
 //! workspace-specific paths, enabling per-worktree isolation during development.
 
+// Tests are allowed to use unwrap()/expect()—they're how you assert
+// preconditions and keep test failures informative. Workspace-wide
+// `clippy::unwrap_used = "warn"` applies to non-test code.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 use sha2::{Digest, Sha256};
 #[cfg(any(target_os = "macos", test))]
 use std::ffi::OsString;
@@ -1078,7 +1083,6 @@ pub fn session_state_path() -> PathBuf {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

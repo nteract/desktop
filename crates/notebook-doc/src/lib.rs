@@ -34,6 +34,11 @@
 //!     notebook_metadata: Str      ← Legacy JSON string (backward compat, dual-written)
 //! ```
 
+// Tests are allowed to use unwrap()/expect()—they're how you assert
+// preconditions and keep test failures informative. Workspace-wide
+// `clippy::unwrap_used = "warn"` applies to non-test code.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 pub mod diff;
 pub mod frame_types;
 pub mod metadata;
@@ -2545,7 +2550,6 @@ pub fn get_cells_from_doc(doc: &AutoCommit) -> Vec<CellSnapshot> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

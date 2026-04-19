@@ -13,6 +13,11 @@
 //! - Editing code in cells: notebook stays trusted
 //! - External modification of dependencies: requires re-approval
 
+// Tests are allowed to use unwrap()/expect()—they're how you assert
+// preconditions and keep test failures informative. Workspace-wide
+// `clippy::unwrap_used = "warn"` applies to non-test code.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
@@ -337,7 +342,6 @@ pub fn sign_notebook_dependencies(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use serial_test::serial;

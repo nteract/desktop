@@ -113,7 +113,6 @@ pub async fn query_daemon_info(socket_path: std::path::PathBuf) -> Option<Daemon
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

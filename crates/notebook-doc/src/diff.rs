@@ -633,7 +633,6 @@ pub fn diff_metadata_touched(
 // ── Tests ────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use std::collections::HashMap;
