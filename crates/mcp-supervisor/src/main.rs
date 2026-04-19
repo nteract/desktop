@@ -1403,27 +1403,19 @@ impl ServerHandler for Supervisor {
         let mut tools = Vec::new();
 
         // Supervisor's own tools
-        let empty_schema = serde_json::to_value(schemars::schema_for!(EmptyParams))
-            .unwrap()
-            .as_object()
-            .cloned()
-            .unwrap_or_default();
+        // `serde_json::to_value(schemars::schema_for!(...))` only fails on
+        // OOM. Fall back to an empty schema rather than panic.
+        fn schema_object<T: schemars::JsonSchema>() -> serde_json::Map<String, serde_json::Value> {
+            serde_json::to_value(schemars::schema_for!(T))
+                .ok()
+                .and_then(|v| v.as_object().cloned())
+                .unwrap_or_default()
+        }
 
-        let up_schema = serde_json::to_value(schemars::schema_for!(UpParams))
-            .unwrap()
-            .as_object()
-            .cloned()
-            .unwrap_or_default();
-        let down_schema = serde_json::to_value(schemars::schema_for!(DownParams))
-            .unwrap()
-            .as_object()
-            .cloned()
-            .unwrap_or_default();
-        let logs_schema = serde_json::to_value(schemars::schema_for!(SupervisorLogsParams))
-            .unwrap()
-            .as_object()
-            .cloned()
-            .unwrap_or_default();
+        let empty_schema = schema_object::<EmptyParams>();
+        let up_schema = schema_object::<UpParams>();
+        let down_schema = schema_object::<DownParams>();
+        let logs_schema = schema_object::<SupervisorLogsParams>();
 
         tools.push(Tool::new(
             "up",
@@ -2213,8 +2205,17 @@ fn resolve_project_root() -> PathBuf {
             return p;
         }
     }
-    // Walk up from current dir looking for Cargo.toml with [workspace]
-    let mut dir = std::env::current_dir().expect("Failed to get current directory");
+    // Walk up from current dir looking for Cargo.toml with [workspace].
+    // If current_dir() itself fails we genuinely can't recover — path
+    // discovery is the whole job of this function, and every caller uses
+    // the result to locate the repo. Panic loudly rather than return a
+    // silently-bogus relative path.
+    #[allow(
+        clippy::expect_used,
+        reason = "cwd unreadable is unrecoverable for path bootstrap"
+    )]
+    let cwd = std::env::current_dir().expect("current_dir() failed during path bootstrap");
+    let mut dir = cwd.clone();
     loop {
         let cargo_toml = dir.join("Cargo.toml");
         if cargo_toml.exists() {
@@ -2225,8 +2226,8 @@ fn resolve_project_root() -> PathBuf {
             }
         }
         if !dir.pop() {
-            // Fallback to current dir
-            return std::env::current_dir().expect("Failed to get current directory");
+            // Nothing above cwd contained a workspace Cargo.toml.
+            return cwd;
         }
     }
 }
