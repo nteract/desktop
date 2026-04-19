@@ -1,5 +1,5 @@
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { type ReactNode, useCallback, useEffect, useId, useRef } from "react";
+import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef } from "react";
 import {
   CommBridgeManager,
   type IframeToParentMessage,
@@ -259,6 +259,10 @@ export function OutputArea({
 
   const darkMode = useDarkMode();
   const colorTheme = useColorTheme();
+  const maxHeightStyle = useMemo(
+    () => (maxHeight ? { maxHeight: `${maxHeight}px` } : undefined),
+    [maxHeight],
+  );
   // Ref for reading current darkMode in callbacks without adding to deps
   const darkModeRef = useRef(darkMode);
   darkModeRef.current = darkMode;
@@ -507,7 +511,7 @@ export function OutputArea({
         <div
           id={id}
           className={cn("space-y-2", maxHeight && "overflow-y-auto")}
-          style={maxHeight ? { maxHeight: `${maxHeight}px` } : undefined}
+          style={maxHeightStyle}
         >
           {/* Preloaded or active isolated frame */}
           {(shouldIsolate || showPreloadedIframe) && (
@@ -534,7 +538,7 @@ export function OutputArea({
               {outputs.map((output, index) => (
                 <div key={`output-${index}`} data-slot="output-item" data-output-index={index}>
                   <ErrorBoundary
-                    resetKeys={[JSON.stringify(output)]}
+                    resetKeys={[output]}
                     fallback={(error, reset) => (
                       <OutputErrorFallback error={error} outputIndex={index} onRetry={reset} />
                     )}
