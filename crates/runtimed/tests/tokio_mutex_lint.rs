@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 //! CI lint: ensure no tokio::sync::Mutex guards are held across .await points.
 //!
 //! Uses the async-rust-lsp rule engine (tree-sitter based) to scan all runtimed
