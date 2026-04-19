@@ -854,6 +854,15 @@ impl Daemon {
             }
         }
 
+        // Register global shutdown trigger for notebook_sync_server debouncers.
+        {
+            let shutdown_daemon = self.clone();
+            crate::notebook_sync_server::register_shutdown_trigger(Arc::new(move || {
+                let d = shutdown_daemon.clone();
+                tokio::spawn(async move { d.trigger_shutdown().await });
+            }));
+        }
+
         // Find and reuse existing environments from previous runs
         self.find_existing_environments().await;
 
@@ -874,10 +883,13 @@ impl Daemon {
                     .is_ok()
                 {
                     let d = uv_panic_daemon.clone();
+                    let d2 = uv_panic_daemon;
                     spawn_supervised(
                         "uv-warming-loop",
                         async move { d.uv_warming_loop().await },
-                        |_| {},
+                        move |_| {
+                            tokio::spawn(async move { d2.trigger_shutdown().await });
+                        },
                     );
                 } else {
                     let d = uv_panic_daemon;
@@ -899,10 +911,13 @@ impl Daemon {
                     .is_ok()
                 {
                     let d = conda_panic_daemon.clone();
+                    let d2 = conda_panic_daemon;
                     spawn_supervised(
                         "conda-warming-loop",
                         async move { d.conda_warming_loop().await },
-                        |_| {},
+                        move |_| {
+                            tokio::spawn(async move { d2.trigger_shutdown().await });
+                        },
                     );
                 } else {
                     let d = conda_panic_daemon;
@@ -924,10 +939,13 @@ impl Daemon {
                     .is_ok()
                 {
                     let d = pixi_panic_daemon.clone();
+                    let d2 = pixi_panic_daemon;
                     spawn_supervised(
                         "pixi-warming-loop",
                         async move { d.pixi_warming_loop().await },
-                        |_| {},
+                        move |_| {
+                            tokio::spawn(async move { d2.trigger_shutdown().await });
+                        },
                     );
                 } else {
                     let d = pixi_panic_daemon;
