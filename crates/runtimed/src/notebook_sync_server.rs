@@ -640,7 +640,7 @@ async fn process_markdown_assets(room: &NotebookRoom) {
             .map(|cell| (cell.id, cell.source, cell.resolved_assets))
             .collect();
         let mut fork = doc.fork();
-        fork.set_actor("runtimed:assets");
+        fork.set_actor(&unique_fork_actor("runtimed:assets"));
         (cells, fork)
     };
 
@@ -815,7 +815,7 @@ pub(crate) async fn apply_interrupt_to_state_doc(
     let mut fork = {
         let mut sd = room_state_doc.write().await;
         let mut f = sd.fork();
-        f.set_actor("runtimed:state:interrupt");
+        f.set_actor(&unique_fork_actor("runtimed:state:interrupt"));
         f
     };
 
@@ -5880,7 +5880,7 @@ async fn handle_notebook_request(
                         if let Some(runtime) = detect_room_runtime(&room_clone).await {
                             if let Some(formatted) = format_source(&source_clone, &runtime).await {
                                 let mut fork = fork;
-                                let actor = formatter_actor(&runtime);
+                                let actor = unique_fork_actor(&formatter_actor(&runtime));
                                 fork.set_actor(&actor);
                                 if fork.update_source(&cell_id_clone, &formatted).is_ok() {
                                     let mut doc = room_clone.doc.write().await;
@@ -7113,6 +7113,22 @@ fn formatter_actor(runtime: &str) -> String {
     format!("runtimed:{tool}")
 }
 
+/// Append a UUID suffix to an Automerge actor base string.
+///
+/// Every concurrent fork+merge cycle MUST have a distinct actor ID.
+/// Automerge rejects merges whose `(actor, seq)` pairs collide with a
+/// previously-merged fork's, which manifests as a silent
+/// `DuplicateSeqNumber` under `catch_automerge_panic` — see #1905 for
+/// the IOPub variant of this bug. This helper is the fix for the other
+/// fork sites in this file (assets, interrupt, formatter) where two
+/// triggers can overlap in the async gap between fork and merge.
+///
+/// The base prefix is preserved so any downstream attribution filter
+/// that matches on e.g. `"runtimed:"` still works.
+fn unique_fork_actor(base: &str) -> String {
+    format!("{}:{}", base, uuid::Uuid::new_v4())
+}
+
 /// Detect the runtime from room metadata, returning "python", "deno", or None.
 async fn detect_room_runtime(room: &NotebookRoom) -> Option<String> {
     let doc = room.doc.read().await;
@@ -7154,7 +7170,7 @@ async fn format_notebook_cells(room: &NotebookRoom) -> Result<usize, String> {
     let mut fork = {
         let mut doc = room.doc.write().await;
         let mut f = doc.fork();
-        f.set_actor(&formatter_actor(&runtime));
+        f.set_actor(&unique_fork_actor(&formatter_actor(&runtime)));
         f
     };
 
