@@ -1,11 +1,9 @@
-import { invoke } from "@tauri-apps/api/core";
-import { useCallback, useRef, useState } from "react";
+import { useNotebookHost } from "@nteract/notebook-host";
+import { useCallback, useMemo, useRef, useState } from "react";
+import { NotebookClient } from "runtimed";
+import type { HistoryEntry } from "runtimed";
 
-export interface HistoryEntry {
-  session: number;
-  line: number;
-  source: string;
-}
+export type { HistoryEntry };
 
 // MRU cache for search queries (pattern -> entries)
 // Uses Map iteration order: oldest at start, newest at end
@@ -48,57 +46,51 @@ function getTailCache(): HistoryEntry[] {
 }
 
 export function useHistorySearch() {
+  const host = useNotebookHost();
+  const client = useMemo(() => new NotebookClient({ transport: host.transport }), [host]);
   const [entries, setEntries] = useState<HistoryEntry[]>(getTailCache);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Track the current search pattern to avoid race conditions
   const currentSearchRef = useRef<string | undefined>(undefined);
 
-  const searchHistory = useCallback(async (pattern?: string) => {
-    // Track this search request
-    currentSearchRef.current = pattern;
+  const searchHistory = useCallback(
+    async (pattern?: string) => {
+      currentSearchRef.current = pattern;
 
-    // Check cache first - if we have results, show them immediately
-    const cached = getCachedResult(pattern);
-    if (cached) {
-      setEntries(cached);
-      // Still fetch fresh results in background, but don't show loading
-      // This gives instant feedback for typo corrections / backspace
-    }
+      const cached = getCachedResult(pattern);
+      if (cached) {
+        setEntries(cached);
+      }
 
-    setIsLoading(true);
-    setError(null);
+      setIsLoading(true);
+      setError(null);
 
-    try {
-      const results = await invoke<HistoryEntry[]>("get_history_via_daemon", {
-        pattern: pattern || null,
-        n: 100,
-      });
+      try {
+        const results = await client.getHistory(pattern || null, 100, true);
 
-      // Only update if this is still the current search (avoid race conditions)
-      if (currentSearchRef.current === pattern) {
-        // Don't replace good entries with empty kernel results — the kernel
-        // glob search may legitimately return nothing for very narrow patterns
-        // while client-side filtering of the tail still has useful matches.
-        if (results.length > 0 || !pattern) {
-          setEntries(results);
-          setCacheResult(pattern, results);
+        if (currentSearchRef.current === pattern) {
+          // Don't replace good entries with empty kernel results — the kernel
+          // glob search may legitimately return nothing for very narrow patterns
+          // while client-side filtering of the tail still has useful matches.
+          if (results.length > 0 || !pattern) {
+            setEntries(results);
+            setCacheResult(pattern, results);
+          }
+        }
+      } catch (e) {
+        const errorMsg = e instanceof Error ? e.message : String(e);
+        if (currentSearchRef.current === pattern) {
+          setError(errorMsg);
+        }
+      } finally {
+        if (currentSearchRef.current === pattern) {
+          setIsLoading(false);
         }
       }
-    } catch (e) {
-      const errorMsg = e instanceof Error ? e.message : String(e);
-      // Only update error if this is still the current search
-      if (currentSearchRef.current === pattern) {
-        setError(errorMsg);
-        // Don't clear entries on error - keep showing what we have
-      }
-    } finally {
-      // Only clear loading if this is still the current search
-      if (currentSearchRef.current === pattern) {
-        setIsLoading(false);
-      }
-    }
-  }, []);
+    },
+    [client],
+  );
 
   const clearEntries = useCallback(() => {
     // Reset to tail cache (or empty if no cache)

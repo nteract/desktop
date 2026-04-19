@@ -30,13 +30,24 @@ use crate::error::SyncError;
 /// so there are no mutation or sync confirmation commands.
 pub enum RelayCommand {
     /// Send a request to the daemon and wait for a response.
+    ///
+    /// The caller generates the correlation `id` so it can later send a
+    /// matching `CancelRequest` if the wait times out — otherwise the
+    /// pending entry would linger in the relay's `HashMap` forever.
     SendRequest {
+        id: String,
         request: NotebookRequest,
         reply: oneshot::Sender<Result<NotebookResponse, SyncError>>,
         /// Optional broadcast sender for delivering broadcasts during long-running
         /// requests (e.g., LaunchKernel with environment progress updates).
         broadcast_tx: Option<broadcast::Sender<NotebookBroadcast>>,
     },
+
+    /// Evict a pending request whose caller has given up (e.g., timed
+    /// out). Stops future responses for `id` from being delivered to a
+    /// dead `oneshot` and keeps the pending map from accumulating
+    /// abandoned entries across a long-lived relay.
+    CancelRequest { id: String },
 
     /// Forward a typed frame from the frontend to the daemon.
     ///
@@ -116,20 +127,13 @@ impl RelayHandle {
     ///
     /// This is async because it involves socket I/O. The request is sent
     /// to the daemon via the relay task, which handles the wire protocol.
+    /// The per-request-type timeout (see `relay_task::request_timeout`) is
+    /// enforced here; an overrun returns `SyncError::Timeout`.
     pub async fn send_request(
         &self,
         request: NotebookRequest,
     ) -> Result<NotebookResponse, SyncError> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.cmd_tx
-            .send(RelayCommand::SendRequest {
-                request,
-                reply: reply_tx,
-                broadcast_tx: None,
-            })
-            .await
-            .map_err(|_| SyncError::Disconnected)?;
-        reply_rx.await.map_err(|_| SyncError::Disconnected)?
+        self.send_request_inner(request, None).await
     }
 
     /// Send a request with a broadcast channel for real-time progress updates.
@@ -142,16 +146,39 @@ impl RelayHandle {
         request: NotebookRequest,
         broadcast_tx: broadcast::Sender<NotebookBroadcast>,
     ) -> Result<NotebookResponse, SyncError> {
+        self.send_request_inner(request, Some(broadcast_tx)).await
+    }
+
+    async fn send_request_inner(
+        &self,
+        request: NotebookRequest,
+        broadcast_tx: Option<broadcast::Sender<NotebookBroadcast>>,
+    ) -> Result<NotebookResponse, SyncError> {
+        let timeout = crate::relay_task::request_timeout(&request);
+        // Generate the id here so we can send a matching CancelRequest on
+        // timeout — otherwise the pending map inside the relay task would
+        // accumulate abandoned entries across a long-lived connection.
+        let id = uuid::Uuid::new_v4().to_string();
         let (reply_tx, reply_rx) = oneshot::channel();
         self.cmd_tx
             .send(RelayCommand::SendRequest {
+                id: id.clone(),
                 request,
                 reply: reply_tx,
-                broadcast_tx: Some(broadcast_tx),
+                broadcast_tx,
             })
             .await
             .map_err(|_| SyncError::Disconnected)?;
-        reply_rx.await.map_err(|_| SyncError::Disconnected)?
+        match tokio::time::timeout(timeout, reply_rx).await {
+            Ok(Ok(inner)) => inner,
+            Ok(Err(_)) => Err(SyncError::Disconnected),
+            Err(_) => {
+                // Fire-and-forget eviction. If the relay has already shut
+                // down (cmd_tx closed), there's nothing to clean up.
+                let _ = self.cmd_tx.send(RelayCommand::CancelRequest { id }).await;
+                Err(SyncError::Timeout)
+            }
+        }
     }
 
     /// Forward a typed frame from the frontend to the daemon.
