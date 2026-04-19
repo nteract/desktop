@@ -154,6 +154,12 @@ pub const PROTOCOL_V2: &str = "v2";
 
 /// Numeric protocol version for version negotiation.
 /// Increment this when making breaking protocol changes.
+///
+/// The request/response envelope change (`NotebookRequestEnvelope` /
+/// `NotebookResponseEnvelope` with an optional `id` correlation field)
+/// is JSON-wire-compatible — the id is `Option<String>` and serde
+/// ignores unknown fields by default — so mixed v2/new deployments
+/// interoperate. No version bump is needed for that change.
 pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Magic bytes identifying the runtimed protocol.

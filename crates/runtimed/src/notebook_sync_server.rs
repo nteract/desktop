@@ -2651,19 +2651,30 @@ where
                             }
 
                             NotebookFrameType::Request => {
-                                // Handle NotebookRequest
-                                let request: NotebookRequest = serde_json::from_slice(&frame.payload)?;
-                                let response =
-                                    handle_notebook_request(room, request, daemon.clone()).await;
+                                // Decode the envelope, dispatch the inner request,
+                                // echo the id on the response envelope so the caller
+                                // can correlate multiple in-flight requests.
+                                let envelope: notebook_protocol::protocol::NotebookRequestEnvelope =
+                                    serde_json::from_slice(&frame.payload)?;
+                                let response = handle_notebook_request(
+                                    room,
+                                    envelope.request,
+                                    daemon.clone(),
+                                )
+                                .await;
 
                                 // Promotion from untitled → file-backed is now handled
                                 // entirely inside handle_notebook_request (SaveNotebook arm).
                                 // Save path update is handled inside handle_notebook_request.
 
+                                let reply = notebook_protocol::protocol::NotebookResponseEnvelope {
+                                    id: envelope.id,
+                                    response,
+                                };
                                 connection::send_typed_json_frame(
                                     writer,
                                     NotebookFrameType::Response,
-                                    &response,
+                                    &reply,
                                 )
                                 .await?;
                             }

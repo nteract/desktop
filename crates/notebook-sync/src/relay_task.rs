@@ -178,9 +178,19 @@ async fn send_request_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     request: &notebook_protocol::protocol::NotebookRequest,
     notebook_id: &str,
 ) -> Result<NotebookResponse, SyncError> {
-    // Serialize and send the request
+    // Wrap the request in a correlation envelope. The daemon echoes the
+    // id on the response envelope. The relay currently serializes requests
+    // (one in flight per room), so the correlation id is redundant here —
+    // but it's part of the wire protocol at `PROTOCOL_VERSION = 3`, and a
+    // later PR (direct JS sendRequest) will use the id to dispatch
+    // concurrent responses via a pending map.
+    let expected_id = uuid::Uuid::new_v4().to_string();
+    let envelope = notebook_protocol::protocol::NotebookRequestEnvelope {
+        id: Some(expected_id.clone()),
+        request: request.clone(),
+    };
     let payload =
-        serde_json::to_vec(request).map_err(|e| SyncError::Serialization(e.to_string()))?;
+        serde_json::to_vec(&envelope).map_err(|e| SyncError::Serialization(e.to_string()))?;
     connection::send_typed_frame(writer, NotebookFrameType::Request, &payload)
         .await
         .map_err(SyncError::Io)?;
@@ -199,7 +209,13 @@ async fn send_request_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 
     let result = tokio::time::timeout(
         Duration::from_secs(timeout_secs),
-        wait_for_response(reader, frame_tx, req_broadcast_tx, notebook_id),
+        wait_for_response(
+            reader,
+            frame_tx,
+            req_broadcast_tx,
+            notebook_id,
+            &expected_id,
+        ),
     )
     .await;
 
@@ -229,6 +245,7 @@ async fn wait_for_response<R: AsyncRead + Unpin>(
     frame_tx: &mpsc::UnboundedSender<Vec<u8>>,
     req_broadcast_tx: Option<&tokio::sync::broadcast::Sender<NotebookBroadcast>>,
     _notebook_id: &str,
+    expected_id: &str,
 ) -> Result<NotebookResponse, SyncError> {
     loop {
         let frame = connection::recv_typed_frame(reader)
@@ -238,9 +255,23 @@ async fn wait_for_response<R: AsyncRead + Unpin>(
 
         match frame.frame_type {
             NotebookFrameType::Response => {
-                let response: NotebookResponse = serde_json::from_slice(&frame.payload)
-                    .map_err(|e| SyncError::Serialization(e.to_string()))?;
-                return Ok(response);
+                let envelope: notebook_protocol::protocol::NotebookResponseEnvelope =
+                    serde_json::from_slice(&frame.payload)
+                        .map_err(|e| SyncError::Serialization(e.to_string()))?;
+                // Relay serializes requests per room, so the id we're waiting
+                // for should always match. A mismatch means a stale response
+                // leaked past a timeout or a protocol bug — warn and keep
+                // reading so we eventually land on ours.
+                if let Some(id) = envelope.id.as_deref() {
+                    if id != expected_id {
+                        warn!(
+                            "[relay] Ignoring response with id {:?}, waiting for {:?}",
+                            id, expected_id
+                        );
+                        continue;
+                    }
+                }
+                return Ok(envelope.response);
             }
 
             NotebookFrameType::Broadcast => {
