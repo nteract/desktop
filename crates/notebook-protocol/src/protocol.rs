@@ -905,4 +905,89 @@ mod tests {
             serde_json::from_str(&json).expect("v2 parser accepts response envelope");
         assert!(matches!(parsed, NotebookResponse::Ok {}));
     }
+
+    /// Locks in the exact JSON wire shape that the TypeScript frontend
+    /// emits for each `NotebookRequest` variant. The TS `NotebookRequest`
+    /// union's discriminator field names must match the Rust variant's
+    /// snake_cased name — the frame-based `TauriTransport.sendRequest`
+    /// translates TS's `type:` into the envelope's `action:` key verbatim,
+    /// so a mismatched name produces an unparseable request on the
+    /// daemon side (silent wire error + failed interrupt / execute / etc.).
+    ///
+    /// Adding a new variant on the Rust side? Extend this test with the
+    /// JSON shape the TS caller sends. Renaming a Rust variant? This
+    /// test will flag the mismatch.
+    #[test]
+    fn wire_action_names_match_ts_discriminators() {
+        let cases: Vec<(&str, serde_json::Value)> = vec![
+            (
+                "launch_kernel",
+                serde_json::json!({
+                    "action": "launch_kernel",
+                    "kernel_type": "python",
+                    "env_source": "uv:inline",
+                }),
+            ),
+            (
+                "execute_cell",
+                serde_json::json!({ "action": "execute_cell", "cell_id": "c1" }),
+            ),
+            (
+                "clear_outputs",
+                serde_json::json!({ "action": "clear_outputs", "cell_id": "c1" }),
+            ),
+            (
+                "interrupt_execution",
+                serde_json::json!({ "action": "interrupt_execution" }),
+            ),
+            (
+                "shutdown_kernel",
+                serde_json::json!({ "action": "shutdown_kernel" }),
+            ),
+            (
+                "sync_environment",
+                serde_json::json!({ "action": "sync_environment" }),
+            ),
+            (
+                "run_all_cells",
+                serde_json::json!({ "action": "run_all_cells" }),
+            ),
+            (
+                "get_history",
+                serde_json::json!({
+                    "action": "get_history",
+                    "pattern": null,
+                    "n": 100,
+                    "unique": false,
+                }),
+            ),
+            (
+                "complete",
+                serde_json::json!({
+                    "action": "complete",
+                    "code": "import os\nos.",
+                    "cursor_pos": 13,
+                }),
+            ),
+        ];
+
+        for (name, json) in cases {
+            // Also validate the envelope form (with an id), which is what
+            // the frame-based path actually sends.
+            let mut with_id = json.clone();
+            if let serde_json::Value::Object(ref mut map) = with_id {
+                map.insert("id".into(), serde_json::Value::String("req-1".into()));
+            }
+            let _: NotebookRequestEnvelope = serde_json::from_value(with_id.clone())
+                .unwrap_or_else(|e| {
+                    panic!("envelope with action {:?} failed to deserialize: {e}", name)
+                });
+            let _: NotebookRequest = serde_json::from_value(json).unwrap_or_else(|e| {
+                panic!(
+                    "bare request with action {:?} failed to deserialize: {e}",
+                    name
+                )
+            });
+        }
+    }
 }

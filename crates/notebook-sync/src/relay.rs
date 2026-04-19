@@ -116,10 +116,13 @@ impl RelayHandle {
     ///
     /// This is async because it involves socket I/O. The request is sent
     /// to the daemon via the relay task, which handles the wire protocol.
+    /// The per-request-type timeout (see `relay_task::request_timeout`) is
+    /// enforced here; an overrun returns `SyncError::Timeout`.
     pub async fn send_request(
         &self,
         request: NotebookRequest,
     ) -> Result<NotebookResponse, SyncError> {
+        let timeout = crate::relay_task::request_timeout(&request);
         let (reply_tx, reply_rx) = oneshot::channel();
         self.cmd_tx
             .send(RelayCommand::SendRequest {
@@ -129,7 +132,11 @@ impl RelayHandle {
             })
             .await
             .map_err(|_| SyncError::Disconnected)?;
-        reply_rx.await.map_err(|_| SyncError::Disconnected)?
+        match tokio::time::timeout(timeout, reply_rx).await {
+            Ok(Ok(inner)) => inner,
+            Ok(Err(_)) => Err(SyncError::Disconnected),
+            Err(_) => Err(SyncError::Timeout),
+        }
     }
 
     /// Send a request with a broadcast channel for real-time progress updates.
@@ -142,6 +149,7 @@ impl RelayHandle {
         request: NotebookRequest,
         broadcast_tx: broadcast::Sender<NotebookBroadcast>,
     ) -> Result<NotebookResponse, SyncError> {
+        let timeout = crate::relay_task::request_timeout(&request);
         let (reply_tx, reply_rx) = oneshot::channel();
         self.cmd_tx
             .send(RelayCommand::SendRequest {
@@ -151,7 +159,11 @@ impl RelayHandle {
             })
             .await
             .map_err(|_| SyncError::Disconnected)?;
-        reply_rx.await.map_err(|_| SyncError::Disconnected)?
+        match tokio::time::timeout(timeout, reply_rx).await {
+            Ok(Ok(inner)) => inner,
+            Ok(Err(_)) => Err(SyncError::Disconnected),
+            Err(_) => Err(SyncError::Timeout),
+        }
     }
 
     /// Forward a typed frame from the frontend to the daemon.

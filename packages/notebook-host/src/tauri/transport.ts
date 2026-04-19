@@ -4,18 +4,50 @@
  * Bridges the `runtimed` `SyncEngine` to the daemon via Tauri IPC:
  *   - `sendFrame` → `invoke("send_frame", bytes)`
  *   - `onFrame` → `getCurrentWebview().listen("notebook:frame")`
+ *   - `sendRequest` → encode `NotebookRequestEnvelope`, send as `0x01` frame,
+ *                     wait for matching `0x02` response via an internal
+ *                     frame tap keyed by correlation id.
  *
- * Lives in this package (not in `apps/notebook`) so other hosts can depend
- * on a single canonical Tauri transport rather than re-implementing it.
+ * The pending map is tapped directly off `notebook:frame` events so Rust
+ * and JS callers can share the same socket concurrently — responses are
+ * dispatched by id, not by serialization order.
  */
 
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import type { FrameListener, NotebookRequest, NotebookTransport } from "runtimed";
+import type { FrameListener, NotebookRequest, NotebookResponse, NotebookTransport } from "runtimed";
+
+const FRAME_TYPE_REQUEST = 0x01;
+const FRAME_TYPE_RESPONSE = 0x02;
+
+/** Per-request-type timeouts. Mirror `relay_task::request_timeout` in Rust. */
+function requestTimeoutMs(request: NotebookRequest): number {
+  switch (request.type) {
+    case "launch_kernel":
+    case "sync_environment":
+      return 300_000;
+    case "complete":
+      return 7_000;
+    default:
+      return 30_000;
+  }
+}
+
+interface PendingEntry {
+  resolve: (response: NotebookResponse) => void;
+  reject: (err: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
 
 export class TauriTransport implements NotebookTransport {
   private _connected = true;
   private unlisteners: Array<() => void> = [];
+  /** In-flight requests keyed by correlation id. */
+  private pending = new Map<string, PendingEntry>();
+
+  constructor() {
+    this.attachResponseTap();
+  }
 
   get connected(): boolean {
     return this._connected;
@@ -74,30 +106,38 @@ export class TauriTransport implements NotebookTransport {
 
   async sendRequest(request: unknown): Promise<unknown> {
     const req = request as NotebookRequest;
-    switch (req.type) {
-      case "launch_kernel":
-        return invoke("launch_kernel_via_daemon", {
-          kernelType: req.kernel_type,
-          envSource: req.env_source,
-          notebookPath: req.notebook_path,
-        });
-      case "execute_cell":
-        return invoke("execute_cell_via_daemon", { cellId: req.cell_id });
-      case "clear_outputs":
-        return invoke("clear_outputs_via_daemon", { cellId: req.cell_id });
-      case "interrupt":
-        return invoke("interrupt_via_daemon");
-      case "shutdown_kernel":
-        return invoke("shutdown_kernel_via_daemon");
-      case "sync_environment":
-        return invoke("sync_environment_via_daemon");
-      case "run_all_cells":
-        return invoke("run_all_cells_via_daemon");
-      case "send_comm":
-        return invoke("send_comm_via_daemon", { message: req.message });
-      default:
-        throw new Error(`TauriTransport: unknown request type: ${(req as { type: string }).type}`);
-    }
+    const id = crypto.randomUUID();
+
+    // Wire shape matches Rust's `NotebookRequestEnvelope` with
+    // `#[serde(tag = "action")]` on the flattened `NotebookRequest`:
+    //   { id: "...", action: "execute_cell", cell_id: "..." }
+    // TS uses `type:` as the discriminator internally, so translate on
+    // the way out.
+    const { type, ...rest } = req as { type: string } & Record<string, unknown>;
+    const envelope = { id, action: type, ...rest };
+    const payload = new TextEncoder().encode(JSON.stringify(envelope));
+
+    const timeoutMs = requestTimeoutMs(req);
+
+    return new Promise<NotebookResponse>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (this.pending.delete(id)) {
+          reject(new Error(`Request timeout after ${timeoutMs}ms: ${type}`));
+        }
+      }, timeoutMs);
+
+      this.pending.set(id, { resolve, reject, timer });
+
+      // Fire the 0x01 frame. If `sendFrame` itself fails (rare — only if
+      // the Tauri relay rejects the frame type), fail fast instead of
+      // waiting out the timeout.
+      void this.sendFrame(FRAME_TYPE_REQUEST, payload).catch((err) => {
+        if (this.pending.delete(id)) {
+          clearTimeout(timer);
+          reject(err instanceof Error ? err : new Error(String(err)));
+        }
+      });
+    });
   }
 
   disconnect(): void {
@@ -106,5 +146,85 @@ export class TauriTransport implements NotebookTransport {
       unlisten();
     }
     this.unlisteners = [];
+    // Reject any still-pending requests so callers don't hang.
+    for (const [id, entry] of this.pending) {
+      clearTimeout(entry.timer);
+      entry.reject(new Error(`Transport disconnected (request ${id})`));
+    }
+    this.pending.clear();
+  }
+
+  /**
+   * Attach a permanent tap on `notebook:frame` that intercepts `0x02`
+   * response frames and dispatches them to the pending map.
+   *
+   * Non-response frames are ignored here — user-registered `onFrame`
+   * callbacks (e.g., the SyncEngine) see every frame independently.
+   * Tauri webview events fan out to all listeners, so the tap doesn't
+   * steal frames from other subscribers.
+   */
+  private attachResponseTap(): void {
+    const webview = getCurrentWebview();
+    let unlistenFn: (() => void) | null = null;
+    let cancelled = false;
+
+    const unlistenPromise = webview.listen<number[]>("notebook:frame", (event) => {
+      try {
+        this.dispatchResponseFrame(event.payload);
+      } catch (err) {
+        console.error("[tauri-transport] response tap failed:", err);
+      }
+    });
+
+    unlistenPromise
+      .then((fn) => {
+        if (cancelled) {
+          fn();
+        } else {
+          unlistenFn = fn;
+        }
+      })
+      .catch((err) => {
+        console.error("[tauri-transport] failed to attach response tap:", err);
+      });
+
+    this.unlisteners.push(() => {
+      cancelled = true;
+      if (unlistenFn) {
+        unlistenFn();
+        unlistenFn = null;
+      }
+    });
+  }
+
+  private dispatchResponseFrame(bytes: number[] | Uint8Array): void {
+    const first = (bytes as { [i: number]: number })[0];
+    if (first !== FRAME_TYPE_RESPONSE) return;
+
+    const view =
+      bytes instanceof Uint8Array ? bytes.subarray(1) : new Uint8Array(Array.from(bytes).slice(1));
+    const json = new TextDecoder().decode(view);
+
+    let envelope: { id?: string } & Record<string, unknown>;
+    try {
+      envelope = JSON.parse(json);
+    } catch (err) {
+      console.error("[tauri-transport] malformed response envelope:", err);
+      return;
+    }
+
+    const id = envelope.id;
+    if (typeof id !== "string") return;
+
+    const entry = this.pending.get(id);
+    if (!entry) return;
+
+    this.pending.delete(id);
+    clearTimeout(entry.timer);
+
+    // Strip the envelope id from the returned response so callers see a
+    // clean `NotebookResponse`.
+    const { id: _id, ...response } = envelope;
+    entry.resolve(response as NotebookResponse);
   }
 }

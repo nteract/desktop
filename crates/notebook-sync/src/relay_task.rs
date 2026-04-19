@@ -8,19 +8,40 @@
 //!
 //! Two arms:
 //! 1. **Commands** from `RelayHandle` — send requests, forward frames
-//! 2. **Incoming daemon frames** — pipe to frontend via `frame_tx`
+//! 2. **Incoming daemon frames** — route via pending map or pipe to frontend
 //!
-//! No `changed_rx` (no local doc to sync). No snapshot publishing.
-//! No `FrameForwarder` conditionals — the relay always pipes.
+//! ## Request/response correlation
+//!
+//! Requests carry a correlation id (see `NotebookRequestEnvelope`). When a
+//! Rust-side caller issues `SendRequest`, the relay:
+//! 1. Generates a uuid id.
+//! 2. Registers a `PendingEntry { reply, broadcast_tx }` in the pending map.
+//! 3. Writes the `0x01` request envelope (with id) to the daemon socket.
+//!
+//! When a `0x02` response arrives on the socket, the relay parses the
+//! envelope and looks up the id in the pending map. If a Rust caller
+//! registered, the response is delivered via their oneshot. If the id is
+//! unknown, the raw frame is piped to the frontend — a frontend-originated
+//! request was waiting for it. This lets Rust and JS share the socket for
+//! request/response without per-type Tauri commands.
+//!
+//! JS-originated requests arrive via `RelayCommand::ForwardFrame` with
+//! frame type `0x01`; the relay forwards them unchanged and never looks at
+//! the id. The frontend maintains its own pending map and matches responses
+//! via the `notebook:frame` event stream.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use log::{debug, info, warn};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use notebook_protocol::connection::{self, NotebookFrameType};
-use notebook_protocol::protocol::{NotebookBroadcast, NotebookResponse};
+use notebook_protocol::protocol::{
+    NotebookBroadcast, NotebookRequest, NotebookRequestEnvelope, NotebookResponse,
+    NotebookResponseEnvelope,
+};
 
 use crate::error::SyncError;
 use crate::relay::RelayCommand;
@@ -38,13 +59,18 @@ pub struct RelayTaskConfig {
     pub notebook_id: String,
 }
 
+/// A Rust-side caller awaiting a response for a specific correlation id.
+struct PendingEntry {
+    reply: oneshot::Sender<Result<NotebookResponse, SyncError>>,
+    /// Progress broadcasts to deliver while the request is in flight
+    /// (e.g., LaunchKernel env-creation progress). Optional.
+    broadcast_tx: Option<tokio::sync::broadcast::Sender<NotebookBroadcast>>,
+}
+
 /// Run the relay task.
 ///
-/// This is spawned as a background tokio task. It runs until the socket
-/// closes or all handles are dropped (command channel closes).
-///
-/// The relay has no local document, no mutex, no snapshot publishing.
-/// It is a transparent byte pipe with request/response support.
+/// Spawned as a background tokio task. Runs until the socket closes or all
+/// handles are dropped (command channel closes).
 pub async fn run<R, W>(mut config: RelayTaskConfig, reader: R, writer: W)
 where
     R: AsyncRead + Unpin,
@@ -54,6 +80,7 @@ where
     let mut writer = tokio::io::BufWriter::new(writer);
 
     let notebook_id = &config.notebook_id;
+    let mut pending: HashMap<String, PendingEntry> = HashMap::new();
 
     info!("[relay] Started for {}", notebook_id);
 
@@ -65,17 +92,15 @@ where
 
         let select_result = tokio::select! {
             biased;
-            // Prioritize incoming daemon frames (sync, broadcast, presence)
-            // over outgoing commands.  Keeping sync frames flowing prevents
-            // head divergence; commands can wait a tick.
+            // Prioritize incoming daemon frames (sync, broadcast, presence,
+            // responses) over outgoing commands. Keeping frames flowing
+            // prevents head divergence; commands can wait a tick.
             frame = connection::recv_typed_frame(&mut reader) => SelectResult::Frame(frame),
             cmd = config.cmd_rx.recv() => SelectResult::Command(cmd),
         };
 
         match select_result {
-            // ─── Command from handle ───────────────────────────────────
             SelectResult::Command(None) => {
-                // All handles dropped — shut down
                 info!(
                     "[relay] All handles dropped for {}, shutting down",
                     notebook_id
@@ -89,16 +114,8 @@ where
                     reply,
                     broadcast_tx,
                 } => {
-                    let result = send_request_impl(
-                        &mut reader,
-                        &mut writer,
-                        &config.frame_tx,
-                        broadcast_tx.as_ref(),
-                        &request,
-                        notebook_id,
-                    )
-                    .await;
-                    let _ = reply.send(result);
+                    handle_send_request(&mut writer, &mut pending, request, reply, broadcast_tx)
+                        .await;
                 }
 
                 RelayCommand::ForwardFrame {
@@ -120,9 +137,8 @@ where
                 }
             },
 
-            // ─── Incoming frame from daemon → pipe to frontend ─────────
             SelectResult::Frame(Ok(Some(frame))) => {
-                pipe_frame(&config.frame_tx, &frame);
+                route_incoming_frame(&frame, &mut pending, &config.frame_tx);
             }
 
             SelectResult::Frame(Ok(None)) => {
@@ -137,159 +153,150 @@ where
         }
     }
 
+    // Any Rust callers still waiting get a Disconnected error so they
+    // don't hang on a channel that will never deliver.
+    for (_, entry) in pending.drain() {
+        let _ = entry.reply.send(Err(SyncError::Disconnected));
+    }
+
     info!("[relay] Stopped for {}", notebook_id);
+}
+
+/// Register a Rust-side request in the pending map and write the envelope
+/// to the daemon. If the write fails, the entry is evicted and the error
+/// is delivered on the caller's oneshot.
+async fn handle_send_request<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    pending: &mut HashMap<String, PendingEntry>,
+    request: NotebookRequest,
+    reply: oneshot::Sender<Result<NotebookResponse, SyncError>>,
+    broadcast_tx: Option<tokio::sync::broadcast::Sender<NotebookBroadcast>>,
+) {
+    let id = uuid::Uuid::new_v4().to_string();
+    let envelope = NotebookRequestEnvelope {
+        id: Some(id.clone()),
+        request,
+    };
+
+    let payload = match serde_json::to_vec(&envelope) {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = reply.send(Err(SyncError::Serialization(e.to_string())));
+            return;
+        }
+    };
+
+    // Register BEFORE sending so a fast daemon response can't arrive before
+    // the pending entry is in place.
+    pending.insert(
+        id.clone(),
+        PendingEntry {
+            reply,
+            broadcast_tx,
+        },
+    );
+
+    if let Err(e) = connection::send_typed_frame(writer, NotebookFrameType::Request, &payload).await
+    {
+        if let Some(entry) = pending.remove(&id) {
+            let _ = entry.reply.send(Err(SyncError::Io(e)));
+        }
+    }
+}
+
+/// Dispatch an incoming frame from the daemon.
+///
+/// Response frames with a known correlation id are delivered to the
+/// matching Rust caller. Response frames with no id, or with an id we
+/// didn't register, are piped to the frontend — a JS caller is the likely
+/// owner. Broadcast frames are both delivered to any subscribed request
+/// (for progress updates on long-running calls) and piped to the frontend.
+/// Everything else is piped to the frontend.
+fn route_incoming_frame(
+    frame: &connection::TypedNotebookFrame,
+    pending: &mut HashMap<String, PendingEntry>,
+    frame_tx: &mpsc::UnboundedSender<Vec<u8>>,
+) {
+    match frame.frame_type {
+        NotebookFrameType::Response => {
+            match serde_json::from_slice::<NotebookResponseEnvelope>(&frame.payload) {
+                Ok(envelope) => {
+                    let entry = envelope.id.as_deref().and_then(|id| pending.remove(id));
+                    if let Some(entry) = entry {
+                        let _ = entry.reply.send(Ok(envelope.response));
+                    } else {
+                        // Unknown id (or missing) — must belong to a frontend
+                        // request. Pipe the whole frame so the frontend's pending
+                        // map can match on the envelope's id.
+                        pipe_frame(frame_tx, frame);
+                    }
+                }
+                Err(e) => {
+                    warn!("[relay] Malformed response envelope: {}", e);
+                    // Pipe anyway so the frontend can surface / log it.
+                    pipe_frame(frame_tx, frame);
+                }
+            }
+        }
+
+        NotebookFrameType::Broadcast => {
+            // If any in-flight request subscribed to progress broadcasts,
+            // deliver there too (e.g., LaunchKernel env-creation phases).
+            let broadcast: Option<NotebookBroadcast> = serde_json::from_slice(&frame.payload).ok();
+            if let Some(bc) = broadcast.as_ref() {
+                for entry in pending.values() {
+                    if let Some(tx) = &entry.broadcast_tx {
+                        let _ = tx.send(bc.clone());
+                    }
+                }
+            }
+            pipe_frame(frame_tx, frame);
+        }
+
+        _ => pipe_frame(frame_tx, frame),
+    }
 }
 
 /// Pipe a daemon frame to the frontend.
 ///
-/// Only sync, broadcast, and presence frames are forwarded. Response and
-/// request frames are internal to the protocol and must not reach the frontend.
+/// Forwards sync, broadcast, presence, runtime-state, pool-state, AND
+/// response (`0x02`) frames. Frontend requests rely on `0x02` reaching the
+/// JS side so the frontend's pending map can correlate the response.
+///
+/// Request frames (`0x01`) are never piped outbound to the frontend — the
+/// frontend sends them; the daemon never emits them to a client.
 fn pipe_frame(frame_tx: &mpsc::UnboundedSender<Vec<u8>>, frame: &connection::TypedNotebookFrame) {
     match frame.frame_type {
         NotebookFrameType::AutomergeSync
         | NotebookFrameType::Broadcast
         | NotebookFrameType::Presence
         | NotebookFrameType::RuntimeStateSync
-        | NotebookFrameType::PoolStateSync => {
+        | NotebookFrameType::PoolStateSync
+        | NotebookFrameType::Response => {
             let mut bytes = vec![frame.frame_type as u8];
             bytes.extend_from_slice(&frame.payload);
             let _ = frame_tx.send(bytes);
         }
-        _ => {
+        NotebookFrameType::Request => {
             debug!(
-                "[relay] Not piping {:?} frame ({} bytes)",
-                frame.frame_type,
+                "[relay] Not piping Request frame (outbound only) — {} bytes",
                 frame.payload.len()
             );
         }
     }
 }
 
-/// Send a request to the daemon and wait for the response.
-///
-/// While waiting, non-response frames are piped to the frontend.
-/// This ensures the WASM frontend doesn't miss sync/broadcast/presence
-/// frames that arrive during a request/response cycle.
-async fn send_request_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
-    reader: &mut R,
-    writer: &mut W,
-    frame_tx: &mpsc::UnboundedSender<Vec<u8>>,
-    req_broadcast_tx: Option<&tokio::sync::broadcast::Sender<NotebookBroadcast>>,
-    request: &notebook_protocol::protocol::NotebookRequest,
-    notebook_id: &str,
-) -> Result<NotebookResponse, SyncError> {
-    // Wrap the request in a correlation envelope. The daemon echoes the
-    // id on the response envelope. The relay currently serializes requests
-    // (one in flight per room), so the correlation id is redundant here —
-    // but it's part of the wire protocol at `PROTOCOL_VERSION = 3`, and a
-    // later PR (direct JS sendRequest) will use the id to dispatch
-    // concurrent responses via a pending map.
-    let expected_id = uuid::Uuid::new_v4().to_string();
-    let envelope = notebook_protocol::protocol::NotebookRequestEnvelope {
-        id: Some(expected_id.clone()),
-        request: request.clone(),
-    };
-    let payload =
-        serde_json::to_vec(&envelope).map_err(|e| SyncError::Serialization(e.to_string()))?;
-    connection::send_typed_frame(writer, NotebookFrameType::Request, &payload)
-        .await
-        .map_err(SyncError::Io)?;
-
-    // Determine timeout based on request type.
-    // Completions use 7s — the daemon's kernel-level timeout is 5s, so the
-    // daemon always responds within ~5s. The extra 2s margin ensures the
-    // relay never independently times out during normal operation (only on
-    // daemon crash/hang). A long wait blocks the entire relay.
-    let timeout_secs = match request {
-        notebook_protocol::protocol::NotebookRequest::LaunchKernel { .. } => 300,
-        notebook_protocol::protocol::NotebookRequest::SyncEnvironment { .. } => 300,
-        notebook_protocol::protocol::NotebookRequest::Complete { .. } => 7,
+/// Per-request-type timeouts — exported so `RelayHandle::send_request` can
+/// wrap its oneshot await in the same bound that the old inline read loop
+/// used to enforce.
+pub fn request_timeout(request: &NotebookRequest) -> Duration {
+    let secs = match request {
+        NotebookRequest::LaunchKernel { .. } => 300,
+        NotebookRequest::SyncEnvironment { .. } => 300,
+        // Completions use 7s — the daemon's kernel-level timeout is 5s,
+        // so the daemon always responds within ~5s under normal operation.
+        NotebookRequest::Complete { .. } => 7,
         _ => 30,
     };
-
-    let result = tokio::time::timeout(
-        Duration::from_secs(timeout_secs),
-        wait_for_response(
-            reader,
-            frame_tx,
-            req_broadcast_tx,
-            notebook_id,
-            &expected_id,
-        ),
-    )
-    .await;
-
-    match result {
-        Ok(inner) => inner,
-        Err(_) => {
-            warn!(
-                "[relay] Request timed out after {}s: {:?}",
-                timeout_secs, request
-            );
-            // NOTE: We intentionally do NOT drain stale response frames here.
-            // `recv_typed_frame` uses `read_exact` internally, which is not
-            // cancellation-safe — wrapping it in `tokio::time::timeout` could
-            // cancel mid-frame and corrupt the stream. The relay timeout (7s)
-            // exceeds the daemon's kernel-level timeout (5s), so the daemon
-            // always responds before the relay gives up. Any stale Response
-            // frames that reach the select loop are harmlessly discarded by
-            // `pipe_frame`.
-            Err(SyncError::Timeout)
-        }
-    }
-}
-
-/// Wait for a Response frame, piping all other frames to the frontend.
-async fn wait_for_response<R: AsyncRead + Unpin>(
-    reader: &mut R,
-    frame_tx: &mpsc::UnboundedSender<Vec<u8>>,
-    req_broadcast_tx: Option<&tokio::sync::broadcast::Sender<NotebookBroadcast>>,
-    _notebook_id: &str,
-    expected_id: &str,
-) -> Result<NotebookResponse, SyncError> {
-    loop {
-        let frame = connection::recv_typed_frame(reader)
-            .await
-            .map_err(SyncError::Io)?
-            .ok_or_else(|| SyncError::Protocol("Connection closed waiting for response".into()))?;
-
-        match frame.frame_type {
-            NotebookFrameType::Response => {
-                let envelope: notebook_protocol::protocol::NotebookResponseEnvelope =
-                    serde_json::from_slice(&frame.payload)
-                        .map_err(|e| SyncError::Serialization(e.to_string()))?;
-                // Relay serializes requests per room, so the id we're waiting
-                // for should always match. A mismatch means a stale response
-                // leaked past a timeout or a protocol bug — warn and keep
-                // reading so we eventually land on ours.
-                if let Some(id) = envelope.id.as_deref() {
-                    if id != expected_id {
-                        warn!(
-                            "[relay] Ignoring response with id {:?}, waiting for {:?}",
-                            id, expected_id
-                        );
-                        continue;
-                    }
-                }
-                return Ok(envelope.response);
-            }
-
-            NotebookFrameType::Broadcast => {
-                // Deliver to request-specific broadcast channel if provided
-                // (for real-time progress during long requests like LaunchKernel)
-                if let Some(tx) = req_broadcast_tx {
-                    if let Ok(bc) = serde_json::from_slice::<NotebookBroadcast>(&frame.payload) {
-                        let _ = tx.send(bc);
-                    }
-                }
-                // Also pipe to frontend
-                pipe_frame(frame_tx, &frame);
-            }
-
-            _ => {
-                // Sync, presence, etc. — pipe to frontend
-                pipe_frame(frame_tx, &frame);
-            }
-        }
-    }
+    Duration::from_secs(secs)
 }
