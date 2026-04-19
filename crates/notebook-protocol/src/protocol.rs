@@ -1080,4 +1080,79 @@ mod tests {
         }
         .is_command());
     }
+
+    #[test]
+    fn is_command_exhaustive_classification() {
+        // Fire-and-forget commands (no response needed)
+        assert!(RuntimeAgentRequest::InterruptExecution.is_command());
+        assert!(
+            RuntimeAgentRequest::SendComm {
+                message: serde_json::json!({})
+            }
+            .is_command()
+        );
+
+        // Sync queries (response required)
+        assert!(!RuntimeAgentRequest::ShutdownKernel.is_command());
+        assert!(!RuntimeAgentRequest::LaunchKernel {
+            kernel_type: "python".into(),
+            env_source: "uv:prewarmed".into(),
+            notebook_path: None,
+            launched_config: Default::default(),
+            env_vars: Default::default(),
+        }
+        .is_command());
+        assert!(!RuntimeAgentRequest::RestartKernel {
+            kernel_type: "python".into(),
+            env_source: "conda:inline".into(),
+            notebook_path: None,
+            launched_config: Default::default(),
+            env_vars: Default::default(),
+        }
+        .is_command());
+        assert!(!RuntimeAgentRequest::SyncEnvironment(EnvKind::Uv {
+            packages: vec!["numpy".into()]
+        })
+        .is_command());
+    }
+
+    #[test]
+    fn shutdown_is_sync_prevents_crdt_race() {
+        // ShutdownKernel MUST be a sync query. If it were fire-and-forget,
+        // the daemon would return immediately and LaunchKernel could set
+        // kernel_status="starting" before the agent processes shutdown.
+        // Cells queued during env prep would then execute on the dying kernel.
+        assert!(
+            !RuntimeAgentRequest::ShutdownKernel.is_command(),
+            "ShutdownKernel must be sync to prevent CRDT race with LaunchKernel"
+        );
+    }
+
+    #[test]
+    fn correlation_id_preserved_in_envelope_roundtrip() {
+        let id = "corr-abc-123";
+        let envelope = RuntimeAgentRequestEnvelope {
+            id: id.to_string(),
+            request: RuntimeAgentRequest::Complete {
+                code: "import pa".into(),
+                cursor_pos: 9,
+            },
+        };
+        let json = serde_json::to_value(&envelope).unwrap();
+        let parsed: RuntimeAgentRequestEnvelope = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed.id, id);
+
+        let resp_envelope = RuntimeAgentResponseEnvelope {
+            id: id.to_string(),
+            response: RuntimeAgentResponse::CompletionResult {
+                items: vec![],
+                cursor_start: 7,
+                cursor_end: 9,
+            },
+        };
+        let resp_json = serde_json::to_value(&resp_envelope).unwrap();
+        let parsed_resp: RuntimeAgentResponseEnvelope =
+            serde_json::from_value(resp_json).unwrap();
+        assert_eq!(parsed_resp.id, id);
+    }
 }
