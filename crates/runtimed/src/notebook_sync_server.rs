@@ -13241,4 +13241,227 @@ mod tests {
         // Should insert after "  - numpy\n", before "channels:"
         assert_eq!(point, Some("dependencies:\n  - numpy\n".len()));
     }
+
+    /// Pre-v4 .ipynb (no output_id fields) gets IDs minted on load,
+    /// persisted through save, and stable across reload.
+    #[tokio::test]
+    async fn test_pre_v4_ipynb_output_id_round_trip() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let blob_store = test_blob_store(&tmp);
+
+        let notebook_json = serde_json::json!({
+            "nbformat": 4,
+            "nbformat_minor": 5,
+            "metadata": {},
+            "cells": [
+                {
+                    "id": "cell-a",
+                    "cell_type": "code",
+                    "source": "1 + 1",
+                    "execution_count": 1,
+                    "metadata": {},
+                    "outputs": [
+                        {
+                            "output_type": "execute_result",
+                            "execution_count": 1,
+                            "data": { "text/plain": "2" },
+                            "metadata": {}
+                        }
+                    ]
+                },
+                {
+                    "id": "cell-b",
+                    "cell_type": "code",
+                    "source": "print('hi')",
+                    "execution_count": 2,
+                    "metadata": {},
+                    "outputs": [
+                        {
+                            "output_type": "stream",
+                            "name": "stdout",
+                            "text": "hi\n"
+                        }
+                    ]
+                },
+                {
+                    "id": "cell-c",
+                    "cell_type": "code",
+                    "source": "display('x')",
+                    "execution_count": 3,
+                    "metadata": {},
+                    "outputs": [
+                        {
+                            "output_type": "display_data",
+                            "data": { "text/plain": "x" },
+                            "metadata": {}
+                        }
+                    ]
+                },
+                {
+                    "id": "cell-d",
+                    "cell_type": "code",
+                    "source": "1/0",
+                    "execution_count": 4,
+                    "metadata": {},
+                    "outputs": [
+                        {
+                            "output_type": "error",
+                            "ename": "ZeroDivisionError",
+                            "evalue": "division by zero",
+                            "traceback": ["line 1"]
+                        }
+                    ]
+                }
+            ]
+        });
+
+        let ipynb_path = tmp.path().join("legacy.ipynb");
+        std::fs::write(
+            &ipynb_path,
+            serde_json::to_string_pretty(&notebook_json).unwrap(),
+        )
+        .unwrap();
+
+        // --- Load 1: pre-v4 notebook, no output_id fields ---
+        let notebook_id = ipynb_path.to_string_lossy().to_string();
+        let mut doc = crate::notebook_doc::NotebookDoc::new(&notebook_id);
+        let mut state_doc = RuntimeStateDoc::new();
+        load_notebook_from_disk_with_state_doc(
+            &mut doc,
+            Some(&mut state_doc),
+            &ipynb_path,
+            &blob_store,
+        )
+        .await
+        .unwrap();
+
+        // Collect minted output_ids from RuntimeStateDoc
+        let mut first_load_ids: Vec<(String, String)> = Vec::new();
+        for cell_id in ["cell-a", "cell-b", "cell-c", "cell-d"] {
+            let eid = doc
+                .get_execution_id(cell_id)
+                .unwrap_or_else(|| panic!("{cell_id} should have execution_id"));
+            let outputs = state_doc.get_outputs(&eid);
+            assert_eq!(outputs.len(), 1, "{cell_id} should have 1 output");
+            let manifest: crate::output_store::OutputManifest =
+                serde_json::from_value(outputs[0].clone()).unwrap();
+            let id = manifest.output_id().to_string();
+            assert!(
+                !id.is_empty(),
+                "{cell_id} should have a non-empty output_id"
+            );
+            first_load_ids.push((cell_id.to_string(), id));
+        }
+
+        // All IDs should be distinct
+        let id_set: std::collections::HashSet<&str> =
+            first_load_ids.iter().map(|(_, id)| id.as_str()).collect();
+        assert_eq!(id_set.len(), 4, "All output_ids should be unique");
+
+        // --- Save: resolve manifests to .ipynb JSON ---
+        let mut saved_ids: Vec<(String, String)> = Vec::new();
+        for (cell_id, expected_id) in &first_load_ids {
+            let eid = doc.get_execution_id(cell_id).unwrap();
+            let outputs = state_doc.get_outputs(&eid);
+            let manifest: crate::output_store::OutputManifest =
+                serde_json::from_value(outputs[0].clone()).unwrap();
+            let resolved = crate::output_store::resolve_manifest(&manifest, &blob_store)
+                .await
+                .unwrap();
+            let saved_id = resolved["output_id"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{cell_id} resolved JSON should have output_id"));
+            assert_eq!(
+                saved_id, expected_id,
+                "{cell_id}: resolve_manifest should preserve output_id"
+            );
+            saved_ids.push((cell_id.clone(), saved_id.to_string()));
+        }
+
+        // --- Reload: simulate saving and reloading ---
+        // Build an .ipynb with output_id fields (as resolve_manifest now produces)
+        let mut cells_with_ids = Vec::new();
+        for (cell_id, _) in &first_load_ids {
+            let eid = doc.get_execution_id(cell_id).unwrap();
+            let outputs = state_doc.get_outputs(&eid);
+            let manifest: crate::output_store::OutputManifest =
+                serde_json::from_value(outputs[0].clone()).unwrap();
+            let resolved = crate::output_store::resolve_manifest(&manifest, &blob_store)
+                .await
+                .unwrap();
+            cells_with_ids.push((cell_id.clone(), resolved));
+        }
+
+        let saved_notebook = serde_json::json!({
+            "nbformat": 4,
+            "nbformat_minor": 5,
+            "metadata": {},
+            "cells": [
+                {
+                    "id": "cell-a",
+                    "cell_type": "code",
+                    "source": "1 + 1",
+                    "execution_count": 1,
+                    "metadata": {},
+                    "outputs": [cells_with_ids[0].1]
+                },
+                {
+                    "id": "cell-b",
+                    "cell_type": "code",
+                    "source": "print('hi')",
+                    "execution_count": 2,
+                    "metadata": {},
+                    "outputs": [cells_with_ids[1].1]
+                },
+                {
+                    "id": "cell-c",
+                    "cell_type": "code",
+                    "source": "display('x')",
+                    "execution_count": 3,
+                    "metadata": {},
+                    "outputs": [cells_with_ids[2].1]
+                },
+                {
+                    "id": "cell-d",
+                    "cell_type": "code",
+                    "source": "1/0",
+                    "execution_count": 4,
+                    "metadata": {},
+                    "outputs": [cells_with_ids[3].1]
+                }
+            ]
+        });
+
+        let ipynb_path2 = tmp.path().join("saved.ipynb");
+        std::fs::write(
+            &ipynb_path2,
+            serde_json::to_string_pretty(&saved_notebook).unwrap(),
+        )
+        .unwrap();
+
+        // Load the saved notebook
+        let mut doc2 = crate::notebook_doc::NotebookDoc::new("reload-test");
+        let mut state_doc2 = RuntimeStateDoc::new();
+        load_notebook_from_disk_with_state_doc(
+            &mut doc2,
+            Some(&mut state_doc2),
+            &ipynb_path2,
+            &blob_store,
+        )
+        .await
+        .unwrap();
+
+        // Verify IDs are stable across the round-trip
+        for (cell_id, expected_id) in &first_load_ids {
+            let eid = doc2.get_execution_id(cell_id).unwrap();
+            let outputs = state_doc2.get_outputs(&eid);
+            let manifest: crate::output_store::OutputManifest =
+                serde_json::from_value(outputs[0].clone()).unwrap();
+            assert_eq!(
+                manifest.output_id(),
+                expected_id,
+                "{cell_id}: output_id should be stable across save/load round-trip"
+            );
+        }
+    }
 }
