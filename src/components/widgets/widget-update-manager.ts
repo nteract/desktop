@@ -76,15 +76,21 @@ export class WidgetUpdateManager {
   /** Accumulated patches waiting for debounced flush, per comm. */
   private pendingState = new Map<string, Record<string, unknown>>();
   /**
-   * Last-written value per key for echo deduplication.
+   * Trail of recently-written values per key, for echo deduplication.
    *
-   * Stores the value we most recently wrote locally for each key. Only
-   * echoes whose value structurally matches the last-written value are
-   * suppressed — if the kernel normalizes/clamps/rewrites the trait
-   * (e.g., `5.1` → `5.0` on a max-`5.0` slider), the corrected value
-   * passes through and replaces local state.
+   * During rapid drag (slider moving at 60/sec), the kernel processes
+   * our writes in order and echoes each back. A stale echo of `1.2`
+   * while the user is already at `1.4` would otherwise clobber the
+   * optimistic state. Storing only the latest value catches the final
+   * echo but misses in-flight intermediates.
+   *
+   * We keep every value we wrote during the grace window and suppress
+   * any echo whose value matches any entry in the trail. Legitimate
+   * kernel corrections (clamping `5.1` back to `5.0` when we never
+   * wrote `5.0`) fall through because the corrected value isn't in
+   * the trail.
    */
-  private optimisticKeys = new Map<string, Map<string, unknown>>();
+  private optimisticKeys = new Map<string, Map<string, unknown[]>>();
   /** Per-comm debounce timers. */
   private flushTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** Per-comm grace timers for delayed optimistic key cleanup. */
@@ -108,14 +114,19 @@ export class WidgetUpdateManager {
     // 1. Instant store update — UI reflects change immediately
     this.getStore()?.updateModel(commId, patch, buffers);
 
-    // 2. Track optimistic keys + their last-written values
+    // 2. Append each written value to the per-key trail.
     let keys = this.optimisticKeys.get(commId);
     if (!keys) {
       keys = new Map();
       this.optimisticKeys.set(commId, keys);
     }
     for (const [key, value] of Object.entries(patch)) {
-      keys.set(key, value);
+      let trail = keys.get(key);
+      if (!trail) {
+        trail = [];
+        keys.set(key, trail);
+      }
+      trail.push(value);
     }
 
     // 3. Accumulate patch
@@ -141,12 +152,11 @@ export class WidgetUpdateManager {
 
   /**
    * Filter an incoming CRDT echo, suppressing keys whose echoed value
-   * matches the frontend's most recent local write.
+   * matches any recent local write for that key.
    *
-   * A kernel correction (e.g., ipywidgets clamping `5.1` → `5.0`) has a
-   * value that differs from what we wrote, so it passes through and
-   * updates the store. A true echo (kernel bouncing back what we sent)
-   * has an identical value and is dropped.
+   * Echoes of any value in the trail are dropped. Kernel corrections
+   * (values we never wrote, e.g. ipywidgets clamping `5.1` back to
+   * `5.0`) pass through and update the store.
    *
    * Returns the filtered patch to apply, or null if entirely suppressed.
    */
@@ -160,9 +170,8 @@ export class WidgetUpdateManager {
     const filtered: Record<string, unknown> = {};
     let hasKeys = false;
     for (const [key, value] of Object.entries(incomingPatch)) {
-      const optimisticValue = keys.get(key);
-      const isOptimistic = keys.has(key);
-      if (isOptimistic && structuralEqual(optimisticValue, value)) {
+      const trail = keys.get(key);
+      if (trail && trail.some((written) => structuralEqual(written, value))) {
         continue;
       }
       filtered[key] = value;

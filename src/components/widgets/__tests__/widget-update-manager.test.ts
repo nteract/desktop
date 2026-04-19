@@ -219,22 +219,25 @@ describe("WidgetUpdateManager", () => {
       });
     });
 
-    it("suppresses echoes of the latest write during continuous drag", () => {
+    it("suppresses echoes of any recent write during continuous drag", () => {
       const { manager } = setup();
 
-      // Simulate continuous slider drag
+      // Continuous slider drag: every intermediate value is remembered.
       manager.updateAndPersist("comm-1", { value: 10 });
       vi.advanceTimersByTime(16);
       manager.updateAndPersist("comm-1", { value: 15 });
       vi.advanceTimersByTime(16);
       manager.updateAndPersist("comm-1", { value: 20 });
 
-      // Echo of the most recent value — suppressed
+      // Kernel echoes arrive in the order we sent, potentially behind
+      // our current drag position. All of them must be suppressed so
+      // the UI doesn't snap backward to a stale value.
+      expect(manager.shouldSuppressEcho("comm-1", { value: 10 })).toBeNull();
+      expect(manager.shouldSuppressEcho("comm-1", { value: 15 })).toBeNull();
       expect(manager.shouldSuppressEcho("comm-1", { value: 20 })).toBeNull();
 
-      // Stale echo from an earlier drag step — passes through. In
-      // practice the coalescing writer only forwards the latest state,
-      // but the filter must not silently drop non-matching values.
+      // A value we never wrote (e.g., kernel clamp or external change)
+      // still passes through.
       expect(manager.shouldSuppressEcho("comm-1", { value: 5 })).toEqual({
         value: 5,
       });
