@@ -344,10 +344,14 @@ Codex app/CLI can read a project-scoped `.codex/config.toml`. This repo includes
 [mcp_servers.nteract-dev]
 command = "cargo"
 args = ["run", "-p", "mcp-supervisor"]
+cwd = "."
+startup_timeout_sec = 120
 
 [mcp_servers.nteract-dev.env]
 RUNTIMED_DEV = "1"
 ```
+
+`cwd = "."` matters for Codex app/CLI: it forces `mcp-supervisor` to start from the repo root, which is enough to keep the server pinned to the worktree even when Codex was launched outside a direnv-managed shell. The longer startup timeout avoids dropping `nteract-dev` during the initial cargo build.
 
 Or configure `.zed/settings.json` directly (gitignored):
 

@@ -306,7 +306,7 @@ cargo xtask run-mcp --print-config
 
 Use `nteract-dev` as the MCP server name for this source tree. Keep `nteract` for the global/system-installed MCP server. In clients that namespace tools by server name, that keeps repo-local tools distinct from the global install.
 
-For Codex app/CLI, this repository also includes a project-scoped MCP config in `.codex/config.toml` that points at the same server using the `nteract-dev` entry name.
+For Codex app/CLI, this repository also includes a project-scoped MCP config in `.codex/config.toml` that points at the same server using the `nteract-dev` entry name. The Codex config sets `cwd = "."` so GUI-launched sessions still start the supervisor from the repo root, and bumps the startup timeout because the first `cargo run -p mcp-supervisor` can take longer than the default while it builds.
 
 ### MCP Server
 
