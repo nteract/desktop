@@ -2771,6 +2771,70 @@ mod tests {
     }
 
     #[test]
+    fn merging_two_forks_with_shared_actor_returns_duplicate_seq_error() {
+        // Documents the Automerge invariant that motivates
+        // jupyter_kernel's `unique_kernel_actor` helper: two
+        // independent forks that set the same actor ID each produce
+        // ops under that actor's seq series. The first merge lands;
+        // the second merge comes in with an op at a seq number that
+        // actor already used on main, and Automerge rejects it with
+        // `DuplicateSeqNumber`.
+        //
+        // Before the fix, the daemon's IOPub handler ignored the Err
+        // via `let _ = sd.merge(...)` and the second insert vanished.
+        // The production call sites now assign a unique actor per
+        // fork so this error is impossible to hit in practice.
+        let mut main = RuntimeStateDoc::new();
+        main.create_execution("exec-1", "cell-1");
+
+        let shared_actor = "rt:kernel:shared";
+
+        let mut fa = main.fork();
+        fa.set_actor(shared_actor);
+        fa.append_output("exec-1", &test_stream("stream-a"))
+            .unwrap();
+
+        let mut fb = main.fork();
+        fb.set_actor(shared_actor);
+        fb.append_output("exec-1", &test_stream("display-b"))
+            .unwrap();
+
+        main.merge(&mut fa).unwrap();
+        let second = main.merge(&mut fb);
+        match second {
+            Err(AutomergeError::DuplicateSeqNumber(_, _)) => {}
+            other => panic!("expected DuplicateSeqNumber, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn append_output_from_forks_with_unique_actors_keeps_all_inserts() {
+        // Same setup as the previous test but each fork gets its own
+        // actor suffix. Both inserts must survive the merge.
+        let mut main = RuntimeStateDoc::new();
+        main.create_execution("exec-1", "cell-1");
+
+        let mut fa = main.fork();
+        fa.set_actor("rt:kernel:shared:fork-a");
+        fa.append_output("exec-1", &test_stream("stream-a"))
+            .unwrap();
+
+        let mut fb = main.fork();
+        fb.set_actor("rt:kernel:shared:fork-b");
+        fb.append_output("exec-1", &test_stream("display-b"))
+            .unwrap();
+
+        main.merge(&mut fa).unwrap();
+        main.merge(&mut fb).unwrap();
+
+        assert_eq!(
+            main.get_outputs("exec-1").len(),
+            2,
+            "both inserts should survive merge when each fork has a unique actor"
+        );
+    }
+
+    #[test]
     fn test_set_outputs() {
         let mut doc = RuntimeStateDoc::new();
         doc.create_execution("exec-1", "cell-1");
