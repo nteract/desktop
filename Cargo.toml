@@ -65,6 +65,25 @@ expect_used = "warn"
 
 [profile.dev]
 split-debuginfo = "packed"
+# sccache and cargo's incremental compilation fight each other: sccache
+# caches whole-crate outputs, incremental caches per-function deltas
+# inside a crate. With incremental on, sccache's Rust hit rate hovers
+# near zero. Turn it off so sccache actually shares builds across
+# worktrees, branches, and fresh clones.
+incremental = false
+
+# Build third-party deps optimized even in dev. Our own crates stay at
+# opt-level=0 for fast incremental rebuilds. Automerge in particular is
+# unusable at opt-level=0: widget comm_opens were taking 300-450ms of
+# CRDT write time each. Cost is a slower first compile; sccache caches
+# the optimized deps so every later build and fresh worktree benefits.
+[profile.dev.package."*"]
+opt-level = 3
+
+# Build scripts and proc macros run at build time; optimizing them cuts
+# the total dev build wall-clock even accounting for the slower compile.
+[profile.dev.build-override]
+opt-level = 3
 
 [profile.release]
 opt-level = 'z'
