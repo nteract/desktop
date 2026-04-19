@@ -119,6 +119,8 @@ export function useSyncedSettings() {
   const [defaultPixiPackages, setDefaultPixiPackagesState] = useState<string[]>([]);
   // Keep-alive duration in seconds (5s to 7 days)
   const [keepAliveSecs, setKeepAliveSecsState] = useState<number>(30);
+  // Feature flag: nteract/dx kernel bootstrap
+  const [bootstrapDx, setBootstrapDxState] = useState<boolean>(false);
 
   // Load initial settings from daemon
   useEffect(() => {
@@ -152,6 +154,9 @@ export function useSyncedSettings() {
           setKeepAliveSecsState(Number(settings.keep_alive_secs));
         } else if (typeof settings.keep_alive_secs === "number") {
           setKeepAliveSecsState(settings.keep_alive_secs);
+        }
+        if (typeof settings.bootstrap_dx === "boolean") {
+          setBootstrapDxState(settings.bootstrap_dx);
         }
       })
       .catch(() => {
@@ -197,6 +202,9 @@ export function useSyncedSettings() {
         setKeepAliveSecsState(Number(keep_alive_secs));
       } else if (typeof keep_alive_secs === "number") {
         setKeepAliveSecsState(keep_alive_secs);
+      }
+      if (typeof event.payload.bootstrap_dx === "boolean") {
+        setBootstrapDxState(event.payload.bootstrap_dx);
       }
     });
     return () => {
@@ -268,6 +276,14 @@ export function useSyncedSettings() {
     }).catch((e) => console.warn("[settings] Failed to persist keep_alive_secs:", e));
   }, []);
 
+  const setBootstrapDx = useCallback((enabled: boolean) => {
+    setBootstrapDxState(enabled);
+    invoke("set_synced_setting", {
+      key: "bootstrap_dx",
+      value: enabled,
+    }).catch((e) => console.warn("[settings] Failed to persist bootstrap_dx:", e));
+  }, []);
+
   return {
     theme,
     setTheme,
@@ -285,6 +301,8 @@ export function useSyncedSettings() {
     setDefaultPixiPackages,
     keepAliveSecs,
     setKeepAliveSecs,
+    bootstrapDx,
+    setBootstrapDx,
   };
 }
 
