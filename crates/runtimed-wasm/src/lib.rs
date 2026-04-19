@@ -1609,9 +1609,10 @@ impl NotebookHandle {
                 };
 
                 // Diff outputs inline in executions — detect mid-execution
-                // changes (stream append, display update, error).
-                let output_changed_cells = if changed {
-                    let current_state = state.as_ref().unwrap();
+                // changes (stream append, display update, error). `state` is
+                // Some iff `changed` is true, so this also covers the
+                // `changed` branch without a separate check.
+                let output_changed_cells = if let Some(current_state) = state.as_ref() {
                     let (changed_cells, new_snapshot) = diff_execution_outputs(
                         &self.prev_execution_outputs,
                         &current_state.executions,
