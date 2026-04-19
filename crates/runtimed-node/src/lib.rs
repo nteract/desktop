@@ -20,9 +20,11 @@
 use napi_derive::napi;
 
 mod error;
+mod parquet;
 mod session;
 
 pub use error::NodeError;
+pub use parquet::{read_parquet_rows, summarize_parquet};
 pub use session::{
     create_notebook, open_notebook, CellResult, CreateNotebookOptions, JsOutput,
     OpenNotebookOptions, RunCellOptions, Session,
