@@ -240,6 +240,9 @@ pub async fn run_runtime_agent(
                                                 }
                                             }
 
+                                            // Clean sent_to_kernel entries for closed comms
+                                            sent_to_kernel.retain(|cid, _| comms_after.contains_key(cid));
+
                                             // Check for new queued executions
                                             for (eid, exec) in queued {
                                                 if seen_execution_ids.insert(eid.clone()) {
