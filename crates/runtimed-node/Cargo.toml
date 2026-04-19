@@ -1,0 +1,30 @@
+[package]
+name = "runtimed-node"
+version = "0.1.0"
+edition = "2021"
+description = "Node.js (napi-rs) bindings for the runtimed daemon client"
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { version = "3", default-features = false, features = ["napi9", "async", "tokio_rt", "serde-json"] }
+napi-derive = "3"
+runtimed-client = { path = "../runtimed-client" }
+notebook-doc = { path = "../notebook-doc" }
+notebook-protocol = { path = "../notebook-protocol" }
+notebook-sync = { path = "../notebook-sync" }
+runt-workspace = { path = "../runt-workspace" }
+tokio = { version = "1", features = ["full"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+log = "0.4"
+thiserror = { workspace = true }
+base64 = { workspace = true }
+
+[build-dependencies]
+napi-build = "2"

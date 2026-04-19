@@ -1,0 +1,4 @@
+node_modules/
+src/*.node
+src/binding.cjs
+src/binding.d.ts

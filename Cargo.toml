@@ -12,6 +12,7 @@ members = [
     "crates/xtask",
     "crates/runtimed",
     "crates/runtimed-client",
+    "crates/runtimed-node",
     "crates/runtimed-py",
     "crates/runtimed-wasm",
     "crates/mcp-supervisor",

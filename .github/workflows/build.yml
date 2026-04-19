@@ -129,7 +129,7 @@ jobs:
       - run: pnpm --filter nteract-mcp-app install && vp run nteract-mcp-app#build
 
       - name: Clippy (Windows cross-check)
-        run: cargo clippy --target x86_64-pc-windows-gnu --workspace --exclude notebook --exclude runtimed-wasm --exclude sift-wasm --exclude runtimed-py --all-targets -- -D warnings
+        run: cargo clippy --target x86_64-pc-windows-gnu --workspace --exclude notebook --exclude runtimed-wasm --exclude sift-wasm --exclude runtimed-py --exclude runtimed-node --all-targets -- -D warnings
 
   wasm-deno:
     name: WASM + Deno Tests
@@ -369,10 +369,10 @@ jobs:
       # runtimed-wasm (needs wasm-pack, tested in wasm-deno),
       # runtimed-py (needs Python/maturin, tested in runtimed-py-integration).
       - name: Clippy
-        run: cargo clippy --workspace --exclude notebook --exclude runtimed-wasm --exclude sift-wasm --exclude runtimed-py --all-targets -- -D warnings
+        run: cargo clippy --workspace --exclude notebook --exclude runtimed-wasm --exclude sift-wasm --exclude runtimed-py --exclude runtimed-node --all-targets -- -D warnings
 
       - name: Run tests
-        run: cargo test --workspace --exclude notebook --exclude runtimed-wasm --exclude sift-wasm --exclude runtimed-py --verbose
+        run: cargo test --workspace --exclude notebook --exclude runtimed-wasm --exclude sift-wasm --exclude runtimed-py --exclude runtimed-node --verbose
 
   build:
     name: ${{ matrix.platform.name }}
@@ -463,7 +463,7 @@ jobs:
 
       - name: Clippy
         if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --exclude runtimed-node --all-targets -- -D warnings
 
       - name: Build
         if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
@@ -471,7 +471,7 @@ jobs:
 
       - name: Run tests
         if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
-        run: cargo test --workspace --verbose
+        run: cargo test --workspace --exclude runtimed-node --verbose
 
   # Build Tauri app once and share with E2E shards
   # E2E smoke test - verifies basic app functionality
