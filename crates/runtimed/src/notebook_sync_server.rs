@@ -4518,6 +4518,21 @@ async fn handle_notebook_request(
             env_source,
             notebook_path,
         } => {
+            // Fall back to the room's on-disk path when the caller doesn't
+            // supply one. The frontend typically launches with
+            // `notebook_path: None` and relies on the room knowing its own
+            // path; without this fallback, notebook-relative working dirs
+            // and auto-detection of `pyproject.toml` / `environment.yml` /
+            // `pixi.toml` silently stop working for saved notebooks.
+            let notebook_path = match notebook_path {
+                Some(p) => Some(p),
+                None => room
+                    .path
+                    .read()
+                    .await
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().into_owned()),
+            };
             // Check RuntimeStateDoc for launch serialization.
             // Uses write lock so we can atomically check + set "starting"
             // to prevent two concurrent LaunchKernel requests from both

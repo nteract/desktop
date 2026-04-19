@@ -6,6 +6,7 @@ import App from "./App";
 import "./index.css";
 import { IsolatedRendererProvider } from "@/components/isolated/isolated-renderer-context";
 import { setBlobPortHost } from "./lib/blob-port";
+import { setKernelCompletionHost } from "./lib/kernel-completion";
 import { setLoggerHost } from "./lib/logger";
 import { setMetadataTransport } from "./lib/notebook-metadata";
 import { setOpenUrlHost } from "./lib/open-url";
@@ -38,6 +39,7 @@ setMetadataTransport(host.transport);
 setBlobPortHost(host);
 setLoggerHost(host);
 setOpenUrlHost(host);
+setKernelCompletionHost(host);
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

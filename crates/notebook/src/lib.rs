@@ -3137,6 +3137,7 @@ async fn send_frame_bytes(
 
     match frame_type {
         frame_types::AUTOMERGE_SYNC
+        | frame_types::REQUEST
         | frame_types::PRESENCE
         | frame_types::RUNTIME_STATE_SYNC
         | frame_types::POOL_STATE_SYNC => handle

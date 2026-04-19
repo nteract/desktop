@@ -92,7 +92,13 @@ export {
 
 // Notebook client
 export { NotebookClient, type NotebookClientOptions } from "./notebook-client";
-export type { CommRequestMessage, NotebookRequest, NotebookResponse } from "./request-types";
+export type {
+  CommRequestMessage,
+  CompletionItem,
+  HistoryEntry,
+  NotebookRequest,
+  NotebookResponse,
+} from "./request-types";
 
 // MIME priority
 export { DEFAULT_MIME_PRIORITY } from "./mime-priority";

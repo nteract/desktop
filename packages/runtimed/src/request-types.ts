@@ -17,11 +17,34 @@ export type NotebookRequest =
     }
   | { type: "execute_cell"; cell_id: string }
   | { type: "clear_outputs"; cell_id: string }
-  | { type: "interrupt" }
+  | { type: "interrupt_execution" }
   | { type: "shutdown_kernel" }
   | { type: "sync_environment" }
   | { type: "run_all_cells" }
-  | { type: "send_comm"; message: CommRequestMessage };
+  | { type: "send_comm"; message: CommRequestMessage }
+  | {
+      type: "get_history";
+      /** Glob-style pattern to match. null for no filter. */
+      pattern: string | null;
+      /** Maximum number of entries to return. */
+      n: number;
+      /** Deduplicate identical entries when true. */
+      unique: boolean;
+    }
+  | { type: "complete"; code: string; cursor_pos: number };
+
+/** One entry returned by `get_history`. */
+export interface HistoryEntry {
+  session: number;
+  line: number;
+  source: string;
+}
+
+/** One item returned in a `completion_result`. */
+export interface CompletionItem {
+  label: string;
+  kind?: string | null;
+}
 
 /** Message shape for send_comm requests. */
 export interface CommRequestMessage {
@@ -70,4 +93,11 @@ export type NotebookResponse =
       result: "sync_environment_failed";
       error: string;
       needs_restart: boolean;
+    }
+  | { result: "history_result"; entries: HistoryEntry[] }
+  | {
+      result: "completion_result";
+      items: CompletionItem[];
+      cursor_start: number;
+      cursor_end: number;
     };
