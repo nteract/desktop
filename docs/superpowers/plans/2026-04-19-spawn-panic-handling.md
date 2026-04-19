@@ -272,12 +272,40 @@ returns a `JoinHandle<()>` that's `.abort()`-compatible, so no struct changes.
   the `spawn_supervised` migration since it's orthogonal; do it first so
   the migration doesn't have to work around half-landed state.
 
-- **Q4 (autosave panic) — DEFERRED pending research.** Phase 2 can
-  proceed on Q1–Q3 without resolving this. Kyle's direction: check how
-  `automerge` and `automerge-repo` (in `~/code/src/github.com/automerge/`)
-  handle persist/autosave panic recovery — he recalls a "refresh" pattern.
-  Site #28 stays on plain `tokio::spawn` for this PR; migrate after Q4
-  research lands. Tracked as task #70. Do not block phase 2 on this.
+- **Q4 (autosave panic) — RESEARCH COMPLETE, DECISION PENDING.**
+  Kyle's recollection of automerge-repo using a "refresh" pattern was
+  off. Actual behavior: `Repo.ts:192-197` fires save through a throttled
+  `void this.storageSubsystem.saveDoc(...)`; `StorageSubsystem.ts:327-333`
+  wraps `loadSyncState` in try/catch but `saveDoc` / `#saveIncremental` /
+  `#saveTotal` (lines 209-320) have **no error handling** — rejected
+  promises are discarded, the doc stays in memory diverged from storage,
+  no retry, no event. The Rust `automerge` core returns `Result` from
+  save/load and has no panic-safety helpers; panic handling is a caller
+  concern.
+
+  That pattern is **unacceptable for our autosave task**. automerge-repo
+  runs in a browser with sync peers that retransmit CRDT state; our
+  daemon is often the only persistence path. Silent save failure means
+  user edits vanish.
+
+  Options for site #28 (`spawn_autosave_debouncer`):
+  - **A. `trigger_shutdown()` on panic.** Daemon exits cleanly, frontend
+    reconnects, user sees the failure. Matches how other load-bearing
+    worker failures already propagate.
+  - **B. Broadcast to frontend on panic.** Daemon stays up, surfaces an
+    "autosave broken, please save-as / restart" banner. Keeps the
+    session usable for read-only inspection. Needs a new broadcast kind.
+  - **C. Single respawn with backoff.** Symmetric with Q2. Adds
+    complexity around debouncer internal state (in-flight save, queued
+    changes); the debouncer state is lost on respawn and we don't know
+    whether the save-triggering change has been flushed.
+
+  **Recommendation: A.** Cleanest; matches existing kernel-died and
+  daemon-shutdown semantics the frontend already handles. B is a
+  follow-up if we want finer-grained recovery; C is the wrong trade
+  for a data-path worker.
+
+  Kyle to confirm A or override to B. Tracked: task #70.
 
 ## Notes on other crates (out of scope, follow-up)
 
