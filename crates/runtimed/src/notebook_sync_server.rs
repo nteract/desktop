@@ -46,6 +46,7 @@ use crate::notebook_metadata::NotebookMetadataSnapshot;
 use crate::protocol::{
     EnvSyncDiff, NotebookBroadcast, NotebookRequest, NotebookResponse, QueueEntry,
 };
+use crate::task_supervisor::spawn_best_effort;
 use notebook_doc::diff::diff_metadata_touched;
 use notebook_doc::presence::{self, PresenceState};
 use notebook_doc::runtime_state::{QueueEntry as DocQueueEntry, RuntimeStateDoc};
@@ -2037,7 +2038,7 @@ where
             let room_clone = room.clone();
             let notebook_id_clone = notebook_id.clone();
             let daemon_clone = daemon.clone();
-            tokio::spawn(async move {
+            spawn_best_effort("auto-launch-kernel", async move {
                 auto_launch_kernel(
                     &room_clone,
                     &notebook_id_clone,
@@ -2133,7 +2134,7 @@ where
             eviction_delay
         );
 
-        tokio::spawn(async move {
+        spawn_best_effort("room-eviction", async move {
             // Outer loop wraps the eviction attempt so a flush timeout can
             // back off and retry rather than leak the room (and any attached
             // kernel / watcher) indefinitely. The loop exits either by
@@ -6011,7 +6012,7 @@ async fn handle_notebook_request(
                     let room_clone = Arc::clone(room);
                     let cell_id_clone = cell_id.clone();
                     let source_clone = source.clone();
-                    tokio::spawn(async move {
+                    spawn_best_effort("cell-formatter", async move {
                         if let Some(runtime) = detect_room_runtime(&room_clone).await {
                             if let Some(formatted) = format_source(&source_clone, &runtime).await {
                                 // Actor is assigned here (not via fork_with_actor)
@@ -7998,7 +7999,7 @@ fn spawn_persist_debouncer_with_config(
     persist_path: PathBuf,
     config: PersistDebouncerConfig,
 ) {
-    tokio::spawn(async move {
+    spawn_best_effort("persist-debouncer", async move {
         use std::time::Duration;
         use tokio::time::{interval, Instant, MissedTickBehavior};
 
@@ -9589,7 +9590,7 @@ pub(crate) fn spawn_notebook_file_watcher(
 ) -> oneshot::Sender<()> {
     let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
 
-    tokio::spawn(async move {
+    spawn_best_effort("notebook-file-watcher", async move {
         // Determine what path to watch
         let watch_path = if notebook_path.exists() {
             notebook_path.clone()
