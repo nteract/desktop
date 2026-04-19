@@ -486,6 +486,79 @@ impl Pool {
     }
 }
 
+/// Which environment pool a `WarmingGuard` protects.
+#[derive(Clone, Copy)]
+enum PoolKind {
+    Uv,
+    Conda,
+    Pixi,
+}
+
+/// RAII guard for pool warming paths. On drop (including panic unwind), rolls
+/// back the warming counter and unregisters the path. Call `commit()` on
+/// success to suppress the rollback, or `fail_with()` to record a specific
+/// error before consuming the guard.
+struct WarmingGuard {
+    inner: Option<WarmingGuardInner>,
+}
+
+struct WarmingGuardInner {
+    daemon: Arc<Daemon>,
+    path: PathBuf,
+    kind: PoolKind,
+}
+
+impl WarmingGuard {
+    fn new(daemon: Arc<Daemon>, path: PathBuf, kind: PoolKind) -> Self {
+        Self {
+            inner: Some(WarmingGuardInner { daemon, path, kind }),
+        }
+    }
+
+    /// Consume the guard on success — suppresses the Drop rollback.
+    fn commit(&mut self) {
+        self.inner.take();
+    }
+
+    /// Record a specific error and consume the guard. Caller must be in an
+    /// async context (this is not used from Drop).
+    async fn fail_with(&mut self, error: Option<PackageInstallError>) {
+        if let Some(inner) = self.inner.take() {
+            inner.rollback(error).await;
+        }
+    }
+}
+
+impl WarmingGuardInner {
+    async fn rollback(self, error: Option<PackageInstallError>) {
+        let pool = match self.kind {
+            PoolKind::Uv => &self.daemon.uv_pool,
+            PoolKind::Conda => &self.daemon.conda_pool,
+            PoolKind::Pixi => &self.daemon.pixi_pool,
+        };
+        pool.lock().await.warming_failed_for_path(&self.path, error);
+        match self.kind {
+            PoolKind::Uv => self.daemon.pool_ready_uv.notify_waiters(),
+            PoolKind::Conda => self.daemon.pool_ready_conda.notify_waiters(),
+            PoolKind::Pixi => self.daemon.pool_ready_pixi.notify_waiters(),
+        }
+        self.daemon.update_pool_doc().await;
+    }
+}
+
+impl Drop for WarmingGuard {
+    fn drop(&mut self) {
+        if let Some(inner) = self.inner.take() {
+            // Panic or early exit without commit/fail_with — roll back
+            // asynchronously. If the runtime is shutting down, the spawned
+            // task may not execute, but pool accounting is irrelevant then.
+            tokio::spawn(async move {
+                inner.rollback(None).await;
+            });
+        }
+    }
+}
+
 /// The pool daemon state.
 pub struct Daemon {
     config: DaemonConfig,
@@ -3154,7 +3227,7 @@ impl Daemon {
     }
 
     /// UV warming loop - maintains the UV pool.
-    async fn uv_warming_loop(&self) {
+    async fn uv_warming_loop(self: &Arc<Self>) {
         // Bootstrap uv via rattler if not on PATH (this is cached via OnceCell)
         let uv_path = match kernel_launch::tools::get_uv_path().await {
             Ok(path) => {
@@ -3265,7 +3338,7 @@ impl Daemon {
     }
 
     /// Conda warming loop - maintains the Conda pool using rattler.
-    async fn conda_warming_loop(&self) {
+    async fn conda_warming_loop(self: &Arc<Self>) {
         info!("[runtimed] Starting conda warming loop");
         let mut settings_rx = self.settings_changed.subscribe();
 
@@ -3370,7 +3443,7 @@ impl Daemon {
     }
 
     /// Background loop that keeps the pixi environment pool at its target size.
-    async fn pixi_warming_loop(&self) {
+    async fn pixi_warming_loop(self: &Arc<Self>) {
         info!("[runtimed] Starting pixi warming loop");
         let mut settings_rx = self.settings_changed.subscribe();
 
@@ -3472,7 +3545,7 @@ impl Daemon {
     }
 
     /// Create a single Conda environment using rattler and add it to the pool.
-    async fn create_conda_env(&self) {
+    async fn create_conda_env(self: &Arc<Self>) {
         use rattler::{default_cache_dir, install::Installer, package_cache::PackageCache};
         use rattler_conda_types::{
             Channel, ChannelConfig, GenericVirtualPackage, MatchSpec, ParseMatchSpecOptions,
@@ -3491,6 +3564,9 @@ impl Daemon {
             .await
             .register_warming_path(env_path.clone());
 
+        // Guard rolls back pool accounting on panic or early exit.
+        let mut guard = WarmingGuard::new(self.clone(), env_path.clone(), PoolKind::Conda);
+
         #[cfg(target_os = "windows")]
         let python_path = env_path.join("python.exe");
         #[cfg(not(target_os = "windows"))]
@@ -3501,15 +3577,13 @@ impl Daemon {
         // Ensure cache directory exists
         if let Err(e) = tokio::fs::create_dir_all(&self.config.cache_dir).await {
             error!("[runtimed] Failed to create cache dir: {}", e);
-            self.conda_pool.lock().await.warming_failed_for_path(
-                &env_path,
-                Some(PackageInstallError {
+            guard
+                .fail_with(Some(PackageInstallError {
                     failed_package: None,
                     error_message: format!("Failed to create cache dir: {}", e),
                     error_kind: "setup_failed".to_string(),
-                }),
-            );
-            self.update_pool_doc().await;
+                }))
+                .await;
             return;
         }
 
@@ -3521,15 +3595,13 @@ impl Daemon {
             Ok(ch) => vec![ch],
             Err(e) => {
                 error!("[runtimed] Failed to parse conda-forge channel: {}", e);
-                self.conda_pool.lock().await.warming_failed_for_path(
-                    &env_path,
-                    Some(PackageInstallError {
+                guard
+                    .fail_with(Some(PackageInstallError {
                         failed_package: None,
                         error_message: format!("Failed to parse conda-forge channel: {}", e),
                         error_kind: "setup_failed".to_string(),
-                    }),
-                );
-                self.update_pool_doc().await;
+                    }))
+                    .await;
                 return;
             }
         };
@@ -3562,15 +3634,13 @@ impl Daemon {
             Ok(s) => s,
             Err(e) => {
                 error!("[runtimed] Failed to parse match specs: {}", e);
-                self.conda_pool.lock().await.warming_failed_for_path(
-                    &env_path,
-                    Some(PackageInstallError {
+                guard
+                    .fail_with(Some(PackageInstallError {
                         failed_package: None,
                         error_message: format!("Failed to parse match specs: {}", e),
                         error_kind: "setup_failed".to_string(),
-                    }),
-                );
-                self.update_pool_doc().await;
+                    }))
+                    .await;
                 return;
             }
         };
@@ -3583,33 +3653,29 @@ impl Daemon {
                     "[runtimed] Could not determine rattler cache directory: {}",
                     e
                 );
-                self.conda_pool.lock().await.warming_failed_for_path(
-                    &env_path,
-                    Some(PackageInstallError {
+                guard
+                    .fail_with(Some(PackageInstallError {
                         failed_package: None,
                         error_message: format!(
                             "Could not determine rattler cache directory: {}",
                             e
                         ),
                         error_kind: "setup_failed".to_string(),
-                    }),
-                );
-                self.update_pool_doc().await;
+                    }))
+                    .await;
                 return;
             }
         };
 
         if let Err(e) = rattler_cache::ensure_cache_dir(&rattler_cache_dir) {
             error!("[runtimed] Could not create rattler cache directory: {}", e);
-            self.conda_pool.lock().await.warming_failed_for_path(
-                &env_path,
-                Some(PackageInstallError {
+            guard
+                .fail_with(Some(PackageInstallError {
                     failed_package: None,
                     error_message: format!("Could not create rattler cache directory: {}", e),
                     error_kind: "setup_failed".to_string(),
-                }),
-            );
-            self.update_pool_doc().await;
+                }))
+                .await;
             return;
         }
 
@@ -3618,15 +3684,13 @@ impl Daemon {
             Ok(c) => reqwest_middleware::ClientBuilder::new(c).build(),
             Err(e) => {
                 error!("[runtimed] Failed to create HTTP client: {}", e);
-                self.conda_pool.lock().await.warming_failed_for_path(
-                    &env_path,
-                    Some(PackageInstallError {
+                guard
+                    .fail_with(Some(PackageInstallError {
                         failed_package: None,
                         error_message: format!("Failed to create HTTP client: {}", e),
                         error_kind: "setup_failed".to_string(),
-                    }),
-                );
-                self.update_pool_doc().await;
+                    }))
+                    .await;
                 return;
             }
         };
@@ -3653,15 +3717,13 @@ impl Daemon {
             Ok(data) => data,
             Err(e) => {
                 error!("[runtimed] Failed to fetch repodata: {}", e);
-                self.conda_pool.lock().await.warming_failed_for_path(
-                    &env_path,
-                    Some(PackageInstallError {
+                guard
+                    .fail_with(Some(PackageInstallError {
                         failed_package: None,
                         error_message: format!("Failed to fetch repodata: {}", e),
                         error_kind: "setup_failed".to_string(),
-                    }),
-                );
-                self.update_pool_doc().await;
+                    }))
+                    .await;
                 return;
             }
         };
@@ -3678,15 +3740,13 @@ impl Daemon {
                 .collect::<Vec<_>>(),
             Err(e) => {
                 error!("[runtimed] Failed to detect virtual packages: {}", e);
-                self.conda_pool.lock().await.warming_failed_for_path(
-                    &env_path,
-                    Some(PackageInstallError {
+                guard
+                    .fail_with(Some(PackageInstallError {
                         failed_package: None,
                         error_message: format!("Failed to detect virtual packages: {}", e),
                         error_kind: "setup_failed".to_string(),
-                    }),
-                );
-                self.update_pool_doc().await;
+                    }))
+                    .await;
                 return;
             }
         };
@@ -3702,15 +3762,13 @@ impl Daemon {
             Ok(result) => result.records,
             Err(e) => {
                 error!("[runtimed] Failed to solve dependencies: {}", e);
-                self.conda_pool.lock().await.warming_failed_for_path(
-                    &env_path,
-                    Some(PackageInstallError {
+                guard
+                    .fail_with(Some(PackageInstallError {
                         failed_package: None,
                         error_message: format!("Failed to solve dependencies: {}", e),
                         error_kind: "invalid_package".to_string(),
-                    }),
-                );
-                self.update_pool_doc().await;
+                    }))
+                    .await;
                 return;
             }
         };
@@ -3730,15 +3788,13 @@ impl Daemon {
         if let Err(e) = install_result {
             error!("[runtimed] Failed to install packages: {}", e);
             tokio::fs::remove_dir_all(&env_path).await.ok();
-            self.conda_pool.lock().await.warming_failed_for_path(
-                &env_path,
-                Some(PackageInstallError {
+            guard
+                .fail_with(Some(PackageInstallError {
                     failed_package: None,
                     error_message: format!("Failed to install packages: {}", e),
                     error_kind: "setup_failed".to_string(),
-                }),
-            );
-            self.update_pool_doc().await;
+                }))
+                .await;
             return;
         }
 
@@ -3749,15 +3805,13 @@ impl Daemon {
                 python_path
             );
             tokio::fs::remove_dir_all(&env_path).await.ok();
-            self.conda_pool.lock().await.warming_failed_for_path(
-                &env_path,
-                Some(PackageInstallError {
+            guard
+                .fail_with(Some(PackageInstallError {
                     failed_package: None,
                     error_message: format!("Python not found at {:?} after install", python_path),
                     error_kind: "setup_failed".to_string(),
-                }),
-            );
-            self.update_pool_doc().await;
+                }))
+                .await;
             return;
         }
 
@@ -3768,6 +3822,7 @@ impl Daemon {
 
         match warmup_outcome {
             WarmupOutcome::Ok => {
+                guard.commit();
                 {
                     let mut pool = self.conda_pool.lock().await;
                     pool.add(PooledEnv {
@@ -3791,30 +3846,26 @@ impl Daemon {
             }
             WarmupOutcome::Timeout => {
                 let _ = tokio::fs::remove_dir_all(&env_path).await;
-                self.conda_pool.lock().await.warming_failed_for_path(
-                    &env_path,
-                    Some(PackageInstallError {
+                guard
+                    .fail_with(Some(PackageInstallError {
                         failed_package: None,
                         error_message: "Conda warmup timed out".into(),
                         error_kind: "timeout".to_string(),
-                    }),
-                );
-                self.update_pool_doc().await;
+                    }))
+                    .await;
             }
             WarmupOutcome::ImportError(msg) => {
                 let _ = tokio::fs::remove_dir_all(&env_path).await;
-                self.conda_pool.lock().await.warming_failed_for_path(
-                    &env_path,
-                    Some(PackageInstallError {
+                guard
+                    .fail_with(Some(PackageInstallError {
                         failed_package: None,
                         error_message: format!(
                             "Conda warmup failed: {}",
                             msg.chars().take(200).collect::<String>()
                         ),
                         error_kind: "import_error".to_string(),
-                    }),
-                );
-                self.update_pool_doc().await;
+                    }))
+                    .await;
             }
         }
     }
@@ -3885,7 +3936,7 @@ impl Daemon {
     }
 
     /// Replenish a single Conda environment.
-    async fn replenish_conda_env(&self) {
+    async fn replenish_conda_env(self: &Arc<Self>) {
         self.conda_pool.lock().await.mark_warming(1);
         self.create_conda_env().await;
     }
@@ -3895,7 +3946,7 @@ impl Daemon {
     /// Creates a pixi-compatible project directory with ipykernel and default
     /// packages, solved and installed via rattler. Replaces the old
     /// `pixi init` + `pixi add` subprocess approach.
-    async fn create_pixi_env(&self) {
+    async fn create_pixi_env(self: &Arc<Self>) {
         let cache_dir = self.config.cache_dir.clone();
         let env_id = uuid::Uuid::new_v4().to_string();
         let project_dir = cache_dir.join(format!("{}{}", crate::POOL_PREFIX_PIXI, env_id));
@@ -3906,6 +3957,9 @@ impl Daemon {
             .lock()
             .await
             .register_warming_path(project_dir.clone());
+
+        // Guard rolls back pool accounting on panic or early exit.
+        let mut guard = WarmingGuard::new(self.clone(), project_dir.clone(), PoolKind::Pixi);
 
         info!("[runtimed] Creating Pixi environment at {:?}", project_dir);
 
@@ -3940,6 +3994,7 @@ impl Daemon {
                 }
 
                 info!("[runtimed] Pixi environment ready at {:?}", env.project_dir);
+                guard.commit();
                 {
                     let mut pool = self.pixi_pool.lock().await;
                     pool.add(PooledEnv {
@@ -3954,21 +4009,19 @@ impl Daemon {
             Err(e) => {
                 error!("[runtimed] Pixi environment creation failed: {}", e);
                 let _ = tokio::fs::remove_dir_all(&project_dir).await;
-                self.pixi_pool.lock().await.warming_failed_for_path(
-                    &project_dir,
-                    Some(PackageInstallError {
+                guard
+                    .fail_with(Some(PackageInstallError {
                         error_message: format!("{}", e),
                         failed_package: None,
                         error_kind: "setup_failed".to_string(),
-                    }),
-                );
-                self.update_pool_doc().await;
+                    }))
+                    .await;
             }
         }
     }
 
     /// Mark pixi pool as warming and create a pixi environment.
-    async fn replenish_pixi_env(&self) {
+    async fn replenish_pixi_env(self: &Arc<Self>) {
         self.pixi_pool.lock().await.mark_warming(1);
         self.create_pixi_env().await;
     }
@@ -4039,7 +4092,7 @@ impl Daemon {
     }
 
     /// Create a single UV environment and add it to the pool.
-    async fn create_uv_env(&self) {
+    async fn create_uv_env(self: &Arc<Self>) {
         // Get uv path (cached via OnceCell, so this is instant after initial bootstrap)
         let uv_path = match kernel_launch::tools::get_uv_path().await {
             Ok(path) => path,
@@ -4068,6 +4121,9 @@ impl Daemon {
             .await
             .register_warming_path(venv_path.clone());
 
+        // Guard rolls back pool accounting on panic or early exit.
+        let mut guard = WarmingGuard::new(self.clone(), venv_path.clone(), PoolKind::Uv);
+
         #[cfg(target_os = "windows")]
         let python_path = venv_path.join("Scripts").join("python.exe");
         #[cfg(not(target_os = "windows"))]
@@ -4078,15 +4134,13 @@ impl Daemon {
         // Ensure cache directory exists
         if let Err(e) = tokio::fs::create_dir_all(&self.config.cache_dir).await {
             error!("[runtimed] Failed to create cache dir: {}", e);
-            self.uv_pool.lock().await.warming_failed_for_path(
-                &venv_path,
-                Some(PackageInstallError {
+            guard
+                .fail_with(Some(PackageInstallError {
                     failed_package: None,
                     error_message: format!("Failed to create cache dir: {}", e),
                     error_kind: "setup_failed".to_string(),
-                }),
-            );
-            self.update_pool_doc().await;
+                }))
+                .await;
             return;
         }
 
@@ -4109,42 +4163,36 @@ impl Daemon {
             Ok(Ok(output)) => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 error!("[runtimed] Failed to create venv: {}", stderr);
-                self.uv_pool.lock().await.warming_failed_for_path(
-                    &venv_path,
-                    Some(PackageInstallError {
+                guard
+                    .fail_with(Some(PackageInstallError {
                         failed_package: None,
                         error_message: format!("Failed to create venv: {}", stderr),
                         error_kind: "setup_failed".to_string(),
-                    }),
-                );
-                self.update_pool_doc().await;
+                    }))
+                    .await;
                 return;
             }
             Ok(Err(e)) => {
                 error!("[runtimed] Failed to create venv: {}", e);
-                self.uv_pool.lock().await.warming_failed_for_path(
-                    &venv_path,
-                    Some(PackageInstallError {
+                guard
+                    .fail_with(Some(PackageInstallError {
                         failed_package: None,
                         error_message: format!("Failed to create venv: {}", e),
                         error_kind: "setup_failed".to_string(),
-                    }),
-                );
-                self.update_pool_doc().await;
+                    }))
+                    .await;
                 return;
             }
             Err(_) => {
                 error!("[runtimed] Timeout creating venv");
                 tokio::fs::remove_dir_all(&venv_path).await.ok();
-                self.uv_pool.lock().await.warming_failed_for_path(
-                    &venv_path,
-                    Some(PackageInstallError {
+                guard
+                    .fail_with(Some(PackageInstallError {
                         failed_package: None,
                         error_message: "Timeout creating venv after 60 seconds".to_string(),
                         error_kind: "timeout".to_string(),
-                    }),
-                );
-                self.update_pool_doc().await;
+                    }))
+                    .await;
                 return;
             }
         }
@@ -4225,39 +4273,31 @@ impl Daemon {
                 }
 
                 tokio::fs::remove_dir_all(&venv_path).await.ok();
-                self.uv_pool
-                    .lock()
-                    .await
-                    .warming_failed_for_path(&venv_path, parsed_error);
-                self.update_pool_doc().await;
+                guard.fail_with(parsed_error).await;
                 return;
             }
             Ok(Err(e)) => {
                 error!("[runtimed] Failed to run uv pip install: {}", e);
                 tokio::fs::remove_dir_all(&venv_path).await.ok();
-                self.uv_pool.lock().await.warming_failed_for_path(
-                    &venv_path,
-                    Some(PackageInstallError {
+                guard
+                    .fail_with(Some(PackageInstallError {
                         failed_package: None,
                         error_message: e.to_string(),
                         error_kind: "setup_failed".to_string(),
-                    }),
-                );
-                self.update_pool_doc().await;
+                    }))
+                    .await;
                 return;
             }
             Err(_) => {
                 error!("[runtimed] Timeout installing packages (180s)");
                 tokio::fs::remove_dir_all(&venv_path).await.ok();
-                self.uv_pool.lock().await.warming_failed_for_path(
-                    &venv_path,
-                    Some(PackageInstallError {
+                guard
+                    .fail_with(Some(PackageInstallError {
                         failed_package: None,
                         error_message: "Timeout after 180 seconds".to_string(),
                         error_kind: "timeout".to_string(),
-                    }),
-                );
-                self.update_pool_doc().await;
+                    }))
+                    .await;
                 return;
             }
         }
@@ -4319,7 +4359,7 @@ impl Daemon {
         match warmup_outcome {
             WarmupOutcome::Ok => {
                 info!("[runtimed] UV environment ready at {:?}", venv_path);
-
+                guard.commit();
                 {
                     let mut pool = self.uv_pool.lock().await;
                     pool.add(PooledEnv {
@@ -4333,30 +4373,26 @@ impl Daemon {
             }
             WarmupOutcome::Timeout => {
                 let _ = tokio::fs::remove_dir_all(&venv_path).await;
-                self.uv_pool.lock().await.warming_failed_for_path(
-                    &venv_path,
-                    Some(PackageInstallError {
+                guard
+                    .fail_with(Some(PackageInstallError {
                         failed_package: None,
                         error_message: "UV warmup timed out".into(),
                         error_kind: "timeout".to_string(),
-                    }),
-                );
-                self.update_pool_doc().await;
+                    }))
+                    .await;
             }
             WarmupOutcome::ImportError(msg) => {
                 let _ = tokio::fs::remove_dir_all(&venv_path).await;
-                self.uv_pool.lock().await.warming_failed_for_path(
-                    &venv_path,
-                    Some(PackageInstallError {
+                guard
+                    .fail_with(Some(PackageInstallError {
                         failed_package: None,
                         error_message: format!(
                             "UV warmup failed: {}",
                             msg.chars().take(200).collect::<String>()
                         ),
                         error_kind: "import_error".to_string(),
-                    }),
-                );
-                self.update_pool_doc().await;
+                    }))
+                    .await;
             }
         }
     }
