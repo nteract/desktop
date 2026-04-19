@@ -71,13 +71,7 @@ pub(crate) fn catch_automerge_panic<T>(label: &str, f: impl FnOnce() -> T) -> Re
     match std::panic::catch_unwind(AssertUnwindSafe(f)) {
         Ok(val) => Ok(val),
         Err(payload) => {
-            let msg = if let Some(s) = payload.downcast_ref::<String>() {
-                s.clone()
-            } else if let Some(s) = payload.downcast_ref::<&str>() {
-                s.to_string()
-            } else {
-                "unknown panic".to_string()
-            };
+            let msg = crate::task_supervisor::panic_payload_to_string(payload);
             Err(format!(
                 "[{label}] automerge panicked (upstream bug, see automerge collector.rs MissingOps): {msg}"
             ))
