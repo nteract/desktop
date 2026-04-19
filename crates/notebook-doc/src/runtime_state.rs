@@ -879,10 +879,10 @@ impl RuntimeStateDoc {
         cell_id: &str,
         source: &str,
         seq: u64,
-    ) -> bool {
+    ) -> Result<bool, AutomergeError> {
         let executions = self
             .get_map("executions")
-            .expect("executions map must exist");
+            .ok_or_else(|| AutomergeError::InvalidObjId("executions map must exist".to_string()))?;
 
         // Don't overwrite if it already exists (idempotent)
         if self
@@ -892,35 +892,20 @@ impl RuntimeStateDoc {
             .flatten()
             .is_some()
         {
-            return false;
+            return Ok(false);
         }
 
         let entry = self
             .doc
-            .put_object(&executions, execution_id, ObjType::Map)
-            .expect("put execution entry");
-        self.doc
-            .put(&entry, "cell_id", cell_id)
-            .expect("put execution.cell_id");
-        self.doc
-            .put(&entry, "status", "queued")
-            .expect("put execution.status");
-        self.doc
-            .put(&entry, "execution_count", ScalarValue::Null)
-            .expect("put execution.execution_count");
-        self.doc
-            .put(&entry, "success", ScalarValue::Null)
-            .expect("put execution.success");
-        self.doc
-            .put_object(&entry, "outputs", ObjType::List)
-            .expect("put execution.outputs");
-        self.doc
-            .put(&entry, "source", source)
-            .expect("put execution.source");
-        self.doc
-            .put(&entry, "seq", ScalarValue::Uint(seq))
-            .expect("put execution.seq");
-        true
+            .put_object(&executions, execution_id, ObjType::Map)?;
+        self.doc.put(&entry, "cell_id", cell_id)?;
+        self.doc.put(&entry, "status", "queued")?;
+        self.doc.put(&entry, "execution_count", ScalarValue::Null)?;
+        self.doc.put(&entry, "success", ScalarValue::Null)?;
+        self.doc.put_object(&entry, "outputs", ObjType::List)?;
+        self.doc.put(&entry, "source", source)?;
+        self.doc.put(&entry, "seq", ScalarValue::Uint(seq))?;
+        Ok(true)
     }
 
     /// Mark an execution as running.
@@ -2442,7 +2427,9 @@ mod tests {
     #[test]
     fn test_create_execution_with_source() {
         let mut doc = RuntimeStateDoc::new();
-        assert!(doc.create_execution_with_source("exec-1", "cell-1", "x = 42", 0));
+        assert!(doc
+            .create_execution_with_source("exec-1", "cell-1", "x = 42", 0)
+            .unwrap());
 
         let es = doc.get_execution("exec-1").unwrap();
         assert_eq!(es.cell_id, "cell-1");
@@ -2454,9 +2441,12 @@ mod tests {
     #[test]
     fn test_get_queued_executions_sorted_by_seq() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution_with_source("exec-3", "cell-3", "z = 3", 2);
-        doc.create_execution_with_source("exec-1", "cell-1", "x = 1", 0);
-        doc.create_execution_with_source("exec-2", "cell-2", "y = 2", 1);
+        doc.create_execution_with_source("exec-3", "cell-3", "z = 3", 2)
+            .unwrap();
+        doc.create_execution_with_source("exec-1", "cell-1", "x = 1", 0)
+            .unwrap();
+        doc.create_execution_with_source("exec-2", "cell-2", "y = 2", 1)
+            .unwrap();
 
         let queued = doc.get_queued_executions();
         assert_eq!(queued.len(), 3);

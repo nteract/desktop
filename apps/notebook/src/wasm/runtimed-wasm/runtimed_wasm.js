@@ -1824,6 +1824,11 @@ export function encode_clear_channel_presence(peer_id, channel) {
         wasm.encode_clear_channel_presence(retptr, ptr0, len0, ptr1, len1);
         var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
         var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+        var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
+        if (r3) {
+            throw takeObject(r2);
+        }
         var v3 = getArrayU8FromWasm0(r0, r1).slice();
         wasm.__wbindgen_export4(r0, r1 * 1, 1);
         return v3;
@@ -1862,6 +1867,11 @@ export function encode_cursor_presence(peer_id, peer_label, actor_label, cell_id
         wasm.encode_cursor_presence(retptr, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, line, column);
         var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
         var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+        var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
+        if (r3) {
+            throw takeObject(r2);
+        }
         var v5 = getArrayU8FromWasm0(r0, r1).slice();
         wasm.__wbindgen_export4(r0, r1 * 1, 1);
         return v5;
@@ -1893,6 +1903,11 @@ export function encode_focus_presence(peer_id, peer_label, actor_label, cell_id)
         wasm.encode_focus_presence(retptr, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3);
         var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
         var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+        var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
+        if (r3) {
+            throw takeObject(r2);
+        }
         var v5 = getArrayU8FromWasm0(r0, r1).slice();
         wasm.__wbindgen_export4(r0, r1 * 1, 1);
         return v5;
@@ -1927,6 +1942,11 @@ export function encode_selection_presence(peer_id, peer_label, actor_label, cell
         wasm.encode_selection_presence(retptr, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, anchor_line, anchor_col, head_line, head_col);
         var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
         var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+        var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
+        if (r3) {
+            throw takeObject(r2);
+        }
         var v5 = getArrayU8FromWasm0(r0, r1).slice();
         wasm.__wbindgen_export4(r0, r1 * 1, 1);
         return v5;

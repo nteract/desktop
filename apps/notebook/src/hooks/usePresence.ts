@@ -33,7 +33,13 @@ export function usePresence(
   const setCursor = useCallback(
     (cellId: string, line: number, column: number) => {
       if (!peerId) return;
-      const payload = encode_cursor_presence(peerId, peerLabel, actorLabel, cellId, line, column);
+      let payload: Uint8Array;
+      try {
+        payload = encode_cursor_presence(peerId, peerLabel, actorLabel, cellId, line, column);
+      } catch (e) {
+        logger.warn("[presence] encode cursor failed:", e);
+        return;
+      }
       transport
         .sendFrame(frame_types.PRESENCE, payload)
         .catch((e: unknown) => logger.warn("[presence] send cursor failed:", e));
@@ -44,16 +50,22 @@ export function usePresence(
   const setSelection = useCallback(
     (cellId: string, anchorLine: number, anchorCol: number, headLine: number, headCol: number) => {
       if (!peerId) return;
-      const payload = encode_selection_presence(
-        peerId,
-        peerLabel,
-        actorLabel,
-        cellId,
-        anchorLine,
-        anchorCol,
-        headLine,
-        headCol,
-      );
+      let payload: Uint8Array;
+      try {
+        payload = encode_selection_presence(
+          peerId,
+          peerLabel,
+          actorLabel,
+          cellId,
+          anchorLine,
+          anchorCol,
+          headLine,
+          headCol,
+        );
+      } catch (e) {
+        logger.warn("[presence] encode selection failed:", e);
+        return;
+      }
       transport
         .sendFrame(frame_types.PRESENCE, payload)
         .catch((e: unknown) => logger.warn("[presence] send selection failed:", e));
@@ -64,7 +76,13 @@ export function usePresence(
   const setFocus = useCallback(
     (cellId: string) => {
       if (!peerId) return;
-      const payload = encode_focus_presence(peerId, peerLabel, actorLabel, cellId);
+      let payload: Uint8Array;
+      try {
+        payload = encode_focus_presence(peerId, peerLabel, actorLabel, cellId);
+      } catch (e) {
+        logger.warn("[presence] encode focus failed:", e);
+        return;
+      }
       transport
         .sendFrame(frame_types.PRESENCE, payload)
         .catch((e: unknown) => logger.warn("[presence] send focus failed:", e));

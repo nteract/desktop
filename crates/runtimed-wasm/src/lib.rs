@@ -1744,7 +1744,7 @@ pub fn encode_cursor_presence(
     cell_id: &str,
     line: u32,
     column: u32,
-) -> Vec<u8> {
+) -> Result<Vec<u8>, JsError> {
     let label = if peer_label.is_empty() {
         None
     } else {
@@ -1765,6 +1765,7 @@ pub fn encode_cursor_presence(
             column,
         },
     )
+    .map_err(|e| JsError::new(&e.to_string()))
 }
 
 /// Encode a selection range as a presence frame payload (CBOR).
@@ -1779,7 +1780,7 @@ pub fn encode_selection_presence(
     anchor_col: u32,
     head_line: u32,
     head_col: u32,
-) -> Vec<u8> {
+) -> Result<Vec<u8>, JsError> {
     let label = if peer_label.is_empty() {
         None
     } else {
@@ -1802,6 +1803,7 @@ pub fn encode_selection_presence(
             head_col,
         },
     )
+    .map_err(|e| JsError::new(&e.to_string()))
 }
 
 /// Encode a cell focus as a presence frame payload (CBOR).
@@ -1812,7 +1814,7 @@ pub fn encode_focus_presence(
     peer_label: &str,
     actor_label: &str,
     cell_id: &str,
-) -> Vec<u8> {
+) -> Result<Vec<u8>, JsError> {
     let label = if peer_label.is_empty() {
         None
     } else {
@@ -1824,19 +1826,20 @@ pub fn encode_focus_presence(
         Some(actor_label)
     };
     presence::encode_focus_update_labeled(peer_id, label, actor, cell_id)
+        .map_err(|e| JsError::new(&e.to_string()))
 }
 
 /// Encode a clear-channel message as a presence frame payload (CBOR).
 /// Removes a single presence channel (e.g. cursor or selection) for this peer.
 #[wasm_bindgen]
-pub fn encode_clear_channel_presence(peer_id: &str, channel: &str) -> Vec<u8> {
+pub fn encode_clear_channel_presence(peer_id: &str, channel: &str) -> Result<Vec<u8>, JsError> {
     let ch = match channel {
         "cursor" => presence::Channel::Cursor,
         "selection" => presence::Channel::Selection,
         "focus" => presence::Channel::Focus,
-        _ => return vec![],
+        other => return Err(JsError::new(&format!("unknown presence channel: {other}"))),
     };
-    presence::encode_clear_channel(peer_id, ch)
+    presence::encode_clear_channel(peer_id, ch).map_err(|e| JsError::new(&e.to_string()))
 }
 
 #[cfg(test)]

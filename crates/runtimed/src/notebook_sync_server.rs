@@ -2104,8 +2104,12 @@ where
     // available here. remove_peer is a no-op for unknown peers
     // (e.g. error before any presence was registered).
     room.presence.write().await.remove_peer(&peer_id);
-    let left_bytes = presence::encode_left(&peer_id);
-    let _ = room.presence_tx.send((peer_id, left_bytes));
+    match presence::encode_left(&peer_id) {
+        Ok(left_bytes) => {
+            let _ = room.presence_tx.send((peer_id, left_bytes));
+        }
+        Err(e) => warn!("[notebook-sync] Failed to encode 'left' presence: {}", e),
+    }
 
     // Peer disconnected — decrement and possibly evict the room
     let remaining = room.active_peers.fetch_sub(1, Ordering::Relaxed) - 1;
@@ -2537,7 +2541,13 @@ where
                     })
                     .collect();
                 if !other_peers.is_empty() {
-                    Some(presence::encode_snapshot("daemon", &other_peers))
+                    match presence::encode_snapshot("daemon", &other_peers) {
+                        Ok(bytes) => Some(bytes),
+                        Err(e) => {
+                            warn!("[notebook-sync] Failed to encode presence snapshot: {}", e);
+                            None
+                        }
+                    }
                 } else {
                     None
                 }
@@ -2737,14 +2747,23 @@ where
                                                     })
                                                     .collect();
                                                 if !other_peers.is_empty() {
-                                                    let snapshot_bytes =
-                                                        presence::encode_snapshot("daemon", &other_peers);
-                                                    connection::send_typed_frame(
-                                                        writer,
-                                                        NotebookFrameType::Presence,
-                                                        &snapshot_bytes,
-                                                    )
-                                                    .await?;
+                                                    match presence::encode_snapshot(
+                                                        "daemon",
+                                                        &other_peers,
+                                                    ) {
+                                                        Ok(snapshot_bytes) => {
+                                                            connection::send_typed_frame(
+                                                                writer,
+                                                                NotebookFrameType::Presence,
+                                                                &snapshot_bytes,
+                                                            )
+                                                            .await?;
+                                                        }
+                                                        Err(e) => warn!(
+                                                            "[notebook-sync] Failed to encode presence snapshot for new peer: {}",
+                                                            e
+                                                        ),
+                                                    }
                                                 }
                                             }
 
@@ -2766,8 +2785,15 @@ where
                                     }
                                     Ok(presence::PresenceMessage::ClearChannel { channel, .. }) => {
                                         room.presence.write().await.clear_channel(peer_id, channel);
-                                        let bytes = presence::encode_clear_channel(peer_id, channel);
-                                        let _ = room.presence_tx.send((peer_id.to_string(), bytes));
+                                        match presence::encode_clear_channel(peer_id, channel) {
+                                            Ok(bytes) => {
+                                                let _ = room.presence_tx.send((peer_id.to_string(), bytes));
+                                            }
+                                            Err(e) => warn!(
+                                                "[notebook-sync] Failed to encode clear_channel presence: {}",
+                                                e
+                                            ),
+                                        }
                                     }
                                     Ok(_) => {
                                         // Snapshot/Left from a client — ignore
@@ -3106,13 +3132,20 @@ where
                             "[notebook-sync] Peer {} lagged {} presence updates, sending snapshot",
                             peer_id, n
                         );
-                        let snapshot_bytes = room.presence.read().await.encode_snapshot(peer_id);
-                        connection::send_typed_frame(
-                            writer,
-                            NotebookFrameType::Presence,
-                            &snapshot_bytes,
-                        )
-                        .await?;
+                        match room.presence.read().await.encode_snapshot(peer_id) {
+                            Ok(snapshot_bytes) => {
+                                connection::send_typed_frame(
+                                    writer,
+                                    NotebookFrameType::Presence,
+                                    &snapshot_bytes,
+                                )
+                                .await?;
+                            }
+                            Err(e) => warn!(
+                                "[notebook-sync] Failed to encode lag-recovery snapshot: {}",
+                                e
+                            ),
+                        }
                     }
                     Err(broadcast::error::RecvError::Closed) => {
                         // Presence channel closed — room is being evicted
@@ -3193,8 +3226,15 @@ where
                 let pruned = presence_state.prune_stale(now_ms, presence::DEFAULT_PEER_TTL_MS);
                 drop(presence_state);
                 for pruned_peer_id in pruned {
-                    let left_bytes = presence::encode_left(&pruned_peer_id);
-                    let _ = room.presence_tx.send((pruned_peer_id, left_bytes));
+                    match presence::encode_left(&pruned_peer_id) {
+                        Ok(left_bytes) => {
+                            let _ = room.presence_tx.send((pruned_peer_id, left_bytes));
+                        }
+                        Err(e) => warn!(
+                            "[notebook-sync] Failed to encode 'left' for pruned peer: {}",
+                            e
+                        ),
+                    }
                 }
             }
         }
@@ -4499,8 +4539,15 @@ pub(crate) async fn update_kernel_presence(
         presence::ChannelData::KernelState(data.clone()),
         now_ms,
     );
-    let bytes = presence::encode_kernel_state_update("daemon", &data);
-    let _ = presence_tx.send(("daemon".to_string(), bytes));
+    match presence::encode_kernel_state_update("daemon", &data) {
+        Ok(bytes) => {
+            let _ = presence_tx.send(("daemon".to_string(), bytes));
+        }
+        Err(e) => warn!(
+            "[notebook-sync] Failed to encode kernel state presence: {}",
+            e
+        ),
+    }
 }
 
 /// Handle a NotebookRequest and return a NotebookResponse.
@@ -5853,18 +5900,30 @@ async fn handle_notebook_request(
                         .next_queue_seq
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
+                    // Write execution entry with source to RuntimeStateDoc first
+                    // so that NotebookDoc's cell→execution_id pointer never
+                    // dangles. If this fails we bail before stamping the cell.
+                    {
+                        let mut sd = room.state_doc.write().await;
+                        if let Err(e) =
+                            sd.create_execution_with_source(&execution_id, &cell_id, &source, seq)
+                        {
+                            warn!(
+                                "[notebook-sync] Failed to create_execution_with_source for {}: {}",
+                                execution_id, e
+                            );
+                            return NotebookResponse::Error {
+                                error: format!("failed to queue execution: {e}"),
+                            };
+                        }
+                        let _ = room.state_changed_tx.send(());
+                    }
+
                     // Stamp execution_id on the cell in NotebookDoc
                     {
                         let mut doc = room.doc.write().await;
                         let _ = doc.set_execution_id(&cell_id, Some(&execution_id));
                         let _ = room.changed_tx.send(());
-                    }
-
-                    // Write execution entry with source to RuntimeStateDoc
-                    {
-                        let mut sd = room.state_doc.write().await;
-                        sd.create_execution_with_source(&execution_id, &cell_id, &source, seq);
-                        let _ = room.state_changed_tx.send(());
                     }
 
                     // Best-effort background formatting via fork+merge
@@ -6113,10 +6172,23 @@ async fn handle_notebook_request(
                             });
                         }
                     }
+                    // Write RuntimeStateDoc entries first; on failure bail
+                    // before stamping NotebookDoc so cell→execution_id pointers
+                    // cannot dangle. Any single failure aborts the whole batch.
                     {
                         let mut sd = room.state_doc.write().await;
                         for (execution_id, cell_id, source, seq) in &entries {
-                            sd.create_execution_with_source(execution_id, cell_id, source, *seq);
+                            if let Err(e) =
+                                sd.create_execution_with_source(execution_id, cell_id, source, *seq)
+                            {
+                                warn!(
+                                    "[notebook-sync] Failed to create_execution_with_source for {}: {}",
+                                    execution_id, e
+                                );
+                                return NotebookResponse::Error {
+                                    error: format!("failed to queue execution: {e}"),
+                                };
+                            }
                         }
                         let _ = room.state_changed_tx.send(());
                     }

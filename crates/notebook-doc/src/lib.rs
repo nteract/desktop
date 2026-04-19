@@ -1587,17 +1587,23 @@ impl NotebookDoc {
             .get_cell_metadata(cell_id)
             .unwrap_or_else(|| serde_json::json!({}));
 
-        // Navigate to the parent of the target key, creating objects as needed
+        // Navigate to the parent of the target key, creating objects as needed.
+        // Each hop: coerce `current` into a Map, then bind a mutable reference
+        // to the child entry (insert `{}` if missing). This replaces the prior
+        // unwrap chain with Map-returning pattern matches that make the
+        // never-None invariant hold by construction.
         let mut current = &mut metadata;
         for key in &path[..path.len() - 1] {
             if !current.is_object() {
                 *current = serde_json::json!({});
             }
-            let obj = current.as_object_mut().unwrap();
-            if !obj.contains_key(*key) {
-                obj.insert((*key).to_string(), serde_json::json!({}));
-            }
-            current = obj.get_mut(*key).unwrap();
+            let Some(obj) = current.as_object_mut() else {
+                // Unreachable: we just assigned a Map above if it wasn't one.
+                unreachable!("current was coerced into a JSON object on the line above");
+            };
+            current = obj
+                .entry((*key).to_string())
+                .or_insert_with(|| serde_json::json!({}));
         }
 
         // Set the final key
@@ -1605,10 +1611,10 @@ impl NotebookDoc {
             *current = serde_json::json!({});
         }
         let final_key = path[path.len() - 1];
-        current
-            .as_object_mut()
-            .unwrap()
-            .insert(final_key.to_string(), value);
+        let Some(obj) = current.as_object_mut() else {
+            unreachable!("current was coerced into a JSON object on the line above");
+        };
+        obj.insert(final_key.to_string(), value);
 
         self.set_cell_metadata(cell_id, &metadata)
     }

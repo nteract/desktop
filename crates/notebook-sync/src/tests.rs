@@ -631,7 +631,8 @@ mod tests {
     ) {
         let mut st = shared.lock().unwrap();
         st.state_doc
-            .create_execution_with_source(execution_id, cell_id, "x = 1", 0);
+            .create_execution_with_source(execution_id, cell_id, "x = 1", 0)
+            .unwrap();
         st.state_doc.set_execution_running(execution_id);
         if let Some(count) = execution_count {
             st.state_doc.set_execution_count(execution_id, count);
