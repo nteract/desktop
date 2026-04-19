@@ -2184,10 +2184,21 @@ where
                 const MAX_FLUSH_RETRIES: u32 = 4;
                 let mut flush_ok = true;
                 if let Some(ref flush_tx) = room_for_eviction.flush_request_tx {
-                    let (ack_tx, ack_rx) = oneshot::channel::<()>();
+                    let (ack_tx, ack_rx) = oneshot::channel::<bool>();
                     if flush_tx.send(ack_tx).is_ok() {
                         match tokio::time::timeout(FLUSH_TIMEOUT, ack_rx).await {
-                            Ok(Ok(())) => {}
+                            Ok(Ok(true)) => {}
+                            Ok(Ok(false)) => {
+                                // Write returned an I/O error (ENOSPC, EIO, perm).
+                                // Retry — the filesystem may recover, and forcing
+                                // teardown now would leave the user's latest
+                                // bytes only in the soon-to-be-dropped room.
+                                warn!(
+                                    "[notebook-sync] Eviction flush reported write failure for {}",
+                                    notebook_id_for_eviction
+                                );
+                                flush_ok = false;
+                            }
                             Ok(Err(_)) => {
                                 // Debouncer dropped the ack sender without replying —
                                 // task already exited (e.g. previous eviction
@@ -7967,10 +7978,12 @@ impl Default for PersistDebouncerConfig {
 }
 
 /// Request to force the persist debouncer to flush pending data immediately.
-/// The debouncer replies on the oneshot after the write completes (or immediately
-/// if there's nothing to write). Used by room eviction to guarantee the persisted
-/// file reflects the latest doc state *before* the room is removed from the map.
-type FlushRequest = oneshot::Sender<()>;
+/// The debouncer replies on the oneshot with `true` if the write succeeded
+/// (or if there were no pending bytes to write), `false` on I/O error. Used
+/// by room eviction to guarantee the persisted file reflects the latest doc
+/// state *before* the room is removed from the map; a `false` reply tells
+/// the caller the file on disk is still stale.
+type FlushRequest = oneshot::Sender<bool>;
 
 /// Spawn a debounced persistence task that coalesces writes.
 ///
@@ -8036,17 +8049,24 @@ fn spawn_persist_debouncer_with_config(
                     match maybe_req {
                         Some(ack) => {
                             // Eviction (or another caller) wants a synchronous flush.
-                            // Write the latest doc bytes, then ack. Holding the watch
-                            // borrow across do_persist is safe: do_persist is sync I/O
-                            // and the borrow is released before we reply.
+                            // Write the latest doc bytes, then ack with the write
+                            // result so the caller knows whether the file is
+                            // current. No pending bytes = nothing to write = ack true
+                            // (the file either doesn't exist or already reflects
+                            // the latest state).
                             let bytes = persist_rx.borrow().clone();
-                            if let Some(data) = bytes {
-                                do_persist(&data, &persist_path);
-                                last_flush = Some(Instant::now());
-                                last_receive = None;
-                            }
+                            let ok = if let Some(data) = bytes {
+                                let write_ok = do_persist(&data, &persist_path);
+                                if write_ok {
+                                    last_flush = Some(Instant::now());
+                                    last_receive = None;
+                                }
+                                write_ok
+                            } else {
+                                true
+                            };
                             // Receiver may have dropped (eviction timed out); ignore.
-                            let _ = ack.send(());
+                            let _ = ack.send(ok);
                         }
                         None => {
                             // All flush senders dropped. The room is being torn
@@ -8228,9 +8248,10 @@ fn spawn_autosave_debouncer_with_config(
 }
 
 /// Actually persist bytes to disk, logging if it takes too long.
-fn do_persist(data: &[u8], path: &Path) {
+/// Returns `true` on success, `false` on I/O error.
+fn do_persist(data: &[u8], path: &Path) -> bool {
     let start = std::time::Instant::now();
-    persist_notebook_bytes(data, path);
+    let ok = persist_notebook_bytes(data, path);
     let elapsed = start.elapsed();
     if elapsed > std::time::Duration::from_millis(500) {
         warn!(
@@ -8238,22 +8259,30 @@ fn do_persist(data: &[u8], path: &Path) {
             path, elapsed
         );
     }
+    ok
 }
 
 /// Persist pre-serialized notebook bytes to disk.
-pub(crate) fn persist_notebook_bytes(data: &[u8], path: &Path) {
+///
+/// Returns `true` on success, `false` on I/O error. Callers that need to
+/// know whether the bytes actually hit disk (e.g. eviction's flush-and-ack
+/// path) must check the return value; earlier call sites that only care
+/// about best-effort debounced writes can ignore it.
+pub(crate) fn persist_notebook_bytes(data: &[u8], path: &Path) -> bool {
     if let Some(parent) = path.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
             warn!(
                 "[notebook-sync] Failed to create parent dir for {:?}: {}",
                 path, e
             );
-            return;
+            return false;
         }
     }
     if let Err(e) = std::fs::write(path, data) {
         warn!("[notebook-sync] Failed to save notebook doc: {}", e);
+        return false;
     }
+    true
 }
 
 // =============================================================================
@@ -10671,14 +10700,15 @@ mod tests {
         let payload = b"eviction-latest-bytes".to_vec();
         tx.send(Some(payload.clone())).unwrap();
 
-        let (ack_tx, ack_rx) = oneshot::channel::<()>();
+        let (ack_tx, ack_rx) = oneshot::channel::<bool>();
         flush_tx.send(ack_tx).unwrap();
 
-        // The ack must come back fast. 500ms is 10x margin over local disk I/O.
+        // The ack must come back fast (success=true). 500ms is 10x margin over
+        // local disk I/O.
         let ack_result = tokio::time::timeout(Duration::from_millis(500), ack_rx).await;
         assert!(
-            matches!(ack_result, Ok(Ok(()))),
-            "flush ack did not arrive synchronously: {:?}",
+            matches!(ack_result, Ok(Ok(true))),
+            "flush ack did not arrive synchronously with success=true: {:?}",
             ack_result
         );
 
@@ -10688,6 +10718,47 @@ mod tests {
         assert_eq!(
             on_disk, payload,
             "file contents must match latest payload after flush ack"
+        );
+    }
+
+    /// The flush-and-ack must report I/O failures so the eviction task can
+    /// retry (rather than remove the room and leave stale bytes on disk).
+    /// Force a write failure by pointing persist_path at a non-writable
+    /// location, then confirm the ack carries `false`.
+    #[tokio::test]
+    async fn test_persist_debouncer_flush_request_reports_write_failure() {
+        use std::time::Duration;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Write target is a file *inside* a path that includes a non-directory
+        // component — `std::fs::create_dir_all` on parent will succeed, but
+        // `std::fs::write` on the final path will fail because it conflicts
+        // with a regular file we planted there. This simulates ENOSPC-class
+        // failures without needing OS-specific tricks.
+        let blocker = tmp.path().join("blocker");
+        std::fs::write(&blocker, b"regular file").unwrap();
+        let persist_path = blocker.join("race.automerge");
+
+        let (tx, rx) = watch::channel::<Option<Vec<u8>>>(None);
+        let (flush_tx, flush_rx) = mpsc::unbounded_channel::<FlushRequest>();
+        spawn_persist_debouncer(rx, flush_rx, persist_path.clone());
+
+        let payload = b"write-will-fail".to_vec();
+        tx.send(Some(payload)).unwrap();
+
+        let (ack_tx, ack_rx) = oneshot::channel::<bool>();
+        flush_tx.send(ack_tx).unwrap();
+
+        let ack_result = tokio::time::timeout(Duration::from_millis(500), ack_rx).await;
+        assert!(
+            matches!(ack_result, Ok(Ok(false))),
+            "flush ack must report write failure: {:?}",
+            ack_result
+        );
+        // The file should not exist, since the write errored before any bytes hit disk.
+        assert!(
+            !persist_path.exists(),
+            "persist_path must not exist after failed write"
         );
     }
 
