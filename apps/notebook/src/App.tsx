@@ -363,6 +363,22 @@ function AppContent() {
     };
   }, [getHandle, triggerSync]);
 
+  // Expose widget update pipeline on window for E2E tests.
+  // Allows tests to drive slider values through the real code path
+  // (store update + debounced CRDT write + echo suppression) without
+  // needing to reach into the security-isolated iframe.
+  useEffect(() => {
+    const w = window as unknown as Record<string, unknown>;
+    w.__nteractWidgetUpdate = (commId: string, patch: Record<string, unknown>) => {
+      updateManager.updateAndPersist(commId, patch);
+    };
+    w.__nteractWidgetStore = widgetStore;
+    return () => {
+      delete w.__nteractWidgetUpdate;
+      delete w.__nteractWidgetStore;
+    };
+  }, [widgetStore]);
+
   // ── CRDT → WidgetStore projection via SyncEngine.commChanges$ ──────
   // Replaces the old Jupyter message synthesis path. The SyncEngine diffs
   // RuntimeStateDoc.comms, resolves ContentRefs via WASM, and emits
