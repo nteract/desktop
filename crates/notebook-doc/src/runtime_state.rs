@@ -1396,13 +1396,28 @@ impl RuntimeStateDoc {
                             .or_else(|| t.get("inline").and_then(|i| i.as_str()))
                     });
                     if current_id == Some(&state.blob_hash) {
+                        // Carry forward the existing output_id so the
+                        // coalesced stream keeps a stable identity.
+                        let mut patched = manifest.clone();
+                        if let (
+                            Some(serde_json::Value::String(old_id)),
+                            serde_json::Value::Object(ref mut map),
+                        ) = (existing.get("output_id").cloned(), &mut patched)
+                        {
+                            if !old_id.is_empty() {
+                                map.insert(
+                                    "output_id".to_string(),
+                                    serde_json::Value::String(old_id),
+                                );
+                            }
+                        }
                         // Validated! Delete old and insert new at same index
                         self.doc.delete(&list_id, state.index)?;
                         crate::insert_json_at_index(
                             &mut self.doc,
                             &list_id,
                             state.index,
-                            manifest,
+                            &patched,
                         )?;
                         return Ok((true, state.index));
                     }
@@ -3150,6 +3165,46 @@ mod tests {
         assert!(!updated);
         assert_eq!(idx, 1);
         assert_eq!(doc.get_outputs("exec-1"), vec![m_a, m_b]);
+    }
+
+    #[test]
+    fn test_upsert_stream_preserves_output_id() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.create_execution("exec-1", "cell-1");
+        let m_a = serde_json::json!({
+            "output_type": "stream",
+            "output_id": "original-id-abc",
+            "name": "stdout",
+            "text": {"blob": "hash-a", "size": 6}
+        });
+        doc.append_output("exec-1", &m_a).unwrap();
+
+        let state = StreamOutputState {
+            index: 0,
+            blob_hash: "hash-a".to_string(),
+        };
+        let m_b = serde_json::json!({
+            "output_type": "stream",
+            "output_id": "fresh-minted-xyz",
+            "name": "stdout",
+            "text": {"blob": "hash-b", "size": 10}
+        });
+        let (updated, idx) = doc
+            .upsert_stream_output("exec-1", "stdout", &m_b, Some(&state))
+            .unwrap();
+        assert!(updated);
+        assert_eq!(idx, 0);
+
+        let outputs = doc.get_outputs("exec-1");
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(
+            outputs[0]["output_id"], "original-id-abc",
+            "Coalesced stream should keep the original output_id"
+        );
+        assert_eq!(
+            outputs[0]["text"]["blob"], "hash-b",
+            "Content should be updated to the new manifest"
+        );
     }
 
     #[test]
