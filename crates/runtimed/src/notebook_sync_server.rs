@@ -2140,64 +2140,91 @@ where
         );
 
         tokio::spawn(async move {
-            tokio::time::sleep(eviction_delay).await;
+            // Outer loop wraps the eviction attempt so a flush timeout can
+            // back off and retry rather than leak the room (and any attached
+            // kernel / watcher) indefinitely. The loop exits either by
+            // cancelling (peers reconnected) or by completing teardown.
+            let mut delay = eviction_delay;
+            let mut flush_retries: u32 = 0;
+            loop {
+                tokio::time::sleep(delay).await;
 
-            // Check if peers reconnected during the delay
-            if room_for_eviction.active_peers.load(Ordering::Relaxed) > 0 {
-                info!(
-                    "[notebook-sync] Eviction cancelled for {} (peers reconnected)",
-                    notebook_id_for_eviction
-                );
-                return;
-            }
+                // Check if peers reconnected during the delay
+                if room_for_eviction.active_peers.load(Ordering::Relaxed) > 0 {
+                    info!(
+                        "[notebook-sync] Eviction cancelled for {} (peers reconnected)",
+                        notebook_id_for_eviction
+                    );
+                    return;
+                }
 
-            // Force a synchronous flush of the persist debouncer BEFORE removing
-            // the room from the map. Without this, a fast reconnect lands in
-            // the window between HashMap removal and the debouncer's shutdown
-            // flush (which only fires when the last Arc to the room drops, and
-            // the eviction task still holds one while running kernel/env
-            // teardown). In that window get_or_create_room creates a fresh
-            // room that loads stale bytes from the .automerge file — or no
-            // file at all for brand-new untitled notebooks — silently losing
-            // cells and edits.
-            //
-            // Request/ack over a dedicated channel. The debouncer has a
-            // select! arm that writes the latest doc bytes and replies on the
-            // oneshot.
-            //
-            // On timeout we abort this eviction rather than forcing removal.
-            // Proceeding would reopen the exact race we're closing (the write
-            // may still be in flight; reconnect would create a fresh room
-            // from a partial file). The room stays resident; the next peer
-            // disconnect (or the periodic eviction hook) will reschedule.
-            if let Some(ref flush_tx) = room_for_eviction.flush_request_tx {
-                let (ack_tx, ack_rx) = oneshot::channel::<()>();
-                if flush_tx.send(ack_tx).is_ok() {
-                    match tokio::time::timeout(std::time::Duration::from_secs(5), ack_rx).await {
-                        Ok(Ok(())) => {}
-                        Ok(Err(_)) => {
-                            // Debouncer dropped the ack sender without replying —
-                            // task already exited (e.g. previous eviction flushed
-                            // and closed). Any pending bytes went through the
-                            // shutdown path.
-                            debug!(
-                                "[notebook-sync] Eviction flush ack dropped for {} (debouncer exited)",
-                                notebook_id_for_eviction
-                            );
-                        }
-                        Err(_) => {
-                            // Persist write is slow or wedged. Keep the room in
-                            // the HashMap so a reconnect sees the live in-memory
-                            // doc rather than a potentially partial file. Abort
-                            // this eviction; the next disconnect reschedules.
-                            warn!(
-                                "[notebook-sync] Eviction flush timed out for {} after 5s; aborting eviction to avoid stale-reconnect race",
-                                notebook_id_for_eviction
-                            );
-                            return;
+                // Force a synchronous flush of the persist debouncer BEFORE removing
+                // the room from the map. Without this, a fast reconnect lands in
+                // the window between HashMap removal and the debouncer's shutdown
+                // flush (which only fires when the last Arc to the room drops, and
+                // the eviction task still holds one while running kernel/env
+                // teardown). In that window get_or_create_room creates a fresh
+                // room that loads stale bytes from the .automerge file — or no
+                // file at all for brand-new untitled notebooks — silently losing
+                // cells and edits.
+                //
+                // Request/ack over a dedicated channel. The debouncer has a
+                // select! arm that writes the latest doc bytes and replies on the
+                // oneshot.
+                //
+                // On timeout we back off and retry. Proceeding with HashMap
+                // removal would reopen the race (the write may still be in
+                // flight; reconnect would create a fresh room from a partial
+                // file). Retrying keeps the room live so reconnects see the
+                // in-memory doc, and gives the write another shot — bounded
+                // retries prevent a permanently-wedged filesystem from leaking
+                // rooms forever.
+                const FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+                const FLUSH_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(30);
+                const MAX_FLUSH_RETRIES: u32 = 4;
+                let mut flush_ok = true;
+                if let Some(ref flush_tx) = room_for_eviction.flush_request_tx {
+                    let (ack_tx, ack_rx) = oneshot::channel::<()>();
+                    if flush_tx.send(ack_tx).is_ok() {
+                        match tokio::time::timeout(FLUSH_TIMEOUT, ack_rx).await {
+                            Ok(Ok(())) => {}
+                            Ok(Err(_)) => {
+                                // Debouncer dropped the ack sender without replying —
+                                // task already exited (e.g. previous eviction
+                                // flushed and closed). Any pending bytes went
+                                // through the shutdown path.
+                                debug!(
+                                    "[notebook-sync] Eviction flush ack dropped for {} (debouncer exited)",
+                                    notebook_id_for_eviction
+                                );
+                            }
+                            Err(_) => {
+                                flush_ok = false;
+                            }
                         }
                     }
                 }
+                if !flush_ok {
+                    if flush_retries >= MAX_FLUSH_RETRIES {
+                        // Give up and force teardown. After ~2 minutes of
+                        // wedged flushes we prefer a leaked .automerge over
+                        // a leaked room+kernel; the daemon's shutdown flush
+                        // (on process exit) is the last line of defense.
+                        warn!(
+                            "[notebook-sync] Eviction flush wedged for {} after {} retries; forcing teardown",
+                            notebook_id_for_eviction, flush_retries
+                        );
+                    } else {
+                        flush_retries += 1;
+                        warn!(
+                            "[notebook-sync] Eviction flush timed out for {} (retry {}/{}); keeping room resident",
+                            notebook_id_for_eviction, flush_retries, MAX_FLUSH_RETRIES
+                        );
+                        delay = FLUSH_RETRY_DELAY;
+                        continue;
+                    }
+                }
+                break;
             }
 
             // Remove room from the map under the lock, then drop the lock
