@@ -1,120 +1,93 @@
-# Map-keyed execution outputs
+# Addressable execution outputs
 
-**Status:** Proposed
+**Status:** Revised after review
 **Date:** 2026-04-19
-**Related:** #1905 (DuplicateSeqNumber root cause), #1558 (outputs moved to `RuntimeStateDoc`), #1667 (unified `DocChangeset`)
+**Related:** #1905 (DuplicateSeqNumber root cause), #1911/#1913 (per-task stable actors), #1667 (unified `DocChangeset`), #1558 (outputs moved to `RuntimeStateDoc`)
 
-## Motivation
+## What this spec does now (and what it no longer tries to do)
 
-`RuntimeStateDoc::executions[eid].outputs` is a pure Automerge `List` of manifests. Lists are great for user-editable sequences (cells in a notebook, characters in source text) where stable ordering is a user-visible property. Output streams are not that. Three recent patterns make the list choice look costly:
+The original draft proposed replacing `executions[eid].outputs` with a `Map<output_id, {seq, manifest, display_id?}>` and reconstructing emission order via `sort_by_key(seq)` at read time. Review surfaced three correctness blockers and two scoping issues:
 
-1. **List-insert under concurrent forks is fragile.** The IOPub handler forks the state doc, inserts an output, releases the lock, does async work (blob-store, manifest creation), re-acquires the lock, and merges. If two forks share an Automerge actor ID, the second merge returns `DuplicateSeqNumber` and the insert is silently dropped. That's what the missing-output bug in #1905 was. The fix (one actor per fork) papers over the class of bug, but the underlying sharpness — "reordering a list under a CRDT is more subtle than it looks" — remains.
+1. `seq` is not unique under concurrent writers. Two forks derived from the same heads allocate the same "next seq" and the map preserves both; read-time ordering becomes map iteration order, not emission order.
+2. `display_id` is intentionally one-to-many today (`update_output_by_display_id_with_manifests` updates every matching entry across executions on rerun). A plain `display_id` field on each map entry doesn't give O(1) lookup without a secondary index.
+3. Stream coalescence depends on the *position* of the previous chunk, not just its identity. Today `stream_output` only rewrites in place when that chunk is still the tail of the list; otherwise it appends a new chunk, which is what preserves `stdout, stderr, stdout` as three visible segments. A cached `output_id` per `(execution_id, stream_name)` would incorrectly rewrite the earlier stdout entry unless the spec also specifies tail-tracking and invalidation.
+4. The original motivation said list inserts under concurrent forks are fragile. That class of bug (actor reuse) was the real cause, and it's fixed: #1905 + #1911 + #1913 landed unique/per-task stable actors everywhere fork+merge crosses an `.await`. Map-keyed outputs don't *fix* anything on this axis anymore.
+5. Migration cost was understated. `read_state`, output diffing, WASM materialization, and frontend consumers all treat `ExecutionState.outputs` as an ordered array. A daemon-only feature flag isn't safe without dual-shape readers throughout.
 
-2. **`replace_output` and `update_display_data` are O(N) scans.** Finding the output to replace means walking the list looking for a matching `display_id`. With a map keyed on something addressable, this is a direct lookup.
+Given (4) and (5), inventing a second ordering system to recover the same emission order at read time is a bad trade. This revision keeps the list, addresses the things that were genuinely hard, and leaves the rest alone.
 
-3. **No user-editable ordering.** Outputs are appended in kernel-emission order. Nothing else ever inserts in the middle or reorders them. The "ordered sequence" property of the list is purely structural — and Automerge's RGA list CRDT is paying a lot for ordering guarantees we don't use.
+## Revised proposal
 
-Cells learned this lesson already: they're stored as a `Map<cell_id, Cell>` with a separate fractional index for position, precisely so independent peers editing different cells never fight over list indices.
+Keep `executions[eid].outputs` as an Automerge `List<OutputManifest>`. Add two pieces:
 
-## Non-goals
+### 1. Stable `output_id` as a field on each manifest
 
-- Changing the on-the-wire output shape (frontend still receives an ordered list per execution). Only the internal CRDT representation changes.
-- Generalizing to arbitrary list-in-CRDT replacements. This spec is scoped to output streams.
-- Supporting user-reordering of outputs. Outputs are kernel-emission ordered and will stay that way.
-- Revisiting the `executions[eid].outputs` location. Staying under `RuntimeStateDoc.executions` — this is a storage-format change, not a tree-shape change.
+`OutputManifest` grows a required `output_id: String` (UUIDv4 minted by the daemon when the output is first emitted). This is metadata on the existing list entry, not a new container.
 
-## Proposed schema
+- Emission: daemon mints `output_id` when it constructs the manifest from the kernel's first IOPub message for that output.
+- Updates: `update_display_data` and `stream` coalescence address the target entry by `output_id` rather than by list index.
+- Wire format: just another field. `.ipynb` load/save passes it through; old notebooks without the field get IDs minted on first touch.
 
-```text
-executions[eid]/
-  outputs: Map<output_id, OutputEntry>
-    where OutputEntry = { seq: u64, manifest: OutputManifest, display_id?: String }
-```
+This gives the two things the map was supposed to: **addressability** and **stability across reorder-under-CRDT**. It doesn't try to replace the list's structural role.
 
-- `output_id` — a kernel-session-scoped UUID. Generated on first emit; stable across the life of the output. For `update_display_data`, the daemon finds the entry by `display_id` and replaces its `manifest` field in place (`output_id` does not change).
-- `seq` — monotonic u64 per execution, assigned at insertion time. Reassembling the ordered list is a single `sort_by_key(|entry| entry.seq)` on read. `u64` leaves plenty of headroom for streaming outputs; we're not going to hit 2^63 streams from a single cell.
-- `display_id` — hoisted out of `manifest.transient` into a first-class indexed field. The existing `update_output_by_display_id` scan becomes a filtered iteration over entries and, more importantly, a *different* piece of daemon code can find a display without touching the manifest blob. This is a convenience, not a correctness requirement.
+### 2. `display_index: Map<display_id, Vec<(execution_id, output_id)>>` as a side index
 
-### Why a simple monotonic seq, not fractional indexing
+Lives under `RuntimeStateDoc.display_index`, separate from `executions`. Updated in the same transaction as the output write. Preserves the current one-to-many semantics (`update_output_by_display_id_with_manifests` updates *all* matching entries across executions, used on rerun). Lookups go from O(N executions × N outputs) to O(1) plus a small iteration.
 
-Cells use fractional indexing because users reorder them. Outputs don't get reordered. A per-execution counter is sufficient and simpler: the daemon owns the assignment, concurrent forks use unique `(actor, seq)` pairs as usual, and reconstruction is deterministic. No fractional math, no rebalance passes.
+Invariants:
+- Entries added when an output with a `display_id` is appended.
+- Entries removed when the owning execution is cleared or the manifest's `display_id` is dropped.
+- Concurrent writers merge via Automerge Map LWW at the `display_id` key; the `Vec` is rebuilt from scratch on write (reads walk `executions[eid].outputs` to reconcile), so staleness is self-correcting.
 
-### What the map write patterns look like
+This explicitly addresses the one-to-many display-id semantics the original map-keyed design would have regressed.
 
-```rust
-// Append: mint a new output_id, next seq, put_object at the map key.
-pub fn append_output(&mut self, eid: &str, manifest: &Value) -> Result<String, AutomergeError>;
+## What this does not change
 
-// Update_display_data: find by display_id, put on the existing entry.
-// No map-key mutation, no list insert, no reordering.
-pub fn update_output_by_display_id(
-    &mut self,
-    display_id: &str,
-    manifest: &Value,
-) -> Result<bool, AutomergeError>;
-
-// Stream upsert: look up by output_id (cached in StreamTerminals), put on
-// that entry's manifest. Currently this is "delete+insert at same index"
-// which is a list-level dance; becomes a single put_object.
-pub fn upsert_stream_output(
-    &mut self,
-    eid: &str,
-    output_id: &str,
-    manifest: &Value,
-) -> Result<(), AutomergeError>;
-
-// Read: stable ordered materialization.
-pub fn get_outputs(&self, eid: &str) -> Vec<OutputManifest> {
-    // Map.entries → sort_by_key(seq) → collect
-}
-```
-
-Every mutation is a put on an addressable key. There is no operation in this set that creates the same structural op twice, which is the failure mode list inserts hit under fork+merge.
-
-### Concurrent merge semantics
-
-- Two forks appending different outputs → two different `output_id` keys → disjoint writes, merge compose cleanly.
-- Two forks updating the same `display_id` → same map key, same `manifest` field → last-writer-wins per Automerge scalar semantics. Same as today with list replace_output.
-- Two forks doing upsert on the same stream output → same output_id, LWW on `manifest`. Text accumulates the same way the current `upsert_stream_output` does, just keyed instead of positional.
-- Fork A appends output_id X, fork B deletes execution N (incl. its outputs map) → B wins the execution-entry delete, X becomes orphaned. Same behavior as today: outputs under a deleted execution entry are unreachable. No new failure mode.
+- **Stream coalescence**: stays exactly as it is. `stream_output` still checks "is the previous output on this execution still a stream of the same name?" and rewrites-in-place or appends accordingly. `output_id` is orthogonal to the tail-tracking invariant. Specifically: the current logic in `runtime_state.rs:1232` and `jupyter_kernel.rs:865` stays, just with `output_id` populated on the manifest.
+- **Ordering**: the list preserves emission order the way it always has. No `seq` field, no sort step, no concurrent-writer ordering question to answer.
+- **`executions[eid].outputs` location**: unchanged.
+- **Wire shape to the frontend**: an ordered list of manifests, each now carrying `output_id`. Frontend can choose to key React elements off `output_id` for stable reconciliation during streams, but that's an optimization, not a contract change.
 
 ## Migration
 
-Outputs are ephemeral by design — `RuntimeStateDoc` is daemon-authoritative and rebuilt from `.ipynb` on load. So the migration is simpler than a full notebook-schema bump:
+Much smaller than the original proposal:
 
-1. **New schema behind a feature** (`RUNTIMED_OUTPUTS_SCHEMA=v2`). The daemon writes the new shape when the env var is set; otherwise continues writing the list.
-2. **Reader tolerates both.** `get_outputs` checks which shape the `outputs` field is and dispatches. This is a couple of lines in `runtime_state.rs`.
-3. **`.ipynb` load layer is untouched.** `.ipynb`'s schema is the canonical ordered list. When loading, the daemon converts into the internal map with `seq = array_index`. No round-trip loss.
-4. **Flip the default** after a couple of nightlies with the env var enabled. Remove the list code path.
+1. Add `output_id: String` to `OutputManifest` (required, not `Option`, to keep the type honest). Bump the on-disk notebook-doc schema version.
+2. Daemon writes populate it on emission.
+3. Loader for legacy `.ipynb` or existing persisted `RuntimeStateDoc` mints IDs for outputs that don't have them (idempotent — run once at load, persist, done).
+4. Readers use `output_id` for addressable operations; positional operations (get by index, iterate in order) keep using the list.
+5. Ship `display_index` in the same PR; the daemon populates and consults it. No feature flag needed — the field is additive.
 
-Rollback is trivial: unset the env var, restart the daemon. Existing runtime docs on disk get reloaded from the `.ipynb` either way.
+No dual-shape readers, no env-var toggle, no multi-nightly staging. This is one schema-version bump with a migrate-on-load.
 
-## What this makes easy that's currently hard
+## What this makes easier
 
-- **Display-id lookup** is O(1). Today it's a `get_all_outputs` that walks every execution's list.
-- **Partial renders** for huge output streams: the frontend can sync individual outputs by `output_id` instead of re-serializing the full list on every append. `DocChangeset` can grow a new `output_changes` field that says "these output_ids changed on this execution" — a natural extension of the unified diff pattern from #1667.
-- **Per-output GC.** The blob store GC already walks output manifests; indexing by `output_id` makes it possible to add finer-grained per-output sweep later (e.g. "this specific stream output was consumed; drop its blob ref") without schema changes.
+- **Per-output `DocChangeset`**: the unified diff can grow an `output_changes: Vec<(execution_id, output_id)>` field. Frontend materialization can update just the changed outputs instead of re-serializing the full per-execution list. Natural extension of #1667.
+- **Per-output GC**: blob store sweep can target specific `output_id`s instead of "everything on this execution."
+- **Frontend React keys**: `key={output.id}` instead of `key={index}` for the iframe renderer. Stable across stream appends — fewer DOM moves, fewer iframe reloads.
+- **Debug / tracing**: `output_id` in logs lets us correlate an emission through IOPub handler, blob store, sync frame, and renderer without ambiguity.
 
-## What this does not solve
+## What this still does not solve
 
-- **The underlying fork-merge-actor-reuse bug** (#1905). That's fixed by the UUID-per-fork workaround and will be replaced by per-task stable actors in a follow-up. Map-keyed outputs *prevent* that class of bug from affecting this specific code path, but the broader invariant ("concurrent forks must have distinct actors") still has to hold for all other doc mutations.
-- **Inline manifests vs blob store.** Manifest contents are out of scope; this is purely the container shape.
-- **`.ipynb` serialization format.** `.ipynb` stays list-shaped on disk. The conversion happens at load/save time, matching how cell-position fractional indices are flattened to a JSON array.
-
-## Tradeoffs
-
-- **Two maps vs one list.** An `outputs` map requires `output_id` allocation (UUID on mint) and a `seq` field per entry. Storage overhead: ~20 bytes per output for the UUID and 8 for seq vs whatever a list-index costs internally. Negligible for typical notebook sizes, but worth naming.
-- **Reads need a sort.** Currently `get_outputs` is `doc.length(list) + read_json_value(list, i)`. With the map, it's `doc.keys(map).map(read).sort_by_key(seq).collect`. At N=10 outputs per execution (the realistic ceiling), this is under a microsecond; for the rare cell that spews thousands of stream chunks, it's still cheap. The read cost is paid once per materialization, not once per mutation.
-- **Schema migration.** Needs the feature flag and a handful of nightlies. Not zero cost.
+- The fork+merge+actor-reuse invariant. Fixed by #1905/#1911/#1913 and being further hardened by #1920 (`fork_with_actor`).
+- Inline manifests vs blob store. Out of scope.
+- `.ipynb` as a list on disk. Stays a list.
 
 ## Testing
 
-- Parity tests: for each existing `test_append_output`, `test_replace_output`, `test_clear_execution_outputs`, `test_update_output_by_display_id`, run the same assertions against the map-backed impl and verify `get_outputs()` produces the same ordered Vec.
-- Fork+merge test: two forks append concurrently to the same execution under *distinct* actors; merge composes both outputs, ordering by `seq` matches the order forks committed locally.
-- `.ipynb` round-trip: load a notebook with 3 outputs → save → load → compare.
+- `output_id` uniqueness: emitting N outputs produces N distinct IDs, stable across save/load round-trips.
+- `display_index` LWW under concurrent writes on the same `display_id`.
+- Rerun semantics: re-executing a cell whose output had `display_id="foo"` updates the earlier display (via the index), not just the new one. This is the codex-flagged regression test.
+- Stream coalescence: still produces `stdout, stderr, stdout` as three chunks when interleaved; `output_id`s of the two stdout chunks are distinct.
+- Load of a pre-migration notebook: IDs get minted, saved, reloaded, and stay stable.
 
-## Out of scope / follow-ups
+## Open questions
 
-1. **Similar treatment for `comms`.** Widget comm state lives under `RuntimeStateDoc.comms` as a Map already (keyed by comm_id). Widget `outputs` on the Output widget, however, are a list field on a comm state entry. Same concerns apply. A follow-up spec can mirror this design there.
-2. **Fractional index for widget-output ordering.** Not obviously needed; mention only so it's not forgotten.
-3. **Cross-peer output_id uniqueness.** This spec assumes the daemon is the sole writer of outputs. If that ever changes (e.g. a second runtime agent joining a shared session), `output_id` needs a peer-scope or gets UUID-sized already for collision resistance. UUIDv4 is collision-resistant enough as-is.
+- Does the frontend need `output_id` on the wire today, or only once the `DocChangeset.output_changes` extension lands? Leaning: add it now — cost is 16 bytes per output in the payload, unlocks incremental materialization the moment we want it.
+- Should `display_index` entries hold a `seq` or timestamp so rerun-ordering is deterministic? Probably yes; add a monotonic `updated_at` per-entry in the Vec, tie-break on it.
+
+## Follow-ups
+
+1. Same addressability treatment for widget `OutputWidget.outputs`. Separate spec.
+2. Incremental output materialization via `DocChangeset.output_changes`. Separate PR after this lands and we have `output_id`s to key on.
+3. Retire the "outputs might be positionally-addressable" assumption in any remaining code paths (search for list-index math on output arrays; promote to `output_id`-keyed access where possible).
