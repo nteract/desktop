@@ -12,6 +12,9 @@
 //! - `runtimed-py` (Python bindings) — PoolClient, SyncClient, settings
 //! - `runtimed` (daemon) — re-exports everything, adds server-only code
 
+// Allow `expect()` and `unwrap()` in tests
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 

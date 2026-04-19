@@ -492,7 +492,6 @@ pub async fn build_execution_result(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

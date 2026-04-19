@@ -5,6 +5,9 @@
 //! `runt mcp` as a child, and proxies MCP over stdio with transparent
 //! restart on child death (daemon upgrade, crash, etc.).
 
+// Allow `expect()` and `unwrap()` in tests
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::ExitCode;

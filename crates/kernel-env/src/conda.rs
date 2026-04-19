@@ -855,7 +855,6 @@ fn find_site_packages(base_path: &std::path::Path) -> Option<String> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

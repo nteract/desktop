@@ -666,7 +666,6 @@ fn summarize_generic(trace: &Value, trace_type: &str) -> String {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use serde_json::json;

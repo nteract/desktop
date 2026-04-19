@@ -34,6 +34,9 @@
 //!     notebook_metadata: Str      ← Legacy JSON string (backward compat, dual-written)
 //! ```
 
+// Allow `expect()` and `unwrap()` in tests
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 pub mod diff;
 pub mod frame_types;
 pub mod metadata;
@@ -2545,7 +2548,6 @@ pub fn get_cells_from_doc(doc: &AutoCommit) -> Vec<CellSnapshot> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

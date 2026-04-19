@@ -370,7 +370,6 @@ fn parse_environment_yml_content(content: &str) -> Result<EnvironmentYmlConfig, 
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use tempfile::TempDir;

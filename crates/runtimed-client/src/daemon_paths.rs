@@ -90,7 +90,6 @@ pub async fn get_blob_paths_async(socket_path: &Path) -> (Option<String>, Option
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use std::fs;

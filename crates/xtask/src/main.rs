@@ -1,3 +1,6 @@
+// Allow `expect()` and `unwrap()` in tests
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -3285,7 +3288,6 @@ fn update_manifest_tools(manifest_json: &str, tools: &[serde_json::Value]) -> St
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use std::path::Path;

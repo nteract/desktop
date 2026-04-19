@@ -736,7 +736,6 @@ pub async fn show_notebook(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     /// When package_manager is explicitly provided, it takes precedence
     /// over whatever the daemon detected.

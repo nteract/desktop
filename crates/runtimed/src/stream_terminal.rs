@@ -420,7 +420,6 @@ fn color_to_ansi(color: &Color, is_foreground: bool) -> Option<String> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

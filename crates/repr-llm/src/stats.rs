@@ -138,7 +138,7 @@ pub fn extract_title(v: &Value) -> Option<&str> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::approx_constant)]
+#[allow(clippy::approx_constant)]
 mod tests {
     use super::*;
 

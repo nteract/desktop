@@ -12,6 +12,9 @@
 //! using length-prefixed binary framing with a channel-based handshake.
 
 // Re-export everything from runtimed-client for backward compatibility
+// Allow `expect()` and `unwrap()` in tests
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 pub use runtimed_client::*;
 
 // ============================================================================

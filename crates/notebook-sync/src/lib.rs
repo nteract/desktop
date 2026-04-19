@@ -47,6 +47,9 @@
 //!
 //! Document mutations (`with_doc`) are synchronous and microsecond-fast.
 //! Only daemon protocol operations (`send_request`, `confirm_sync`) are async.
+// Allow `expect()` and `unwrap()` in tests
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 pub mod broadcast;
 pub mod connect;
 pub mod error;

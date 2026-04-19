@@ -5,6 +5,9 @@
 //! The stateful dataset store (`DataStore`) lives here because it only
 //! makes sense in a WASM context (JS holds handles via keep-alive).
 
+// Allow `expect()` and `unwrap()` in tests
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsValue;
 

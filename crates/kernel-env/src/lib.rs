@@ -24,6 +24,9 @@
 //! kernel_env::conda::prepare_environment(&deps, &handler).await?;
 //! ```
 
+// Allow `expect()` and `unwrap()` in tests
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 #[cfg(feature = "runtime")]
 pub mod conda;
 #[cfg(feature = "runtime")]

@@ -20,6 +20,9 @@
 //! assert!(summary.is_some());
 //! ```
 
+// Allow `expect()` and `unwrap()` in tests
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 pub mod geojson;
 pub mod json;
 pub mod parquet;

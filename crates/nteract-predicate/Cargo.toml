@@ -23,3 +23,6 @@ arrow-string = { version = "54", default-features = false }
 
 # Parquet reader
 parquet = { version = "54", default-features = false, features = ["arrow", "snap", "flate2", "zstd"] }
+
+[lints]
+workspace = true

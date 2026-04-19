@@ -16,6 +16,9 @@
 //!   # or via xtask:
 //!   cargo xtask mcp
 
+// Allow `expect()` and `unwrap()` in tests
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
@@ -2552,7 +2555,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

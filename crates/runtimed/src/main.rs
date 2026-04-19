@@ -3,6 +3,9 @@
 //! This runs the runtime daemon as a standalone process that manages
 //! prewarmed Python environments for notebook windows.
 
+// Allow `expect()` and `unwrap()` in tests
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};

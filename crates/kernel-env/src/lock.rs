@@ -131,7 +131,6 @@ pub async fn install_from_lock(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

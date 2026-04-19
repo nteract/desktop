@@ -405,7 +405,6 @@ impl KernelState {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::kernel_connection::{KernelConnection, KernelLaunchConfig, KernelSharedRefs};

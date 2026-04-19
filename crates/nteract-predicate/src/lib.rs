@@ -7,6 +7,9 @@
 //! This crate is intentionally free of `wasm-bindgen` so it compiles as
 //! a plain `rlib` in native builds without pulling in JS interop code.
 
+// Allow `expect()` and `unwrap()` in tests
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 pub mod arrow_utils;
 pub mod filter;
 pub mod parquet_summary;

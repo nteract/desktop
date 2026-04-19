@@ -13,6 +13,9 @@
 //! - Editing code in cells: notebook stays trusted
 //! - External modification of dependencies: requires re-approval
 
+// Allow `expect()` and `unwrap()` in tests
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
@@ -337,7 +340,6 @@ pub fn sign_notebook_dependencies(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use serial_test::serial;

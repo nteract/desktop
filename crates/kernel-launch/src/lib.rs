@@ -19,6 +19,9 @@
 //! let ruff = tools::get_ruff_path().await?;
 //! ```
 
+// Allow `expect()` and `unwrap()` in tests
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 pub mod tools;
 
 // Re-export commonly used items

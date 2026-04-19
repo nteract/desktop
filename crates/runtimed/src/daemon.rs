@@ -4370,7 +4370,6 @@ fn looks_like_untitled_notebook_path(path: &str) -> bool {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use std::path::PathBuf;

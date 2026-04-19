@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 //! Generate Automerge document fixtures for frontend (vitest) integration tests.
 //!
 //! Each scenario creates a NotebookDoc with daemon-authored mutations (outputs,

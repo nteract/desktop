@@ -478,7 +478,6 @@ pub async fn try_get_synced_settings() -> Result<SyncedSettings, SyncClientError
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::runtime::Runtime;

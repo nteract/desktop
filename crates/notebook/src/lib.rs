@@ -1,3 +1,6 @@
+// Allow `expect()` and `unwrap()` in tests
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 pub mod cli_install;
 pub mod conda_env;
 pub mod deno_env;
@@ -925,7 +928,6 @@ async fn setup_sync_receivers(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::{next_available_sample_path, reopen_action, ReopenAction};
     use tempfile::TempDir;
