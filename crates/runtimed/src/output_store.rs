@@ -523,13 +523,19 @@ pub async fn create_manifest(
         .and_then(|v| v.as_str())
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing output_type"))?;
 
+    let existing_output_id = output
+        .get("output_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+
     let manifest = match output_type {
         "display_data" => {
             let data = convert_data_bundle(output.get("data"), blob_store, threshold).await?;
             let metadata = extract_metadata(output.get("metadata"));
             let transient = extract_transient(output.get("transient"));
             OutputManifest::DisplayData {
-                output_id: uuid::Uuid::new_v4().to_string(),
+                output_id: existing_output_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
                 data,
                 metadata,
                 transient,
@@ -544,7 +550,7 @@ pub async fn create_manifest(
                 .and_then(|v| v.as_i64())
                 .map(|n| n as i32);
             OutputManifest::ExecuteResult {
-                output_id: uuid::Uuid::new_v4().to_string(),
+                output_id: existing_output_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
                 data,
                 metadata,
                 execution_count,
@@ -569,7 +575,7 @@ pub async fn create_manifest(
                 ContentRef::Inline { .. } => None,
             };
             OutputManifest::Stream {
-                output_id: uuid::Uuid::new_v4().to_string(),
+                output_id: existing_output_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
                 name,
                 text,
                 llm_preview,
@@ -602,7 +608,7 @@ pub async fn create_manifest(
                 ContentRef::Inline { .. } => None,
             };
             OutputManifest::Error {
-                output_id: uuid::Uuid::new_v4().to_string(),
+                output_id: existing_output_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
                 ename,
                 evalue,
                 traceback,
@@ -804,6 +810,7 @@ pub async fn resolve_manifest(
 ) -> io::Result<Value> {
     match manifest {
         OutputManifest::DisplayData {
+            output_id,
             data,
             metadata,
             transient,
@@ -812,6 +819,7 @@ pub async fn resolve_manifest(
             let resolved_data = resolve_data_bundle(data, blob_store).await?;
             let mut output = serde_json::json!({
                 "output_type": "display_data",
+                "output_id": output_id,
                 "data": resolved_data,
             });
             if !metadata.is_empty() {
@@ -830,6 +838,7 @@ pub async fn resolve_manifest(
             Ok(output)
         }
         OutputManifest::ExecuteResult {
+            output_id,
             data,
             metadata,
             execution_count,
@@ -839,6 +848,7 @@ pub async fn resolve_manifest(
             let resolved_data = resolve_data_bundle(data, blob_store).await?;
             let mut output = serde_json::json!({
                 "output_type": "execute_result",
+                "output_id": output_id,
                 "data": resolved_data,
                 "execution_count": execution_count,
             });
@@ -857,15 +867,22 @@ pub async fn resolve_manifest(
             }
             Ok(output)
         }
-        OutputManifest::Stream { name, text, .. } => {
+        OutputManifest::Stream {
+            output_id,
+            name,
+            text,
+            ..
+        } => {
             let resolved_text = text.resolve(blob_store).await?;
             Ok(serde_json::json!({
                 "output_type": "stream",
+                "output_id": output_id,
                 "name": name,
                 "text": resolved_text,
             }))
         }
         OutputManifest::Error {
+            output_id,
             ename,
             evalue,
             traceback,
@@ -876,6 +893,7 @@ pub async fn resolve_manifest(
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
             Ok(serde_json::json!({
                 "output_type": "error",
+                "output_id": output_id,
                 "ename": ename,
                 "evalue": evalue,
                 "traceback": traceback_array,
