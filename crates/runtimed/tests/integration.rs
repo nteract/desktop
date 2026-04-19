@@ -571,10 +571,21 @@ async fn test_untitled_notebook_persists_through_eviction() {
         // Both clients drop here — the room should be evicted from memory
     }
 
-    // Wait deterministically for the daemon to flush the Automerge doc to disk.
-    // The persist debouncer runs on a 500ms debounce / 5s max-interval, so a
-    // fixed sleep races with CI runner load. Poll for the file to exist with a
-    // non-zero size instead, up to a 10s ceiling.
+    // Wait deterministically for the daemon to:
+    //   1. Evict the room (scheduled `room_eviction_delay_ms` after the last
+    //      peer disconnects — 50ms in this test config).
+    //   2. Flush the Automerge doc to `notebook-docs/<hash>.automerge` (persist
+    //      debouncer: 500ms debounce / 5s max-interval, plus a final flush on
+    //      channel close when the evicted room is dropped).
+    //
+    // Polling for the persisted file alone isn't enough: the debouncer can
+    // flush periodically while the room is still resident, and this test is
+    // specifically exercising the evict-then-reload-from-disk path. Give
+    // eviction a 500ms head start (10x the configured 50ms delay) before we
+    // start trusting the file as a sign that reload-from-disk is the only
+    // code path the reconnect can hit.
+    sleep(Duration::from_millis(500)).await;
+
     let persist_path = temp_dir
         .path()
         .join("notebook-docs")
