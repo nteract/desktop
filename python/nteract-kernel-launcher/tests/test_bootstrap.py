@@ -1,48 +1,37 @@
-"""Tests for the bootstrap step. The hand-off to ipykernel is exercised by
-integration tests; here we only check the feature-flagged bootstrap logic.
+"""Unit tests for the bootstrap wiring.
+
+These cover the argv rewriting and feature-flag gating. The hand-off to
+ipykernel itself is exercised by integration tests.
 """
 
 from __future__ import annotations
 
-import sys
-import types
-from unittest.mock import patch
-
-import nteract_kernel_launcher
+import nteract_kernel_launcher as nkl
 
 
-def test_bootstrap_noop_without_flag(monkeypatch):
+def test_no_exec_lines_without_flag(monkeypatch):
     monkeypatch.delenv("RUNT_BOOTSTRAP_DX", raising=False)
-    fake_dx = types.SimpleNamespace(
-        install=lambda: (_ for _ in ()).throw(AssertionError("should not run"))
-    )
-    with patch.dict(sys.modules, {"dx": fake_dx}):
-        nteract_kernel_launcher.bootstrap()
+    assert nkl.enabled_exec_lines() == []
 
 
-def test_bootstrap_calls_dx_install_when_flag_set(monkeypatch):
+def test_dx_exec_line_when_flag_set(monkeypatch):
     monkeypatch.setenv("RUNT_BOOTSTRAP_DX", "1")
-    calls: list[bool] = []
-    fake_dx = types.SimpleNamespace(install=lambda: calls.append(True))
-    with patch.dict(sys.modules, {"dx": fake_dx}):
-        nteract_kernel_launcher.bootstrap()
-    assert calls == [True]
+    lines = nkl.enabled_exec_lines()
+    assert len(lines) == 1
+    assert "dx" in lines[0]
+    assert "install" in lines[0]
+    assert "\n" not in lines[0]
 
 
-def test_bootstrap_survives_missing_dx(monkeypatch):
-    monkeypatch.setenv("RUNT_BOOTSTRAP_DX", "1")
-    # Ensure dx is not importable
-    monkeypatch.setitem(sys.modules, "dx", None)
-    nteract_kernel_launcher.bootstrap()
+def test_inject_exec_lines_appends_args():
+    argv = ["nteract_kernel_launcher", "-f", "/tmp/conn.json"]
+    nkl._inject_exec_lines(argv, ["import dx; dx.install()"])
+    assert argv[:3] == ["nteract_kernel_launcher", "-f", "/tmp/conn.json"]
+    assert argv[3] == "--IPKernelApp.exec_lines=import dx; dx.install()"
 
 
-def test_bootstrap_survives_dx_install_error(monkeypatch, capsys):
-    monkeypatch.setenv("RUNT_BOOTSTRAP_DX", "1")
-
-    def boom() -> None:
-        raise RuntimeError("boom")
-
-    fake_dx = types.SimpleNamespace(install=boom)
-    with patch.dict(sys.modules, {"dx": fake_dx}):
-        nteract_kernel_launcher.bootstrap()
-    assert "dx.install() failed" in capsys.readouterr().err
+def test_inject_exec_lines_noop_on_empty():
+    argv = ["nteract_kernel_launcher", "-f", "/tmp/conn.json"]
+    before = list(argv)
+    nkl._inject_exec_lines(argv, [])
+    assert argv == before

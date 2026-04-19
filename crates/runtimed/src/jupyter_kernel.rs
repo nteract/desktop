@@ -152,6 +152,7 @@ impl KernelConnection for JupyterKernel {
         let notebook_path = config.notebook_path;
         let env = config.pooled_env;
         let launched_config = config.launched_config;
+        let bootstrap_dx = config.bootstrap_dx;
         let env_path = env.as_ref().map(|e| e.venv_path.clone());
 
         // ── Build process command ────────────────────────────────────────
@@ -221,7 +222,7 @@ impl KernelConnection for JupyterKernel {
                             "[jupyter-kernel] Starting Python kernel with cached inline env at {:?}",
                             pooled_env.python_path
                         );
-                        let launcher_module = if bootstrap_dx_enabled() {
+                        let launcher_module = if bootstrap_dx {
                             "nteract_kernel_launcher"
                         } else {
                             "ipykernel_launcher"
@@ -247,10 +248,10 @@ impl KernelConnection for JupyterKernel {
                         let mut cmd = tokio::process::Command::new(&uv_path);
                         let mut args: Vec<&str> =
                             vec!["run", "--with", "ipykernel", "--with", "uv"];
-                        if bootstrap_dx_enabled() {
+                        if bootstrap_dx {
                             args.extend(["--with", "nteract-kernel-launcher", "--with", "dx"]);
                         }
-                        let launcher_module = if bootstrap_dx_enabled() {
+                        let launcher_module = if bootstrap_dx {
                             "nteract_kernel_launcher"
                         } else {
                             "ipykernel_launcher"
@@ -474,12 +475,12 @@ impl KernelConnection for JupyterKernel {
                         // When RUNT_BOOTSTRAP_DX is set, prewarmed UV envs have
                         // `nteract-kernel-launcher` installed; conda/pixi prewarmed envs
                         // do not, so fall back to ipykernel_launcher there.
-                        let launcher_module =
-                            if bootstrap_dx_enabled() && pooled_env.env_type == EnvType::Uv {
-                                "nteract_kernel_launcher"
-                            } else {
-                                "ipykernel_launcher"
-                            };
+                        let launcher_module = if bootstrap_dx && pooled_env.env_type == EnvType::Uv
+                        {
+                            "nteract_kernel_launcher"
+                        } else {
+                            "ipykernel_launcher"
+                        };
                         let mut cmd = tokio::process::Command::new(&pooled_env.python_path);
                         cmd.args(["-Xfrozen_modules=off", "-m", launcher_module, "-f"]);
                         cmd.arg(&connection_file_path);
@@ -524,6 +525,13 @@ impl KernelConnection for JupyterKernel {
         // Apply extra env vars from launch config
         for (key, value) in &config.env_vars {
             cmd.env(key, value);
+        }
+
+        // Signal dx bootstrap to the launcher module inside the kernel process.
+        // The nteract_kernel_launcher reads RUNT_BOOTSTRAP_DX to decide whether
+        // to append `import dx; dx.install()` to ipykernel's exec_lines.
+        if bootstrap_dx {
+            cmd.env("RUNT_BOOTSTRAP_DX", "1");
         }
 
         let mut process = cmd.kill_on_drop(true).spawn()?;
@@ -2536,14 +2544,4 @@ fn prepend_to_path(dir: &std::path::Path) -> String {
         Ok(existing) => format!("{}:{}", dir_str, existing),
         Err(_) => dir_str.to_string(),
     }
-}
-
-/// Whether nteract kernel bootstrap is enabled for UV-based kernels.
-///
-/// Gated by `RUNT_BOOTSTRAP_DX`. When set, UV kernels launch via
-/// `nteract_kernel_launcher` (shipped by the `nteract-kernel-launcher` pypi
-/// package) which runs `dx.install()` before handing off to ipykernel.
-/// When unset, kernels launch via `ipykernel_launcher` as before.
-fn bootstrap_dx_enabled() -> bool {
-    std::env::var_os("RUNT_BOOTSTRAP_DX").is_some()
 }

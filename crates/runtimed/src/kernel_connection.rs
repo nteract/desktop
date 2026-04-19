@@ -42,6 +42,9 @@ pub struct KernelLaunchConfig {
     pub env_vars: Vec<(String, String)>,
     /// Prewarmed pool environment, if one was claimed.
     pub pooled_env: Option<PooledEnv>,
+    /// Whether to launch via `nteract_kernel_launcher` and enable dx bootstrap.
+    /// Populated from the `bootstrap_dx` user setting.
+    pub bootstrap_dx: bool,
 }
 
 /// Shared references that the kernel needs but does not own.

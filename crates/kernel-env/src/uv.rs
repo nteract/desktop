@@ -16,7 +16,7 @@ use std::sync::Arc;
 use crate::progress::{EnvProgressPhase, ProgressHandler};
 
 /// UV dependency specification.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UvDependencies {
     pub dependencies: Vec<String>,
     #[serde(rename = "requires-python")]
@@ -25,6 +25,10 @@ pub struct UvDependencies {
     /// Possible values: "disallow", "allow", "if-necessary", "explicit", "if-necessary-or-explicit"
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub prerelease: Option<String>,
+    /// When true, install nteract-kernel-launcher and dx alongside the standard
+    /// bootstrap packages so that `dx.install()` can run on kernel startup. Opt-in.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bootstrap_dx: bool,
 }
 
 /// A resolved UV virtual environment on disk.
@@ -207,7 +211,7 @@ pub async fn prepare_environment_in(
     ];
     // nteract kernel bootstrap (feature-flagged, default off): includes a custom
     // launcher module and dx so `dx.install()` can fire before ipykernel starts.
-    if std::env::var_os("RUNT_BOOTSTRAP_DX").is_some() {
+    if deps.bootstrap_dx {
         packages.push("nteract-kernel-launcher".to_string());
         packages.push("dx".to_string());
     }
@@ -408,8 +412,15 @@ pub async fn sync_dependencies(env: &UvEnvironment, deps: &[String]) -> Result<(
 pub async fn create_prewarmed_environment(
     extra_packages: &[String],
     handler: Arc<dyn ProgressHandler>,
+    bootstrap_dx: bool,
 ) -> Result<UvEnvironment> {
-    create_prewarmed_environment_in(&default_cache_dir_uv(), extra_packages, handler).await
+    create_prewarmed_environment_in(
+        &default_cache_dir_uv(),
+        extra_packages,
+        handler,
+        bootstrap_dx,
+    )
+    .await
 }
 
 /// Like [`create_prewarmed_environment`] but with an explicit cache directory.
@@ -417,6 +428,7 @@ pub async fn create_prewarmed_environment_in(
     cache_dir: &Path,
     extra_packages: &[String],
     handler: Arc<dyn ProgressHandler>,
+    bootstrap_dx: bool,
 ) -> Result<UvEnvironment> {
     let temp_id = format!("prewarm-{}", uuid::Uuid::new_v4());
     let venv_path = cache_dir.join(&temp_id);
@@ -470,7 +482,7 @@ pub async fn create_prewarmed_environment_in(
         "uv".to_string(), // For %uv magic in notebooks
     ];
     // Opt-in kernel bootstrap (see prepare_environment_in above).
-    if std::env::var_os("RUNT_BOOTSTRAP_DX").is_some() {
+    if bootstrap_dx {
         install_args.push("nteract-kernel-launcher".to_string());
         install_args.push("dx".to_string());
     }
@@ -587,6 +599,7 @@ pub async fn claim_prewarmed_environment_in(
         dependencies: vec![],
         requires_python: None,
         prerelease: None,
+        bootstrap_dx: false,
     };
     let hash = compute_env_hash(&deps, Some(env_id));
     let dest_path = cache_dir.join(&hash);
@@ -840,6 +853,7 @@ mod tests {
             dependencies: vec!["pandas".to_string(), "numpy".to_string()],
             requires_python: Some(">=3.10".to_string()),
             prerelease: None,
+            bootstrap_dx: false,
         };
 
         let hash1 = compute_env_hash(&deps, None);
@@ -853,12 +867,14 @@ mod tests {
             dependencies: vec!["pandas".to_string(), "numpy".to_string()],
             requires_python: None,
             prerelease: None,
+            bootstrap_dx: false,
         };
 
         let deps2 = UvDependencies {
             dependencies: vec!["numpy".to_string(), "pandas".to_string()],
             requires_python: None,
             prerelease: None,
+            bootstrap_dx: false,
         };
 
         assert_eq!(
@@ -873,12 +889,14 @@ mod tests {
             dependencies: vec!["pandas".to_string()],
             requires_python: None,
             prerelease: None,
+            bootstrap_dx: false,
         };
 
         let deps2 = UvDependencies {
             dependencies: vec!["numpy".to_string()],
             requires_python: None,
             prerelease: None,
+            bootstrap_dx: false,
         };
 
         assert_ne!(
@@ -893,6 +911,7 @@ mod tests {
             dependencies: vec![],
             requires_python: None,
             prerelease: None,
+            bootstrap_dx: false,
         };
 
         let hash1 = compute_env_hash(&deps, Some("notebook-1"));
@@ -906,6 +925,7 @@ mod tests {
             dependencies: vec!["pandas".to_string()],
             requires_python: None,
             prerelease: None,
+            bootstrap_dx: false,
         };
 
         let hash1 = compute_env_hash(&deps, Some("notebook-1"));
@@ -920,12 +940,14 @@ mod tests {
             dependencies: vec!["pandas".to_string()],
             requires_python: None,
             prerelease: None,
+            bootstrap_dx: false,
         };
 
         let deps2 = UvDependencies {
             dependencies: vec!["pandas".to_string()],
             requires_python: None,
             prerelease: Some("allow".to_string()),
+            bootstrap_dx: false,
         };
 
         assert_ne!(
@@ -940,6 +962,7 @@ mod tests {
             dependencies: vec!["pandas".to_string()],
             requires_python: None,
             prerelease: Some("allow".to_string()),
+            bootstrap_dx: false,
         };
 
         let hash1 = compute_env_hash(&deps, None);

@@ -384,8 +384,12 @@ fn build_launched_config(
     python_path: Option<PathBuf>,
     prewarmed_packages: Option<&[String]>,
     notebook_path: Option<&std::path::Path>,
+    bootstrap_dx: bool,
 ) -> LaunchedEnvConfig {
-    let mut config = LaunchedEnvConfig::default();
+    let mut config = LaunchedEnvConfig {
+        bootstrap_dx,
+        ..LaunchedEnvConfig::default()
+    };
 
     match env_source {
         "uv:inline" | "uv:pep723" => {
@@ -4208,8 +4212,13 @@ async fn auto_launch_kernel(
                 "[notebook-sync] Preparing cached UV env for PEP 723 deps: {:?}",
                 deps
             );
-            match crate::inline_env::prepare_uv_inline_env(deps, None, progress_handler.clone())
-                .await
+            match crate::inline_env::prepare_uv_inline_env(
+                deps,
+                None,
+                progress_handler.clone(),
+                daemon.bootstrap_dx_enabled().await,
+            )
+            .await
             {
                 Ok(prepared) => {
                     info!(
@@ -4278,6 +4287,7 @@ async fn auto_launch_kernel(
                             &deps,
                             prerelease.as_deref(),
                             progress_handler.clone(),
+                            daemon.bootstrap_dx_enabled().await,
                         )
                         .await
                         {
@@ -4321,6 +4331,7 @@ async fn auto_launch_kernel(
                     &deps,
                     prerelease.as_deref(),
                     progress_handler.clone(),
+                    daemon.bootstrap_dx_enabled().await,
                 )
                 .await
                 {
@@ -4485,6 +4496,7 @@ async fn auto_launch_kernel(
     } else {
         None
     };
+    let bootstrap_dx = daemon.bootstrap_dx_enabled().await;
     let launched_config = build_launched_config(
         kernel_type,
         &env_source,
@@ -4494,6 +4506,7 @@ async fn auto_launch_kernel(
         python_path,
         prewarmed_pkgs.as_deref(),
         notebook_path_opt.as_deref(),
+        bootstrap_dx,
     );
 
     // Transition to "launching" phase before starting the kernel process
@@ -5245,6 +5258,7 @@ async fn handle_notebook_request(
                         &deps,
                         None,
                         launch_progress_handler.clone(),
+                        daemon.bootstrap_dx_enabled().await,
                     )
                     .await
                     {
@@ -5321,6 +5335,7 @@ async fn handle_notebook_request(
                                     &deps,
                                     prerelease.as_deref(),
                                     launch_progress_handler.clone(),
+                                    daemon.bootstrap_dx_enabled().await,
                                 )
                                 .await
                                 {
@@ -5355,6 +5370,7 @@ async fn handle_notebook_request(
                             &deps,
                             prerelease.as_deref(),
                             launch_progress_handler.clone(),
+                            daemon.bootstrap_dx_enabled().await,
                         )
                         .await
                         {
@@ -5706,6 +5722,7 @@ async fn handle_notebook_request(
             let venv_path = pooled_env.as_ref().map(|e| e.venv_path.clone());
             let python_path = pooled_env.as_ref().map(|e| e.python_path.clone());
             let prewarmed_pkgs = pooled_env.as_ref().map(|e| e.prewarmed_packages.clone());
+            let bootstrap_dx = daemon.bootstrap_dx_enabled().await;
             let launched_config = build_launched_config(
                 &resolved_kernel_type,
                 &resolved_env_source,
@@ -5715,6 +5732,7 @@ async fn handle_notebook_request(
                 python_path,
                 prewarmed_pkgs.as_deref(),
                 notebook_path.as_deref(),
+                bootstrap_dx,
             );
 
             // Transition to "launching" phase before starting the kernel process
@@ -12582,6 +12600,7 @@ mod tests {
             Some(python.clone()),
             Some(&pkgs),
             None,
+            false,
         );
         assert_eq!(config.venv_path.as_ref(), Some(&venv));
         assert_eq!(config.python_path.as_ref(), Some(&python));
@@ -12621,6 +12640,7 @@ mod tests {
             Some(python.clone()),
             None,
             None,
+            false,
         );
         assert_eq!(config.venv_path.as_ref(), Some(&venv));
         assert_eq!(config.python_path.as_ref(), Some(&python));

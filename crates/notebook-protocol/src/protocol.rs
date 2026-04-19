@@ -68,6 +68,13 @@ pub struct LaunchedEnvConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub launch_id: Option<String>,
 
+    /// Whether the nteract/dx kernel bootstrap is enabled for this launch.
+    /// Snapshot of the `bootstrap_dx` user setting; passed through to the
+    /// kernel spawner so UV kernels use `nteract_kernel_launcher` and the
+    /// dx formatters fire via ipykernel exec_lines.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bootstrap_dx: bool,
+
     /// Packages pre-installed in the prewarmed environment (empty for inline envs).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prewarmed_packages: Vec<String>,
