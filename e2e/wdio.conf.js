@@ -37,6 +37,7 @@ const FIXTURE_SPECS = [
   "untitled-pyproject.spec.js", // Requires working dir to be pyproject fixture directory
   "uv-inline.spec.js",
   "uv-pyproject.spec.js",
+  "widget-slider-stall.spec.js", // Requires fixture notebook with ipywidgets slider
 ];
 
 /**
