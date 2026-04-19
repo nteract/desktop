@@ -213,6 +213,21 @@ Rough count stated; actual totals finalized during migration.
 The 5 abort-only tasks keep their JoinHandle for `.abort()` — `spawn_supervised`
 returns a `JoinHandle<()>` that's `.abort()`-compatible, so no struct changes.
 
+**Phase 2 ordering and gating:**
+
+1. Land `WarmingGuard` RAII + migrate the `create_uv_env`/`create_conda_env`
+   pre-increment sites first, as its own PR. Unblocks Q3 without touching
+   spawn wiring.
+2. Land `spawn_supervised` + `spawn_best_effort` helpers in
+   `crates/runtimed/src/task_supervisor.rs` (name TBD) with unit tests.
+3. Migrate supervised sites in small, per-subsystem PRs (queue workers,
+   kernel tasks, formatter, etc.) so each diff reads cleanly.
+4. Migrate best-effort sites after supervised are done — lower-risk batch.
+5. **Skip site #28 (autosave)** in this phase. Keep on `tokio::spawn` until
+   Q4 research (task #70) decides the recovery story.
+6. After all migrations land, grep for remaining `tokio::spawn` in
+   `crates/runtimed/src/` — anything left is either #28 or a bug.
+
 ## What breaks if we get this wrong
 
 - Classifying a load-bearing task as `spawn_best_effort` is a regression:
@@ -226,31 +241,43 @@ returns a `JoinHandle<()>` that's `.abort()`-compatible, so no struct changes.
 - `on_panic` callbacks must not themselves panic. Keep them trivial:
   `daemon.trigger_shutdown()`, `tx.try_send(KernelDied)`, `status.store(...)`.
 
-## Design questions for Kyle
+## Design decisions (answered by Kyle 2026-04-19)
 
-- **Q1 (iopub/shell panic recovery):** Should a panic in `iopub_task` or
-  `shell_reader_task` send `KernelDied` (so the queue observer transitions
-  the kernel to `error` and the frontend offers a restart), or should it
-  trigger a silent kernel restart? Current proposal is `KernelDied` —
-  explicit, user-visible, symmetric with other kernel failures.
-- **Q2 (warming-loop panic):** Warming loops (#12-14) — `spawn_supervised`
-  with what `on_panic`? Options: (a) `trigger_shutdown()` — brutal but
-  honest; without warming, the daemon is useless. (b) Log only and accept
-  that env launches will time out at 120s. (c) Attempt a single respawn.
-  My vote: (b) — matches current behavior (silent today, logged tomorrow)
-  without introducing restart semantics this pass.
-- **Q3 (pool-accounting rollback):** Sites #19-23 (`create_uv_env` spawns)
-  increment `mark_warming` before the spawn and rely on the spawned body
-  to roll it back on failure. A panic would skip the rollback. Do we want
-  a `PoolCounterGuard` RAII that decrements on drop, or handle it in
-  `on_panic`? Slight preference for RAII — it's defensive against any
-  early return, not just panics.
-- **Q4 (autosave panic):** Site #28 is user data. Currently a panic means
-  the user loses subsequent edits silently. Is it enough to log and let
-  the next save-triggering broadcast re-subscribe? Probably not — there's
-  no re-spawn logic. Options: (a) trigger_shutdown so the user sees the
-  daemon die and reconnects, (b) surface to frontend as a broadcast, (c)
-  respawn the task. Needs explicit decision.
+- **Q1 (iopub/shell panic recovery) — DECIDED: `KernelDied` + explicit
+  logging.** Same path existing kernel-exit failures take, so existing
+  recovery UI and client messaging apply. `on_panic` for `iopub_task` and
+  `shell_reader_task` sends `QueueCommand::KernelDied` via the held
+  `cmd_tx` clone and calls `error!(task, panic=?, "iopub/shell task
+  panicked")`.
+
+- **Q2 (warming-loop panic) — DECIDED: log, mark in-flight as failed,
+  single respawn with backoff; escalate to `trigger_shutdown` on second
+  failure.** Log at minimum. A pool worker that dies mid-warm leaves a
+  stuck counter (see Q3) and no further progress, so respawn is right.
+  `on_panic` for sites #12–14: call the existing
+  `warming_failed_with_error(Some(panic_marker))`, log, then schedule a
+  single respawn via the daemon's existing spawn helper. Track respawn
+  count per warming task (simple `AtomicU32`); if it panics twice,
+  `trigger_shutdown()`. Don't introduce open-ended restart loops.
+
+- **Q3 (pool-accounting rollback) — DECIDED: RAII `WarmingGuard`.**
+  `register_warming_path` (daemon.rs:4069) pre-increments; every exit
+  path in `create_uv_env` and siblings calls `warming_failed_*` or the
+  success equivalent. A `WarmingGuard { path, pool }` with `impl Drop`
+  that calls `warming_failed_for_path(panic_placeholder)` on drop, plus
+  `fn commit(self)` that `mem::forget`s the guard on success, removes
+  the class of bug. Works for panics, `?` returns, and future early
+  returns we haven't written yet. `on_panic` for these sites becomes a
+  no-op — the guard already ran during unwind. Separate commit/PR from
+  the `spawn_supervised` migration since it's orthogonal; do it first so
+  the migration doesn't have to work around half-landed state.
+
+- **Q4 (autosave panic) — DEFERRED pending research.** Phase 2 can
+  proceed on Q1–Q3 without resolving this. Kyle's direction: check how
+  `automerge` and `automerge-repo` (in `~/code/src/github.com/automerge/`)
+  handle persist/autosave panic recovery — he recalls a "refresh" pattern.
+  Site #28 stays on plain `tokio::spawn` for this PR; migrate after Q4
+  research lands. Tracked as task #70. Do not block phase 2 on this.
 
 ## Notes on other crates (out of scope, follow-up)
 
