@@ -207,6 +207,22 @@ impl DocChangeset {
 /// and each re-ran `doc.diff` on the same heads. Cost goes from O(N*3)
 /// to O(N) where N is the number of patches.
 ///
+/// # Why this does not emit output-change flags
+///
+/// Cell outputs live in `RuntimeStateDoc`, not in `NotebookDoc`. The
+/// runtime agent writes them via IOPub; the daemon syncs them via frame
+/// `0x05`. The WASM layer handles that path separately via
+/// `runtime_state::diff_execution_outputs`, which emits
+/// `RuntimeStateSyncApplied.output_changed_cells`. The sync engine then
+/// synthesizes a `CellChangeset` with `fields.outputs = true` for those
+/// cells so materialization goes through the same path as structural
+/// changes.
+///
+/// Do not add an output scan here. If you're tempted to, read
+/// `crates/runtimed-wasm/src/lib.rs` (`RuntimeStateSyncApplied` emit
+/// site) and `packages/runtimed/src/sync-engine.ts` (synthetic
+/// CellChangeset) first.
+///
 /// # Arguments
 ///
 /// Same semantics as [`diff_cells`] — `before == &[]` or `before == after`

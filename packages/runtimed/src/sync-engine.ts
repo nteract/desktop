@@ -695,6 +695,16 @@ export class SyncEngine {
               // Output changes detected by WASM-side diff of RuntimeStateDoc.
               // The WASM compares output hash lists before/after sync and
               // reports cell IDs that need re-materialization.
+              //
+              // This is the ONLY source of `fields.outputs = true` in the
+              // materialization pipeline. The `diff_doc` in notebook-doc
+              // walks NotebookDoc only, and NotebookDoc never carries cell
+              // outputs — they live exclusively in RuntimeStateDoc. If this
+              // synthesis goes away, outputs stop re-rendering on kernel
+              // IOPub.
+              //
+              // See `crates/notebook-doc/src/diff.rs` (diff_doc docstring)
+              // for the other half of the contract.
               const outputChangedCells: string[] = e.output_changed_cells ?? [];
               if (outputChangedCells.length > 0) {
                 // Deduplicate against cells already handled by transitions
