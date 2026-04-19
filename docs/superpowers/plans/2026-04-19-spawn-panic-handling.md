@@ -33,7 +33,7 @@ specific automerge bug but is not applied as a task-level guard.
 ## Scope
 
 `crates/runtimed/src/` only, as instructed. 30 `tokio::spawn` call sites total
-(27 production + 3 in tests). Other crates (`runt-mcp`, `notebook-sync`,
+(29 production + 1 in a test block at `notebook_sync_server.rs:12900`). Other crates (`runt-mcp`, `notebook-sync`,
 `runt-cli`, `mcp-supervisor`) are out of scope for this pass — brief
 observations are at the end.
 
@@ -59,18 +59,18 @@ Legend for **Current**:
 | 9 | `jupyter_kernel.rs:1819` | `heartbeat_task` | Abort-only | `spawn_supervised`. Panic → KernelDied. | Already sends KernelDied on timeout, natural extension. |
 | 10 | `jupyter_kernel.rs:1862` | `comm_coalesce_task` — widget state batcher | Abort-only | `spawn_supervised`. On panic, log and let widget updates stall for this kernel; don't take the whole daemon down. | Side-effect is degraded widgets, not lost data. |
 | 11 | `daemon.rs:215` | `spawn_env_deletions` — rm -rf stale env dirs | Orphan | `spawn_best_effort`. Genuinely best-effort filesystem cleanup. | Document as such. |
-| 12 | `daemon.rs:783` | `uv_warming_loop` | Orphan | `spawn_supervised` with **daemon shutdown on panic**. | Long-lived pool filler. If it dies the UV pool never refills, all UV kernel launches block until 120s timeout. |
-| 13 | `daemon.rs:788` | `conda_warming_loop` | Orphan | `spawn_supervised` + shutdown. | Same as above. |
-| 14 | `daemon.rs:793` | `pixi_warming_loop` | Orphan | `spawn_supervised` + shutdown. | Same. |
+| 12 | `daemon.rs:783` | `uv_warming_loop` | Orphan | `spawn_supervised`. On-panic action: see Q2 — table resolves to **log-only** pending Kyle's call. | Long-lived pool filler. If it dies the UV pool never refills, all UV kernel launches block until 120s timeout. |
+| 13 | `daemon.rs:788` | `conda_warming_loop` | Orphan | `spawn_supervised`. Same Q2. | Same as above. |
+| 14 | `daemon.rs:793` | `pixi_warming_loop` | Orphan | `spawn_supervised`. Same Q2. | Same. |
 | 15 | `daemon.rs:799` | `env_gc_loop` | Orphan | `spawn_supervised` (log + restart? or just log). | Degradation, not data loss. Stale dirs accumulate. |
 | 16 | `daemon.rs:805` | `watch_settings_json` | Orphan | `spawn_supervised`. Settings stop syncing if this dies. | User-visible degradation. |
 | 17 | `daemon.rs:893` | Per-connection unix socket handler | Orphan | `spawn_best_effort`. One client's connection dying is fine. | High-cardinality. |
 | 18 | `daemon.rs:958` | Per-connection windows named-pipe handler | Orphan | `spawn_best_effort`. | Same as 17. |
-| 19 | `daemon.rs:2083` | `create_uv_env` post-take replenish | Orphan | `spawn_best_effort` with explicit warming-counter rollback on panic. | If body panics, `mark_warming` increments are never rolled back — pool accounting drifts. Q: safe to rely on `PoolEntry` Drop + `mark_warming` compensation, or do we need a scope guard? |
-| 20 | `daemon.rs:2108` | `create_uv_env` retry spawn | Orphan | `spawn_best_effort` + rollback. | Same as 19. |
-| 21 | `daemon.rs:2158` | `replenish_conda_env` | Orphan | `spawn_best_effort` + rollback. | Same as 19. |
-| 22 | `daemon.rs:2183` | `create_conda_env` retry | Orphan | `spawn_best_effort` + rollback. | Same as 19. |
-| 23 | `daemon.rs:2228` | `replenish_pixi_env` | Orphan | `spawn_best_effort` + rollback. | Same as 19. |
+| 19 | `daemon.rs:2083` | `create_uv_env` post-take replenish | Orphan | `spawn_best_effort`. No pre-spawn `mark_warming` here — the spawned body manages its own counter. | Corrected per codex review: this site does NOT pre-increment `warming`. Rollback concern applies only to #20, #22, and to the bodies of `replenish_*` (#21, #23). |
+| 20 | `daemon.rs:2108` | `create_uv_env` retry after `mark_warming(1)` | Orphan | `spawn_best_effort` with warming-counter rollback on panic. | `mark_warming(1)` happens BEFORE the spawn at the call site — a panic inside the spawned body skips the rollback. Q3 applies. |
+| 21 | `daemon.rs:2158` | `replenish_conda_env` | Orphan | `spawn_best_effort` with internal counter hygiene. | `mark_warming` happens inside the spawned body; ensure the helper drops it on panic. |
+| 22 | `daemon.rs:2183` | `create_conda_env` retry after `mark_warming(1)` | Orphan | `spawn_best_effort` + rollback. | Same structure as #20. |
+| 23 | `daemon.rs:2228` | `replenish_pixi_env` | Orphan | `spawn_best_effort` with internal counter hygiene. | Same as #21. |
 | 24 | `notebook_sync_server.rs:2034` | `auto_launch_kernel` on first connect | Orphan | `spawn_supervised`. If this panics the frontend is stuck in "Initializing" forever. | User-visible. Should flip `kernel_status` to `error` on panic. |
 | 25 | `notebook_sync_server.rs:2130` | Room eviction delay + teardown | Orphan | `spawn_supervised`. On panic, room leaks — kernel, agent, blob handles all held. | Long delay (default 30s), memory and resource leak risk. |
 | 26 | `notebook_sync_server.rs:5934` | Background cell formatter | Orphan | `spawn_best_effort`. | Body already does fork+merge with `catch_automerge_panic`. A formatter panic outside the merge is non-fatal. |
@@ -79,8 +79,8 @@ Legend for **Current**:
 | 29 | `notebook_sync_server.rs:9450` | `spawn_notebook_file_watcher` | Orphan | `spawn_supervised`. Panic means external file changes silently stop merging. | Degradation, no data loss. |
 | 30 | `notebook_sync_server.rs:12900` | Test helper | Test | Leave as-is. | Not production. |
 
-**Counts (production only, 27 sites):**
-- Orphan: 23
+**Counts (production only, 29 sites):**
+- Orphan: 24
 - Abort-only: 5 (the jupyter_kernel tasks, with a stored JoinHandle whose
   only use is `.abort()`)
 - Supervised (body-level wrapper): 0 at the task boundary. A handful of
@@ -268,10 +268,11 @@ Leave these for a follow-up PR once the runtimed pattern is agreed.
 
 ## Summary
 
-- 27 production spawn sites in `crates/runtimed/src/`. All 27 currently lose
+- 29 production spawn sites in `crates/runtimed/src/`. All 29 currently lose
   panic information.
-- Propose two helpers: `spawn_supervised` (long-lived workers, custom
-  on-panic action) and `spawn_best_effort` (side-effect-only, log-and-drop).
-- Migrate all 27 in Phase 2 after Kyle resolves Q1–Q4.
+- Propose one primitive: `spawn_supervised(label, fut, on_panic)`.
+  `spawn_best_effort(label, fut)` is a thin wrapper that passes a no-op
+  `on_panic`. Keeps the surface minimal per codex review.
+- Migrate all 29 in Phase 2 after Kyle resolves Q1–Q4.
 - No new dependencies; `futures::FutureExt::catch_unwind` is already in the
   tree via existing usage.
