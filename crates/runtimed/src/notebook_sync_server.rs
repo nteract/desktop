@@ -1914,6 +1914,13 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
         }
     }
 
+    // Drain any pending query replies so callers get an error instead of hanging.
+    for (_id, reply_tx) in pending_replies.drain() {
+        let _ = reply_tx.send(RuntimeAgentResponse::Error {
+            error: "Runtime agent disconnected".to_string(),
+        });
+    }
+
     // Cleanup: only clear state if we're still the current runtime agent.
     // A stale runtime agent disconnecting after a new one connected must not
     // clobber the new runtime agent's channel.
