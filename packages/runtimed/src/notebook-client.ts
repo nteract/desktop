@@ -10,7 +10,13 @@
 
 import type { SyncEngineLogger } from "./sync-engine";
 import type { NotebookTransport } from "./transport";
-import type { CommRequestMessage, NotebookRequest, NotebookResponse } from "./request-types";
+import type {
+  CommRequestMessage,
+  CompletionItem,
+  HistoryEntry,
+  NotebookRequest,
+  NotebookResponse,
+} from "./request-types";
 
 const nullLogger: SyncEngineLogger = {
   debug() {},
@@ -88,7 +94,7 @@ export class NotebookClient {
   /** Interrupt kernel execution. */
   async interruptKernel(): Promise<NotebookResponse> {
     try {
-      return await this.sendRequest({ type: "interrupt" });
+      return await this.sendRequest({ type: "interrupt_execution" });
     } catch (e) {
       this.log.error("[notebook-client] Interrupt failed:", e);
       throw e;
@@ -126,6 +132,52 @@ export class NotebookClient {
       return await this.sendRequest({ type: "run_all_cells" });
     } catch (e) {
       this.log.error("[notebook-client] Run all cells failed:", e);
+      throw e;
+    }
+  }
+
+  /** Search the kernel's input history. */
+  async getHistory(pattern: string | null, n: number, unique: boolean): Promise<HistoryEntry[]> {
+    try {
+      const response = await this.sendRequest({
+        type: "get_history",
+        pattern,
+        n,
+        unique,
+      });
+      if ((response as { result: string }).result === "history_result") {
+        return (response as { result: "history_result"; entries: HistoryEntry[] }).entries;
+      }
+      return [];
+    } catch (e) {
+      this.log.error("[notebook-client] Get history failed:", e);
+      throw e;
+    }
+  }
+
+  /** Request code completions from the kernel. */
+  async complete(
+    code: string,
+    cursorPos: number,
+  ): Promise<{ items: CompletionItem[]; cursorStart: number; cursorEnd: number }> {
+    try {
+      const response = await this.sendRequest({
+        type: "complete",
+        code,
+        cursor_pos: cursorPos,
+      });
+      if ((response as { result: string }).result === "completion_result") {
+        const r = response as {
+          result: "completion_result";
+          items: CompletionItem[];
+          cursor_start: number;
+          cursor_end: number;
+        };
+        return { items: r.items, cursorStart: r.cursor_start, cursorEnd: r.cursor_end };
+      }
+      return { items: [], cursorStart: cursorPos, cursorEnd: cursorPos };
+    } catch (e) {
+      this.log.error("[notebook-client] Complete failed:", e);
       throw e;
     }
   }
