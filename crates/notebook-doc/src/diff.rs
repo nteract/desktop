@@ -287,7 +287,50 @@ pub fn diff_doc(doc: &mut AutoCommit, before: &[ChangeHash], after: &[ChangeHash
                     _ => continue,
                 };
 
-                if added.contains(&cell_id) {
+                let is_added = added.contains(&cell_id);
+
+                // Source-text splice/delete always produces a TextPatch,
+                // even for cells that were added in this same diff
+                // window — the frontend wants attribution overlays on
+                // every freshly-arrived character, regardless of
+                // whether the cell itself is new. Matches the pre-
+                // refactor `compute_text_attributions` contract.
+                if path_after_cells.len() >= 2 {
+                    if let Prop::Map(f) = &path_after_cells[1].1 {
+                        if f == "source" {
+                            match &patch.action {
+                                PatchAction::SpliceText { index, value, .. } => {
+                                    let text = value.make_string();
+                                    if !text.is_empty() {
+                                        text_patches.push(TextPatch {
+                                            cell_id: cell_id.clone(),
+                                            index: *index,
+                                            text,
+                                            deleted: 0,
+                                        });
+                                    }
+                                }
+                                PatchAction::DeleteSeq { index, length } => {
+                                    text_patches.push(TextPatch {
+                                        cell_id: cell_id.clone(),
+                                        index: *index,
+                                        text: String::new(),
+                                        deleted: *length,
+                                    });
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+
+                // Field-level change tracking. Skip when the cell was
+                // just added in this same diff — the caller will read
+                // the whole cell fresh from the doc anyway, so there's
+                // no benefit to ALSO marking individual fields as
+                // changed. This also matches the pre-refactor
+                // `diff_cells` behavior.
+                if is_added {
                     continue;
                 }
 
@@ -312,38 +355,11 @@ pub fn diff_doc(doc: &mut AutoCommit, before: &[ChangeHash], after: &[ChangeHash
                         _ => continue,
                     };
 
-                    let fields = cell_fields.entry(cell_id.clone()).or_default();
+                    let fields = cell_fields.entry(cell_id).or_default();
                     fields.set_field(field_name);
 
                     if field_name == "position" {
                         order_changed = true;
-                    }
-
-                    // Source-text splice/delete — record as a TextPatch
-                    // for consumers that want attribution ranges.
-                    if field_name == "source" {
-                        match &patch.action {
-                            PatchAction::SpliceText { index, value, .. } => {
-                                let text = value.make_string();
-                                if !text.is_empty() {
-                                    text_patches.push(TextPatch {
-                                        cell_id,
-                                        index: *index,
-                                        text,
-                                        deleted: 0,
-                                    });
-                                }
-                            }
-                            PatchAction::DeleteSeq { index, length } => {
-                                text_patches.push(TextPatch {
-                                    cell_id,
-                                    index: *index,
-                                    text: String::new(),
-                                    deleted: *length,
-                                });
-                            }
-                            _ => {}
-                        }
                     }
                 }
             }
@@ -890,12 +906,86 @@ mod tests {
         );
     }
 
+    // Equivalence tests: the new `diff_doc` is the single source of
+    // truth for the three old entry points. These tests assert that
+    // `diff_cells(...) == diff_doc(...).cells` and `diff_metadata_touched(...) ==
+    // diff_doc(...).metadata_changed` across the full classifier
+    // matrix, so a future change to diff_doc that silently drops a
+    // category fails loudly here.
+
+    fn build_diverse_diff(doc: &mut NotebookDoc) -> (Vec<ChangeHash>, Vec<ChangeHash>) {
+        doc.add_cell(0, "cell-a", "code").unwrap();
+        doc.add_cell(1, "cell-b", "markdown").unwrap();
+        let before = doc.doc_mut().get_heads();
+
+        // Every classifier case in one window: source edit,
+        // per-cell metadata, notebook-level metadata, removal,
+        // execution_count, cell_type change.
+        doc.update_source("cell-a", "print('ok')").unwrap();
+        let _ = doc.set_cell_source_hidden("cell-a", true);
+        doc.add_uv_dependency("numpy").unwrap();
+        doc.delete_cell("cell-b").unwrap();
+        let cell_a_obj = doc.cell_obj_for("cell-a").unwrap();
+        doc.doc_mut()
+            .put(&cell_a_obj, "execution_count", 5_i64)
+            .unwrap();
+
+        let after = doc.doc_mut().get_heads();
+        (before, after)
+    }
+
     #[test]
-    fn test_diff_doc_added_cell_no_text_patch() {
-        // A newly-added cell's source arrives as a PutMap on the cell
-        // map, not as a SpliceText on an existing Text object. We
-        // treat added cells as "caller does a full read" and don't
-        // emit text_patches for them.
+    fn test_diff_doc_cells_matches_diff_cells() {
+        let mut doc = NotebookDoc::new("nb1");
+        let (before, after) = build_diverse_diff(&mut doc);
+
+        let unified = diff_doc(doc.doc_mut(), &before, &after).cells;
+        let legacy = diff_cells(doc.doc_mut(), &before, &after);
+        assert_eq!(unified, legacy);
+    }
+
+    #[test]
+    fn test_diff_doc_metadata_changed_matches_diff_metadata_touched() {
+        // Case 1: notebook-metadata edit — both agree.
+        let mut doc = NotebookDoc::new("nb1");
+        doc.add_cell(0, "cell-a", "code").unwrap();
+        let before = doc.doc_mut().get_heads();
+        doc.add_uv_dependency("polars").unwrap();
+        let after = doc.doc_mut().get_heads();
+        assert!(diff_doc(doc.doc_mut(), &before, &after).metadata_changed);
+        assert!(diff_metadata_touched(doc.doc_mut(), &before, &after));
+
+        // Case 2: cell-only edit — both say false.
+        let mut doc2 = NotebookDoc::new("nb2");
+        doc2.add_cell(0, "cell-a", "code").unwrap();
+        let before = doc2.doc_mut().get_heads();
+        doc2.update_source("cell-a", "x = 1").unwrap();
+        let after = doc2.doc_mut().get_heads();
+        assert!(!diff_doc(doc2.doc_mut(), &before, &after).metadata_changed);
+        assert!(!diff_metadata_touched(doc2.doc_mut(), &before, &after));
+
+        // Case 3: per-cell metadata — the nested "metadata" under
+        // cells/<id>/metadata is NOT notebook metadata. Both agree.
+        let mut doc3 = NotebookDoc::new("nb3");
+        doc3.add_cell(0, "cell-a", "code").unwrap();
+        let before = doc3.doc_mut().get_heads();
+        let _ = doc3.set_cell_source_hidden("cell-a", true);
+        let after = doc3.doc_mut().get_heads();
+        assert!(!diff_doc(doc3.doc_mut(), &before, &after).metadata_changed);
+        assert!(!diff_metadata_touched(doc3.doc_mut(), &before, &after));
+    }
+
+    #[test]
+    fn test_diff_doc_added_cell_still_emits_text_patches() {
+        // Add-then-edit in a single diff window: the cell is in
+        // `added` AND there are SpliceText patches on its source.
+        // The frontend still wants attribution overlays on the
+        // freshly-arrived characters — matches the pre-refactor
+        // `compute_text_attributions` contract, which had no
+        // added-cell filter.
+        //
+        // Field-level tracking IS skipped for added cells (the
+        // caller will do a full read), but text_patches are NOT.
         let mut doc = NotebookDoc::new("nb1");
         let before = doc.doc_mut().get_heads();
 
@@ -905,15 +995,17 @@ mod tests {
 
         let changeset = diff_doc(doc.doc_mut(), &before, &after);
         assert_eq!(changeset.cells.added, vec!["cell-1".to_string()]);
-        // Source edits on a freshly-added cell shouldn't show up as
-        // attribution patches — the cell itself is "added" and the
-        // full source will be read as part of materializing the new
-        // cell.
+        // The cell is in `added`, not `changed` — field tracking
+        // skipped (old diff_cells behavior).
         assert!(
-            changeset.text_patches.is_empty(),
-            "added cell should not produce text patches, got {:?}",
-            changeset.text_patches
+            changeset.cells.changed.is_empty(),
+            "added cell should not appear in cells.changed, got {:?}",
+            changeset.cells.changed
         );
+        // But text_patches ARE emitted so attribution still works.
+        assert_eq!(changeset.text_patches.len(), 1);
+        assert_eq!(changeset.text_patches[0].cell_id, "cell-1");
+        assert_eq!(changeset.text_patches[0].text, "x = 1");
     }
 
     #[test]
