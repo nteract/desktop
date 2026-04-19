@@ -44,6 +44,44 @@ use notebook_protocol::protocol::LaunchedEnvConfig;
 type PendingCompletions =
     Arc<StdMutex<HashMap<String, oneshot::Sender<(Vec<CompletionItem>, usize, usize)>>>>;
 
+/// Handle for interrupting a kernel without exclusive access.
+///
+/// Created at kernel launch time, captures connection_info and session_id.
+/// Can be used concurrently with other kernel operations since interrupt
+/// creates its own ZMQ control connection.
+#[derive(Clone)]
+pub struct InterruptHandle {
+    connection_info: ConnectionInfo,
+    session_id: String,
+}
+
+impl InterruptHandle {
+    pub async fn interrupt(&self) -> Result<()> {
+        let mut control =
+            runtimelib::create_client_control_connection(&self.connection_info, &self.session_id)
+                .await?;
+
+        let request: JupyterMessage = InterruptRequest {}.into();
+        control.send(request).await?;
+
+        info!("[jupyter-kernel] Sent interrupt_request (via handle)");
+
+        match tokio::time::timeout(std::time::Duration::from_secs(5), control.read()).await {
+            Ok(Ok(_reply)) => {
+                info!("[jupyter-kernel] Received interrupt_reply");
+            }
+            Ok(Err(e)) => {
+                warn!("[jupyter-kernel] Error receiving interrupt_reply: {}", e);
+            }
+            Err(_) => {
+                warn!("[jupyter-kernel] Timed out waiting for interrupt_reply (5s)");
+            }
+        }
+
+        Ok(())
+    }
+}
+
 /// A Jupyter kernel connection that implements `KernelConnection`.
 ///
 /// Holds the IO-bound parts of a kernel connection: ZeroMQ sockets, spawned
@@ -2401,6 +2439,16 @@ impl KernelConnection for JupyterKernel {
 
     fn update_launched_uv_deps(&mut self, deps: Vec<String>) {
         self.launched_config.uv_deps = Some(deps);
+    }
+}
+
+impl JupyterKernel {
+    /// Get an InterruptHandle for concurrent interrupt without &mut self.
+    pub fn interrupt_handle(&self) -> Option<InterruptHandle> {
+        self.connection_info.as_ref().map(|ci| InterruptHandle {
+            connection_info: ci.clone(),
+            session_id: self.session_id.clone(),
+        })
     }
 }
 

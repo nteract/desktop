@@ -107,6 +107,7 @@ pub async fn run_runtime_agent(
     // -- Local variables owned by the select! loop (no mutex) ---------------
 
     let mut kernel: Option<JupyterKernel> = None;
+    let mut interrupt_handle: Option<crate::jupyter_kernel::InterruptHandle> = None;
     let mut kernel_state = KernelState::new(
         state_doc.clone(),
         state_changed_tx.clone(),
@@ -133,6 +134,31 @@ pub async fn run_runtime_agent(
                                 if let Ok(envelope) = serde_json::from_slice::<
                                     notebook_protocol::protocol::RuntimeAgentRequestEnvelope,
                                 >(&typed_frame.payload) {
+                                    // Interrupt bypasses &mut kernel via InterruptHandle
+                                    if matches!(envelope.request, RuntimeAgentRequest::InterruptExecution) {
+                                        if let Some(ref handle) = interrupt_handle {
+                                            let handle = handle.clone();
+                                            let cleared = kernel_state.clear_queue();
+                                            // Write cleared entries to state doc
+                                            {
+                                                let mut sd = state_doc.write().await;
+                                                for entry in &cleared {
+                                                    sd.set_execution_done(&entry.execution_id, false);
+                                                }
+                                            }
+                                            kernel_state.write_queue_to_state_doc().await;
+                                            // Interrupt kernel in background — don't block the loop
+                                            tokio::spawn(async move {
+                                                if let Err(e) = handle.interrupt().await {
+                                                    warn!("[runtime-agent] Interrupt failed: {}", e);
+                                                }
+                                            });
+                                        } else {
+                                            warn!("[runtime-agent] Interrupt requested but no kernel running");
+                                        }
+                                        continue;
+                                    }
+
                                     let is_command = envelope.request.is_command();
                                     let id = envelope.id.clone();
 
@@ -147,6 +173,8 @@ pub async fn run_runtime_agent(
                                     if let Some(rx) = new_cmd_rx {
                                         cmd_rx = Some(rx);
                                     }
+                                    // Update interrupt handle after any request that may change kernel state
+                                    interrupt_handle = kernel.as_ref().and_then(|k| k.interrupt_handle());
 
                                     // Only send response for queries (not commands)
                                     if !is_command {
