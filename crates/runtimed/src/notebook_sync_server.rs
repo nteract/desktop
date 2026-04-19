@@ -104,6 +104,22 @@ type RuntimeAgentRequestSender = tokio::sync::mpsc::Sender<(
     tokio::sync::oneshot::Sender<notebook_protocol::protocol::RuntimeAgentResponse>,
 )>;
 
+fn runtime_agent_request_timeout(
+    request: &notebook_protocol::protocol::RuntimeAgentRequest,
+) -> std::time::Duration {
+    use notebook_protocol::protocol::RuntimeAgentRequest;
+    match request {
+        RuntimeAgentRequest::InterruptExecution => std::time::Duration::from_secs(10),
+        RuntimeAgentRequest::ShutdownKernel => std::time::Duration::from_secs(10),
+        RuntimeAgentRequest::SendComm { .. } => std::time::Duration::from_secs(10),
+        RuntimeAgentRequest::Complete { .. } => std::time::Duration::from_secs(10),
+        RuntimeAgentRequest::GetHistory { .. } => std::time::Duration::from_secs(10),
+        RuntimeAgentRequest::LaunchKernel { .. } => std::time::Duration::from_secs(240),
+        RuntimeAgentRequest::RestartKernel { .. } => std::time::Duration::from_secs(240),
+        RuntimeAgentRequest::SyncEnvironment(_) => std::time::Duration::from_secs(240),
+    }
+}
+
 /// Send an RPC request to the runtime agent via its sync connection.
 ///
 /// The runtime agent's sync handler receives the request as a frame 0x01 and
@@ -113,6 +129,7 @@ pub(crate) async fn send_runtime_agent_request(
     room: &NotebookRoom,
     request: notebook_protocol::protocol::RuntimeAgentRequest,
 ) -> anyhow::Result<notebook_protocol::protocol::RuntimeAgentResponse> {
+    let timeout = runtime_agent_request_timeout(&request);
     let tx = {
         let guard = room.runtime_agent_request_tx.lock().await;
         guard
@@ -123,9 +140,11 @@ pub(crate) async fn send_runtime_agent_request(
     tx.send((request, reply_tx))
         .await
         .map_err(|_| anyhow::anyhow!("Runtime agent disconnected"))?;
-    reply_rx
-        .await
-        .map_err(|_| anyhow::anyhow!("Runtime agent dropped reply"))
+    match tokio::time::timeout(timeout, reply_rx).await {
+        Ok(Ok(response)) => Ok(response),
+        Ok(Err(_)) => Err(anyhow::anyhow!("Runtime agent dropped reply")),
+        Err(_) => Err(anyhow::anyhow!("Runtime agent request timed out")),
+    }
 }
 
 /// Trust state for a notebook room.
