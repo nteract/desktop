@@ -41,7 +41,7 @@ pub mod runtime_agent_handle;
 pub mod singleton;
 pub mod stream_terminal;
 pub mod sync_server;
-pub(crate) mod task_supervisor;
+pub mod task_supervisor;
 pub mod terminal_size;
 
 /// Get the daemon version string (e.g., "0.1.0-dev.10+abc123").

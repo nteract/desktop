@@ -27,39 +27,57 @@ use tokio::net::TcpListener;
 use tracing::{error, info};
 
 use crate::blob_store::BlobStore;
+use crate::daemon::Daemon;
 use crate::embedded_plugins;
+use crate::task_supervisor::{spawn_best_effort, spawn_supervised};
 
 /// Start the blob HTTP server on a random localhost port.
 ///
 /// Returns the port the server is listening on. The server runs as a
 /// spawned task on the current tokio runtime.
-pub async fn start_blob_server(store: Arc<BlobStore>) -> std::io::Result<u16> {
+///
+/// When `daemon` is provided, a panic in the accept loop triggers shutdown.
+/// Pass `None` in tests where no daemon is available.
+pub async fn start_blob_server(
+    store: Arc<BlobStore>,
+    daemon: Option<Arc<Daemon>>,
+) -> std::io::Result<u16> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
 
     info!("[blob-server] Listening on http://127.0.0.1:{}", port);
 
-    tokio::spawn(async move {
-        loop {
-            match listener.accept().await {
-                Ok((stream, _)) => {
-                    let store = store.clone();
-                    let io = TokioIo::new(stream);
-                    tokio::spawn(async move {
-                        let service = service_fn(move |req| handle_request(req, store.clone()));
-                        if let Err(e) = http1::Builder::new().serve_connection(io, service).await {
-                            if !e.is_incomplete_message() && !e.is_canceled() {
-                                error!("[blob-server] Connection error: {}", e);
+    spawn_supervised(
+        "blob-accept-loop",
+        async move {
+            loop {
+                match listener.accept().await {
+                    Ok((stream, _)) => {
+                        let store = store.clone();
+                        let io = TokioIo::new(stream);
+                        spawn_best_effort("blob-connection", async move {
+                            let service = service_fn(move |req| handle_request(req, store.clone()));
+                            if let Err(e) =
+                                http1::Builder::new().serve_connection(io, service).await
+                            {
+                                if !e.is_incomplete_message() && !e.is_canceled() {
+                                    error!("[blob-server] Connection error: {}", e);
+                                }
                             }
-                        }
-                    });
-                }
-                Err(e) => {
-                    error!("[blob-server] Accept error: {}", e);
+                        });
+                    }
+                    Err(e) => {
+                        error!("[blob-server] Accept error: {}", e);
+                    }
                 }
             }
-        }
-    });
+        },
+        move |_| {
+            if let Some(d) = daemon {
+                tokio::spawn(async move { d.trigger_shutdown().await });
+            }
+        },
+    );
 
     Ok(port)
 }
@@ -159,7 +177,7 @@ mod tests {
     async fn setup() -> (TempDir, Arc<BlobStore>, u16) {
         let dir = TempDir::new().unwrap();
         let store = Arc::new(BlobStore::new(dir.path().join("blobs")));
-        let port = start_blob_server(store.clone()).await.unwrap();
+        let port = start_blob_server(store.clone(), None).await.unwrap();
         // Give the server a moment to start accepting
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         (dir, store, port)
@@ -265,8 +283,8 @@ mod tests {
     async fn test_two_servers_get_different_ports() {
         let dir = TempDir::new().unwrap();
         let store = Arc::new(BlobStore::new(dir.path().join("blobs")));
-        let port1 = start_blob_server(store.clone()).await.unwrap();
-        let port2 = start_blob_server(store.clone()).await.unwrap();
+        let port1 = start_blob_server(store.clone(), None).await.unwrap();
+        let port2 = start_blob_server(store.clone(), None).await.unwrap();
         assert_ne!(port1, port2);
     }
 

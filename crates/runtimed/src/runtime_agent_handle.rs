@@ -12,6 +12,8 @@ use std::sync::Arc;
 use anyhow::Result;
 use tracing::{info, warn};
 
+use crate::task_supervisor::spawn_supervised;
+
 /// Handle to a running runtime agent subprocess.
 ///
 /// The runtime agent connects back to the daemon's Unix socket as a peer.
@@ -84,24 +86,31 @@ impl RuntimeAgentHandle {
 
         // Monitor child process exit
         let alive_clone = alive.clone();
+        let panic_alive = alive.clone();
         let runtime_agent_id_clone = runtime_agent_id.clone();
-        tokio::spawn(async move {
-            match child.wait().await {
-                Ok(status) => {
-                    info!(
-                        "[runtime-agent-handle] Runtime agent {} exited with status: {}",
-                        runtime_agent_id_clone, status
-                    );
+        spawn_supervised(
+            "runtime-agent-watcher",
+            async move {
+                match child.wait().await {
+                    Ok(status) => {
+                        info!(
+                            "[runtime-agent-handle] Runtime agent {} exited with status: {}",
+                            runtime_agent_id_clone, status
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            "[runtime-agent-handle] Runtime agent {} wait error: {}",
+                            runtime_agent_id_clone, e
+                        );
+                    }
                 }
-                Err(e) => {
-                    warn!(
-                        "[runtime-agent-handle] Runtime agent {} wait error: {}",
-                        runtime_agent_id_clone, e
-                    );
-                }
-            }
-            alive_clone.store(false, Ordering::Relaxed);
-        });
+                alive_clone.store(false, Ordering::Relaxed);
+            },
+            move |_| {
+                panic_alive.store(false, Ordering::Relaxed);
+            },
+        );
 
         Ok(Self {
             alive,

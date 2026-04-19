@@ -30,6 +30,7 @@ use crate::notebook_sync_server::{NotebookRooms, PathIndex};
 use crate::protocol::{BlobRequest, BlobResponse, Request, Response};
 use crate::settings_doc::SettingsDoc;
 use crate::singleton::DaemonLock;
+use crate::task_supervisor::{spawn_best_effort, spawn_supervised};
 use crate::{
     default_blob_store_dir, default_cache_dir, default_socket_path, is_pool_env_dir,
     is_within_cache_dir, pool_env_root, EnvType, PooledEnv,
@@ -212,7 +213,7 @@ fn spawn_env_deletions(paths: Vec<PathBuf>) {
     if paths.is_empty() {
         return;
     }
-    tokio::spawn(async move {
+    spawn_best_effort("env-deletions", async move {
         for path in &paths {
             if let Err(e) = tokio::fs::remove_dir_all(path).await {
                 warn!("[runtimed] Failed to delete stale env {:?}: {}", path, e);
@@ -607,6 +608,9 @@ pub struct Daemon {
     /// loop would miss short-lived sessions and pin the daemon back in
     /// the post-restart state forever.
     rooms_ever_seen: std::sync::atomic::AtomicBool,
+    uv_warming_respawns: std::sync::atomic::AtomicU32,
+    conda_warming_respawns: std::sync::atomic::AtomicU32,
+    pixi_warming_respawns: std::sync::atomic::AtomicU32,
 }
 
 /// Error returned when another daemon is already running.
@@ -694,6 +698,9 @@ impl Daemon {
             notebook_rooms: Arc::new(Mutex::new(HashMap::new())),
             path_index: Arc::new(tokio::sync::Mutex::new(PathIndex::new())),
             rooms_ever_seen: std::sync::atomic::AtomicBool::new(false),
+            uv_warming_respawns: std::sync::atomic::AtomicU32::new(0),
+            conda_warming_respawns: std::sync::atomic::AtomicU32::new(0),
+            pixi_warming_respawns: std::sync::atomic::AtomicU32::new(0),
         }))
     }
 
@@ -791,17 +798,19 @@ impl Daemon {
         }
 
         // Start the blob HTTP server (also serves renderer plugin assets)
-        let blob_port = match blob_server::start_blob_server(self.blob_store.clone()).await {
-            Ok(port) => {
-                info!("[runtimed] Blob server started on port {}", port);
-                *self.blob_port.lock().await = Some(port);
-                Some(port)
-            }
-            Err(e) => {
-                error!("[runtimed] Failed to start blob server: {}", e);
-                None
-            }
-        };
+        let blob_port =
+            match blob_server::start_blob_server(self.blob_store.clone(), Some(self.clone())).await
+            {
+                Ok(port) => {
+                    info!("[runtimed] Blob server started on port {}", port);
+                    *self.blob_port.lock().await = Some(port);
+                    Some(port)
+                }
+                Err(e) => {
+                    error!("[runtimed] Failed to start blob server: {}", e);
+                    None
+                }
+            };
 
         // Bind the Unix socket early so clients can connect (and ping) while
         // the rest of initialisation finishes.  The accept loop runs later.
@@ -853,29 +862,89 @@ impl Daemon {
 
         // Spawn the warming loops
         let uv_daemon = self.clone();
-        tokio::spawn(async move {
-            uv_daemon.uv_warming_loop().await;
-        });
+        let uv_panic_daemon = self.clone();
+        spawn_supervised(
+            "uv-warming-loop",
+            async move { uv_daemon.uv_warming_loop().await },
+            move |_| {
+                use std::sync::atomic::Ordering;
+                if uv_panic_daemon
+                    .uv_warming_respawns
+                    .compare_exchange(0, 1, Ordering::SeqCst, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    let d = uv_panic_daemon.clone();
+                    spawn_supervised(
+                        "uv-warming-loop",
+                        async move { d.uv_warming_loop().await },
+                        |_| {},
+                    );
+                } else {
+                    let d = uv_panic_daemon;
+                    tokio::spawn(async move { d.trigger_shutdown().await });
+                }
+            },
+        );
 
         let conda_daemon = self.clone();
-        tokio::spawn(async move {
-            conda_daemon.conda_warming_loop().await;
-        });
+        let conda_panic_daemon = self.clone();
+        spawn_supervised(
+            "conda-warming-loop",
+            async move { conda_daemon.conda_warming_loop().await },
+            move |_| {
+                use std::sync::atomic::Ordering;
+                if conda_panic_daemon
+                    .conda_warming_respawns
+                    .compare_exchange(0, 1, Ordering::SeqCst, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    let d = conda_panic_daemon.clone();
+                    spawn_supervised(
+                        "conda-warming-loop",
+                        async move { d.conda_warming_loop().await },
+                        |_| {},
+                    );
+                } else {
+                    let d = conda_panic_daemon;
+                    tokio::spawn(async move { d.trigger_shutdown().await });
+                }
+            },
+        );
 
         let pixi_daemon = self.clone();
-        tokio::spawn(async move {
-            pixi_daemon.pixi_warming_loop().await;
-        });
+        let pixi_panic_daemon = self.clone();
+        spawn_supervised(
+            "pixi-warming-loop",
+            async move { pixi_daemon.pixi_warming_loop().await },
+            move |_| {
+                use std::sync::atomic::Ordering;
+                if pixi_panic_daemon
+                    .pixi_warming_respawns
+                    .compare_exchange(0, 1, Ordering::SeqCst, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    let d = pixi_panic_daemon.clone();
+                    spawn_supervised(
+                        "pixi-warming-loop",
+                        async move { d.pixi_warming_loop().await },
+                        |_| {},
+                    );
+                } else {
+                    let d = pixi_panic_daemon;
+                    tokio::spawn(async move { d.trigger_shutdown().await });
+                }
+            },
+        );
 
         // Spawn the environment GC loop
         let gc_daemon = self.clone();
-        tokio::spawn(async move {
+        spawn_best_effort("env-gc-loop", async move {
             gc_daemon.env_gc_loop().await;
         });
 
         // Spawn the settings.json file watcher
         let watcher_daemon = self.clone();
-        tokio::spawn(async move {
+        spawn_best_effort("watch-settings-json", async move {
             watcher_daemon.watch_settings_json().await;
         });
 
@@ -963,7 +1032,7 @@ impl Daemon {
                     match accept_result {
                         Ok((stream, _)) => {
                             let daemon = self.clone();
-                            tokio::spawn(async move {
+                            spawn_best_effort("unix-connection", async move {
                                 if let Err(e) = daemon.route_connection(stream).await {
                                     if !crate::sync_server::is_connection_closed(&e) {
                                         error!("[runtimed] Connection error: {}", e);
@@ -1028,7 +1097,7 @@ impl Daemon {
 
                     // Handle the connection
                     let daemon = self.clone();
-                    tokio::spawn(async move {
+                    spawn_best_effort("pipe-connection", async move {
                         if let Err(e) = daemon.route_connection(connected).await {
                             if !crate::sync_server::is_connection_closed(&e) {
                                 error!("[runtimed] Connection error: {}", e);
@@ -2153,7 +2222,7 @@ impl Daemon {
                     e.venv_path
                 );
                 let daemon = self.clone();
-                tokio::spawn(async move {
+                spawn_best_effort("uv-replenish", async move {
                     daemon.create_uv_env().await;
                 });
                 return Some(e);
@@ -2178,7 +2247,7 @@ impl Daemon {
             }; // pool lock dropped
             if should_spawn {
                 let daemon = self.clone();
-                tokio::spawn(async move {
+                spawn_best_effort("uv-retry", async move {
                     daemon.create_uv_env().await;
                 });
             }
@@ -2228,7 +2297,7 @@ impl Daemon {
                     e.venv_path
                 );
                 let daemon = self.clone();
-                tokio::spawn(async move {
+                spawn_best_effort("conda-replenish", async move {
                     daemon.replenish_conda_env().await;
                 });
                 return Some(e);
@@ -2253,7 +2322,7 @@ impl Daemon {
             }; // pool lock dropped
             if should_spawn {
                 let daemon = self.clone();
-                tokio::spawn(async move {
+                spawn_best_effort("conda-retry", async move {
                     daemon.create_conda_env().await;
                 });
             }
@@ -2298,7 +2367,7 @@ impl Daemon {
                 e.venv_path
             );
             let daemon = self.clone();
-            tokio::spawn(async move {
+            spawn_best_effort("pixi-replenish", async move {
                 daemon.replenish_pixi_env().await;
             });
         }
