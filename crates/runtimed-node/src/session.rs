@@ -123,6 +123,50 @@ impl Session {
         Ok(())
     }
 
+    /// Add a UV dependency to the notebook (e.g. `"matplotlib>=3.8"`).
+    /// Call `syncEnvironment()` or restart the kernel to install it.
+    #[napi]
+    pub async fn add_uv_dependency(&self, pkg: String) -> Result<()> {
+        let handle = {
+            let st = self.state.lock().await;
+            st.handle
+                .as_ref()
+                .ok_or_else(|| Error::from_reason("Not connected"))?
+                .clone()
+        };
+        handle.add_uv_dependency(&pkg).map_err(to_napi_err)?;
+        handle.confirm_sync().await.map_err(to_napi_err)?;
+        Ok(())
+    }
+
+    /// Ask the daemon to hot-install any pending dependency changes into
+    /// the running kernel's env. Starts the kernel first if needed.
+    /// Returns once the install finishes.
+    #[napi]
+    pub async fn sync_environment(&self) -> Result<()> {
+        ensure_kernel_started(&self.state).await?;
+        let handle = {
+            let st = self.state.lock().await;
+            st.handle
+                .as_ref()
+                .ok_or_else(|| Error::from_reason("Not connected"))?
+                .clone()
+        };
+        handle.confirm_sync().await.map_err(to_napi_err)?;
+        let response = handle
+            .send_request(NotebookRequest::SyncEnvironment {})
+            .await
+            .map_err(to_napi_err)?;
+        match response {
+            NotebookResponse::SyncEnvironmentComplete { .. } => Ok(()),
+            NotebookResponse::SyncEnvironmentFailed { error, .. } => Err(Error::from_reason(error)),
+            NotebookResponse::Error { error } => Err(Error::from_reason(error)),
+            other => Err(Error::from_reason(format!(
+                "Unexpected response: {other:?}"
+            ))),
+        }
+    }
+
     /// Execute a source string as a new cell. Starts the kernel on demand.
     /// Returns the cell's outputs once execution is terminal.
     #[napi]
