@@ -571,9 +571,29 @@ async fn test_untitled_notebook_persists_through_eviction() {
         // Both clients drop here — the room should be evicted from memory
     }
 
-    // Give the daemon time to process disconnects and evict the room.
-    // 200ms was too tight for CI runners under load — bump to 2s.
-    sleep(Duration::from_secs(2)).await;
+    // Wait deterministically for the daemon to flush the Automerge doc to disk.
+    // The persist debouncer runs on a 500ms debounce / 5s max-interval, so a
+    // fixed sleep races with CI runner load. Poll for the file to exist with a
+    // non-zero size instead, up to a 10s ceiling.
+    let persist_path = temp_dir
+        .path()
+        .join("notebook-docs")
+        .join(runtimed::notebook_doc::notebook_doc_filename(&notebook_id));
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Ok(meta) = tokio::fs::metadata(&persist_path).await {
+            if meta.len() > 0 {
+                break;
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!(
+                "persisted Automerge doc for untitled notebook did not appear within 10s at {:?}",
+                persist_path
+            );
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
 
     // Phase 2: Reconnect — untitled notebook state should be restored from
     // the persisted Automerge doc (there's no .ipynb to load from)
