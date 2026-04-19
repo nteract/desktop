@@ -1640,6 +1640,68 @@ describe("SyncEngine", () => {
       }
     });
 
+    it("re-surfaces an update dropped while resolver was not ready", async () => {
+      // Simulates the race where an update to an already-opened comm
+      // arrives before blob_port is set (resolve_comm_state returns
+      // undefined). Before the fix, projectComms advanced the diff's
+      // recorded json for that comm, so the next projection saw "no
+      // change" and never re-emitted — the update was lost.
+      const commId = "race1";
+      let portReady = false;
+      handle = createMockHandle({
+        resolve_comm_state: vi.fn((_id: unknown) =>
+          portReady
+            ? { state: { value: 42 }, buffer_paths: [], text_paths: [] }
+            : undefined,
+        ),
+      });
+
+      const engine = createEngine();
+      engine.start();
+
+      const emissions: Array<{
+        opened: Array<{ commId: string; state: unknown }>;
+        updated: Array<{ commId: string; state: unknown }>;
+      }> = [];
+      engine.commChanges$.subscribe((c) => emissions.push(c));
+
+      // Open: resolver ready, comm opens fine.
+      portReady = true;
+      (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
+        runtimeStateSyncEvent(runtimeStateWithComm(commId, { value: 1 })),
+      ]);
+      transport.deliver([0x05, 0x01]);
+      await vi.waitFor(() => expect(emissions.length).toBe(1));
+      expect(emissions[0].opened.map((o) => o.commId)).toEqual([commId]);
+
+      // Update arrives while resolver is briefly unavailable (e.g. port
+      // reconnect). Before the fix, this update was swallowed and never
+      // re-surfaced on later projections.
+      portReady = false;
+      (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
+        runtimeStateSyncEvent(runtimeStateWithComm(commId, { value: 2 })),
+      ]);
+      transport.deliver([0x05, 0x02]);
+
+      // Give the pipeline a turn — there should be no new emission yet.
+      await Promise.resolve();
+      expect(emissions.length).toBe(1);
+
+      // Resolver comes back. Next projection should re-surface the
+      // deferred update instead of comparing against the stale recorded
+      // state and concluding "no change."
+      portReady = true;
+      (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
+        runtimeStateSyncEvent(runtimeStateWithComm(commId, { value: 2 })),
+      ]);
+      transport.deliver([0x05, 0x03]);
+
+      await vi.waitFor(() => expect(emissions.length).toBe(2));
+      expect(emissions[1].updated.map((u) => u.commId)).toEqual([commId]);
+
+      engine.stop();
+    });
+
     it("does not retry 4xx — leaves URL in state and emits anyway", async () => {
       const commId = "missing1";
       handle = createMockHandle({

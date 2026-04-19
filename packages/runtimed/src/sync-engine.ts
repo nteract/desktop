@@ -908,7 +908,22 @@ export class SyncEngine {
     const updated: Array<{ comm: ResolvedComm; textPaths: string[][] }> = [];
     for (const { commId, entry } of result.updated) {
       const resolved = resolve(commId);
-      if (!resolved) continue;
+      if (!resolved) {
+        // resolver not ready (e.g. blob_port transiently missing after
+        // reconnect). Revert `next` to the previous state for this comm
+        // so the next diff re-surfaces this update instead of swallowing
+        // it. Without this revert, `next.json[commId]` would record the
+        // new state, and the next projection would see "no change" and
+        // never re-emit — the update would be lost permanently until an
+        // unrelated future change to the same comm.
+        const prevEntry = this.commDiffState.comms[commId];
+        const prevJson = this.commDiffState.json[commId];
+        if (prevEntry !== undefined && prevJson !== undefined) {
+          next.comms[commId] = prevEntry;
+          next.json[commId] = prevJson;
+        }
+        continue;
+      }
       updated.push({
         comm: {
           commId,
