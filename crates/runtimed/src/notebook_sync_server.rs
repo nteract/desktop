@@ -2163,8 +2163,13 @@ where
             //
             // Request/ack over a dedicated channel. The debouncer has a
             // select! arm that writes the latest doc bytes and replies on the
-            // oneshot. Bounded with a timeout so a wedged debouncer can't
-            // deadlock the eviction task; teardown must proceed either way.
+            // oneshot.
+            //
+            // On timeout we abort this eviction rather than forcing removal.
+            // Proceeding would reopen the exact race we're closing (the write
+            // may still be in flight; reconnect would create a fresh room
+            // from a partial file). The room stays resident; the next peer
+            // disconnect (or the periodic eviction hook) will reschedule.
             if let Some(ref flush_tx) = room_for_eviction.flush_request_tx {
                 let (ack_tx, ack_rx) = oneshot::channel::<()>();
                 if flush_tx.send(ack_tx).is_ok() {
@@ -2181,10 +2186,15 @@ where
                             );
                         }
                         Err(_) => {
+                            // Persist write is slow or wedged. Keep the room in
+                            // the HashMap so a reconnect sees the live in-memory
+                            // doc rather than a potentially partial file. Abort
+                            // this eviction; the next disconnect reschedules.
                             warn!(
-                                "[notebook-sync] Eviction flush timed out for {} after 5s; proceeding with teardown",
+                                "[notebook-sync] Eviction flush timed out for {} after 5s; aborting eviction to avoid stale-reconnect race",
                                 notebook_id_for_eviction
                             );
+                            return;
                         }
                     }
                 }
