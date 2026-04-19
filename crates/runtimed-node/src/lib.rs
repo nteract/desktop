@@ -20,8 +20,13 @@
 use napi_derive::napi;
 
 mod error;
+mod session;
 
 pub use error::NodeError;
+pub use session::{
+    create_notebook, open_notebook, CellResult, CreateNotebookOptions, JsOutput,
+    OpenNotebookOptions, RunCellOptions, Session,
+};
 
 /// Return the default daemon socket path.
 ///

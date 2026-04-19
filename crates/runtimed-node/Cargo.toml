@@ -24,9 +24,7 @@ serde_json = { workspace = true }
 uuid = { workspace = true }
 log = "0.4"
 thiserror = { workspace = true }
+base64 = { workspace = true }
 
 [build-dependencies]
 napi-build = "2"
-
-[profile.release]
-lto = true
