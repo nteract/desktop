@@ -200,15 +200,17 @@ pub async fn run_runtime_agent(
                                                             delta,
                                                             &sent_to_kernel,
                                                         );
+                                                        // Always clean confirmed echoes from the
+                                                        // cache, even when some keys pass through.
+                                                        remove_confirmed_echo(
+                                                            comm_id,
+                                                            delta,
+                                                            &mut sent_to_kernel,
+                                                        );
                                                         if filtered.is_empty() {
                                                             debug!(
                                                                 "[runtime-agent] suppressed echo for comm_id={} (all keys matched sent values)",
                                                                 comm_id
-                                                            );
-                                                            remove_confirmed_echo(
-                                                                comm_id,
-                                                                delta,
-                                                                &mut sent_to_kernel,
                                                             );
                                                             continue;
                                                         }
@@ -1333,6 +1335,27 @@ mod tests {
         assert!(
             !sent.contains_key("w1"),
             "comm entry should be removed when empty"
+        );
+    }
+
+    #[test]
+    fn partial_echo_cleans_matched_keys() {
+        // Scenario: echo contains one matching key and one new key.
+        // The matching key should be cleaned from cache even though
+        // the delta isn't fully suppressed.
+        let mut sent = make_sent(&[("w1", "value", &[serde_json::json!(5.0)])]);
+        let delta = serde_json::json!({"value": 5.0, "description": "new"});
+
+        // filter_echo_keys passes "description" through, suppresses "value"
+        let filtered = filter_echo_keys("w1", &delta, &sent);
+        assert_eq!(filtered.len(), 1);
+        assert!(filtered.contains_key("description"));
+
+        // remove_confirmed_echo should clean "value" from cache
+        remove_confirmed_echo("w1", &delta, &mut sent);
+        assert!(
+            !sent.contains_key("w1"),
+            "cache entry should be fully cleaned after echo confirmation"
         );
     }
 }
