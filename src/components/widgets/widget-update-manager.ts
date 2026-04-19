@@ -58,7 +58,7 @@ function structuralEqual(a: unknown, b: unknown): boolean {
   const aKeys = Object.keys(ao);
   if (aKeys.length !== Object.keys(bo).length) return false;
   for (const key of aKeys) {
-    if (!Object.hasOwn(bo, key)) return false;
+    if (!Object.prototype.hasOwnProperty.call(bo, key)) return false;
     if (!structuralEqual(ao[key], bo[key])) return false;
   }
   return true;
