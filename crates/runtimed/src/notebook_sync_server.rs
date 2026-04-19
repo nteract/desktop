@@ -8127,7 +8127,7 @@ fn spawn_autosave_debouncer_with_config(
     config: AutosaveDebouncerConfig,
 ) {
     let mut changed_rx = room.changed_tx.subscribe();
-    tokio::spawn(async move {
+    spawn_best_effort("autosave-debouncer", async move {
         use std::time::Duration;
         use tokio::time::{interval, Instant, MissedTickBehavior};
 
