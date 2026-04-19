@@ -222,7 +222,12 @@ impl KernelConnection for JupyterKernel {
                             pooled_env.python_path
                         );
                         let mut cmd = tokio::process::Command::new(&pooled_env.python_path);
-                        cmd.args(["-Xfrozen_modules=off", "-m", "ipykernel_launcher", "-f"]);
+                        cmd.args([
+                            "-Xfrozen_modules=off",
+                            "-m",
+                            "nteract_kernel_launcher",
+                            "-f",
+                        ]);
                         cmd.arg(&connection_file_path);
                         cmd.stdout(Stdio::null());
                         cmd.stderr(Stdio::piped());
@@ -246,10 +251,14 @@ impl KernelConnection for JupyterKernel {
                             "ipykernel",
                             "--with",
                             "uv",
+                            "--with",
+                            "nteract-kernel-launcher",
+                            "--with",
+                            "dx",
                             "python",
                             "-Xfrozen_modules=off",
                             "-m",
-                            "ipykernel_launcher",
+                            "nteract_kernel_launcher",
                             "-f",
                         ]);
                         cmd.arg(&connection_file_path);
@@ -460,8 +469,16 @@ impl KernelConnection for JupyterKernel {
                             "[jupyter-kernel] Starting Python kernel from env at {:?}",
                             pooled_env.python_path
                         );
+                        // Prewarmed UV envs have our kernel bootstrap wrapper installed;
+                        // conda and other prewarmed envs do not, so fall back to
+                        // plain ipykernel_launcher there.
+                        let launcher_module = if pooled_env.env_type == EnvType::Uv {
+                            "nteract_kernel_launcher"
+                        } else {
+                            "ipykernel_launcher"
+                        };
                         let mut cmd = tokio::process::Command::new(&pooled_env.python_path);
-                        cmd.args(["-Xfrozen_modules=off", "-m", "ipykernel_launcher", "-f"]);
+                        cmd.args(["-Xfrozen_modules=off", "-m", launcher_module, "-f"]);
                         cmd.arg(&connection_file_path);
                         cmd.stdout(Stdio::null());
                         cmd.stderr(Stdio::piped());

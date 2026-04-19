@@ -203,7 +203,9 @@ pub async fn prepare_environment_in(
         "ipywidgets".to_string(),
         "anywidget".to_string(),
         "nbformat".to_string(),
-        "uv".to_string(), // For %uv magic in notebooks
+        "uv".to_string(),                      // For %uv magic in notebooks
+        "nteract-kernel-launcher".to_string(), // Runs kernel bootstrap before ipykernel starts
+        "dx".to_string(), // nteract data-experience library; enabled via RUNT_BOOTSTRAP_DX
     ];
     packages.extend(deps.dependencies.iter().cloned());
 
@@ -461,7 +463,9 @@ pub async fn create_prewarmed_environment_in(
         python_path.to_string_lossy().to_string(),
         "ipykernel".to_string(),
         "ipywidgets".to_string(),
-        "uv".to_string(), // For %uv magic in notebooks
+        "uv".to_string(),                      // For %uv magic in notebooks
+        "nteract-kernel-launcher".to_string(), // Runs kernel bootstrap before ipykernel starts
+        "dx".to_string(), // nteract data-experience library; enabled via RUNT_BOOTSTRAP_DX
     ];
     if !extra_packages.is_empty() {
         info!("[prewarm] Including extra packages: {:?}", extra_packages);
