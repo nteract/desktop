@@ -707,6 +707,44 @@ pub enum RuntimeAgentResponse {
     Error { error: String },
 }
 
+/// Envelope around a `RuntimeAgentRequest` carrying a correlation ID.
+///
+/// Every request gets a unique ID. For query RPCs (Complete, GetHistory),
+/// the agent echoes the ID on the response envelope. For command RPCs
+/// (fire-and-forget), the agent processes the request but sends no response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeAgentRequestEnvelope {
+    pub id: String,
+    #[serde(flatten)]
+    pub request: RuntimeAgentRequest,
+}
+
+/// Envelope around a `RuntimeAgentResponse` echoing the correlation ID.
+///
+/// Only used for query RPCs (Complete, GetHistory) that need sync responses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeAgentResponseEnvelope {
+    pub id: String,
+    #[serde(flatten)]
+    pub response: RuntimeAgentResponse,
+}
+
+impl RuntimeAgentRequest {
+    /// Returns true if this request is a command (fire-and-forget).
+    /// Commands don't get a response — state flows back via CRDT.
+    pub fn is_command(&self) -> bool {
+        matches!(
+            self,
+            RuntimeAgentRequest::InterruptExecution
+                | RuntimeAgentRequest::ShutdownKernel
+                | RuntimeAgentRequest::SendComm { .. }
+                | RuntimeAgentRequest::LaunchKernel { .. }
+                | RuntimeAgentRequest::RestartKernel { .. }
+                | RuntimeAgentRequest::SyncEnvironment(_)
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -988,5 +1026,58 @@ mod tests {
                 )
             });
         }
+    }
+
+    #[test]
+    fn runtime_agent_request_envelope_round_trip() {
+        let envelope = RuntimeAgentRequestEnvelope {
+            id: "req-42".to_string(),
+            request: RuntimeAgentRequest::InterruptExecution,
+        };
+        let json = serde_json::to_value(&envelope).unwrap();
+        assert_eq!(json["id"], "req-42");
+        assert_eq!(json["action"], "interrupt_execution");
+
+        let parsed: RuntimeAgentRequestEnvelope = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed.id, "req-42");
+        assert!(matches!(
+            parsed.request,
+            RuntimeAgentRequest::InterruptExecution
+        ));
+    }
+
+    #[test]
+    fn runtime_agent_response_envelope_round_trip() {
+        let envelope = RuntimeAgentResponseEnvelope {
+            id: "req-42".to_string(),
+            response: RuntimeAgentResponse::CompletionResult {
+                items: vec![],
+                cursor_start: 0,
+                cursor_end: 5,
+            },
+        };
+        let json = serde_json::to_value(&envelope).unwrap();
+        assert_eq!(json["id"], "req-42");
+        assert_eq!(json["result"], "completion_result");
+
+        let parsed: RuntimeAgentResponseEnvelope = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed.id, "req-42");
+    }
+
+    #[test]
+    fn runtime_agent_is_command() {
+        assert!(RuntimeAgentRequest::InterruptExecution.is_command());
+        assert!(RuntimeAgentRequest::ShutdownKernel.is_command());
+        assert!(!RuntimeAgentRequest::Complete {
+            code: String::new(),
+            cursor_pos: 0,
+        }
+        .is_command());
+        assert!(!RuntimeAgentRequest::GetHistory {
+            pattern: None,
+            n: 10,
+            unique: false,
+        }
+        .is_command());
     }
 }
