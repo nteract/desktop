@@ -28,3 +28,6 @@ parquet = { version = "54", default-features = false, features = ["arrow", "snap
 
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = false
+
+[lints]
+workspace = true
