@@ -119,6 +119,34 @@ impl Session {
         self.notebook_id.clone()
     }
 
+    /// Save the notebook to disk. If a path is given, saves to that path
+    /// (creating the file if needed). Otherwise saves to the original location.
+    #[napi]
+    pub async fn save_notebook(&self, path: Option<String>) -> Result<()> {
+        let handle = {
+            let st = self.state.lock().await;
+            st.handle
+                .as_ref()
+                .ok_or_else(|| Error::from_reason("Not connected"))?
+                .clone()
+        };
+        handle.confirm_sync().await.map_err(to_napi_err)?;
+        let response = handle
+            .send_request(NotebookRequest::SaveNotebook {
+                format_cells: false,
+                path,
+            })
+            .await
+            .map_err(to_napi_err)?;
+        match response {
+            NotebookResponse::NotebookSaved { .. } => Ok(()),
+            NotebookResponse::Error { error } => Err(Error::from_reason(error)),
+            other => Err(Error::from_reason(format!(
+                "Unexpected response: {other:?}"
+            ))),
+        }
+    }
+
     /// Close the session and release the underlying connection.
     #[napi]
     pub async fn close(&self) -> Result<()> {
