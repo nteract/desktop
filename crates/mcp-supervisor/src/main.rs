@@ -2249,10 +2249,12 @@ fn resolve_project_root() -> std::io::Result<PathBuf> {
     loop {
         let cargo_toml = dir.join("Cargo.toml");
         if cargo_toml.exists() {
-            if let Ok(contents) = std::fs::read_to_string(&cargo_toml) {
-                if contents.contains("[workspace]") {
-                    return Ok(dir);
-                }
+            // Propagate permission / I/O errors on a Cargo.toml that exists
+            // but can't be read. Only a successfully-read non-workspace file
+            // should cause us to keep walking.
+            let contents = std::fs::read_to_string(&cargo_toml)?;
+            if contents.contains("[workspace]") {
+                return Ok(dir);
             }
         }
         if !dir.pop() {
