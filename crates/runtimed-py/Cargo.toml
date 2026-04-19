@@ -24,3 +24,6 @@ serde_json = { workspace = true }
 uuid = { workspace = true }
 log = "0.4"
 runt-workspace = { path = "../runt-workspace" }
+
+[lints]
+workspace = true

@@ -125,7 +125,11 @@ impl AsyncSession {
         // Return overridden ID if set; otherwise return the connect-time UUID.
         // This lock is a std::sync::Mutex (not tokio), so it never contends
         // with async SessionState operations.
-        if let Some(ref id) = *self.notebook_id_override.lock().unwrap() {
+        let guard = self
+            .notebook_id_override
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(ref id) = *guard {
             return id.clone();
         }
         self.notebook_id.clone()
@@ -209,7 +213,7 @@ impl AsyncSession {
         let effective_id = self
             .notebook_id_override
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .clone()
             .unwrap_or_else(|| self.notebook_id.clone());
         future_into_py(py, async move {
@@ -615,7 +619,7 @@ impl AsyncSession {
         let effective_id = self
             .notebook_id_override
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .clone()
             .unwrap_or_else(|| self.notebook_id.clone());
         let path = path.map(crate::daemon_paths::resolve_notebook_path);
