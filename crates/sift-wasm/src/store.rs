@@ -75,7 +75,9 @@ fn with_stores<F, R>(f: F) -> R
 where
     F: FnOnce(&mut HashMap<u32, DataStore>) -> R,
 {
-    let mut guard = STORES.lock().unwrap();
+    // wasm32 is single-threaded, so poisoning only occurs if a prior call
+    // panicked while holding the lock. Recover the inner value and carry on.
+    let mut guard = STORES.lock().unwrap_or_else(|e| e.into_inner());
     let stores = guard.get_or_insert_with(HashMap::new);
     f(stores)
 }
@@ -110,7 +112,7 @@ fn store_batches(batches: Vec<RecordBatch>, schema: &arrow::datatypes::Schema) -
     }
 
     let handle = {
-        let mut h = NEXT_HANDLE.lock().unwrap();
+        let mut h = NEXT_HANDLE.lock().unwrap_or_else(|e| e.into_inner());
         let id = *h;
         *h += 1;
         id
@@ -457,12 +459,12 @@ pub fn store_temporal_histogram(handle: u32, col: usize) -> Result<JsValue, JsVa
             let column = batch.column(col);
             extract_timestamp_ms(column, &mut ms_values);
         }
-        if ms_values.is_empty() {
-            return JsValue::from(js_sys::Array::new());
-        }
-
-        let min_ms = *ms_values.iter().min().unwrap();
-        let max_ms = *ms_values.iter().max().unwrap();
+        let (min_ms, max_ms) = match (ms_values.iter().min(), ms_values.iter().max()) {
+            (Some(&lo), Some(&hi)) => (lo, hi),
+            // Empty series: nothing to bin. Return an empty array so callers
+            // can treat "no data" uniformly.
+            _ => return JsValue::from(js_sys::Array::new()),
+        };
         let range_ms = max_ms - min_ms;
 
         // Auto-detect granularity
@@ -1377,10 +1379,10 @@ pub fn cast_column(handle: u32, col: usize, target_type: &str) -> Result<(), JsV
                         None => builder.append_null(),
                         Some(s) => {
                             if let Ok(dt) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
-                                // and_hms_opt(0,0,0) only fails for invalid h/m/s, which are hardcoded valid
+                                // NaiveTime::default() is midnight; and_time
+                                // returns NaiveDateTime directly — no Option.
                                 let ts = dt
-                                    .and_hms_opt(0, 0, 0)
-                                    .unwrap()
+                                    .and_time(chrono::NaiveTime::default())
                                     .and_utc()
                                     .timestamp_millis();
                                 builder.append_value(ts);
