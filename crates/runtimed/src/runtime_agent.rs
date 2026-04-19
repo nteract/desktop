@@ -126,24 +126,37 @@ pub async fn run_runtime_agent(
                 match frame {
                     Ok(Some(typed_frame)) => {
                         match typed_frame.frame_type {
-                            // RuntimeAgentRequest RPC: LaunchKernel, Interrupt, etc.
+                            // RuntimeAgentRequest: envelope with correlation ID.
+                            // Commands (fire-and-forget) get no response.
+                            // Queries (Complete, GetHistory) echo the ID back.
                             NotebookFrameType::Request => {
-                                if let Ok(request) = serde_json::from_slice::<RuntimeAgentRequest>(&typed_frame.payload) {
+                                if let Ok(envelope) = serde_json::from_slice::<
+                                    notebook_protocol::protocol::RuntimeAgentRequestEnvelope,
+                                >(&typed_frame.payload) {
+                                    let is_command = envelope.request.is_command();
+                                    let id = envelope.id.clone();
+
                                     let (response, new_cmd_rx) = handle_runtime_agent_request(
-                                        request,
+                                        envelope.request,
                                         &ctx,
                                         &mut kernel,
                                         &mut kernel_state,
                                         &mut seen_execution_ids,
                                     ).await;
 
-                                    // After launch/restart, take cmd_rx from response
                                     if let Some(rx) = new_cmd_rx {
                                         cmd_rx = Some(rx);
                                     }
 
-                                    let json = serde_json::to_vec(&response)?;
-                                    send_typed_frame(&mut writer, NotebookFrameType::Response, &json).await?;
+                                    // Only send response for queries (not commands)
+                                    if !is_command {
+                                        let resp_envelope = notebook_protocol::protocol::RuntimeAgentResponseEnvelope {
+                                            id,
+                                            response,
+                                        };
+                                        let json = serde_json::to_vec(&resp_envelope)?;
+                                        send_typed_frame(&mut writer, NotebookFrameType::Response, &json).await?;
+                                    }
                                 }
                             }
 

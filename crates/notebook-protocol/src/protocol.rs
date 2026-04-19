@@ -732,15 +732,16 @@ pub struct RuntimeAgentResponseEnvelope {
 impl RuntimeAgentRequest {
     /// Returns true if this request is a command (fire-and-forget).
     /// Commands don't get a response — state flows back via CRDT.
+    ///
+    /// Currently: Interrupt, Shutdown, SendComm. Launch/Restart/SyncEnvironment
+    /// remain queries because the daemon needs response data (env_source,
+    /// launched_config, error handling).
     pub fn is_command(&self) -> bool {
         matches!(
             self,
             RuntimeAgentRequest::InterruptExecution
                 | RuntimeAgentRequest::ShutdownKernel
                 | RuntimeAgentRequest::SendComm { .. }
-                | RuntimeAgentRequest::LaunchKernel { .. }
-                | RuntimeAgentRequest::RestartKernel { .. }
-                | RuntimeAgentRequest::SyncEnvironment(_)
         )
     }
 }
