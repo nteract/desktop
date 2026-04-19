@@ -1122,6 +1122,11 @@ fn cmd_e2e_test_all() {
             "e2e/specs/deno.spec.js",
             "Deno Kernel Test",
         ),
+        (
+            "crates/notebook/fixtures/audit-test/16-widget-slider.ipynb",
+            "e2e/specs/widget-slider-stall.spec.js",
+            "Widget Slider Stall Reproducer",
+        ),
     ];
 
     for (notebook, spec, name) in fixtures {

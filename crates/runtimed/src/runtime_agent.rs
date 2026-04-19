@@ -115,6 +115,19 @@ pub async fn run_runtime_agent(
     let mut seen_execution_ids = HashSet::new();
     let mut cmd_rx: Option<mpsc::Receiver<QueueCommand>> = None;
 
+    // Track ALL values recently forwarded to the kernel per comm per key.
+    // This suppresses the echo-amplification loop: kernel echoes the value
+    // back via IOPub → coalescing writer writes to CRDT → sync round-trips
+    // → diff_comm_state sees a "change" → without this filter, the runtime
+    // agent would re-forward the echo, creating exponential message growth.
+    //
+    // We track a SET of recent values (not just the latest) because with
+    // rapid alternating input, an older echo may arrive after a newer value
+    // was sent. If we only tracked the latest, the older echo would bypass
+    // the filter and restart the amplification cycle.
+    let mut sent_to_kernel: HashMap<String, HashMap<String, Vec<serde_json::Value>>> =
+        HashMap::new();
+
     info!("[runtime-agent] Infrastructure ready, entering main loop");
 
     // -- 4. Main event loop -------------------------------------------------
@@ -138,8 +151,10 @@ pub async fn run_runtime_agent(
                                     ).await;
 
                                     // After launch/restart, take cmd_rx from response
+                                    // and clear the echo suppression cache.
                                     if let Some(rx) = new_cmd_rx {
                                         cmd_rx = Some(rx);
+                                        sent_to_kernel.clear();
                                     }
 
                                     let json = serde_json::to_vec(&response)?;
@@ -171,9 +186,52 @@ pub async fn run_runtime_agent(
 
                                             let comm_updates = diff_comm_state(&comms_before, &comms_after);
                                             if !comm_updates.is_empty() {
+                                                debug!(
+                                                    "[runtime-agent] comm state diff: {} update(s) to forward to kernel",
+                                                    comm_updates.len()
+                                                );
                                                 if let Some(ref mut k) = kernel {
                                                     for (comm_id, delta) in &comm_updates {
-                                                        if let Err(e) = k.send_comm_update(comm_id, delta.clone()).await {
+                                                        // Filter out keys that match values we
+                                                        // already sent — these are kernel echoes
+                                                        // that round-tripped through the CRDT.
+                                                        let filtered = filter_echo_keys(
+                                                            comm_id,
+                                                            delta,
+                                                            &sent_to_kernel,
+                                                        );
+                                                        if filtered.is_empty() {
+                                                            debug!(
+                                                                "[runtime-agent] suppressed echo for comm_id={} (all keys matched sent values)",
+                                                                comm_id
+                                                            );
+                                                            remove_confirmed_echo(
+                                                                comm_id,
+                                                                delta,
+                                                                &mut sent_to_kernel,
+                                                            );
+                                                            continue;
+                                                        }
+                                                        let filtered_val = serde_json::Value::Object(filtered);
+                                                        debug!(
+                                                            "[runtime-agent] forwarding comm_msg(update) to kernel: comm_id={}, keys={:?}",
+                                                            comm_id,
+                                                            filtered_val.as_object().map(|o| o.keys().collect::<Vec<_>>()).unwrap_or_default()
+                                                        );
+                                                        // Record what we're sending so we can
+                                                        // suppress the echo on the way back.
+                                                        if let Some(obj) = filtered_val.as_object() {
+                                                            let entry = sent_to_kernel
+                                                                .entry(comm_id.clone())
+                                                                .or_default();
+                                                            for (key, val) in obj {
+                                                                let vals = entry.entry(key.clone()).or_default();
+                                                                if !vals.contains(val) {
+                                                                    vals.push(val.clone());
+                                                                }
+                                                            }
+                                                        }
+                                                        if let Err(e) = k.send_comm_update(comm_id, filtered_val).await {
                                                             warn!("[runtime-agent] Failed to forward comm state to kernel: {}", e);
                                                         }
                                                     }
@@ -964,6 +1022,65 @@ fn diff_comm_state(
     updates
 }
 
+/// Filter a comm delta against values we already forwarded to the kernel.
+///
+/// Returns only the keys whose new values were NOT recently sent. This
+/// breaks the echo-amplification loop: when the kernel echoes a value back
+/// via IOPub, the coalescing writer writes it to the CRDT, and the next
+/// diff picks it up as a "change." Without this filter, we'd re-send that
+/// value to the kernel, which echoes it again, ad infinitum.
+///
+/// We check against a SET of recently sent values (not just the latest)
+/// because with rapid alternating input (left/right arrow keys), an older
+/// echo may arrive after a newer value was already sent.
+fn filter_echo_keys(
+    comm_id: &str,
+    delta: &serde_json::Value,
+    sent_to_kernel: &HashMap<String, HashMap<String, Vec<serde_json::Value>>>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut filtered = serde_json::Map::new();
+    let Some(delta_obj) = delta.as_object() else {
+        return filtered;
+    };
+    let sent = sent_to_kernel.get(comm_id);
+    for (key, val) in delta_obj {
+        let is_echo = sent
+            .and_then(|s| s.get(key))
+            .is_some_and(|vals| vals.contains(val));
+        if !is_echo {
+            filtered.insert(key.clone(), val.clone());
+        }
+    }
+    filtered
+}
+
+/// Remove a confirmed echo value from the sent cache for a comm.
+/// Once an echo is confirmed (suppressed), we remove that specific value
+/// from the set so the cache doesn't grow unboundedly.
+fn remove_confirmed_echo(
+    comm_id: &str,
+    delta: &serde_json::Value,
+    sent_to_kernel: &mut HashMap<String, HashMap<String, Vec<serde_json::Value>>>,
+) {
+    let Some(delta_obj) = delta.as_object() else {
+        return;
+    };
+    let Some(sent) = sent_to_kernel.get_mut(comm_id) else {
+        return;
+    };
+    for (key, val) in delta_obj {
+        if let Some(vals) = sent.get_mut(key) {
+            vals.retain(|v| v != val);
+            if vals.is_empty() {
+                sent.remove(key);
+            }
+        }
+    }
+    if sent.is_empty() {
+        sent_to_kernel.remove(comm_id);
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -1131,5 +1248,91 @@ mod tests {
         assert_eq!(rs.kernel.status, "error");
         assert!(rs.queue.executing.is_none());
         assert!(rs.queue.queued.is_empty());
+    }
+
+    fn make_sent(
+        entries: &[(&str, &str, &[serde_json::Value])],
+    ) -> HashMap<String, HashMap<String, Vec<serde_json::Value>>> {
+        let mut sent = HashMap::new();
+        for (comm, key, vals) in entries {
+            sent.entry(comm.to_string())
+                .or_insert_with(HashMap::new)
+                .insert(key.to_string(), vals.to_vec());
+        }
+        sent
+    }
+
+    #[test]
+    fn filter_echo_keys_suppresses_matching_values() {
+        let sent = make_sent(&[("w1", "value", &[serde_json::json!(1.1)])]);
+        let delta = serde_json::json!({"value": 1.1});
+        let filtered = filter_echo_keys("w1", &delta, &sent);
+        assert!(filtered.is_empty(), "echo should be fully suppressed");
+    }
+
+    #[test]
+    fn filter_echo_keys_passes_new_values() {
+        let sent = make_sent(&[("w1", "value", &[serde_json::json!(1.1)])]);
+        let delta = serde_json::json!({"value": 1.0});
+        let filtered = filter_echo_keys("w1", &delta, &sent);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered["value"], serde_json::json!(1.0));
+    }
+
+    #[test]
+    fn filter_echo_keys_partial_match() {
+        let sent = make_sent(&[("w1", "value", &[serde_json::json!(1.1)])]);
+        let delta = serde_json::json!({"value": 1.1, "description": "new"});
+        let filtered = filter_echo_keys("w1", &delta, &sent);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered["description"], serde_json::json!("new"));
+    }
+
+    #[test]
+    fn filter_echo_keys_no_sent_data() {
+        let sent: HashMap<String, HashMap<String, Vec<serde_json::Value>>> = HashMap::new();
+        let delta = serde_json::json!({"value": 1.0});
+        let filtered = filter_echo_keys("w1", &delta, &sent);
+        assert_eq!(filtered.len(), 1, "no sent data means all keys pass");
+    }
+
+    #[test]
+    fn filter_echo_keys_suppresses_older_echo_in_set() {
+        // Simulates: sent 1.1, then sent 1.0. Echo for 1.1 arrives.
+        let sent = make_sent(&[(
+            "w1",
+            "value",
+            &[serde_json::json!(1.1), serde_json::json!(1.0)],
+        )]);
+        let delta = serde_json::json!({"value": 1.1});
+        let filtered = filter_echo_keys("w1", &delta, &sent);
+        assert!(
+            filtered.is_empty(),
+            "older echo should be suppressed when value is in sent set"
+        );
+    }
+
+    #[test]
+    fn remove_confirmed_echo_cleans_matched_value() {
+        let mut sent = make_sent(&[(
+            "w1",
+            "value",
+            &[serde_json::json!(1.1), serde_json::json!(1.0)],
+        )]);
+        let delta = serde_json::json!({"value": 1.1});
+        remove_confirmed_echo("w1", &delta, &mut sent);
+        // 1.1 removed, 1.0 remains
+        assert_eq!(sent["w1"]["value"], vec![serde_json::json!(1.0)]);
+    }
+
+    #[test]
+    fn remove_confirmed_echo_removes_empty_comm() {
+        let mut sent = make_sent(&[("w1", "value", &[serde_json::json!(1.1)])]);
+        let delta = serde_json::json!({"value": 1.1});
+        remove_confirmed_echo("w1", &delta, &mut sent);
+        assert!(
+            !sent.contains_key("w1"),
+            "comm entry should be removed when empty"
+        );
     }
 }
