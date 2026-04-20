@@ -238,10 +238,17 @@ export function FullTreeViewer({ notebookId }: Props) {
         } else {
           const tb = resolveRef(obj.traceback);
           if (tb === null) return null;
-          try { traceback = JSON.parse(tb); } catch { traceback = [tb]; }
+          try {
+            const parsed = JSON.parse(tb);
+            traceback = Array.isArray(parsed) ? parsed : [String(parsed)];
+          } catch {
+            traceback = [tb];
+          }
         }
         return {
-          output_type: "error", ename: obj.ename, evalue: obj.evalue,
+          output_type: "error",
+          ename: String(obj.ename ?? ""),
+          evalue: String(obj.evalue ?? ""),
           traceback,
         };
       }
