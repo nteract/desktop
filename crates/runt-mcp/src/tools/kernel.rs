@@ -58,12 +58,37 @@ pub async fn restart_kernel(
     // Brief pause for shutdown to complete
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
+    // Step 2: Get a fresh handle (the original may have been invalidated by
+    // a daemon restart during the shutdown sequence). If the session was
+    // replaced by the health monitor's auto_rejoin, we pick up the new one.
+    let handle = {
+        let guard = server.session.read().await;
+        match guard.as_ref() {
+            Some(s) => s.handle.clone(),
+            None => {
+                // Session dropped — wait briefly for health monitor to reconnect
+                drop(guard);
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                let guard = server.session.read().await;
+                match guard.as_ref() {
+                    Some(s) => s.handle.clone(),
+                    None => {
+                        return tool_error(
+                            "Lost connection to daemon during kernel restart. \
+                             The session will auto-reconnect — retry in a few seconds.",
+                        )
+                    }
+                }
+            }
+        }
+    };
+
     // Ensure daemon has latest metadata (deps may have changed since last sync)
     if let Err(e) = handle.confirm_sync().await {
         tracing::warn!("confirm_sync failed before restart_kernel launch: {e}");
     }
 
-    // Step 2: Determine kernel type and env_source.
+    // Step 3: Determine kernel type and env_source.
     // Use metadata-based detection (not RuntimeState env_source) to scope the
     // auto-detect. This ensures the correct package manager pool is used even
     // if the previous kernel was launched with a different env (e.g., UV default
@@ -91,25 +116,52 @@ pub async fn restart_kernel(
         (kernel_type, env_source)
     };
 
-    // Step 3: Launch kernel
-
+    // Step 4: Launch kernel
     let notebook_path = if notebook_id.contains('/') || notebook_id.contains('\\') {
         Some(notebook_id)
     } else {
         None
     };
 
-    match handle
+    let launch_result = handle
         .send_request(NotebookRequest::LaunchKernel {
             kernel_type: kernel_type.clone(),
             env_source: env_source.clone(),
-            notebook_path,
+            notebook_path: notebook_path.clone(),
         })
-        .await
-    {
+        .await;
+
+    // If LaunchKernel failed with a disconnection, the daemon may have
+    // restarted. Wait for the health monitor to reconnect and retry once.
+    let launch_result = match launch_result {
+        Err(ref e) if e.to_string().contains("Disconnected") => {
+            tracing::warn!("LaunchKernel disconnected during restart, waiting for reconnection");
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            let guard = server.session.read().await;
+            match guard.as_ref() {
+                Some(s) => {
+                    let fresh_handle = s.handle.clone();
+                    drop(guard);
+                    fresh_handle
+                        .send_request(NotebookRequest::LaunchKernel {
+                            kernel_type: kernel_type.clone(),
+                            env_source: env_source.clone(),
+                            notebook_path,
+                        })
+                        .await
+                }
+                None => launch_result,
+            }
+        }
+        other => other,
+    };
+
+    match launch_result {
         Ok(NotebookResponse::KernelLaunched { .. })
         | Ok(NotebookResponse::KernelAlreadyRunning { .. }) => {
-            // Poll RuntimeState for kernel to become ready
+            // Poll RuntimeState for kernel to become ready.
+            // Re-read the session handle each iteration in case it was
+            // replaced by the health monitor during reconnection.
             let start = std::time::Instant::now();
             let timeout = std::time::Duration::from_secs(120);
             loop {
@@ -117,7 +169,14 @@ pub async fn restart_kernel(
                     break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                if let Ok(state) = handle.get_runtime_state() {
+                let current_handle = {
+                    let guard = server.session.read().await;
+                    guard.as_ref().map(|s| s.handle.clone())
+                };
+                let Some(h) = current_handle else {
+                    continue;
+                };
+                if let Ok(state) = h.get_runtime_state() {
                     if state.kernel.status == "idle" || state.kernel.status == "busy" {
                         break;
                     }
