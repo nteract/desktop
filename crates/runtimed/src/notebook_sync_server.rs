@@ -2428,16 +2428,24 @@ where
                     );
                 }
 
-                // Clean up the environment directory on eviction. Both pool envs
-                // (runtimed-uv-*, etc.) and content-addressed envs (16-char hex)
-                // are orphaned once the room is gone — pool envs were removed from
-                // the pool's VecDeque on take() and have been mutated with the
-                // notebook's deps, so they cannot be returned. Delete eagerly to
-                // prevent disk pressure during sustained workloads.
+                // Clean up the environment directory on eviction — unless
+                // the room holds a captured env bound to a saved .ipynb.
                 //
-                // Use pool_env_root() to normalise pixi paths — their venv_path
-                // is nested (e.g. .pixi/envs/default) but we need to delete the
-                // top-level runtimed-pixi-* directory.
+                // Pool envs (`runtimed-{uv,conda,pixi}-*`) and captured envs
+                // for untitled notebooks are orphaned once the room is gone:
+                // pool envs were mutated with the notebook's deps and can't
+                // be returned, and captured envs with no saved .ipynb have
+                // no persistent `env_id` reference. Both delete eagerly.
+                //
+                // Captured envs for saved notebooks are the reopen cache.
+                // Preserve them so the next daemon session's first open
+                // hits `unified_env_on_disk` instead of rebuilding from the
+                // pool. A future age-based GC sweeps envs whose notebook
+                // hasn't been opened in a long time.
+                //
+                // Use pool_env_root() to normalise pixi paths — their
+                // venv_path is nested (e.g. .pixi/envs/default) but we
+                // operate on the top-level runtimed-pixi-* directory.
                 {
                     let env_path = room_for_eviction
                         .runtime_agent_env_path
@@ -2445,23 +2453,42 @@ where
                         .await
                         .clone();
                     if let Some(ref path) = env_path {
-                        let root = crate::pool_env_root(path);
-                        let cache_dir = crate::default_cache_dir();
-                        if !crate::is_within_cache_dir(&root, &cache_dir) {
-                            warn!(
-                                "[notebook-sync] Refusing to delete env {:?} on eviction (not within cache dir)",
-                                root
-                            );
-                        } else if root.exists() {
+                        let has_saved_path = room_for_eviction.path.read().await.is_some();
+                        let metadata = {
+                            let doc = room_for_eviction.doc.read().await;
+                            doc.get_metadata_snapshot()
+                        };
+                        let preserve = should_preserve_env_on_eviction(
+                            has_saved_path,
+                            path,
+                            metadata.as_ref(),
+                            &kernel_env::uv::default_cache_dir_uv(),
+                            &kernel_env::conda::default_cache_dir_conda(),
+                        );
+                        if preserve {
                             info!(
-                                "[notebook-sync] Cleaning up env {:?} on room eviction",
-                                root
+                                "[notebook-sync] Preserving captured env {:?} on eviction (saved notebook)",
+                                path
                             );
-                            if let Err(e) = tokio::fs::remove_dir_all(&root).await {
+                        } else {
+                            let root = crate::pool_env_root(path);
+                            let cache_dir = crate::default_cache_dir();
+                            if !crate::is_within_cache_dir(&root, &cache_dir) {
                                 warn!(
-                                    "[notebook-sync] Failed to clean up env {:?} on eviction: {}",
-                                    root, e
+                                    "[notebook-sync] Refusing to delete env {:?} on eviction (not within cache dir)",
+                                    root
                                 );
+                            } else if root.exists() {
+                                info!(
+                                    "[notebook-sync] Cleaning up env {:?} on room eviction",
+                                    root
+                                );
+                                if let Err(e) = tokio::fs::remove_dir_all(&root).await {
+                                    warn!(
+                                        "[notebook-sync] Failed to clean up env {:?} on eviction: {}",
+                                        root, e
+                                    );
+                                }
                             }
                         }
                     }
@@ -3666,11 +3693,25 @@ fn captured_env_for_runtime(
 /// Check whether a captured env exists on disk at the unified-hash path.
 /// Returns the cache path + python path if present.
 fn unified_env_on_disk(captured: &CapturedEnv) -> Option<(PathBuf, PathBuf)> {
+    unified_env_on_disk_in(
+        captured,
+        &kernel_env::uv::default_cache_dir_uv(),
+        &kernel_env::conda::default_cache_dir_conda(),
+    )
+}
+
+/// Test-friendly form of [`unified_env_on_disk`] that accepts explicit
+/// cache dirs instead of using the channel defaults. The production call
+/// site always passes the defaults; tests pass tmpdirs.
+fn unified_env_on_disk_in(
+    captured: &CapturedEnv,
+    uv_cache_dir: &Path,
+    conda_cache_dir: &Path,
+) -> Option<(PathBuf, PathBuf)> {
     match captured {
         CapturedEnv::Uv { deps, env_id } => {
             let hash = kernel_env::uv::compute_unified_env_hash(deps, env_id);
-            let cache_dir = kernel_env::uv::default_cache_dir_uv();
-            let venv_path = cache_dir.join(&hash);
+            let venv_path = uv_cache_dir.join(&hash);
 
             #[cfg(target_os = "windows")]
             let python_path = venv_path.join("Scripts").join("python.exe");
@@ -3685,8 +3726,7 @@ fn unified_env_on_disk(captured: &CapturedEnv) -> Option<(PathBuf, PathBuf)> {
         }
         CapturedEnv::Conda { deps, env_id } => {
             let hash = kernel_env::conda::compute_unified_env_hash(deps, env_id);
-            let cache_dir = kernel_env::conda::default_cache_dir_conda();
-            let env_path = cache_dir.join(&hash);
+            let env_path = conda_cache_dir.join(&hash);
 
             #[cfg(target_os = "windows")]
             let python_path = env_path.join("python.exe");
@@ -3700,6 +3740,42 @@ fn unified_env_on_disk(captured: &CapturedEnv) -> Option<(PathBuf, PathBuf)> {
             }
         }
     }
+}
+
+/// Decide whether to preserve the room's env directory on eviction.
+///
+/// Rule: if the notebook has a saved path on disk AND its current
+/// `env_path` matches the captured unified-hash env path in metadata,
+/// keep the env. Saved path means the `.ipynb` will persist the env_id
+/// binding, so the on-disk cache is reachable on next open.
+///
+/// Untitled / never-saved rooms have no persistent reference and their
+/// env is orphaned on eviction — delete as before.
+///
+/// Non-captured envs (pool / legacy inline) are always cleaned because
+/// their paths don't survive re-launch regardless.
+fn should_preserve_env_on_eviction(
+    has_saved_path: bool,
+    env_path: &Path,
+    metadata: Option<&NotebookMetadataSnapshot>,
+    uv_cache_dir: &Path,
+    conda_cache_dir: &Path,
+) -> bool {
+    if !has_saved_path {
+        return false;
+    }
+    for runtime in [CapturedEnvRuntime::Uv, CapturedEnvRuntime::Conda] {
+        if let Some(captured) = captured_env_for_runtime(metadata, runtime) {
+            if let Some((venv, _)) =
+                unified_env_on_disk_in(&captured, uv_cache_dir, conda_cache_dir)
+            {
+                if venv == env_path {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Return a captured-env `env_source` override (`uv:prewarmed` /
@@ -14705,6 +14781,149 @@ mod tests {
             prerelease: None,
         });
         assert!(captured_env_source_override(Some(&snap)).is_none());
+    }
+
+    /// Given a tmpdir pretending to be the UV cache, materialise a fake
+    /// venv at `{cache}/{hash}/bin/python` for the given captured env so
+    /// `unified_env_on_disk_in` finds it.
+    fn materialise_fake_uv_venv(
+        deps: &kernel_env::UvDependencies,
+        env_id: &str,
+        cache_dir: &Path,
+    ) -> PathBuf {
+        let hash = kernel_env::uv::compute_unified_env_hash(deps, env_id);
+        let venv_path = cache_dir.join(&hash);
+        #[cfg(target_os = "windows")]
+        let python_path = venv_path.join("Scripts").join("python.exe");
+        #[cfg(not(target_os = "windows"))]
+        let python_path = venv_path.join("bin").join("python");
+        std::fs::create_dir_all(python_path.parent().unwrap()).unwrap();
+        std::fs::write(&python_path, b"#!/bin/sh\n").unwrap();
+        venv_path
+    }
+
+    #[test]
+    fn should_preserve_env_on_eviction_untitled_notebook_deletes() {
+        // Even with captured deps + env on disk, no saved path means the
+        // .ipynb won't persist the env_id binding — the env is orphaned.
+        let tmp = tempfile::tempdir().unwrap();
+        let uv_cache = tmp.path().to_path_buf();
+        let conda_cache = tmp.path().join("conda");
+        std::fs::create_dir_all(&conda_cache).unwrap();
+
+        let deps = kernel_env::UvDependencies {
+            dependencies: vec!["pandas".to_string()],
+            requires_python: None,
+            prerelease: None,
+        };
+        let env_id = "env-untitled";
+        let venv_path = materialise_fake_uv_venv(&deps, env_id, &uv_cache);
+
+        let mut snap = NotebookMetadataSnapshot::default();
+        snap.runt.env_id = Some(env_id.to_string());
+        snap.runt.uv = Some(notebook_doc::metadata::UvInlineMetadata {
+            dependencies: deps.dependencies.clone(),
+            requires_python: None,
+            prerelease: None,
+        });
+
+        assert!(!should_preserve_env_on_eviction(
+            false, // has_saved_path
+            &venv_path,
+            Some(&snap),
+            &uv_cache,
+            &conda_cache,
+        ));
+    }
+
+    #[test]
+    fn should_preserve_env_on_eviction_saved_captured_notebook_preserves() {
+        let tmp = tempfile::tempdir().unwrap();
+        let uv_cache = tmp.path().to_path_buf();
+        let conda_cache = tmp.path().join("conda");
+        std::fs::create_dir_all(&conda_cache).unwrap();
+
+        let deps = kernel_env::UvDependencies {
+            dependencies: vec!["pandas".to_string(), "numpy".to_string()],
+            requires_python: None,
+            prerelease: None,
+        };
+        let env_id = "env-saved";
+        let venv_path = materialise_fake_uv_venv(&deps, env_id, &uv_cache);
+
+        let mut snap = NotebookMetadataSnapshot::default();
+        snap.runt.env_id = Some(env_id.to_string());
+        snap.runt.uv = Some(notebook_doc::metadata::UvInlineMetadata {
+            dependencies: deps.dependencies.clone(),
+            requires_python: None,
+            prerelease: None,
+        });
+
+        assert!(should_preserve_env_on_eviction(
+            true,
+            &venv_path,
+            Some(&snap),
+            &uv_cache,
+            &conda_cache,
+        ));
+    }
+
+    #[test]
+    fn should_preserve_env_on_eviction_path_mismatch_deletes() {
+        // Room has a saved path but its runtime_agent_env_path points at a
+        // pool env (runtimed-uv-xxx), not the captured hash dir. That's a
+        // pool-launched notebook — delete on eviction like before.
+        let tmp = tempfile::tempdir().unwrap();
+        let uv_cache = tmp.path().to_path_buf();
+        let conda_cache = tmp.path().join("conda");
+        std::fs::create_dir_all(&conda_cache).unwrap();
+
+        let deps = kernel_env::UvDependencies {
+            dependencies: vec!["pandas".to_string()],
+            requires_python: None,
+            prerelease: None,
+        };
+        let env_id = "env-pool";
+        let _ = materialise_fake_uv_venv(&deps, env_id, &uv_cache);
+
+        let pool_path = uv_cache.join("runtimed-uv-abc123");
+
+        let mut snap = NotebookMetadataSnapshot::default();
+        snap.runt.env_id = Some(env_id.to_string());
+        snap.runt.uv = Some(notebook_doc::metadata::UvInlineMetadata {
+            dependencies: deps.dependencies.clone(),
+            requires_python: None,
+            prerelease: None,
+        });
+
+        assert!(!should_preserve_env_on_eviction(
+            true,
+            &pool_path,
+            Some(&snap),
+            &uv_cache,
+            &conda_cache,
+        ));
+    }
+
+    #[test]
+    fn should_preserve_env_on_eviction_no_captured_metadata_deletes() {
+        // Saved notebook but empty metadata — never captured, nothing to
+        // preserve. This covers fresh notebooks that got saved before
+        // first launch.
+        let tmp = tempfile::tempdir().unwrap();
+        let uv_cache = tmp.path().to_path_buf();
+        let conda_cache = tmp.path().join("conda");
+        std::fs::create_dir_all(&conda_cache).unwrap();
+
+        let some_path = uv_cache.join("runtimed-uv-deadbeef");
+
+        assert!(!should_preserve_env_on_eviction(
+            true,
+            &some_path,
+            Some(&NotebookMetadataSnapshot::default()),
+            &uv_cache,
+            &conda_cache,
+        ));
     }
 
     /// P1 regression: the manual LaunchKernel handler must apply the captured
