@@ -1,4 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { NotebookHostProvider } from "@nteract/notebook-host";
+import { createBrowserHost } from "@nteract/notebook-host/browser";
 import { SyncEngine } from "runtimed/src/sync-engine";
 import type { SyncableHandle } from "runtimed/src/handle";
 import type { RuntimeState, ExecutionState, QueueEntry } from "runtimed/src/runtime-state";
@@ -28,6 +30,7 @@ export function NotebookViewer({ notebookId }: Props) {
     executing: null,
     queued: [],
   });
+  const [transport, setTransport] = useState<WebSocketTransport | null>(null);
   const engineRef = useRef<SyncEngine | null>(null);
   const transportRef = useRef<WebSocketTransport | null>(null);
   const handleRef = useRef<SyncableHandle | null>(null);
@@ -46,18 +49,19 @@ export function NotebookViewer({ notebookId }: Props) {
       const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
       const url = `${proto}//${window.location.host}/ws/join?id=${encodeURIComponent(notebookId)}`;
 
-      const transport = new WebSocketTransport({
+      const ws = new WebSocketTransport({
         url,
         onOpen: () => setStatus("syncing"),
         onClose: () => {
           if (!disposed) setStatus("error");
         },
       });
-      transportRef.current = transport;
+      transportRef.current = ws;
+      setTransport(ws);
 
       const engine = new SyncEngine({
         getHandle: () => handleRef.current,
-        transport,
+        transport: ws,
         logger: {
           debug: () => {},
           info: console.info.bind(console),
@@ -114,6 +118,11 @@ export function NotebookViewer({ notebookId }: Props) {
     };
   }, [notebookId]);
 
+  const host = useMemo(() => {
+    if (!transport) return null;
+    return createBrowserHost({ transport });
+  }, [transport]);
+
   const cellExecutionStatus = (cellId: string): ExecutionState | null => {
     for (const exec of Object.values(executions)) {
       if (exec.cell_id === cellId && (exec.status === "queued" || exec.status === "running")) {
@@ -123,7 +132,7 @@ export function NotebookViewer({ notebookId }: Props) {
     return null;
   };
 
-  return (
+  const content = (
     <div className="mx-auto max-w-4xl px-4 py-4">
       <div className="mb-3 flex items-center gap-2 text-xs text-muted-foreground">
         <span
@@ -173,6 +182,11 @@ export function NotebookViewer({ notebookId }: Props) {
       </div>
     </div>
   );
+
+  if (host) {
+    return <NotebookHostProvider host={host}>{content}</NotebookHostProvider>;
+  }
+  return content;
 }
 
 function KernelStatusBadge({ status }: { status: string }) {
