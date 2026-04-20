@@ -25,6 +25,7 @@ use notebook_sync::relay::RelayHandle;
 use serde::Deserialize;
 use tokio::sync::mpsc;
 use tower_http::cors::CorsLayer;
+use tower_http::services::ServeDir;
 use tracing::{info, warn};
 
 const PORT: u16 = 8743;
@@ -204,13 +205,42 @@ async fn main() {
 
     let state = AppState { socket_path };
 
-    let app = Router::new()
-        .route("/", get(handle_index))
+    // Serve the Vite build output if available, otherwise fall back to test HTML.
+    // Check env var first, then look relative to the cargo manifest dir (dev),
+    // then relative to the binary.
+    let dist_path = std::env::var("LIVE_VIEWER_DIST")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            let manifest_relative = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../dist");
+            if manifest_relative.join("index.html").exists() {
+                return manifest_relative;
+            }
+            std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+                .unwrap_or_default()
+                .join("dist")
+        });
+
+    let has_dist = dist_path.join("index.html").exists();
+    if has_dist {
+        info!("serving built app from {:?}", dist_path);
+    } else {
+        info!("no dist/ found, serving embedded test page");
+    }
+
+    let mut app = Router::new()
         .route("/api/notebooks", get(handle_list))
         .route("/ws/open", get(ws_open))
         .route("/ws/join", get(ws_join))
         .layer(CorsLayer::permissive())
         .with_state(state);
+
+    if has_dist {
+        app = app.fallback_service(ServeDir::new(&dist_path).append_index_html_on_directories(true));
+    } else {
+        app = app.route("/", get(handle_index));
+    }
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{PORT}"))
         .await
