@@ -18,7 +18,7 @@
  * - No drag handles (no reordering)
  */
 
-import { memo } from "react";
+import { memo, useMemo } from "react";
 import { CellContainer } from "@/components/cell/CellContainer";
 import { CompactExecutionButton } from "@/components/cell/CompactExecutionButton";
 import { OutputArea } from "@/components/cell/OutputArea";
@@ -57,6 +57,19 @@ export const CellView = memo(function CellView({ cell, executionState }: Props) 
   const isSourceHidden = jupyter?.source_hidden === true;
   const isOutputsHidden = jupyter?.outputs_hidden === true;
 
+  // Render markdown cells as rendered output via OutputArea's iframe
+  // isolation (same path as text/markdown MIME in execute_result).
+  // COUPLING EDGE: The real MarkdownCell uses IsolatedFrame directly
+  // with edit/preview toggle and CRDT bridge. We fake it as an output.
+  const markdownAsOutput: JupyterOutput[] = useMemo(() => {
+    if (!isMarkdown || !cell.source) return [];
+    return [{
+      output_type: "display_data" as const,
+      data: { "text/markdown": cell.source },
+      metadata: {},
+    }];
+  }, [isMarkdown, cell.source]);
+
   return (
     <CellContainer
       id={cell.id}
@@ -76,9 +89,11 @@ export const CellView = memo(function CellView({ cell, executionState }: Props) 
             source hidden
           </div>
         ) : isMarkdown ? (
-          <div className="whitespace-pre-wrap break-words text-[13px] leading-relaxed text-foreground/90">
-            {cell.source}
-          </div>
+          <OutputArea
+            outputs={markdownAsOutput}
+            cellId={cell.id}
+            preloadIframe
+          />
         ) : (
           <CodeMirrorEditor
             initialValue={cell.source}
