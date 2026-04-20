@@ -2132,6 +2132,13 @@ impl RuntimeStateDoc {
         peer_state: &mut sync::State,
         message: sync::Message,
     ) -> Result<(), AutomergeError> {
+        #[cfg(feature = "persistence")]
+        if !message.changes.is_empty() {
+            log::debug!(
+                "[notebook-sync] Stripped {} change(s) from client RuntimeStateDoc sync message",
+                message.changes.len(),
+            );
+        }
         // Strip client changes — keep only the sync protocol handshake.
         let filtered = sync::Message {
             heads: message.heads,
