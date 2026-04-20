@@ -4,7 +4,7 @@
 //! Environments are keyed by a SHA-256 hash of (dependencies + channels +
 //! python constraint + env_id) and stored under the cache directory.
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use log::{info, warn};
 use rattler::{default_cache_dir, install::Installer};
 use rattler_conda_types::{
@@ -122,6 +122,9 @@ pub async fn prepare_environment_in(
     if env_path.exists() && python_path.exists() {
         info!("Using cached conda environment at {:?}", env_path);
         crate::gc::touch_last_used(&env_path).await;
+        crate::launcher::vendor_into_venv(&python_path)
+            .await
+            .context("vendor nteract_kernel_launcher into conda env")?;
         handler.on_progress(
             "conda",
             EnvProgressPhase::CacheHit {
@@ -167,6 +170,9 @@ pub async fn prepare_environment_in(
                             // Re-persist lock so it survives future rebuilds
                             crate::lock::try_write_lock(&env_path, &lock).await;
                             crate::gc::touch_last_used(&env_path).await;
+                            crate::launcher::vendor_into_venv(&python_path)
+                                .await
+                                .context("vendor nteract_kernel_launcher into conda env")?;
                             handler.on_progress(
                                 "conda",
                                 EnvProgressPhase::Ready {
@@ -209,6 +215,9 @@ pub async fn prepare_environment_in(
     }
 
     crate::gc::touch_last_used(&env_path).await;
+    crate::launcher::vendor_into_venv(&python_path)
+        .await
+        .context("vendor nteract_kernel_launcher into conda env")?;
     handler.on_progress(
         "conda",
         EnvProgressPhase::Ready {
@@ -469,6 +478,10 @@ pub async fn create_prewarmed_environment_in(
         python_path,
     };
 
+    crate::launcher::vendor_into_venv(&env.python_path)
+        .await
+        .context("vendor nteract_kernel_launcher into prewarmed conda env")?;
+
     warmup_environment(&env).await?;
 
     Ok(env)
@@ -511,6 +524,9 @@ pub async fn claim_prewarmed_environment_in(
             prewarmed.env_path
         );
         tokio::fs::remove_dir_all(&prewarmed.env_path).await.ok();
+        crate::launcher::vendor_into_venv(&python_path)
+            .await
+            .context("vendor nteract_kernel_launcher into claimed conda env")?;
         return Ok(CondaEnvironment {
             env_path: dest_path,
             python_path,
@@ -533,6 +549,10 @@ pub async fn claim_prewarmed_environment_in(
             info!("[prewarm] Conda environment claimed via copy");
         }
     }
+
+    crate::launcher::vendor_into_venv(&python_path)
+        .await
+        .context("vendor nteract_kernel_launcher into claimed conda env")?;
 
     Ok(CondaEnvironment {
         env_path: dest_path,

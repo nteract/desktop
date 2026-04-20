@@ -3991,6 +3991,27 @@ impl Daemon {
             return;
         }
 
+        // Vendor the single-file nteract_kernel_launcher module into
+        // site-packages so `python -m nteract_kernel_launcher` resolves for
+        // pool-served conda envs. Without this, bootstrap_dx kernels die with
+        // ModuleNotFoundError at launch. Run before warmup so .pyc is built
+        // with the launcher present.
+        if let Err(e) = kernel_env::launcher::vendor_into_venv(&python_path).await {
+            error!(
+                "[runtimed] Failed to vendor nteract_kernel_launcher into conda pool env at {:?}: {}",
+                python_path, e
+            );
+            let _ = tokio::fs::remove_dir_all(&env_path).await;
+            guard
+                .fail_with(Some(PackageInstallError {
+                    failed_package: None,
+                    error_message: format!("Failed to vendor nteract_kernel_launcher: {}", e),
+                    error_kind: "setup_failed".to_string(),
+                }))
+                .await;
+            return;
+        }
+
         // Run warmup script
         let warmup_outcome = self
             .warmup_conda_env(&python_path, &env_path, &extra_conda_packages)
