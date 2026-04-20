@@ -342,8 +342,6 @@ When `nteract-dev` is active, agents also get the full nteract tool suite. **Use
 | Editing | `replace_match`, `replace_regex` |
 | Execution | `execute_cell`, `run_all_cells` |
 
-`join_notebook` is accepted as a backward-compat alias that routes to `open_notebook`.
-
 **Audit workflow example:** After modifying daemon or kernel code, use `open_notebook` on a test fixture, `execute_cell` to run it, then `get_cell` to inspect outputs — confirming the change works end-to-end without leaving the agent session.
 
 ### Hot reload

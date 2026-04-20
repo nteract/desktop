@@ -389,19 +389,4 @@ mod tests {
         );
         assert_eq!(extract_session_id(&params, &success_result()), None);
     }
-
-    // ── Deprecated join_notebook is NOT tracked ───────────────────────
-
-    #[test]
-    fn does_not_track_join_notebook() {
-        let params = make_params(
-            "join_notebook",
-            serde_json::json!({"notebook_id": "abc-123"}),
-        );
-        assert_eq!(
-            extract_session_id(&params, &success_result()),
-            None,
-            "join_notebook is deprecated and should not be tracked"
-        );
-    }
 }

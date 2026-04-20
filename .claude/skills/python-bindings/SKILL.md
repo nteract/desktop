@@ -201,8 +201,6 @@ cargo xtask run-mcp
 | Editing | `replace_match`, `replace_regex` |
 | Execution | `execute_cell`, `run_all_cells` |
 
-`join_notebook` is accepted as a backward-compat alias for `open_notebook`.
-
 Three packages are workspace members:
 
 | Package | Path | Purpose |

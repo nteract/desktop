@@ -250,7 +250,6 @@ pub async fn list_active_notebooks(server: &NteractMcp) -> Result<CallToolResult
 /// Open a notebook — either from a file path on disk or by connecting to an
 /// existing daemon session by UUID.
 ///
-/// Unified handler for `open_notebook` and the deprecated `join_notebook`.
 /// Requires exactly one of `path` or `notebook_id` — not both, not neither.
 pub async fn open_notebook(
     server: &NteractMcp,

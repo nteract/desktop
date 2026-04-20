@@ -330,8 +330,6 @@ pub async fn dispatch(
         // Session
         "list_active_notebooks" => session::list_active_notebooks(server).await,
         "open_notebook" => session::open_notebook(server, request).await,
-        // Backward compat: join_notebook routes to open_notebook
-        "join_notebook" => session::open_notebook(server, request).await,
         "create_notebook" => session::create_notebook(server, request).await,
         "save_notebook" => session::save_notebook(server, request).await,
         "launch_app" => session::show_notebook(server, request).await,
