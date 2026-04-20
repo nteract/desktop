@@ -18,8 +18,7 @@ export function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<NotebookList />} />
-        <Route path="/full/:notebookId" element={<FullTreePage />} />
-        <Route path="/:notebookId" element={<ViewerPage />} />
+        <Route path="/:notebookId" element={<FullTreePage />} />
       </Routes>
     </BrowserRouter>
   );
