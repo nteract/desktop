@@ -707,6 +707,44 @@ pub enum RuntimeAgentResponse {
     Error { error: String },
 }
 
+/// Envelope around a `RuntimeAgentRequest` carrying a correlation ID.
+///
+/// Every request gets a unique ID. For query RPCs (Complete, GetHistory),
+/// the agent echoes the ID on the response envelope. For command RPCs
+/// (fire-and-forget), the agent processes the request but sends no response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeAgentRequestEnvelope {
+    pub id: String,
+    #[serde(flatten)]
+    pub request: RuntimeAgentRequest,
+}
+
+/// Envelope around a `RuntimeAgentResponse` echoing the correlation ID.
+///
+/// Only used for query RPCs (Complete, GetHistory) that need sync responses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeAgentResponseEnvelope {
+    pub id: String,
+    #[serde(flatten)]
+    pub response: RuntimeAgentResponse,
+}
+
+impl RuntimeAgentRequest {
+    /// Returns true if this request is a command (fire-and-forget).
+    /// Commands don't get a response — state flows back via CRDT.
+    ///
+    /// Currently: Interrupt, SendComm. Shutdown is a sync query because
+    /// the daemon must confirm the kernel is dead before LaunchKernel
+    /// sends RestartKernel — otherwise CRDT-queued cells can race onto
+    /// the dying kernel.
+    pub fn is_command(&self) -> bool {
+        matches!(
+            self,
+            RuntimeAgentRequest::InterruptExecution | RuntimeAgentRequest::SendComm { .. }
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -988,5 +1026,130 @@ mod tests {
                 )
             });
         }
+    }
+
+    #[test]
+    fn runtime_agent_request_envelope_round_trip() {
+        let envelope = RuntimeAgentRequestEnvelope {
+            id: "req-42".to_string(),
+            request: RuntimeAgentRequest::InterruptExecution,
+        };
+        let json = serde_json::to_value(&envelope).unwrap();
+        assert_eq!(json["id"], "req-42");
+        assert_eq!(json["action"], "interrupt_execution");
+
+        let parsed: RuntimeAgentRequestEnvelope = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed.id, "req-42");
+        assert!(matches!(
+            parsed.request,
+            RuntimeAgentRequest::InterruptExecution
+        ));
+    }
+
+    #[test]
+    fn runtime_agent_response_envelope_round_trip() {
+        let envelope = RuntimeAgentResponseEnvelope {
+            id: "req-42".to_string(),
+            response: RuntimeAgentResponse::CompletionResult {
+                items: vec![],
+                cursor_start: 0,
+                cursor_end: 5,
+            },
+        };
+        let json = serde_json::to_value(&envelope).unwrap();
+        assert_eq!(json["id"], "req-42");
+        assert_eq!(json["result"], "completion_result");
+
+        let parsed: RuntimeAgentResponseEnvelope = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed.id, "req-42");
+    }
+
+    #[test]
+    fn runtime_agent_is_command() {
+        assert!(RuntimeAgentRequest::InterruptExecution.is_command());
+        assert!(!RuntimeAgentRequest::ShutdownKernel.is_command());
+        assert!(!RuntimeAgentRequest::Complete {
+            code: String::new(),
+            cursor_pos: 0,
+        }
+        .is_command());
+        assert!(!RuntimeAgentRequest::GetHistory {
+            pattern: None,
+            n: 10,
+            unique: false,
+        }
+        .is_command());
+    }
+
+    #[test]
+    fn is_command_exhaustive_classification() {
+        // Fire-and-forget commands (no response needed)
+        assert!(RuntimeAgentRequest::InterruptExecution.is_command());
+        assert!(RuntimeAgentRequest::SendComm {
+            message: serde_json::json!({})
+        }
+        .is_command());
+
+        // Sync queries (response required)
+        assert!(!RuntimeAgentRequest::ShutdownKernel.is_command());
+        assert!(!RuntimeAgentRequest::LaunchKernel {
+            kernel_type: "python".into(),
+            env_source: "uv:prewarmed".into(),
+            notebook_path: None,
+            launched_config: Default::default(),
+            env_vars: Default::default(),
+        }
+        .is_command());
+        assert!(!RuntimeAgentRequest::RestartKernel {
+            kernel_type: "python".into(),
+            env_source: "conda:inline".into(),
+            notebook_path: None,
+            launched_config: Default::default(),
+            env_vars: Default::default(),
+        }
+        .is_command());
+        assert!(!RuntimeAgentRequest::SyncEnvironment(EnvKind::Uv {
+            packages: vec!["numpy".into()]
+        })
+        .is_command());
+    }
+
+    #[test]
+    fn shutdown_is_sync_prevents_crdt_race() {
+        // ShutdownKernel MUST be a sync query. If it were fire-and-forget,
+        // the daemon would return immediately and LaunchKernel could set
+        // kernel_status="starting" before the agent processes shutdown.
+        // Cells queued during env prep would then execute on the dying kernel.
+        assert!(
+            !RuntimeAgentRequest::ShutdownKernel.is_command(),
+            "ShutdownKernel must be sync to prevent CRDT race with LaunchKernel"
+        );
+    }
+
+    #[test]
+    fn correlation_id_preserved_in_envelope_roundtrip() {
+        let id = "corr-abc-123";
+        let envelope = RuntimeAgentRequestEnvelope {
+            id: id.to_string(),
+            request: RuntimeAgentRequest::Complete {
+                code: "import pa".into(),
+                cursor_pos: 9,
+            },
+        };
+        let json = serde_json::to_value(&envelope).unwrap();
+        let parsed: RuntimeAgentRequestEnvelope = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed.id, id);
+
+        let resp_envelope = RuntimeAgentResponseEnvelope {
+            id: id.to_string(),
+            response: RuntimeAgentResponse::CompletionResult {
+                items: vec![],
+                cursor_start: 7,
+                cursor_end: 9,
+            },
+        };
+        let resp_json = serde_json::to_value(&resp_envelope).unwrap();
+        let parsed_resp: RuntimeAgentResponseEnvelope = serde_json::from_value(resp_json).unwrap();
+        assert_eq!(parsed_resp.id, id);
     }
 }

@@ -49,7 +49,7 @@ use crate::protocol::{
 use crate::task_supervisor::{spawn_best_effort, spawn_supervised};
 use notebook_doc::diff::diff_metadata_touched;
 use notebook_doc::presence::{self, PresenceState};
-use notebook_doc::runtime_state::{QueueEntry as DocQueueEntry, RuntimeStateDoc};
+use notebook_doc::runtime_state::RuntimeStateDoc;
 
 mod path_index;
 pub use path_index::{PathIndex, PathIndexError};
@@ -98,34 +98,98 @@ pub(crate) fn catch_automerge_panic<T>(label: &str, f: impl FnOnce() -> T) -> Re
     }
 }
 
-/// Sender half of the runtime agent RPC channel.
-type RuntimeAgentRequestSender = tokio::sync::mpsc::Sender<(
-    notebook_protocol::protocol::RuntimeAgentRequest,
-    tokio::sync::oneshot::Sender<notebook_protocol::protocol::RuntimeAgentResponse>,
-)>;
+/// A message sent through the runtime agent channel.
+pub enum RuntimeAgentMessage {
+    /// Fire-and-forget command — no response expected.
+    Command(notebook_protocol::protocol::RuntimeAgentRequestEnvelope),
+    /// Query requiring a sync response via correlation ID.
+    Query(
+        notebook_protocol::protocol::RuntimeAgentRequestEnvelope,
+        tokio::sync::oneshot::Sender<notebook_protocol::protocol::RuntimeAgentResponse>,
+    ),
+}
 
-/// Send an RPC request to the runtime agent via its sync connection.
+/// Sender half of the runtime agent channel.
+type RuntimeAgentRequestSender = tokio::sync::mpsc::Sender<RuntimeAgentMessage>;
+
+fn runtime_agent_query_timeout(
+    request: &notebook_protocol::protocol::RuntimeAgentRequest,
+) -> std::time::Duration {
+    use notebook_protocol::protocol::RuntimeAgentRequest;
+    match request {
+        RuntimeAgentRequest::Complete { .. } => std::time::Duration::from_secs(10),
+        RuntimeAgentRequest::GetHistory { .. } => std::time::Duration::from_secs(10),
+        _ => std::time::Duration::from_secs(30),
+    }
+}
+
+/// Send a fire-and-forget command to the runtime agent.
 ///
-/// The runtime agent's sync handler receives the request as a frame 0x01 and
-/// sends the response as frame 0x02. Returns error if no runtime agent is
-/// connected.
-pub(crate) async fn send_runtime_agent_request(
+/// Commands (Interrupt, SendComm) don't wait for a response — state
+/// flows back via RuntimeStateDoc CRDT.
+pub(crate) async fn send_runtime_agent_command(
     room: &NotebookRoom,
     request: notebook_protocol::protocol::RuntimeAgentRequest,
-) -> anyhow::Result<notebook_protocol::protocol::RuntimeAgentResponse> {
+) -> anyhow::Result<()> {
     let tx = {
         let guard = room.runtime_agent_request_tx.lock().await;
         guard
             .clone()
             .ok_or_else(|| anyhow::anyhow!("Runtime agent not connected"))?
     };
-    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    tx.send((request, reply_tx))
+    let envelope = notebook_protocol::protocol::RuntimeAgentRequestEnvelope {
+        id: uuid::Uuid::new_v4().to_string(),
+        request,
+    };
+    tx.send(RuntimeAgentMessage::Command(envelope))
         .await
         .map_err(|_| anyhow::anyhow!("Runtime agent disconnected"))?;
-    reply_rx
+    Ok(())
+}
+
+/// Send a query to the runtime agent and wait for a sync response.
+///
+/// Only used for Complete and GetHistory which need return values.
+pub(crate) async fn send_runtime_agent_query(
+    room: &NotebookRoom,
+    request: notebook_protocol::protocol::RuntimeAgentRequest,
+) -> anyhow::Result<notebook_protocol::protocol::RuntimeAgentResponse> {
+    let timeout = runtime_agent_query_timeout(&request);
+    let tx = {
+        let guard = room.runtime_agent_request_tx.lock().await;
+        guard
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Runtime agent not connected"))?
+    };
+    let envelope = notebook_protocol::protocol::RuntimeAgentRequestEnvelope {
+        id: uuid::Uuid::new_v4().to_string(),
+        request,
+    };
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    tx.send(RuntimeAgentMessage::Query(envelope, reply_tx))
         .await
-        .map_err(|_| anyhow::anyhow!("Runtime agent dropped reply"))
+        .map_err(|_| anyhow::anyhow!("Runtime agent disconnected"))?;
+    match tokio::time::timeout(timeout, reply_rx).await {
+        Ok(Ok(response)) => Ok(response),
+        Ok(Err(_)) => Err(anyhow::anyhow!("Runtime agent dropped reply")),
+        Err(_) => Err(anyhow::anyhow!("Runtime agent query timed out")),
+    }
+}
+
+/// Send an RPC request to the runtime agent (legacy wrapper).
+///
+/// Routes commands as fire-and-forget, queries as sync RPCs.
+/// Callers that don't need a response should use `send_runtime_agent_command` directly.
+pub(crate) async fn send_runtime_agent_request(
+    room: &NotebookRoom,
+    request: notebook_protocol::protocol::RuntimeAgentRequest,
+) -> anyhow::Result<notebook_protocol::protocol::RuntimeAgentResponse> {
+    if request.is_command() {
+        send_runtime_agent_command(room, request).await?;
+        Ok(notebook_protocol::protocol::RuntimeAgentResponse::Ok)
+    } else {
+        send_runtime_agent_query(room, request).await
+    }
 }
 
 /// Trust state for a notebook room.
@@ -810,53 +874,6 @@ async fn check_and_broadcast_sync_state(room: &NotebookRoom) {
                     in_sync: true,
                     diff: None,
                 });
-        }
-    }
-}
-
-/// Handle interrupt: clear queued executions in state_doc and mark them as
-/// errored using fork+merge. The currently-executing cell is left alone —
-/// the kernel will send an `execute_reply` with error status for it, which
-/// the normal IOPub handler will process.
-pub(crate) async fn apply_interrupt_to_state_doc(
-    room_state_doc: &Arc<RwLock<RuntimeStateDoc>>,
-    room_state_changed_tx: &broadcast::Sender<()>,
-    cleared: &[notebook_protocol::protocol::QueueEntry],
-) {
-    // Fork state_doc so mutations compose with any concurrent writes.
-    let mut fork = {
-        let mut sd = room_state_doc.write().await;
-        sd.fork_with_actor(format!("runtimed:state:interrupt:{}", uuid::Uuid::new_v4()))
-    };
-
-    // Read the currently-executing entry from the CRDT (it stays — the
-    // kernel will send an execute_reply for it via the normal IOPub path).
-    let state = fork.read_state();
-    let exec = state.queue.executing.as_ref().map(|e| DocQueueEntry {
-        cell_id: e.cell_id.clone(),
-        execution_id: e.execution_id.clone(),
-    });
-
-    // Clear the queued entries, keeping only the executing one.
-    fork.set_queue(exec.as_ref(), &[]);
-
-    // Mark cleared executions as errored on the fork
-    for entry in cleared {
-        fork.set_execution_done(&entry.execution_id, false);
-    }
-
-    // Merge fork back — concurrent state_doc writes compose via CRDT
-    {
-        let mut sd = room_state_doc.write().await;
-        match catch_automerge_panic("interrupt-state-merge", || sd.merge(&mut fork)) {
-            Ok(Ok(_)) => {
-                let _ = room_state_changed_tx.send(());
-            }
-            Ok(Err(_)) => {}
-            Err(e) => {
-                warn!("{}", e);
-                sd.rebuild_from_save();
-            }
         }
     }
 }
@@ -1658,7 +1675,7 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
     W: tokio::io::AsyncWrite + Unpin + Send,
 {
     use notebook_protocol::connection::{recv_typed_frame, send_typed_frame, NotebookFrameType};
-    use notebook_protocol::protocol::{RuntimeAgentRequest, RuntimeAgentResponse};
+    use notebook_protocol::protocol::RuntimeAgentResponse;
 
     info!(
         "[notebook-sync] Runtime agent sync connection: notebook={} runtime_agent={}",
@@ -1724,10 +1741,7 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
     }
 
     // ── 3. Set up request channel ────────────────────────────────────
-    let (ra_tx, mut ra_rx) = tokio::sync::mpsc::channel::<(
-        RuntimeAgentRequest,
-        tokio::sync::oneshot::Sender<RuntimeAgentResponse>,
-    )>(16);
+    let (ra_tx, mut ra_rx) = tokio::sync::mpsc::channel::<RuntimeAgentMessage>(16);
     {
         let mut tx_guard = room.runtime_agent_request_tx.lock().await;
         *tx_guard = Some(ra_tx);
@@ -1752,7 +1766,10 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
     // ── 5. Sync loop ─────────────────────────────────────────────────
     let mut changed_rx = room.changed_tx.subscribe();
     let mut state_changed_rx = room.state_changed_tx.subscribe();
-    let mut pending_reply: Option<tokio::sync::oneshot::Sender<RuntimeAgentResponse>> = None;
+    let mut pending_replies: std::collections::HashMap<
+        String,
+        tokio::sync::oneshot::Sender<RuntimeAgentResponse>,
+    > = std::collections::HashMap::new();
 
     loop {
         tokio::select! {
@@ -1800,12 +1817,13 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                                 }
                             }
                             NotebookFrameType::Response => {
-                                // Agent responded to an RPC request
-                                if let Ok(response) = serde_json::from_slice::<RuntimeAgentResponse>(&typed_frame.payload) {
-                                    if let Some(reply) = pending_reply.take() {
-                                        let _ = reply.send(response);
+                                if let Ok(envelope) = serde_json::from_slice::<
+                                    notebook_protocol::protocol::RuntimeAgentResponseEnvelope,
+                                >(&typed_frame.payload) {
+                                    if let Some(reply) = pending_replies.remove(&envelope.id) {
+                                        let _ = reply.send(envelope.response);
                                     } else {
-                                        warn!("[notebook-sync] Agent response with no pending request");
+                                        debug!("[notebook-sync] Agent response for unknown id: {}", envelope.id);
                                     }
                                 }
                             }
@@ -1859,15 +1877,21 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                 }
             }
 
-            // RPC requests to forward to runtime agent (only accept when no reply is pending
-            // to serialize RPCs and prevent overwriting the reply slot)
-            Some((request, reply_tx)) = ra_rx.recv(), if pending_reply.is_none() => {
-                let json = match serde_json::to_vec(&request) {
+            // Forward requests to the runtime agent. Commands are fire-and-forget;
+            // queries register a pending reply keyed by correlation ID.
+            Some(msg) = ra_rx.recv() => {
+                let (envelope, reply_tx) = match msg {
+                    RuntimeAgentMessage::Command(env) => (env, None),
+                    RuntimeAgentMessage::Query(env, tx) => (env, Some(tx)),
+                };
+                let json = match serde_json::to_vec(&envelope) {
                     Ok(j) => j,
                     Err(e) => {
-                        let _ = reply_tx.send(RuntimeAgentResponse::Error {
-                            error: format!("Serialize error: {}", e),
-                        });
+                        if let Some(tx) = reply_tx {
+                            let _ = tx.send(RuntimeAgentResponse::Error {
+                                error: format!("Serialize error: {}", e),
+                            });
+                        }
                         continue;
                     }
                 };
@@ -1876,14 +1900,25 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                     NotebookFrameType::Request,
                     &json,
                 ).await {
-                    let _ = reply_tx.send(RuntimeAgentResponse::Error {
-                        error: format!("Send error: {}", e),
-                    });
+                    if let Some(tx) = reply_tx {
+                        let _ = tx.send(RuntimeAgentResponse::Error {
+                            error: format!("Send error: {}", e),
+                        });
+                    }
                     break;
                 }
-                pending_reply = Some(reply_tx);
+                if let Some(tx) = reply_tx {
+                    pending_replies.insert(envelope.id, tx);
+                }
             }
         }
+    }
+
+    // Drain any pending query replies so callers get an error instead of hanging.
+    for (_id, reply_tx) in pending_replies.drain() {
+        let _ = reply_tx.send(RuntimeAgentResponse::Error {
+            error: "Runtime agent disconnected".to_string(),
+        });
     }
 
     // Cleanup: only clear state if we're still the current runtime agent.
@@ -6135,38 +6170,15 @@ async fn handle_notebook_request(
         NotebookRequest::InterruptExecution {} => {
             let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
             if has_runtime_agent {
-                match send_runtime_agent_request(
+                // Fire-and-forget: the agent handles interrupt and updates
+                // RuntimeStateDoc CRDT directly (clears queue, marks executions).
+                match send_runtime_agent_command(
                     room,
                     notebook_protocol::protocol::RuntimeAgentRequest::InterruptExecution,
                 )
                 .await
                 {
-                    Ok(
-                        notebook_protocol::protocol::RuntimeAgentResponse::InterruptAcknowledged {
-                            cleared,
-                        },
-                    ) => {
-                        // Update RuntimeStateDoc: clear CRDT queue, mark cleared
-                        // executions as errored so the frontend reflects the interrupt.
-                        apply_interrupt_to_state_doc(
-                            &room.state_doc,
-                            &room.state_changed_tx,
-                            &cleared,
-                        )
-                        .await;
-                        NotebookResponse::InterruptSent {}
-                    }
-                    Ok(notebook_protocol::protocol::RuntimeAgentResponse::Error { error }) => {
-                        NotebookResponse::Error {
-                            error: format!("Agent interrupt error: {}", error),
-                        }
-                    }
-                    Ok(_) => {
-                        // Legacy Ok response — still update state_doc with empty cleared list
-                        apply_interrupt_to_state_doc(&room.state_doc, &room.state_changed_tx, &[])
-                            .await;
-                        NotebookResponse::InterruptSent {}
-                    }
+                    Ok(()) => NotebookResponse::InterruptSent {},
                     Err(e) => NotebookResponse::Error {
                         error: format!("Agent interrupt error: {}", e),
                     },
