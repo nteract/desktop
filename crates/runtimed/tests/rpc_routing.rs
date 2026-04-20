@@ -481,14 +481,9 @@ async fn pending_reply_dropped_when_agent_exits_mid_query() {
 
     // Agent that receives one query then exits (drops reply_tx)
     tokio::spawn(async move {
-        if let Some(msg) = rx.recv().await {
-            match msg {
-                RuntimeAgentMessage::Query(_, reply_tx) => {
-                    // Simulate agent crash: drop reply without sending
-                    drop(reply_tx);
-                }
-                _ => {}
-            }
+        if let Some(RuntimeAgentMessage::Query(_, reply_tx)) = rx.recv().await {
+            // Simulate agent crash: drop reply without sending
+            drop(reply_tx);
         }
     });
 
