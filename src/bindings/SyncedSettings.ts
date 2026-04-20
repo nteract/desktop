@@ -62,4 +62,11 @@ export type SyncedSettings = {
    * Number of prewarmed Pixi environments to keep ready. 0 disables the pool.
    */
   pixi_pool_size: bigint;
+  /**
+   * Enable the nteract data-experience kernel bootstrap (nteract/dx).
+   * When true, the daemon installs `nteract-kernel-launcher` and `dx` into
+   * UV kernel environments, launches kernels via `nteract_kernel_launcher`,
+   * and runs `dx.install()` before the first user cell. Default: false.
+   */
+  bootstrap_dx: boolean;
 };

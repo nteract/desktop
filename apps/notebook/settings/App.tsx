@@ -4,6 +4,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import {
+  FEATURE_FLAGS,
   isKnownPythonEnv,
   isKnownRuntime,
   type ThemeMode,
@@ -188,15 +189,6 @@ function PackageBadgeInput({
   );
 }
 
-interface FeatureFlag {
-  id: string;
-  label: string;
-  description: string;
-  settingKey: string;
-}
-
-const FEATURE_FLAGS: FeatureFlag[] = [];
-
 const themeOptions: { value: ThemeMode; label: string; icon: typeof Sun }[] = [
   { value: "light", label: "Light", icon: Sun },
   { value: "dark", label: "Dark", icon: Moon },
@@ -222,6 +214,8 @@ export default function App() {
     setDefaultPixiPackages,
     keepAliveSecs,
     setKeepAliveSecs,
+    featureFlags,
+    setFeatureFlag,
   } = useSyncedSettings();
 
   return (
@@ -460,7 +454,10 @@ export default function App() {
                     <span className="text-sm text-foreground">{flag.label}</span>
                     <p className="text-[10px] text-muted-foreground/70">{flag.description}</p>
                   </div>
-                  <Switch checked={false} onCheckedChange={() => {}} />
+                  <Switch
+                    checked={featureFlags[flag.id]}
+                    onCheckedChange={(next) => setFeatureFlag(flag.id, next)}
+                  />
                 </div>
               ))}
             </CollapsibleContent>

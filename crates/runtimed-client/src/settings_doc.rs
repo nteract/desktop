@@ -226,6 +226,26 @@ pub struct SyncedSettings {
     /// Number of prewarmed Pixi environments to keep ready. 0 disables the pool.
     #[serde(default = "default_pixi_pool_size")]
     pub pixi_pool_size: u64,
+
+    /// Enable the nteract data-experience kernel bootstrap (nteract/dx).
+    /// When true, the daemon installs `nteract-kernel-launcher` and `dx` into
+    /// UV kernel environments, launches kernels via `nteract_kernel_launcher`,
+    /// and runs `dx.install()` before the first user cell. Default: false.
+    ///
+    /// Mirrors `FeatureFlags::bootstrap_dx`. Flattened on the wire so the
+    /// settings JSON and Automerge document keep a flat layout even as new
+    /// feature flags are added.
+    #[serde(default)]
+    pub bootstrap_dx: bool,
+}
+
+impl SyncedSettings {
+    /// Snapshot the user's feature-flag settings.
+    pub fn feature_flags(&self) -> notebook_protocol::protocol::FeatureFlags {
+        notebook_protocol::protocol::FeatureFlags {
+            bootstrap_dx: self.bootstrap_dx,
+        }
+    }
 }
 
 impl Default for SyncedSettings {
@@ -243,6 +263,7 @@ impl Default for SyncedSettings {
             uv_pool_size: DEFAULT_UV_POOL_SIZE,
             conda_pool_size: DEFAULT_CONDA_POOL_SIZE,
             pixi_pool_size: DEFAULT_PIXI_POOL_SIZE,
+            bootstrap_dx: false,
         }
     }
 }
@@ -310,6 +331,9 @@ impl SettingsDoc {
         );
         // Store onboarding_completed as boolean
         let _ = doc.put(automerge::ROOT, "onboarding_completed", false);
+
+        // nteract/dx kernel bootstrap (opt-in)
+        let _ = doc.put(automerge::ROOT, "bootstrap_dx", defaults.bootstrap_dx);
 
         // Pool sizes
         let _ = doc.put(
@@ -422,6 +446,11 @@ impl SettingsDoc {
         // onboarding_completed: boolean
         if let Some(completed) = json.get("onboarding_completed").and_then(|v| v.as_bool()) {
             settings.put_bool("onboarding_completed", completed);
+        }
+
+        // bootstrap_dx: boolean
+        if let Some(enabled) = json.get("bootstrap_dx").and_then(|v| v.as_bool()) {
+            settings.put_bool("bootstrap_dx", enabled);
         }
 
         // Pool sizes (numeric values, import from JSON if present)
@@ -820,6 +849,9 @@ impl SettingsDoc {
             pixi_pool_size: self
                 .get_u64("pixi_pool_size")
                 .unwrap_or(defaults.pixi_pool_size),
+            bootstrap_dx: self
+                .get_bool("bootstrap_dx")
+                .unwrap_or(defaults.bootstrap_dx),
         }
     }
 
@@ -935,6 +967,19 @@ impl SettingsDoc {
                     current, pixi_pool
                 );
                 self.put_u64("pixi_pool_size", pixi_pool);
+                changed = true;
+            }
+        }
+
+        // bootstrap_dx: boolean
+        if let Some(enabled) = json.get("bootstrap_dx").and_then(|v| v.as_bool()) {
+            let current = self.get_bool("bootstrap_dx");
+            if current != Some(enabled) {
+                info!(
+                    "[settings] apply_json_changes: bootstrap_dx changed {:?} -> {}",
+                    current, enabled
+                );
+                self.put_bool("bootstrap_dx", enabled);
                 changed = true;
             }
         }

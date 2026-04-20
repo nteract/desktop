@@ -66,11 +66,13 @@ pub async fn prepare_uv_inline_env(
     deps: &[String],
     prerelease: Option<&str>,
     handler: Arc<dyn ProgressHandler>,
+    feature_flags: notebook_protocol::protocol::FeatureFlags,
 ) -> Result<PreparedEnv> {
     let uv_deps = kernel_env::UvDependencies {
         dependencies: deps.to_vec(),
         requires_python: Some(">=3.13".to_string()),
         prerelease: prerelease.map(|s| s.to_string()),
+        bootstrap_dx: feature_flags.bootstrap_dx,
     };
 
     let env =
@@ -191,6 +193,7 @@ pub fn check_uv_inline_cache(deps: &[String], prerelease: Option<&str>) -> Optio
         dependencies: deps.to_vec(),
         requires_python: Some(">=3.13".to_string()),
         prerelease: prerelease.map(|s| s.to_string()),
+        bootstrap_dx: false,
     };
 
     let hash = kernel_env::uv::compute_env_hash(&uv_deps, None);

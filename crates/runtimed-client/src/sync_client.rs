@@ -451,6 +451,7 @@ pub fn get_all_from_doc(doc: &AutoCommit) -> SyncedSettings {
         uv_pool_size: get_u64("uv_pool_size").unwrap_or(defaults.uv_pool_size),
         conda_pool_size: get_u64("conda_pool_size").unwrap_or(defaults.conda_pool_size),
         pixi_pool_size: get_u64("pixi_pool_size").unwrap_or(defaults.pixi_pool_size),
+        bootstrap_dx: get_bool("bootstrap_dx").unwrap_or(defaults.bootstrap_dx),
     }
 }
 

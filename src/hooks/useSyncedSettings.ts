@@ -72,6 +72,44 @@ export function isKnownPythonEnv(value: string): value is "uv" | "conda" | "pixi
 }
 
 /**
+ * Feature flags exposed to the settings UI.
+ *
+ * Mirrors the `FeatureFlags` struct on the Rust side. The TS source of truth
+ * is intentionally flat (each flag is a top-level boolean on `SyncedSettings`)
+ * so that adding a new flag is one field here, one struct field in Rust, and
+ * one entry in the settings UI — no schema migration.
+ *
+ * Adding a flag:
+ *  1. Add `flag_id: boolean` to `FeatureFlags` in Rust + the matching field
+ *     on `SyncedSettings`.
+ *  2. Add `flag_id: { label, description }` below.
+ *  3. Done — the settings UI renders a toggle automatically.
+ */
+export const FEATURE_FLAG_METADATA = {
+  bootstrap_dx: {
+    label: "nteract/dx DataFrame rendering",
+    description:
+      "Install nteract-kernel-launcher + dx into UV kernels and enable rich DataFrame rendering via dx.install(). Requires restarting any running kernels.",
+  },
+} as const satisfies Record<string, { label: string; description: string }>;
+
+export type FeatureFlagId = keyof typeof FEATURE_FLAG_METADATA;
+export type FeatureFlagValues = Record<FeatureFlagId, boolean>;
+
+const FEATURE_FLAG_DEFAULTS: FeatureFlagValues = {
+  bootstrap_dx: false,
+};
+
+export const FEATURE_FLAGS: ReadonlyArray<{
+  id: FeatureFlagId;
+  label: string;
+  description: string;
+}> = (Object.keys(FEATURE_FLAG_METADATA) as FeatureFlagId[]).map((id) => ({
+  id,
+  ...FEATURE_FLAG_METADATA[id],
+}));
+
+/**
  * Read a theme value from localStorage.
  *
  * localStorage is ONLY used for the theme setting to avoid a flash of
@@ -119,6 +157,8 @@ export function useSyncedSettings() {
   const [defaultPixiPackages, setDefaultPixiPackagesState] = useState<string[]>([]);
   // Keep-alive duration in seconds (5s to 7 days)
   const [keepAliveSecs, setKeepAliveSecsState] = useState<number>(30);
+  // Feature flags (auto-derived from FEATURE_FLAG_METADATA)
+  const [featureFlags, setFeatureFlagsState] = useState<FeatureFlagValues>(FEATURE_FLAG_DEFAULTS);
 
   // Load initial settings from daemon
   useEffect(() => {
@@ -153,6 +193,7 @@ export function useSyncedSettings() {
         } else if (typeof settings.keep_alive_secs === "number") {
           setKeepAliveSecsState(settings.keep_alive_secs);
         }
+        setFeatureFlagsState((prev) => readFeatureFlags(settings, prev));
       })
       .catch(() => {
         // Daemon unavailable — defaults are fine
@@ -198,6 +239,7 @@ export function useSyncedSettings() {
       } else if (typeof keep_alive_secs === "number") {
         setKeepAliveSecsState(keep_alive_secs);
       }
+      setFeatureFlagsState((prev) => readFeatureFlags(event.payload, prev));
     });
     return () => {
       unlisten.then((u) => u());
@@ -268,6 +310,14 @@ export function useSyncedSettings() {
     }).catch((e) => console.warn("[settings] Failed to persist keep_alive_secs:", e));
   }, []);
 
+  const setFeatureFlag = useCallback((id: FeatureFlagId, enabled: boolean) => {
+    setFeatureFlagsState((prev) => ({ ...prev, [id]: enabled }));
+    invoke("set_synced_setting", {
+      key: id,
+      value: enabled,
+    }).catch((e) => console.warn(`[settings] Failed to persist ${id}:`, e));
+  }, []);
+
   return {
     theme,
     setTheme,
@@ -285,7 +335,27 @@ export function useSyncedSettings() {
     setDefaultPixiPackages,
     keepAliveSecs,
     setKeepAliveSecs,
+    featureFlags,
+    setFeatureFlag,
   };
+}
+
+/**
+ * Read feature flag values from a settings snapshot, falling back to the
+ * current known values when a flag is missing or malformed.
+ */
+function readFeatureFlags(
+  settings: Partial<Record<FeatureFlagId, unknown>>,
+  prev: FeatureFlagValues,
+): FeatureFlagValues {
+  const next: FeatureFlagValues = { ...prev };
+  for (const id of Object.keys(FEATURE_FLAG_METADATA) as FeatureFlagId[]) {
+    const value = settings[id];
+    if (typeof value === "boolean") {
+      next[id] = value;
+    }
+  }
+  return next;
 }
 
 /**

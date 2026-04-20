@@ -102,6 +102,10 @@ pub fn load_settings() -> SyncedSettings {
             .get("pixi_pool_size")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or(defaults.pixi_pool_size),
+        bootstrap_dx: json
+            .get("bootstrap_dx")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(defaults.bootstrap_dx),
     }
 }
 
@@ -136,6 +140,7 @@ mod tests {
             uv_pool_size: 3,
             conda_pool_size: 3,
             pixi_pool_size: 2,
+            bootstrap_dx: false,
         };
 
         let json = serde_json::to_string(&settings).unwrap();
@@ -290,6 +295,7 @@ mod tests {
             uv_pool_size: defaults.uv_pool_size,
             conda_pool_size: defaults.conda_pool_size,
             pixi_pool_size: defaults.pixi_pool_size,
+            bootstrap_dx: defaults.bootstrap_dx,
         };
         // Valid fields are preserved
         assert_eq!(settings.theme, ThemeMode::Dark);
