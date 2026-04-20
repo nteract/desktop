@@ -527,7 +527,7 @@ Three UI components manage dependencies for different runtimes:
 |-----------|------|---------|
 | `DependencyHeader.tsx` | `useDependencies.ts` | UV deps, pyproject.toml detection |
 | `CondaDependencyHeader.tsx` | `useCondaDependencies.ts` | Conda deps, environment.yml and pixi.toml detection |
-| `DenoDependencyHeader.tsx` | `useDenoDependencies.ts` | Deno configuration and deno.json detection |
+| `DenoDependencyHeader.tsx` | `useDenoConfig.ts` | Deno configuration and deno.json detection |
 
 The kernel lifecycle is managed by `useDaemonKernel.ts`, which:
 - Listens for `notebook:broadcast` events (re-emitted by `useAutomergeNotebook` after WASM frame demux)

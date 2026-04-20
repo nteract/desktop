@@ -120,7 +120,7 @@ export interface HostTrust {
  *
  * This namespace will grow as we migrate dep-edit flows
  * (useDependencies, useCondaDependencies, usePixiDetection,
- * useDenoDependencies) off direct `invoke(...)`. `checkTyposquats`
+ * useDenoConfig) off direct `invoke(...)`. `checkTyposquats`
  * lives here and not in `HostTrust` because it validates package
  * names, not notebook attestation.
  */

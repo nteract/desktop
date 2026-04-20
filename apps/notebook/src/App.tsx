@@ -28,7 +28,7 @@ import { useAutomergeNotebook } from "./hooks/useAutomergeNotebook";
 import { useCondaDependencies } from "./hooks/useCondaDependencies";
 import { CrdtBridgeProvider } from "./hooks/useCrdtBridge";
 import { useDaemonKernel } from "./hooks/useDaemonKernel";
-import { useDenoDependencies } from "./hooks/useDenoDependencies";
+import { useDenoConfig } from "./hooks/useDenoConfig";
 import { type EnvSyncState, useDependencies } from "./hooks/useDependencies";
 import { useEnvProgress } from "./hooks/useEnvProgress";
 import { useDaemonInfo, useGitInfo } from "./hooks/useGitInfo";
@@ -283,7 +283,7 @@ function AppContent() {
   const { pixiInfo } = usePixiDetection();
 
   // Deno config detection and settings
-  const { denoConfigInfo, flexibleNpmImports, setFlexibleNpmImports } = useDenoDependencies();
+  const { denoConfigInfo, flexibleNpmImports, setFlexibleNpmImports } = useDenoConfig();
 
   // Get widget store for CRDT → WidgetStore projection.
   // Set the module-level ref so the updateManager can access it.

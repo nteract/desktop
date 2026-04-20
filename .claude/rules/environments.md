@@ -165,7 +165,7 @@ Changes to dependency metadata structure require updating `crates/runt-trust/src
 | `DependencyHeader.tsx` | `useDependencies.ts` | UV deps, pyproject.toml detection |
 | `CondaDependencyHeader.tsx` | `useCondaDependencies.ts` | Conda deps, environment.yml detection |
 | `PixiDependencyHeader.tsx` | `usePixiDetection.ts` | Pixi project detection, read-only dep display |
-| `DenoDependencyHeader.tsx` | `useDenoDependencies.ts` | Deno configuration and deno.json detection |
+| `DenoDependencyHeader.tsx` | `useDenoConfig.ts` | Deno configuration and deno.json detection |
 
 ## Key Files
 

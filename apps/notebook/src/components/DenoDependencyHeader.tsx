@@ -1,7 +1,7 @@
 import { Check, ExternalLink, FileText, Info, Package, RefreshCw } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
-import type { DenoConfigInfo } from "../hooks/useDenoDependencies";
+import type { DenoConfigInfo } from "../hooks/useDenoConfig";
 
 interface DenoDependencyHeaderProps {
   denoConfigInfo: DenoConfigInfo | null;

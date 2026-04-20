@@ -170,7 +170,7 @@ Security boundary for untrusted HTML/widget outputs. See [iframe-isolation.md](i
 | `useEnvProgress` | Environment setup progress tracking |
 | `useDependencies` | UV dependency management |
 | `useCondaDependencies` | Conda dependency management |
-| `useDenoDependencies` | Deno dependency management |
+| `useDenoConfig` | Deno config detection plus flexible-npm-imports toggle |
 | `useManifestResolver` | Resolves blob hashes to output data |
 | `useCellKeyboardNavigation` | Arrow keys, enter/escape modes |
 | `useEditorRegistry` | CodeMirror editor instance registry |
