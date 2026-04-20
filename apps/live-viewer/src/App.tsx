@@ -70,9 +70,7 @@ export function App() {
         {rooms.length === 0 && !error && (
           <div className="py-20 text-center text-muted-foreground">
             <p className="text-lg">No active notebooks</p>
-            <p className="mt-1 text-sm opacity-70">
-              Open a notebook in nteract to see it here.
-            </p>
+            <p className="mt-1 text-sm opacity-70">Open a notebook in nteract to see it here.</p>
           </div>
         )}
 

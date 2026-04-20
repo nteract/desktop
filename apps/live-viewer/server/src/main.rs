@@ -63,7 +63,9 @@ async fn ws_join(
     Query(params): Query<JoinParams>,
 ) -> impl IntoResponse {
     info!("[relay] join request: {}", &params.id);
-    ws.on_upgrade(move |socket| handle_relay_connection(socket, state, RelayTarget::Join(params.id)))
+    ws.on_upgrade(move |socket| {
+        handle_relay_connection(socket, state, RelayTarget::Join(params.id))
+    })
 }
 
 enum RelayTarget {
@@ -143,8 +145,9 @@ async fn handle_relay_connection(socket: WebSocket, state: AppState, target: Rel
                     let frame_type = data[0];
                     // Read-only: only allow sync frames from browser
                     if frame_type == 0x00 || frame_type == 0x05 || frame_type == 0x06 {
-                        if let Err(e) =
-                            relay_clone.forward_frame(frame_type, data[1..].to_vec()).await
+                        if let Err(e) = relay_clone
+                            .forward_frame(frame_type, data[1..].to_vec())
+                            .await
                         {
                             warn!("[relay] forward_frame error: {e}");
                             break;
@@ -163,7 +166,10 @@ async fn handle_relay_connection(socket: WebSocket, state: AppState, target: Rel
         _ = inbound => {},
     }
 
-    info!("[relay] disconnected from notebook {}", &notebook_id[..8.min(notebook_id.len())]);
+    info!(
+        "[relay] disconnected from notebook {}",
+        &notebook_id[..8.min(notebook_id.len())]
+    );
 }
 
 // ─── REST endpoints ─────────────────────────────────────────────────────
@@ -237,7 +243,8 @@ async fn main() {
         .with_state(state);
 
     if has_dist {
-        app = app.fallback_service(ServeDir::new(&dist_path).append_index_html_on_directories(true));
+        app =
+            app.fallback_service(ServeDir::new(&dist_path).append_index_html_on_directories(true));
     } else {
         app = app.route("/", get(handle_index));
     }
