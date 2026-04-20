@@ -527,6 +527,25 @@ impl RuntimeStateDoc {
         }
     }
 
+    /// Compact the document if its serialized size exceeds `threshold` bytes.
+    ///
+    /// Returns `true` if compaction was performed.
+    pub fn compact_if_oversized(&mut self, threshold: usize) -> bool {
+        let actor = self.doc.get_actor().clone();
+        let bytes = self.doc.save();
+        if bytes.len() <= threshold {
+            return false;
+        }
+        match AutoCommit::load(&bytes) {
+            Ok(mut doc) => {
+                doc.set_actor(actor);
+                self.doc = doc;
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
     /// Set the actor identity for this document.
     ///
     /// Forks should call this with a distinct label so their changes are
@@ -4054,5 +4073,23 @@ mod tests {
         assert_eq!(outputs[2]["output_id"], "oid-stdout-2");
         // Two stdout chunks must have distinct IDs
         assert_ne!(outputs[0]["output_id"], outputs[2]["output_id"]);
+    }
+
+    #[test]
+    fn test_compact_if_oversized_below_threshold() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.set_kernel_status("idle");
+        // Doc is tiny — should not compact
+        assert!(!doc.compact_if_oversized(1024 * 1024));
+    }
+
+    #[test]
+    fn test_compact_if_oversized_above_threshold() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.set_kernel_status("idle");
+        // Threshold of 0 forces compaction
+        assert!(doc.compact_if_oversized(0));
+        // State is preserved after compaction
+        assert_eq!(doc.read_state().kernel.status, "idle");
     }
 }

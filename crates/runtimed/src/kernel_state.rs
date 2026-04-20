@@ -208,7 +208,15 @@ impl KernelState {
                 let mut sd = self.state_doc.write().await;
                 let mut changed = sd.set_execution_done(execution_id, success);
                 changed |= sd.set_queue(None, &doc_queued);
-                changed |= sd.trim_executions(MAX_EXECUTION_ENTRIES) > 0;
+                let trimmed = sd.trim_executions(MAX_EXECUTION_ENTRIES);
+                changed |= trimmed > 0;
+                if trimmed > 0 {
+                    sd.rebuild_from_save();
+                    debug!(
+                        "[kernel-state] Compacted RuntimeStateDoc after trimming {} executions",
+                        trimmed
+                    );
+                }
                 if changed {
                     let _ = self.state_changed_tx.send(());
                 }

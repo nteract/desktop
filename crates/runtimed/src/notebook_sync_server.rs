@@ -2613,6 +2613,12 @@ where
     // Phase 1.1: Initial RuntimeStateDoc sync — encode inside lock, send outside
     let initial_state_encoded = {
         let mut state_doc = room.state_doc.write().await;
+        // Safety net: compact before initial sync if the doc grew too large.
+        // 80 MiB leaves headroom under the 100 MiB frame limit.
+        const COMPACTION_THRESHOLD: usize = 80 * 1024 * 1024;
+        if state_doc.compact_if_oversized(COMPACTION_THRESHOLD) {
+            info!("[notebook-sync] Compacted oversized RuntimeStateDoc before initial sync");
+        }
         match catch_automerge_panic("initial-state-sync", || {
             state_doc
                 .generate_sync_message(&mut state_peer_state)
