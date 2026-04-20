@@ -25,7 +25,7 @@ use notebook_sync::relay::RelayHandle;
 use serde::Deserialize;
 use tokio::sync::mpsc;
 use tower_http::cors::CorsLayer;
-use tower_http::services::ServeDir;
+use tower_http::services::{ServeDir, ServeFile};
 use tracing::{info, warn};
 
 const PORT: u16 = 8743;
@@ -243,8 +243,13 @@ async fn main() {
         .with_state(state);
 
     if has_dist {
-        app =
-            app.fallback_service(ServeDir::new(&dist_path).append_index_html_on_directories(true));
+        let index_html = dist_path.join("index.html");
+        let spa_fallback = ServeFile::new(&index_html);
+        app = app.fallback_service(
+            ServeDir::new(&dist_path)
+                .append_index_html_on_directories(true)
+                .fallback(spa_fallback),
+        );
     } else {
         app = app.route("/", get(handle_index));
     }

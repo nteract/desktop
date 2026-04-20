@@ -1,3 +1,4 @@
+import { BrowserRouter, Routes, Route, useNavigate, useParams } from "react-router";
 import { useEffect, useState } from "react";
 import { NotebookViewer } from "./components/NotebookViewer";
 
@@ -11,9 +12,20 @@ interface RoomInfo {
 }
 
 export function App() {
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<NotebookList />} />
+        <Route path="/:notebookId" element={<ViewerPage />} />
+      </Routes>
+    </BrowserRouter>
+  );
+}
+
+function NotebookList() {
   const [rooms, setRooms] = useState<RoomInfo[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const navigate = useNavigate();
 
   useEffect(() => {
     async function fetchRooms() {
@@ -30,26 +42,6 @@ export function App() {
     const interval = setInterval(fetchRooms, 5000);
     return () => clearInterval(interval);
   }, []);
-
-  if (selectedId) {
-    return (
-      <div className="dark min-h-screen bg-background text-foreground">
-        <header className="sticky top-0 z-50 flex items-center gap-3 border-b border-border bg-background/80 px-6 py-3 backdrop-blur-sm">
-          <button
-            onClick={() => setSelectedId(null)}
-            className="rounded-md border border-border px-3 py-1 text-xs text-muted-foreground hover:bg-secondary"
-          >
-            &larr; Back
-          </button>
-          <h1 className="text-sm font-semibold">nteract live viewer</h1>
-          <span className="ml-auto font-mono text-xs text-muted-foreground">
-            {selectedId.slice(0, 8)}
-          </span>
-        </header>
-        <NotebookViewer notebookId={selectedId} />
-      </div>
-    );
-  }
 
   return (
     <div className="dark min-h-screen bg-background text-foreground">
@@ -78,7 +70,7 @@ export function App() {
           {rooms.map((room) => (
             <button
               key={room.notebook_id}
-              onClick={() => setSelectedId(room.notebook_id)}
+              onClick={() => navigate(`/${room.notebook_id}`)}
               className="flex items-center gap-3 rounded-lg border border-border bg-card p-4 text-left transition-colors hover:bg-secondary"
             >
               <div className="flex-1">
@@ -108,6 +100,31 @@ export function App() {
           ))}
         </div>
       </main>
+    </div>
+  );
+}
+
+function ViewerPage() {
+  const { notebookId } = useParams<{ notebookId: string }>();
+  const navigate = useNavigate();
+
+  if (!notebookId) return null;
+
+  return (
+    <div className="dark min-h-screen bg-background text-foreground">
+      <header className="sticky top-0 z-50 flex items-center gap-3 border-b border-border bg-background/80 px-6 py-3 backdrop-blur-sm">
+        <button
+          onClick={() => navigate("/")}
+          className="rounded-md border border-border px-3 py-1 text-xs text-muted-foreground hover:bg-secondary"
+        >
+          &larr; Back
+        </button>
+        <h1 className="text-sm font-semibold">nteract live viewer</h1>
+        <span className="ml-auto font-mono text-xs text-muted-foreground">
+          {notebookId.slice(0, 8)}
+        </span>
+      </header>
+      <NotebookViewer notebookId={notebookId} />
     </div>
   );
 }
