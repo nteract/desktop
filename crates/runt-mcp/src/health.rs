@@ -274,13 +274,9 @@ async fn auto_rejoin_session(
             .map(|r| (r.handle, r.broadcast_rx, r.cells.len(), r.info.notebook_id))
         } else {
             // Ephemeral: reconnect by UUID
-            notebook_sync::connect::connect(
-                socket_path.to_path_buf(),
-                notebook_id.clone(),
-                &label,
-            )
-            .await
-            .map(|r| (r.handle, r.broadcast_rx, r.cells.len(), notebook_id.clone()))
+            notebook_sync::connect::connect(socket_path.to_path_buf(), notebook_id.clone(), &label)
+                .await
+                .map(|r| (r.handle, r.broadcast_rx, r.cells.len(), notebook_id.clone()))
         };
 
         match result {
@@ -306,9 +302,7 @@ async fn auto_rejoin_session(
                     notebook_path: notebook_path.clone(),
                 };
                 *session.write().await = Some(new_session);
-                info!(
-                    "Auto-rejoined notebook session: {notebook_id} ({new_cell_count} cells)",
-                );
+                info!("Auto-rejoined notebook session: {notebook_id} ({new_cell_count} cells)",);
                 return;
             }
             Err(e) => {
