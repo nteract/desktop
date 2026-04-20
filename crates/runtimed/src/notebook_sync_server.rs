@@ -1730,10 +1730,11 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
 
     // ── 2. Initial RuntimeStateDoc sync ──────────────────────────────
     // Scope the state_doc write guard so it drops before the async send.
+    // Uses bounded generation to compact if oversized (same 80 MiB threshold).
     let mut state_sync_state = automerge::sync::State::new();
     let state_sync_msg = {
         let mut sd = room.state_doc.write().await;
-        sd.generate_sync_message(&mut state_sync_state)
+        sd.generate_sync_message_bounded(&mut state_sync_state, 80 * 1024 * 1024)
             .map(|msg| msg.encode())
     };
     if let Some(encoded) = state_sync_msg {
@@ -2614,7 +2615,10 @@ where
         connection::send_typed_frame(writer, NotebookFrameType::AutomergeSync, &encoded).await?;
     }
 
-    // Phase 1.1: Initial RuntimeStateDoc sync — encode inside lock, send outside
+    // Phase 1.1: Initial RuntimeStateDoc sync — encode inside lock, send outside.
+    // Uses bounded generation to compact atomically if the message would exceed
+    // the 100 MiB frame limit (80 MiB threshold leaves headroom).
+    const STATE_SYNC_COMPACT_THRESHOLD: usize = 80 * 1024 * 1024;
     let initial_state_encoded = {
         let mut state_doc = room.state_doc.write().await;
         // Safety net: compact before initial sync if the doc grew too large.
@@ -2625,7 +2629,10 @@ where
         }
         match catch_automerge_panic("initial-state-sync", || {
             state_doc
-                .generate_sync_message(&mut state_peer_state)
+                .generate_sync_message_bounded(
+                    &mut state_peer_state,
+                    STATE_SYNC_COMPACT_THRESHOLD,
+                )
                 .map(|msg| msg.encode())
         }) {
             Ok(encoded) => encoded,

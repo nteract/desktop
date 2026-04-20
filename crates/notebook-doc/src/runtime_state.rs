@@ -2102,6 +2102,26 @@ impl RuntimeStateDoc {
         self.doc.sync().generate_sync_message(peer_state)
     }
 
+    /// Generate a sync message, compacting the doc if the encoded message
+    /// would exceed `max_encoded_bytes`.
+    ///
+    /// Eliminates the TOCTOU race where the doc grows between a pre-send size
+    /// check and the actual frame send. If the message is oversized, this
+    /// compacts via save→load, resets `peer_state`, and regenerates.
+    pub fn generate_sync_message_bounded(
+        &mut self,
+        peer_state: &mut sync::State,
+        max_encoded_bytes: usize,
+    ) -> Option<sync::Message> {
+        let msg = self.doc.sync().generate_sync_message(peer_state)?;
+        if msg.clone().encode().len() <= max_encoded_bytes {
+            return Some(msg);
+        }
+        self.rebuild_from_save();
+        *peer_state = sync::State::new();
+        self.doc.sync().generate_sync_message(peer_state)
+    }
+
     /// Receive a sync message with change stripping (read-only enforcement).
     ///
     /// The daemon is the sole authority for runtime state. Any changes a
@@ -2601,6 +2621,64 @@ mod tests {
             client_state.last_saved,
             Some("2025-01-15T12:00:00Z".to_string()),
         );
+    }
+
+    #[test]
+    fn test_generate_sync_message_bounded_compacts_on_oversized() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.create_execution("exec-1", "cell-1");
+        for i in 0..50 {
+            let manifest = serde_json::json!({
+                "output_type": "stream",
+                "name": "stdout",
+                "text": {"blob": format!("hash-{}", i), "size": 1000 + i}
+            });
+            doc.append_output("exec-1", &manifest).unwrap();
+        }
+
+        let mut peer_state = sync::State::new();
+        // Threshold of 1 byte forces compaction
+        let msg = doc.generate_sync_message_bounded(&mut peer_state, 1);
+        assert!(msg.is_some(), "should produce a message after compaction");
+
+        // Verify the compacted message syncs correctly to a fresh client
+        let mut client = RuntimeStateDoc::new_empty();
+        let mut client_state = sync::State::new();
+        if let Some(msg) = msg {
+            client
+                .doc_mut()
+                .sync()
+                .receive_sync_message(&mut client_state, msg)
+                .expect("client receive after compaction");
+        }
+        for _ in 0..5 {
+            if let Some(reply) = client
+                .doc_mut()
+                .sync()
+                .generate_sync_message(&mut client_state)
+            {
+                doc.receive_sync_message_with_changes(&mut peer_state, reply)
+                    .ok();
+            }
+            if let Some(msg) = doc.generate_sync_message(&mut peer_state) {
+                client
+                    .doc_mut()
+                    .sync()
+                    .receive_sync_message(&mut client_state, msg)
+                    .ok();
+            }
+        }
+        assert_eq!(client.get_outputs("exec-1").len(), 50);
+    }
+
+    #[test]
+    fn test_generate_sync_message_bounded_no_compact_under_limit() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.set_kernel_status("idle");
+
+        let mut peer_state = sync::State::new();
+        let msg = doc.generate_sync_message_bounded(&mut peer_state, 100 * 1024 * 1024);
+        assert!(msg.is_some());
     }
 
     // ── Execution lifecycle tests ───────────────────────────────────
