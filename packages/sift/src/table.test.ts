@@ -384,4 +384,35 @@ describe("createTable", () => {
       expect(stats?.dataset.value).toContain("50");
     });
   });
+
+  describe("column resize", () => {
+    it("last column has a resize handle", async () => {
+      await flushRAF();
+      const headerCells = container.querySelectorAll(".sift-th");
+      expect(headerCells).toHaveLength(4);
+      const lastHandle = headerCells[headerCells.length - 1].querySelector(".sift-resize-handle");
+      expect(lastHandle).not.toBeNull();
+    });
+
+    it("grows last column to fill when viewport reports width wider than columns", async () => {
+      const wide = document.createElement("div");
+      document.body.appendChild(wide);
+      const e = createTable(wide, makeTableData(makeRows(10)));
+      await flushRAF();
+      const viewport = wide.querySelector<HTMLElement>(".sift-viewport")!;
+      // jsdom reports clientWidth as 0; stub it to simulate a wide container
+      // and fire a resize event to trigger fitLastColumnToViewport().
+      Object.defineProperty(viewport, "clientWidth", { value: 1600, configurable: true });
+      window.dispatchEvent(new Event("resize"));
+      await flushRAF();
+      const headers = wide.querySelectorAll<HTMLElement>(".sift-th");
+      const total = Array.from(headers).reduce(
+        (s, h) => s + Number.parseFloat(h.style.width || "0"),
+        0,
+      );
+      expect(total).toBeGreaterThanOrEqual(1600 - 2);
+      e.destroy();
+      wide.remove();
+    });
+  });
 });

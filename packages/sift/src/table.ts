@@ -555,12 +555,10 @@ export function createTable(
       }
     });
 
-    if (c < columns.length - 1) {
-      const handle = document.createElement("div");
-      handle.className = "sift-resize-handle";
-      handle.addEventListener("pointerdown", (e) => onResizeStart(e, c));
-      th.appendChild(handle);
-    }
+    const handle = document.createElement("div");
+    handle.className = "sift-resize-handle";
+    handle.addEventListener("pointerdown", (e) => onResizeStart(e, c));
+    th.appendChild(handle);
 
     headerCells.push(th);
     headerRowEl.appendChild(th);
@@ -891,6 +889,29 @@ export function createTable(
       updateScrollContentWidth();
       heightsDirty = true;
     }
+  }
+
+  // Grow the last column to fill leftover viewport space. Active until the
+  // user resizes the last column explicitly. Re-runs on viewport resize and
+  // after non-last column resizes, so maximize/restore just works.
+  let lastColumnAutoFill = true;
+
+  function fitLastColumnToViewport() {
+    if (!lastColumnAutoFill) return;
+    const last = columns.length - 1;
+    if (last < 0) return;
+    const viewportW = viewport.clientWidth;
+    if (viewportW <= 0) return;
+    let fixedW = 0;
+    for (let c = 0; c < last; c++) fixedW += colWidths[c];
+    const target = Math.max(MIN_COL_WIDTH, viewportW - fixedW);
+    if (target === colWidths[last]) return;
+    colWidths[last] = target;
+    headerCells[last].style.width = target + "px";
+    renderSummary(last);
+    updateScrollContentWidth();
+    heightsDirty = true;
+    scheduleRender();
   }
 
   function rebuildFilterPills() {
@@ -1280,7 +1301,11 @@ export function createTable(
 
   viewport.addEventListener("scroll", onScroll, { passive: true });
 
-  window.addEventListener("resize", scheduleRender);
+  const onWindowResize = () => {
+    fitLastColumnToViewport();
+    scheduleRender();
+  };
+  window.addEventListener("resize", onWindowResize);
 
   // --- Mobile tap-row detail sheet ---
 
@@ -1454,6 +1479,8 @@ export function createTable(
     handle.setPointerCapture(e.pointerId);
     const startX = e.clientX;
     const startWidth = colWidths[colIndex];
+    const isLast = colIndex === columns.length - 1;
+    if (isLast) lastColumnAutoFill = false;
 
     const onMove = (ev: PointerEvent) => {
       const delta = ev.clientX - startX;
@@ -1463,6 +1490,7 @@ export function createTable(
       updateScrollContentWidth();
       heightsDirty = true;
       scheduleRender();
+      if (!isLast) fitLastColumnToViewport();
     };
 
     const onUp = () => {
@@ -1596,13 +1624,24 @@ export function createTable(
   // Watch for header height changes (e.g. when React summary charts mount async)
   // so rowPool.style.top stays in sync
   let headerResizeObserver: ResizeObserver | null = null;
+  let viewportResizeObserver: ResizeObserver | null = null;
   if (typeof ResizeObserver !== "undefined") {
     headerResizeObserver = new ResizeObserver(() => {
       heightsDirty = true;
       scheduleRender();
     });
     headerResizeObserver.observe(headerEl);
+
+    // Keep the last column sized to fill the viewport as the container resizes
+    // (e.g. the user maximizes the notebook window or resizes a split pane).
+    viewportResizeObserver = new ResizeObserver(() => {
+      fitLastColumnToViewport();
+    });
+    viewportResizeObserver.observe(viewport);
   }
+
+  // Initial fit in case the proportional scale above left sub-pixel slack.
+  fitLastColumnToViewport();
 
   // --- Keyboard navigation ---
 
@@ -1665,7 +1704,8 @@ export function createTable(
     viewport.removeEventListener("scroll", onScroll);
 
     container.removeEventListener("keydown", onKeyDown);
-    window.removeEventListener("resize", scheduleRender);
+    window.removeEventListener("resize", onWindowResize);
+    viewportResizeObserver?.disconnect();
     document.removeEventListener("fullscreenchange", onFullscreenChange);
     document.removeEventListener("webkitfullscreenchange", onFullscreenChange);
 
