@@ -269,12 +269,12 @@ ls -la ~/.cache/runt/envs/
 
 Check that uv/conda are installed and working.
 
-## NEVER Use pkill or killall
-
-**Never** use `pkill runtimed`, `killall runtimed`, or similar. These kill ALL runtimed processes system-wide, disrupting other agents and worktrees. Use:
+## Stopping the Daemon
 
 - `./target/debug/runt daemon stop` — stops only your worktree's daemon
 - `cargo xtask install-nightly` — gracefully installs/reinstalls the full nightly stack (Linux/headless only; refuses on macOS by default)
+
+Avoid system-wide process killers (`pkill`, `killall`) — they affect every worktree and every other agent on the machine.
 
 ## Shipped App Behavior
 
