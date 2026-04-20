@@ -97,78 +97,55 @@ export function useCondaDependencies() {
     }
   }, []);
 
-  const addDependency = useCallback(
-    async (pkg: string) => {
-      if (!pkg.trim()) return;
+  // Wrap a mutating WASM op with the shared loading + trust-resign + error log
+  // shape. `label` appears in the error message so grep still works.
+  const withTrustResign = useCallback(
+    async (op: () => Promise<void>, label: string) => {
       setLoading(true);
       try {
-        await addCondaDepWasm(pkg.trim());
+        await op();
         await resignTrust();
       } catch (e) {
-        logger.error("Failed to add conda dependency:", e);
+        logger.error(`Failed to ${label}:`, e);
       } finally {
         setLoading(false);
       }
     },
     [resignTrust],
+  );
+
+  const addDependency = useCallback(
+    async (pkg: string) => {
+      if (!pkg.trim()) return;
+      await withTrustResign(() => addCondaDepWasm(pkg.trim()), "add conda dependency");
+    },
+    [withTrustResign],
   );
 
   const removeDependency = useCallback(
     async (pkg: string) => {
-      setLoading(true);
-      try {
-        await removeCondaDepWasm(pkg);
-        await resignTrust();
-      } catch (e) {
-        logger.error("Failed to remove conda dependency:", e);
-      } finally {
-        setLoading(false);
-      }
+      await withTrustResign(() => removeCondaDepWasm(pkg), "remove conda dependency");
     },
-    [resignTrust],
+    [withTrustResign],
   );
 
   // Remove the entire conda dependency section from notebook metadata
   const clearAllDependencies = useCallback(async () => {
-    setLoading(true);
-    try {
-      await clearCondaSection();
-      await resignTrust();
-    } catch (e) {
-      logger.error("Failed to clear conda dependencies:", e);
-    } finally {
-      setLoading(false);
-    }
-  }, [resignTrust]);
+    await withTrustResign(() => clearCondaSection(), "clear conda dependencies");
+  }, [withTrustResign]);
 
   const setChannels = useCallback(
     async (channels: string[]) => {
-      setLoading(true);
-      try {
-        await setCondaChannelsWasm(channels);
-        await resignTrust();
-      } catch (e) {
-        logger.error("Failed to set channels:", e);
-      } finally {
-        setLoading(false);
-      }
+      await withTrustResign(() => setCondaChannelsWasm(channels), "set channels");
     },
-    [resignTrust],
+    [withTrustResign],
   );
 
   const setPython = useCallback(
     async (version: string | null) => {
-      setLoading(true);
-      try {
-        await setCondaPythonWasm(version);
-        await resignTrust();
-      } catch (e) {
-        logger.error("Failed to set python version:", e);
-      } finally {
-        setLoading(false);
-      }
+      await withTrustResign(() => setCondaPythonWasm(version), "set python version");
     },
-    [resignTrust],
+    [withTrustResign],
   );
 
   const hasDependencies = dependencies !== null && dependencies.dependencies.length > 0;
