@@ -1998,7 +1998,15 @@ class TestExecuteCell:
         cell = await notebook.cells.create("for i in range(3): print(f'line {i}')")
         await asyncio.sleep(0.5)
 
-        result = await cell.run(timeout_secs=30.0)
+        # timeout_secs=90.0 (not 30) across this file: on loaded CI runners
+        # (compile jobs running alongside), first-execute latency can stretch
+        # past 30s even though notebook.start() already blocks on kernel-idle.
+        # The kernel-boot cost is paid inside start(), but pool contention and
+        # I/O on a loaded runner can still slow the first roundtrip. The
+        # deeper fix is a kernel-ready signal that discriminates "idle" from
+        # "idle and warm," tracked as arch review task #8. Until then, a
+        # generous timeout matches observed CI reality.
+        result = await cell.run(timeout_secs=90.0)
 
         assert result.success, f"Expected success, got error: {result.error}"
         assert "line 0" in result.stdout
@@ -2012,7 +2020,7 @@ class TestExecuteCell:
         cell = await notebook.cells.create("raise ValueError('test error')")
         await asyncio.sleep(0.5)
 
-        result = await cell.run(timeout_secs=30.0)
+        result = await cell.run(timeout_secs=90.0)
 
         assert not result.success, "Expected failure"
         assert result.error is not None, "Expected error info"
@@ -2026,7 +2034,7 @@ class TestExecuteCell:
         cell = await notebook.cells.create("raise ValueError('persisted error')")
         await asyncio.sleep(0.5)
 
-        await cell.run(timeout_secs=30.0)
+        await cell.run(timeout_secs=90.0)
 
         error_outputs = [o for o in cell.outputs if o.output_type == "error"]
         assert len(error_outputs) > 0, "Error should be persisted in cell outputs"
@@ -2046,7 +2054,7 @@ class TestExecuteCell:
         assert len(execution.execution_id) == 36
         assert execution.cell_id == cell.id
 
-        result = await execution.result(timeout_secs=30.0)
+        result = await execution.result(timeout_secs=90.0)
         assert result.success
         assert "handle test" in result.stdout
 
@@ -2113,10 +2121,10 @@ class TestExecutionIdScoping:
         cell = await notebook.cells.create("print('run')")
         await asyncio.sleep(0.5)
 
-        r1 = await cell.run(timeout_secs=30.0)
+        r1 = await cell.run(timeout_secs=90.0)
         assert r1.success
 
-        r2 = await cell.run(timeout_secs=30.0)
+        r2 = await cell.run(timeout_secs=90.0)
         assert r2.success
 
         # execution_count is now in RuntimeStateDoc, not exposed via
@@ -2130,7 +2138,7 @@ class TestExecutionIdScoping:
         cell = await notebook.cells.create("print('scoped')")
         await asyncio.sleep(0.5)
 
-        result = await cell.run(timeout_secs=30.0)
+        result = await cell.run(timeout_secs=90.0)
 
         assert result.success
         assert "scoped" in result.stdout

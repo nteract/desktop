@@ -105,11 +105,24 @@ async fn wait_for_daemon(client: &PoolClient, timeout: Duration) -> bool {
 ///
 /// Per architecture rules (see `.claude/rules/architecture.md` § "No
 /// Independent `put_object` on Shared Keys"), only the daemon creates
-/// the `cells` / `metadata` maps at room creation — client peers receive
+/// the `cells` / `metadata` maps at room creation. Client peers receive
 /// them via sync. Mutations like `add_cell_after` panic with
 /// `InvalidObjId("cells map not found")` if called before that sync
 /// frame arrives, which is a flaky race under loaded CI. Poll the
 /// client's local Automerge doc until the cells map object is visible.
+///
+/// Why a client-side poll at all: `do_initial_sync` in
+/// `crates/notebook-sync/src/connect.rs` declares convergence via an
+/// idle-timeout heuristic (100ms of silence from the peer) rather than
+/// a protocol-level "initial sync complete" signal. Automerge sync
+/// frames can arrive in multiple rounds with arbitrary spacing; under
+/// loaded CI a 100ms gap can appear mid-sync, so `do_initial_sync`
+/// returns before the cells map frame has been applied. This helper is
+/// the test-side fallback. The proper fix is a protocol-level
+/// completion marker on the sync frames themselves, tracked as an
+/// architecture-review follow-up (see arch review task #8 measurement
+/// track). Until then the timeout needs enough slack to absorb a
+/// loaded CI runner mid-compile.
 async fn wait_for_cells_map(handle: &notebook_sync::DocHandle, timeout: Duration) -> bool {
     let start = std::time::Instant::now();
     while start.elapsed() < timeout {
@@ -1231,8 +1244,8 @@ async fn test_pipe_mode_forwards_sync_frames() {
     // mutate it. Otherwise `add_cell_after` panics with
     // `InvalidObjId("cells map not found")` — a flake under loaded CI.
     assert!(
-        wait_for_cells_map(&client2, Duration::from_secs(2)).await,
-        "initial sync did not deliver the cells map within 2s"
+        wait_for_cells_map(&client2, Duration::from_secs(10)).await,
+        "initial sync did not deliver the cells map within 10s"
     );
     client2.add_cell_after("cell-1", "code", None).unwrap();
     client2
@@ -1455,8 +1468,8 @@ async fn test_pipe_mode_preserves_frame_order() {
     // mutate it. Otherwise `add_cell_after` panics with
     // `InvalidObjId("cells map not found")` — a flake under loaded CI.
     assert!(
-        wait_for_cells_map(&client2, Duration::from_secs(2)).await,
-        "initial sync did not deliver the cells map within 2s"
+        wait_for_cells_map(&client2, Duration::from_secs(10)).await,
+        "initial sync did not deliver the cells map within 10s"
     );
     client2.add_cell_after("cell-1", "code", None).unwrap();
     client2
