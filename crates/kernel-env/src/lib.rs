@@ -119,6 +119,31 @@ mod strip_base_tests {
     }
 
     #[test]
+    fn strips_dx_from_bootstrap_dx_envs() {
+        // When bootstrap_dx is on, `uv_prewarmed_packages` adds `dx` to the
+        // pool env's install list. `dx` is treated as base-level tooling
+        // (the feature flag controls it, not the user), so strip_base
+        // removes it — keeping captured notebook metadata free of the
+        // feature flag's state.
+        let installed: Vec<String> = [
+            "ipykernel",
+            "ipywidgets",
+            "anywidget",
+            "nbformat",
+            "uv",
+            "dx",
+            "pandas",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(
+            strip_base(&installed, UV_BASE_PACKAGES),
+            vec!["pandas".to_string()]
+        );
+    }
+
+    #[test]
     fn preserves_order() {
         let installed: Vec<String> = ["pandas", "ipykernel", "numpy", "uv", "matplotlib"]
             .iter()

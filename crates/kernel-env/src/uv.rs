@@ -52,7 +52,21 @@ pub async fn check_uv_available() -> bool {
 /// Used by the daemon's UV pool warmer (`uv_prewarmed_packages` in runtimed) and
 /// by the unified env design's capture step (`strip_base`) so the notebook's
 /// metadata records only user-level deps. Keep this in sync with the warmer.
-pub const UV_BASE_PACKAGES: &[&str] = &["ipykernel", "ipywidgets", "anywidget", "nbformat", "uv"];
+///
+/// `dx` is here even though it's only installed when the `bootstrap_dx`
+/// feature flag is on. Treating it as base keeps the feature flag's state
+/// from leaking into captured notebook metadata — the flag continues to
+/// control launch-time behaviour (`RUNT_BOOTSTRAP_DX` env var + launcher
+/// module selection) without forcing every flag-on notebook to pin `dx`
+/// in its dep list.
+pub const UV_BASE_PACKAGES: &[&str] = &[
+    "ipykernel",
+    "ipywidgets",
+    "anywidget",
+    "nbformat",
+    "uv",
+    "dx",
+];
 
 /// Compute the unified env hash for a notebook. Used by the captured-deps
 /// reopen path from the unified env resolution design (see
