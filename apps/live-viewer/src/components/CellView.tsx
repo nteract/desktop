@@ -92,8 +92,7 @@ export const CellView = memo(function CellView({ cell, executionState }: Props) 
           <OutputArea
             outputs={cell.outputs}
             cellId={cell.id}
-            preloadIframe={false}
-            isolated="auto"
+            preloadIframe
           />
         ) : undefined
       }

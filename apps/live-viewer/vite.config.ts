@@ -1,28 +1,39 @@
+import fs from "node:fs";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import path from "path";
 import { defineConfig, type Plugin } from "vite-plus";
 
 /**
- * Stub plugin for virtual:renderer-plugin/* modules.
+ * Loads pre-built renderer plugin artifacts from the notebook app's
+ * checked-in renderer-plugins/ directory and exposes them as virtual modules.
  *
- * The notebook app uses a Vite plugin that builds renderer plugins (markdown,
- * plotly, vega, leaflet, sift) as CJS bundles for the isolated iframe.
- * The live-viewer doesn't use iframe isolation, so these virtual modules
- * are stubbed to export empty strings. OutputArea with isolated={false}
- * never calls the loader, but Rolldown still needs the modules resolvable.
+ * This enables the live-viewer to use the full OutputArea with iframe
+ * isolation for rich outputs (plotly, vega, markdown/LaTeX, leaflet, sift).
  *
- * COUPLING EDGE: This is the first hard boundary between the live-viewer
- * and the notebook app's build system. The iframe-libraries.ts module has
- * dynamic imports to virtual modules that only the notebook app provides.
+ * COUPLING EDGE: The live-viewer depends on pre-built artifacts from the
+ * notebook app's build pipeline (cargo xtask renderer-plugins). If those
+ * artifacts are missing, we fall back to empty stubs (in-DOM rendering only).
  */
-function rendererPluginStubs(): Plugin {
+function rendererPlugins(): Plugin {
   const PREFIX = "virtual:renderer-plugin/";
   const RESOLVED_PREFIX = "\0virtual:renderer-plugin/";
   const ISOLATED_ID = "virtual:isolated-renderer";
   const RESOLVED_ISOLATED_ID = "\0virtual:isolated-renderer";
+
+  const PREBUILT_DIR = path.resolve(__dirname, "../notebook/src/renderer-plugins");
+
+  function readArtifact(name: string, ext: string): string {
+    const file = path.join(PREBUILT_DIR, `${name}.${ext}`);
+    try {
+      return fs.readFileSync(file, "utf-8");
+    } catch {
+      return "";
+    }
+  }
+
   return {
-    name: "live-viewer:renderer-plugin-stubs",
+    name: "live-viewer:renderer-plugins",
     resolveId(id) {
       if (id.startsWith(PREFIX)) {
         return RESOLVED_PREFIX + id.slice(PREFIX.length);
@@ -33,17 +44,22 @@ function rendererPluginStubs(): Plugin {
     },
     load(id) {
       if (id.startsWith(RESOLVED_PREFIX)) {
-        return 'export const code = ""; export const css = "";';
+        const name = id.slice(RESOLVED_PREFIX.length);
+        const code = readArtifact(name, "js");
+        const css = readArtifact(name, "css");
+        return `export const code = ${JSON.stringify(code)};\nexport const css = ${JSON.stringify(css)};`;
       }
       if (id === RESOLVED_ISOLATED_ID) {
-        return 'export const rendererCode = ""; export const rendererCss = "";';
+        const rendererCode = readArtifact("isolated-renderer", "js");
+        const rendererCss = readArtifact("isolated-renderer", "css");
+        return `export const rendererCode = ${JSON.stringify(rendererCode)};\nexport const rendererCss = ${JSON.stringify(rendererCss)};`;
       }
     },
   };
 }
 
 export default defineConfig({
-  plugins: [react(), tailwindcss(), rendererPluginStubs()],
+  plugins: [react(), tailwindcss(), rendererPlugins()],
   resolve: {
     alias: {
       "@/": path.resolve(__dirname, "../../src") + "/",

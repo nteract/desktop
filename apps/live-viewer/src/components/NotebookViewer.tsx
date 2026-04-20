@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { NotebookHostProvider } from "@nteract/notebook-host";
 import { createBrowserHost } from "@nteract/notebook-host/browser";
 import { WidgetStoreProvider } from "@/components/widgets/widget-store-context";
+import { IsolatedRendererProvider } from "@/components/isolated/isolated-renderer-context";
 import { SyncEngine } from "runtimed/src/sync-engine";
 import type { SyncableHandle } from "runtimed/src/handle";
 import type { RuntimeState, ExecutionState, QueueEntry } from "runtimed/src/runtime-state";
@@ -184,14 +185,18 @@ export function NotebookViewer({ notebookId }: Props) {
     </div>
   );
 
+  const providers = (children: React.ReactNode) => (
+    <IsolatedRendererProvider loader={() => import("virtual:isolated-renderer")}>
+      <WidgetStoreProvider>{children}</WidgetStoreProvider>
+    </IsolatedRendererProvider>
+  );
+
   if (host) {
     return (
-      <NotebookHostProvider host={host}>
-        <WidgetStoreProvider>{content}</WidgetStoreProvider>
-      </NotebookHostProvider>
+      <NotebookHostProvider host={host}>{providers(content)}</NotebookHostProvider>
     );
   }
-  return <WidgetStoreProvider>{content}</WidgetStoreProvider>;
+  return providers(content);
 }
 
 function KernelStatusBadge({ status }: { status: string }) {
