@@ -1,8 +1,27 @@
+/**
+ * Full component tree integration for the live-viewer.
+ *
+ * Uses the same shared components as the notebook app:
+ * - CellContainer (segmented ribbon, gutter, right-gutter layout)
+ * - CompactExecutionButton (execution count + play/stop)
+ * - OutputArea (iframe isolation, MediaRouter, ANSI, error rendering)
+ * - CodeMirrorEditor (syntax highlighting, read-only)
+ *
+ * Coupling boundaries documented inline where the viewer diverges
+ * from the notebook app's CodeCell:
+ * - No useCrdtBridge (read-only, no editing)
+ * - No useCellKeyboardNavigation (no cell focus navigation)
+ * - No usePresenceContext (no remote cursors)
+ * - No useEditorRegistry (no editor instance tracking)
+ * - No cell-ui-state hooks (focus/executing/queued driven by props)
+ * - No HistorySearchDialog (no Ctrl+R)
+ * - No drag handles (no reordering)
+ */
+
+import { memo } from "react";
 import { CellContainer } from "@/components/cell/CellContainer";
-import { ExecutionCount } from "@/components/cell/ExecutionCount";
-import { ExecutionStatus } from "@/components/cell/ExecutionStatus";
-import { AnsiErrorOutput, AnsiStreamOutput } from "@/components/outputs/ansi-output";
-import { MediaRouter } from "@/components/outputs/media-router";
+import { CompactExecutionButton } from "@/components/cell/CompactExecutionButton";
+import { OutputArea } from "@/components/cell/OutputArea";
 import { CodeMirrorEditor } from "@/components/editor/codemirror-editor";
 import type { JupyterOutput } from "@/components/cell/jupyter-output";
 import type { ExecutionState } from "runtimed/src/runtime-state";
@@ -13,6 +32,7 @@ interface CellData {
   source: string;
   execution_count: number | null;
   outputs: JupyterOutput[];
+  metadata?: Record<string, unknown>;
 }
 
 interface Props {
@@ -20,68 +40,64 @@ interface Props {
   executionState: ExecutionState | null;
 }
 
-export function CellView({ cell, executionState }: Props) {
+export const CellView = memo(function CellView({ cell, executionState }: Props) {
   const isRunning = executionState?.status === "running";
   const isQueued = executionState?.status === "queued";
+
+  // Shared components from the real app's CodeCell — read-only mode
+  // COUPLING EDGE: CodeCell uses useCrdtBridge for live editing.
+  // We skip it entirely since this is read-only.
+  const isCode = cell.cell_type === "code";
+  const isMarkdown = cell.cell_type === "markdown";
+
+  // Check source_hidden / outputs_hidden (JupyterLab convention)
+  const jupyter = cell.metadata?.jupyter as
+    | { source_hidden?: boolean; outputs_hidden?: boolean }
+    | undefined;
+  const isSourceHidden = jupyter?.source_hidden === true;
+  const isOutputsHidden = jupyter?.outputs_hidden === true;
 
   return (
     <CellContainer
       id={cell.id}
       cellType={cell.cell_type}
       gutterContent={
-        cell.cell_type === "code" ? (
-          <div className="flex flex-col items-end gap-0.5">
-            <ExecutionCount count={cell.execution_count} isExecuting={isRunning} />
-            {(isRunning || isQueued) && <ExecutionStatus executionState={executionState.status} />}
-          </div>
+        isCode ? (
+          <CompactExecutionButton
+            count={cell.execution_count}
+            isExecuting={isRunning}
+            isQueued={isQueued}
+          />
         ) : undefined
       }
       codeContent={
-        cell.cell_type === "markdown" ? (
-          <pre className="whitespace-pre-wrap break-words text-[13px] text-muted-foreground">
+        isSourceHidden ? (
+          <div className="flex items-center text-xs text-muted-foreground italic py-0.5">
+            source hidden
+          </div>
+        ) : isMarkdown ? (
+          <div className="whitespace-pre-wrap break-words text-[13px] leading-relaxed text-foreground/90">
             {cell.source}
-          </pre>
+          </div>
         ) : (
           <CodeMirrorEditor
             initialValue={cell.source}
-            language={cell.cell_type === "code" ? "python" : undefined}
+            language={isCode ? "python" : undefined}
             readOnly
           />
         )
       }
       outputContent={
-        cell.outputs.length > 0 ? (
-          <div className="space-y-2 pl-6 pr-3">
-            {cell.outputs.map((output, i) => (
-              <CellOutput key={i} output={output} />
-            ))}
-          </div>
+        isOutputsHidden ? undefined : isCode && cell.outputs.length > 0 ? (
+          <OutputArea
+            outputs={cell.outputs}
+            cellId={cell.id}
+            preloadIframe={false}
+            isolated="auto"
+          />
         ) : undefined
       }
+      hideOutput={isCode && cell.outputs.length === 0}
     />
   );
-}
-
-function CellOutput({ output }: { output: JupyterOutput }) {
-  if (output.output_type === "stream") {
-    const text = Array.isArray(output.text) ? output.text.join("") : output.text;
-    return <AnsiStreamOutput text={text} streamName={output.name} />;
-  }
-
-  if (output.output_type === "error") {
-    return (
-      <AnsiErrorOutput ename={output.ename} evalue={output.evalue} traceback={output.traceback} />
-    );
-  }
-
-  if (output.output_type === "execute_result" || output.output_type === "display_data") {
-    return (
-      <MediaRouter
-        data={output.data}
-        metadata={output.metadata as Record<string, Record<string, unknown> | undefined>}
-      />
-    );
-  }
-
-  return null;
-}
+});
