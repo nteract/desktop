@@ -18,9 +18,9 @@ Use this skill to avoid talking to the wrong daemon and to keep daemon-backed ve
 
 ## Guardrails
 
-- Never use `pkill`, `killall`, or other system-wide process killers for `runtimed`.
-- Never assume the system daemon is correct for a repo worktree.
-- Never run the notebook GUI from an agent terminal; let the human launch it.
+- Stop the daemon with `./target/debug/runt daemon stop`. System-wide killers (`pkill`, `killall`) affect every worktree on the machine.
+- Assume the worktree daemon is the target for dev work; the system daemon is for diagnostics only.
+- Let the human launch the notebook GUI from their own terminal.
 - If a test or script depends on notebook execution, blob resolution, or MCP server behavior, confirm it is pointed at the worktree daemon first.
 - Use `default_socket_path()` for the current process. Reach for `socket_path_for_channel(...)` only when you intentionally need stable/nightly discovery that ignores `RUNTIMED_SOCKET_PATH`.
 - **Any daemon code that reads CRDT state, does async work, then writes back must use `fork()` + `merge()`.** For synchronous blocks use `doc.fork_and_merge(|fork| { ... })`. See `contributing/crdt-mutation-guide.md` and `.codex/skills/nteract-notebook-sync/references/crdt-ownership.md`.

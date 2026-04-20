@@ -427,13 +427,12 @@ All build, lint, and dev commands go through `cargo xtask`. **Run `cargo xtask h
 
 The daemon is a separate process from the notebook app. When you change code in `crates/runtimed/`, the running daemon still uses the old binary until you reinstall it.
 
-### Do NOT Use pkill or killall
+### Stopping the Daemon
 
-**Never** use `pkill runtimed`, `killall runtimed`, or similar commands. These kill **all** runtimed processes system-wide, disrupting other agents and worktrees.
-
-Use instead:
 - `./target/debug/runt daemon stop` — stops only your worktree's daemon
 - `cargo xtask install-nightly` — gracefully installs or reinstalls the full nightly stack (Linux/headless only; refuses on macOS by default)
+
+Avoid system-wide process killers (`pkill`, `killall`) — they affect every worktree and every other agent on the machine.
 
 ### Per-Worktree Daemon Isolation
 
