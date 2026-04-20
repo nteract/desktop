@@ -179,7 +179,7 @@ Security boundary for untrusted HTML/widget outputs. See [iframe-isolation.md](i
 | `useHistorySearch` | Kernel input history search |
 | `useTrust` | Notebook trust verification state |
 | `useUpdater` | App update checking and installation |
-| `usePixiDependencies` | Pixi/conda dependency management |
+| `usePixiDetection` | Pixi project detection (pixi.toml is the source of truth) |
 | `usePoolState` | Daemon pool state |
 | `useCrdtBridge` | CodeMirror ↔ CRDT character-level sync |
 

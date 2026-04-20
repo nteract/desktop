@@ -34,7 +34,7 @@ import { useEnvProgress } from "./hooks/useEnvProgress";
 import { useDaemonInfo, useGitInfo } from "./hooks/useGitInfo";
 import { useGlobalFind } from "./hooks/useGlobalFind";
 import { resolveOutputValue } from "./hooks/useManifestResolver";
-import { usePixiDependencies } from "./hooks/usePixiDependencies";
+import { usePixiDetection } from "./hooks/usePixiDetection";
 import { usePoolState } from "./hooks/usePoolState";
 import { useTrust } from "./hooks/useTrust";
 import { useUpdater } from "./hooks/useUpdater";
@@ -280,7 +280,7 @@ function AppContent() {
   } = useCondaDependencies();
 
   // Pixi project detection
-  const { pixiInfo } = usePixiDependencies();
+  const { pixiInfo } = usePixiDetection();
 
   // Deno config detection and settings
   const { denoConfigInfo, flexibleNpmImports, setFlexibleNpmImports } = useDenoDependencies();

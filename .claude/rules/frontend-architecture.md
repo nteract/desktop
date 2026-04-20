@@ -123,7 +123,7 @@ daemon-owned detection in subsequent PRs. See
 | `usePresence` | Remote cursor/selection tracking via presence frames |
 | `useDependencies` | UV dependency management |
 | `useCondaDependencies` | Conda dependency management |
-| `usePixiDependencies` | Pixi/conda dependency management |
+| `usePixiDetection` | Pixi project detection (pixi.toml is the source of truth) |
 | `usePoolState` | Daemon pool state via PoolDoc sync |
 | `useCrdtBridge` | CodeMirror ↔ CRDT character-level sync |
 | `useManifestResolver` | Resolves blob hashes to output data |

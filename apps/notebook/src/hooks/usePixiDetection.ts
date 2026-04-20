@@ -10,7 +10,7 @@ import type { PixiInfo } from "../types";
  * Pixi dependencies are managed via `pixi add`/`pixi remove` in the terminal,
  * not through the notebook metadata — pixi.toml is the source of truth.
  */
-export function usePixiDependencies() {
+export function usePixiDetection() {
   const [pixiInfo, setPixiInfo] = useState<PixiInfo | null>(null);
 
   useEffect(() => {
