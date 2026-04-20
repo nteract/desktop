@@ -31,6 +31,7 @@
 pub mod conda;
 #[cfg(feature = "runtime")]
 pub mod gc;
+pub mod launcher;
 #[cfg(feature = "runtime")]
 pub mod lock;
 #[cfg(feature = "runtime")]

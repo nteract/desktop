@@ -49,3 +49,4 @@ reqwest-middleware = { version = "0.4", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
+which = "7"
