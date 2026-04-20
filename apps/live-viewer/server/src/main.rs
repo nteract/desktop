@@ -33,6 +33,7 @@ const PORT: u16 = 8743;
 #[derive(Clone)]
 struct AppState {
     socket_path: PathBuf,
+    blob_port: u16,
 }
 
 #[derive(Deserialize)]
@@ -172,6 +173,36 @@ async fn handle_relay_connection(socket: WebSocket, state: AppState, target: Rel
     );
 }
 
+// ─── Blob proxy ────────────────────────────────────────────────────────
+
+async fn handle_blob(
+    State(state): State<AppState>,
+    axum::extract::Path(hash): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    let url = format!("http://127.0.0.1:{}/blob/{}", state.blob_port, hash);
+    match reqwest::get(&url).await {
+        Ok(resp) if resp.status().is_success() => {
+            let content_type = resp
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("application/octet-stream")
+                .to_string();
+            let bytes = resp.bytes().await.unwrap_or_default();
+            (
+                StatusCode::OK,
+                [
+                    ("content-type", content_type),
+                    ("cache-control", "public, max-age=31536000, immutable".to_string()),
+                ],
+                bytes,
+            )
+                .into_response()
+        }
+        _ => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
 // ─── REST endpoints ─────────────────────────────────────────────────────
 
 async fn handle_index() -> Html<&'static str> {
@@ -209,7 +240,17 @@ async fn main() {
         runtimed_client::socket_path_for_channel(runtimed_client::BuildChannel::Nightly);
     info!("daemon socket: {:?}", socket_path);
 
-    let state = AppState { socket_path };
+    // Read blob port from daemon.json
+    let blob_port = socket_path
+        .parent()
+        .map(|p| p.join("daemon.json"))
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("blob_port").and_then(|p| p.as_u64()))
+        .unwrap_or(0) as u16;
+    info!("daemon blob port: {}", blob_port);
+
+    let state = AppState { socket_path, blob_port };
 
     // Serve the Vite build output if available, otherwise fall back to test HTML.
     // Check env var first, then look relative to the cargo manifest dir (dev),
@@ -237,6 +278,7 @@ async fn main() {
 
     let mut app = Router::new()
         .route("/api/notebooks", get(handle_list))
+        .route("/blob/{hash}", get(handle_blob))
         .route("/ws/open", get(ws_open))
         .route("/ws/join", get(ws_join))
         .layer(CorsLayer::permissive())

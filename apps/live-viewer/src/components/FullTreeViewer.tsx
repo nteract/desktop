@@ -66,6 +66,7 @@ import {
   replaceNotebookCells,
 } from "notebook-app/lib/notebook-cells";
 
+
 // Cell UI state (focus, executing, queued)
 import {
   setFocusedCellId,
@@ -73,6 +74,7 @@ import {
   setQueuedCellIds,
   flushCellUIState,
 } from "notebook-app/lib/cell-ui-state";
+
 
 // The actual NotebookView component with dnd-kit, stable DOM order, etc.
 import { NotebookView } from "notebook-app/components/NotebookView";
@@ -174,6 +176,9 @@ export function FullTreeViewer({ notebookId }: Props) {
         }
         setExecutingCellIds(executing);
         setQueuedCellIds(queued);
+
+        // Re-materialize when runtime state changes (execution counts updated)
+        materializeCells();
       });
 
       engine.start();
@@ -184,15 +189,88 @@ export function FullTreeViewer({ notebookId }: Props) {
       if (!handle) return;
 
       try {
-        const h = handle as unknown as { get_cells_json(): string };
-        const json = h.get_cells_json();
-        const parsed = JSON.parse(json) as NotebookCell[];
-        // Write to the module-level cell store — this is what drives
-        // useCell(id) and useCellIds() subscriptions in NotebookView/CodeCell
-        replaceNotebookCells(parsed);
+        const h = handle as unknown as NotebookHandle;
+        const cellIds: string[] = h.get_cell_ids();
+        const cells: NotebookCell[] = [];
+        for (const id of cellIds) {
+          const cellType = h.get_cell_type(id);
+          if (!cellType) continue;
+          const source = h.get_cell_source(id) ?? "";
+          const metadata = h.get_cell_metadata(id) ?? {};
+
+          if (cellType === "code") {
+            const rawOutputs: unknown[] = h.get_cell_outputs(id) ?? [];
+            const outputs = rawOutputs
+              .map(resolveOutput)
+              .filter((o): o is NonNullable<typeof o> => o !== null);
+            cells.push({
+              id, cell_type: "code", source,
+              execution_count: null, outputs, metadata,
+            });
+          } else if (cellType === "markdown") {
+            cells.push({ id, cell_type: "markdown", source, metadata });
+          } else {
+            cells.push({ id, cell_type: "raw", source, metadata });
+          }
+        }
+        replaceNotebookCells(cells);
       } catch {
         // Handle may not have synced yet
       }
+    }
+
+    // Resolve a raw output from WASM into a JupyterOutput.
+    // ContentRefs with blob hashes → same-origin /blob/{hash} URLs.
+    function resolveOutput(output: unknown): any | null {
+      if (typeof output !== "object" || output === null) return null;
+      const obj = output as Record<string, unknown>;
+      if (!("output_type" in obj)) return null;
+
+      if (obj.output_type === "stream") {
+        const text = resolveRef(obj.text);
+        if (text === null) return null;
+        return { output_type: "stream", name: obj.name, text };
+      }
+      if (obj.output_type === "error") {
+        const tb = resolveRef(obj.traceback);
+        if (tb === null) return null;
+        return {
+          output_type: "error", ename: obj.ename, evalue: obj.evalue,
+          traceback: JSON.parse(tb),
+        };
+      }
+      if (obj.output_type === "display_data" || obj.output_type === "execute_result") {
+        const data = obj.data as Record<string, unknown> | undefined;
+        if (!data) return null;
+        const resolved: Record<string, unknown> = {};
+        for (const [mime, ref_] of Object.entries(data)) {
+          const val = resolveRef(ref_);
+          if (val === null) continue;
+          if (mime.includes("json")) {
+            try { resolved[mime] = JSON.parse(val); } catch { resolved[mime] = val; }
+          } else {
+            resolved[mime] = val;
+          }
+        }
+        if (Object.keys(resolved).length === 0) return null;
+        return {
+          output_type: obj.output_type, data: resolved,
+          metadata: obj.metadata ?? {},
+          execution_count: obj.execution_count ?? null,
+        };
+      }
+      return obj;
+    }
+
+    function resolveRef(ref_: unknown): string | null {
+      if (typeof ref_ === "string") return ref_;
+      if (typeof ref_ !== "object" || ref_ === null) return null;
+      const r = ref_ as Record<string, unknown>;
+      if ("inline" in r && typeof r.inline === "string") return r.inline;
+      if ("url" in r && typeof r.url === "string") return r.url;
+      if ("blob" in r && typeof r.blob === "string")
+        return `${window.location.origin}/blob/${r.blob}`;
+      return null;
     }
 
     initViewer();
@@ -223,7 +301,7 @@ export function FullTreeViewer({ notebookId }: Props) {
   const noopString = (_id: string) => {};
 
   const content = (
-    <div className="mx-auto max-w-5xl">
+    <div className="w-full">
       <div className="mb-3 flex items-center gap-2 px-4 py-2 text-xs text-muted-foreground">
         <span
           className={`h-2 w-2 rounded-full ${
