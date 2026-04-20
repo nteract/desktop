@@ -771,6 +771,41 @@ async fn run_mcp_server(no_show: bool) -> Result<()> {
         );
     }
 
+    // Install a panic hook that writes to the MCP log file so panics are
+    // visible for diagnosis (the default hook writes to stderr which is
+    // invisible for stdio MCP servers).
+    let panic_log_path = log_path.clone();
+    std::panic::set_hook(Box::new(move |info| {
+        let payload = if let Some(s) = info.payload().downcast_ref::<String>() {
+            s.as_str()
+        } else if let Some(s) = info.payload().downcast_ref::<&str>() {
+            s
+        } else {
+            "unknown panic"
+        };
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "unknown location".to_string());
+
+        let msg = format!(
+            "[PANIC] {payload}\n  at {location}\n  pid={}\n",
+            std::process::id()
+        );
+
+        // Best-effort write directly to the log file (tracing may not flush)
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&panic_log_path)
+        {
+            use std::io::Write;
+            let _ = f.write_all(msg.as_bytes());
+        }
+
+        // Also emit via tracing in case the subscriber is still alive
+        tracing::error!("{msg}");
+    }));
+
     // ── Server setup ─────────────────────────────────────────────────
     let socket_path = runtimed_client::daemon_paths::get_socket_path();
     let (blob_base_url, blob_store_path) =

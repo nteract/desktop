@@ -91,4 +91,13 @@ opt-level = 'z'
 strip = true
 lto = true
 codegen-units = 1
+# Prevent panics in user-facing code - crashes are terrible UX.
 panic = "abort"
+
+# runt-cli hosts the MCP server which uses catch_unwind to recover from
+# automerge panics during sync (automerge/automerge#1187). panic=abort
+# makes those guards no-ops, causing silent process death on shared notebooks.
+# This profile inherits from release but enables unwinding.
+[profile.release-mcp]
+inherits = "release"
+panic = "unwind"

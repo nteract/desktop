@@ -1600,18 +1600,9 @@ fn cmd_install_nightly(args: &[String]) {
     // `RUNT_BUILD_CHANNEL=stable` exported for release validation, a naive
     // `cargo build` would produce stable binaries that then get installed
     // into the nightly namespace.
-    println!("Building runtimed, runt-cli, runt-proxy (release, channel=nightly)...");
+    println!("Building runtimed, runt-proxy (release, channel=nightly)...");
     let mut build_cmd = Command::new("cargo");
-    build_cmd.args([
-        "build",
-        "--release",
-        "-p",
-        "runtimed",
-        "-p",
-        "runt-cli",
-        "-p",
-        "runt-proxy",
-    ]);
+    build_cmd.args(["build", "--release", "-p", "runtimed", "-p", "runt-proxy"]);
     build_cmd.env("RUNT_BUILD_CHANNEL", "nightly");
     apply_sccache_env(&mut build_cmd);
     let status = build_cmd.status().unwrap_or_else(|e| {
@@ -1623,10 +1614,27 @@ fn cmd_install_nightly(args: &[String]) {
         exit(status.code().unwrap_or(1));
     }
 
+    // runt-cli uses a custom profile that enables panic=unwind so catch_unwind
+    // guards in the MCP server remain effective (automerge/automerge#1187).
+    println!("Building runt-cli (release-mcp, channel=nightly)...");
+    let mut mcp_build_cmd = Command::new("cargo");
+    mcp_build_cmd.args(["build", "--profile", "release-mcp", "-p", "runt-cli"]);
+    mcp_build_cmd.env("RUNT_BUILD_CHANNEL", "nightly");
+    apply_sccache_env(&mut mcp_build_cmd);
+    let status = mcp_build_cmd.status().unwrap_or_else(|e| {
+        eprintln!("Failed to run cargo build: {e}");
+        exit(1);
+    });
+    if !status.success() {
+        eprintln!("cargo build --profile release-mcp failed");
+        exit(status.code().unwrap_or(1));
+    }
+
     let exe_suffix = if cfg!(windows) { ".exe" } else { "" };
     let release_dir = Path::new("target/release");
+    let release_mcp_dir = Path::new("target/release-mcp");
     let runtimed_source = release_dir.join(format!("runtimed{exe_suffix}"));
-    let runt_source = release_dir.join(format!("runt{exe_suffix}"));
+    let runt_source = release_mcp_dir.join(format!("runt{exe_suffix}"));
     let proxy_source = release_dir.join(format!("runt-proxy{exe_suffix}"));
 
     for (label, path) in [
@@ -1905,7 +1913,10 @@ fn cmd_mcp(print_config: bool, release: bool) {
     if release {
         println!("Building runtimed (release) for supervisor...");
         run_cmd("cargo", &["build", "--release", "-p", "runtimed"]);
-        run_cmd("cargo", &["build", "--release", "-p", "runt-cli"]);
+        run_cmd(
+            "cargo",
+            &["build", "--profile", "release-mcp", "-p", "runt-cli"],
+        );
     }
 
     if print_config {
@@ -3115,11 +3126,14 @@ fn cmd_sync_tool_cache(check: bool) {
     let manifest_nightly = Path::new("mcpb/manifest.nightly.json");
     let manifest_stable = Path::new("mcpb/manifest.stable.json");
 
-    eprintln!("Building runt-cli (release)...");
-    run_cmd("cargo", &["build", "--release", "-p", "runt-cli"]);
+    eprintln!("Building runt-cli (release-mcp)...");
+    run_cmd(
+        "cargo",
+        &["build", "--profile", "release-mcp", "-p", "runt-cli"],
+    );
 
     eprintln!("Dumping tool list from runt mcp...");
-    let runt_bin = Path::new("target/release/runt");
+    let runt_bin = Path::new("target/release-mcp/runt");
     let tools_json = dump_mcp_tools(runt_bin);
 
     // 3. Parse and compute description bytes
