@@ -584,6 +584,18 @@ Heavy output renderers (markdown, plotly, vega, leaflet) are loaded as **on-dema
 
 **Key files:** `src/isolated-renderer/index.tsx` (registry + loader), `src/isolated-renderer/*-renderer.tsx` (plugins), `apps/notebook/vite-plugin-isolated-renderer.ts` (build), `src/components/isolated/iframe-libraries.ts` (single MIME→plugin mapping layer: `PLUGIN_MIME_TYPES`, `needsPlugin`, `loadPluginForMime`).
 
+### Unified Env Resolution
+
+**One hash rule for every cached env: `compute_unified_env_hash(deps, env_id)`.** Always includes `env_id`. No cross-notebook env sharing at the disk level — hot-sync on notebook A would silently mutate a shared env under notebook B. Rule lives in `kernel_env::{uv,conda}::compute_unified_env_hash`.
+
+**Base-package sets are the capture contract.** `kernel_env::uv::UV_BASE_PACKAGES` and `kernel_env::conda::CONDA_BASE_PACKAGES` are consumed by both the pool warmer and the first-launch capture step via `kernel_env::strip_base`. Adding a package to either set affects what gets stripped from newly-captured metadata — existing notebooks keep whatever set was captured the day they were first claimed.
+
+**Preserve-on-eviction requires a saved `.ipynb` path.** `should_preserve_env_on_eviction` in `notebook_sync_server.rs` returns true only when the room has a saved path AND the room's `runtime_agent_env_path` matches the captured unified-hash dir. Untitled notebooks, pool envs (`runtimed-{uv,conda,pixi}-*`), and saved notebooks whose env is still a pool dir all delete on eviction. Do not extend preservation to untitled notebooks without making autosave claim a file first.
+
+**Hot-sync coherence runs at eviction, not kernel shutdown.** `flush_launched_deps_to_metadata` + `save_notebook_to_disk` + `rename_env_dir_to_unified_hash` are sequenced after the runtime agent is shut down and before env cleanup. The kernel is guaranteed dead at this point — renaming mid-session would invalidate the kernel's `VIRTUAL_ENV` and any absolute-path subprocess handles.
+
+See issue #1954 and PRs #1958, #1960, #1962, #1963, #1964 for the full design + correction history.
+
 ### Cell List Stable DOM Order (Iframe Reload Prevention)
 
 **The cell list in `NotebookView.tsx` MUST render in a stable DOM order (sorted by cell ID) and use CSS `order` for visual positioning.** Do NOT iterate `cellIds` directly in the JSX — iterate `stableDomOrder` instead.

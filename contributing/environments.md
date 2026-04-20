@@ -370,23 +370,36 @@ When a user creates a new notebook (File → New), the kernel type is determined
 
 ## Content-Addressed Caching
 
-Environments are cached by a hash of their dependencies so notebooks with identical deps share a single environment.
+Every environment lives at `{cache}/{hash}/`. The hash uses one rule across UV and Conda:
 
-**UV** (`uv_env.rs`):
-- Hash = SHA256(sorted deps + requires_python + prerelease + env_id), first 16 hex chars
-- Location: `~/.cache/runt/envs/{hash}/`
-- When deps are non-empty, env_id is excluded from hash (allows cross-notebook sharing)
-- When deps are empty, env_id is included (per-notebook isolation)
+```
+hash = sha256(sorted_deps + resolver_fields + env_id)[..16]
+```
 
-**Conda** (`conda_env.rs`):
-- Hash = SHA256(sorted deps + sorted channels + python version + env_id), first 16 hex chars
-- Location: `~/.cache/runt/conda-envs/{hash}/`
+Resolver fields differ per runtime (UV: `requires-python`, `prerelease`; Conda: `sorted_channels`, `python`), but `env_id` is **always** included. Every notebook's env is isolated per notebook — there is no cross-notebook env sharing at the disk level, on purpose. Hot-sync on notebook A would silently mutate a shared env under notebook B, which is a correctness trap (see issue #1954 § Cross-notebook sharing default).
 
-Cache hit check: verify that `{hash}/bin/python` (Unix) or `{hash}/Scripts/python.exe` (Windows) exists.
+| Runtime | Source of truth | Cache dir |
+|---------|-----------------|-----------|
+| UV | `kernel_env::uv::compute_unified_env_hash(deps, env_id)` | `~/.cache/runt/envs/{hash}/` |
+| Conda | `kernel_env::conda::compute_unified_env_hash(deps, env_id)` | `~/.cache/runt/conda-envs/{hash}/` |
+
+Cache hit check: verify that `{hash}/bin/python` (Unix) or `{hash}/Scripts/python.exe` (Windows) exists — same as before.
+
+### Base-package constants
+
+The pool warmer and the capture step both strip a shared base set so captured metadata records only user intent:
+
+| Constant | Value |
+|----------|-------|
+| `kernel_env::uv::UV_BASE_PACKAGES` | `[ipykernel, ipywidgets, anywidget, nbformat, uv, dx]` |
+| `kernel_env::conda::CONDA_BASE_PACKAGES` | `[ipykernel, ipywidgets, anywidget, nbformat]` |
+| `kernel_env::strip_base(installed, base)` | Filter the base set out of an install list |
+
+Adding to the base set never retroactively rewrites captured notebooks — each notebook keeps whatever set was captured the day it was first claimed.
 
 ## Prewarming and the Daemon Pool
 
-To make notebook startup instant, the daemon maintains a pool of pre-created environments with just `ipykernel` and `ipywidgets` installed.
+To make notebook startup instant, the daemon maintains a pool of pre-created environments installed with the base set plus the user's current `default_packages` setting. Entries in the pool are named `runtimed-{uv,conda}-{uuid}` and are content-free — they can be claimed by any notebook.
 
 **Daemon pool** (`crates/runtimed/src/daemon.rs`):
 - The `runtimed` daemon runs as a background process
@@ -395,7 +408,42 @@ To make notebook startup instant, the daemon maintains a pool of pre-created env
 - Max age: 2 days (172800 seconds)
 - Warming loops replenish environments as they're consumed
 
-Prewarmed environments have no `env_id` so they can be reused by any notebook that needs a bare environment.
+### First-launch capture
+
+A notebook is "captured" on first launch out of the pool. The daemon:
+
+1. Takes an entry from the pool (`runtimed-uv-{uuid}` / `runtimed-conda-{uuid}`).
+2. Computes `user_defaults = strip_base(prewarmed_packages, BASE_PACKAGES)`.
+3. Renames the env dir from the pool name to `{cache}/{compute_unified_env_hash(user_defaults, env_id)}/`.
+4. Writes `user_defaults` into `metadata.runt.{uv,conda}.dependencies` and ensures `metadata.runt.env_id` is set — both via `doc.fork_and_merge()` per the CRDT-mutation rule.
+
+After this, the notebook is indistinguishable from an inline-deps notebook — the pool is a bootstrap optimisation, not a runtime dependency.
+
+`capture_env_into_metadata` in `notebook_sync_server.rs` is idempotent and write-once: it only populates empty sections. User-edited deps are not clobbered.
+
+### Reopen: cache-hit via `unified_env_on_disk`
+
+On subsequent launches the daemon reads `metadata.runt.{uv,conda}` + `metadata.runt.env_id`, recomputes `compute_unified_env_hash`, and checks `unified_env_on_disk`. Cache hit → `prepare_environment_unified` returns instantly, no pool take. Cache miss → falls through to the inline-deps path and rebuilds (happens after a daemon restart if the env was GC'd, or for notebooks shared from another machine).
+
+The "captured" predicate is **disk-only**: `unified_env_on_disk(captured).is_some()`. Deps-present-but-disk-absent is intentionally not treated as captured because it's indistinguishable from a fresh notebook whose user added inline deps before first launch (see PR #1962).
+
+### Preserve captured envs on room eviction
+
+Room eviction fires 30 s after the last peer disconnects, plus any time the daemon restarts. By default that tears down the env dir. Captured envs bound to a **saved** `.ipynb` survive eviction so the next reopen cache-hits; untitled notebooks, pool envs, and saved notebooks whose env is still a pool dir get deleted as before. The predicate lives in `should_preserve_env_on_eviction`.
+
+Without this, PR #1960's reopen path only worked inside a single daemon session — any restart blew away the cache. See PR #1963 and issue #1954 § "Correction to the design."
+
+### Hot-sync coherence at eviction
+
+When a user runs `sync_environment` mid-session (adds packages to a running kernel), the new packages land in the in-memory `LaunchedEnvConfig` but not in the notebook metadata or the on-disk hash. If we stopped there, the saved `.ipynb` would be stale and the next reopen would find an env at the wrong hash.
+
+At eviction, after the runtime agent is shut down and before env cleanup:
+
+1. `flush_launched_deps_to_metadata` writes the kernel's post-sync dep list (via `effective_user_deps_from_launched`, which applies `strip_base`) into `metadata.runt.{uv,conda}.dependencies` using `fork_and_merge`.
+2. `save_notebook_to_disk` persists the updated metadata to the `.ipynb` synchronously.
+3. `rename_env_dir_to_unified_hash` moves the on-disk env from the pre-flush hash to the post-flush hash so the next reopen's `unified_env_on_disk` lookup hits. The rename is gated on save success and is explicitly scoped to the launched runtime (UV xor Conda), and skipped if the target path already exists.
+
+Kernel is guaranteed dead at this point, so renaming is safe (no process holds the old `VIRTUAL_ENV`). See PR #1964.
 
 ## Project File Discovery
 
