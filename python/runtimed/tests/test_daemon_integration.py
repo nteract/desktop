@@ -1240,10 +1240,6 @@ class TestKernelLaunchMetadata:
         assert ks["display_name"] == "Minimal Kernel"
         assert "language" not in ks  # Should not be present when not set
 
-    @pytest.mark.xfail(
-        reason="Flaky on CI: inline dep kernel output capture is unreliable on slow runners",
-        strict=False,
-    )
     @pytest.mark.timeout(120)
     async def test_uv_inline_deps_trusted(self, session):
         """Python kernel with UV inline deps from metadata launches correctly.
@@ -1266,10 +1262,6 @@ class TestKernelLaunchMetadata:
         assert result.success, f"Failed to import requests: {result.stderr}"
         assert result.stdout.strip(), "requests version should not be empty"
 
-    @pytest.mark.xfail(
-        reason="Flaky on CI: inline dep kernel output capture is unreliable on slow runners",
-        strict=False,
-    )
     @pytest.mark.timeout(120)
     async def test_uv_inline_deps_env_has_python(self, session):
         """UV inline env actually has a working Python with the declared deps."""
@@ -1369,10 +1361,6 @@ class TestDenoKernel:
 
 
 @pytest.mark.timeout(180)
-@pytest.mark.xfail(
-    reason="Flaky on CI: conda inline env output capture is unreliable on slow runners",
-    strict=False,
-)
 class TestCondaInlineDeps:
     """Test conda inline dependency environments.
 
@@ -1949,7 +1937,7 @@ class TestErrorHandling:
         await async_start_kernel_with_retry(session)
 
         warmup_cell = await async_create_cell_and_wait_for_sync(session, "warmup = 1")
-        warmup_result = await session.execute_cell(warmup_cell)
+        warmup_result = await session.execute_cell(warmup_cell, timeout_secs=120)
         assert warmup_result.success
 
         cell_id = await async_create_cell_and_wait_for_sync(session, "if True print('broken')")
