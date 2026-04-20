@@ -13,7 +13,7 @@
 //! use rattler directly (already a dependency) and generate the pixi manifest
 //! ourselves -- giving us the same result with zero new dependencies.
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use log::{debug, info, warn};
 use rattler::{default_cache_dir, install::Installer};
 use rattler_conda_types::{
@@ -167,6 +167,14 @@ pub async fn create_pixi_environment(
             python_path
         ));
     }
+
+    // Vendor the single-file nteract_kernel_launcher module into site-packages
+    // so `python -m nteract_kernel_launcher` resolves from this env. Without
+    // this, bootstrap_dx kernels die with ModuleNotFoundError at launch.
+    // Run before Ready so the env is fully provisioned when the caller sees it.
+    crate::launcher::vendor_into_venv(&python_path)
+        .await
+        .context("vendor nteract_kernel_launcher into pixi env")?;
 
     handler.on_progress(
         "pixi",
