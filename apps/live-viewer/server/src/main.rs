@@ -254,10 +254,6 @@ async fn main() {
         app = app.route("/", get(handle_index));
     }
 
-    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{PORT}"))
-        .await
-        .expect("failed to bind");
-
     let hostname = std::process::Command::new("sh")
         .arg("-c")
         .arg(r#"tailscale status --json 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('Self',{}).get('DNSName','').rstrip('.'))" 2>/dev/null"#)
@@ -268,9 +264,33 @@ async fn main() {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "0.0.0.0".into());
 
-    info!("nteract live viewer (frame relay)");
-    info!("  Tailnet: http://{}:{}", hostname, PORT);
-    info!("  Local:   http://localhost:{}", PORT);
+    // Try to find Tailscale TLS certs for HTTPS
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
+    let cert_dir = PathBuf::from(&home).join(".local/share/tailscale/certs");
+    let cert_file = cert_dir.join(format!("{hostname}.crt"));
+    let key_file = cert_dir.join(format!("{hostname}.key"));
 
-    axum::serve(listener, app).await.unwrap();
+    if cert_file.exists() && key_file.exists() {
+        info!("nteract live viewer (TLS)");
+        info!("  Tailnet: https://{}:{}", hostname, PORT);
+        info!("  Local:   https://localhost:{}", PORT);
+
+        let config = axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert_file, &key_file)
+            .await
+            .expect("failed to load TLS certs");
+
+        axum_server::bind_rustls(format!("0.0.0.0:{PORT}").parse().unwrap(), config)
+            .serve(app.into_make_service())
+            .await
+            .unwrap();
+    } else {
+        info!("nteract live viewer (plain HTTP — no TLS certs found)");
+        info!("  Tailnet: http://{}:{}", hostname, PORT);
+        info!("  Local:   http://localhost:{}", PORT);
+
+        let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{PORT}"))
+            .await
+            .expect("failed to bind");
+        axum::serve(listener, app).await.unwrap();
+    }
 }
