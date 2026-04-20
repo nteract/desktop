@@ -2108,20 +2108,35 @@ impl RuntimeStateDoc {
     /// Eliminates the TOCTOU race where the doc grows between a pre-send size
     /// check and the actual frame send. If the message is oversized, this
     /// compacts via save→load, resets `peer_state`, and regenerates.
-    pub fn generate_sync_message_bounded(
+    ///
+    /// Returns the encoded bytes directly, avoiding a redundant clone of the
+    /// sync message. Only safe before the first sync exchange with the peer
+    /// (i.e., `peer_state` must be fresh or about to be reset).
+    pub fn generate_sync_message_bounded_encoded(
         &mut self,
         peer_state: &mut sync::State,
         max_encoded_bytes: usize,
-    ) -> Option<sync::Message> {
-        let msg = self.doc.sync().generate_sync_message(peer_state)?;
-        if msg.clone().encode().len() <= max_encoded_bytes {
-            return Some(msg);
+    ) -> Option<Vec<u8>> {
+        let encoded = self.doc.sync().generate_sync_message(peer_state)?.encode();
+        if encoded.len() <= max_encoded_bytes {
+            return Some(encoded);
         }
+        #[cfg(feature = "persistence")]
+        log::warn!(
+            "[runtime-state] Sync message ({} bytes) exceeds threshold ({} bytes), compacting",
+            encoded.len(),
+            max_encoded_bytes,
+        );
         if !self.rebuild_from_save() {
-            return None;
+            #[cfg(feature = "persistence")]
+            log::warn!("[runtime-state] Compaction failed during bounded sync generation");
+            return Some(encoded);
         }
         *peer_state = sync::State::new();
-        self.doc.sync().generate_sync_message(peer_state)
+        self.doc
+            .sync()
+            .generate_sync_message(peer_state)
+            .map(|m| m.encode())
     }
 
     /// Receive a sync message with change stripping (read-only enforcement).
@@ -2633,7 +2648,7 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_sync_message_bounded_compacts_on_oversized() {
+    fn test_generate_sync_message_bounded_encoded_compacts_on_oversized() {
         let mut doc = RuntimeStateDoc::new();
         doc.create_execution("exec-1", "cell-1");
         for i in 0..50 {
@@ -2647,13 +2662,17 @@ mod tests {
 
         let mut peer_state = sync::State::new();
         // Threshold of 1 byte forces compaction
-        let msg = doc.generate_sync_message_bounded(&mut peer_state, 1);
-        assert!(msg.is_some(), "should produce a message after compaction");
+        let encoded = doc.generate_sync_message_bounded_encoded(&mut peer_state, 1);
+        assert!(
+            encoded.is_some(),
+            "should produce a message after compaction"
+        );
 
         // Verify the compacted message syncs correctly to a fresh client
         let mut client = RuntimeStateDoc::new_empty();
         let mut client_state = sync::State::new();
-        if let Some(msg) = msg {
+        if let Some(bytes) = encoded {
+            let msg = sync::Message::decode(&bytes).expect("decode compacted message");
             client
                 .doc_mut()
                 .sync()
@@ -2681,13 +2700,13 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_sync_message_bounded_no_compact_under_limit() {
+    fn test_generate_sync_message_bounded_encoded_no_compact_under_limit() {
         let mut doc = RuntimeStateDoc::new();
         doc.set_kernel_status("idle");
 
         let mut peer_state = sync::State::new();
-        let msg = doc.generate_sync_message_bounded(&mut peer_state, 100 * 1024 * 1024);
-        assert!(msg.is_some());
+        let encoded = doc.generate_sync_message_bounded_encoded(&mut peer_state, 100 * 1024 * 1024);
+        assert!(encoded.is_some());
     }
 
     // ── Execution lifecycle tests ───────────────────────────────────

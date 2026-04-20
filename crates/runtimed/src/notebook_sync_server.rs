@@ -1739,8 +1739,10 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
     let mut state_sync_state = automerge::sync::State::new();
     let state_sync_msg = {
         let mut sd = room.state_doc.write().await;
-        sd.generate_sync_message_bounded(&mut state_sync_state, STATE_SYNC_COMPACT_THRESHOLD)
-            .map(|msg| msg.encode())
+        sd.generate_sync_message_bounded_encoded(
+            &mut state_sync_state,
+            STATE_SYNC_COMPACT_THRESHOLD,
+        )
     };
     if let Some(encoded) = state_sync_msg {
         if let Err(e) =
@@ -2632,9 +2634,10 @@ where
             info!("[notebook-sync] Compacted oversized RuntimeStateDoc before initial sync");
         }
         match catch_automerge_panic("initial-state-sync", || {
-            state_doc
-                .generate_sync_message_bounded(&mut state_peer_state, STATE_SYNC_COMPACT_THRESHOLD)
-                .map(|msg| msg.encode())
+            state_doc.generate_sync_message_bounded_encoded(
+                &mut state_peer_state,
+                STATE_SYNC_COMPACT_THRESHOLD,
+            )
         }) {
             Ok(encoded) => encoded,
             Err(e) => {
