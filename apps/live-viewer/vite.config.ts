@@ -64,6 +64,7 @@ export default defineConfig({
     alias: {
       "@/": path.resolve(__dirname, "../../src") + "/",
       "~/": path.resolve(__dirname, "./src") + "/",
+      "notebook-app/": path.resolve(__dirname, "../notebook/src") + "/",
       "runtimed-wasm": path.resolve(__dirname, "../notebook/src/wasm/runtimed-wasm"),
     },
   },

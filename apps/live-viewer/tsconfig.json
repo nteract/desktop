@@ -14,6 +14,7 @@
     "paths": {
       "@/*": ["../../src/*"],
       "~/*": ["./src/*"],
+      "notebook-app/*": ["../notebook/src/*"],
       "runtimed/*": ["../../packages/runtimed/*"],
       "runtimed-wasm/*": ["../notebook/src/wasm/runtimed-wasm/*"]
     }

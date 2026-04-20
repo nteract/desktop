@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route, Link, useNavigate, useParams } from "react-router";
+import { FullTreeViewer } from "./components/FullTreeViewer";
 import { useEffect, useState } from "react";
 import { NotebookViewer } from "./components/NotebookViewer";
 
@@ -17,6 +18,7 @@ export function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<NotebookList />} />
+        <Route path="/full/:notebookId" element={<FullTreePage />} />
         <Route path="/:notebookId" element={<ViewerPage />} />
       </Routes>
     </BrowserRouter>
@@ -163,6 +165,30 @@ function ViewerPage() {
         </span>
       </header>
       <NotebookViewer notebookId={notebookId} />
+    </div>
+  );
+}
+
+function FullTreePage() {
+  const { notebookId } = useParams<{ notebookId: string }>();
+
+  if (!notebookId) return null;
+
+  return (
+    <div className="dark min-h-screen bg-background text-foreground">
+      <header className="sticky top-0 z-50 flex items-center gap-3 border-b border-border bg-background/80 px-6 py-3 backdrop-blur-sm">
+        <Link
+          to="/"
+          className="rounded-md border border-border px-3 py-1 text-xs text-muted-foreground hover:bg-secondary"
+        >
+          &larr; Back
+        </Link>
+        <h1 className="text-sm font-semibold">FULL TREE TEST</h1>
+        <span className="ml-auto font-mono text-xs text-muted-foreground">
+          {notebookId.slice(0, 8)}
+        </span>
+      </header>
+      <FullTreeViewer notebookId={notebookId} />
     </div>
   );
 }
