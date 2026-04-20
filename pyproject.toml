@@ -83,7 +83,8 @@ extra-paths = [
     "python/gremlin/src",
     "python/prewarm/src",
     "python/dx/src",
-    "python/nteract-kernel-launcher/src",
+    # nteract-kernel-launcher is a single top-level .py file, no src/ layout
+    "python/nteract-kernel-launcher",
     # Integration tests sit side-by-side under tests/ and share fixtures
     # via direct import (sys.path injection at runtime). Add the dir so
     # ty can resolve the cross-file fixture imports.

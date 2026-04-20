@@ -479,11 +479,11 @@ impl KernelConnection for JupyterKernel {
                             "[jupyter-kernel] Starting Python kernel from env at {:?}",
                             pooled_env.python_path
                         );
-                        // When RUNT_BOOTSTRAP_DX is set, prewarmed UV envs have
-                        // `nteract-kernel-launcher` installed; conda/pixi prewarmed envs
-                        // do not, so fall back to ipykernel_launcher there.
-                        let launcher_module = if bootstrap_dx && pooled_env.env_type == EnvType::Uv
-                        {
+                        // Every pool env (UV/conda/pixi) is vendored with
+                        // `nteract_kernel_launcher.py` at creation + take time,
+                        // so `-m nteract_kernel_launcher` resolves regardless of
+                        // flavor when bootstrap_dx is on.
+                        let launcher_module = if bootstrap_dx {
                             "nteract_kernel_launcher"
                         } else {
                             "ipykernel_launcher"
