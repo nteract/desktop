@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { SyncEngine } from "runtimed/src/sync-engine";
 import type { SyncableHandle } from "runtimed/src/handle";
+import init, { NotebookHandle } from "runtimed-wasm/runtimed_wasm.js";
 import { WebSocketTransport } from "~/lib/ws-transport";
 import { CellView } from "./CellView";
 
@@ -37,9 +38,8 @@ export function NotebookViewer({ notebookId }: Props) {
   useEffect(() => {
     let disposed = false;
 
-    async function init() {
-      const { default: wasmInit, NotebookHandle } = await import("runtimed-wasm");
-      await wasmInit();
+    async function initViewer() {
+      await init();
 
       if (disposed) return;
 
@@ -70,10 +70,10 @@ export function NotebookViewer({ notebookId }: Props) {
       });
       engineRef.current = engine;
 
-      engine.cellChanges$.subscribe((changeset) => {
+      engine.cellChanges$.subscribe(() => {
         if (disposed) return;
         materializeCells();
-        if (status !== "live") setStatus("live");
+        setStatus("live");
       });
 
       engine.initialSyncComplete$.subscribe(() => {
@@ -107,7 +107,7 @@ export function NotebookViewer({ notebookId }: Props) {
       }
     }
 
-    init();
+    initViewer();
 
     return () => {
       disposed = true;
