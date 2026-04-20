@@ -43,11 +43,28 @@ pub async fn purelib_for(python: &Path) -> Result<PathBuf> {
     Ok(PathBuf::from(trimmed))
 }
 
+/// Per-call unique temp filename for write-and-rename.
+///
+/// A fixed `.tmp` filename races when two vendors target the same
+/// site-packages directory: the first rename succeeds and removes the
+/// tmp; the second sees ENOENT on its own tmp path. Use
+/// `pid + nanos` so each caller owns its own tmp file.
+fn unique_tmp_path(purelib: &Path) -> PathBuf {
+    let pid = std::process::id();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    purelib.join(format!(".{LAUNCHER_FILENAME}.tmp.{pid}.{nanos}"))
+}
+
 /// Write `LAUNCHER_SRC` into the venv's site-packages so that
 /// `python -m nteract_kernel_launcher` resolves.
 ///
 /// Idempotent: overwrites if present. Writes via a temp file + rename
-/// so concurrent readers never see a half-written module.
+/// so concurrent readers never see a half-written module. The temp
+/// filename is unique per call so concurrent vendors into the same
+/// site-packages don't race on the rename.
 pub async fn vendor_into_venv(python: &Path) -> Result<PathBuf> {
     let purelib = purelib_for(python).await?;
     tokio::fs::create_dir_all(&purelib)
@@ -55,7 +72,7 @@ pub async fn vendor_into_venv(python: &Path) -> Result<PathBuf> {
         .with_context(|| format!("create purelib {purelib:?}"))?;
 
     let final_path = purelib.join(LAUNCHER_FILENAME);
-    let tmp_path = purelib.join(format!(".{LAUNCHER_FILENAME}.tmp"));
+    let tmp_path = unique_tmp_path(&purelib);
     tokio::fs::write(&tmp_path, LAUNCHER_SRC)
         .await
         .with_context(|| format!("write {tmp_path:?}"))?;
@@ -73,7 +90,7 @@ pub async fn vendor_into_venv(python: &Path) -> Result<PathBuf> {
 #[doc(hidden)]
 pub async fn _test_write_launcher(purelib: &Path) -> Result<PathBuf> {
     let final_path = purelib.join(LAUNCHER_FILENAME);
-    let tmp_path = purelib.join(format!(".{LAUNCHER_FILENAME}.tmp"));
+    let tmp_path = unique_tmp_path(purelib);
     tokio::fs::write(&tmp_path, LAUNCHER_SRC).await?;
     tokio::fs::rename(&tmp_path, &final_path).await?;
     Ok(final_path)
@@ -124,5 +141,30 @@ mod tests {
             .await
             .unwrap();
         assert!(status.success(), "embedded launcher is not valid Python");
+    }
+
+    #[tokio::test]
+    async fn concurrent_writes_dont_race() {
+        // Two concurrent writes into the same purelib must both succeed.
+        // A fixed `.tmp` filename would make the second rename fail with
+        // ENOENT once the first finishes — per-call unique tmps avoid that.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let purelib = tmp.path().join("lib/site-packages");
+        tokio::fs::create_dir_all(&purelib).await.unwrap();
+
+        let p1 = purelib.clone();
+        let p2 = purelib.clone();
+        let (r1, r2) = tokio::join!(
+            super::_test_write_launcher(&p1),
+            super::_test_write_launcher(&p2),
+        );
+
+        assert!(r1.is_ok(), "first concurrent write failed: {:?}", r1);
+        assert!(r2.is_ok(), "second concurrent write failed: {:?}", r2);
+
+        let final_path = purelib.join(LAUNCHER_FILENAME);
+        assert!(final_path.exists(), "launcher file not present after race");
+        let read = tokio::fs::read_to_string(&final_path).await.unwrap();
+        assert_eq!(read, LAUNCHER_SRC);
     }
 }

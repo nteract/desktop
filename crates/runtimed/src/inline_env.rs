@@ -58,17 +58,39 @@ fn get_inline_cache_dir() -> std::path::PathBuf {
         .join("inline-envs")
 }
 
+/// Combine inline deps with `dx` when `bootstrap_dx` is requested.
+///
+/// The vendored `nteract_kernel_launcher` shipped inside the daemon binary
+/// handles its own placement in site-packages; only the `dx` PyPI install
+/// has to ride along with the inline env. Folding `dx` into the dep list
+/// also changes the env hash so bootstrap and non-bootstrap envs don't
+/// collide in the cache.
+fn inline_deps_with_bootstrap(deps: &[String], bootstrap_dx: bool) -> Vec<String> {
+    if bootstrap_dx {
+        let mut out = deps.to_vec();
+        out.push("dx".to_string());
+        out
+    } else {
+        deps.to_vec()
+    }
+}
+
 /// Prepare a cached UV environment with the given inline dependencies.
 ///
 /// If a cached environment with the same deps already exists, returns it
 /// immediately. Otherwise creates a new environment with uv venv + uv pip install.
+///
+/// When `bootstrap_dx` is true, `dx` is added to the install set so
+/// `import dx; dx.install()` succeeds inside the kernel. This changes the
+/// env hash, so bootstrap and non-bootstrap envs are cached separately.
 pub async fn prepare_uv_inline_env(
     deps: &[String],
     prerelease: Option<&str>,
     handler: Arc<dyn ProgressHandler>,
+    bootstrap_dx: bool,
 ) -> Result<PreparedEnv> {
     let uv_deps = kernel_env::UvDependencies {
-        dependencies: deps.to_vec(),
+        dependencies: inline_deps_with_bootstrap(deps, bootstrap_dx),
         requires_python: Some(">=3.13".to_string()),
         prerelease: prerelease.map(|s| s.to_string()),
     };
@@ -186,9 +208,17 @@ pub fn compare_deps_to_pool(inline_deps: &[String], pool_packages: &[String]) ->
 /// Check if a cached UV inline environment already exists for the given deps.
 ///
 /// Returns `Some(PreparedEnv)` on cache hit, `None` on miss.
-pub fn check_uv_inline_cache(deps: &[String], prerelease: Option<&str>) -> Option<PreparedEnv> {
+///
+/// `bootstrap_dx` must match the value that will be passed to
+/// [`prepare_uv_inline_env`] so the hash lookup matches the env that will
+/// be created (or was created) on a miss.
+pub fn check_uv_inline_cache(
+    deps: &[String],
+    prerelease: Option<&str>,
+    bootstrap_dx: bool,
+) -> Option<PreparedEnv> {
     let uv_deps = kernel_env::UvDependencies {
-        dependencies: deps.to_vec(),
+        dependencies: inline_deps_with_bootstrap(deps, bootstrap_dx),
         requires_python: Some(">=3.13".to_string()),
         prerelease: prerelease.map(|s| s.to_string()),
     };

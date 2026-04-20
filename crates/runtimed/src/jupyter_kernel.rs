@@ -254,26 +254,38 @@ impl KernelConnection for JupyterKernel {
                             "uv".into(),
                         ];
                         if bootstrap_dx {
-                            // `dx` is on PyPI; the launcher is bundled and invoked by path.
+                            // `dx` is on PyPI; the launcher is injected via
+                            // PYTHONPATH below so `-m nteract_kernel_launcher`
+                            // resolves without shadowing cwd in sys.path[0].
                             args.push("--with".into());
                             args.push("dx".into());
                         }
                         args.push("python".into());
                         args.push("-Xfrozen_modules=off".into());
-                        if bootstrap_dx {
-                            // uv run's ephemeral venv doesn't have `nteract_kernel_launcher`
-                            // in site-packages, so invoke the daemon-side copy by path.
-                            let script = crate::launcher_cache::launcher_script_path().await?;
-                            args.push(script.to_string_lossy().into_owned());
+                        args.push("-m".into());
+                        let launcher_module = if bootstrap_dx {
+                            "nteract_kernel_launcher"
                         } else {
-                            args.push("-m".into());
-                            args.push("ipykernel_launcher".into());
-                        }
+                            "ipykernel_launcher"
+                        };
+                        args.push(launcher_module.into());
                         args.push("-f".into());
                         cmd.args(&args);
                         cmd.arg(&connection_file_path);
                         cmd.stdout(Stdio::null());
                         cmd.stderr(Stdio::piped());
+                        if bootstrap_dx {
+                            // Inject the daemon-side launcher via PYTHONPATH
+                            // instead of invoking it as a script. Running
+                            // `python /path/to/launcher.py` would set
+                            // `sys.path[0]` to the launcher's cache dir, which
+                            // breaks sibling-module imports from the notebook
+                            // cwd. `uv run` preserves env vars, and putting
+                            // the launcher dir on PYTHONPATH keeps cwd at
+                            // `sys.path[0]`.
+                            let dir = crate::launcher_cache::launcher_cache_dir().await?;
+                            cmd.env("PYTHONPATH", &dir);
+                        }
                         cmd
                     }
                     "conda:inline" => {
@@ -286,8 +298,13 @@ impl KernelConnection for JupyterKernel {
                             "[jupyter-kernel] Starting Python kernel with cached conda inline env at {:?}",
                             pooled_env.python_path
                         );
+                        let launcher_module = if bootstrap_dx {
+                            "nteract_kernel_launcher"
+                        } else {
+                            "ipykernel_launcher"
+                        };
                         let mut cmd = tokio::process::Command::new(&pooled_env.python_path);
-                        cmd.args(["-Xfrozen_modules=off", "-m", "ipykernel_launcher", "-f"]);
+                        cmd.args(["-Xfrozen_modules=off", "-m", launcher_module, "-f"]);
                         cmd.arg(&connection_file_path);
                         cmd.stdout(Stdio::null());
                         cmd.stderr(Stdio::piped());
@@ -318,6 +335,11 @@ impl KernelConnection for JupyterKernel {
                                     "[jupyter-kernel] Starting Python kernel from conda:env_yml env ({})",
                                     python.display()
                                 );
+                                let launcher_module = if bootstrap_dx {
+                                    "nteract_kernel_launcher"
+                                } else {
+                                    "ipykernel_launcher"
+                                };
                                 let mut cmd = tokio::process::Command::new(&python);
                                 cmd.env("CONDA_PREFIX", prefix);
                                 if let Some(ref nb_path) = notebook_path {
@@ -325,12 +347,7 @@ impl KernelConnection for JupyterKernel {
                                         cmd.current_dir(parent);
                                     }
                                 }
-                                cmd.args([
-                                    "-Xfrozen_modules=off",
-                                    "-m",
-                                    "ipykernel_launcher",
-                                    "-f",
-                                ]);
+                                cmd.args(["-Xfrozen_modules=off", "-m", launcher_module, "-f"]);
                                 cmd.arg(&connection_file_path);
                                 cmd.stdout(Stdio::null());
                                 cmd.stderr(Stdio::piped());
@@ -356,6 +373,11 @@ impl KernelConnection for JupyterKernel {
                                 .map(|d| d.path)
                         });
 
+                        let launcher_module = if bootstrap_dx {
+                            "nteract_kernel_launcher"
+                        } else {
+                            "ipykernel_launcher"
+                        };
                         if let Some(ref manifest) = manifest_path {
                             match kernel_launch::tools::pixi_shell_hook(manifest, None).await {
                                 Ok(env_vars) => {
@@ -379,12 +401,7 @@ impl KernelConnection for JupyterKernel {
                                     if let Some(parent) = manifest.parent() {
                                         cmd.current_dir(parent);
                                     }
-                                    cmd.args([
-                                        "-Xfrozen_modules=off",
-                                        "-m",
-                                        "ipykernel_launcher",
-                                        "-f",
-                                    ]);
+                                    cmd.args(["-Xfrozen_modules=off", "-m", launcher_module, "-f"]);
                                     cmd.arg(&connection_file_path);
                                     cmd.stdout(Stdio::null());
                                     cmd.stderr(Stdio::piped());
@@ -402,7 +419,7 @@ impl KernelConnection for JupyterKernel {
                                         "python",
                                         "-Xfrozen_modules=off",
                                         "-m",
-                                        "ipykernel_launcher",
+                                        launcher_module,
                                         "-f",
                                     ]);
                                     cmd.arg(&connection_file_path);
@@ -422,7 +439,7 @@ impl KernelConnection for JupyterKernel {
                                 "python",
                                 "-Xfrozen_modules=off",
                                 "-m",
-                                "ipykernel_launcher",
+                                launcher_module,
                                 "-f",
                             ]);
                             cmd.arg(&connection_file_path);
@@ -442,6 +459,11 @@ impl KernelConnection for JupyterKernel {
                             "[jupyter-kernel] Starting Python kernel with pixi exec (env_source: {})",
                             env_source
                         );
+                        let launcher_module = if bootstrap_dx {
+                            "nteract_kernel_launcher"
+                        } else {
+                            "ipykernel_launcher"
+                        };
                         let mut cmd = tokio::process::Command::new(&pixi_path);
                         cmd.arg("exec");
                         for pkg in ["ipykernel", "ipywidgets", "anywidget", "nbformat"] {
@@ -459,12 +481,20 @@ impl KernelConnection for JupyterKernel {
                             "python",
                             "-Xfrozen_modules=off",
                             "-m",
-                            "ipykernel_launcher",
+                            launcher_module,
                             "-f",
                         ]);
                         cmd.arg(&connection_file_path);
                         cmd.stdout(Stdio::null());
                         cmd.stderr(Stdio::piped());
+                        if bootstrap_dx {
+                            // pixi exec spins up an ephemeral env we don't
+                            // vendor into; inject the daemon-side launcher via
+                            // PYTHONPATH so `-m nteract_kernel_launcher`
+                            // resolves without touching sys.path[0].
+                            let dir = crate::launcher_cache::launcher_cache_dir().await?;
+                            cmd.env("PYTHONPATH", &dir);
+                        }
                         cmd
                     }
                     _ => {
