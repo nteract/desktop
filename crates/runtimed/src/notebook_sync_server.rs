@@ -117,8 +117,12 @@ fn runtime_agent_query_timeout(
 ) -> std::time::Duration {
     use notebook_protocol::protocol::RuntimeAgentRequest;
     match request {
-        RuntimeAgentRequest::Complete { .. } => std::time::Duration::from_secs(10),
-        RuntimeAgentRequest::GetHistory { .. } => std::time::Duration::from_secs(10),
+        RuntimeAgentRequest::Complete { .. } | RuntimeAgentRequest::GetHistory { .. } => {
+            std::time::Duration::from_secs(10)
+        }
+        RuntimeAgentRequest::LaunchKernel { .. }
+        | RuntimeAgentRequest::RestartKernel { .. }
+        | RuntimeAgentRequest::SyncEnvironment(_) => std::time::Duration::from_secs(240),
         _ => std::time::Duration::from_secs(30),
     }
 }
