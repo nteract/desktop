@@ -2629,10 +2629,7 @@ where
         }
         match catch_automerge_panic("initial-state-sync", || {
             state_doc
-                .generate_sync_message_bounded(
-                    &mut state_peer_state,
-                    STATE_SYNC_COMPACT_THRESHOLD,
-                )
+                .generate_sync_message_bounded(&mut state_peer_state, STATE_SYNC_COMPACT_THRESHOLD)
                 .map(|msg| msg.encode())
         }) {
             Ok(encoded) => encoded,
