@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { SyncEngine } from "runtimed/src/sync-engine";
 import type { SyncableHandle } from "runtimed/src/handle";
+import type { RuntimeState, ExecutionState, QueueEntry } from "runtimed/src/runtime-state";
+import type { JupyterOutput } from "@/components/cell/jupyter-output";
 import init, { NotebookHandle } from "runtimed-wasm/runtimed_wasm.js";
 import { WebSocketTransport } from "~/lib/ws-transport";
 import { CellView } from "./CellView";
@@ -10,17 +12,7 @@ interface CellData {
   cell_type: string;
   source: string;
   execution_count: number | null;
-  outputs: OutputData[];
-}
-
-interface OutputData {
-  output_type: string;
-  text?: string;
-  data?: Record<string, unknown>;
-  name?: string;
-  ename?: string;
-  evalue?: string;
-  traceback?: string[];
+  outputs: JupyterOutput[];
 }
 
 interface Props {
@@ -31,6 +23,11 @@ export function NotebookViewer({ notebookId }: Props) {
   const [cells, setCells] = useState<CellData[]>([]);
   const [status, setStatus] = useState<"connecting" | "syncing" | "live" | "error">("connecting");
   const [kernelStatus, setKernelStatus] = useState<string>("");
+  const [executions, setExecutions] = useState<Record<string, ExecutionState>>({});
+  const [queue, setQueue] = useState<{ executing: QueueEntry | null; queued: QueueEntry[] }>({
+    executing: null,
+    queued: [],
+  });
   const engineRef = useRef<SyncEngine | null>(null);
   const transportRef = useRef<WebSocketTransport | null>(null);
   const handleRef = useRef<SyncableHandle | null>(null);
@@ -82,12 +79,11 @@ export function NotebookViewer({ notebookId }: Props) {
         materializeCells();
       });
 
-      engine.runtimeState$.subscribe((state: unknown) => {
+      engine.runtimeState$.subscribe((state: RuntimeState) => {
         if (disposed) return;
-        const rs = state as { kernel?: { status?: string } } | null;
-        if (rs?.kernel?.status) {
-          setKernelStatus(rs.kernel.status);
-        }
+        setKernelStatus(state.kernel.status);
+        setExecutions(state.executions);
+        setQueue(state.queue);
       });
 
       engine.start();
@@ -118,6 +114,15 @@ export function NotebookViewer({ notebookId }: Props) {
     };
   }, [notebookId]);
 
+  const cellExecutionStatus = (cellId: string): ExecutionState | null => {
+    for (const exec of Object.values(executions)) {
+      if (exec.cell_id === cellId && (exec.status === "queued" || exec.status === "running")) {
+        return exec;
+      }
+    }
+    return null;
+  };
+
   return (
     <div className="mx-auto max-w-4xl px-4 py-4">
       <div className="mb-3 flex items-center gap-2 text-xs text-muted-foreground">
@@ -136,17 +141,21 @@ export function NotebookViewer({ notebookId }: Props) {
         {kernelStatus && (
           <>
             <span className="text-border">·</span>
-            <span>kernel: {kernelStatus}</span>
+            <KernelStatusBadge status={kernelStatus} />
           </>
         )}
         <span className="text-border">·</span>
         <span>{cells.length} cells</span>
+        {(queue.executing || queue.queued.length > 0) && (
+          <>
+            <span className="text-border">·</span>
+            <QueueIndicator executing={queue.executing} queued={queue.queued} />
+          </>
+        )}
       </div>
 
       {cells.length === 0 && status === "live" && (
-        <div className="py-12 text-center text-muted-foreground">
-          Empty notebook
-        </div>
+        <div className="py-12 text-center text-muted-foreground">Empty notebook</div>
       )}
 
       {cells.length === 0 && status !== "live" && (
@@ -159,9 +168,43 @@ export function NotebookViewer({ notebookId }: Props) {
 
       <div className="flex flex-col gap-0">
         {cells.map((cell) => (
-          <CellView key={cell.id} cell={cell} />
+          <CellView key={cell.id} cell={cell} executionState={cellExecutionStatus(cell.id)} />
         ))}
       </div>
     </div>
   );
+}
+
+function KernelStatusBadge({ status }: { status: string }) {
+  const colors: Record<string, string> = {
+    idle: "text-green-400",
+    busy: "text-amber-400",
+    starting: "text-blue-400",
+    error: "text-red-400",
+    not_started: "text-muted-foreground",
+    shutdown: "text-muted-foreground",
+  };
+  const icons: Record<string, string> = {
+    idle: "\u25CF",
+    busy: "\u25CF",
+    starting: "\u25CB",
+    error: "\u2716",
+  };
+  return (
+    <span className={colors[status] ?? "text-muted-foreground"}>
+      {icons[status] && <span className="mr-0.5">{icons[status]}</span>}
+      kernel: {status}
+    </span>
+  );
+}
+
+function QueueIndicator({
+  executing,
+  queued,
+}: {
+  executing: QueueEntry | null;
+  queued: QueueEntry[];
+}) {
+  const total = (executing ? 1 : 0) + queued.length;
+  return <span className="text-amber-400 animate-pulse">{total} in queue</span>;
 }
