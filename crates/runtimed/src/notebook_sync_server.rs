@@ -3716,23 +3716,16 @@ fn captured_env_source_override(
     resolve_captured_env_override(metadata_snapshot).0
 }
 
-/// A notebook is considered "captured" when either:
-/// - its claimed env is still present on disk (cache hit, happy path), or
-/// - its captured deps are non-empty (shared notebook or GC'd env — deps
-///   alone are enough signal to rebuild via `prepare_environment_unified`).
-///
-/// Empty deps + no on-disk env means the notebook has never been through
-/// the capture flow (common for fresh notebooks `create_empty_notebook`
-/// creates with an `env_id` and an empty `uv`/`conda` section). Those still
-/// need to go through the pool-take + claim + capture path.
+/// A notebook is considered "captured" only when its claimed env is still
+/// present on disk. Deps-present-but-disk-absent is intentionally NOT
+/// captured — we can't distinguish a GC'd captured env from a fresh
+/// notebook whose user added inline deps before the first launch. Treating
+/// the latter as captured would bypass the cross-notebook inline-deps
+/// cache. The tradeoff: GC'd captured envs rebuild via the normal inline
+/// path using legacy hashing. Same deps still dedup across notebooks; they
+/// just lose per-notebook env_id isolation for that rebuild.
 fn is_captured(captured: &CapturedEnv) -> bool {
-    if unified_env_on_disk(captured).is_some() {
-        return true;
-    }
-    match captured {
-        CapturedEnv::Uv { deps, .. } => !deps.dependencies.is_empty(),
-        CapturedEnv::Conda { deps, .. } => !deps.dependencies.is_empty(),
-    }
+    unified_env_on_disk(captured).is_some()
 }
 
 /// Like `captured_env_source_override` but also returns the full
@@ -3788,13 +3781,14 @@ async fn acquire_prewarmed_env_with_capture(
     // Uses the FULL dep-shape from metadata (requires-python, prerelease,
     // channels, python pin) so the hash matches what the capture step wrote,
     // even after the user edits one of those resolver-affecting fields.
+    //
+    // `is_captured` checks for the env on disk — deps-present-but-disk-absent
+    // falls through to the pool-take + capture path. That covers both fresh
+    // notebooks (empty deps) and GC'd captured envs (non-empty deps with no
+    // on-disk presence). The GC'd case accepts a rebuild via the normal
+    // inline path rather than routing through unified hashing, to avoid
+    // conflating "captured" with "user added inline deps before first launch."
     if let Some(captured) = captured_env_for_runtime(metadata_snapshot, runtime) {
-        // Route through `prepare_environment_unified` when the notebook has
-        // been through the capture flow before. `is_captured` covers both
-        // the common cache-hit case (env on disk) and the GC'd/shared-notebook
-        // rebuild case (env missing but non-empty deps signal prior capture).
-        // Brand-new notebooks with empty deps fall through to the pool-take +
-        // capture path below so they still get the warmed defaults.
         if is_captured(&captured) {
             match &captured {
                 CapturedEnv::Uv { deps, env_id } => {
@@ -14679,12 +14673,14 @@ mod tests {
     }
 
     #[test]
-    fn captured_env_source_override_returns_some_when_deps_present_but_env_missing() {
-        // env_id + non-empty captured deps is enough to route through the
-        // captured path even without the env on disk: deps alone signal the
-        // notebook has been through capture, and `prepare_environment_unified`
-        // rebuilds from the captured metadata. This covers GC'd envs and
-        // shared .ipynb files opened on a fresh machine.
+    fn captured_env_source_override_returns_none_when_deps_present_but_env_missing() {
+        // Deps-present-but-disk-absent is intentionally NOT treated as
+        // captured: we cannot tell a GC'd captured env apart from a fresh
+        // notebook whose user added inline deps before the first launch.
+        // Falling through to the normal inline path is the safer default —
+        // same deps still dedup across notebooks via the legacy inline
+        // cache; they just lose per-notebook env_id isolation for that
+        // rebuild.
         let mut snap = NotebookMetadataSnapshot::default();
         snap.runt.env_id = Some(format!("unlikely-env-id-{}", uuid::Uuid::new_v4()));
         snap.runt.uv = Some(notebook_doc::metadata::UvInlineMetadata {
@@ -14692,10 +14688,7 @@ mod tests {
             requires_python: None,
             prerelease: None,
         });
-        assert_eq!(
-            captured_env_source_override(Some(&snap)),
-            Some("uv:prewarmed".to_string())
-        );
+        assert!(captured_env_source_override(Some(&snap)).is_none());
     }
 
     #[test]
