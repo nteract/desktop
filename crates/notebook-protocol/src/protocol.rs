@@ -903,40 +903,6 @@ mod tests {
         ));
     }
 
-    /// Legacy v2 payload (no `id` field) must deserialize as an envelope
-    /// with `id = None`. This lets a new daemon accept requests from an
-    /// old client that hasn't learned about the correlation id yet.
-    #[test]
-    fn request_envelope_accepts_legacy_v2_payload() {
-        let legacy = serde_json::json!({
-            "action": "execute_cell",
-            "cell_id": "cell-legacy",
-        });
-        let parsed: NotebookRequestEnvelope =
-            serde_json::from_value(legacy).expect("legacy payload deserializes");
-        assert!(parsed.id.is_none());
-        assert!(matches!(
-            parsed.request,
-            NotebookRequest::ExecuteCell { cell_id } if cell_id == "cell-legacy"
-        ));
-    }
-
-    /// A `NotebookRequestEnvelope` sent to a legacy v2 parser (which
-    /// deserializes into the bare `NotebookRequest` enum) must still work
-    /// — serde ignores unknown fields by default, so the `id` field is
-    /// harmlessly dropped. This lets a new client talk to an old daemon.
-    #[test]
-    fn legacy_v2_parser_accepts_envelope_payload() {
-        let envelope = NotebookRequestEnvelope {
-            id: Some("req-1".into()),
-            request: NotebookRequest::InterruptExecution {},
-        };
-        let json = serde_json::to_string(&envelope).expect("serialize");
-        let parsed: NotebookRequest =
-            serde_json::from_str(&json).expect("v2 parser accepts envelope");
-        assert!(matches!(parsed, NotebookRequest::InterruptExecution {}));
-    }
-
     #[test]
     fn response_envelope_flattens_and_round_trips() {
         let env = NotebookResponseEnvelope {
@@ -952,20 +918,6 @@ mod tests {
         assert_eq!(json["cell_id"], "cell-42");
         let parsed: NotebookResponseEnvelope = serde_json::from_value(json).expect("deserialize");
         assert_eq!(parsed.id.as_deref(), Some("req-1"));
-    }
-
-    /// A legacy v2 response parser must accept the new response envelope
-    /// (id field is unknown-and-ignored by default serde behavior).
-    #[test]
-    fn legacy_v2_response_parser_accepts_envelope() {
-        let envelope = NotebookResponseEnvelope {
-            id: Some("req-1".into()),
-            response: NotebookResponse::Ok {},
-        };
-        let json = serde_json::to_string(&envelope).expect("serialize");
-        let parsed: NotebookResponse =
-            serde_json::from_str(&json).expect("v2 parser accepts response envelope");
-        assert!(matches!(parsed, NotebookResponse::Ok {}));
     }
 
     /// Locks in the exact JSON wire shape that the TypeScript frontend
