@@ -73,7 +73,7 @@ pub fn install_mcpb(app: &tauri::AppHandle) -> Result<PathBuf, String> {
             { "name": "list_active_notebooks", "description": "List running notebook sessions." },
             { "name": "open_notebook", "description": "Open a notebook. Provide exactly one of: path (file path, e.g. \"~/analysis.ipynb\") or notebook_id (UUID from list_active_notebooks). Paths open the file from disk; notebook_id connects to a running session." },
             { "name": "create_notebook", "description": "Create a new notebook. Ephemeral by default; use save_notebook(path) to persist." },
-            { "name": "save_notebook", "description": "Save notebook to disk." },
+            { "name": "save_notebook", "description": "Save notebook to disk. For notebooks created with create_notebook(), you must provide a path." },
             { "name": "launch_app", "description": "Show the current notebook to the user." },
             { "name": "get_cell", "description": "Get a cell by ID." },
             { "name": "get_all_cells", "description": "Get all cells as summary, json, or rich format." },
