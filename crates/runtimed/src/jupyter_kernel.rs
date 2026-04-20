@@ -246,23 +246,30 @@ impl KernelConnection for JupyterKernel {
                             env_source
                         );
                         let mut cmd = tokio::process::Command::new(&uv_path);
-                        let mut args: Vec<&str> =
-                            vec!["run", "--with", "ipykernel", "--with", "uv"];
+                        let mut args: Vec<String> = vec![
+                            "run".into(),
+                            "--with".into(),
+                            "ipykernel".into(),
+                            "--with".into(),
+                            "uv".into(),
+                        ];
                         if bootstrap_dx {
-                            args.extend(["--with", "nteract-kernel-launcher", "--with", "dx"]);
+                            // `dx` is on PyPI; the launcher is bundled and invoked by path.
+                            args.push("--with".into());
+                            args.push("dx".into());
                         }
-                        let launcher_module = if bootstrap_dx {
-                            "nteract_kernel_launcher"
+                        args.push("python".into());
+                        args.push("-Xfrozen_modules=off".into());
+                        if bootstrap_dx {
+                            // uv run's ephemeral venv doesn't have `nteract_kernel_launcher`
+                            // in site-packages, so invoke the daemon-side copy by path.
+                            let script = crate::launcher_cache::launcher_script_path().await?;
+                            args.push(script.to_string_lossy().into_owned());
                         } else {
-                            "ipykernel_launcher"
-                        };
-                        args.extend([
-                            "python",
-                            "-Xfrozen_modules=off",
-                            "-m",
-                            launcher_module,
-                            "-f",
-                        ]);
+                            args.push("-m".into());
+                            args.push("ipykernel_launcher".into());
+                        }
+                        args.push("-f".into());
                         cmd.args(&args);
                         cmd.arg(&connection_file_path);
                         cmd.stdout(Stdio::null());

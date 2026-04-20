@@ -31,6 +31,7 @@ pub mod jupyter_kernel;
 pub mod kernel_connection;
 pub mod kernel_manager;
 pub mod kernel_state;
+pub mod launcher_cache;
 pub mod markdown_assets;
 pub mod notebook_sync_server;
 pub mod output_store;
