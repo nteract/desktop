@@ -5466,23 +5466,21 @@ async fn handle_notebook_request(
                 // project file at sync/launch time (project is source of truth).
                 // A project file added after capture means the user wants the
                 // project env, not the stale captured one.
-                if let Some(detected) =
-                    notebook_path.as_ref().and_then(|path| match auto_scope {
-                        Some("uv") => crate::project_file::find_nearest_project_file(
-                            path,
-                            &[crate::project_file::ProjectFileKind::PyprojectToml],
-                        ),
-                        Some("conda") => crate::project_file::find_nearest_project_file(
-                            path,
-                            &[crate::project_file::ProjectFileKind::EnvironmentYml],
-                        ),
-                        Some("pixi") => crate::project_file::find_nearest_project_file(
-                            path,
-                            &[crate::project_file::ProjectFileKind::PixiToml],
-                        ),
-                        _ => crate::project_file::detect_project_file(path),
-                    })
-                {
+                if let Some(detected) = notebook_path.as_ref().and_then(|path| match auto_scope {
+                    Some("uv") => crate::project_file::find_nearest_project_file(
+                        path,
+                        &[crate::project_file::ProjectFileKind::PyprojectToml],
+                    ),
+                    Some("conda") => crate::project_file::find_nearest_project_file(
+                        path,
+                        &[crate::project_file::ProjectFileKind::EnvironmentYml],
+                    ),
+                    Some("pixi") => crate::project_file::find_nearest_project_file(
+                        path,
+                        &[crate::project_file::ProjectFileKind::PixiToml],
+                    ),
+                    _ => crate::project_file::detect_project_file(path),
+                }) {
                     info!(
                         "[notebook-sync] Auto-detected project file: {:?} -> {}",
                         detected.path,
@@ -5501,15 +5499,16 @@ async fn handle_notebook_request(
                 // Respects `auto_scope`: `auto:uv` with a conda-captured
                 // notebook (or vice versa) falls through. `auto:pixi` always
                 // falls through — no pixi capture path yet.
-                else if let Some(captured_src) = captured_env_source_override(
-                    metadata_snapshot.as_ref(),
-                )
-                .filter(|src| match auto_scope {
-                    Some("uv") => src == "uv:prewarmed",
-                    Some("conda") => src == "conda:prewarmed",
-                    Some("pixi") => false,
-                    _ => true,
-                }) {
+                else if let Some(captured_src) =
+                    captured_env_source_override(metadata_snapshot.as_ref()).filter(|src| {
+                        match auto_scope {
+                            Some("uv") => src == "uv:prewarmed",
+                            Some("conda") => src == "conda:prewarmed",
+                            Some("pixi") => false,
+                            _ => true,
+                        }
+                    })
+                {
                     info!(
                         "[notebook-sync] LaunchKernel: captured env on disk -> {}",
                         captured_src
