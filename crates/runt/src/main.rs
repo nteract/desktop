@@ -3840,16 +3840,82 @@ async fn diagnostics_command(output_dir: Option<PathBuf>) -> Result<()> {
     tar_add_bytes(&mut tar, "system-info.json", system_json.as_bytes())?;
     println!("  {} system-info.json", "✓".green());
 
+    // 7. automerge-health.json — counters for the MissingOps workaround.
+    //    Pulled from the daemon over the socket. Older daemons return
+    //    "Unknown request"; treat that as counters unavailable.
+    let health = fetch_automerge_health().await;
+    let health_json = serde_json::to_string_pretty(&health)?;
+    tar_add_bytes(&mut tar, "automerge-health.json", health_json.as_bytes())?;
+    println!("  {} automerge-health.json", "✓".green());
+
     // Finalize archive
     let enc = tar.into_inner()?;
     enc.finish()?;
 
+    println!();
+    print_automerge_health(&health);
     println!();
     println!(
         "  Archive saved to: {}",
         archive_path.display().to_string().bold()
     );
     Ok(())
+}
+
+/// Fetch the automerge-health snapshot from a running daemon. Returns a
+/// JSON value with either the counters under `"health"` or an
+/// `"error"` field describing why the counters weren't available (no
+/// daemon running, old daemon, socket error).
+async fn fetch_automerge_health() -> serde_json::Value {
+    use runtimed::client::PoolClient;
+    let socket = runt_workspace::default_socket_path();
+    let Some(info) = runtimed_client::singleton::query_daemon_info(socket).await else {
+        return serde_json::json!({ "error": "daemon not running" });
+    };
+    let client = PoolClient::new(PathBuf::from(&info.endpoint));
+    match tokio::time::timeout(Duration::from_secs(3), client.automerge_health()).await {
+        Ok(Ok(health)) => serde_json::json!({ "health": health }),
+        Ok(Err(e)) => serde_json::json!({ "error": e.to_string() }),
+        Err(_) => serde_json::json!({ "error": "timed out after 3s" }),
+    }
+}
+
+/// Render the automerge-health counters as a small purple-headed
+/// section. Zero counts are shown too so the operator can confirm the
+/// workaround is cold rather than silently masking the library bug.
+fn print_automerge_health(value: &serde_json::Value) {
+    use colored::Colorize;
+
+    print_header("automerge", "Health (MissingOps workaround)");
+    if let Some(err) = value.get("error").and_then(|v| v.as_str()) {
+        println!("  {} {}", "–".yellow(), err);
+        return;
+    }
+    let Some(health) = value.get("health") else {
+        println!("  {} counters unavailable", "–".yellow());
+        return;
+    };
+    let fields = [
+        ("panics_caught", "panics_caught:"),
+        (
+            "rebuilds_lossy_skipped_notebook",
+            "rebuilds_lossy_skipped_notebook:",
+        ),
+        (
+            "rebuilds_failed_runtime_state",
+            "rebuilds_failed_runtime_state:",
+        ),
+        ("rebuilds_failed_pool", "rebuilds_failed_pool:"),
+    ];
+    for (key, label) in fields {
+        let count = health.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
+        let colored_count = if count == 0 {
+            count.to_string().green()
+        } else {
+            count.to_string().yellow()
+        };
+        println!("  {:<38} {}", label.bold(), colored_count);
+    }
 }
 
 /// Return a colored status icon for display
