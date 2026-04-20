@@ -1411,9 +1411,11 @@ impl RuntimeStateDoc {
                                 );
                             }
                         }
-                        // Validated! Delete old and insert new at same index
-                        self.doc.delete(&list_id, state.index)?;
-                        crate::insert_json_at_index(
+                        // In-place update: reuse the existing Map object,
+                        // only updating changed fields (text, llm_preview).
+                        // This avoids delete+insert which generates tombstones
+                        // for the entire Map on every stream coalescence.
+                        crate::update_json_at_index(
                             &mut self.doc,
                             &list_id,
                             state.index,
@@ -1434,7 +1436,8 @@ impl RuntimeStateDoc {
     /// Replace an output at a specific index for an execution.
     ///
     /// Used by UpdateDisplayData handling for in-place manifest updates.
-    /// Deletes the old entry and inserts the new manifest at the same position.
+    /// Reuses the existing Map object and only updates changed fields to
+    /// minimize CRDT ops (avoids delete+insert tombstone accumulation).
     pub fn replace_output(
         &mut self,
         execution_id: &str,
@@ -1447,9 +1450,7 @@ impl RuntimeStateDoc {
         if output_idx >= self.doc.length(&list_id) {
             return Ok(false);
         }
-        // Delete old entry and insert new manifest at same position
-        self.doc.delete(&list_id, output_idx)?;
-        crate::insert_json_at_index(&mut self.doc, &list_id, output_idx, manifest)?;
+        crate::update_json_at_index(&mut self.doc, &list_id, output_idx, manifest)?;
         Ok(true)
     }
 
@@ -3204,6 +3205,63 @@ mod tests {
         assert_eq!(
             outputs[0]["text"]["blob"], "hash-b",
             "Content should be updated to the new manifest"
+        );
+    }
+
+    #[test]
+    fn test_stream_coalescence_doc_size_bounded() {
+        // Simulate 100 stream updates (typical ML training loop).
+        // With in-place updates, doc size should grow sub-linearly
+        // because only the text ContentRef scalars change — no tombstones
+        // from deleted Maps accumulate.
+        let mut doc = RuntimeStateDoc::new();
+        doc.create_execution("exec-1", "cell-1");
+
+        let initial = serde_json::json!({
+            "output_type": "stream",
+            "output_id": "stream-uuid",
+            "name": "stdout",
+            "text": {"blob": "hash-0", "size": 100}
+        });
+        doc.append_output("exec-1", &initial).unwrap();
+
+        let size_after_first = doc.doc.save().len();
+
+        let mut state = StreamOutputState {
+            index: 0,
+            blob_hash: "hash-0".to_string(),
+        };
+
+        for i in 1..100 {
+            let new_hash = format!("hash-{}", i);
+            let manifest = serde_json::json!({
+                "output_type": "stream",
+                "output_id": "new-uuid",
+                "name": "stdout",
+                "text": {"blob": &new_hash, "size": 100 + i}
+            });
+            let (updated, idx) = doc
+                .upsert_stream_output("exec-1", "stdout", &manifest, Some(&state))
+                .unwrap();
+            assert!(updated);
+            assert_eq!(idx, 0);
+            state = StreamOutputState {
+                index: 0,
+                blob_hash: new_hash,
+            };
+        }
+
+        let size_after_100 = doc.doc.save().len();
+        // With in-place updates, only text.blob and text.size scalars change
+        // (2 ops per update). The doc should stay well under 3x initial size.
+        let growth_factor = size_after_100 as f64 / size_after_first as f64;
+        assert!(
+            growth_factor < 3.0,
+            "Doc grew {:.1}x after 100 stream updates (expected < 6x). \
+             size_after_first={}, size_after_100={}",
+            growth_factor,
+            size_after_first,
+            size_after_100,
         );
     }
 
