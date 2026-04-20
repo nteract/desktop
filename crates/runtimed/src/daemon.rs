@@ -2553,6 +2553,10 @@ impl Daemon {
 
             Request::GetDaemonInfo => self.build_daemon_info().await,
 
+            Request::GetAutomergeHealth => Response::AutomergeHealth {
+                health: notebook_doc::diagnostics::AutomergeHealth::snapshot(),
+            },
+
             Request::Shutdown => {
                 self.trigger_shutdown().await;
                 Response::ShuttingDown

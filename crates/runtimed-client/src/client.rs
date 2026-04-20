@@ -292,6 +292,24 @@ impl PoolClient {
         }
     }
 
+    /// Snapshot the automerge MissingOps workaround counters. Older
+    /// daemons that don't know this request return an
+    /// `Err(ClientError::DaemonError(..))` with the string
+    /// "Unknown request"; callers should treat that as "counters
+    /// unavailable" rather than a hard failure.
+    pub async fn automerge_health(
+        &self,
+    ) -> Result<notebook_doc::diagnostics::AutomergeHealth, ClientError> {
+        let response = self.send_request(Request::GetAutomergeHealth).await?;
+        match response {
+            Response::AutomergeHealth { health } => Ok(health),
+            Response::Error { message } => Err(ClientError::DaemonError(message)),
+            _ => Err(ClientError::ProtocolError(
+                "Unexpected response".to_string(),
+            )),
+        }
+    }
+
     /// Flush all pooled environments and trigger rebuild with current settings.
     pub async fn flush_pool(&self) -> Result<(), ClientError> {
         let response = self.send_request(Request::FlushPool).await?;

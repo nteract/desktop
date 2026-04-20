@@ -67,6 +67,12 @@ pub enum Request {
     /// or is forcibly killed. Clients should prefer this request and
     /// fall back to `Ping` if they only need the version.
     GetDaemonInfo,
+
+    /// Snapshot of the automerge MissingOps workaround counters.
+    /// Local-only telemetry; consumed by `runt diagnostics` to show the
+    /// operator how often the library-bug workaround has fired in the
+    /// current daemon session.
+    GetAutomergeHealth,
 }
 
 /// Responses from the daemon to clients.
@@ -166,6 +172,15 @@ pub enum Response {
 
     /// Environment paths currently in use by running kernels.
     ActiveEnvPaths { paths: Vec<PathBuf> },
+
+    /// Snapshot of the automerge MissingOps workaround counters. See
+    /// [`notebook_doc::diagnostics::AutomergeHealth`]. Older daemons
+    /// that don't recognise this request return
+    /// `Response::Error { message: "Unknown request" }`; clients should
+    /// treat that as "counters unavailable" rather than a hard error.
+    AutomergeHealth {
+        health: notebook_doc::diagnostics::AutomergeHealth,
+    },
 }
 
 /// Kernel info for a notebook room.

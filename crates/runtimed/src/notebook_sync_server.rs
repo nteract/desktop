@@ -96,6 +96,7 @@ pub(crate) fn catch_automerge_panic<T>(label: &str, f: impl FnOnce() -> T) -> Re
         Ok(val) => Ok(val),
         Err(payload) => {
             let msg = crate::task_supervisor::panic_payload_to_string(payload);
+            notebook_doc::diagnostics::record_panic_caught(label, &msg);
             Err(format!(
                 "[{label}] automerge panicked (upstream bug, see automerge collector.rs MissingOps): {msg}"
             ))
