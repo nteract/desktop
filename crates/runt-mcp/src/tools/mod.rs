@@ -111,7 +111,7 @@ pub fn all_tools() -> Vec<Tool> {
         .annotate(ToolAnnotations::new().destructive(false).open_world(false)),
         Tool::new(
             "save_notebook",
-            "Save notebook to disk.",
+            "Save notebook to disk. For notebooks created with create_notebook(), you must provide a path.",
             schema_for::<session::SaveNotebookParams>(),
         )
         .annotate(

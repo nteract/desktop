@@ -225,7 +225,9 @@ pub struct ShowNotebookParams {
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SaveNotebookParams {
-    /// Path to save the notebook to. If None, saves to original location.
+    /// Path to save the notebook to (e.g., "~/analysis.ipynb").
+    /// Required for ephemeral notebooks created with create_notebook().
+    /// Omit to save to the notebook's existing file path.
     #[serde(default)]
     pub path: Option<String>,
 }
