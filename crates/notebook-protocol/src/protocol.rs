@@ -1085,12 +1085,10 @@ mod tests {
     fn is_command_exhaustive_classification() {
         // Fire-and-forget commands (no response needed)
         assert!(RuntimeAgentRequest::InterruptExecution.is_command());
-        assert!(
-            RuntimeAgentRequest::SendComm {
-                message: serde_json::json!({})
-            }
-            .is_command()
-        );
+        assert!(RuntimeAgentRequest::SendComm {
+            message: serde_json::json!({})
+        }
+        .is_command());
 
         // Sync queries (response required)
         assert!(!RuntimeAgentRequest::ShutdownKernel.is_command());
@@ -1151,8 +1149,7 @@ mod tests {
             },
         };
         let resp_json = serde_json::to_value(&resp_envelope).unwrap();
-        let parsed_resp: RuntimeAgentResponseEnvelope =
-            serde_json::from_value(resp_json).unwrap();
+        let parsed_resp: RuntimeAgentResponseEnvelope = serde_json::from_value(resp_json).unwrap();
         assert_eq!(parsed_resp.id, id);
     }
 }

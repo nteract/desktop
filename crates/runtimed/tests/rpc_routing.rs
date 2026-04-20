@@ -54,10 +54,7 @@ async fn route_request(
 
 /// Simulates a runtime agent that processes messages from the channel.
 /// Returns responses for queries, ignores commands.
-async fn mock_agent(
-    mut rx: mpsc::Receiver<RuntimeAgentMessage>,
-    response_delay: Duration,
-) {
+async fn mock_agent(mut rx: mpsc::Receiver<RuntimeAgentMessage>, response_delay: Duration) {
     while let Some(msg) = rx.recv().await {
         match msg {
             RuntimeAgentMessage::Command(_) => {
@@ -149,8 +146,10 @@ async fn correlation_ids_handle_interleaved_responses() {
 
     // Custom agent: delays ShutdownKernel but responds to Complete immediately
     tokio::spawn(async move {
-        let mut pending: Vec<(RuntimeAgentRequestEnvelope, oneshot::Sender<RuntimeAgentResponse>)> =
-            Vec::new();
+        let mut pending: Vec<(
+            RuntimeAgentRequestEnvelope,
+            oneshot::Sender<RuntimeAgentResponse>,
+        )> = Vec::new();
 
         while let Some(msg) = rx.recv().await {
             match msg {
@@ -183,9 +182,8 @@ async fn correlation_ids_handle_interleaved_responses() {
     let tx1 = tx.clone();
     let tx2 = tx.clone();
 
-    let shutdown_handle = tokio::spawn(async move {
-        route_request(&tx1, RuntimeAgentRequest::ShutdownKernel).await
-    });
+    let shutdown_handle =
+        tokio::spawn(async move { route_request(&tx1, RuntimeAgentRequest::ShutdownKernel).await });
     // Small delay to ensure ordering
     tokio::time::sleep(Duration::from_millis(1)).await;
     let complete_handle = tokio::spawn(async move {
@@ -334,10 +332,7 @@ async fn shutdown_then_launch_serialized() {
                         RuntimeAgentRequest::RestartKernel { .. } => "restart",
                         _ => "other",
                     };
-                    order_clone
-                        .lock()
-                        .unwrap()
-                        .push(format!("query:{}", label));
+                    order_clone.lock().unwrap().push(format!("query:{}", label));
 
                     // Simulate some processing time
                     tokio::time::sleep(Duration::from_millis(20)).await;
@@ -420,7 +415,10 @@ async fn interrupt_fires_while_query_in_flight() {
     let interrupt_result = route_request(&tx2, RuntimeAgentRequest::InterruptExecution).await;
     let elapsed = start.elapsed();
 
-    assert!(matches!(interrupt_result.unwrap(), RuntimeAgentResponse::Ok));
+    assert!(matches!(
+        interrupt_result.unwrap(),
+        RuntimeAgentResponse::Ok
+    ));
     assert!(
         elapsed < Duration::from_millis(50),
         "interrupt took {:?} — should not be blocked by in-flight query",
