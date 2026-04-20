@@ -82,4 +82,9 @@ vi.mock("@chenglou/pretext", () => ({
     segments: [text],
   })),
   layout: vi.fn(() => ({ lineCount: 1, height: 20 })),
+  measureNaturalWidth: vi.fn((prepared: { widths: number[] }) => {
+    let w = 0;
+    for (let i = 0; i < prepared.widths.length; i++) w += prepared.widths[i];
+    return w;
+  }),
 }));
