@@ -400,6 +400,237 @@ pub async fn prepare_environment_in(
     })
 }
 
+/// Prepare a UV environment using the unified env hash
+/// (`hash(user_deps, env_id)`).
+///
+/// This is the reopen path from the unified env resolution design: notebooks
+/// with captured deps in their metadata route through here and skip the pool
+/// entirely. Behavior mirrors [`prepare_environment_in`] (cache hit → offline
+/// install → network install), but the cache key is
+/// [`compute_unified_env_hash`]. `env_id` is always required so each
+/// notebook's env is isolated on disk from other notebooks with the same dep
+/// set.
+pub async fn prepare_environment_unified(
+    deps: &UvDependencies,
+    env_id: &str,
+    cache_dir: &Path,
+    handler: Arc<dyn ProgressHandler>,
+) -> Result<UvEnvironment> {
+    let hash = compute_unified_env_hash(deps, env_id);
+    let venv_path = cache_dir.join(&hash);
+
+    handler.on_progress(
+        "uv",
+        EnvProgressPhase::Starting {
+            env_hash: hash.clone(),
+        },
+    );
+
+    #[cfg(target_os = "windows")]
+    let python_path = venv_path.join("Scripts").join("python.exe");
+    #[cfg(not(target_os = "windows"))]
+    let python_path = venv_path.join("bin").join("python");
+
+    // Cache hit
+    if venv_path.exists() && python_path.exists() {
+        info!("Using cached unified UV env at {:?}", venv_path);
+        crate::gc::touch_last_used(&venv_path).await;
+        crate::launcher::vendor_into_venv(&python_path)
+            .await
+            .context("vendor nteract_kernel_launcher into UV env")?;
+        handler.on_progress(
+            "uv",
+            EnvProgressPhase::CacheHit {
+                env_path: venv_path.to_string_lossy().to_string(),
+            },
+        );
+        handler.on_progress(
+            "uv",
+            EnvProgressPhase::Ready {
+                env_path: venv_path.to_string_lossy().to_string(),
+                python_path: python_path.to_string_lossy().to_string(),
+            },
+        );
+        return Ok(UvEnvironment {
+            venv_path,
+            python_path,
+        });
+    }
+
+    info!("Creating new unified UV env at {:?}", venv_path);
+
+    let uv_path = kernel_launch::tools::get_uv_path().await?;
+
+    tokio::fs::create_dir_all(cache_dir).await?;
+
+    // Remove partial environment
+    if venv_path.exists() {
+        tokio::fs::remove_dir_all(&venv_path).await?;
+    }
+
+    // Create venv
+    handler.on_progress("uv", EnvProgressPhase::CreatingVenv);
+
+    let mut venv_cmd = tokio::process::Command::new(&uv_path);
+    venv_cmd.arg("venv").arg(&venv_path);
+    venv_cmd.current_dir(cache_dir);
+
+    if let Some(ref py_version) = deps.requires_python {
+        let version = py_version
+            .trim_start_matches(|c: char| !c.is_ascii_digit())
+            .to_string();
+        if !version.is_empty() {
+            venv_cmd.arg("--python").arg(&version);
+        }
+    }
+
+    let venv_output = venv_cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await?;
+
+    if !venv_output.status.success() {
+        let stderr = String::from_utf8_lossy(&venv_output.stderr);
+        let error_msg = format!("Failed to create virtual environment: {}", stderr);
+        handler.on_progress(
+            "uv",
+            EnvProgressPhase::Error {
+                message: error_msg.clone(),
+            },
+        );
+        return Err(anyhow!(error_msg));
+    }
+
+    // Build list of packages to install (for progress reporting).
+    // The base packages are the same prelude the pool warmer installs;
+    // `deps.dependencies` is the user-level set (with base already stripped
+    // at capture time). This ensures a reopen-path rebuild produces the same
+    // installed set as the original pool env.
+    let mut packages: Vec<String> = UV_BASE_PACKAGES
+        .iter()
+        .filter(|p| **p != "dx") // dx is installed via bootstrap_dx flag, not unconditionally
+        .map(|p| p.to_string())
+        .collect();
+    packages.extend(deps.dependencies.iter().cloned());
+
+    let mut install_args = vec![
+        "pip".to_string(),
+        "install".to_string(),
+        "--link-mode".to_string(),
+        "hardlink".to_string(),
+        "--python".to_string(),
+        python_path.to_string_lossy().to_string(),
+    ];
+
+    if let Some(ref prerelease) = deps.prerelease {
+        install_args.push("--prerelease".to_string());
+        install_args.push(prerelease.clone());
+    }
+
+    install_args.extend(packages.iter().cloned());
+
+    handler.on_progress("uv", EnvProgressPhase::InstallingPackages { packages });
+
+    // Try offline first
+    let mut offline_args = install_args.clone();
+    offline_args.insert(2, "--offline".to_string());
+
+    let offline_output = tokio::process::Command::new(&uv_path)
+        .args(&offline_args)
+        .current_dir(cache_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await?;
+
+    if offline_output.status.success() {
+        info!("Resolved dependencies from local cache (offline mode)");
+        handler.on_progress("uv", EnvProgressPhase::OfflineHit);
+
+        info!("Unified UV env ready at {:?}", venv_path);
+        crate::gc::touch_last_used(&venv_path).await;
+        crate::launcher::vendor_into_venv(&python_path)
+            .await
+            .context("vendor nteract_kernel_launcher into UV env")?;
+        handler.on_progress(
+            "uv",
+            EnvProgressPhase::Ready {
+                env_path: venv_path.to_string_lossy().to_string(),
+                python_path: python_path.to_string_lossy().to_string(),
+            },
+        );
+
+        return Ok(UvEnvironment {
+            venv_path,
+            python_path,
+        });
+    }
+
+    debug!(
+        "Offline install failed (expected if packages not cached): {}",
+        String::from_utf8_lossy(&offline_output.stderr)
+    );
+
+    let install_output = tokio::process::Command::new(&uv_path)
+        .args(&install_args)
+        .current_dir(cache_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await?;
+
+    let install_output = if !install_output.status.success() {
+        let first_stderr = String::from_utf8_lossy(&install_output.stderr);
+        info!(
+            "uv pip install failed, retrying with --refresh. First attempt stderr: {}",
+            first_stderr
+        );
+        let mut retry_args = install_args.clone();
+        retry_args.insert(2, "--refresh".to_string());
+        tokio::process::Command::new(&uv_path)
+            .args(&retry_args)
+            .current_dir(cache_dir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await?
+    } else {
+        install_output
+    };
+
+    if !install_output.status.success() {
+        tokio::fs::remove_dir_all(&venv_path).await.ok();
+        let stderr = String::from_utf8_lossy(&install_output.stderr);
+        let error_msg = format!("Failed to install dependencies: {}", stderr);
+        handler.on_progress(
+            "uv",
+            EnvProgressPhase::Error {
+                message: error_msg.clone(),
+            },
+        );
+        return Err(anyhow!(error_msg));
+    }
+
+    info!("Unified UV env ready at {:?}", venv_path);
+    crate::gc::touch_last_used(&venv_path).await;
+    crate::launcher::vendor_into_venv(&python_path)
+        .await
+        .context("vendor nteract_kernel_launcher into UV env")?;
+    handler.on_progress(
+        "uv",
+        EnvProgressPhase::Ready {
+            env_path: venv_path.to_string_lossy().to_string(),
+            python_path: python_path.to_string_lossy().to_string(),
+        },
+    );
+
+    Ok(UvEnvironment {
+        venv_path,
+        python_path,
+    })
+}
+
 /// Install additional dependencies into an existing environment.
 pub async fn sync_dependencies(env: &UvEnvironment, deps: &[String]) -> Result<()> {
     if deps.is_empty() {
@@ -636,26 +867,31 @@ pub async fn create_prewarmed_environment_in(
 /// Claim a prewarmed environment for a specific notebook.
 ///
 /// Moves the prewarmed environment to the correct cache location based
-/// on `env_id`, so it will be found by [`prepare_environment`] later.
+/// on `(user_defaults, env_id)`, so it will be found by
+/// [`prepare_environment_unified`] later. `user_defaults` is the
+/// pool env's full install list with [`UV_BASE_PACKAGES`] stripped — the
+/// user-level deps that belong in the notebook's metadata.
 pub async fn claim_prewarmed_environment(
     prewarmed: UvEnvironment,
     env_id: &str,
+    user_defaults: &[String],
 ) -> Result<UvEnvironment> {
-    claim_prewarmed_environment_in(prewarmed, env_id, &default_cache_dir_uv()).await
+    claim_prewarmed_environment_in(prewarmed, env_id, user_defaults, &default_cache_dir_uv()).await
 }
 
 /// Like [`claim_prewarmed_environment`] but with an explicit cache directory.
 pub async fn claim_prewarmed_environment_in(
     prewarmed: UvEnvironment,
     env_id: &str,
+    user_defaults: &[String],
     cache_dir: &Path,
 ) -> Result<UvEnvironment> {
     let deps = UvDependencies {
-        dependencies: vec![],
+        dependencies: user_defaults.to_vec(),
         requires_python: None,
         prerelease: None,
     };
-    let hash = compute_env_hash(&deps, Some(env_id));
+    let hash = compute_unified_env_hash(&deps, env_id);
     let dest_path = cache_dir.join(&hash);
 
     #[cfg(target_os = "windows")]
@@ -1091,5 +1327,46 @@ mod tests {
         let legacy = compute_env_hash(&deps, Some("abc"));
         let unified = compute_unified_env_hash(&deps, "abc");
         assert_ne!(legacy, unified);
+    }
+
+    #[test]
+    fn unified_hash_differs_from_legacy_for_claim_path() {
+        // The claim path hashes (user_defaults, env_id) via the unified rule.
+        // Before PR 2 it hashed ([], env_id) via the legacy rule. Even for an
+        // empty user_defaults list, the unified and legacy hashes must differ
+        // — otherwise envs claimed under the old rule would be mistaken for
+        // "fresh" unified-hash captures and overwritten on reopen.
+        let user_defaults: Vec<String> = vec![];
+        let unified_deps = UvDependencies {
+            dependencies: user_defaults.clone(),
+            requires_python: None,
+            prerelease: None,
+        };
+        let legacy_deps = UvDependencies {
+            dependencies: vec![],
+            requires_python: None,
+            prerelease: None,
+        };
+        let legacy = compute_env_hash(&legacy_deps, Some("abc"));
+        let unified = compute_unified_env_hash(&unified_deps, "abc");
+        assert_ne!(
+            legacy, unified,
+            "legacy and unified hashes must not alias on disk"
+        );
+    }
+
+    /// Different notebooks with the same user_defaults must land at
+    /// different on-disk paths — per-notebook isolation.
+    #[test]
+    fn claim_hash_differs_per_env_id() {
+        let user_defaults = vec!["pandas".to_string()];
+        let deps = UvDependencies {
+            dependencies: user_defaults.clone(),
+            requires_python: None,
+            prerelease: None,
+        };
+        let h1 = compute_unified_env_hash(&deps, "notebook-1");
+        let h2 = compute_unified_env_hash(&deps, "notebook-2");
+        assert_ne!(h1, h2);
     }
 }

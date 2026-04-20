@@ -255,6 +255,148 @@ pub async fn prepare_environment_in(
     })
 }
 
+/// Prepare a Conda environment using the unified env hash
+/// (`hash(user_deps, env_id)`).
+///
+/// This is the reopen path from the unified env resolution design: notebooks
+/// with captured deps in their metadata route through here and skip the pool
+/// entirely. Behavior mirrors [`prepare_environment_in`] (cache hit →
+/// lock-based rebuild → full solve), but the cache key is
+/// [`compute_unified_env_hash`]. `env_id` is always required so each
+/// notebook's env is isolated on disk from other notebooks with the same dep
+/// set.
+pub async fn prepare_environment_unified(
+    deps: &CondaDependencies,
+    env_id: &str,
+    cache_dir: &Path,
+    handler: Arc<dyn ProgressHandler>,
+) -> Result<CondaEnvironment> {
+    let hash = compute_unified_env_hash(deps, env_id);
+    let env_path = cache_dir.join(&hash);
+
+    handler.on_progress(
+        "conda",
+        EnvProgressPhase::Starting {
+            env_hash: hash.clone(),
+        },
+    );
+
+    #[cfg(target_os = "windows")]
+    let python_path = env_path.join("python.exe");
+    #[cfg(not(target_os = "windows"))]
+    let python_path = env_path.join("bin").join("python");
+
+    // Cache hit
+    if env_path.exists() && python_path.exists() {
+        info!("Using cached unified conda env at {:?}", env_path);
+        crate::gc::touch_last_used(&env_path).await;
+        crate::launcher::vendor_into_venv(&python_path)
+            .await
+            .context("vendor nteract_kernel_launcher into conda env")?;
+        handler.on_progress(
+            "conda",
+            EnvProgressPhase::CacheHit {
+                env_path: env_path.to_string_lossy().to_string(),
+            },
+        );
+        handler.on_progress(
+            "conda",
+            EnvProgressPhase::Ready {
+                env_path: env_path.to_string_lossy().to_string(),
+                python_path: python_path.to_string_lossy().to_string(),
+            },
+        );
+        return Ok(CondaEnvironment {
+            env_path,
+            python_path,
+        });
+    }
+
+    info!("Creating new unified conda env at {:?}", env_path);
+
+    tokio::fs::create_dir_all(cache_dir).await?;
+
+    // Try lock-based rebuild before full re-creation
+    if env_path.exists() && !python_path.exists() {
+        if let Some(lock) = crate::lock::LockFile::read_from(&env_path).await {
+            let expected_specs = build_spec_strings(deps);
+            let expected_channels = if deps.channels.is_empty() {
+                vec!["conda-forge".to_string()]
+            } else {
+                deps.channels.clone()
+            };
+            if lock.matches(&expected_specs, &expected_channels) {
+                info!("Rebuilding conda env from lock file at {:?}", env_path);
+                tokio::fs::remove_dir_all(&env_path).await?;
+                tokio::fs::create_dir_all(&env_path).await?;
+                match crate::lock::install_from_lock(&env_path, &lock, handler.clone(), "conda")
+                    .await
+                {
+                    Ok(()) => {
+                        if python_path.exists() {
+                            crate::lock::try_write_lock(&env_path, &lock).await;
+                            crate::gc::touch_last_used(&env_path).await;
+                            crate::launcher::vendor_into_venv(&python_path)
+                                .await
+                                .context("vendor nteract_kernel_launcher into conda env")?;
+                            handler.on_progress(
+                                "conda",
+                                EnvProgressPhase::Ready {
+                                    env_path: env_path.to_string_lossy().to_string(),
+                                    python_path: python_path.to_string_lossy().to_string(),
+                                },
+                            );
+                            return Ok(CondaEnvironment {
+                                env_path,
+                                python_path,
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Lock-based rebuild failed: {}, falling back to full solve",
+                            e
+                        );
+                        tokio::fs::remove_dir_all(&env_path).await.ok();
+                    }
+                }
+            }
+        }
+    }
+
+    // Remove partial environment
+    if env_path.exists() {
+        tokio::fs::remove_dir_all(&env_path).await?;
+    }
+
+    install_conda_env(&env_path, deps, handler.clone()).await?;
+
+    if !python_path.exists() {
+        tokio::fs::remove_dir_all(&env_path).await.ok();
+        return Err(anyhow!(
+            "Python not found at {:?} after conda install",
+            python_path
+        ));
+    }
+
+    crate::gc::touch_last_used(&env_path).await;
+    crate::launcher::vendor_into_venv(&python_path)
+        .await
+        .context("vendor nteract_kernel_launcher into conda env")?;
+    handler.on_progress(
+        "conda",
+        EnvProgressPhase::Ready {
+            env_path: env_path.to_string_lossy().to_string(),
+            python_path: python_path.to_string_lossy().to_string(),
+        },
+    );
+
+    Ok(CondaEnvironment {
+        env_path,
+        python_path,
+    })
+}
+
 /// Core rattler solve + install logic, extracted for reuse by prepare and prewarm.
 async fn install_conda_env(
     env_path: &Path,
@@ -513,27 +655,33 @@ pub async fn create_prewarmed_environment_in(
 /// Claim a prewarmed environment for a specific notebook.
 ///
 /// Moves the prewarmed environment to the correct cache location based
-/// on `env_id`, so it will be found by [`prepare_environment`] later.
+/// on `(user_defaults, env_id)`, so it will be found by
+/// [`prepare_environment_unified`] later. `user_defaults` is the pool
+/// env's full install list with [`CONDA_BASE_PACKAGES`] stripped — the
+/// user-level deps that belong in the notebook's metadata.
 pub async fn claim_prewarmed_environment(
     prewarmed: CondaEnvironment,
     env_id: &str,
+    user_defaults: &[String],
 ) -> Result<CondaEnvironment> {
-    claim_prewarmed_environment_in(prewarmed, env_id, &default_cache_dir_conda()).await
+    claim_prewarmed_environment_in(prewarmed, env_id, user_defaults, &default_cache_dir_conda())
+        .await
 }
 
 /// Like [`claim_prewarmed_environment`] but with an explicit cache directory.
 pub async fn claim_prewarmed_environment_in(
     prewarmed: CondaEnvironment,
     env_id: &str,
+    user_defaults: &[String],
     cache_dir: &Path,
 ) -> Result<CondaEnvironment> {
     let deps = CondaDependencies {
-        dependencies: vec!["ipykernel".to_string()],
+        dependencies: user_defaults.to_vec(),
         channels: vec!["conda-forge".to_string()],
         python: None,
-        env_id: Some(env_id.to_string()),
+        env_id: None,
     };
-    let hash = compute_env_hash(&deps);
+    let hash = compute_unified_env_hash(&deps, env_id);
     let dest_path = cache_dir.join(&hash);
 
     #[cfg(target_os = "windows")]

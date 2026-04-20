@@ -3452,6 +3452,396 @@ async fn send_doc_sync<W: tokio::io::AsyncWrite + Unpin>(
     Ok(())
 }
 
+/// Which runtime this capture applies to — UV pool envs or Conda pool envs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CapturedEnvRuntime {
+    Uv,
+    Conda,
+}
+
+/// Write captured user-level deps and env_id into the notebook's metadata
+/// if not already set.
+///
+/// This is the first-launch capture step from the unified env resolution
+/// design: after the daemon takes an env from the pool and claims it at the
+/// unified-hash path, the notebook's metadata records the user-level deps
+/// derived from the pool env's install list (base packages stripped). On
+/// subsequent reopens, this captured set participates in the hash lookup
+/// so the claimed env is found on disk.
+///
+/// Write-once semantics:
+/// - `env_id` is set only if the metadata's `env_id` is `None`.
+/// - `dependencies` on `metadata.runt.uv` or `metadata.runt.conda` is
+///   overwritten only if empty (the brand-new notebook case). Existing
+///   non-empty deps are left alone so user-edited lists aren't clobbered.
+///
+/// Uses `fork_and_merge` per the async-CRDT-mutation rule.
+///
+/// Returns `true` if any field was updated.
+async fn capture_env_into_metadata(
+    room: &NotebookRoom,
+    runtime: CapturedEnvRuntime,
+    user_defaults: &[String],
+    env_id: &str,
+) -> bool {
+    let mut changed = false;
+    let mut doc = room.doc.write().await;
+    doc.fork_and_merge(|fork| {
+        let mut snap = fork.get_metadata_snapshot().unwrap_or_default();
+
+        if snap.runt.env_id.is_none() {
+            snap.runt.env_id = Some(env_id.to_string());
+            changed = true;
+        }
+
+        match runtime {
+            CapturedEnvRuntime::Uv => {
+                let uv =
+                    snap.runt
+                        .uv
+                        .get_or_insert_with(|| notebook_doc::metadata::UvInlineMetadata {
+                            dependencies: Vec::new(),
+                            requires_python: None,
+                            prerelease: None,
+                        });
+                if uv.dependencies.is_empty() && !user_defaults.is_empty() {
+                    uv.dependencies = user_defaults.to_vec();
+                    changed = true;
+                }
+            }
+            CapturedEnvRuntime::Conda => {
+                let conda = snap.runt.conda.get_or_insert_with(|| {
+                    notebook_doc::metadata::CondaInlineMetadata {
+                        dependencies: Vec::new(),
+                        channels: vec!["conda-forge".to_string()],
+                        python: None,
+                    }
+                });
+                if conda.dependencies.is_empty() && !user_defaults.is_empty() {
+                    conda.dependencies = user_defaults.to_vec();
+                    changed = true;
+                }
+            }
+        }
+
+        if changed {
+            let _ = fork.set_metadata_snapshot(&snap);
+        }
+    });
+    changed
+}
+
+/// Pull (user_defaults, env_id) out of the metadata snapshot for the
+/// unified-hash lookup on reopen. `user_defaults` defaults to the empty set
+/// when the uv/conda section is unset.
+fn captured_env_for_runtime(
+    snapshot: Option<&NotebookMetadataSnapshot>,
+    runtime: CapturedEnvRuntime,
+) -> Option<(Vec<String>, String)> {
+    let snap = snapshot?;
+    let env_id = snap.runt.env_id.as_ref()?.clone();
+    let deps = match runtime {
+        CapturedEnvRuntime::Uv => snap
+            .runt
+            .uv
+            .as_ref()
+            .map(|u| u.dependencies.clone())
+            .unwrap_or_default(),
+        CapturedEnvRuntime::Conda => snap
+            .runt
+            .conda
+            .as_ref()
+            .map(|c| c.dependencies.clone())
+            .unwrap_or_default(),
+    };
+    Some((deps, env_id))
+}
+
+/// Check whether an env for the given (deps, env_id) exists on disk at the
+/// unified-hash path. Returns the cache path + python path if present.
+fn unified_env_on_disk_uv(deps: &[String], env_id: &str) -> Option<(PathBuf, PathBuf)> {
+    let uv_deps = kernel_env::UvDependencies {
+        dependencies: deps.to_vec(),
+        requires_python: None,
+        prerelease: None,
+    };
+    let hash = kernel_env::uv::compute_unified_env_hash(&uv_deps, env_id);
+    let cache_dir = kernel_env::uv::default_cache_dir_uv();
+    let venv_path = cache_dir.join(&hash);
+
+    #[cfg(target_os = "windows")]
+    let python_path = venv_path.join("Scripts").join("python.exe");
+    #[cfg(not(target_os = "windows"))]
+    let python_path = venv_path.join("bin").join("python");
+
+    if python_path.exists() {
+        Some((venv_path, python_path))
+    } else {
+        None
+    }
+}
+
+fn unified_env_on_disk_conda(deps: &[String], env_id: &str) -> Option<(PathBuf, PathBuf)> {
+    let conda_deps = kernel_env::CondaDependencies {
+        dependencies: deps.to_vec(),
+        channels: vec!["conda-forge".to_string()],
+        python: None,
+        env_id: None,
+    };
+    let hash = kernel_env::conda::compute_unified_env_hash(&conda_deps, env_id);
+    let cache_dir = kernel_env::conda::default_cache_dir_conda();
+    let env_path = cache_dir.join(&hash);
+
+    #[cfg(target_os = "windows")]
+    let python_path = env_path.join("python.exe");
+    #[cfg(not(target_os = "windows"))]
+    let python_path = env_path.join("bin").join("python");
+
+    if python_path.exists() {
+        Some((env_path, python_path))
+    } else {
+        None
+    }
+}
+
+/// Return a captured-env `env_source` override (`uv:prewarmed` /
+/// `conda:prewarmed`) when the notebook has captured deps + env_id and a
+/// matching unified-hash env exists on disk. None otherwise.
+///
+/// This is the hinge that keeps captured notebooks on the prewarmed
+/// capture path on reopen, even when `check_inline_deps` would otherwise
+/// route them through the inline-deps flow based on their captured
+/// (non-empty) dep list.
+fn captured_env_source_override(
+    metadata_snapshot: Option<&NotebookMetadataSnapshot>,
+) -> Option<String> {
+    let snap = metadata_snapshot?;
+    if let Some((deps, env_id)) = captured_env_for_runtime(Some(snap), CapturedEnvRuntime::Uv) {
+        if unified_env_on_disk_uv(&deps, &env_id).is_some() {
+            return Some("uv:prewarmed".to_string());
+        }
+    }
+    if let Some((deps, env_id)) = captured_env_for_runtime(Some(snap), CapturedEnvRuntime::Conda) {
+        if unified_env_on_disk_conda(&deps, &env_id).is_some() {
+            return Some("conda:prewarmed".to_string());
+        }
+    }
+    None
+}
+
+/// Acquire a prewarmed env for a notebook, handling both the reopen
+/// (captured-deps) path and the first-launch (pool-take + capture) path.
+///
+/// Returns `Some(Some(env))` with a PooledEnv wrapping either the claimed
+/// reopen env or the newly-claimed pool env. Returns `Some(None)` when the
+/// pool is empty but the caller should continue (unused by the prewarmed
+/// paths today). Returns `None` when a fatal error was broadcast and the
+/// caller should unwind.
+async fn acquire_prewarmed_env_with_capture(
+    env_source: &str,
+    daemon: &std::sync::Arc<crate::daemon::Daemon>,
+    room: &NotebookRoom,
+    metadata_snapshot: Option<&NotebookMetadataSnapshot>,
+) -> Option<Option<crate::PooledEnv>> {
+    let runtime = match env_source {
+        "uv:prewarmed" => CapturedEnvRuntime::Uv,
+        "conda:prewarmed" => CapturedEnvRuntime::Conda,
+        _ => return acquire_pool_env_for_source(env_source, daemon, room).await,
+    };
+    let progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler> = std::sync::Arc::new(
+        crate::inline_env::BroadcastProgressHandler::new(room.kernel_broadcast_tx.clone()),
+    );
+
+    // Reopen path: if the notebook has an env_id and the unified-hash env
+    // exists on disk, route through prepare_environment_unified for an
+    // instant cache hit. Captured deps + env_id → same env across reopens.
+    if let Some((user_defaults, env_id)) = captured_env_for_runtime(metadata_snapshot, runtime) {
+        let on_disk = match runtime {
+            CapturedEnvRuntime::Uv => unified_env_on_disk_uv(&user_defaults, &env_id),
+            CapturedEnvRuntime::Conda => unified_env_on_disk_conda(&user_defaults, &env_id),
+        };
+        if on_disk.is_some() {
+            match runtime {
+                CapturedEnvRuntime::Uv => {
+                    let uv_deps = kernel_env::UvDependencies {
+                        dependencies: user_defaults.clone(),
+                        requires_python: None,
+                        prerelease: None,
+                    };
+                    let cache_dir = kernel_env::uv::default_cache_dir_uv();
+                    match kernel_env::uv::prepare_environment_unified(
+                        &uv_deps,
+                        &env_id,
+                        &cache_dir,
+                        progress_handler.clone(),
+                    )
+                    .await
+                    {
+                        Ok(prepared) => {
+                            info!(
+                                "[notebook-sync] Reopen cache-hit for env_id={} at {:?}",
+                                env_id, prepared.venv_path
+                            );
+                            return Some(Some(crate::PooledEnv {
+                                env_type: crate::EnvType::Uv,
+                                venv_path: prepared.venv_path,
+                                python_path: prepared.python_path,
+                                prewarmed_packages: user_defaults,
+                            }));
+                        }
+                        Err(e) => {
+                            warn!(
+                                "[notebook-sync] Unified UV reopen failed ({}), falling back to pool",
+                                e
+                            );
+                        }
+                    }
+                }
+                CapturedEnvRuntime::Conda => {
+                    let conda_deps = kernel_env::CondaDependencies {
+                        dependencies: user_defaults.clone(),
+                        channels: vec!["conda-forge".to_string()],
+                        python: None,
+                        env_id: None,
+                    };
+                    let cache_dir = kernel_env::conda::default_cache_dir_conda();
+                    match kernel_env::conda::prepare_environment_unified(
+                        &conda_deps,
+                        &env_id,
+                        &cache_dir,
+                        progress_handler.clone(),
+                    )
+                    .await
+                    {
+                        Ok(prepared) => {
+                            info!(
+                                "[notebook-sync] Reopen cache-hit for env_id={} at {:?}",
+                                env_id, prepared.env_path
+                            );
+                            return Some(Some(crate::PooledEnv {
+                                env_type: crate::EnvType::Conda,
+                                venv_path: prepared.env_path,
+                                python_path: prepared.python_path,
+                                prewarmed_packages: user_defaults,
+                            }));
+                        }
+                        Err(e) => {
+                            warn!(
+                                "[notebook-sync] Unified conda reopen failed ({}), falling back to pool",
+                                e
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // First-launch path: take from pool, strip base to derive user_defaults,
+    // claim to the unified-hash location, and capture into metadata.
+    let pooled = acquire_pool_env_for_source(env_source, daemon, room).await?;
+    let pooled = pooled?;
+
+    let env_id = metadata_snapshot
+        .and_then(|s| s.runt.env_id.clone())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+    match runtime {
+        CapturedEnvRuntime::Uv => {
+            let user_defaults =
+                kernel_env::strip_base(&pooled.prewarmed_packages, kernel_env::UV_BASE_PACKAGES);
+            let prewarmed = kernel_env::uv::UvEnvironment {
+                venv_path: pooled.venv_path.clone(),
+                python_path: pooled.python_path.clone(),
+            };
+            let cache_dir = kernel_env::uv::default_cache_dir_uv();
+            match kernel_env::uv::claim_prewarmed_environment_in(
+                prewarmed,
+                &env_id,
+                &user_defaults,
+                &cache_dir,
+            )
+            .await
+            {
+                Ok(claimed) => {
+                    let claimed_path = claimed.venv_path.clone();
+                    let python_path = claimed.python_path.clone();
+                    let _wrote = capture_env_into_metadata(
+                        room,
+                        CapturedEnvRuntime::Uv,
+                        &user_defaults,
+                        &env_id,
+                    )
+                    .await;
+                    info!(
+                        "[notebook-sync] Captured prewarmed UV env into metadata for env_id={} at {:?}",
+                        env_id, claimed_path
+                    );
+                    Some(Some(crate::PooledEnv {
+                        env_type: crate::EnvType::Uv,
+                        venv_path: claimed_path,
+                        python_path,
+                        prewarmed_packages: pooled.prewarmed_packages,
+                    }))
+                }
+                Err(e) => {
+                    warn!(
+                        "[notebook-sync] Failed to claim UV pool env ({}), using raw pool env",
+                        e
+                    );
+                    Some(Some(pooled))
+                }
+            }
+        }
+        CapturedEnvRuntime::Conda => {
+            let user_defaults =
+                kernel_env::strip_base(&pooled.prewarmed_packages, kernel_env::CONDA_BASE_PACKAGES);
+            let prewarmed = kernel_env::conda::CondaEnvironment {
+                env_path: pooled.venv_path.clone(),
+                python_path: pooled.python_path.clone(),
+            };
+            let cache_dir = kernel_env::conda::default_cache_dir_conda();
+            match kernel_env::conda::claim_prewarmed_environment_in(
+                prewarmed,
+                &env_id,
+                &user_defaults,
+                &cache_dir,
+            )
+            .await
+            {
+                Ok(claimed) => {
+                    let claimed_path = claimed.env_path.clone();
+                    let python_path = claimed.python_path.clone();
+                    let _wrote = capture_env_into_metadata(
+                        room,
+                        CapturedEnvRuntime::Conda,
+                        &user_defaults,
+                        &env_id,
+                    )
+                    .await;
+                    info!(
+                        "[notebook-sync] Captured prewarmed conda env into metadata for env_id={} at {:?}",
+                        env_id, claimed_path
+                    );
+                    Some(Some(crate::PooledEnv {
+                        env_type: crate::EnvType::Conda,
+                        venv_path: claimed_path,
+                        python_path,
+                        prewarmed_packages: pooled.prewarmed_packages,
+                    }))
+                }
+                Err(e) => {
+                    warn!(
+                        "[notebook-sync] Failed to claim conda pool env ({}), using raw pool env",
+                        e
+                    );
+                    Some(Some(pooled))
+                }
+            }
+        }
+    }
+}
+
 /// Acquire a pooled environment from the appropriate pool based on env_source.
 /// Returns None and broadcasts error if pool is empty.
 async fn acquire_pool_env_for_source(
@@ -3911,8 +4301,22 @@ async fn auto_launch_kernel(
     // Step 1: Detect kernel type from metadata snapshot
     let notebook_kernel_type = metadata_snapshot.as_ref().and_then(|s| s.detect_runtime());
 
-    // Step 2: Check inline deps (for environment source, and runt.deno override)
-    let inline_source = metadata_snapshot.as_ref().and_then(check_inline_deps);
+    // Step 2a: If the notebook has a captured prewarmed env on disk, route
+    // back through the prewarmed capture path so the reopen cache-hit fires.
+    // This overrides inline-deps detection because captured deps are
+    // structurally indistinguishable from user-authored inline deps.
+    let captured_override = captured_env_source_override(metadata_snapshot.as_ref());
+    if let Some(ref src) = captured_override {
+        info!(
+            "[notebook-sync] Auto-launch: captured env on disk -> {}",
+            src
+        );
+    }
+
+    // Step 2b: Check inline deps (for environment source, and runt.deno override)
+    let inline_source = captured_override
+        .clone()
+        .or_else(|| metadata_snapshot.as_ref().and_then(check_inline_deps));
 
     // Step 2b: If no metadata inline deps, check cell source for PEP 723 script blocks
     let (inline_source, pep723_deps) = if inline_source.is_some() {
@@ -4086,7 +4490,14 @@ async fn auto_launch_kernel(
                 );
                 None
             } else {
-                match acquire_pool_env_for_source(&env_source, &daemon, room).await {
+                match acquire_prewarmed_env_with_capture(
+                    &env_source,
+                    &daemon,
+                    room,
+                    metadata_snapshot.as_ref(),
+                )
+                .await
+                {
                     Some(env) => env,
                     None => {
                         reset_starting_state(room, None).await;
@@ -4147,7 +4558,14 @@ async fn auto_launch_kernel(
                     );
                     None
                 } else {
-                    match acquire_pool_env_for_source(&env_source, &daemon, room).await {
+                    match acquire_prewarmed_env_with_capture(
+                        &env_source,
+                        &daemon,
+                        room,
+                        metadata_snapshot.as_ref(),
+                    )
+                    .await
+                    {
                         Some(env) => env,
                         None => {
                             reset_starting_state(room, None).await;
@@ -4168,7 +4586,14 @@ async fn auto_launch_kernel(
                 crate::settings_doc::PythonEnvType::Conda => "conda:prewarmed",
                 _ => "uv:prewarmed",
             };
-            let pooled_env = match acquire_pool_env_for_source(prewarmed, &daemon, room).await {
+            let pooled_env = match acquire_prewarmed_env_with_capture(
+                prewarmed,
+                &daemon,
+                room,
+                metadata_snapshot.as_ref(),
+            )
+            .await
+            {
                 Some(env) => env,
                 None => {
                     reset_starting_state(room, None).await;
@@ -13571,5 +13996,246 @@ mod tests {
                 "{cell_id}: output_id should be stable across save/load round-trip"
             );
         }
+    }
+
+    // ── PR 2: prewarmed env capture (spec 2026-04-20) ───────────────────────
+
+    /// Build a minimal room suitable for exercising metadata writes. Avoids
+    /// pulling in the full daemon stack — we only touch `room.doc`.
+    ///
+    /// Returns `(room, _tmp)` so the TempDir lives at least as long as
+    /// the room; dropping the TempDir mid-test would remove the docs dir
+    /// under the room's persist debouncer.
+    async fn test_room_for_capture() -> (NotebookRoom, tempfile::TempDir) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let blob_store = test_blob_store(&tmp);
+        let room = NotebookRoom::load_or_create("capture-test", tmp.path(), blob_store);
+        // Seed the doc so `get_metadata_snapshot` returns Some, mirroring
+        // what `create_empty_notebook` does on a fresh notebook.
+        {
+            let mut doc = room.doc.write().await;
+            let _ = create_empty_notebook(
+                &mut doc,
+                "python",
+                crate::settings_doc::PythonEnvType::Uv,
+                Some("test-env-id"),
+            );
+        }
+        (room, tmp)
+    }
+
+    #[tokio::test]
+    async fn capture_writes_deps_and_env_id_for_fresh_uv_notebook() {
+        let (room, _tmp) = test_room_for_capture().await;
+        // Wipe env_id first so the capture step sets it.
+        {
+            let mut doc = room.doc.write().await;
+            doc.fork_and_merge(|fork| {
+                let mut snap = fork.get_metadata_snapshot().unwrap_or_default();
+                snap.runt.env_id = None;
+                let _ = fork.set_metadata_snapshot(&snap);
+            });
+        }
+        let user_defaults = vec!["pandas".to_string(), "numpy".to_string()];
+        let wrote =
+            capture_env_into_metadata(&room, CapturedEnvRuntime::Uv, &user_defaults, "nb-42").await;
+        assert!(wrote, "first capture should write both deps and env_id");
+
+        let snap = room.doc.read().await.get_metadata_snapshot().unwrap();
+        assert_eq!(snap.runt.env_id.as_deref(), Some("nb-42"));
+        assert_eq!(
+            snap.runt.uv.as_ref().unwrap().dependencies,
+            vec!["pandas".to_string(), "numpy".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn capture_is_idempotent_on_existing_deps() {
+        let (room, _tmp) = test_room_for_capture().await;
+        // Pre-populate with user-edited deps.
+        {
+            let mut doc = room.doc.write().await;
+            doc.fork_and_merge(|fork| {
+                let mut snap = fork.get_metadata_snapshot().unwrap_or_default();
+                let uv =
+                    snap.runt
+                        .uv
+                        .get_or_insert_with(|| notebook_doc::metadata::UvInlineMetadata {
+                            dependencies: Vec::new(),
+                            requires_python: None,
+                            prerelease: None,
+                        });
+                uv.dependencies = vec!["scikit-learn".to_string()];
+                let _ = fork.set_metadata_snapshot(&snap);
+            });
+        }
+
+        // Second capture tries to overwrite with different defaults — must not.
+        let wrote = capture_env_into_metadata(
+            &room,
+            CapturedEnvRuntime::Uv,
+            &["pandas".to_string()],
+            "nb-x",
+        )
+        .await;
+        assert!(
+            !wrote,
+            "capture must not overwrite user-edited deps (env_id already set)"
+        );
+
+        let snap = room.doc.read().await.get_metadata_snapshot().unwrap();
+        assert_eq!(
+            snap.runt.uv.as_ref().unwrap().dependencies,
+            vec!["scikit-learn".to_string()],
+            "captured deps must not overwrite existing non-empty list"
+        );
+    }
+
+    #[tokio::test]
+    async fn capture_preserves_existing_env_id_across_calls() {
+        let (room, _tmp) = test_room_for_capture().await;
+        // env_id is already set by create_empty_notebook to "test-env-id".
+        let wrote_first = capture_env_into_metadata(
+            &room,
+            CapturedEnvRuntime::Uv,
+            &["polars".to_string()],
+            "different-env-id-ignored",
+        )
+        .await;
+        assert!(wrote_first, "deps filled in, write_id left alone");
+
+        let snap = room.doc.read().await.get_metadata_snapshot().unwrap();
+        assert_eq!(
+            snap.runt.env_id.as_deref(),
+            Some("test-env-id"),
+            "existing env_id must survive capture"
+        );
+
+        // Second call with same defaults is a no-op.
+        let wrote_second =
+            capture_env_into_metadata(&room, CapturedEnvRuntime::Uv, &["polars".to_string()], "x")
+                .await;
+        assert!(
+            !wrote_second,
+            "second capture must be a no-op when deps and env_id are already set"
+        );
+    }
+
+    #[tokio::test]
+    async fn capture_handles_conda_section_independently() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let blob_store = test_blob_store(&tmp);
+        let room = NotebookRoom::load_or_create("capture-conda-test", tmp.path(), blob_store);
+        {
+            let mut doc = room.doc.write().await;
+            let _ = create_empty_notebook(
+                &mut doc,
+                "python",
+                crate::settings_doc::PythonEnvType::Conda,
+                Some("conda-env-id"),
+            );
+        }
+
+        let user_defaults = vec!["scipy".to_string()];
+        let wrote = capture_env_into_metadata(
+            &room,
+            CapturedEnvRuntime::Conda,
+            &user_defaults,
+            "conda-env-id",
+        )
+        .await;
+        assert!(wrote);
+
+        let snap = room.doc.read().await.get_metadata_snapshot().unwrap();
+        assert_eq!(
+            snap.runt.conda.as_ref().unwrap().dependencies,
+            vec!["scipy".to_string()]
+        );
+        // UV section should remain untouched.
+        assert!(snap.runt.uv.is_none());
+    }
+
+    #[test]
+    fn captured_env_for_runtime_reads_uv_deps_and_env_id() {
+        let mut snap = NotebookMetadataSnapshot::default();
+        snap.runt.env_id = Some("abc".to_string());
+        snap.runt.uv = Some(notebook_doc::metadata::UvInlineMetadata {
+            dependencies: vec!["pandas".to_string()],
+            requires_python: None,
+            prerelease: None,
+        });
+        let (deps, env_id) = captured_env_for_runtime(Some(&snap), CapturedEnvRuntime::Uv).unwrap();
+        assert_eq!(deps, vec!["pandas".to_string()]);
+        assert_eq!(env_id, "abc");
+    }
+
+    #[test]
+    fn captured_env_for_runtime_returns_empty_deps_when_section_missing() {
+        let mut snap = NotebookMetadataSnapshot::default();
+        snap.runt.env_id = Some("xyz".to_string());
+        // No uv or conda section populated.
+        let (deps, env_id) = captured_env_for_runtime(Some(&snap), CapturedEnvRuntime::Uv).unwrap();
+        assert!(deps.is_empty());
+        assert_eq!(env_id, "xyz");
+    }
+
+    #[test]
+    fn captured_env_for_runtime_requires_env_id() {
+        let snap = NotebookMetadataSnapshot::default();
+        assert!(captured_env_for_runtime(Some(&snap), CapturedEnvRuntime::Uv).is_none());
+    }
+
+    #[test]
+    fn captured_env_source_override_returns_none_when_no_env_id() {
+        let snap = NotebookMetadataSnapshot::default();
+        assert!(captured_env_source_override(Some(&snap)).is_none());
+    }
+
+    #[test]
+    fn captured_env_source_override_returns_none_when_env_missing_on_disk() {
+        // env_id + captured deps but no env in cache_dir. We rely on the disk
+        // absence to fall back to the inline/pool path rather than loop back
+        // into the prewarmed capture path with a broken reference.
+        let mut snap = NotebookMetadataSnapshot::default();
+        snap.runt.env_id = Some(format!("unlikely-env-id-{}", uuid::Uuid::new_v4()));
+        snap.runt.uv = Some(notebook_doc::metadata::UvInlineMetadata {
+            dependencies: vec!["pandas".to_string()],
+            requires_python: None,
+            prerelease: None,
+        });
+        assert!(captured_env_source_override(Some(&snap)).is_none());
+    }
+
+    /// Pre-upgrade notebooks: env_id is set but deps are empty. The capture
+    /// step must still record the env_id (no-op) and populate user_defaults
+    /// if they were derived from the pool. This is the migration path from
+    /// § 4 Migration of the spec.
+    #[tokio::test]
+    async fn capture_migrates_pre_upgrade_notebook() {
+        let (room, _tmp) = test_room_for_capture().await;
+        // Pre-upgrade state: env_id exists, uv section exists but empty.
+        let snap_before = room.doc.read().await.get_metadata_snapshot().unwrap();
+        assert_eq!(snap_before.runt.env_id.as_deref(), Some("test-env-id"));
+        assert!(
+            snap_before
+                .runt
+                .uv
+                .as_ref()
+                .map(|u| u.dependencies.is_empty())
+                .unwrap_or(true),
+            "pre-upgrade notebook starts with empty uv deps"
+        );
+
+        let user_defaults = vec!["polars".to_string()];
+        let wrote =
+            capture_env_into_metadata(&room, CapturedEnvRuntime::Uv, &user_defaults, "test-env-id")
+                .await;
+        assert!(wrote, "migration should populate user_defaults into deps");
+
+        let snap_after = room.doc.read().await.get_metadata_snapshot().unwrap();
+        assert_eq!(
+            snap_after.runt.uv.as_ref().unwrap().dependencies,
+            vec!["polars".to_string()]
+        );
     }
 }
