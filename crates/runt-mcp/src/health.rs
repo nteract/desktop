@@ -220,6 +220,13 @@ const REJOIN_RETRY_DELAY: Duration = Duration::from_secs(1);
 
 /// Attempt to re-join the active notebook session after daemon reconnection.
 ///
+/// For file-backed notebooks, uses `connect_open(path)` so the daemon reloads
+/// from disk — the UUID-only reconnect would yield an empty document because
+/// the .automerge persist file is deleted for file-backed rooms.
+///
+/// For ephemeral notebooks, uses `connect(uuid)` and detects data loss (empty
+/// document after reconnect means the daemon lost the ephemeral data).
+///
 /// Retries up to [`REJOIN_MAX_RETRIES`] times with [`REJOIN_RETRY_DELAY`] between
 /// attempts, since the daemon may respond to pings before it is ready to accept
 /// notebook sync connections.
@@ -228,10 +235,16 @@ async fn auto_rejoin_session(
     session: &Arc<RwLock<Option<NotebookSession>>>,
     peer_label: &Arc<RwLock<String>>,
 ) {
-    // Read the current session's notebook_id
-    let notebook_id = {
+    let (notebook_id, notebook_path, prev_cell_count) = {
         let s = session.read().await;
-        s.as_ref().map(|s| s.notebook_id.clone())
+        match s.as_ref() {
+            Some(s) => (
+                Some(s.notebook_id.clone()),
+                s.notebook_path.clone(),
+                s.handle.get_cell_ids().len(),
+            ),
+            None => (None, None, 0),
+        }
     };
 
     let Some(notebook_id) = notebook_id else {
@@ -246,23 +259,52 @@ async fn auto_rejoin_session(
     let label = peer_label.read().await.clone();
 
     for attempt in 0..=REJOIN_MAX_RETRIES {
-        match notebook_sync::connect::connect(
-            socket_path.to_path_buf(),
-            notebook_id.clone(),
-            &label,
-        )
-        .await
-        {
-            Ok(result) => {
-                crate::presence::announce(&result.handle, &label).await;
+        let result = if let Some(ref path) = notebook_path {
+            // File-backed: use connect_open so daemon reloads from .ipynb
+            notebook_sync::connect::connect_open(
+                socket_path.to_path_buf(),
+                PathBuf::from(path),
+                &label,
+            )
+            .await
+            .map(|r| (r.handle, r.broadcast_rx, r.cells.len(), r.info.notebook_id))
+        } else {
+            // Ephemeral: reconnect by UUID
+            notebook_sync::connect::connect(
+                socket_path.to_path_buf(),
+                notebook_id.clone(),
+                &label,
+            )
+            .await
+            .map(|r| (r.handle, r.broadcast_rx, r.cells.len(), notebook_id.clone()))
+        };
+
+        match result {
+            Ok((handle, broadcast_rx, new_cell_count, new_notebook_id)) => {
+                // Detect ephemeral session loss: previously had cells but
+                // rejoin yields an empty doc. For ephemeral notebooks this
+                // means the data is gone (no persistence).
+                if prev_cell_count > 0 && new_cell_count == 0 && notebook_path.is_none() {
+                    warn!(
+                        "Ephemeral notebook lost: rejoined {notebook_id} but document is empty \
+                         (had {prev_cell_count} cells). Daemon restarted and ephemeral \
+                         notebook was not saved to disk.",
+                    );
+                    return;
+                }
+
+                crate::presence::announce(&handle, &label).await;
 
                 let new_session = NotebookSession {
-                    handle: result.handle,
-                    broadcast_rx: result.broadcast_rx,
-                    notebook_id: notebook_id.clone(),
+                    handle,
+                    broadcast_rx,
+                    notebook_id: new_notebook_id,
+                    notebook_path: notebook_path.clone(),
                 };
                 *session.write().await = Some(new_session);
-                info!("Auto-rejoined notebook session: {notebook_id}");
+                info!(
+                    "Auto-rejoined notebook session: {notebook_id} ({new_cell_count} cells)",
+                );
                 return;
             }
             Err(e) => {
@@ -278,7 +320,6 @@ async fn auto_rejoin_session(
                         "Failed to auto-rejoin notebook {notebook_id} after {} attempts: {e}",
                         attempt + 1
                     );
-                    // Session stays None — tools will prompt user to re-join
                 }
             }
         }

@@ -321,6 +321,7 @@ pub async fn open_notebook(
                     handle: result.handle,
                     broadcast_rx: result.broadcast_rx,
                     notebook_id,
+                    notebook_path: Some(abs_path.to_string_lossy().into_owned()),
                 };
                 *server.session.write().await = Some(session);
 
@@ -386,6 +387,7 @@ pub async fn open_notebook(
                     handle: result.handle,
                     broadcast_rx: result.broadcast_rx,
                     notebook_id,
+                    notebook_path: None,
                 };
                 *server.session.write().await = Some(session);
 
@@ -480,6 +482,7 @@ pub async fn create_notebook(
                 handle: result.handle,
                 broadcast_rx: result.broadcast_rx,
                 notebook_id: notebook_id.clone(),
+                notebook_path: None,
             };
             *server.session.write().await = Some(session);
 
