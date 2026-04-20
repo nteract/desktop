@@ -3716,6 +3716,25 @@ fn captured_env_source_override(
     resolve_captured_env_override(metadata_snapshot).0
 }
 
+/// A notebook is considered "captured" when either:
+/// - its claimed env is still present on disk (cache hit, happy path), or
+/// - its captured deps are non-empty (shared notebook or GC'd env — deps
+///   alone are enough signal to rebuild via `prepare_environment_unified`).
+///
+/// Empty deps + no on-disk env means the notebook has never been through
+/// the capture flow (common for fresh notebooks `create_empty_notebook`
+/// creates with an `env_id` and an empty `uv`/`conda` section). Those still
+/// need to go through the pool-take + claim + capture path.
+fn is_captured(captured: &CapturedEnv) -> bool {
+    if unified_env_on_disk(captured).is_some() {
+        return true;
+    }
+    match captured {
+        CapturedEnv::Uv { deps, .. } => !deps.dependencies.is_empty(),
+        CapturedEnv::Conda { deps, .. } => !deps.dependencies.is_empty(),
+    }
+}
+
 /// Like `captured_env_source_override` but also returns the full
 /// `CapturedEnv` that matched. The capture data feeds into
 /// `build_launched_config` so drift detection knows what the launch
@@ -3727,12 +3746,12 @@ fn resolve_captured_env_override(
         return (None, None);
     };
     if let Some(captured) = captured_env_for_runtime(Some(snap), CapturedEnvRuntime::Uv) {
-        if unified_env_on_disk(&captured).is_some() {
+        if is_captured(&captured) {
             return (Some("uv:prewarmed".to_string()), Some(captured));
         }
     }
     if let Some(captured) = captured_env_for_runtime(Some(snap), CapturedEnvRuntime::Conda) {
-        if unified_env_on_disk(&captured).is_some() {
+        if is_captured(&captured) {
             return (Some("conda:prewarmed".to_string()), Some(captured));
         }
     }
@@ -3770,12 +3789,13 @@ async fn acquire_prewarmed_env_with_capture(
     // channels, python pin) so the hash matches what the capture step wrote,
     // even after the user edits one of those resolver-affecting fields.
     if let Some(captured) = captured_env_for_runtime(metadata_snapshot, runtime) {
-        // Don't gate on disk presence. `prepare_environment_unified` handles
-        // cache-hit AND cache-miss, rebuilding from metadata when the env is
-        // absent (GC'd, opened on another machine, first install from a
-        // shared .ipynb). The old guard silently fell through to pool take
-        // in that case, which would relaunch with stale defaults instead.
-        {
+        // Route through `prepare_environment_unified` when the notebook has
+        // been through the capture flow before. `is_captured` covers both
+        // the common cache-hit case (env on disk) and the GC'd/shared-notebook
+        // rebuild case (env missing but non-empty deps signal prior capture).
+        // Brand-new notebooks with empty deps fall through to the pool-take +
+        // capture path below so they still get the warmed defaults.
+        if is_captured(&captured) {
             match &captured {
                 CapturedEnv::Uv { deps, env_id } => {
                     let cache_dir = kernel_env::uv::default_cache_dir_uv();
@@ -14659,14 +14679,35 @@ mod tests {
     }
 
     #[test]
-    fn captured_env_source_override_returns_none_when_env_missing_on_disk() {
-        // env_id + captured deps but no env in cache_dir. We rely on the disk
-        // absence to fall back to the inline/pool path rather than loop back
-        // into the prewarmed capture path with a broken reference.
+    fn captured_env_source_override_returns_some_when_deps_present_but_env_missing() {
+        // env_id + non-empty captured deps is enough to route through the
+        // captured path even without the env on disk: deps alone signal the
+        // notebook has been through capture, and `prepare_environment_unified`
+        // rebuilds from the captured metadata. This covers GC'd envs and
+        // shared .ipynb files opened on a fresh machine.
         let mut snap = NotebookMetadataSnapshot::default();
         snap.runt.env_id = Some(format!("unlikely-env-id-{}", uuid::Uuid::new_v4()));
         snap.runt.uv = Some(notebook_doc::metadata::UvInlineMetadata {
             dependencies: vec!["pandas".to_string()],
+            requires_python: None,
+            prerelease: None,
+        });
+        assert_eq!(
+            captured_env_source_override(Some(&snap)),
+            Some("uv:prewarmed".to_string())
+        );
+    }
+
+    #[test]
+    fn captured_env_source_override_returns_none_for_fresh_notebook_empty_deps() {
+        // `create_empty_notebook` assigns an env_id and an empty uv/conda
+        // section on every new notebook. Empty deps + no env on disk must
+        // NOT be treated as captured, otherwise brand-new `uv:prewarmed`
+        // launches bypass the warmed pool and build a base env from scratch.
+        let mut snap = NotebookMetadataSnapshot::default();
+        snap.runt.env_id = Some(format!("fresh-env-{}", uuid::Uuid::new_v4()));
+        snap.runt.uv = Some(notebook_doc::metadata::UvInlineMetadata {
+            dependencies: vec![],
             requires_python: None,
             prerelease: None,
         });
