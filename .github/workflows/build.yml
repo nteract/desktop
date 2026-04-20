@@ -129,7 +129,10 @@ jobs:
       - run: pnpm --filter nteract-mcp-app install && vp run nteract-mcp-app#build
 
       - name: Clippy (Windows cross-check)
-        run: cargo clippy --target x86_64-pc-windows-gnu --workspace --exclude notebook --exclude runtimed-wasm --exclude sift-wasm --exclude runtimed-py --all-targets -- -D warnings
+        # runtimed-node stays excluded here: napi's build script needs libnode.dll
+        # for Windows targets, which the Linux cross-compiler doesn't carry. Linux
+        # and matrix clippy steps still cover runtimed-node natively.
+        run: cargo clippy --target x86_64-pc-windows-gnu --workspace --exclude notebook --exclude runtimed-wasm --exclude sift-wasm --exclude runtimed-py --exclude runtimed-node --all-targets -- -D warnings
 
   wasm-deno:
     name: WASM + Deno Tests
