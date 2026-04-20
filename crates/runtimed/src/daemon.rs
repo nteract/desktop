@@ -27,14 +27,12 @@ use crate::blob_server;
 use crate::blob_store::BlobStore;
 use crate::connection::{self, Handshake};
 use crate::notebook_sync_server::{NotebookRooms, PathIndex};
+use crate::paths::{default_cache_dir, default_socket_path, pool_env_root};
 use crate::protocol::{BlobRequest, BlobResponse, Request, Response};
 use crate::settings_doc::SettingsDoc;
 use crate::singleton::DaemonLock;
 use crate::task_supervisor::{spawn_best_effort, spawn_supervised};
-use crate::{
-    default_blob_store_dir, default_cache_dir, default_socket_path, is_pool_env_dir,
-    is_within_cache_dir, pool_env_root, EnvType, PooledEnv,
-};
+use crate::{default_blob_store_dir, is_pool_env_dir, is_within_cache_dir, EnvType, PooledEnv};
 use runtimed_client::singleton::DaemonInfo;
 
 /// Configuration for the pool daemon.
@@ -1789,7 +1787,7 @@ impl Daemon {
             Ok(())
         }
 
-        if looks_like_untitled_notebook_path(&path) {
+        if crate::paths::looks_like_untitled_notebook_path(&path) {
             let (_reader, mut writer) = tokio::io::split(stream);
             send_error_response(
                 &mut writer,
@@ -2617,7 +2615,7 @@ impl Daemon {
                     }
                 } else {
                     // No active room - try to load from persisted file
-                    let filename = crate::notebook_doc::notebook_doc_filename(&notebook_id);
+                    let filename = crate::paths::notebook_doc_filename(&notebook_id);
                     let persist_path = self.config.notebook_docs_dir.join(filename);
                     if persist_path.exists() {
                         match std::fs::read(&persist_path) {
@@ -2908,7 +2906,7 @@ impl Daemon {
                 let active_rooms = self.notebook_rooms.lock().await;
                 let active_hashes: std::collections::HashSet<String> = active_rooms
                     .keys()
-                    .map(|id| notebook_doc::notebook_doc_filename(&id.to_string()))
+                    .map(|id| crate::paths::notebook_doc_filename(&id.to_string()))
                     .collect();
                 drop(active_rooms);
 
@@ -3226,7 +3224,7 @@ impl Daemon {
         if notebook_docs_dir.exists() {
             let active_filenames: std::collections::HashSet<String> = rooms
                 .iter()
-                .map(|(id, _)| notebook_doc::notebook_doc_filename(id))
+                .map(|(id, _)| crate::paths::notebook_doc_filename(id))
                 .collect();
 
             let mut persisted_paths: Vec<PathBuf> = Vec::new();
@@ -4645,13 +4643,6 @@ impl Daemon {
     }
 }
 
-fn looks_like_untitled_notebook_path(path: &str) -> bool {
-    let candidate = Path::new(path);
-    candidate.components().count() == 1
-        && candidate.extension().is_none()
-        && uuid::Uuid::parse_str(path).is_ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5596,7 +5587,7 @@ mod tests {
         assets.insert("image.png".to_string(), blob_hash.to_string());
         doc.set_cell_resolved_assets(cell_id, &assets).unwrap();
 
-        let filename = notebook_doc::notebook_doc_filename(notebook_id);
+        let filename = crate::paths::notebook_doc_filename(notebook_id);
         let path = docs_dir.join(filename);
         std::fs::create_dir_all(docs_dir).unwrap();
         std::fs::write(&path, doc.save()).unwrap();
@@ -5744,18 +5735,5 @@ mod tests {
             blob_store.get(&hash).await.unwrap().is_some(),
             "unreferenced blob within grace should survive"
         );
-    }
-
-    #[test]
-    fn bare_uuid_path_is_rejected() {
-        assert!(looks_like_untitled_notebook_path(
-            "550e8400-e29b-41d4-a716-446655440000"
-        ));
-        assert!(!looks_like_untitled_notebook_path(
-            "/tmp/550e8400-e29b-41d4-a716-446655440000"
-        ));
-        assert!(!looks_like_untitled_notebook_path(
-            "550e8400-e29b-41d4-a716-446655440000.ipynb"
-        ));
     }
 }

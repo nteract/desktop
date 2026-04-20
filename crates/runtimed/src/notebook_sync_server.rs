@@ -40,9 +40,10 @@ use notify_debouncer_mini::DebounceEventResult;
 use crate::blob_store::BlobStore;
 use crate::connection::{self, NotebookFrameType};
 use crate::markdown_assets::resolve_markdown_assets;
-use crate::notebook_doc::{notebook_doc_filename, CellSnapshot, NotebookDoc};
+use crate::notebook_doc::{CellSnapshot, NotebookDoc};
 use crate::notebook_metadata::NotebookMetadataSnapshot;
 use crate::output_prep::{DenoLaunchedConfig, LaunchedEnvConfig};
+use crate::paths::notebook_doc_filename;
 use crate::protocol::{
     EnvSyncDiff, NotebookBroadcast, NotebookRequest, NotebookResponse, QueueEntry,
 };
@@ -1202,77 +1203,6 @@ pub struct NotebookRoom {
     pub current_runtime_agent_id: Arc<RwLock<Option<String>>>,
 }
 
-/// Maximum number of snapshots to keep per notebook hash.
-const MAX_SNAPSHOTS_PER_NOTEBOOK: usize = 5;
-
-/// Snapshot a persisted automerge doc before deleting it.
-///
-/// Copies the file to `{docs_dir}/snapshots/{stem}-{millis}.automerge`
-/// and prunes old snapshots beyond `MAX_SNAPSHOTS_PER_NOTEBOOK`.
-///
-/// Returns `true` if the snapshot was created successfully. The caller
-/// should only delete the original file when this returns `true`.
-fn snapshot_before_delete(persist_path: &Path, docs_dir: &Path) -> bool {
-    let Some(stem) = persist_path.file_stem().and_then(|s| s.to_str()) else {
-        return false;
-    };
-
-    let snapshots_dir = docs_dir.join("snapshots");
-    if let Err(e) = std::fs::create_dir_all(&snapshots_dir) {
-        warn!(
-            "[notebook-sync] Failed to create snapshots dir {:?}: {}",
-            snapshots_dir, e
-        );
-        return false;
-    }
-
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    let snapshot_name = format!("{}-{}.automerge", stem, timestamp);
-    let snapshot_path = snapshots_dir.join(&snapshot_name);
-
-    match std::fs::copy(persist_path, &snapshot_path) {
-        Ok(_) => {
-            info!(
-                "[notebook-sync] Snapshotted persisted doc before refresh: {:?}",
-                snapshot_path
-            );
-        }
-        Err(e) => {
-            warn!(
-                "[notebook-sync] Failed to snapshot {:?}: {}",
-                persist_path, e
-            );
-            return false;
-        }
-    }
-
-    // Prune old snapshots for this hash (keep most recent MAX_SNAPSHOTS_PER_NOTEBOOK)
-    let prefix = format!("{}-", stem);
-    let mut snapshots: Vec<_> = std::fs::read_dir(&snapshots_dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|e| {
-            e.file_name()
-                .to_str()
-                .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".automerge"))
-        })
-        .collect();
-
-    if snapshots.len() > MAX_SNAPSHOTS_PER_NOTEBOOK {
-        // Sort by filename (which embeds timestamp) — ascending order
-        snapshots.sort_by_key(|e| e.file_name());
-        for entry in &snapshots[..snapshots.len() - MAX_SNAPSHOTS_PER_NOTEBOOK] {
-            let _ = std::fs::remove_file(entry.path());
-        }
-    }
-
-    true
-}
-
 impl NotebookRoom {
     /// Create a fresh room, ignoring any persisted state.
     ///
@@ -1314,7 +1244,7 @@ impl NotebookRoom {
             NotebookDoc::load_or_create_with_actor(&persist_path, &notebook_id_str, runtimed_actor)
         } else {
             if !ephemeral && persist_path.exists() {
-                if snapshot_before_delete(&persist_path, docs_dir) {
+                if crate::paths::snapshot_before_delete(&persist_path, docs_dir) {
                     let _ = std::fs::remove_file(&persist_path);
                 } else {
                     warn!(
@@ -2558,8 +2488,8 @@ where
                                 path
                             );
                         } else {
-                            let root = crate::pool_env_root(path);
-                            let cache_dir = crate::default_cache_dir();
+                            let root = crate::paths::pool_env_root(path);
+                            let cache_dir = crate::paths::default_cache_dir();
                             if !crate::is_within_cache_dir(&root, &cache_dir) {
                                 warn!(
                                     "[notebook-sync] Refusing to delete env {:?} on eviction (not within cache dir)",
@@ -4532,8 +4462,8 @@ async fn try_uv_pool_for_inline_deps(
                     );
                     // Clean up the taken pool env — it's out of the pool's
                     // tracking and would otherwise leak on disk.
-                    let root = crate::pool_env_root(&env.venv_path);
-                    let cache_dir = crate::default_cache_dir();
+                    let root = crate::paths::pool_env_root(&env.venv_path);
+                    let cache_dir = crate::paths::default_cache_dir();
                     if crate::is_within_cache_dir(&root, &cache_dir) {
                         if let Err(e) = tokio::fs::remove_dir_all(&root).await {
                             warn!(
@@ -4549,8 +4479,8 @@ async fn try_uv_pool_for_inline_deps(
         crate::inline_env::PoolDepRelation::Independent => {
             // Shouldn't reach here (pre-check above), but handle gracefully
             debug!("[notebook-sync] UV pool env doesn't match inline deps, falling back");
-            let root = crate::pool_env_root(&env.venv_path);
-            let cache_dir = crate::default_cache_dir();
+            let root = crate::paths::pool_env_root(&env.venv_path);
+            let cache_dir = crate::paths::default_cache_dir();
             if crate::is_within_cache_dir(&root, &cache_dir) {
                 if let Err(e) = tokio::fs::remove_dir_all(&root).await {
                     warn!(
@@ -4652,8 +4582,8 @@ async fn try_conda_pool_for_inline_deps(
                         "[notebook-sync] Failed to install delta into Conda pool env: {}, falling back",
                         e
                     );
-                    let root = crate::pool_env_root(&env.venv_path);
-                    let cache_dir = crate::default_cache_dir();
+                    let root = crate::paths::pool_env_root(&env.venv_path);
+                    let cache_dir = crate::paths::default_cache_dir();
                     if crate::is_within_cache_dir(&root, &cache_dir) {
                         if let Err(e) = tokio::fs::remove_dir_all(&root).await {
                             warn!(
@@ -4668,8 +4598,8 @@ async fn try_conda_pool_for_inline_deps(
         }
         crate::inline_env::PoolDepRelation::Independent => {
             debug!("[notebook-sync] Conda pool env doesn't match inline deps, falling back");
-            let root = crate::pool_env_root(&env.venv_path);
-            let cache_dir = crate::default_cache_dir();
+            let root = crate::paths::pool_env_root(&env.venv_path);
+            let cache_dir = crate::paths::default_cache_dir();
             if crate::is_within_cache_dir(&root, &cache_dir) {
                 if let Err(e) = tokio::fs::remove_dir_all(&root).await {
                     warn!(
@@ -6470,7 +6400,8 @@ async fn handle_notebook_request(
                                 )
                             } else {
                                 // No name or prefix — use a hash-based env in cache
-                                let cache_dir = crate::default_cache_dir().join("conda-envs");
+                                let cache_dir =
+                                    crate::paths::default_cache_dir().join("conda-envs");
                                 let conda_deps_tmp = kernel_env::CondaDependencies {
                                     dependencies: env_config.dependencies.clone(),
                                     channels: env_config.channels.clone(),
@@ -7479,7 +7410,7 @@ async fn handle_notebook_request(
             // is required; for file-backed rooms we only need a pre-write claim
             // if the caller specified a path different from room.path.
             let target_for_claim: Option<PathBuf> = match (&path, was_untitled) {
-                (Some(p), _) => match normalize_save_target(p) {
+                (Some(p), _) => match crate::paths::normalize_save_target(p) {
                     Ok(normalized) => Some(canonical_target_path(&normalized).await),
                     Err(msg) => {
                         return NotebookResponse::SaveError {
@@ -8722,23 +8653,6 @@ async fn canonical_target_path(target: &Path) -> PathBuf {
         }
     }
     target.to_path_buf()
-}
-
-/// Normalize a user-supplied save target: append `.ipynb` if missing, reject
-/// relative paths, and return the path that `save_notebook_to_disk` will use.
-fn normalize_save_target(target: &str) -> Result<PathBuf, String> {
-    let path = PathBuf::from(target);
-    if path.is_relative() {
-        return Err(format!(
-            "Relative paths are not supported for save: '{}'. Please provide an absolute path.",
-            target
-        ));
-    }
-    Ok(if target.ends_with(".ipynb") {
-        path
-    } else {
-        PathBuf::from(format!("{}.ipynb", target))
-    })
 }
 
 /// Try to claim a path in the path_index for a given room. Returns the
