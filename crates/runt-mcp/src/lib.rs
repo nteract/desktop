@@ -182,11 +182,12 @@ impl ServerHandler for NteractMcp {
                 }
             }
         }
-        let tool_name = request.name.clone();
         let start = std::time::Instant::now();
         let result = tools::dispatch(self, &request).await;
-        let elapsed = start.elapsed();
-        log_mcp_response(&tool_name, elapsed, &result);
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            let elapsed = start.elapsed();
+            log_mcp_response(&request.name, elapsed, &result);
+        }
         result
     }
 
