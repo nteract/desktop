@@ -747,8 +747,14 @@ async fn run_mcp_server(no_show: bool) -> Result<()> {
         use tracing_subscriber::layer::SubscriberExt;
         use tracing_subscriber::util::SubscriberInitExt;
 
+        let default_filter =
+            if runt_workspace::build_channel() == runt_workspace::BuildChannel::Nightly {
+                "info,runt_mcp=debug"
+            } else {
+                "info"
+            };
         let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_filter));
         let file_layer = tracing_subscriber::fmt::layer()
             .with_writer(std::sync::Mutex::new(log_file))
             .with_ansi(false);

@@ -8,6 +8,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, Implementation, ListResourceTemplatesResult,
@@ -181,7 +182,13 @@ impl ServerHandler for NteractMcp {
                 }
             }
         }
-        tools::dispatch(self, &request).await
+        let start = std::time::Instant::now();
+        let result = tools::dispatch(self, &request).await;
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            let elapsed = start.elapsed();
+            log_mcp_response(&request.name, elapsed, &result);
+        }
+        result
     }
 
     async fn list_resources(
@@ -210,5 +217,94 @@ impl ServerHandler for NteractMcp {
             next_cursor: None,
             meta: None,
         })
+    }
+}
+
+/// Analyze and log an MCP tool response for SDK crash investigation.
+///
+/// Logs payload size, content summary, problematic bytes, and timing at debug
+/// level for every response. Escalates to warn for payloads that are likely to
+/// trigger SDK message reader crashes (large payloads, null bytes, malformed content).
+fn log_mcp_response(tool_name: &str, elapsed: Duration, result: &Result<CallToolResult, McpError>) {
+    match result {
+        Ok(ref call_result) => {
+            let serialized = serde_json::to_string(call_result).unwrap_or_default();
+            let payload_bytes = serialized.len();
+            let elapsed_ms = elapsed.as_millis();
+
+            let content_count = call_result.content.len();
+            let has_structured = call_result.structured_content.is_some();
+            let is_error = call_result.is_error.unwrap_or(false);
+
+            // Scan for problematic bytes
+            let null_bytes = serialized.bytes().filter(|&b| b == 0).count();
+            let control_chars = serialized
+                .bytes()
+                .filter(|&b| b < 0x20 && b != b'\n' && b != b'\r' && b != b'\t')
+                .count();
+
+            // Content item summaries
+            let mut item_summaries: Vec<String> = Vec::new();
+            for (i, item) in call_result.content.iter().enumerate() {
+                let serialized_item = serde_json::to_string(item).unwrap_or_default();
+                let item_bytes = serialized_item.len();
+                let preview = if serialized_item.len() > 200 {
+                    format!("{}...", &serialized_item[..200])
+                } else {
+                    serialized_item
+                };
+                item_summaries.push(format!("  [{i}] {item_bytes}B: {preview}"));
+            }
+
+            let structured_bytes = call_result
+                .structured_content
+                .as_ref()
+                .map(|sc| serde_json::to_string(sc).unwrap_or_default().len())
+                .unwrap_or(0);
+
+            if null_bytes > 0 || control_chars > 0 || payload_bytes > 512 * 1024 {
+                tracing::warn!(
+                    "[mcp-response] tool={tool_name} PROBLEMATIC \
+                     payload={payload_bytes}B elapsed={elapsed_ms}ms \
+                     items={content_count} structured={has_structured} \
+                     structured_bytes={structured_bytes} error={is_error} \
+                     null_bytes={null_bytes} control_chars={control_chars}"
+                );
+                for summary in &item_summaries {
+                    tracing::warn!("[mcp-response] {tool_name} {summary}");
+                }
+                if has_structured {
+                    let sc_preview = call_result
+                        .structured_content
+                        .as_ref()
+                        .and_then(|sc| serde_json::to_string(sc).ok())
+                        .unwrap_or_default();
+                    let sc_preview = if sc_preview.len() > 500 {
+                        format!("{}...", &sc_preview[..500])
+                    } else {
+                        sc_preview
+                    };
+                    tracing::warn!("[mcp-response] {tool_name} structured_content: {sc_preview}");
+                }
+            } else {
+                tracing::debug!(
+                    "[mcp-response] tool={tool_name} \
+                     payload={payload_bytes}B elapsed={elapsed_ms}ms \
+                     items={content_count} structured={has_structured} \
+                     structured_bytes={structured_bytes} error={is_error}"
+                );
+                for summary in &item_summaries {
+                    tracing::debug!("[mcp-response] {tool_name} {summary}");
+                }
+            }
+        }
+        Err(ref err) => {
+            let elapsed_ms = elapsed.as_millis();
+            tracing::debug!(
+                "[mcp-response] tool={tool_name} ERROR elapsed={elapsed_ms}ms code={:?} message={}",
+                err.code,
+                err.message,
+            );
+        }
     }
 }
