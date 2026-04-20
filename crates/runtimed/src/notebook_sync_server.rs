@@ -77,6 +77,11 @@ fn trigger_global_shutdown() {
 /// full doc sync ("peer lagged") rather than losing messages.
 const KERNEL_BROADCAST_CAPACITY: usize = 256;
 
+/// Compaction threshold for RuntimeStateDoc initial sync messages.
+/// If the encoded message exceeds this, compact before sending. Leaves
+/// 20 MiB headroom under the 100 MiB frame limit.
+const STATE_SYNC_COMPACT_THRESHOLD: usize = 80 * 1024 * 1024;
+
 /// Catch panics from automerge internal operations.
 ///
 /// Automerge 0.7.4 (and 0.8.0) has a known bug where the change collector
@@ -1734,7 +1739,7 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
     let mut state_sync_state = automerge::sync::State::new();
     let state_sync_msg = {
         let mut sd = room.state_doc.write().await;
-        sd.generate_sync_message_bounded(&mut state_sync_state, 80 * 1024 * 1024)
+        sd.generate_sync_message_bounded(&mut state_sync_state, STATE_SYNC_COMPACT_THRESHOLD)
             .map(|msg| msg.encode())
     };
     if let Some(encoded) = state_sync_msg {
@@ -2617,8 +2622,7 @@ where
 
     // Phase 1.1: Initial RuntimeStateDoc sync — encode inside lock, send outside.
     // Uses bounded generation to compact atomically if the message would exceed
-    // the 100 MiB frame limit (80 MiB threshold leaves headroom).
-    const STATE_SYNC_COMPACT_THRESHOLD: usize = 80 * 1024 * 1024;
+    // the 100 MiB frame limit.
     let initial_state_encoded = {
         let mut state_doc = room.state_doc.write().await;
         // Safety net: compact before initial sync if the doc grew too large.

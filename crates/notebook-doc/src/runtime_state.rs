@@ -2117,7 +2117,9 @@ impl RuntimeStateDoc {
         if msg.clone().encode().len() <= max_encoded_bytes {
             return Some(msg);
         }
-        self.rebuild_from_save();
+        if !self.rebuild_from_save() {
+            return None;
+        }
         *peer_state = sync::State::new();
         self.doc.sync().generate_sync_message(peer_state)
     }
@@ -3361,7 +3363,7 @@ mod tests {
         let growth_factor = size_after_100 as f64 / size_after_first as f64;
         assert!(
             growth_factor < 3.0,
-            "Doc grew {:.1}x after 100 stream updates (expected < 6x). \
+            "Doc grew {:.1}x after 100 stream updates (expected < 3x). \
              size_after_first={}, size_after_100={}",
             growth_factor,
             size_after_first,
