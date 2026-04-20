@@ -4218,13 +4218,8 @@ async fn auto_launch_kernel(
                 "[notebook-sync] Preparing cached UV env for PEP 723 deps: {:?}",
                 deps
             );
-            match crate::inline_env::prepare_uv_inline_env(
-                deps,
-                None,
-                progress_handler.clone(),
-                daemon.feature_flags().await,
-            )
-            .await
+            match crate::inline_env::prepare_uv_inline_env(deps, None, progress_handler.clone())
+                .await
             {
                 Ok(prepared) => {
                     info!(
@@ -4293,7 +4288,6 @@ async fn auto_launch_kernel(
                             &deps,
                             prerelease.as_deref(),
                             progress_handler.clone(),
-                            daemon.feature_flags().await,
                         )
                         .await
                         {
@@ -4337,7 +4331,6 @@ async fn auto_launch_kernel(
                     &deps,
                     prerelease.as_deref(),
                     progress_handler.clone(),
-                    daemon.feature_flags().await,
                 )
                 .await
                 {
@@ -5264,7 +5257,6 @@ async fn handle_notebook_request(
                         &deps,
                         None,
                         launch_progress_handler.clone(),
-                        daemon.feature_flags().await,
                     )
                     .await
                     {
@@ -5341,7 +5333,6 @@ async fn handle_notebook_request(
                                     &deps,
                                     prerelease.as_deref(),
                                     launch_progress_handler.clone(),
-                                    daemon.feature_flags().await,
                                 )
                                 .await
                                 {
@@ -5376,7 +5367,6 @@ async fn handle_notebook_request(
                             &deps,
                             prerelease.as_deref(),
                             launch_progress_handler.clone(),
-                            daemon.feature_flags().await,
                         )
                         .await
                         {
