@@ -6,7 +6,12 @@ ipykernel itself is exercised by integration tests.
 
 from __future__ import annotations
 
-import nteract_kernel_launcher as nkl
+import sys
+from pathlib import Path
+
+# The module is a single file at the package root, not under src/.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import nteract_kernel_launcher as nkl  # noqa: E402
 
 
 def test_no_exec_lines_without_flag(monkeypatch):

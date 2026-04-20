@@ -1,12 +1,14 @@
 """nteract-kernel-launcher — wrapper around ipykernel_launcher with kernel bootstrap.
 
-Run via ``python -m nteract_kernel_launcher -f <connection_file>``.
+Two supported invocations:
+
+    python -m nteract_kernel_launcher -f <connection_file>   # vendored into venv
+    python /path/to/nteract_kernel_launcher.py -f <file>     # run as a script
 
 Bootstrap runs inside the kernel, *after* IPython is initialized but *before*
 any user code executes. We achieve that ordering by appending the bootstrap
-snippet to ``IPKernelApp.exec_lines`` on the process's argv before handing off
-to ``ipykernel.kernelapp.launch_new_instance()``. Ipykernel already runs
-``exec_lines`` at the right point in its ``IPKernelApp.init_code()`` phase.
+snippet to ``IPKernelApp.exec_lines`` on the process's argv before handing
+off to ``ipykernel.kernelapp.launch_new_instance()``.
 """
 
 from __future__ import annotations
@@ -39,3 +41,7 @@ def main() -> None:
     from ipykernel import kernelapp
 
     kernelapp.launch_new_instance()
+
+
+if __name__ == "__main__":
+    main()
