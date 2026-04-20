@@ -553,7 +553,6 @@ async fn handle_runtime_agent_request(
                 presence: ctx.presence.clone(),
                 presence_tx: ctx.presence_tx.clone(),
             };
-            let bootstrap_dx = launched_config.bootstrap_dx;
             let config = KernelLaunchConfig {
                 kernel_type,
                 env_source: env_source.clone(),
@@ -561,7 +560,6 @@ async fn handle_runtime_agent_request(
                 launched_config,
                 env_vars: vec![],
                 pooled_env,
-                bootstrap_dx,
             };
 
             match JupyterKernel::launch(config, shared).await {
@@ -638,7 +636,6 @@ async fn handle_runtime_agent_request(
                 presence: ctx.presence.clone(),
                 presence_tx: ctx.presence_tx.clone(),
             };
-            let bootstrap_dx = launched_config.bootstrap_dx;
             let config = KernelLaunchConfig {
                 kernel_type,
                 env_source: env_source.clone(),
@@ -646,7 +643,6 @@ async fn handle_runtime_agent_request(
                 launched_config,
                 env_vars: vec![],
                 pooled_env,
-                bootstrap_dx,
             };
 
             // Mark stale executions as failed in RuntimeStateDoc.

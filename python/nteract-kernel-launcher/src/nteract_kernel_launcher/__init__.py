@@ -14,12 +14,9 @@ from __future__ import annotations
 import os
 import sys
 
-
 # Code run inside the kernel once IPython is initialized.
 # Must be a single CLI-safe string (no newlines — use `;`).
-_DX_EXEC_LINE = (
-    "import dx as _nteract_dx; _nteract_dx.install()"
-)
+_DX_EXEC_LINE = "import dx as _nteract_dx; _nteract_dx.install()"
 
 
 def enabled_exec_lines() -> list[str]:

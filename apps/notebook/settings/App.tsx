@@ -4,6 +4,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import {
+  FEATURE_FLAGS,
   isKnownPythonEnv,
   isKnownRuntime,
   type ThemeMode,
@@ -188,23 +189,6 @@ function PackageBadgeInput({
   );
 }
 
-interface FeatureFlag {
-  id: string;
-  label: string;
-  description: string;
-  settingKey: "bootstrap_dx";
-}
-
-const FEATURE_FLAGS: FeatureFlag[] = [
-  {
-    id: "bootstrap_dx",
-    label: "nteract/dx DataFrame rendering",
-    description:
-      "Install nteract-kernel-launcher + dx into UV kernels and enable rich DataFrame rendering via dx.install(). Requires restarting any running kernels.",
-    settingKey: "bootstrap_dx",
-  },
-];
-
 const themeOptions: { value: ThemeMode; label: string; icon: typeof Sun }[] = [
   { value: "light", label: "Light", icon: Sun },
   { value: "dark", label: "Dark", icon: Moon },
@@ -230,19 +214,9 @@ export default function App() {
     setDefaultPixiPackages,
     keepAliveSecs,
     setKeepAliveSecs,
-    bootstrapDx,
-    setBootstrapDx,
+    featureFlags,
+    setFeatureFlag,
   } = useSyncedSettings();
-
-  const featureFlagValues: Record<FeatureFlag["settingKey"], boolean> = {
-    bootstrap_dx: bootstrapDx,
-  };
-  const featureFlagSetters: Record<
-    FeatureFlag["settingKey"],
-    (next: boolean) => void
-  > = {
-    bootstrap_dx: setBootstrapDx,
-  };
 
   return (
     <div className="h-full overflow-auto">
@@ -481,8 +455,8 @@ export default function App() {
                     <p className="text-[10px] text-muted-foreground/70">{flag.description}</p>
                   </div>
                   <Switch
-                    checked={featureFlagValues[flag.settingKey]}
-                    onCheckedChange={featureFlagSetters[flag.settingKey]}
+                    checked={featureFlags[flag.id]}
+                    onCheckedChange={(next) => setFeatureFlag(flag.id, next)}
                   />
                 </div>
               ))}

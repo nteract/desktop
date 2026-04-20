@@ -245,7 +245,10 @@ struct Pool {
 
 const MIN_WARM_BASES: usize = 2;
 
-fn uv_prewarmed_packages(extra: &[String], bootstrap_dx: bool) -> Vec<String> {
+fn uv_prewarmed_packages(
+    extra: &[String],
+    feature_flags: notebook_protocol::protocol::FeatureFlags,
+) -> Vec<String> {
     let mut packages = vec![
         "ipykernel".to_string(),
         "ipywidgets".to_string(),
@@ -253,7 +256,7 @@ fn uv_prewarmed_packages(extra: &[String], bootstrap_dx: bool) -> Vec<String> {
         "nbformat".to_string(),
         "uv".to_string(),
     ];
-    if bootstrap_dx {
+    if feature_flags.bootstrap_dx {
         packages.push("nteract-kernel-launcher".to_string());
         packages.push("dx".to_string());
     }
@@ -644,12 +647,12 @@ impl Daemon {
     pub async fn uv_pool_packages(&self) -> Vec<String> {
         let settings = self.settings.read().await;
         let synced = settings.get_all();
-        uv_prewarmed_packages(&synced.uv.default_packages, synced.bootstrap_dx)
+        uv_prewarmed_packages(&synced.uv.default_packages, synced.feature_flags())
     }
 
-    /// Snapshot the `bootstrap_dx` setting.
-    pub async fn bootstrap_dx_enabled(&self) -> bool {
-        self.settings.read().await.get_all().bootstrap_dx
+    /// Snapshot the user's feature-flag settings.
+    pub async fn feature_flags(&self) -> notebook_protocol::protocol::FeatureFlags {
+        self.settings.read().await.get_all().feature_flags()
     }
 
     /// Get the full list of Conda pool packages (base + user default_packages).
@@ -1321,7 +1324,8 @@ impl Daemon {
             let settings = self.settings.read().await;
             let synced = settings.get_all();
 
-            let uv_pkgs = uv_prewarmed_packages(&synced.uv.default_packages, synced.bootstrap_dx);
+            let uv_pkgs =
+                uv_prewarmed_packages(&synced.uv.default_packages, synced.feature_flags());
             let conda_pkgs = conda_prewarmed_packages(&synced.conda.default_packages);
             let pixi_pkgs = pixi_prewarmed_packages(&synced.pixi.default_packages);
 
@@ -4294,16 +4298,17 @@ impl Daemon {
         }
 
         // Read default uv packages from synced settings
-        let (user_default_packages, bootstrap_dx) = {
+        let (user_default_packages, feature_flags) = {
             let settings = self.settings.read().await;
             let synced = settings.get_all();
+            let flags = synced.feature_flags();
             let configured = synced.uv.default_packages;
             if !configured.is_empty() {
                 info!("[runtimed] Including default uv packages: {:?}", configured);
             }
-            (configured, synced.bootstrap_dx)
+            (configured, flags)
         };
-        let install_packages = uv_prewarmed_packages(&user_default_packages, bootstrap_dx);
+        let install_packages = uv_prewarmed_packages(&user_default_packages, feature_flags);
 
         // Install packages (180 second timeout)
         // Use hardlink mode to share files from uv's global cache,

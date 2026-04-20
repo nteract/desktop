@@ -66,13 +66,13 @@ pub async fn prepare_uv_inline_env(
     deps: &[String],
     prerelease: Option<&str>,
     handler: Arc<dyn ProgressHandler>,
-    bootstrap_dx: bool,
+    feature_flags: notebook_protocol::protocol::FeatureFlags,
 ) -> Result<PreparedEnv> {
     let uv_deps = kernel_env::UvDependencies {
         dependencies: deps.to_vec(),
         requires_python: Some(">=3.13".to_string()),
         prerelease: prerelease.map(|s| s.to_string()),
-        bootstrap_dx,
+        bootstrap_dx: feature_flags.bootstrap_dx,
     };
 
     let env =

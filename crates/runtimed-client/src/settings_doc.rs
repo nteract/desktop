@@ -231,8 +231,21 @@ pub struct SyncedSettings {
     /// When true, the daemon installs `nteract-kernel-launcher` and `dx` into
     /// UV kernel environments, launches kernels via `nteract_kernel_launcher`,
     /// and runs `dx.install()` before the first user cell. Default: false.
+    ///
+    /// Mirrors `FeatureFlags::bootstrap_dx`. Flattened on the wire so the
+    /// settings JSON and Automerge document keep a flat layout even as new
+    /// feature flags are added.
     #[serde(default)]
     pub bootstrap_dx: bool,
+}
+
+impl SyncedSettings {
+    /// Snapshot the user's feature-flag settings.
+    pub fn feature_flags(&self) -> notebook_protocol::protocol::FeatureFlags {
+        notebook_protocol::protocol::FeatureFlags {
+            bootstrap_dx: self.bootstrap_dx,
+        }
+    }
 }
 
 impl Default for SyncedSettings {

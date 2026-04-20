@@ -152,7 +152,7 @@ impl KernelConnection for JupyterKernel {
         let notebook_path = config.notebook_path;
         let env = config.pooled_env;
         let launched_config = config.launched_config;
-        let bootstrap_dx = config.bootstrap_dx;
+        let bootstrap_dx = launched_config.feature_flags.bootstrap_dx;
         let env_path = env.as_ref().map(|e| e.venv_path.clone());
 
         // ── Build process command ────────────────────────────────────────

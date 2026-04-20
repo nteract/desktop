@@ -9,6 +9,25 @@ use serde::{Deserialize, Serialize};
 
 // ── Data structs referenced by protocol enums ───────────────────────────────
 
+/// Optional runtime behaviors toggled by the user.
+///
+/// Single source of truth for feature-flag state across the daemon,
+/// settings UI, and kernel launch pipeline. Each flag defaults to `false`,
+/// so adding a new flag is one extra field here, no new arguments threaded
+/// through call sites.
+///
+/// Serialized flat via `#[serde(flatten)]` in parent structs, so the
+/// on-wire JSON and Automerge keys stay at the top level (`bootstrap_dx`)
+/// for backward compatibility.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FeatureFlags {
+    /// Install `nteract-kernel-launcher` and `dx` into UV kernels, launch
+    /// via `nteract_kernel_launcher`, and register dx display formatters
+    /// before the first user cell.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bootstrap_dx: bool,
+}
+
 /// Environment configuration captured at kernel launch time.
 /// Used to detect when notebook metadata has drifted from the running kernel.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -68,12 +87,11 @@ pub struct LaunchedEnvConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub launch_id: Option<String>,
 
-    /// Whether the nteract/dx kernel bootstrap is enabled for this launch.
-    /// Snapshot of the `bootstrap_dx` user setting; passed through to the
-    /// kernel spawner so UV kernels use `nteract_kernel_launcher` and the
-    /// dx formatters fire via ipykernel exec_lines.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub bootstrap_dx: bool,
+    /// Snapshot of the user's feature-flag settings at launch time.
+    /// Flattened on the wire so each flag sits at the top level (e.g.
+    /// `bootstrap_dx`) for backward compatibility.
+    #[serde(default, flatten)]
+    pub feature_flags: FeatureFlags,
 
     /// Packages pre-installed in the prewarmed environment (empty for inline envs).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
