@@ -561,6 +561,12 @@ async fn test_untitled_notebook_persists_through_eviction() {
             .unwrap()
             .handle;
 
+        // Wait for the daemon's document structure (cells map) to arrive via
+        // background sync — connect_create returns after handshake but the Map
+        // may not be delivered yet on slow CI runners.
+        let mut watcher = client1.subscribe();
+        let _ = tokio::time::timeout(Duration::from_secs(2), watcher.changed()).await;
+
         client1.add_cell_after("c1", "code", None).unwrap();
         client1.update_source("c1", "persisted = True").unwrap();
         client1
@@ -671,6 +677,9 @@ async fn test_eviction_flushes_before_reconnect() {
             .unwrap();
         notebook_id = result.info.notebook_id.clone();
         let client = result.handle;
+
+        let mut watcher = client.subscribe();
+        let _ = tokio::time::timeout(Duration::from_secs(2), watcher.changed()).await;
 
         client.add_cell_after("c1", "code", None).unwrap();
         client.update_source("c1", "race_test = 1").unwrap();
