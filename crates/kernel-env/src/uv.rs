@@ -608,6 +608,9 @@ pub async fn claim_prewarmed_environment_in(
             prewarmed.venv_path
         );
         tokio::fs::remove_dir_all(&prewarmed.venv_path).await.ok();
+        crate::launcher::vendor_into_venv(&python_path)
+            .await
+            .context("vendor nteract_kernel_launcher into claimed UV env")?;
         return Ok(UvEnvironment {
             venv_path: dest_path,
             python_path,
@@ -630,6 +633,10 @@ pub async fn claim_prewarmed_environment_in(
             info!("[prewarm] Environment claimed via copy");
         }
     }
+
+    crate::launcher::vendor_into_venv(&python_path)
+        .await
+        .context("vendor nteract_kernel_launcher into claimed UV env")?;
 
     Ok(UvEnvironment {
         venv_path: dest_path,

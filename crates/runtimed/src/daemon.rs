@@ -2286,6 +2286,18 @@ impl Daemon {
                     "[runtimed] Took UV env for kernel launch: {:?}",
                     e.venv_path
                 );
+                // Backstop: re-vendor the launcher into this env. Pool entries
+                // warmed by a pre-upgrade daemon (or rehydrated from disk) may
+                // be missing `nteract_kernel_launcher.py`. Idempotent and
+                // cheap. On failure, warn and continue -- the env is still
+                // usable for non-launcher kernels, and launcher-using kernels
+                // will fail with a clearer error at startup.
+                if let Err(err) = kernel_env::launcher::vendor_into_venv(&e.python_path).await {
+                    warn!(
+                        "[runtimed] Pool take (UV): failed to re-vendor launcher into {:?}: {}",
+                        e.python_path, err
+                    );
+                }
                 let daemon = self.clone();
                 spawn_best_effort("uv-replenish", async move {
                     daemon.create_uv_env().await;
@@ -2361,6 +2373,14 @@ impl Daemon {
                     "[runtimed] Took Conda env for kernel launch: {:?}",
                     e.venv_path
                 );
+                // Backstop: re-vendor the launcher into this env. See take_uv_env
+                // for rationale. Warn-and-continue on failure.
+                if let Err(err) = kernel_env::launcher::vendor_into_venv(&e.python_path).await {
+                    warn!(
+                        "[runtimed] Pool take (Conda): failed to re-vendor launcher into {:?}: {}",
+                        e.python_path, err
+                    );
+                }
                 let daemon = self.clone();
                 spawn_best_effort("conda-replenish", async move {
                     daemon.replenish_conda_env().await;
@@ -2431,6 +2451,14 @@ impl Daemon {
                 "[runtimed] Took Pixi env for kernel launch: {:?}",
                 e.venv_path
             );
+            // Backstop: re-vendor the launcher into this env. See take_uv_env
+            // for rationale. Warn-and-continue on failure.
+            if let Err(err) = kernel_env::launcher::vendor_into_venv(&e.python_path).await {
+                warn!(
+                    "[runtimed] Pool take (Pixi): failed to re-vendor launcher into {:?}: {}",
+                    e.python_path, err
+                );
+            }
             let daemon = self.clone();
             spawn_best_effort("pixi-replenish", async move {
                 daemon.replenish_pixi_env().await;
