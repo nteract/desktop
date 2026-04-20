@@ -3864,8 +3864,14 @@ async fn diagnostics_command(output_dir: Option<PathBuf>) -> Result<()> {
 
 /// Fetch the automerge-health snapshot from a running daemon. Returns a
 /// JSON value with either the counters under `"health"` or an
-/// `"error"` field describing why the counters weren't available (no
-/// daemon running, old daemon, socket error).
+/// `"error"` field describing why the counters weren't available.
+///
+/// The counters only cover the daemon process. Runtime-agent subprocesses
+/// (one per notebook) catch automerge panics independently; their
+/// occurrences land in the per-subprocess stderr which the daemon tees
+/// into `runtimed.log`. `runt diagnostics` already archives that log,
+/// so `grep reason=panic_caught` on the bundle will find subprocess
+/// hits even though they don't tick these counters.
 async fn fetch_automerge_health() -> serde_json::Value {
     use runtimed::client::PoolClient;
     let socket = runt_workspace::default_socket_path();
@@ -3875,7 +3881,23 @@ async fn fetch_automerge_health() -> serde_json::Value {
     let client = PoolClient::new(PathBuf::from(&info.endpoint));
     match tokio::time::timeout(Duration::from_secs(3), client.automerge_health()).await {
         Ok(Ok(health)) => serde_json::json!({ "health": health }),
-        Ok(Err(e)) => serde_json::json!({ "error": e.to_string() }),
+        Ok(Err(e)) => {
+            // Older daemons don't recognise GetAutomergeHealth and will
+            // fail the serde-tagged decode, closing the socket. The
+            // client surfaces that as ProtocolError("recv: connection
+            // closed"). Downgrade any of those to the friendlier
+            // "counters unavailable (daemon predates this request)"
+            // — the daemon isn't broken, it just doesn't know the
+            // request yet. Any other error keeps its detail.
+            let msg = e.to_string();
+            if msg.contains("connection closed") || msg.contains("Unknown request") {
+                serde_json::json!({
+                    "error": "counters unavailable (daemon predates this request, restart to pick up)",
+                })
+            } else {
+                serde_json::json!({ "error": msg })
+            }
+        }
         Err(_) => serde_json::json!({ "error": "timed out after 3s" }),
     }
 }
@@ -3883,6 +3905,9 @@ async fn fetch_automerge_health() -> serde_json::Value {
 /// Render the automerge-health counters as a small purple-headed
 /// section. Zero counts are shown too so the operator can confirm the
 /// workaround is cold rather than silently masking the library bug.
+///
+/// The footer reminds the reader that these counters are daemon-process
+/// only, and points at the log file for runtime-agent subprocess hits.
 fn print_automerge_health(value: &serde_json::Value) {
     use colored::Colorize;
 
@@ -3916,6 +3941,10 @@ fn print_automerge_health(value: &serde_json::Value) {
         };
         println!("  {:<38} {}", label.bold(), colored_count);
     }
+    println!(
+        "  {}",
+        "(daemon process only; grep runtimed.log for subprocess hits)".dimmed()
+    );
 }
 
 /// Return a colored status icon for display

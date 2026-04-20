@@ -20,6 +20,18 @@
 //! only need monotonicity and eventual visibility, not happens-before
 //! ordering relative to other state. Local only; no network upload.
 //!
+//! ## Scope: per-process
+//!
+//! These counters live in the process that imports `notebook-doc`. The
+//! `runtimed` daemon spawns one runtime-agent subprocess per notebook
+//! room; that subprocess also calls `catch_automerge_panic` and has
+//! its own independent counter values. `runt diagnostics` snapshots
+//! only the daemon's counters over the socket, so subprocess hits
+//! won't tick the numbers. The structured `warn!` emitted on every
+//! increment still lands in `runtimed.log` (the daemon tees subprocess
+//! stderr), and the diagnostics bundle archives that log — grep
+//! `reason=panic_caught` on the bundle for a complete view.
+//!
 //! [automerge/automerge#1327]: https://github.com/automerge/automerge/issues/1327
 
 use std::sync::atomic::{AtomicU64, Ordering};
