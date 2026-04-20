@@ -4,6 +4,7 @@ use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::ErrorData as McpError;
 
 use notebook_protocol::protocol::{NotebookRequest, NotebookResponse};
+use notebook_sync::SyncError;
 
 use crate::NteractMcp;
 
@@ -45,6 +46,22 @@ pub async fn restart_kernel(
         }
     };
 
+    // Capture kernel_type from the *current* RuntimeState before shutdown.
+    // After a daemon restart the fresh RuntimeStateDoc has kernel.name = "",
+    // so reading it post-reconnect would silently regress to "python".
+    let pre_shutdown_kernel_type = handle
+        .get_runtime_state()
+        .ok()
+        .and_then(|s| {
+            let name = &s.kernel.name;
+            if name.is_empty() {
+                None
+            } else {
+                Some(name.clone())
+            }
+        })
+        .unwrap_or_else(|| "python".to_string());
+
     // Step 1: Shutdown existing kernel
     match handle
         .send_request(NotebookRequest::ShutdownKernel {})
@@ -66,9 +83,10 @@ pub async fn restart_kernel(
         match guard.as_ref() {
             Some(s) => s.handle.clone(),
             None => {
-                // Session dropped — wait briefly for health monitor to reconnect
+                // Session dropped — wait for health monitor to reconnect.
+                // PING_INTERVAL is 5s; give it two cycles plus margin.
                 drop(guard);
-                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                tokio::time::sleep(std::time::Duration::from_secs(8)).await;
                 let guard = server.session.read().await;
                 match guard.as_ref() {
                     Some(s) => s.handle.clone(),
@@ -88,32 +106,16 @@ pub async fn restart_kernel(
         tracing::warn!("confirm_sync failed before restart_kernel launch: {e}");
     }
 
-    // Step 3: Determine kernel type and env_source.
-    // Use metadata-based detection (not RuntimeState env_source) to scope the
-    // auto-detect. This ensures the correct package manager pool is used even
-    // if the previous kernel was launched with a different env (e.g., UV default
-    // when the notebook metadata says pixi). See #1605.
-    let (kernel_type, env_source) = {
-        let state = handle.get_runtime_state().ok();
-        let kernel_type = state
-            .as_ref()
-            .and_then(|s| {
-                let name = &s.kernel.name;
-                if name.is_empty() {
-                    None
-                } else {
-                    Some(name.clone())
-                }
-            })
-            .unwrap_or_else(|| "python".to_string());
-        // Scope auto-detect based on notebook metadata, not stale env_source
+    // Step 3: Determine env_source from metadata. kernel_type was captured
+    // pre-shutdown so it survives daemon restarts that clear RuntimeStateDoc.
+    let kernel_type = pre_shutdown_kernel_type;
+    let env_source = {
         let detected_manager = super::deps::detect_package_manager(&handle);
-        let env_source = match detected_manager.as_str() {
+        match detected_manager.as_str() {
             "pixi" => "auto:pixi".to_string(),
             "conda" => "auto:conda".to_string(),
             _ => "auto:uv".to_string(),
-        };
-        (kernel_type, env_source)
+        }
     };
 
     // Step 4: Launch kernel
@@ -134,9 +136,9 @@ pub async fn restart_kernel(
     // If LaunchKernel failed with a disconnection, the daemon may have
     // restarted. Wait for the health monitor to reconnect and retry once.
     let launch_result = match launch_result {
-        Err(ref e) if e.to_string().contains("Disconnected") => {
+        Err(SyncError::Disconnected) => {
             tracing::warn!("LaunchKernel disconnected during restart, waiting for reconnection");
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(8)).await;
             let guard = server.session.read().await;
             match guard.as_ref() {
                 Some(s) => {
@@ -150,7 +152,7 @@ pub async fn restart_kernel(
                         })
                         .await
                 }
-                None => launch_result,
+                None => Err(SyncError::Disconnected),
             }
         }
         other => other,
