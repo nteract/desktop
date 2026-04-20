@@ -341,7 +341,7 @@ impl Pool {
     }
 
     /// Evict pool entries whose installed package set no longer matches the
-    /// current expected list, returning their venv paths so the caller can
+    /// current expected list, returning the pool-root paths so the caller can
     /// delete them from disk.
     ///
     /// Compares `PooledEnv::prewarmed_packages` as a sorted list against the
@@ -349,6 +349,10 @@ impl Pool {
     /// `conda.default_packages`, `pixi.default_packages`, and feature flags that
     /// affect the install set (e.g. `bootstrap_dx` adding `nteract-kernel-launcher`
     /// to UV envs).
+    ///
+    /// Returned paths are normalised via [`pool_env_root`] so callers delete the
+    /// top-level pool directory (Pixi envs are nested under `.pixi/envs/default`
+    /// but GC and eviction must both operate on the `runtimed-pixi-*` root).
     ///
     /// Note: envs that are still warming are not affected. Their `prewarmed_packages`
     /// is the snapshot the warming task captured at install time; once they finish,
@@ -364,7 +368,7 @@ impl Pool {
             if entry_pkgs == expected_sorted {
                 kept.push_back(entry);
             } else {
-                evicted.push(entry.env.venv_path.clone());
+                evicted.push(pool_env_root(&entry.env.venv_path));
             }
         }
         self.available = kept;
@@ -3432,6 +3436,10 @@ impl Daemon {
                     evicted_paths.len()
                 );
                 spawn_env_deletions(evicted_paths);
+                // Publish the post-eviction state immediately so clients don't
+                // see ghost entries while the pool is in backoff or waiting
+                // for the next warm tick.
+                self.update_pool_doc().await;
             }
 
             if deficit > 0 {
@@ -3538,6 +3546,7 @@ impl Daemon {
                     evicted_paths.len()
                 );
                 spawn_env_deletions(evicted_paths);
+                self.update_pool_doc().await;
             }
 
             if deficit > 0 {
@@ -3654,6 +3663,7 @@ impl Daemon {
                     evicted_paths.len()
                 );
                 spawn_env_deletions(evicted_paths);
+                self.update_pool_doc().await;
             }
 
             if deficit > 0 {
@@ -5443,6 +5453,38 @@ mod tests {
         let evicted = pool.evict_mismatched_packages(&["ipykernel".to_string()]);
         assert!(evicted.is_empty());
         assert!(pool.available.is_empty());
+    }
+
+    #[test]
+    fn test_evict_mismatched_packages_returns_pool_root_for_nested_venv() {
+        // Pixi envs live at `runtimed-pixi-*/.pixi/envs/default`. Eviction
+        // must return the pool root so `spawn_env_deletions` removes the
+        // whole directory, not just the inner venv.
+        let temp_dir = TempDir::new().unwrap();
+        let mut pool = Pool::new(3, 3600);
+
+        let pool_root = temp_dir.path().join("runtimed-pixi-abc");
+        let nested_venv = pool_root.join(".pixi").join("envs").join("default");
+        let python = nested_venv.join("bin").join("python");
+        std::fs::create_dir_all(python.parent().unwrap()).unwrap();
+        std::fs::write(&python, "").unwrap();
+        std::fs::write(nested_venv.join(".warmed"), "").unwrap();
+
+        pool.add(PooledEnv {
+            env_type: EnvType::Conda,
+            venv_path: nested_venv,
+            python_path: python,
+            prewarmed_packages: vec!["ipykernel".into()],
+        });
+
+        let expected = vec!["ipykernel".to_string(), "pandas".to_string()];
+        let evicted = pool.evict_mismatched_packages(&expected);
+
+        assert_eq!(
+            evicted,
+            vec![pool_root],
+            "nested venv should evict by pool root, not inner venv path"
+        );
     }
 
     // ── Blob GC correctness (spec 1) ─────────────────────────────────
