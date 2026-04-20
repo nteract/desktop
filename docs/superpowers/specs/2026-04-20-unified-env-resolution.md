@@ -74,12 +74,15 @@ Conda is structurally the same, plus sorted channels.
 
 ### Metadata as source of truth
 
-A notebook's env is `(metadata.runt.{uv,conda}.dependencies, metadata.runt.env_id)`. The daemon's job is to find or build the env matching that description. Nothing else factors in.
+A notebook's env is `(metadata.runt.{uv,conda}.dependencies, metadata.runt.env_id)`. The daemon's job is to find or build the env matching that description. Captured deps are the signal that a notebook has gone through first-launch capture; `env_id` alone is not, because `create_empty_notebook` already assigns an `env_id` to every fresh notebook.
 
-- **Brand-new notebook.** No `env_id`. Daemon does a pool take for fast first launch, then captures (see next section) so subsequent launches go through the cache-hit path.
-- **Reopened notebook.** Has `env_id` and captured deps. `auto_launch_kernel` reads them and calls `prepare_environment(deps, env_id)`. Cache-hit → instant.
+- **Brand-new notebook.** Has an `env_id` (assigned by `create_empty_notebook`) but no captured deps. Daemon does a pool take for fast first launch, then captures (see next section) so subsequent launches go through the cache-hit path.
+- **Reopened notebook (post-capture).** Has `env_id` and captured deps. `auto_launch_kernel` reads them and calls `prepare_environment(deps, env_id)`. Cache-hit → instant.
 - **User-edited deps.** User adds `scikit-learn` via the deps UI. Metadata now has deps including sklearn. Hash changes. Next launch misses cache, installs sklearn on top of the existing env (see § Hot sync), or builds fresh if no running kernel. Either way, converges to the new hash.
 - **Shared notebook.** Recipient opens a `.ipynb` whose `metadata.runt.uv.dependencies` = `["numpy", "pandas"]` and `env_id = "abc"`. On their machine, first launch misses cache (env_id is different from any local env), builds from scratch deterministically, writes to disk at `hash(["numpy","pandas"], "abc")`. Subsequent launches hit.
+- **Pre-upgrade notebook.** Has `env_id` (assigned pre-upgrade) but no captured deps. Treated identically to a brand-new notebook — pool take + capture on next launch. See § 4 Migration.
+
+**Signal summary:** "has captured deps" routes to the reopen path; "no captured deps" routes to first-launch / capture. `env_id` presence is not the discriminator.
 
 ### Prewarmed capture
 
@@ -96,22 +99,51 @@ Steps:
 
 Once captured, metadata + env_id + on-disk location are consistent. Subsequent launches find the env via `prepare_environment(deps_from_metadata, env_id)`.
 
-### auto_launch_kernel collapse
+### auto_launch_kernel flow
 
-Today `auto_launch_kernel` has a big if/else selecting env_source by inline deps / project file / runtime default. After this change the flow collapses to:
+Today `auto_launch_kernel` resolves `env_source` via a priority chain: kernelspec → inline `runt.{uv,conda}` deps → project files (`uv:pyproject`, `conda:env_yml`, `pixi:toml`) → runtime default. That priority chain stays intact — this design only changes what happens inside the `uv:prewarmed` / `conda:prewarmed` branches.
+
+High level:
+
+1. **Resolve `env_source`** via the existing priority chain. Unchanged.
+2. **Branch on `env_source`:**
+   - `uv:pyproject`, `conda:env_yml`, `pixi:toml`: **unchanged.** Project-file envs always reflect the current state of the project file on disk; they do not participate in the captured-deps scheme. Reopening a notebook whose `pyproject.toml` was edited still picks up the edit, because these branches don't read from captured metadata.
+   - `uv:inline`, `conda:inline`, `uv:pep723`: **unchanged.** Inline deps already route through `prepare_{uv,conda}_inline_env(deps, env_id)`, which is content-addressed. They cache-hit on reopen today; the design doesn't move them.
+   - `uv:prewarmed`, `conda:prewarmed`: **new logic.** Branch on captured deps:
+     - **Captured deps present** → `prepare_{uv,conda}_inline_env(deps, env_id)`. Cache-hit, no pool take.
+     - **No captured deps** (brand-new or pre-upgrade) → pool take + claim + capture (see § Prewarmed capture). Metadata gets populated, on-disk env lands at the unified hash.
+   - `pixi:prewarmed`, `pixi:inline`, `pixi:pep723`, deno, etc.: **unchanged.** Pixi manages its own env cache.
+
+In pseudo-code:
 
 ```
-if metadata.runt.env_id is present:
-    # Reopen path.
-    deps = metadata.runt.{uv,conda}.dependencies or []
-    prepare_environment(deps, env_id)  # content-addressed, expected cache hit
-else:
-    # First-launch path.
-    pooled_env = daemon.take_{uv,conda}_env()  # blind pool pop
-    claim_and_capture(pooled_env, notebook)     # writes metadata, renames to hashed path
+env_source = resolve_env_source(metadata, project_files, default_python_env)
+
+match env_source:
+    "uv:prewarmed" | "conda:prewarmed":
+        if metadata.runt.{uv,conda}.dependencies is Some:
+            # Reopen path (post-capture).
+            deps = metadata.runt.{uv,conda}.dependencies
+            env_id = metadata.runt.env_id
+            prepare_{uv,conda}_inline_env(deps, env_id)  # expected cache hit
+        else:
+            # First-launch path (brand-new or pre-upgrade).
+            pooled_env = daemon.take_{uv,conda}_env()
+            claim_and_capture(pooled_env, notebook)  # writes metadata, renames to unified hash
+
+    "uv:pyproject" | "conda:env_yml" | "pixi:toml":
+        # Unchanged. Project file is source of truth; metadata captured deps are ignored.
+        existing_project_file_flow()
+
+    "uv:inline" | "conda:inline" | "uv:pep723":
+        # Unchanged. Inline deps already go through content-addressed prepare.
+        existing_inline_deps_flow()
+
+    _:  # pixi:*, deno, etc.
+        existing_flow()
 ```
 
-Inline-deps notebooks behave the same as today: `prepare_environment` hashes `(user_deps, env_id)` and either cache-hits or builds. No separate code path for "has inline deps, but no env_id yet" — the first launch path assigns an env_id as part of capture.
+The design's scope is **strictly the two prewarmed branches**. Project-file precedence, inline-deps routing, and pixi/deno paths are untouched.
 
 ## Open questions, answered
 
@@ -163,7 +195,7 @@ Stripping is set-subtraction: `user_defaults = prewarmed_packages.into_iter().fi
 
 **Decision:** Accept one-time cache invalidation. No migration code.
 
-**Reasoning:** Existing claimed envs on disk are at rule-A hash paths. Under the new rule they'd be at rule-B paths. Rewriting them is fragile (rename races, incomplete fallback, reboot mid-migration). Instead: on first launch post-upgrade, any notebook that had `env_id` but no captured deps will be treated as a brand-new notebook (no env_id) and go through the first-launch path: pool take, capture, rehash. The orphaned old env dir sits on disk until the GC grace period (max_age_secs, default 2 days) reaps it.
+**Reasoning:** Existing claimed envs on disk are at rule-A hash paths. Under the new rule they'd be at rule-B paths. Rewriting them is fragile (rename races, incomplete fallback, reboot mid-migration). Instead: on first launch post-upgrade, any notebook that has `env_id` but no captured deps goes through the first-launch path: pool take, capture, rehash. The old env dir sits on disk until the GC grace period (max_age_secs, default 2 days) reaps it. This treats pre-upgrade notebooks identically to brand-new notebooks — both match the "no captured deps" signal.
 
 **Cost:** Every pre-upgrade notebook does one slow first launch post-upgrade. Matches the current slow-reopen cost people already live with; no regression.
 
@@ -238,9 +270,10 @@ Split into three PRs. Each self-contained, each leaves the system in a working s
 
 - `claim_prewarmed_environment_in` (both UV and Conda) gain a `user_defaults: &[String]` parameter. Hash becomes `compute_env_hash(user_defaults + requires_python etc., env_id)`. Daemon's claim call sites pass the stripped list.
 - Daemon's post-claim logic (in `notebook_sync_server.rs`) writes captured deps + env_id to the notebook's `metadata.runt.{uv,conda}` if not already present. Uses `doc.fork_and_merge` to respect the async-CRDT-mutation rule.
-- `auto_launch_kernel` gains a "reopen" branch: if `metadata.runt.env_id` is set and captured deps are present, route through `prepare_{uv,conda}_inline_env(deps, env_id)` with no pool take.
-- `auto_launch_kernel` "first launch" branch: take from pool, claim with capture, proceed.
-- Migration logic: if `env_id` is set but no captured deps are present (pre-upgrade notebook), treat as first-launch. Log `[runtimed] Migrating notebook {id} to captured-deps layout` at info level.
+- Inside `auto_launch_kernel`'s `uv:prewarmed` and `conda:prewarmed` branches (not the project-file or inline-deps branches, which stay as-is): check for captured deps.
+  - Captured deps present → route through `prepare_{uv,conda}_inline_env(deps, env_id)` with no pool take.
+  - No captured deps → existing pool-take flow plus the capture step from PR 1's new API. Covers brand-new and pre-upgrade notebooks.
+- Migration log: on first post-upgrade launch of a notebook that lacks captured deps, emit `[runtimed] Capturing prewarmed env into notebook metadata: {id}` at info level.
 - Tests: capture idempotence (second claim doesn't overwrite), pool take behavior unchanged for new notebooks, reopen cache-hits at the same hash after first capture.
 
 **Compat risk:** Notebooks captured under the old rule-A claim hash become orphaned. They sit on disk until GC. One-time slow launch per pre-upgrade notebook. Acceptable and documented.
