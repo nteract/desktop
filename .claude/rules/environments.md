@@ -184,7 +184,7 @@ Changes to dependency metadata structure require updating `crates/runt-trust/src
 | `crates/runtimed/src/notebook_sync_server.rs` | `auto_launch_kernel()` -- detection and resolution |
 | `crates/runtimed/src/runtime_agent.rs` | Spawned as a subprocess by `RuntimeAgentHandle::spawn()`. `run_runtime_agent()` is the per-notebook event loop owning sockets, `QueueCommand` channels, and RuntimeStateDoc writes; `handle_runtime_agent_request()` dispatches each `LaunchKernel`/`RestartKernel`/etc. RPC |
 | `crates/runtimed/src/jupyter_kernel.rs` | `JupyterKernel::launch()` -- spawns the kernel process and wires ZMQ sockets |
-| `crates/runtimed/src/kernel_manager.rs` | Shared kernel plumbing — `QueueCommand`, `KernelStatus`, `QueuedCell`, output conversion + display-update helpers, widget-buffer offload to the blob store. Imported by `runtime_agent.rs`, `jupyter_kernel.rs`, and `kernel_state.rs` |
+| `crates/runtimed/src/output_prep.rs` | Output-prep helpers — `QueueCommand`, `KernelStatus`, `QueuedCell`, iopub → nbformat conversion + display-update helpers, widget-buffer offload to the blob store. Imported by `runtime_agent.rs`, `jupyter_kernel.rs`, and `kernel_state.rs` |
 | `crates/runtimed/src/project_file.rs` | Unified closest-wins project file detection |
 | `crates/runtimed/src/inline_env.rs` | Cached inline dep environments (UV and Conda) |
 

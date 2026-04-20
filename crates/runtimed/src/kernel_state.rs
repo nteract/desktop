@@ -16,13 +16,13 @@ use tokio::sync::{broadcast, RwLock};
 use tracing::{debug, info, warn};
 
 use crate::kernel_connection::KernelConnection;
-use crate::kernel_manager::{KernelStatus, QueuedCell};
+use crate::output_prep::{KernelStatus, QueuedCell};
 use crate::protocol::{NotebookBroadcast, QueueEntry};
 use notebook_doc::runtime_state::{QueueEntry as DocQueueEntry, RuntimeStateDoc};
 
 /// Maximum execution entries retained in the RuntimeStateDoc.
 ///
-/// Matches the constant in `kernel_manager.rs`. `trim_executions` preserves the
+/// Matches the constant in `output_prep.rs`. `trim_executions` preserves the
 /// latest execution per cell, so the actual count can exceed this if the
 /// notebook has more unique cells than this limit.
 const MAX_EXECUTION_ENTRIES: usize = 64;
@@ -416,7 +416,7 @@ impl KernelState {
 mod tests {
     use super::*;
     use crate::kernel_connection::{KernelConnection, KernelLaunchConfig, KernelSharedRefs};
-    use crate::kernel_manager::QueueCommand;
+    use crate::output_prep::QueueCommand;
     use crate::protocol::CompletionItem;
     use anyhow::Result;
     use notebook_protocol::protocol::LaunchedEnvConfig;

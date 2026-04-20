@@ -26,7 +26,7 @@ const SCROLLBACK_HISTORY: usize = 10000;
 type StreamKey = (String, String);
 
 // Re-export from the shared notebook-doc crate so existing callers
-// (kernel_manager, notebook_sync_server) continue to compile.
+// (output_prep, notebook_sync_server) continue to compile.
 pub use notebook_doc::StreamOutputState;
 
 /// Simple dimensions struct for creating terminals.

@@ -125,7 +125,7 @@ The rule:
 
 #### Data Flow
 
-1. Kernel produces output → daemon's `kernel_manager.rs` converts to nbformat JSON
+1. Kernel produces output → daemon's `output_prep.rs` converts to nbformat JSON
 2. `output_store.rs` creates manifest:
    - Text MIME → `ContentRef::from_data()` (inline if ≤ 1KB, blob if larger)
    - Binary MIME → base64-decode → `ContentRef::from_binary()` (always blob)
@@ -271,7 +271,7 @@ The frontend now owns a local Automerge doc via `runtimed-wasm` WASM bindings, m
 - `crates/runtimed/src/runtime_agent.rs` — Runtime agent subprocess: Unix socket peer, CRDT queue watching, comm state diffing, kernel ownership
 - `crates/runtimed/src/runtime_agent_handle.rs` — Coordinator-side runtime agent process management (spawn + monitor)
 - `crates/runtimed/src/jupyter_kernel.rs` — `JupyterKernel`: kernel process spawn, ZMQ socket wiring, IOPub output routing
-- `crates/runtimed/src/kernel_manager.rs` — Shared kernel plumbing: `QueueCommand`, `KernelStatus`, `QueuedCell`, output conversion + display-update helpers, widget-buffer offload to the blob store
+- `crates/runtimed/src/output_prep.rs` — Output-prep helpers: `QueueCommand`, `KernelStatus`, `QueuedCell`, iopub → nbformat conversion + display-update helpers, widget-buffer offload to the blob store
 - `crates/runtimed/src/output_store.rs` — Output manifest creation/resolution, `ContentRef`
 - `crates/notebook-doc/src/mime.rs` — Canonical MIME classification (`is_binary_mime`, `mime_kind`, `MimeKind`)
 - `crates/notebook-sync/src/relay.rs` — `RelayHandle`: relay API for forwarding typed frames between WASM and daemon

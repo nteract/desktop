@@ -238,7 +238,7 @@ crates/runtimed/
 │   ├── runtime_agent.rs         # Runtime agent subprocess: Unix socket peer, CRDT queue watching, kernel ownership
 │   ├── runtime_agent_handle.rs  # Coordinator-side runtime agent process management (spawn + monitor)
 │   ├── jupyter_kernel.rs        # JupyterKernel: process spawn, ZMQ socket wiring, IOPub output routing
-│   ├── kernel_manager.rs        # Shared kernel plumbing: QueueCommand, KernelStatus, QueuedCell, output conversion, widget buffers
+│   ├── output_prep.rs           # Output-prep helpers: QueueCommand, KernelStatus, QueuedCell, iopub → nbformat conversion, widget buffers, blob-store offload
 │   ├── kernel_pids.rs           # Kernel PID tracking and orphan reaping
 │   ├── singleton.rs             # Daemon locking/singleton management
 │   ├── sync_server.rs           # Settings Automerge sync handler

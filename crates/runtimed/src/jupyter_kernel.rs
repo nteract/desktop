@@ -27,7 +27,7 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::kernel_connection::{KernelConnection, KernelLaunchConfig, KernelSharedRefs};
-use crate::kernel_manager::{
+use crate::output_prep::{
     blob_store_large_state_values, escape_glob_pattern, extract_buffer_paths,
     media_to_display_data, message_content_to_nbformat, store_widget_buffers,
     update_output_by_display_id_with_manifests, QueueCommand,

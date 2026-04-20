@@ -39,10 +39,10 @@ use notify_debouncer_mini::DebounceEventResult;
 
 use crate::blob_store::BlobStore;
 use crate::connection::{self, NotebookFrameType};
-use crate::kernel_manager::{DenoLaunchedConfig, LaunchedEnvConfig};
 use crate::markdown_assets::resolve_markdown_assets;
 use crate::notebook_doc::{notebook_doc_filename, CellSnapshot, NotebookDoc};
 use crate::notebook_metadata::NotebookMetadataSnapshot;
+use crate::output_prep::{DenoLaunchedConfig, LaunchedEnvConfig};
 use crate::protocol::{
     EnvSyncDiff, NotebookBroadcast, NotebookRequest, NotebookResponse, QueueEntry,
 };
@@ -4704,7 +4704,7 @@ async fn auto_launch_kernel(
     }
 
     // For saved notebooks, notebook_path_opt is the file path (kernel cwd = parent dir).
-    // For untitled notebooks, use working_dir as-is (kernel_manager handles is_dir()).
+    // For untitled notebooks, use working_dir as-is (output_prep handles is_dir()).
     let notebook_path = PathBuf::from(notebook_id);
     let notebook_path_opt = if notebook_path.exists() {
         Some(notebook_path.clone())

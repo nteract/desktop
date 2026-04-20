@@ -499,7 +499,7 @@ Character-level source edits use Automerge's `update_text` for CRDT-friendly mer
 
 Outputs flow through the Automerge doc, not Tauri events:
 
-1. Kernel emits iopub message → daemon's `kernel_manager` receives it
+1. Kernel emits iopub message → daemon's `output_prep` receives it
 2. Daemon writes output to the notebook's Automerge doc (cell outputs array)
 3. Daemon produces a sync message → Tauri relay forwards raw bytes to the frontend (pipe mode — no Automerge processing in the relay)
 4. Frontend receives `notebook:frame` → WASM `receive_frame()` demuxes and merges into local doc
@@ -530,7 +530,7 @@ Save is delegated to the daemon via `NotebookRequest::SaveNotebook`. The daemon:
 | `apps/notebook/src/hooks/useAutomergeNotebook.ts` | Frontend hook owning the local Automerge doc and sync lifecycle |
 | `apps/notebook/src/lib/materialize-cells.ts` | Converts Automerge doc state into React cell arrays |
 | `crates/runtimed/src/notebook_sync_server.rs` | Daemon-side notebook room management and sync |
-| `crates/runtimed/src/kernel_manager.rs` | Daemon-side kernel process and iopub → Automerge output writing |
+| `crates/runtimed/src/output_prep.rs` | Daemon-side iopub → Automerge output conversion and blob-store offload |
 | `crates/notebook/src/lib.rs` | Tauri commands and relay plumbing |
 
 ---
@@ -698,7 +698,7 @@ The MIME classification logic is implemented in `mime_kind()` in `crates/runtime
 |------|------|
 | `crates/runtimed/src/output_store.rs` | Manifest construction, ContentRef, inlining threshold |
 | `crates/runtimed/src/blob_server.rs` | HTTP read server (`GET /blob/{hash}`, `GET /health`) |
-| `crates/runtimed/src/kernel_manager.rs` | iopub listener constructs manifests and stores blobs |
+| `crates/runtimed/src/output_prep.rs` | iopub listener constructs manifests and stores blobs |
 | `crates/runtimed-client/src/output_resolver.rs` | Shared manifest resolution, MIME typing, `text/llm+plain` synthesis used by Python/MCP consumers |
 | `src/components/cell/OutputArea.tsx` | Fetch manifests, resolve blob URLs |
 | `apps/notebook/src/hooks/useManifestResolver.ts` | Hook for fetching/caching output manifests |
@@ -852,7 +852,7 @@ The implementation:
 
 | File | Role |
 |------|------|
-| `crates/runtimed/src/kernel_manager.rs` | Kernel lifecycle, iopub watching, output handling |
+| `crates/runtimed/src/output_prep.rs` | Output-prep helpers: iopub → nbformat conversion, widget buffer handling, blob-store offload |
 | `crates/runtimed/src/notebook_sync_server.rs` | Room management, request handling, broadcasts |
 | `crates/runtimed/src/project_file.rs` | Project file detection for auto-env |
 | `crates/notebook-doc/src/lib.rs` | Automerge doc operations, output persistence |

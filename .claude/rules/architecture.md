@@ -165,7 +165,7 @@ Never pass code directly in execution requests. The correct flow: write to the C
 | `crates/notebook-protocol/src/protocol.rs` | Wire types: requests, responses, broadcasts |
 | `crates/notebook-sync/src/handle.rs` | `DocHandle` -- sync infrastructure, per-cell accessors |
 | `crates/runtimed/src/notebook_sync_server.rs` | `NotebookRoom`, room lifecycle, autosave, path_index |
-| `crates/runtimed/src/kernel_manager.rs` | Kernel lifecycle, execution queue, IOPub routing |
+| `crates/runtimed/src/output_prep.rs` | IOPub output-prep helpers (conversion, widget buffers, blob-store offload) |
 | `crates/runtimed/src/output_store.rs` | Manifest creation/resolution, `ContentRef` |
 | `crates/runtimed/src/blob_store.rs` | Content-addressed storage |
 | `crates/runtimed/src/blob_server.rs` | HTTP server for blob retrieval |

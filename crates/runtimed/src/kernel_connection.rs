@@ -19,7 +19,7 @@ use notebook_doc::runtime_state::RuntimeStateDoc;
 use tokio::sync::{broadcast, mpsc, RwLock};
 
 use crate::blob_store::BlobStore;
-use crate::kernel_manager::QueueCommand;
+use crate::output_prep::QueueCommand;
 use crate::protocol::{CompletionItem, HistoryEntry, NotebookBroadcast};
 use crate::PooledEnv;
 use notebook_protocol::protocol::LaunchedEnvConfig;

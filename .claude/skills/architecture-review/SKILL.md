@@ -183,7 +183,7 @@ Start with these to understand the actual implementation:
 **Core daemon:**
 - `crates/runtimed/src/daemon.rs`
 - `crates/runtimed/src/notebook_sync_server.rs`
-- `crates/runtimed/src/kernel_manager.rs`
+- `crates/runtimed/src/output_prep.rs`
 - `crates/runtimed/src/output_store.rs`
 - `crates/runtimed/src/blob_store.rs`
 

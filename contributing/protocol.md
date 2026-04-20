@@ -352,7 +352,7 @@ Widget state now lives in `doc.comms/` in RuntimeStateDoc. The daemon writes com
 | `crates/notebook-sync/src/connect.rs` | Connection setup (`connect_open_relay`, `connect_create_relay`) |
 | `crates/notebook-sync/src/handle.rs` | `DocHandle` — sync infrastructure, per-cell accessors for Python clients |
 | `crates/runtimed/src/notebook_sync_server.rs` | `NotebookRoom`, room lifecycle, autosave debouncer, sync loop |
-| `crates/runtimed/src/kernel_manager.rs` | Kernel process lifecycle, execution queue, IOPub output routing |
+| `crates/runtimed/src/output_prep.rs` | IOPub output-prep helpers: message-to-nbformat conversion, widget buffers, blob-store offload |
 | `crates/runtimed/src/comm_state.rs` | Widget comm state + Output widget capture routing |
 | `crates/runtimed/src/output_store.rs` | Output manifest creation, blob inlining threshold |
 | `crates/runtimed/src/blob_store.rs` | Content-addressed blob storage |

@@ -46,8 +46,8 @@ use tracing::{debug, error, info, warn};
 use crate::blob_store::BlobStore;
 use crate::jupyter_kernel::JupyterKernel;
 use crate::kernel_connection::{KernelConnection, KernelLaunchConfig, KernelSharedRefs};
-use crate::kernel_manager::QueueCommand;
 use crate::kernel_state::KernelState;
+use crate::output_prep::QueueCommand;
 
 /// Shared context for the runtime agent (no kernel -- kernel is owned locally).
 struct RuntimeAgentContext {
