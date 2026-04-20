@@ -47,6 +47,29 @@ pub fn default_cache_dir_conda() -> PathBuf {
         .join("conda-envs")
 }
 
+/// Base package set every Conda kernel env is warmed with.
+///
+/// Used by the daemon's Conda pool warmer (`conda_prewarmed_packages` in
+/// runtimed) and by the unified env design's capture step (`strip_base`) so
+/// the notebook's metadata records only user-level deps. Keep this in sync
+/// with the warmer.
+pub const CONDA_BASE_PACKAGES: &[&str] = &["ipykernel", "ipywidgets", "anywidget", "nbformat"];
+
+/// Compute the unified env hash for a notebook. Used by the captured-deps
+/// reopen path from the unified env resolution design (see
+/// `docs/superpowers/specs/2026-04-20-unified-env-resolution.md`).
+///
+/// Requires `deps.env_id` to be `Some`. Distinct from [`compute_env_hash`]
+/// only in that contract: the existing function tolerates `env_id = None`
+/// for cross-notebook sharing, and this one doesn't. Hash output is
+/// identical when `env_id` is `Some` — no on-disk migration needed when
+/// PR 2 switches callers.
+pub fn compute_unified_env_hash(deps: &CondaDependencies, env_id: &str) -> String {
+    let mut with_id = deps.clone();
+    with_id.env_id = Some(env_id.to_string());
+    compute_env_hash(&with_id)
+}
+
 /// Compute a stable cache key for the given dependencies.
 ///
 /// The hash includes sorted deps, sorted channels, python constraint,
@@ -966,5 +989,55 @@ mod tests {
         };
 
         assert_ne!(compute_env_hash(&deps1), compute_env_hash(&deps2));
+    }
+
+    // ── unified env hash (PR 1, spec 2026-04-20) ─────────────────────────
+
+    #[test]
+    fn unified_hash_matches_legacy_with_env_id() {
+        // Conda's legacy hash already always includes env_id, so the unified
+        // hash produces identical output for the same inputs. Sanity-check
+        // the bridge so switching callers in PR 2 doesn't invalidate any
+        // on-disk env.
+        let deps = CondaDependencies {
+            dependencies: vec!["numpy".into(), "scipy".into()],
+            channels: vec!["conda-forge".into()],
+            python: None,
+            env_id: Some("abc".into()),
+        };
+        assert_eq!(
+            compute_env_hash(&deps),
+            compute_unified_env_hash(&deps, "abc"),
+        );
+    }
+
+    #[test]
+    fn unified_hash_overrides_env_id_in_deps() {
+        // If the caller already populated deps.env_id, the unified function
+        // uses the explicit env_id argument. This lets us pass in-flight
+        // values without reshaping the struct.
+        let deps = CondaDependencies {
+            dependencies: vec!["numpy".into()],
+            channels: vec!["conda-forge".into()],
+            python: None,
+            env_id: Some("stale".into()),
+        };
+        let with_explicit = compute_unified_env_hash(&deps, "fresh");
+        let mut expected_deps = deps.clone();
+        expected_deps.env_id = Some("fresh".into());
+        assert_eq!(with_explicit, compute_env_hash(&expected_deps));
+    }
+
+    #[test]
+    fn unified_hash_isolates_by_env_id() {
+        let deps = CondaDependencies {
+            dependencies: vec!["numpy".into()],
+            channels: vec!["conda-forge".into()],
+            python: None,
+            env_id: None,
+        };
+        let h1 = compute_unified_env_hash(&deps, "notebook-1");
+        let h2 = compute_unified_env_hash(&deps, "notebook-2");
+        assert_ne!(h1, h2);
     }
 }

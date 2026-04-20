@@ -47,6 +47,53 @@ pub async fn check_uv_available() -> bool {
     kernel_launch::tools::get_uv_path().await.is_ok()
 }
 
+/// Base package set every UV kernel env is warmed with.
+///
+/// Used by the daemon's UV pool warmer (`uv_prewarmed_packages` in runtimed) and
+/// by the unified env design's capture step (`strip_base`) so the notebook's
+/// metadata records only user-level deps. Keep this in sync with the warmer.
+pub const UV_BASE_PACKAGES: &[&str] = &["ipykernel", "ipywidgets", "anywidget", "nbformat", "uv"];
+
+/// Compute the unified env hash for a notebook. Used by the captured-deps
+/// reopen path from the unified env resolution design (see
+/// `docs/superpowers/specs/2026-04-20-unified-env-resolution.md`).
+///
+/// Hashes `(sorted_deps, requires_python, prerelease, env_id)`. `env_id` is
+/// always included so each notebook's env is isolated by default, regardless
+/// of whether its captured deps overlap with another notebook's. This is the
+/// hashing rule PR 2 wires into `claim_prewarmed_environment_in` and
+/// `prepare_environment_in` once the capture flow lands.
+///
+/// Prefer this over [`compute_env_hash`] for any new call site. The legacy
+/// function is kept for the existing inline-deps codepath until PR 2 flips
+/// callers over.
+pub fn compute_unified_env_hash(deps: &UvDependencies, env_id: &str) -> String {
+    let mut hasher = Sha256::new();
+
+    let mut sorted_deps = deps.dependencies.clone();
+    sorted_deps.sort();
+    for dep in &sorted_deps {
+        hasher.update(dep.as_bytes());
+        hasher.update(b"\n");
+    }
+
+    if let Some(ref py) = deps.requires_python {
+        hasher.update(b"requires-python:");
+        hasher.update(py.as_bytes());
+    }
+
+    if let Some(ref prerelease) = deps.prerelease {
+        hasher.update(b"\nprerelease:");
+        hasher.update(prerelease.as_bytes());
+    }
+
+    hasher.update(b"\nenv_id:");
+    hasher.update(env_id.as_bytes());
+
+    let hash = hasher.finalize();
+    hex::encode(hash)[..16].to_string()
+}
+
 /// Compute a stable cache key for the given dependencies.
 ///
 /// When deps are empty and env_id is provided, includes env_id in hash
@@ -958,5 +1005,77 @@ mod tests {
         let hash1 = compute_env_hash(&deps, None);
         let hash2 = compute_env_hash(&deps, None);
         assert_eq!(hash1, hash2);
+    }
+
+    // ── unified env hash (PR 1, spec 2026-04-20) ─────────────────────────
+
+    #[test]
+    fn unified_hash_is_stable() {
+        let deps = UvDependencies {
+            dependencies: vec!["pandas".to_string(), "numpy".to_string()],
+            requires_python: None,
+            prerelease: None,
+        };
+        let h1 = compute_unified_env_hash(&deps, "abc");
+        let h2 = compute_unified_env_hash(&deps, "abc");
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn unified_hash_is_order_independent() {
+        let d1 = UvDependencies {
+            dependencies: vec!["pandas".into(), "numpy".into()],
+            requires_python: None,
+            prerelease: None,
+        };
+        let d2 = UvDependencies {
+            dependencies: vec!["numpy".into(), "pandas".into()],
+            requires_python: None,
+            prerelease: None,
+        };
+        assert_eq!(
+            compute_unified_env_hash(&d1, "abc"),
+            compute_unified_env_hash(&d2, "abc"),
+        );
+    }
+
+    #[test]
+    fn unified_hash_isolates_by_env_id_even_with_nonempty_deps() {
+        // This is the critical divergence from legacy `compute_env_hash`,
+        // which collapses different env_ids to the same hash when deps
+        // are non-empty. The unified rule always isolates.
+        let deps = UvDependencies {
+            dependencies: vec!["pandas".into()],
+            requires_python: None,
+            prerelease: None,
+        };
+        let h1 = compute_unified_env_hash(&deps, "notebook-1");
+        let h2 = compute_unified_env_hash(&deps, "notebook-2");
+        assert_ne!(h1, h2, "unified hash must isolate notebooks with same deps");
+    }
+
+    #[test]
+    fn unified_hash_isolates_by_env_id_with_empty_deps() {
+        let deps = UvDependencies::default();
+        let h1 = compute_unified_env_hash(&deps, "notebook-1");
+        let h2 = compute_unified_env_hash(&deps, "notebook-2");
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn unified_hash_differs_from_legacy_for_nonempty_deps_with_env_id() {
+        // Sanity check: confirm the unified hash and legacy hash produce
+        // different outputs for the same inputs when legacy was ignoring
+        // env_id. If this ever matched the legacy hash we'd have on-disk
+        // collisions between captured-deps envs (unified rule) and
+        // inline-deps envs (legacy rule, env_id absent).
+        let deps = UvDependencies {
+            dependencies: vec!["pandas".into()],
+            requires_python: None,
+            prerelease: None,
+        };
+        let legacy = compute_env_hash(&deps, Some("abc"));
+        let unified = compute_unified_env_hash(&deps, "abc");
+        assert_ne!(legacy, unified);
     }
 }

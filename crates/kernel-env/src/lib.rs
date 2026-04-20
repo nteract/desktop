@@ -45,7 +45,92 @@ pub mod warmup;
 
 // Re-export key types
 #[cfg(feature = "runtime")]
-pub use conda::{CondaDependencies, CondaEnvironment};
+pub use conda::{CondaDependencies, CondaEnvironment, CONDA_BASE_PACKAGES};
 pub use progress::{EnvProgressPhase, LogHandler, ProgressHandler};
 #[cfg(feature = "runtime")]
-pub use uv::{UvDependencies, UvEnvironment};
+pub use uv::{UvDependencies, UvEnvironment, UV_BASE_PACKAGES};
+
+/// Return the subset of `installed` that isn't in `base`, preserving input order.
+///
+/// Used by the unified env resolution design to derive the user-level dep set
+/// from a freshly-claimed pool env's full install list. Pool warmers install
+/// `[ipykernel, ipywidgets, …, <user_defaults…>]`; at capture time we strip
+/// the known base set so the notebook's metadata carries only the user deps.
+///
+/// Comparison is exact-match on package name. If a name appears multiple times
+/// in `installed`, every occurrence is dropped as long as it's in `base`.
+#[cfg(feature = "runtime")]
+pub fn strip_base(installed: &[String], base: &[&str]) -> Vec<String> {
+    installed
+        .iter()
+        .filter(|pkg| !base.contains(&pkg.as_str()))
+        .cloned()
+        .collect()
+}
+
+#[cfg(all(test, feature = "runtime"))]
+mod strip_base_tests {
+    use super::*;
+
+    #[test]
+    fn strips_uv_base_leaves_user_defaults() {
+        let installed: Vec<String> = [
+            "ipykernel",
+            "ipywidgets",
+            "anywidget",
+            "nbformat",
+            "uv",
+            "pandas",
+            "numpy",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let result = strip_base(&installed, UV_BASE_PACKAGES);
+        assert_eq!(result, vec!["pandas".to_string(), "numpy".to_string()]);
+    }
+
+    #[test]
+    fn strips_conda_base_leaves_user_defaults() {
+        let installed: Vec<String> = ["ipykernel", "ipywidgets", "anywidget", "nbformat", "scipy"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let result = strip_base(&installed, CONDA_BASE_PACKAGES);
+        assert_eq!(result, vec!["scipy".to_string()]);
+    }
+
+    #[test]
+    fn empty_installed_returns_empty() {
+        let installed: Vec<String> = vec![];
+        assert!(strip_base(&installed, UV_BASE_PACKAGES).is_empty());
+    }
+
+    #[test]
+    fn installed_all_base_returns_empty() {
+        let installed: Vec<String> = UV_BASE_PACKAGES.iter().map(|s| s.to_string()).collect();
+        assert!(strip_base(&installed, UV_BASE_PACKAGES).is_empty());
+    }
+
+    #[test]
+    fn empty_base_returns_all() {
+        let installed: Vec<String> = vec!["pandas".into(), "numpy".into()];
+        assert_eq!(strip_base(&installed, &[]), installed);
+    }
+
+    #[test]
+    fn preserves_order() {
+        let installed: Vec<String> = ["pandas", "ipykernel", "numpy", "uv", "matplotlib"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            strip_base(&installed, UV_BASE_PACKAGES),
+            vec![
+                "pandas".to_string(),
+                "numpy".to_string(),
+                "matplotlib".to_string()
+            ]
+        );
+    }
+}
