@@ -277,6 +277,9 @@ importers:
 
   apps/live-viewer:
     dependencies:
+      '@nteract/notebook-host':
+        specifier: workspace:*
+        version: link:../../packages/notebook-host
       react:
         specifier: 19.1.0
         version: 19.1.0

@@ -7,7 +7,8 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./tauri": "./src/tauri/index.ts"
+    "./tauri": "./src/tauri/index.ts",
+    "./browser": "./src/browser/index.ts"
   },
   "dependencies": {
     "runtimed": "workspace:*"

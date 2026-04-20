@@ -58,7 +58,10 @@
   --radius: 0.625rem;
 }
 
+html,
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
+  background: oklch(0.12 0.02 320);
+  color: var(--foreground);
 }
