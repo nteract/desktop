@@ -2428,6 +2428,93 @@ where
                     );
                 }
 
+                // Flush launched_config deps → metadata.runt.{uv,conda}.dependencies
+                // before env cleanup and final save. This captures any packages
+                // the user hot-installed during the session so they land in
+                // the .ipynb, and feeds the preserve-predicate below with the
+                // up-to-date dep list so the unified-hash path check points
+                // at the right directory.
+                //
+                // The launched config carries deps for at most one runtime
+                // (UV xor Conda), and `effective_user_deps_from_launched`
+                // gates strictly on that — so at most one flush happens per
+                // eviction. We record which runtime flushed so the rename
+                // step below uses the right hash function.
+                let launched_snapshot = room_for_eviction
+                    .runtime_agent_launched_config
+                    .read()
+                    .await
+                    .clone();
+                let mut flushed_runtime: Option<CapturedEnvRuntime> = None;
+                let mut save_succeeded = false;
+                if let Some(ref launched) = launched_snapshot {
+                    let has_saved_path = room_for_eviction.path.read().await.is_some();
+                    if has_saved_path {
+                        for runtime in [CapturedEnvRuntime::Uv, CapturedEnvRuntime::Conda] {
+                            if flush_launched_deps_to_metadata(
+                                &room_for_eviction,
+                                launched,
+                                runtime,
+                            )
+                            .await
+                            {
+                                flushed_runtime = Some(runtime);
+                            }
+                        }
+                        if flushed_runtime.is_some() {
+                            info!(
+                                "[notebook-sync] Flushed hot-sync deps into metadata for {}",
+                                notebook_id_for_eviction
+                            );
+                            // Persist to disk now — the autosave debouncer
+                            // has already fired for this eviction, and the
+                            // daemon is about to tear the room down.
+                            match save_notebook_to_disk(&room_for_eviction, None).await {
+                                Ok(_) => save_succeeded = true,
+                                Err(e) => warn!(
+                                    "[notebook-sync] Failed to persist hot-sync deps to {}: {} — skipping env-dir rename",
+                                    notebook_id_for_eviction, e
+                                ),
+                            }
+                        }
+                    }
+                }
+
+                // Rename the env dir to match the post-flush unified
+                // hash so the next reopen's `unified_env_on_disk` lookup
+                // finds it. Skip the rename when save failed — leaving
+                // disk metadata on the old hash while the env moved to
+                // the new one would defeat the next reopen. Kernel is
+                // already dead at this point (runtime agent was shut
+                // down above), so the rename is safe.
+                if let Some(runtime) = flushed_runtime {
+                    if save_succeeded {
+                        let current = room_for_eviction
+                            .runtime_agent_env_path
+                            .read()
+                            .await
+                            .clone();
+                        if let Some(current_path) = current {
+                            let metadata_after = {
+                                let doc = room_for_eviction.doc.read().await;
+                                doc.get_metadata_snapshot()
+                            };
+                            let new_path = rename_env_dir_to_unified_hash(
+                                &current_path,
+                                metadata_after.as_ref(),
+                                runtime,
+                                &kernel_env::uv::default_cache_dir_uv(),
+                                &kernel_env::conda::default_cache_dir_conda(),
+                            )
+                            .await;
+                            if new_path != current_path {
+                                let mut ep = room_for_eviction.runtime_agent_env_path.write().await;
+                                *ep = Some(new_path);
+                            }
+                        }
+                    }
+                }
+
                 // Clean up the environment directory on eviction — unless
                 // the room holds a captured env bound to a saved .ipynb.
                 //
@@ -3588,6 +3675,101 @@ async fn capture_env_into_metadata(
     changed
 }
 
+/// Derive the user-level dep list that should land in metadata for the
+/// given runtime, based on the launched config currently running.
+///
+/// `launched.uv_deps` / `launched.conda_deps` are the source of truth
+/// while the kernel is up. They're populated at launch time for
+/// captured reopens and inline-deps launches, and the hot-sync handler
+/// always appends synced packages to the matching field before
+/// returning success. So if `launched.uv_deps` is `None`, no UV hot
+/// sync occurred and captured metadata already matches the on-disk env
+/// — no flush needed for UV. Same for Conda.
+///
+/// `strip_base` removes the runtime's base packages so the persisted
+/// list reflects only user intent.
+///
+/// Returns `None` for runtimes that didn't participate in the launch
+/// (the other runtime's field, deno-only launches, pixi launches).
+fn effective_user_deps_from_launched(
+    launched: &LaunchedEnvConfig,
+    runtime: CapturedEnvRuntime,
+) -> Option<Vec<String>> {
+    match runtime {
+        CapturedEnvRuntime::Uv => {
+            let deps = launched.uv_deps.as_ref()?;
+            Some(kernel_env::strip_base(
+                deps,
+                kernel_env::uv::UV_BASE_PACKAGES,
+            ))
+        }
+        CapturedEnvRuntime::Conda => {
+            let deps = launched.conda_deps.as_ref()?;
+            Some(kernel_env::strip_base(
+                deps,
+                kernel_env::conda::CONDA_BASE_PACKAGES,
+            ))
+        }
+    }
+}
+
+/// Write the post-hot-sync dep list back to `metadata.runt.{uv,conda}.
+/// dependencies` if it drifted from what the kernel actually has
+/// installed. Called at eviction time so the saved `.ipynb` reflects
+/// every package the user hot-installed during the session.
+///
+/// Returns `true` if metadata was updated (caller should persist the
+/// notebook to disk before the room is torn down).
+async fn flush_launched_deps_to_metadata(
+    room: &NotebookRoom,
+    launched: &LaunchedEnvConfig,
+    runtime: CapturedEnvRuntime,
+) -> bool {
+    let Some(new_deps) = effective_user_deps_from_launched(launched, runtime) else {
+        return false;
+    };
+
+    let mut changed = false;
+    let mut doc = room.doc.write().await;
+    doc.fork_and_merge(|fork| {
+        let mut snap = fork.get_metadata_snapshot().unwrap_or_default();
+        match runtime {
+            CapturedEnvRuntime::Uv => {
+                let uv =
+                    snap.runt
+                        .uv
+                        .get_or_insert_with(|| notebook_doc::metadata::UvInlineMetadata {
+                            dependencies: Vec::new(),
+                            requires_python: None,
+                            prerelease: None,
+                        });
+                if uv.dependencies != new_deps {
+                    uv.dependencies = new_deps.clone();
+                    changed = true;
+                }
+            }
+            CapturedEnvRuntime::Conda => {
+                let conda = snap.runt.conda.get_or_insert_with(|| {
+                    notebook_doc::metadata::CondaInlineMetadata {
+                        dependencies: Vec::new(),
+                        channels: vec!["conda-forge".to_string()],
+                        python: None,
+                    }
+                });
+                if conda.dependencies != new_deps {
+                    conda.dependencies = new_deps.clone();
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            let _ = fork.set_metadata_snapshot(&snap);
+        }
+    });
+    drop(doc);
+    changed
+}
+
 /// Full dep-shape captured in notebook metadata plus its env_id.
 ///
 /// Carries every resolver-affecting field so the unified-hash lookup on
@@ -3776,6 +3958,91 @@ fn should_preserve_env_on_eviction(
         }
     }
     false
+}
+
+/// Compute the target path the env dir should live at, given the
+/// runtime the kernel was actually launched with. Returns `None` when
+/// the requested runtime has no captured env in metadata.
+///
+/// The explicit `runtime` argument avoids the UV-first metadata-probe
+/// bug: a pure-conda notebook has `runt.env_id` set and
+/// `captured_env_for_runtime(Uv)` happily synthesises an empty UV
+/// capture, so without the runtime hint the old version would route
+/// conda eviction through a UV hash.
+fn unified_hash_target_path(
+    metadata: Option<&NotebookMetadataSnapshot>,
+    runtime: CapturedEnvRuntime,
+    uv_cache_dir: &Path,
+    conda_cache_dir: &Path,
+) -> Option<PathBuf> {
+    let captured = captured_env_for_runtime(metadata, runtime)?;
+    let (hash, dir) = match &captured {
+        CapturedEnv::Uv { deps, env_id } => (
+            kernel_env::uv::compute_unified_env_hash(deps, env_id),
+            uv_cache_dir,
+        ),
+        CapturedEnv::Conda { deps, env_id } => (
+            kernel_env::conda::compute_unified_env_hash(deps, env_id),
+            conda_cache_dir,
+        ),
+    };
+    Some(dir.join(&hash))
+}
+
+/// Rename the env dir on disk to match the captured metadata's unified
+/// hash for the given runtime. Called at eviction after the hot-sync
+/// flush updates metadata deps: the on-disk dir is still named for the
+/// pre-flush hash, so we rename it before the next reopen's cache
+/// lookup.
+///
+/// Returns the path after the rename. Callers should use this as the
+/// authoritative env path for any later steps (e.g. the preserve check).
+///
+/// Skips the rename when:
+/// - The current path already matches the target hash (no drift).
+/// - The source path no longer exists (already cleaned up).
+/// - The target path already exists (would clobber another env — log
+///   and keep the source).
+async fn rename_env_dir_to_unified_hash(
+    current_env_path: &Path,
+    metadata: Option<&NotebookMetadataSnapshot>,
+    runtime: CapturedEnvRuntime,
+    uv_cache_dir: &Path,
+    conda_cache_dir: &Path,
+) -> PathBuf {
+    let Some(target) = unified_hash_target_path(metadata, runtime, uv_cache_dir, conda_cache_dir)
+    else {
+        return current_env_path.to_path_buf();
+    };
+    if target == current_env_path {
+        return current_env_path.to_path_buf();
+    }
+    if !current_env_path.exists() {
+        return current_env_path.to_path_buf();
+    }
+    if target.exists() {
+        warn!(
+            "[notebook-sync] Unified-hash rename target {:?} already exists; leaving env at {:?}",
+            target, current_env_path
+        );
+        return current_env_path.to_path_buf();
+    }
+    match tokio::fs::rename(current_env_path, &target).await {
+        Ok(()) => {
+            info!(
+                "[notebook-sync] Renamed env {:?} -> {:?} to match new unified hash",
+                current_env_path, target
+            );
+            target
+        }
+        Err(e) => {
+            warn!(
+                "[notebook-sync] Failed to rename env {:?} -> {:?}: {}",
+                current_env_path, target, e
+            );
+            current_env_path.to_path_buf()
+        }
+    }
 }
 
 /// Return a captured-env `env_source` override (`uv:prewarmed` /
@@ -14924,6 +15191,322 @@ mod tests {
             &uv_cache,
             &conda_cache,
         ));
+    }
+
+    #[test]
+    fn effective_user_deps_from_launched_uses_uv_deps_when_set() {
+        // Hot-sync appends to launched.uv_deps, so that's the source of
+        // truth for what should land in metadata.
+        let launched = LaunchedEnvConfig {
+            uv_deps: Some(vec!["pandas".to_string(), "numpy".to_string()]),
+            ..LaunchedEnvConfig::default()
+        };
+        let deps = effective_user_deps_from_launched(&launched, CapturedEnvRuntime::Uv).unwrap();
+        assert_eq!(deps, vec!["pandas".to_string(), "numpy".to_string()]);
+    }
+
+    #[test]
+    fn effective_user_deps_from_launched_ignores_prewarmed_packages() {
+        // Pure prewarmed kernel that never hot-synced: uv_deps and
+        // conda_deps are both None, prewarmed_packages has the pool's
+        // install list. We intentionally return None here so the eviction
+        // flush doesn't mistakenly populate metadata.runt.conda for a
+        // pure UV kernel (or vice versa). For this case captured
+        // metadata was already written at claim time and there's nothing
+        // to flush.
+        let launched = LaunchedEnvConfig {
+            uv_deps: None,
+            conda_deps: None,
+            prewarmed_packages: vec![
+                "ipykernel".to_string(),
+                "ipywidgets".to_string(),
+                "anywidget".to_string(),
+                "nbformat".to_string(),
+                "uv".to_string(),
+                "dx".to_string(),
+                "pandas".to_string(),
+            ],
+            ..LaunchedEnvConfig::default()
+        };
+        assert!(effective_user_deps_from_launched(&launched, CapturedEnvRuntime::Uv).is_none());
+        assert!(effective_user_deps_from_launched(&launched, CapturedEnvRuntime::Conda).is_none());
+    }
+
+    #[test]
+    fn effective_user_deps_from_launched_strips_base_from_uv_deps() {
+        // Hot-synced a package into a captured-reopen kernel: uv_deps
+        // = [captured_user_deps + synced]. Base packages should never
+        // be in uv_deps in practice, but strip_base is idempotent and
+        // this guards against accidental inclusion.
+        let launched = LaunchedEnvConfig {
+            uv_deps: Some(vec![
+                "ipykernel".to_string(),
+                "pandas".to_string(),
+                "numpy".to_string(),
+            ]),
+            ..LaunchedEnvConfig::default()
+        };
+        let deps = effective_user_deps_from_launched(&launched, CapturedEnvRuntime::Uv).unwrap();
+        assert_eq!(deps, vec!["pandas".to_string(), "numpy".to_string()]);
+    }
+
+    #[test]
+    fn effective_user_deps_from_launched_returns_none_for_wrong_runtime() {
+        // Kernel launched with uv_deps; asking for Conda view returns None.
+        let launched = LaunchedEnvConfig {
+            uv_deps: Some(vec!["pandas".to_string()]),
+            ..LaunchedEnvConfig::default()
+        };
+        assert!(effective_user_deps_from_launched(&launched, CapturedEnvRuntime::Conda).is_none());
+    }
+
+    #[test]
+    fn effective_user_deps_from_launched_returns_none_for_deno_only() {
+        // Deno kernel: no uv/conda deps at all. No flush applicable.
+        let launched = LaunchedEnvConfig::default();
+        assert!(effective_user_deps_from_launched(&launched, CapturedEnvRuntime::Uv).is_none());
+        assert!(effective_user_deps_from_launched(&launched, CapturedEnvRuntime::Conda).is_none());
+    }
+
+    #[test]
+    fn effective_user_deps_from_launched_conda_uses_conda_deps() {
+        let launched = LaunchedEnvConfig {
+            conda_deps: Some(vec!["scipy".to_string()]),
+            ..LaunchedEnvConfig::default()
+        };
+        let deps = effective_user_deps_from_launched(&launched, CapturedEnvRuntime::Conda).unwrap();
+        assert_eq!(deps, vec!["scipy".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn rename_env_dir_moves_to_unified_hash_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let uv_cache = tmp.path().to_path_buf();
+        let conda_cache = tmp.path().join("conda");
+        std::fs::create_dir_all(&conda_cache).unwrap();
+
+        // Initial state: env lives under the OLD hash (captured deps
+        // before hot-sync). We materialise a fake venv there.
+        let old_deps = kernel_env::UvDependencies {
+            dependencies: vec!["pandas".to_string()],
+            requires_python: None,
+            prerelease: None,
+        };
+        let env_id = "rename-target";
+        let old_path = materialise_fake_uv_venv(&old_deps, env_id, &uv_cache);
+
+        // Metadata after flush: deps grew to include numpy (new hash).
+        let new_deps = kernel_env::UvDependencies {
+            dependencies: vec!["pandas".to_string(), "numpy".to_string()],
+            requires_python: None,
+            prerelease: None,
+        };
+        let mut snap = NotebookMetadataSnapshot::default();
+        snap.runt.env_id = Some(env_id.to_string());
+        snap.runt.uv = Some(notebook_doc::metadata::UvInlineMetadata {
+            dependencies: new_deps.dependencies.clone(),
+            requires_python: None,
+            prerelease: None,
+        });
+
+        let expected_target =
+            uv_cache.join(kernel_env::uv::compute_unified_env_hash(&new_deps, env_id));
+        assert!(!expected_target.exists());
+
+        let returned = rename_env_dir_to_unified_hash(
+            &old_path,
+            Some(&snap),
+            CapturedEnvRuntime::Uv,
+            &uv_cache,
+            &conda_cache,
+        )
+        .await;
+
+        assert_eq!(returned, expected_target);
+        assert!(!old_path.exists());
+        assert!(expected_target.exists());
+    }
+
+    #[tokio::test]
+    async fn rename_env_dir_noop_when_already_at_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let uv_cache = tmp.path().to_path_buf();
+        let conda_cache = tmp.path().join("conda");
+        std::fs::create_dir_all(&conda_cache).unwrap();
+
+        let deps = kernel_env::UvDependencies {
+            dependencies: vec!["pandas".to_string()],
+            requires_python: None,
+            prerelease: None,
+        };
+        let env_id = "already-correct";
+        let path = materialise_fake_uv_venv(&deps, env_id, &uv_cache);
+
+        let mut snap = NotebookMetadataSnapshot::default();
+        snap.runt.env_id = Some(env_id.to_string());
+        snap.runt.uv = Some(notebook_doc::metadata::UvInlineMetadata {
+            dependencies: deps.dependencies.clone(),
+            requires_python: None,
+            prerelease: None,
+        });
+
+        let returned = rename_env_dir_to_unified_hash(
+            &path,
+            Some(&snap),
+            CapturedEnvRuntime::Uv,
+            &uv_cache,
+            &conda_cache,
+        )
+        .await;
+
+        assert_eq!(returned, path);
+        assert!(path.exists());
+    }
+
+    #[tokio::test]
+    async fn rename_env_dir_skips_when_target_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let uv_cache = tmp.path().to_path_buf();
+        let conda_cache = tmp.path().join("conda");
+        std::fs::create_dir_all(&conda_cache).unwrap();
+
+        // Two distinct envs on disk — an old one and the target name
+        // from a different notebook already claimed. We must not
+        // clobber the target.
+        let old_deps = kernel_env::UvDependencies {
+            dependencies: vec!["pandas".to_string()],
+            requires_python: None,
+            prerelease: None,
+        };
+        let env_id = "collide";
+        let old_path = materialise_fake_uv_venv(&old_deps, env_id, &uv_cache);
+
+        let new_deps = kernel_env::UvDependencies {
+            dependencies: vec!["pandas".to_string(), "numpy".to_string()],
+            requires_python: None,
+            prerelease: None,
+        };
+        let occupied_path = materialise_fake_uv_venv(&new_deps, env_id, &uv_cache);
+        assert!(occupied_path.exists());
+
+        let mut snap = NotebookMetadataSnapshot::default();
+        snap.runt.env_id = Some(env_id.to_string());
+        snap.runt.uv = Some(notebook_doc::metadata::UvInlineMetadata {
+            dependencies: new_deps.dependencies.clone(),
+            requires_python: None,
+            prerelease: None,
+        });
+
+        let returned = rename_env_dir_to_unified_hash(
+            &old_path,
+            Some(&snap),
+            CapturedEnvRuntime::Uv,
+            &uv_cache,
+            &conda_cache,
+        )
+        .await;
+
+        // Target is occupied — leave source intact.
+        assert_eq!(returned, old_path);
+        assert!(old_path.exists());
+        assert!(occupied_path.exists());
+    }
+
+    #[tokio::test]
+    async fn rename_env_dir_noop_when_no_captured_metadata() {
+        let tmp = tempfile::tempdir().unwrap();
+        let uv_cache = tmp.path().to_path_buf();
+        let conda_cache = tmp.path().join("conda");
+        std::fs::create_dir_all(&conda_cache).unwrap();
+
+        let some_path = uv_cache.join("runtimed-uv-abc123");
+        std::fs::create_dir_all(&some_path).unwrap();
+
+        let returned = rename_env_dir_to_unified_hash(
+            &some_path,
+            Some(&NotebookMetadataSnapshot::default()),
+            CapturedEnvRuntime::Uv,
+            &uv_cache,
+            &conda_cache,
+        )
+        .await;
+
+        assert_eq!(returned, some_path);
+        assert!(some_path.exists());
+    }
+
+    /// Given a tmpdir pretending to be the Conda cache, materialise a
+    /// fake env at `{cache}/{hash}/bin/python`.
+    fn materialise_fake_conda_env(
+        deps: &kernel_env::CondaDependencies,
+        env_id: &str,
+        cache_dir: &Path,
+    ) -> PathBuf {
+        let hash = kernel_env::conda::compute_unified_env_hash(deps, env_id);
+        let env_path = cache_dir.join(&hash);
+        #[cfg(target_os = "windows")]
+        let python_path = env_path.join("python.exe");
+        #[cfg(not(target_os = "windows"))]
+        let python_path = env_path.join("bin").join("python");
+        std::fs::create_dir_all(python_path.parent().unwrap()).unwrap();
+        std::fs::write(&python_path, b"#!/bin/sh\n").unwrap();
+        env_path
+    }
+
+    /// Regression: conda-only notebook with env_id set must not route
+    /// its rename through the UV hash function. Before the runtime
+    /// parameter was explicit, `captured_env_for_runtime(Uv)` would
+    /// synthesise a zero-dep UV capture from `runt.env_id`, and the
+    /// rename helper would pick the UV-hash path first even though the
+    /// kernel was conda.
+    #[tokio::test]
+    async fn rename_env_dir_uses_conda_hash_when_runtime_is_conda() {
+        let tmp = tempfile::tempdir().unwrap();
+        let uv_cache = tmp.path().join("uv");
+        let conda_cache = tmp.path().join("conda");
+        std::fs::create_dir_all(&uv_cache).unwrap();
+        std::fs::create_dir_all(&conda_cache).unwrap();
+
+        let old_conda_deps = kernel_env::CondaDependencies {
+            dependencies: vec!["numpy".to_string()],
+            channels: vec!["conda-forge".to_string()],
+            python: None,
+            env_id: None,
+        };
+        let env_id = "conda-rename";
+        let old_path = materialise_fake_conda_env(&old_conda_deps, env_id, &conda_cache);
+
+        let new_conda_deps = kernel_env::CondaDependencies {
+            dependencies: vec!["numpy".to_string(), "scipy".to_string()],
+            channels: vec!["conda-forge".to_string()],
+            python: None,
+            env_id: None,
+        };
+        let expected = conda_cache.join(kernel_env::conda::compute_unified_env_hash(
+            &new_conda_deps,
+            env_id,
+        ));
+
+        let mut snap = NotebookMetadataSnapshot::default();
+        snap.runt.env_id = Some(env_id.to_string());
+        snap.runt.conda = Some(notebook_doc::metadata::CondaInlineMetadata {
+            dependencies: new_conda_deps.dependencies.clone(),
+            channels: new_conda_deps.channels.clone(),
+            python: None,
+        });
+
+        let returned = rename_env_dir_to_unified_hash(
+            &old_path,
+            Some(&snap),
+            CapturedEnvRuntime::Conda,
+            &uv_cache,
+            &conda_cache,
+        )
+        .await;
+
+        assert_eq!(returned, expected);
+        assert!(expected.exists());
+        assert!(!old_path.exists());
     }
 
     /// P1 regression: the manual LaunchKernel handler must apply the captured
