@@ -253,9 +253,6 @@ async fn auto_rejoin_session(
 
     info!("Auto-rejoining notebook session: {notebook_id}");
 
-    // Drop the old session first (its DocHandle/sync task are dead)
-    *session.write().await = None;
-
     let label = peer_label.read().await.clone();
 
     for attempt in 0..=REJOIN_MAX_RETRIES {
@@ -283,12 +280,16 @@ async fn auto_rejoin_session(
             Ok((handle, broadcast_rx, new_cell_count, new_notebook_id)) => {
                 // Detect ephemeral session loss: previously had cells but
                 // rejoin yields an empty doc. For ephemeral notebooks this
-                // means the data is gone (no persistence).
+                // means the data is gone (no persistence). Keep the old
+                // session rather than leaving it None — the stale session
+                // produces clearer errors ("Cell not found") than no session
+                // ("No active notebook session"), and the user can still
+                // call open_notebook to start fresh.
                 if prev_cell_count > 0 && new_cell_count == 0 && notebook_path.is_none() {
                     warn!(
                         "Ephemeral notebook lost: rejoined {notebook_id} but document is empty \
                          (had {prev_cell_count} cells). Daemon restarted and ephemeral \
-                         notebook was not saved to disk.",
+                         notebook was not saved to disk. Keeping stale session.",
                     );
                     return;
                 }
@@ -301,6 +302,7 @@ async fn auto_rejoin_session(
                     notebook_id: new_notebook_id,
                     notebook_path: notebook_path.clone(),
                 };
+                // Replace old session only on successful rejoin
                 *session.write().await = Some(new_session);
                 info!("Auto-rejoined notebook session: {notebook_id} ({new_cell_count} cells)",);
                 return;
@@ -314,8 +316,12 @@ async fn auto_rejoin_session(
                     );
                     tokio::time::sleep(REJOIN_RETRY_DELAY).await;
                 } else {
+                    // Keep old session intact — it's stale but better than None.
+                    // Tools will get sync errors that prompt re-connection rather
+                    // than "No active notebook session" which is confusing mid-run.
                     warn!(
-                        "Failed to auto-rejoin notebook {notebook_id} after {} attempts: {e}",
+                        "Failed to auto-rejoin notebook {notebook_id} after {} attempts, \
+                         keeping stale session: {e}",
                         attempt + 1
                     );
                 }
