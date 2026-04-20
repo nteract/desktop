@@ -22,6 +22,7 @@ members = [
     "crates/repr-llm",
     "crates/nteract-predicate",
     "crates/sift-wasm",
+    "apps/live-viewer/server",
 ]
 default-members = ["crates/notebook"]
 resolver = "2"

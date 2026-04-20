@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>nteract live viewer</title>
+<style>
+body { font-family: system-ui, sans-serif; background: #0d1117; color: #e6edf3; padding: 24px; }
+h1 { font-size: 1.2em; margin-bottom: 16px; }
+.status { font-size: 0.8em; padding: 2px 8px; border-radius: 8px; }
+.status.ok { background: #23863533; color: #3fb950; }
+.status.err { background: #da363333; color: #f85149; }
+pre { font-size: 0.8em; background: #161b22; padding: 12px; border-radius: 8px; overflow: auto; max-height: 400px; }
+#log { white-space: pre-wrap; }
+button { background: #21262d; color: #e6edf3; border: 1px solid #30363d; padding: 6px 12px; border-radius: 6px; cursor: pointer; margin: 4px; }
+button:hover { background: #30363d; }
+</style>
+</head>
+<body>
+<h1>nteract live viewer <span class="status" id="status">loading...</span></h1>
+<p style="font-size:0.85em;color:#8b949e;margin-bottom:16px">
+  Frame relay prototype — raw daemon frames over WebSocket.
+  The full WASM+React app will replace this page.
+</p>
+<div id="notebooks" style="margin-bottom:16px"></div>
+<div id="controls"></div>
+<pre id="log"></pre>
+
+<script>
+const statusEl = document.getElementById('status');
+const logEl = document.getElementById('log');
+const notebooksEl = document.getElementById('notebooks');
+const controlsEl = document.getElementById('controls');
+
+function log(msg) {
+  const line = `[${new Date().toLocaleTimeString()}] ${msg}\n`;
+  logEl.textContent += line;
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+// Fetch notebook list
+async function loadNotebooks() {
+  try {
+    const resp = await fetch('/api/notebooks');
+    const rooms = await resp.json();
+    statusEl.textContent = `${rooms.length} rooms`;
+    statusEl.className = 'status ok';
+
+    let html = '<strong>Active notebooks:</strong><br>';
+    for (const room of rooms) {
+      const id = room.notebook_id;
+      const short = id.slice(0, 8);
+      const status = room.kernel_status || 'no-kernel';
+      html += `<button onclick="joinNotebook('${id}')">${short} (${status})</button> `;
+    }
+    notebooksEl.innerHTML = html;
+    log(`Found ${rooms.length} active notebook rooms`);
+  } catch (e) {
+    statusEl.textContent = 'error';
+    statusEl.className = 'status err';
+    log(`Error listing notebooks: ${e}`);
+  }
+}
+
+let ws = null;
+let frameCount = 0;
+
+function joinNotebook(id) {
+  if (ws) { ws.close(); ws = null; }
+
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const url = `${proto}//${location.host}/ws/join?id=${encodeURIComponent(id)}`;
+  log(`Connecting to ${id.slice(0, 8)}...`);
+
+  ws = new WebSocket(url);
+  ws.binaryType = 'arraybuffer';
+  frameCount = 0;
+
+  ws.onopen = () => {
+    log(`Connected! Receiving daemon frames...`);
+    controlsEl.innerHTML = `<button onclick="ws && ws.close()">Disconnect</button>`;
+  };
+
+  ws.onmessage = (event) => {
+    frameCount++;
+    const data = new Uint8Array(event.data);
+    const frameType = data[0];
+    const typeNames = {0:'AutomergeSync', 1:'Request', 2:'Response', 3:'Broadcast', 4:'Presence', 5:'RuntimeStateSync', 6:'PoolStateSync'};
+    const name = typeNames[frameType] || `Unknown(${frameType})`;
+    log(`Frame #${frameCount}: ${name} (${data.length} bytes)`);
+
+    // If it's a broadcast, try to decode the JSON
+    if (frameType === 3) {
+      try {
+        const json = new TextDecoder().decode(data.slice(1));
+        const broadcast = JSON.parse(json);
+        log(`  Broadcast: ${broadcast.type || JSON.stringify(broadcast).slice(0, 100)}`);
+      } catch {}
+    }
+  };
+
+  ws.onclose = () => {
+    log(`Disconnected (received ${frameCount} frames total)`);
+    controlsEl.innerHTML = '';
+  };
+
+  ws.onerror = () => log('WebSocket error');
+}
+
+loadNotebooks();
+</script>
+</body>
+</html>
