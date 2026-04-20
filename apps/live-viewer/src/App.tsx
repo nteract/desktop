@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, useNavigate, useParams } from "react-router";
+import { BrowserRouter, Routes, Route, Link, useNavigate, useParams } from "react-router";
 import { useEffect, useState } from "react";
 import { NotebookViewer } from "./components/NotebookViewer";
 
@@ -9,6 +9,7 @@ interface RoomInfo {
   kernel_type?: string;
   kernel_status?: string;
   env_source?: string;
+  ephemeral?: boolean;
 }
 
 export function App() {
@@ -25,6 +26,7 @@ export function App() {
 function NotebookList() {
   const [rooms, setRooms] = useState<RoomInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [lastFetch, setLastFetch] = useState<Date | null>(null);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -34,12 +36,13 @@ function NotebookList() {
         const data: RoomInfo[] = await resp.json();
         setRooms(data);
         setError(null);
+        setLastFetch(new Date());
       } catch (e) {
         setError(String(e));
       }
     }
     fetchRooms();
-    const interval = setInterval(fetchRooms, 5000);
+    const interval = setInterval(fetchRooms, 3000);
     return () => clearInterval(interval);
   }, []);
 
@@ -48,21 +51,24 @@ function NotebookList() {
       <header className="sticky top-0 z-50 flex items-center gap-3 border-b border-border bg-background/80 px-6 py-3 backdrop-blur-sm">
         <h1 className="text-sm font-semibold">nteract live viewer</h1>
         <span className="rounded-full bg-secondary px-2 py-0.5 text-xs text-muted-foreground">
-          {rooms.length} notebooks
+          {rooms.length} notebook{rooms.length !== 1 ? "s" : ""}
         </span>
+        {lastFetch && (
+          <span className="ml-auto text-[10px] text-muted-foreground/60">polling every 3s</span>
+        )}
       </header>
 
       <main className="mx-auto max-w-3xl p-6">
         {error && (
-          <div className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive-foreground">
-            {error}
+          <div className="mb-4 rounded-md border border-red-500/30 bg-red-950/20 p-3 text-sm text-red-400">
+            Failed to reach daemon: {error}
           </div>
         )}
 
         {rooms.length === 0 && !error && (
           <div className="py-20 text-center text-muted-foreground">
             <p className="text-lg">No active notebooks</p>
-            <p className="mt-1 text-sm opacity-70">Open a notebook in nteract to see it here.</p>
+            <p className="mt-2 text-sm opacity-70">Open a notebook in nteract to see it here.</p>
           </div>
         )}
 
@@ -71,31 +77,48 @@ function NotebookList() {
             <button
               key={room.notebook_id}
               onClick={() => navigate(`/${room.notebook_id}`)}
-              className="flex items-center gap-3 rounded-lg border border-border bg-card p-4 text-left transition-colors hover:bg-secondary"
+              className="group flex items-center gap-4 rounded-lg border border-border bg-card p-4 text-left transition-all hover:border-muted-foreground/30 hover:bg-secondary"
             >
-              <div className="flex-1">
-                <div className="font-mono text-sm text-card-foreground">
-                  {room.notebook_id.slice(0, 8)}
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-secondary text-muted-foreground">
+                {room.ephemeral ? (
+                  <span className="text-base">*</span>
+                ) : (
+                  <span className="text-xs font-mono">.nb</span>
+                )}
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-sm text-card-foreground">
+                    {room.notebook_id.slice(0, 8)}
+                  </span>
+                  {room.ephemeral && (
+                    <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                      ephemeral
+                    </span>
+                  )}
                 </div>
-                <div className="mt-0.5 text-xs text-muted-foreground">
-                  {room.active_peers} peer{room.active_peers !== 1 ? "s" : ""}
-                  {room.kernel_type && ` · ${room.kernel_type}`}
-                  {room.env_source && ` · ${room.env_source}`}
+                <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <span>
+                    {room.active_peers} peer{room.active_peers !== 1 ? "s" : ""}
+                  </span>
+                  {room.kernel_type && (
+                    <>
+                      <span className="text-border">·</span>
+                      <span>{room.kernel_type}</span>
+                    </>
+                  )}
+                  {room.env_source && (
+                    <>
+                      <span className="text-border">·</span>
+                      <span>{room.env_source}</span>
+                    </>
+                  )}
                 </div>
               </div>
-              {room.kernel_status && (
-                <span
-                  className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-                    room.kernel_status === "idle"
-                      ? "bg-green-900/30 text-green-400"
-                      : room.kernel_status === "busy"
-                        ? "bg-yellow-900/30 text-yellow-400"
-                        : "bg-blue-900/30 text-blue-400"
-                  }`}
-                >
-                  {room.kernel_status}
-                </span>
-              )}
+              {room.kernel_status && <KernelPill status={room.kernel_status} />}
+              <span className="text-muted-foreground/40 transition-transform group-hover:translate-x-0.5">
+                &rsaquo;
+              </span>
             </button>
           ))}
         </div>
@@ -104,21 +127,36 @@ function NotebookList() {
   );
 }
 
+function KernelPill({ status }: { status: string }) {
+  const styles: Record<string, string> = {
+    idle: "bg-green-900/30 text-green-400",
+    busy: "bg-amber-900/30 text-amber-400",
+    starting: "bg-blue-900/30 text-blue-400",
+    error: "bg-red-900/30 text-red-400",
+  };
+  return (
+    <span
+      className={`rounded-full px-2 py-0.5 text-xs font-medium ${styles[status] ?? "bg-secondary text-muted-foreground"}`}
+    >
+      {status}
+    </span>
+  );
+}
+
 function ViewerPage() {
   const { notebookId } = useParams<{ notebookId: string }>();
-  const navigate = useNavigate();
 
   if (!notebookId) return null;
 
   return (
     <div className="dark min-h-screen bg-background text-foreground">
       <header className="sticky top-0 z-50 flex items-center gap-3 border-b border-border bg-background/80 px-6 py-3 backdrop-blur-sm">
-        <button
-          onClick={() => navigate("/")}
+        <Link
+          to="/"
           className="rounded-md border border-border px-3 py-1 text-xs text-muted-foreground hover:bg-secondary"
         >
           &larr; Back
-        </button>
+        </Link>
         <h1 className="text-sm font-semibold">nteract live viewer</h1>
         <span className="ml-auto font-mono text-xs text-muted-foreground">
           {notebookId.slice(0, 8)}
