@@ -123,13 +123,13 @@
       "idempotentHint": true,
       "openWorldHint": true
     },
-    "description": "Save notebook to disk.",
+    "description": "Save notebook to disk. For notebooks created with create_notebook(), you must provide a path.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
         "path": {
           "default": null,
-          "description": "Path to save the notebook to. If None, saves to original location.",
+          "description": "Path to save the notebook to (e.g., \"~/analysis.ipynb\").\nRequired for ephemeral notebooks created with create_notebook().\nOmit to save to the notebook's existing file path.",
           "type": [
             "string",
             "null"

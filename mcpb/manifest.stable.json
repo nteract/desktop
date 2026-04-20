@@ -73,7 +73,7 @@
       "name": "create_notebook"
     },
     {
-      "description": "Save notebook to disk.",
+      "description": "Save notebook to disk. For notebooks created with create_notebook(), you must provide a path.",
       "name": "save_notebook"
     },
     {
