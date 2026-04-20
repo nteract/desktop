@@ -232,11 +232,17 @@ export function FullTreeViewer({ notebookId }: Props) {
         return { output_type: "stream", name: obj.name, text };
       }
       if (obj.output_type === "error") {
-        const tb = resolveRef(obj.traceback);
-        if (tb === null) return null;
+        let traceback: string[];
+        if (Array.isArray(obj.traceback)) {
+          traceback = obj.traceback as string[];
+        } else {
+          const tb = resolveRef(obj.traceback);
+          if (tb === null) return null;
+          try { traceback = JSON.parse(tb); } catch { traceback = [tb]; }
+        }
         return {
           output_type: "error", ename: obj.ename, evalue: obj.evalue,
-          traceback: JSON.parse(tb),
+          traceback,
         };
       }
       if (obj.output_type === "display_data" || obj.output_type === "execute_result") {
