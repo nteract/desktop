@@ -28,12 +28,14 @@
 //!
 //! ## The `is_binary_mime` Contract
 //!
-//! Three implementations must stay in sync:
-//! - Rust: `is_binary_mime()` in this file
-//! - Rust: `is_binary_mime()` in `crates/runtimed-py/src/output_resolver.rs`
-//! - TypeScript: `isBinaryMime()` in `apps/notebook/src/lib/manifest-resolution.ts`
+//! MIME classification has one canonical home: [`notebook_doc::mime`]. All
+//! Rust crates in the workspace (`runtimed`, `runtimed-client`,
+//! `runtimed-wasm`) import `is_binary_mime()`, `mime_kind()`, and `MimeKind`
+//! from that module — there are no per-crate copies to keep in sync. The
+//! frontend no longer classifies MIMEs at all; WASM resolves `ContentRef`s
+//! to `Inline`/`Url`/`Blob` variants directly.
 //!
-//! If you change the classification, update all three.
+//! If you change the classification, change it in `notebook-doc/src/mime.rs`.
 //!
 //! ## Key Types
 //!
