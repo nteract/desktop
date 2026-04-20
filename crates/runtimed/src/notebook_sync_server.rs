@@ -10836,6 +10836,23 @@ pub(crate) fn spawn_notebook_file_watcher(
                                 // arrives via Automerge sync frames
                                 let _ = room.changed_tx.send(());
                             }
+
+                            // Re-verify trust after external metadata edits.
+                            // room.trust_state was loaded once at room creation
+                            // and never refreshed on this path. External edits
+                            // via uv/editor (e.g. `uv add numpy` + save) rewrite
+                            // metadata.runt.*.dependencies, which changes the
+                            // HMAC input; without this, the cached trust state
+                            // stays stale until the daemon restarts and
+                            // auto-launch enforces the old signature. Trust
+                            // lives in metadata, so gate on metadata_changed —
+                            // cell-only edits can't affect the signature.
+                            // check_and_update_trust_state only writes when the
+                            // status actually flipped and emits
+                            // state_changed_tx so the frontend banner reacts.
+                            if metadata_changed {
+                                check_and_update_trust_state(&room).await;
+                            }
                         }
                         Err(errs) => {
                             warn!("[notebook-watch] Watch error for {:?}: {:?}", notebook_path, errs);
@@ -14098,6 +14115,98 @@ mod tests {
         // Final trust_state should be NoDependencies.
         let ts = room.trust_state.read().await;
         assert_eq!(ts.status, runt_trust::TrustStatus::NoDependencies);
+    }
+
+    /// Simulates the file-watcher path: a notebook starts Trusted (signed
+    /// metadata on disk), then an external editor / `uv add numpy` rewrites
+    /// the dependency list. The signature no longer covers the new dep set,
+    /// so `check_and_update_trust_state` should flip trust_state to
+    /// SignatureInvalid and emit a state_changed_tx notification.
+    ///
+    /// This is the regression this PR fixes: before the fix the file watcher
+    /// merged new deps into the CRDT but never re-verified trust, so
+    /// room.trust_state stayed Trusted and auto-launch used a stale signature.
+    #[tokio::test]
+    #[serial]
+    async fn test_check_and_update_trust_state_external_dep_add_invalidates() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let key_path = temp_dir.path().join("trust-key");
+        std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (room, _path) = test_room_with_path(&tmp, "signed_then_edited.ipynb");
+
+        // Build a signed snapshot (numpy only) and seed the room with Trusted
+        // state, matching what happens at room creation time on disk.
+        let mut signed = snapshot_with_uv(vec!["numpy".to_string()]);
+        let mut metadata = std::collections::HashMap::new();
+        if let Ok(runt_value) = serde_json::to_value(&signed.runt) {
+            metadata.insert("runt".to_string(), runt_value);
+        }
+        let signature = runt_trust::sign_notebook_dependencies(&metadata).unwrap();
+        signed.runt.trust_signature = Some(signature.clone());
+
+        {
+            let mut doc = room.doc.write().await;
+            doc.set_metadata_snapshot(&signed).unwrap();
+        }
+        {
+            let mut ts = room.trust_state.write().await;
+            *ts = verify_trust_from_snapshot(&signed);
+        }
+        {
+            let mut sd = room.state_doc.write().await;
+            sd.set_trust("trusted", false);
+        }
+
+        // Sanity check: starting state is Trusted.
+        {
+            let ts = room.trust_state.read().await;
+            assert_eq!(ts.status, runt_trust::TrustStatus::Trusted);
+        }
+
+        // Simulate external edit: user runs `uv add pandas` + saves. The
+        // file watcher merges the new deps into the CRDT but carries over
+        // the stale signature (because the external tool doesn't resign).
+        let mut edited = snapshot_with_uv(vec!["numpy".to_string(), "pandas".to_string()]);
+        edited.runt.trust_signature = Some(signature);
+        {
+            let mut doc = room.doc.write().await;
+            doc.set_metadata_snapshot(&edited).unwrap();
+        }
+
+        // Subscribe before the re-verification so we can observe the flip.
+        let mut rx = room.state_changed_tx.subscribe();
+
+        check_and_update_trust_state(&room).await;
+
+        // Trust should flip to SignatureInvalid — the signature is over the
+        // numpy-only dep set, so adding pandas breaks it.
+        {
+            let ts = room.trust_state.read().await;
+            assert_eq!(
+                ts.status,
+                runt_trust::TrustStatus::SignatureInvalid,
+                "external dep add must flip trust from Trusted to SignatureInvalid"
+            );
+        }
+
+        // RuntimeStateDoc should reflect the flip for the frontend banner.
+        {
+            let sd = room.state_doc.read().await;
+            let state = sd.read_state();
+            assert_eq!(state.trust.status, "signature_invalid");
+            assert!(state.trust.needs_approval);
+        }
+
+        // state_changed_tx must have fired at least once so subscribers
+        // (frontend, auto-launch) pick up the new trust state.
+        assert!(
+            rx.try_recv().is_ok(),
+            "trust flip must emit state_changed_tx notification"
+        );
+
+        std::env::remove_var("RUNT_TRUST_KEY_PATH");
     }
 
     // ── Per-agent oneshot channel tests ──────────────────────────────
