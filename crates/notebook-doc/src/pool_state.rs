@@ -325,7 +325,10 @@ impl PoolDoc {
                 self.doc = doc;
                 true
             }
-            Err(_) => false,
+            Err(_) => {
+                crate::diagnostics::record_pool_rebuild_failed();
+                false
+            }
         }
     }
 }

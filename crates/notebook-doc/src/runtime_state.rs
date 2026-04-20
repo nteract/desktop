@@ -523,7 +523,10 @@ impl RuntimeStateDoc {
                 self.doc = doc;
                 true
             }
-            Err(_) => false,
+            Err(_) => {
+                crate::diagnostics::record_runtime_state_rebuild_failed();
+                false
+            }
         }
     }
 

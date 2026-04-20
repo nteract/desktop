@@ -37,6 +37,7 @@
 // Allow `expect()` and `unwrap()` in tests
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+pub mod diagnostics;
 pub mod diff;
 pub mod frame_types;
 pub mod metadata;
@@ -1089,6 +1090,10 @@ impl NotebookDoc {
                     warn!(
                         "[notebook-doc] rebuild_from_save would lose cells ({} → {}), skipping",
                         pre_cell_count, post_cell_count
+                    );
+                    crate::diagnostics::record_notebook_rebuild_skipped(
+                        pre_cell_count,
+                        post_cell_count,
                     );
                     return false;
                 }
@@ -2614,6 +2619,49 @@ pub fn get_cells_from_doc(doc: &AutoCommit) -> Vec<CellSnapshot> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Forces the `rebuild_from_save` cell-count-regression branch and
+    /// asserts the `AutomergeHealth` counter advances.
+    ///
+    /// The regression is synthesised by deleting the `id` field on a
+    /// cell. `cell_count()` reads `doc.length(cells_map)` (sees 2), but
+    /// `get_cells_from_doc()` filters cells that can't read `"id"`
+    /// (returns 1). That mismatch is exactly what the safety branch
+    /// guards against: the rebuilt doc would drop a cell, so the swap
+    /// is refused.
+    #[test]
+    fn test_rebuild_from_save_skip_bumps_health_counter() {
+        use automerge::transaction::Transactable;
+        use automerge::{ObjId, ObjType, ReadDoc, ROOT};
+
+        let mut doc = NotebookDoc::new("test-notebook");
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        doc.add_cell(1, "cell-2", "code").unwrap();
+
+        // Reach into the automerge map to delete cell-2's `id` field.
+        // That makes `get_cells_from_doc` skip the cell, but
+        // `cell_count()` still sees two entries in the cells map.
+        let cells_id: ObjId = match doc.doc.get(ROOT, "cells").unwrap().unwrap() {
+            (automerge::Value::Object(ObjType::Map), id) => id,
+            _ => panic!("cells map missing"),
+        };
+        let cell2_obj: ObjId = match doc.doc.get(&cells_id, "cell-2").unwrap().unwrap() {
+            (automerge::Value::Object(ObjType::Map), id) => id,
+            _ => panic!("cell-2 map missing"),
+        };
+        doc.doc.delete(&cell2_obj, "id").unwrap();
+
+        assert_eq!(doc.cell_count(), 2);
+        let pre_counter =
+            crate::diagnostics::AutomergeHealth::snapshot().rebuilds_lossy_skipped_notebook;
+
+        // Rebuild should refuse the swap because post < pre.
+        assert!(!doc.rebuild_from_save());
+
+        let post_counter =
+            crate::diagnostics::AutomergeHealth::snapshot().rebuilds_lossy_skipped_notebook;
+        assert_eq!(post_counter, pre_counter + 1);
+    }
 
     #[test]
     fn test_empty_doc_has_bootstrap_skeleton() {
