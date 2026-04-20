@@ -259,7 +259,11 @@ async fn auto_rejoin_session(
     let label = peer_label.read().await.clone();
 
     for attempt in 0..=REJOIN_MAX_RETRIES {
-        let result = if let Some(ref path) = notebook_path {
+        let use_path = notebook_path
+            .as_ref()
+            .filter(|p| std::path::Path::new(p.as_str()).exists());
+
+        let result = if let Some(path) = use_path {
             // File-backed: use connect_open so daemon reloads from .ipynb
             notebook_sync::connect::connect_open(
                 socket_path.to_path_buf(),

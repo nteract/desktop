@@ -627,6 +627,14 @@ pub async fn save_notebook(
         .await
     {
         Ok(NotebookResponse::NotebookSaved { path: saved_path }) => {
+            // Update session's notebook_path so auto-rejoin uses connect_open
+            {
+                let mut guard = server.session.write().await;
+                if let Some(ref mut s) = *guard {
+                    s.notebook_path = Some(saved_path.clone());
+                }
+            }
+
             let result = serde_json::json!({
                 "path": saved_path,
                 "notebook_id": notebook_id,
