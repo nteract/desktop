@@ -7030,6 +7030,7 @@ dependencies = [
  "nbformat",
  "nix 0.31.2",
  "notebook-doc",
+ "notebook-persistence",
  "notebook-protocol",
  "notebook-sync",
  "notify",

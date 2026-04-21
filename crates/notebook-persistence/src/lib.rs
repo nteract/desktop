@@ -1,3 +1,4 @@
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 //! Shared `.ipynb` <-> `NotebookDoc` conversion.
 //!
 //! Previously lived in two copies:

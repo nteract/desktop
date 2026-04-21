@@ -6611,90 +6611,44 @@ pub(crate) async fn save_notebook_to_disk(
 
     let nbformat_attachments = room.nbformat_attachments.read().await.clone();
 
-    // Reconstruct cells as JSON
-    // Cell metadata now comes from the CellSnapshot (populated during load)
-    let mut nb_cells = Vec::new();
+    // Pre-resolve outputs against the blob store (async) so we can hand
+    // notebook-persistence a fully-synchronous BuildInputs. The builder
+    // owns source line-splitting, nbformat_minor bumping, and metadata
+    // merging — keep that logic shared with runt recover.
+    let mut output_data: HashMap<String, notebook_persistence::CellOutputData> = HashMap::new();
     for cell in &cells {
-        // Use metadata from the Automerge doc (populated during notebook load)
-        let cell_meta = cell.metadata.clone();
-
-        // Parse source into multiline array format (split_inclusive('\n'))
-        let source_lines: Vec<String> = if cell.source.is_empty() {
-            vec![]
-        } else {
-            let mut lines = Vec::new();
-            let mut remaining = cell.source.as_str();
-            while let Some(pos) = remaining.find('\n') {
-                lines.push(remaining[..=pos].to_string());
-                remaining = &remaining[pos + 1..];
-            }
-            if !remaining.is_empty() {
-                lines.push(remaining.to_string());
-            }
-            lines
-        };
-
-        let mut cell_json = serde_json::json!({
-            "id": cell.id,
-            "cell_type": cell.cell_type,
-            "source": source_lines,
-            "metadata": cell_meta,
-        });
-
-        if cell.cell_type == "code" {
-            // Resolve outputs from RuntimeStateDoc (keyed by execution_id)
-            let mut resolved_outputs = Vec::new();
-            if let Some(outputs) = cell_outputs.get(&cell.id) {
-                for output in outputs {
-                    let output_value = resolve_cell_output(output, &room.blob_store).await;
-                    resolved_outputs.push(output_value);
-                }
-            }
-            cell_json["outputs"] = serde_json::Value::Array(resolved_outputs);
-
-            // Resolve execution_count from RuntimeStateDoc (source of truth)
-            let exec_count: serde_json::Value = cell_execution_counts
-                .get(&cell.id)
-                .and_then(|ec| *ec)
-                .map(|n| serde_json::Value::Number(serde_json::Number::from(n)))
-                .unwrap_or(serde_json::Value::Null);
-            cell_json["execution_count"] = exec_count;
-        } else if matches!(cell.cell_type.as_str(), "markdown" | "raw") {
-            if let Some(attachments) = nbformat_attachments.get(&cell.id) {
-                cell_json["attachments"] = attachments.clone();
+        if cell.cell_type != "code" {
+            continue;
+        }
+        let mut resolved_outputs = Vec::new();
+        if let Some(outputs) = cell_outputs.get(&cell.id) {
+            for output in outputs {
+                let value = resolve_cell_output(output, &room.blob_store).await;
+                resolved_outputs.push(value);
             }
         }
-
-        nb_cells.push(cell_json);
+        let execution_count = cell_execution_counts.get(&cell.id).and_then(|ec| *ec);
+        output_data.insert(
+            cell.id.clone(),
+            notebook_persistence::CellOutputData {
+                outputs: resolved_outputs,
+                execution_count,
+            },
+        );
     }
 
-    // Build metadata by merging synced snapshot onto existing
-    let mut metadata = existing
-        .as_ref()
-        .and_then(|nb| nb.get("metadata"))
-        .cloned()
-        .unwrap_or(serde_json::json!({}));
-
-    if let Some(ref snapshot) = metadata_snapshot {
-        snapshot.merge_into_metadata_value(&mut metadata).ok();
-    }
-
-    // Build the final notebook JSON
-    // Cell IDs were introduced in nbformat 4.5, so ensure minor >= 5
-    let existing_minor = existing
-        .as_ref()
-        .and_then(|nb| nb.get("nbformat_minor"))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(5);
-    let nbformat_minor = std::cmp::max(existing_minor, 5);
-
-    let cell_count = nb_cells.len();
-    let notebook_json = serde_json::json!({
-        "nbformat": 4,
-        "nbformat_minor": nbformat_minor,
-        "metadata": metadata,
-        "cells": nb_cells,
-    });
+    let notebook_json = notebook_persistence::build_ipynb(notebook_persistence::BuildInputs {
+        cells: &cells,
+        metadata_snapshot: metadata_snapshot.as_ref(),
+        existing: existing.as_ref(),
+        outputs_by_cell_id: &output_data,
+        attachments_by_cell_id: &nbformat_attachments,
+    })
+    .map_err(|e| SaveError::Retryable(format!("Failed to build notebook: {e}")))?;
+    let cell_count = notebook_json["cells"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
 
     // Serialize with trailing newline (nbformat convention)
     let content = serde_json::to_string_pretty(&notebook_json)
@@ -7402,137 +7356,12 @@ pub(crate) fn persist_notebook_bytes(data: &[u8], path: &Path) -> bool {
 /// Must be larger than the debounce window (500ms) to reliably skip self-writes.
 const SELF_WRITE_SKIP_WINDOW_MS: u64 = 600;
 
-/// Parse cells from a Jupyter notebook JSON object.
-///
-/// Returns `Some(cells)` if parsing succeeded (including empty `cells: []`),
-/// or `None` if the `cells` key is missing or invalid (parse failure).
-///
-/// The source field can be either a string or an array of strings (lines).
-/// We normalize it to a single string.
-///
-/// For older notebooks (pre-nbformat 4.5) that don't have cell IDs, we generate
-/// stable fallback IDs based on the cell index. This prevents data loss when
-/// merging changes from externally-generated notebooks.
-///
-/// Positions are generated incrementally using fractional indexing.
-fn parse_cells_from_ipynb(json: &serde_json::Value) -> Option<Vec<CellSnapshot>> {
-    use loro_fractional_index::FractionalIndex;
-
-    let cells_json = json.get("cells").and_then(|c| c.as_array())?;
-
-    // Generate positions incrementally
-    let mut prev_position: Option<FractionalIndex> = None;
-
-    let parsed_cells = cells_json
-        .iter()
-        .enumerate()
-        .map(|(index, cell)| {
-            // Use existing ID or generate a stable fallback based on index
-            // This handles older notebooks (pre-nbformat 4.5) without cell IDs
-            let id = cell
-                .get("id")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| format!("__external_cell_{}", index));
-
-            let cell_type = cell
-                .get("cell_type")
-                .and_then(|v| v.as_str())
-                .unwrap_or("code")
-                .to_string();
-
-            // Generate position incrementally (O(1) per cell, not O(n²))
-            let position = match &prev_position {
-                None => FractionalIndex::default(),
-                Some(prev) => FractionalIndex::new_after(prev),
-            };
-            let position_str = position.to_string();
-            prev_position = Some(position);
-
-            // Source can be a string or array of strings
-            let source = match cell.get("source") {
-                Some(serde_json::Value::String(s)) => s.clone(),
-                Some(serde_json::Value::Array(arr)) => arr
-                    .iter()
-                    .filter_map(|v| v.as_str())
-                    .collect::<Vec<_>>()
-                    .join(""),
-                _ => String::new(),
-            };
-
-            // Execution count: number or null
-            let execution_count = match cell.get("execution_count") {
-                Some(serde_json::Value::Number(n)) => n.to_string(),
-                _ => "null".to_string(),
-            };
-
-            // Outputs: keep as serde_json::Value
-            let outputs: Vec<serde_json::Value> = cell
-                .get("outputs")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default();
-
-            // Cell metadata (preserves all fields, normalize to object)
-            let metadata = match cell.get("metadata") {
-                Some(v) if v.is_object() => v.clone(),
-                _ => serde_json::json!({}),
-            };
-
-            CellSnapshot {
-                id,
-                cell_type,
-                position: position_str,
-                source,
-                execution_count,
-                outputs,
-                metadata,
-                resolved_assets: std::collections::HashMap::new(),
-            }
-        })
-        .collect();
-
-    Some(parsed_cells)
-}
-
-/// Parse nbformat attachment payloads from a .ipynb JSON value.
-///
-/// Returns a map of `cell_id -> attachments JSON object` for any cell carrying attachments.
-fn parse_nbformat_attachments_from_ipynb(
-    json: &serde_json::Value,
-) -> HashMap<String, serde_json::Value> {
-    let Some(cells_json) = json.get("cells").and_then(|c| c.as_array()) else {
-        return HashMap::new();
-    };
-
-    cells_json
-        .iter()
-        .enumerate()
-        .filter_map(|(index, cell)| {
-            let id = cell
-                .get("id")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| format!("__external_cell_{}", index));
-
-            let attachments = cell.get("attachments")?;
-            if attachments.is_object() {
-                Some((id, attachments.clone()))
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
-/// Parse notebook metadata from a .ipynb JSON value.
-///
-/// Uses `NotebookMetadataSnapshot::from_metadata_value` which extracts
-/// kernelspec, language_info, and runt namespace from the metadata.
-fn parse_metadata_from_ipynb(json: &serde_json::Value) -> Option<NotebookMetadataSnapshot> {
-    let metadata = json.get("metadata")?;
-    Some(NotebookMetadataSnapshot::from_metadata_value(metadata))
-}
+// Parsing helpers live in notebook-persistence. Keep thin re-exports under the
+// daemon's local names so the rest of this module and its tests keep reading
+// naturally.
+use notebook_persistence::parse_cells_from_ipynb;
+use notebook_persistence::parse_metadata_from_ipynb;
+use notebook_persistence::parse_nbformat_attachments_from_ipynb;
 
 /// Convert raw output JSON strings to blob store manifest references.
 ///

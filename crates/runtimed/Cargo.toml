@@ -75,6 +75,9 @@ automerge = "0.8"
 # Shared notebook document types (cell CRUD, metadata, sync)
 notebook-doc = { path = "../notebook-doc", features = ["persistence"] }
 
+# Shared ipynb <-> NotebookDoc conversion (used by save + file watcher + recover)
+notebook-persistence = { path = "../notebook-persistence" }
+
 # Trust verification (shared with notebook crate)
 runt-trust = { path = "../runt-trust" }
 

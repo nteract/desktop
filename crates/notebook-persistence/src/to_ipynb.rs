@@ -197,8 +197,8 @@ fn cell_to_ipynb_json(
                 // docs stored outputs inline; post-v3 docs will produce an
                 // empty vec and a null execution_count.
                 cell_json["outputs"] = Value::Array(cell.outputs.clone());
-                let exec_count: Value = serde_json::from_str(&cell.execution_count)
-                    .unwrap_or(Value::Null);
+                let exec_count: Value =
+                    serde_json::from_str(&cell.execution_count).unwrap_or(Value::Null);
                 cell_json["execution_count"] = exec_count;
             }
         }
@@ -284,14 +284,8 @@ mod tests {
         assert!(source_to_lines("").is_empty());
         assert_eq!(source_to_lines("hello"), vec!["hello"]);
         assert_eq!(source_to_lines("a\n"), vec!["a\n"]);
-        assert_eq!(
-            source_to_lines("a\nb\nc"),
-            vec!["a\n", "b\n", "c"]
-        );
-        assert_eq!(
-            source_to_lines("a\nb\n"),
-            vec!["a\n", "b\n"]
-        );
+        assert_eq!(source_to_lines("a\nb\nc"), vec!["a\n", "b\n", "c"]);
+        assert_eq!(source_to_lines("a\nb\n"), vec!["a\n", "b\n"]);
     }
 
     #[test]
@@ -357,9 +351,7 @@ mod tests {
             attachments_by_cell_id: &attachments,
         })
         .unwrap();
-        assert_eq!(
-            result["metadata"]["custom_tool"]["version"], "1.2.3"
-        );
+        assert_eq!(result["metadata"]["custom_tool"]["version"], "1.2.3");
         assert_eq!(result["metadata"]["authors"][0]["name"], "Kyle");
     }
 
@@ -393,10 +385,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(result["cells"][0]["execution_count"], 3);
-        assert_eq!(
-            result["cells"][0]["outputs"][0]["output_type"],
-            "stream"
-        );
+        assert_eq!(result["cells"][0]["outputs"][0]["output_type"], "stream");
     }
 
     #[test]
