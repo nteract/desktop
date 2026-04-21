@@ -825,52 +825,28 @@ impl NotebookDoc {
                     Ok(doc) => {
                         let mut loaded = Self { doc };
                         let version = loaded.schema_version().unwrap_or(1);
-                        if version < SCHEMA_VERSION {
-                            info!(
-                                "[notebook-doc] Migrating schema v{} → v{} at {:?} for {}",
-                                version, SCHEMA_VERSION, path, notebook_id
-                            );
-                            let mut ok = true;
-                            if version < 2 {
-                                warn!(
-                                    "[notebook-doc] v1 schema is no longer supported for {}. \
-                                     Creating fresh doc.",
-                                    notebook_id
-                                );
-                                ok = false;
-                            }
-                            if ok && version < 3 {
-                                if let Err(e) = loaded.migrate_v2_to_v3() {
-                                    warn!(
-                                        "[notebook-doc] v2→v3 migration failed for {}: {}. Creating fresh doc.",
-                                        notebook_id, e
-                                    );
-                                    ok = false;
-                                }
-                            }
-                            if ok && version < 4 {
-                                if let Err(e) = loaded.migrate_v3_to_v4() {
-                                    warn!(
-                                        "[notebook-doc] v3→v4 migration failed for {}: {}. Creating fresh doc.",
-                                        notebook_id, e
-                                    );
-                                    ok = false;
-                                }
-                            }
-                            if ok {
-                                info!("[notebook-doc] Migration complete for {}", notebook_id);
-                                if let Some(label) = actor_label {
-                                    loaded.set_actor(label);
-                                }
-                                return loaded;
-                            }
-                        } else {
+                        if version == SCHEMA_VERSION {
                             info!("[notebook-doc] Loaded from {:?} for {}", path, notebook_id);
                             if let Some(label) = actor_label {
                                 loaded.set_actor(label);
                             }
                             return loaded;
                         }
+                        // CRITICAL: one-time cleanup for pre-release schemas
+                        // (v1–v3 predate nteract 2.0). All current users are on
+                        // v4, so dropping older docs on the floor is safe here
+                        // by historical accident, not by policy.
+                        //
+                        // DO NOT COPY THIS PATTERN FOR FUTURE SCHEMA BUMPS.
+                        // Any real migration (v4 → v5 onward) MUST implement a
+                        // `migrate_vN_to_v(N+1)` function that preserves user
+                        // data. Falling back to a fresh doc is a data-loss
+                        // operation and only acceptable when there is no
+                        // meaningful data to lose.
+                        warn!(
+                            "[notebook-doc] Rejecting schema v{} notebook at {:?} for {}; only v{} is supported. Starting fresh untitled notebook.",
+                            version, path, notebook_id, SCHEMA_VERSION
+                        );
                     }
                     Err(e) => {
                         warn!(
