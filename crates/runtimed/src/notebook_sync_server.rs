@@ -1164,6 +1164,13 @@ pub struct NotebookRoom {
     /// Per-notebook RuntimeStateDoc — daemon-authoritative ephemeral state
     /// (kernel status, queue, env sync). Clients sync read-only.
     pub state_doc: Arc<RwLock<RuntimeStateDoc>>,
+    /// Channel to send RuntimeStateDoc bytes to the debounced state
+    /// persistence task. Writes a `{stem}.state.automerge` sibling of
+    /// [`Self::persist_path`] so `runt recover` can surface cell outputs
+    /// (which live in the state doc after schema v3).
+    ///
+    /// `None` for ephemeral rooms, matching `persist_tx`.
+    pub state_persist_tx: Option<watch::Sender<Option<Vec<u8>>>>,
     /// Notification channel for RuntimeStateDoc changes.
     /// Peer sync loops subscribe to push RuntimeStateSync frames.
     pub state_changed_tx: broadcast::Sender<()>,
@@ -1273,6 +1280,20 @@ impl NotebookRoom {
             (Some(persist_tx), Some(flush_tx))
         };
 
+        // State-doc persistence. The RuntimeStateDoc holds cell outputs and
+        // execution state after schema v3 — nothing else on disk captures
+        // them, so offline `runt recover` can't surface outputs without
+        // this sibling file. Ephemeral rooms skip state persistence along
+        // with the main doc.
+        let state_persist_tx = if ephemeral {
+            None
+        } else {
+            let state_persist_path = state_persist_path_for(&persist_path);
+            let (tx, rx) = watch::channel::<Option<Vec<u8>>>(None);
+            spawn_state_persist_debouncer(rx, state_persist_path);
+            Some(tx)
+        };
+
         let trust_state = match &path {
             // Untitled notebooks have no .ipynb on disk — trust signature lives
             // in the persisted Automerge doc we just loaded.
@@ -1340,6 +1361,19 @@ impl NotebookRoom {
 
         let (state_changed_tx, _) = broadcast::channel(16);
 
+        // Forward RuntimeStateDoc changes into the state-persist debouncer.
+        // The forwarder subscribes to `state_changed_tx` (every mutation
+        // broadcasts on it already), reads a fresh byte snapshot from the
+        // state doc, and pushes it to the debouncer's watch channel.
+        // Debouncing + coalescing happens inside `spawn_state_persist_debouncer`.
+        if let Some(ref tx) = state_persist_tx {
+            spawn_state_persist_forwarder(
+                state_doc.clone(),
+                state_changed_tx.subscribe(),
+                tx.clone(),
+            );
+        }
+
         Self {
             id,
             doc: Arc::new(RwLock::new(doc)),
@@ -1366,6 +1400,7 @@ impl NotebookRoom {
             last_save_sources: Arc::new(RwLock::new(HashMap::new())),
             watcher_shutdown_tx: Mutex::new(None),
             state_doc,
+            state_persist_tx,
             state_changed_tx,
             runtime_agent_handle: Arc::new(Mutex::new(None)),
             runtime_agent_env_path: Arc::new(RwLock::new(None)),
@@ -1435,6 +1470,13 @@ impl NotebookRoom {
         };
         let state_doc = Arc::new(RwLock::new(RuntimeStateDoc::new()));
         let (state_changed_tx, _) = broadcast::channel(16);
+        let (state_persist_tx, state_persist_rx) = watch::channel::<Option<Vec<u8>>>(None);
+        spawn_state_persist_debouncer(state_persist_rx, state_persist_path_for(&persist_path));
+        spawn_state_persist_forwarder(
+            state_doc.clone(),
+            state_changed_tx.subscribe(),
+            state_persist_tx.clone(),
+        );
         Self {
             id,
             doc: Arc::new(RwLock::new(doc)),
@@ -1461,6 +1503,7 @@ impl NotebookRoom {
             last_save_sources: Arc::new(RwLock::new(HashMap::new())),
             watcher_shutdown_tx: Mutex::new(None),
             state_doc,
+            state_persist_tx: Some(state_persist_tx),
             state_changed_tx,
             runtime_agent_handle: Arc::new(Mutex::new(None)),
             runtime_agent_env_path: Arc::new(RwLock::new(None)),
@@ -7211,6 +7254,146 @@ fn spawn_persist_debouncer_with_config(
     );
 }
 
+/// Derive the sibling state persistence path for a given notebook doc path.
+///
+/// The RuntimeStateDoc holds cell outputs after schema v3 and has to be
+/// written somewhere for offline `runt recover` to surface them. We write
+/// it next to the notebook `.automerge` with `.state.automerge` appended
+/// to the stem. Snapshot files follow the same stem convention.
+pub(crate) fn state_persist_path_for(notebook_persist_path: &Path) -> PathBuf {
+    let parent = notebook_persist_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."));
+    let stem = notebook_persist_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("doc");
+    parent.join(format!("{stem}.state.automerge"))
+}
+
+/// Spawn a debounced persistence task dedicated to the RuntimeStateDoc.
+///
+/// Mirrors `spawn_persist_debouncer` but without the synchronous-flush
+/// channel — the state doc is a best-effort snapshot, so eviction /
+/// shutdown rely on the channel-close shutdown flush. Uses the same
+/// debounce parameters as the notebook doc so the two stay roughly in
+/// sync on disk.
+fn spawn_state_persist_debouncer(
+    persist_rx: watch::Receiver<Option<Vec<u8>>>,
+    persist_path: PathBuf,
+) {
+    spawn_state_persist_debouncer_with_config(
+        persist_rx,
+        persist_path,
+        PersistDebouncerConfig::default(),
+    );
+}
+
+fn spawn_state_persist_debouncer_with_config(
+    mut persist_rx: watch::Receiver<Option<Vec<u8>>>,
+    persist_path: PathBuf,
+    config: PersistDebouncerConfig,
+) {
+    spawn_supervised(
+        "state-persist-debouncer",
+        async move {
+            use std::time::Duration;
+            use tokio::time::{interval, Instant, MissedTickBehavior};
+
+            let debounce_duration = Duration::from_millis(config.debounce_ms);
+            let max_flush_interval = Duration::from_millis(config.max_interval_ms);
+
+            let mut last_receive: Option<Instant> = None;
+            let mut last_flush: Option<Instant> = None;
+
+            let mut check_interval = interval(Duration::from_millis(config.check_interval_ms));
+            check_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+            loop {
+                tokio::select! {
+                    result = persist_rx.changed() => {
+                        if result.is_err() {
+                            // Channel closed — final flush on shutdown.
+                            let bytes = persist_rx.borrow().clone();
+                            if let Some(data) = bytes {
+                                do_persist(&data, &persist_path);
+                            }
+                            break;
+                        }
+                        last_receive = Some(Instant::now());
+                    }
+                    _ = check_interval.tick() => {
+                        let should_flush = if let Some(recv) = last_receive {
+                            let debounce_ready = recv.elapsed() >= debounce_duration;
+                            let max_interval_ready = last_flush
+                                .map(|f| f.elapsed() >= max_flush_interval)
+                                .unwrap_or(recv.elapsed() >= max_flush_interval);
+                            debounce_ready || max_interval_ready
+                        } else {
+                            false
+                        };
+
+                        if should_flush {
+                            let bytes = persist_rx.borrow().clone();
+                            if let Some(data) = bytes {
+                                do_persist(&data, &persist_path);
+                                last_flush = Some(Instant::now());
+                                last_receive = None;
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        |_| {
+            trigger_global_shutdown();
+        },
+    );
+}
+
+/// Forward RuntimeStateDoc mutations into the state-persist debouncer.
+///
+/// Subscribes to `state_changed_tx` (daemon broadcasts on every state
+/// doc write), serializes the current state doc to bytes, and pushes
+/// them to the debouncer's watch channel. Coalescing and on-disk writes
+/// happen inside `spawn_state_persist_debouncer`.
+fn spawn_state_persist_forwarder(
+    state_doc: Arc<RwLock<RuntimeStateDoc>>,
+    mut state_changed_rx: broadcast::Receiver<()>,
+    state_persist_tx: watch::Sender<Option<Vec<u8>>>,
+) {
+    spawn_supervised(
+        "state-persist-forwarder",
+        async move {
+            loop {
+                match state_changed_rx.recv().await {
+                    Ok(()) => {
+                        let bytes = {
+                            let mut sd = state_doc.write().await;
+                            sd.doc_mut().save()
+                        };
+                        // Receiver (debouncer) may have closed on shutdown;
+                        // that's fine, the loop exits on next iteration
+                        // when the broadcast channel closes as well.
+                        let _ = state_persist_tx.send(Some(bytes));
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        // Fell behind on the broadcast channel. The next
+                        // state_changed signal will still pick up the
+                        // current state_doc snapshot, so lagging is a
+                        // no-op for persistence.
+                        continue;
+                    }
+                }
+            }
+        },
+        |_| {
+            trigger_global_shutdown();
+        },
+    );
+}
+
 /// Configuration for the autosave debouncer (testable).
 struct AutosaveDebouncerConfig {
     /// Quiet period: flush only after no changes for this long.
@@ -9544,6 +9727,7 @@ mod tests {
             last_save_sources: Arc::new(RwLock::new(HashMap::new())),
             watcher_shutdown_tx: Mutex::new(None),
             state_doc,
+            state_persist_tx: None,
             state_changed_tx,
             runtime_agent_handle: Arc::new(Mutex::new(None)),
             runtime_agent_env_path: Arc::new(RwLock::new(None)),
