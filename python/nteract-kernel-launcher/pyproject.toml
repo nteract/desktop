@@ -1,6 +1,6 @@
 [project]
 name = "nteract-kernel-launcher"
-version = "0.1.1"
+version = "0.1.2"
 description = "Thin wrapper around ipykernel_launcher that runs nteract-specific kernel bootstrap (e.g. dx.install) before the kernel starts."
 readme = "README.md"
 license = "BSD-3-Clause"

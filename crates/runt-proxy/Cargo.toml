@@ -1,6 +1,6 @@
 [package]
 name = "runt-proxy"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 description = "Resilient MCP proxy for runt mcp. Ships as a sidecar in the nteract desktop app and inside the .mcpb Claude Desktop extension."
 repository.workspace = true
