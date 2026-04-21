@@ -17,19 +17,14 @@ export function FloatProgress({ modelId, className }: WidgetComponentProps) {
   const max = useWidgetModelValue<number>(modelId, "max") ?? 100;
   const description = useWidgetModelValue<string>(modelId, "description");
   const barStyle =
-    useWidgetModelValue<"success" | "info" | "warning" | "danger" | "">(
-      modelId,
-      "bar_style",
-    ) ?? "";
+    useWidgetModelValue<"success" | "info" | "warning" | "danger" | "">(modelId, "bar_style") ?? "";
   const orientation =
-    useWidgetModelValue<"horizontal" | "vertical">(modelId, "orientation") ??
-    "horizontal";
+    useWidgetModelValue<"horizontal" | "vertical">(modelId, "orientation") ?? "horizontal";
 
   // bar_color lives on the ProgressStyleModel, referenced by the "style" key
   const styleRef = useWidgetModelValue<string>(modelId, "style");
   const styleModelId = styleRef ? parseModelRef(styleRef) : undefined;
-  const barColor =
-    useWidgetModelValue<string | null>(styleModelId ?? "", "bar_color") ?? null;
+  const barColor = useWidgetModelValue<string | null>(styleModelId ?? "", "bar_color") ?? null;
 
   // Calculate percentage
   const range = max - min;
