@@ -685,113 +685,14 @@ impl NotebookDoc {
         }
     }
 
-    /// Migrate a v1 document (cells as List) to v2 (cells as Map with fractional positions).
-    ///
-    /// Reads all cells from the old List, deletes it, creates a Map, and
-    /// re-inserts each cell with a fractional position. Cell content (source,
-    /// outputs, execution_count, metadata) is preserved.
-    pub fn migrate_v1_to_v2(&mut self) -> Result<(), AutomergeError> {
-        use loro_fractional_index::FractionalIndex;
-
-        // Idempotent: skip if already at current schema version
-        if self.schema_version().unwrap_or(0) >= SCHEMA_VERSION {
-            return Ok(());
-        }
-
-        // Only migrate if cells is actually a List (v1 schema).
-        // If cells is already a Map or missing, create a fresh empty Map.
-        let old_cells_id = self
-            .doc
-            .get(automerge::ROOT, "cells")
-            .ok()
-            .flatten()
-            .and_then(|(value, id)| match value {
-                automerge::Value::Object(ObjType::List) => Some(id),
-                _ => None,
-            });
-
-        let old_cells = if let Some(ref cells_id) = old_cells_id {
-            let len = self.doc.length(cells_id);
-            let mut cells = Vec::with_capacity(len);
-            for i in 0..len {
-                if let Some(snap) = self.read_cell_from_obj(cells_id, i) {
-                    cells.push(snap);
-                }
-            }
-            cells
-        } else {
-            // No v1 List found — cells is either missing or already a Map.
-            // Just bump schema version and return.
-            self.doc
-                .put(automerge::ROOT, "schema_version", SCHEMA_VERSION)?;
-            return Ok(());
-        };
-
-        // Delete old List and create new Map
-        let _ = self.doc.delete(automerge::ROOT, "cells");
-
-        let cells_map = self
-            .doc
-            .put_object(automerge::ROOT, "cells", ObjType::Map)?;
-
-        // Re-insert cells with fractional positions
-        let mut prev_position: Option<FractionalIndex> = None;
-        for cell in &old_cells {
-            let position = match &prev_position {
-                None => FractionalIndex::default(),
-                Some(prev) => FractionalIndex::new_after(prev),
-            };
-            let position_str = position.to_string();
-
-            let cell_obj = self
-                .doc
-                .put_object(&cells_map, cell.id.as_str(), ObjType::Map)?;
-            self.doc.put(&cell_obj, "id", cell.id.as_str())?;
-            self.doc
-                .put(&cell_obj, "cell_type", cell.cell_type.as_str())?;
-            self.doc.put(&cell_obj, "position", position_str.as_str())?;
-
-            let source_id = self.doc.put_object(&cell_obj, "source", ObjType::Text)?;
-            if !cell.source.is_empty() {
-                self.doc.splice_text(&source_id, 0, 0, &cell.source)?;
-            }
-
-            self.doc
-                .put(&cell_obj, "execution_count", cell.execution_count.as_str())?;
-
-            // Outputs moved to RuntimeStateDoc in schema v3. The v1→v2 step
-            // no longer carries them — a subsequent v2→v3 migration step
-            // moves any pre-existing outputs into RuntimeStateDoc via
-            // `extract_cell_outputs` before callers reach this point.
-
-            if cell.metadata != serde_json::Value::Object(serde_json::Map::new()) {
-                let meta_str =
-                    serde_json::to_string(&cell.metadata).unwrap_or_else(|_| "{}".to_string());
-                self.doc.put(&cell_obj, "metadata", meta_str.as_str())?;
-            }
-
-            prev_position = Some(position);
-        }
-
-        // Bump schema version
-        self.doc
-            .put(automerge::ROOT, "schema_version", SCHEMA_VERSION)?;
-
-        #[cfg(feature = "persistence")]
-        info!(
-            "[notebook-doc] Migrated {} cells from List to Map schema",
-            old_cells.len()
-        );
-        Ok(())
-    }
-
     /// Migrate from schema v2 to v3: outputs moved to RuntimeStateDoc.
     ///
     /// This migration just bumps the schema version. Cell outputs are
-    /// **not** deleted from the doc (Automerge tombstones would bloat it).
-    /// Instead, `read_cell()` simply ignores the outputs field, and
-    /// the caller uses [`extract_cell_outputs()`] to create synthetic
-    /// execution entries in RuntimeStateDoc before calling this.
+    /// **not** deleted from the doc (Automerge tombstones would bloat it);
+    /// `read_cell()` simply ignores the outputs field. Schema v1 docs
+    /// (cells as List) predate the `.automerge` files that exist in the
+    /// wild and are no longer supported — `load_or_create_inner` starts
+    /// the migration chain at v2→v3.
     pub fn migrate_v2_to_v3(&mut self) -> Result<(), AutomergeError> {
         if self.schema_version().unwrap_or(0) >= 3 {
             return Ok(());
@@ -817,52 +718,6 @@ impl NotebookDoc {
         #[cfg(feature = "persistence")]
         info!("[notebook-doc] Migrated schema v3 → v4 (addressable outputs with output_id)");
         Ok(())
-    }
-
-    /// Extract cell outputs from the notebook doc for migration.
-    ///
-    /// Returns `(cell_id, outputs)` pairs for every cell that has outputs.
-    /// Used when loading a pre-v3 doc from `.automerge` persistence — the
-    /// caller creates synthetic execution entries in RuntimeStateDoc.
-    pub fn extract_cell_outputs(&self) -> Vec<(String, Vec<String>)> {
-        let Some(cells_id) = self.cells_map_id() else {
-            return Vec::new();
-        };
-        let mut results = Vec::new();
-        for cell_id in self.doc.keys(&cells_id) {
-            let Some(cell_obj) = self.cell_obj_id(&cells_id, &cell_id) else {
-                continue;
-            };
-            let Some(list_id) = self.list_id(&cell_obj, "outputs") else {
-                continue;
-            };
-            let len = self.doc.length(&list_id);
-            if len == 0 {
-                continue;
-            }
-            let outputs: Vec<String> = (0..len)
-                .filter_map(|i| read_str(&self.doc, &list_id, i))
-                .collect();
-            if !outputs.is_empty() {
-                results.push((cell_id, outputs));
-            }
-        }
-        results
-    }
-
-    /// Read a cell snapshot from an object at a given index in a List container.
-    /// Used by migration to read cells from the old v1 List schema.
-    fn read_cell_from_obj(&self, cells_id: &ObjId, index: usize) -> Option<CellSnapshot> {
-        let cell_obj = self
-            .doc
-            .get(cells_id, index)
-            .ok()
-            .flatten()
-            .and_then(|(value, id)| match value {
-                automerge::Value::Object(ObjType::Map) => Some(id),
-                _ => None,
-            })?;
-        self.read_cell(&cell_obj)
     }
 
     /// Create a client-side bootstrap document for sync.
@@ -977,13 +832,12 @@ impl NotebookDoc {
                             );
                             let mut ok = true;
                             if version < 2 {
-                                if let Err(e) = loaded.migrate_v1_to_v2() {
-                                    warn!(
-                                        "[notebook-doc] v1→v2 migration failed for {}: {}. Creating fresh doc.",
-                                        notebook_id, e
-                                    );
-                                    ok = false;
-                                }
+                                warn!(
+                                    "[notebook-doc] v1 schema is no longer supported for {}. \
+                                     Creating fresh doc.",
+                                    notebook_id
+                                );
+                                ok = false;
                             }
                             if ok && version < 3 {
                                 if let Err(e) = loaded.migrate_v2_to_v3() {
@@ -1986,17 +1840,6 @@ impl NotebookDoc {
             .flatten()
             .and_then(|(value, id)| match value {
                 automerge::Value::Object(ObjType::Text) => Some(id),
-                _ => None,
-            })
-    }
-
-    fn list_id(&self, parent: &ObjId, key: &str) -> Option<ObjId> {
-        self.doc
-            .get(parent, key)
-            .ok()
-            .flatten()
-            .and_then(|(value, id)| match value {
-                automerge::Value::Object(ObjType::List) => Some(id),
                 _ => None,
             })
     }
@@ -3753,147 +3596,6 @@ mod tests {
         assert_eq!(cells[2].id, "b");
     }
 
-    /// Build a v1 (List-based) document for migration testing.
-    fn make_v1_doc(notebook_id: &str) -> NotebookDoc {
-        let mut doc = AutoCommit::new();
-        let _ = doc.put(automerge::ROOT, "schema_version", 1u64);
-        let _ = doc.put(automerge::ROOT, "notebook_id", notebook_id);
-        let _ = doc.put_object(automerge::ROOT, "cells", ObjType::List);
-        if let Ok(meta_id) = doc.put_object(automerge::ROOT, "metadata", ObjType::Map) {
-            let _ = doc.put(&meta_id, "runtime", "python");
-        }
-        NotebookDoc { doc }
-    }
-
-    /// Add a cell to a v1 doc using List insert (the old schema).
-    fn v1_add_cell(
-        doc: &mut NotebookDoc,
-        index: usize,
-        cell_id: &str,
-        cell_type: &str,
-        source: &str,
-    ) {
-        let cells_id = doc
-            .doc
-            .get(automerge::ROOT, "cells")
-            .ok()
-            .flatten()
-            .map(|(_, id)| id)
-            .unwrap();
-        let len = doc.doc.length(&cells_id);
-        let index = index.min(len);
-        let cell_map = doc
-            .doc
-            .insert_object(&cells_id, index, ObjType::Map)
-            .unwrap();
-        doc.doc.put(&cell_map, "id", cell_id).unwrap();
-        doc.doc.put(&cell_map, "cell_type", cell_type).unwrap();
-        let source_id = doc
-            .doc
-            .put_object(&cell_map, "source", ObjType::Text)
-            .unwrap();
-        if !source.is_empty() {
-            doc.doc.splice_text(&source_id, 0, 0, source).unwrap();
-        }
-        doc.doc.put(&cell_map, "execution_count", "null").unwrap();
-        doc.doc
-            .put_object(&cell_map, "outputs", ObjType::List)
-            .unwrap();
-    }
-
-    #[test]
-    fn test_migrate_v1_empty_doc() {
-        let mut doc = make_v1_doc("nb-empty");
-        assert_eq!(doc.schema_version(), Some(1));
-        assert_eq!(doc.cell_count(), 0);
-
-        doc.migrate_v1_to_v2().unwrap();
-
-        assert_eq!(doc.schema_version(), Some(SCHEMA_VERSION));
-        assert_eq!(doc.cell_count(), 0);
-        // Should be a Map now — v2 operations should work
-        assert!(doc.cells_map_id().is_some());
-    }
-
-    #[test]
-    fn test_migrate_v1_with_cells() {
-        let mut doc = make_v1_doc("nb-migrate");
-        v1_add_cell(&mut doc, 0, "cell-a", "code", "print('hello')");
-        v1_add_cell(&mut doc, 1, "cell-b", "markdown", "# Title");
-        v1_add_cell(&mut doc, 2, "cell-c", "code", "x = 42");
-        // cell_count() uses the Map accessor, so it returns 0 for v1 List docs.
-        // Verify the List has 3 entries directly.
-        let list_id = doc.doc.get(automerge::ROOT, "cells").unwrap().unwrap().1;
-        assert_eq!(doc.doc.length(&list_id), 3);
-
-        doc.migrate_v1_to_v2().unwrap();
-
-        assert_eq!(doc.schema_version(), Some(SCHEMA_VERSION));
-        assert_eq!(doc.cell_count(), 3);
-
-        let cells = doc.get_cells();
-        // Order preserved
-        assert_eq!(cells[0].id, "cell-a");
-        assert_eq!(cells[1].id, "cell-b");
-        assert_eq!(cells[2].id, "cell-c");
-        // Content preserved
-        assert_eq!(cells[0].source, "print('hello')");
-        assert_eq!(cells[0].cell_type, "code");
-        assert_eq!(cells[1].source, "# Title");
-        assert_eq!(cells[1].cell_type, "markdown");
-        assert_eq!(cells[2].source, "x = 42");
-        // Positions are strictly increasing
-        assert!(cells[0].position < cells[1].position);
-        assert!(cells[1].position < cells[2].position);
-    }
-
-    #[test]
-    fn test_migrate_v1_preserves_execution_count_and_outputs() {
-        let mut doc = make_v1_doc("nb-preserve");
-        v1_add_cell(&mut doc, 0, "cell-a", "code", "1+1");
-
-        // Manually set execution_count and outputs on the v1 cell
-        let cells_id = doc.doc.get(automerge::ROOT, "cells").unwrap().unwrap().1;
-        let cell_obj = doc.doc.get(&cells_id, 0usize).unwrap().unwrap().1;
-        doc.doc.put(&cell_obj, "execution_count", "5").unwrap();
-        // Replace outputs list with one entry
-        let _ = doc.doc.delete(&cell_obj, "outputs");
-        let outputs_id = doc
-            .doc
-            .put_object(&cell_obj, "outputs", ObjType::List)
-            .unwrap();
-        doc.doc
-            .insert(&outputs_id, 0, r#"{"output_type":"stream","text":"2\n"}"#)
-            .unwrap();
-
-        doc.migrate_v1_to_v2().unwrap();
-
-        let cells = doc.get_cells();
-        assert_eq!(cells.len(), 1);
-        assert_eq!(cells[0].execution_count, "5");
-        // Outputs no longer live on CellSnapshot — they're keyed by
-        // execution_id in RuntimeStateDoc. The migration path drops the
-        // legacy per-cell `outputs` list entirely.
-    }
-
-    #[test]
-    fn test_migrate_v2_is_noop() {
-        let mut doc = NotebookDoc::new("nb-v2");
-        doc.add_cell(0, "c1", "code").unwrap();
-        doc.update_source("c1", "already v2").unwrap();
-        assert_eq!(doc.schema_version(), Some(SCHEMA_VERSION));
-
-        let cells_before = doc.get_cells();
-
-        // Calling migrate on a v2 doc is a no-op: the early return
-        // checks schema_version >= SCHEMA_VERSION before touching anything.
-        let result = doc.migrate_v1_to_v2();
-        assert!(result.is_ok());
-
-        // Verify cells are unchanged.
-        assert_eq!(cells_before, doc.get_cells());
-    }
-
     // ── Native Automerge metadata tests ───────────────────────────────
 
     #[test]
@@ -4133,36 +3835,6 @@ mod tests {
         let cells = get_cells_from_doc(doc.doc());
         assert_eq!(cells.len(), 1);
         assert_eq!(cells[0].metadata, meta);
-    }
-
-    #[test]
-    fn test_migrate_v1_cells_usable_after_migration() {
-        let mut doc = make_v1_doc("nb-usable");
-        v1_add_cell(&mut doc, 0, "old-cell", "code", "original");
-
-        doc.migrate_v1_to_v2().unwrap();
-
-        // Can add new cells after migration
-        doc.add_cell_after("new-cell", "code", Some("old-cell"))
-            .unwrap();
-        let cells = doc.get_cells();
-        assert_eq!(cells.len(), 2);
-        assert_eq!(cells[0].id, "old-cell");
-        assert_eq!(cells[1].id, "new-cell");
-
-        // Can move cells after migration
-        doc.move_cell("new-cell", None).unwrap();
-        let cells = doc.get_cells();
-        assert_eq!(cells[0].id, "new-cell");
-        assert_eq!(cells[1].id, "old-cell");
-
-        // Can update source after migration
-        doc.update_source("old-cell", "updated").unwrap();
-        assert_eq!(doc.get_cell("old-cell").unwrap().source, "updated");
-
-        // Can delete after migration
-        doc.delete_cell("new-cell").unwrap();
-        assert_eq!(doc.cell_count(), 1);
     }
 
     // ── Actor provenance tests ──────────────────────────────────────────
