@@ -253,19 +253,21 @@ impl JsCell {
     }
 }
 
-impl From<(usize, CellSnapshot)> for JsCell {
-    fn from((index, snap): (usize, CellSnapshot)) -> Self {
-        JsCell {
-            index,
-            id: snap.id,
-            cell_type: snap.cell_type,
-            position: snap.position,
-            source: snap.source,
-            execution_count: snap.execution_count,
-            outputs: snap.outputs,
-            metadata: snap.metadata,
-            resolved_assets: snap.resolved_assets,
-        }
+/// Build a `JsCell` from a `CellSnapshot` and the cell's outputs fetched
+/// separately from `RuntimeStateDoc`. Outputs no longer travel on
+/// `CellSnapshot` — callers resolve them explicitly via
+/// `state_doc.get_outputs(execution_id)`.
+fn js_cell_from_parts(index: usize, snap: CellSnapshot, outputs: Vec<serde_json::Value>) -> JsCell {
+    JsCell {
+        index,
+        id: snap.id,
+        cell_type: snap.cell_type,
+        position: snap.position,
+        source: snap.source,
+        execution_count: snap.execution_count,
+        outputs,
+        metadata: snap.metadata,
+        resolved_assets: snap.resolved_assets,
     }
 }
 
@@ -481,34 +483,49 @@ impl NotebookHandle {
     }
 
     /// Get all cells as an array of JsCell objects.
+    ///
+    /// Outputs are fetched from `RuntimeStateDoc` keyed by each cell's
+    /// `execution_id`. Cells without an execution_id or with empty outputs
+    /// return an empty outputs vec.
     pub fn get_cells(&self) -> Vec<JsCell> {
         self.doc
             .get_cells()
             .into_iter()
             .enumerate()
-            .map(JsCell::from)
+            .map(|(index, snap)| {
+                let outputs = self.fetch_and_narrow_outputs(&snap.id);
+                js_cell_from_parts(index, snap, outputs)
+            })
             .collect()
     }
 
     /// Get all cells as a JSON string (for bulk materialization).
     ///
-    /// Populates each cell's outputs from the RuntimeStateDoc via
-    /// the cell's execution_id, since NotebookDoc.get_cells() returns
-    /// empty outputs (outputs moved to RuntimeStateDoc in #1343).
+    /// Serializes the same shape as `get_cells()` but as a single JSON
+    /// string — cheaper to cross the WASM boundary than many individual
+    /// property getters. Outputs are fetched from `RuntimeStateDoc` keyed
+    /// by each cell's `execution_id`; `CellSnapshot` itself no longer
+    /// carries outputs.
     pub fn get_cells_json(&self) -> String {
-        let mut cells = self.doc.get_cells();
-        for cell in &mut cells {
-            if let Some(eid) = self.doc.get_execution_id(&cell.id) {
-                let outputs = self.state_doc.get_outputs(&eid);
-                if !outputs.is_empty() {
-                    cell.outputs = outputs
-                        .into_iter()
-                        .map(|o| self.narrow_output_data(o))
-                        .collect();
-                }
-            }
+        #[derive(serde::Serialize)]
+        struct CellWithOutputs<'a> {
+            #[serde(flatten)]
+            snapshot: &'a CellSnapshot,
+            outputs: Vec<serde_json::Value>,
         }
-        serde_json::to_string(&cells).unwrap_or_else(|_| "[]".to_string())
+
+        let cells = self.doc.get_cells();
+        let combined: Vec<CellWithOutputs<'_>> = cells
+            .iter()
+            .map(|snap| {
+                let outputs = self.fetch_and_narrow_outputs(&snap.id);
+                CellWithOutputs {
+                    snapshot: snap,
+                    outputs,
+                }
+            })
+            .collect();
+        serde_json::to_string(&combined).unwrap_or_else(|_| "[]".to_string())
     }
 
     // ── Per-cell granular accessors ─────────────────────────────────
@@ -536,29 +553,16 @@ impl NotebookHandle {
     /// Each element is a structured output manifest (with MIME bundles and
     /// ContentRef blob/inline refs). Returns undefined if the cell doesn't exist.
     ///
-    /// Outputs now live in the RuntimeStateDoc keyed by execution_id. This
-    /// method reads the cell's `execution_id` from the notebook doc, then
-    /// looks up outputs in the state doc — providing a transparent facade
-    /// for all existing callers.
+    /// Outputs live in the RuntimeStateDoc keyed by execution_id. This method
+    /// reads the cell's `execution_id` from the notebook doc, then looks up
+    /// outputs in the state doc — the dedicated outputs lookup that replaces
+    /// the old "read the snapshot and inspect `snapshot.outputs`" path.
     pub fn get_cell_outputs(&self, cell_id: &str) -> JsValue {
-        let outputs = match self.doc.get_execution_id(cell_id) {
-            Some(eid) => {
-                let out = self.state_doc.get_outputs(&eid);
-                if out.is_empty() {
-                    None
-                } else {
-                    Some(
-                        out.into_iter()
-                            .map(|o| self.narrow_output_data(o))
-                            .collect::<Vec<_>>(),
-                    )
-                }
-            }
-            None => None,
-        };
-        match outputs {
-            Some(outputs) => serialize_to_js(&outputs).unwrap_or(JsValue::UNDEFINED),
-            None => JsValue::UNDEFINED,
+        let outputs = self.fetch_and_narrow_outputs(cell_id);
+        if outputs.is_empty() {
+            JsValue::UNDEFINED
+        } else {
+            serialize_to_js(&outputs).unwrap_or(JsValue::UNDEFINED)
         }
     }
 
@@ -575,6 +579,24 @@ impl NotebookHandle {
     /// Call after init and whenever the daemon restarts with a new port.
     pub fn set_blob_port(&mut self, port: u16) {
         self.blob_port = Some(port);
+    }
+
+    /// Fetch a cell's outputs from `RuntimeStateDoc` via its `execution_id`
+    /// and narrow the data bundles to the active MIME priority set.
+    ///
+    /// Returns an empty vec when the cell has no `execution_id` or the
+    /// state doc has no outputs for that id. This is the canonical path
+    /// for all output reads on the WASM side — `CellSnapshot` no longer
+    /// carries outputs.
+    fn fetch_and_narrow_outputs(&self, cell_id: &str) -> Vec<serde_json::Value> {
+        let Some(eid) = self.doc.get_execution_id(cell_id) else {
+            return Vec::new();
+        };
+        self.state_doc
+            .get_outputs(&eid)
+            .into_iter()
+            .map(|o| self.narrow_output_data(o))
+            .collect()
     }
 
     /// Narrow an output manifest's data bundle to the winning MIME type,
@@ -687,7 +709,10 @@ impl NotebookHandle {
             .into_iter()
             .enumerate()
             .find(|(_, c)| c.id == cell_id)
-            .map(JsCell::from)
+            .map(|(index, snap)| {
+                let outputs = self.fetch_and_narrow_outputs(&snap.id);
+                js_cell_from_parts(index, snap, outputs)
+            })
     }
 
     /// Add a new cell at the given index (backward-compatible API).
