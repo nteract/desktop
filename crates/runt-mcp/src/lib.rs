@@ -249,7 +249,8 @@ fn log_mcp_response(tool_name: &str, elapsed: Duration, result: &Result<CallTool
                 let serialized_item = serde_json::to_string(item).unwrap_or_default();
                 let item_bytes = serialized_item.len();
                 let preview = if serialized_item.len() > 200 {
-                    format!("{}...", &serialized_item[..200])
+                    let end = serialized_item.floor_char_boundary(200);
+                    format!("{}...", &serialized_item[..end])
                 } else {
                     serialized_item
                 };
@@ -280,7 +281,8 @@ fn log_mcp_response(tool_name: &str, elapsed: Duration, result: &Result<CallTool
                         .and_then(|sc| serde_json::to_string(sc).ok())
                         .unwrap_or_default();
                     let sc_preview = if sc_preview.len() > 500 {
-                        format!("{}...", &sc_preview[..500])
+                        let end = sc_preview.floor_char_boundary(500);
+                        format!("{}...", &sc_preview[..end])
                     } else {
                         sc_preview
                     };
