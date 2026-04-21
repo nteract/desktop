@@ -6,8 +6,6 @@
  * the untyped `broadcasts$` observable into typed sub-streams.
  */
 
-import type { RuntimeState } from "./runtime-state";
-
 // ── Broadcast interfaces ────────────────────────────────────────────
 
 export interface OutputBroadcast {
@@ -42,19 +40,13 @@ export interface KernelErrorBroadcast {
   error: string;
 }
 
-export interface RuntimeStateSnapshotBroadcast {
-  event: "runtime_state_snapshot";
-  state: RuntimeState;
-}
-
 /** Union of all known broadcast types with an `event` field. */
 export type KnownBroadcast =
   | OutputBroadcast
   | DisplayUpdateBroadcast
   | OutputsClearedBroadcast
   | CommBroadcast
-  | KernelErrorBroadcast
-  | RuntimeStateSnapshotBroadcast;
+  | KernelErrorBroadcast;
 
 // ── Type guards ─────────────────────────────────────────────────────
 
@@ -85,10 +77,4 @@ export function isCommBroadcast(payload: unknown): payload is CommBroadcast {
 
 export function isKernelErrorBroadcast(payload: unknown): payload is KernelErrorBroadcast {
   return hasBroadcastEvent(payload) && payload.event === "kernel_error";
-}
-
-export function isRuntimeStateSnapshotBroadcast(
-  payload: unknown,
-): payload is RuntimeStateSnapshotBroadcast {
-  return hasBroadcastEvent(payload) && payload.event === "runtime_state_snapshot";
 }

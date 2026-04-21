@@ -59,6 +59,7 @@ pub mod relay;
 pub mod relay_task;
 mod shared;
 mod snapshot;
+pub mod status;
 pub mod sync_task;
 
 pub use broadcast::BroadcastReceiver;
@@ -71,6 +72,9 @@ pub use handle::DocHandle;
 pub use relay::RelayHandle;
 pub use shared::SharedDocState;
 pub use snapshot::NotebookSnapshot;
+pub use status::{
+    ConnectionState, InitialLoadPhase, NotebookDocPhase, RuntimeStatePhase, SyncStatus,
+};
 
 #[cfg(test)]
 mod tests;

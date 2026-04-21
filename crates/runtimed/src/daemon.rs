@@ -1743,7 +1743,7 @@ impl Daemon {
         S: AsyncRead + AsyncWrite + Unpin,
     {
         use crate::connection::{
-            send_json_frame, NotebookConnectionInfo, PROTOCOL_V2, PROTOCOL_VERSION,
+            send_json_frame, NotebookConnectionInfo, PROTOCOL_V3, PROTOCOL_VERSION,
         };
 
         info!("[runtimed] OpenNotebook requested for {}", path);
@@ -1774,7 +1774,7 @@ impl Daemon {
             error: String,
         ) -> anyhow::Result<()> {
             let response = NotebookConnectionInfo {
-                protocol: PROTOCOL_V2.to_string(),
+                protocol: PROTOCOL_V3.to_string(),
                 protocol_version: Some(PROTOCOL_VERSION),
                 daemon_version: Some(crate::daemon_version().to_string()),
                 notebook_id: String::new(),
@@ -2017,7 +2017,7 @@ impl Daemon {
         // used for logging and file-watcher wiring below.
         let (reader, mut writer) = tokio::io::split(stream);
         let response = NotebookConnectionInfo {
-            protocol: PROTOCOL_V2.to_string(),
+            protocol: PROTOCOL_V3.to_string(),
             protocol_version: Some(PROTOCOL_VERSION),
             daemon_version: Some(crate::daemon_version().to_string()),
             notebook_id: room.id.to_string(),
@@ -2068,7 +2068,7 @@ impl Daemon {
         S: AsyncRead + AsyncWrite + Unpin,
     {
         use crate::connection::{
-            send_json_frame, NotebookConnectionInfo, PROTOCOL_V2, PROTOCOL_VERSION,
+            send_json_frame, NotebookConnectionInfo, PROTOCOL_V3, PROTOCOL_VERSION,
         };
 
         info!(
@@ -2143,7 +2143,7 @@ impl Daemon {
             }
             let (mut reader, mut writer) = tokio::io::split(stream);
             let response = NotebookConnectionInfo {
-                protocol: PROTOCOL_V2.to_string(),
+                protocol: PROTOCOL_V3.to_string(),
                 protocol_version: Some(PROTOCOL_VERSION),
                 daemon_version: Some(crate::daemon_version().to_string()),
                 notebook_id: String::new(),
@@ -2163,7 +2163,7 @@ impl Daemon {
         // provided a notebook_id_hint — room.id is the canonical source.
         let (reader, mut writer) = tokio::io::split(stream);
         let response = NotebookConnectionInfo {
-            protocol: PROTOCOL_V2.to_string(),
+            protocol: PROTOCOL_V3.to_string(),
             protocol_version: Some(PROTOCOL_VERSION),
             daemon_version: Some(crate::daemon_version().to_string()),
             notebook_id: room.id.to_string(),

@@ -41,6 +41,9 @@ use notebook_protocol::protocol::{NotebookRequest, NotebookResponse};
 use crate::error::SyncError;
 use crate::shared::SharedDocState;
 use crate::snapshot::NotebookSnapshot;
+use crate::status::{
+    ConnectionState, InitialLoadPhase, NotebookDocPhase, RuntimeStatePhase, SyncStatus,
+};
 use crate::sync_task::SyncCommand;
 
 /// A handle to a synced notebook document.
@@ -82,6 +85,9 @@ pub struct DocHandle {
     /// Watch channel receiver for reading the latest snapshot.
     snapshot_rx: watch::Receiver<NotebookSnapshot>,
 
+    /// Watch channel receiver for connection/bootstrap status.
+    status_rx: watch::Receiver<SyncStatus>,
+
     /// The notebook identifier.
     notebook_id: String,
 }
@@ -104,6 +110,7 @@ impl DocHandle {
         cmd_tx: mpsc::Sender<SyncCommand>,
         snapshot_tx: Arc<watch::Sender<NotebookSnapshot>>,
         snapshot_rx: watch::Receiver<NotebookSnapshot>,
+        status_rx: watch::Receiver<SyncStatus>,
         notebook_id: String,
     ) -> Self {
         Self {
@@ -112,6 +119,7 @@ impl DocHandle {
             cmd_tx,
             snapshot_tx,
             snapshot_rx,
+            status_rx,
             notebook_id,
         }
     }
@@ -590,6 +598,74 @@ impl DocHandle {
             .await
             .map_err(|_| SyncError::Disconnected)?;
         reply_rx.await.map_err(|_| SyncError::Disconnected)?
+    }
+
+    fn readiness_error(status: &SyncStatus) -> Option<SyncError> {
+        if status.connection == ConnectionState::Disconnected {
+            return Some(SyncError::Disconnected);
+        }
+        match &status.initial_load {
+            InitialLoadPhase::Failed { reason } => Some(SyncError::Protocol(format!(
+                "Initial notebook load failed: {}",
+                reason
+            ))),
+            _ => None,
+        }
+    }
+
+    async fn wait_for_status<F>(&self, predicate: F) -> Result<(), SyncError>
+    where
+        F: Fn(&SyncStatus) -> bool,
+    {
+        let mut rx = self.status_rx.clone();
+        loop {
+            let status = rx.borrow().clone();
+            if predicate(&status) {
+                return Ok(());
+            }
+            if let Some(err) = Self::readiness_error(&status) {
+                return Err(err);
+            }
+            rx.changed().await.map_err(|_| SyncError::Disconnected)?;
+        }
+    }
+
+    /// Return the latest connection/bootstrap status.
+    pub fn status(&self) -> SyncStatus {
+        self.status_rx.borrow().clone()
+    }
+
+    /// Subscribe to status changes.
+    pub fn subscribe_status(&self) -> watch::Receiver<SyncStatus> {
+        self.status_rx.clone()
+    }
+
+    /// Wait until the notebook document is interactive.
+    pub async fn await_notebook_interactive(&self) -> Result<(), SyncError> {
+        self.wait_for_status(|status| status.notebook_doc == NotebookDocPhase::Interactive)
+            .await
+    }
+
+    /// Wait until RuntimeStateDoc bootstrap is ready.
+    pub async fn await_runtime_state_ready(&self) -> Result<(), SyncError> {
+        self.wait_for_status(|status| status.runtime_state == RuntimeStatePhase::Ready)
+            .await
+    }
+
+    /// Wait until initial notebook load has either completed or was not needed.
+    pub async fn await_initial_load_ready(&self) -> Result<(), SyncError> {
+        self.wait_for_status(|status| {
+            matches!(
+                status.initial_load,
+                InitialLoadPhase::NotNeeded | InitialLoadPhase::Ready
+            )
+        })
+        .await
+    }
+
+    /// Wait until notebook doc, runtime state, and initial load are ready.
+    pub async fn await_session_ready(&self) -> Result<(), SyncError> {
+        self.wait_for_status(SyncStatus::session_ready).await
     }
 
     /// Get all connected peer IDs and labels, sorted by peer ID for stable ordering.

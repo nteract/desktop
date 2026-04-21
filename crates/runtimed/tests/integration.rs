@@ -130,6 +130,13 @@ async fn wait_for_cells_map(handle: &notebook_sync::DocHandle, timeout: Duration
     false
 }
 
+async fn wait_for_session_ready(handle: &notebook_sync::DocHandle, timeout: Duration) -> bool {
+    matches!(
+        tokio::time::timeout(timeout, handle.await_session_ready()).await,
+        Ok(Ok(()))
+    )
+}
+
 #[cfg(unix)]
 type LegacyPoolStream = tokio::net::UnixStream;
 
@@ -427,14 +434,13 @@ async fn test_notebook_sync_via_unified_socket() {
     let notebook_id_1 = result1.info.notebook_id.clone();
     let client1 = result1.handle;
 
+    assert!(
+        wait_for_session_ready(&client1, Duration::from_secs(2)).await,
+        "client1 should reach session-ready state within 2s"
+    );
+
     let cells = client1.get_cells();
     assert!(cells.is_empty(), "new notebook should have no cells");
-
-    // Wait for the daemon's document structure (cells map) to sync to the client.
-    // connect_create() returns after the initial handshake, but the background sync
-    // task may not have delivered the cells Map yet.
-    let mut watcher = client1.subscribe();
-    let _ = tokio::time::timeout(Duration::from_secs(2), watcher.changed()).await;
 
     // Add a cell from client1
     client1.add_cell_after("cell-1", "code", None).unwrap();
@@ -445,6 +451,11 @@ async fn test_notebook_sync_via_unified_socket() {
         .await
         .expect("client2 should connect")
         .handle;
+
+    assert!(
+        wait_for_session_ready(&client2, Duration::from_secs(2)).await,
+        "client2 should reach session-ready state within 2s"
+    );
 
     let cells = client2.get_cells();
     assert_eq!(cells.len(), 1, "client2 should see the cell from client1");
@@ -457,6 +468,11 @@ async fn test_notebook_sync_via_unified_socket() {
         .await
         .expect("client3 should connect")
         .handle;
+
+    assert!(
+        wait_for_session_ready(&client3, Duration::from_secs(2)).await,
+        "client3 should reach session-ready state within 2s"
+    );
 
     let cells = client3.get_cells();
     assert!(cells.is_empty(), "different notebook should have no cells");
@@ -491,23 +507,28 @@ async fn test_notebook_sync_cross_window_propagation() {
         .unwrap()
         .handle;
 
-    // Wait for the daemon's document structure (cells map) to sync to client1.
-    let mut watcher1 = client1.subscribe();
-    let _ = tokio::time::timeout(Duration::from_secs(2), watcher1.changed()).await;
+    assert!(
+        wait_for_session_ready(&client1, Duration::from_secs(2)).await,
+        "client1 should reach session-ready state within 2s"
+    );
+    assert!(
+        wait_for_session_ready(&client2, Duration::from_secs(2)).await,
+        "client2 should reach session-ready state within 2s"
+    );
+
+    let mut watcher = client2.subscribe();
 
     // Client1 adds a cell
     client1.add_cell_after("c1", "code", None).unwrap();
     client1.update_source("c1", "x = 42").unwrap();
+    client1.confirm_sync().await.unwrap();
 
     // Client2 should receive the changes
-    let mut watcher = client2.subscribe();
-    let _ = tokio::time::timeout(Duration::from_millis(500), watcher.changed()).await;
-    let cells = client2.get_cells();
-    assert!(!cells.is_empty(), "client2 should receive propagated cells");
-
-    // May need additional recv rounds for full convergence
-    let mut final_cells = cells;
-    for _ in 0..5 {
+    let mut final_cells = client2.get_cells();
+    for _ in 0..10 {
+        if final_cells.iter().any(|c| c.id == "c1") {
+            break;
+        }
         match tokio::time::timeout(Duration::from_millis(200), watcher.changed()).await {
             Ok(Ok(())) => final_cells = client2.get_cells(),
             _ => break,
@@ -561,11 +582,10 @@ async fn test_untitled_notebook_persists_through_eviction() {
             .unwrap()
             .handle;
 
-        // Wait for the daemon's document structure (cells map) to arrive via
-        // background sync — connect_create returns after handshake but the Map
-        // may not be delivered yet on slow CI runners.
-        let mut watcher = client1.subscribe();
-        let _ = tokio::time::timeout(Duration::from_secs(2), watcher.changed()).await;
+        assert!(
+            wait_for_session_ready(&client1, Duration::from_secs(2)).await,
+            "client1 should reach session-ready state within 2s"
+        );
 
         client1.add_cell_after("c1", "code", None).unwrap();
         client1.update_source("c1", "persisted = True").unwrap();
@@ -573,6 +593,7 @@ async fn test_untitled_notebook_persists_through_eviction() {
             .add_cell_after("c2", "markdown", Some("c1"))
             .unwrap();
         client1.update_source("c2", "# Hello World").unwrap();
+        client1.confirm_sync().await.unwrap();
 
         // Both clients drop here — the room should be evicted from memory
     }
@@ -618,6 +639,11 @@ async fn test_untitled_notebook_persists_through_eviction() {
         .await
         .expect("should reconnect after room eviction")
         .handle;
+
+    assert!(
+        wait_for_session_ready(&client3, Duration::from_secs(2)).await,
+        "reconnected client should reach session-ready state within 2s"
+    );
 
     let cells = client3.get_cells();
     assert_eq!(
@@ -678,8 +704,10 @@ async fn test_eviction_flushes_before_reconnect() {
         notebook_id = result.info.notebook_id.clone();
         let client = result.handle;
 
-        let mut watcher = client.subscribe();
-        let _ = tokio::time::timeout(Duration::from_secs(2), watcher.changed()).await;
+        assert!(
+            wait_for_session_ready(&client, Duration::from_secs(2)).await,
+            "client should reach session-ready state within 2s"
+        );
 
         client.add_cell_after("c1", "code", None).unwrap();
         client.update_source("c1", "race_test = 1").unwrap();
@@ -689,6 +717,7 @@ async fn test_eviction_flushes_before_reconnect() {
         client
             .update_source("c3", "# Race regression guard")
             .unwrap();
+        client.confirm_sync().await.unwrap();
     }
 
     // Reconnect fast — no sleep. The fix's flush-and-ack ensures the room's
@@ -748,9 +777,10 @@ async fn test_notebook_cell_delete_propagation() {
     let notebook_id = result.info.notebook_id.clone();
     let client1 = result.handle;
 
-    // Wait for the daemon's document structure (cells map) to sync to client1.
-    let mut watcher1 = client1.subscribe();
-    let _ = tokio::time::timeout(Duration::from_secs(2), watcher1.changed()).await;
+    assert!(
+        wait_for_session_ready(&client1, Duration::from_secs(2)).await,
+        "client1 should reach session-ready state within 2s"
+    );
 
     client1.add_cell_after("keep-1", "code", None).unwrap();
     client1
@@ -762,6 +792,7 @@ async fn test_notebook_cell_delete_propagation() {
     client1.update_source("keep-1", "a = 1").unwrap();
     client1.update_source("to-delete", "b = 2").unwrap();
     client1.update_source("keep-2", "c = 3").unwrap();
+    client1.confirm_sync().await.unwrap();
 
     // Client2 joins and verifies all three cells
     let client2 = connect::connect(socket_path.clone(), notebook_id, "test")
@@ -790,6 +821,7 @@ async fn test_notebook_cell_delete_propagation() {
 
     // Client1 deletes the middle cell
     client1.delete_cell("to-delete").unwrap();
+    client1.confirm_sync().await.unwrap();
 
     // Client2 receives the deletion
     let mut watcher = client2.subscribe();
@@ -855,12 +887,17 @@ async fn test_multiple_notebooks_concurrent_isolation() {
     let nb_b = nb_b.handle;
     let nb_c = nb_c.handle;
 
-    // Wait for the daemon's document structure (cells map) to sync to each client.
-    let (mut wa, mut wb, mut wc) = (nb_a.subscribe(), nb_b.subscribe(), nb_c.subscribe());
-    let _ = tokio::join!(
-        tokio::time::timeout(Duration::from_secs(2), wa.changed()),
-        tokio::time::timeout(Duration::from_secs(2), wb.changed()),
-        tokio::time::timeout(Duration::from_secs(2), wc.changed()),
+    assert!(
+        wait_for_session_ready(&nb_a, Duration::from_secs(2)).await,
+        "alpha notebook should reach session-ready state within 2s"
+    );
+    assert!(
+        wait_for_session_ready(&nb_b, Duration::from_secs(2)).await,
+        "beta notebook should reach session-ready state within 2s"
+    );
+    assert!(
+        wait_for_session_ready(&nb_c, Duration::from_secs(2)).await,
+        "gamma notebook should reach session-ready state within 2s"
     );
 
     // Add cells to each notebook
@@ -879,6 +916,11 @@ async fn test_multiple_notebooks_concurrent_isolation() {
         .unwrap();
     nb_c.add_cell_after("gamma-3", "code", Some("gamma-2"))
         .unwrap();
+    let _ = tokio::join!(
+        nb_a.confirm_sync(),
+        nb_b.confirm_sync(),
+        nb_c.confirm_sync()
+    );
 
     // Verify each notebook is isolated by connecting fresh clients
     let (fresh_a, fresh_b, fresh_c) = tokio::join!(
@@ -887,12 +929,29 @@ async fn test_multiple_notebooks_concurrent_isolation() {
         connect::connect(socket_path.clone(), id_c, "test"),
     );
 
-    let cells_a = fresh_a.unwrap().handle.get_cells();
+    let handle_a = fresh_a.unwrap().handle;
+    let handle_b = fresh_b.unwrap().handle;
+    let handle_c = fresh_c.unwrap().handle;
+
+    assert!(
+        wait_for_session_ready(&handle_a, Duration::from_secs(2)).await,
+        "alpha client should reach session-ready state within 2s"
+    );
+    assert!(
+        wait_for_session_ready(&handle_b, Duration::from_secs(2)).await,
+        "beta client should reach session-ready state within 2s"
+    );
+    assert!(
+        wait_for_session_ready(&handle_c, Duration::from_secs(2)).await,
+        "gamma client should reach session-ready state within 2s"
+    );
+
+    let cells_a = handle_a.get_cells();
     assert_eq!(cells_a.len(), 1, "alpha should have 1 cell");
     assert_eq!(cells_a[0].id, "alpha-1");
     assert_eq!(cells_a[0].source, "print('alpha')");
 
-    let cells_b = fresh_b.unwrap().handle.get_cells();
+    let cells_b = handle_b.get_cells();
     assert_eq!(cells_b.len(), 2, "beta should have 2 cells");
     assert!(cells_b
         .iter()
@@ -901,7 +960,7 @@ async fn test_multiple_notebooks_concurrent_isolation() {
         .iter()
         .any(|c| c.id == "beta-2" && c.source == "x = 99"));
 
-    let cells_c = fresh_c.unwrap().handle.get_cells();
+    let cells_c = handle_c.get_cells();
     assert_eq!(cells_c.len(), 3, "gamma should have 3 cells");
     assert!(cells_c
         .iter()
@@ -973,7 +1032,6 @@ async fn test_streaming_load_via_open_notebook() {
         .await
         .expect("should connect and open notebook");
     let handle = result.handle;
-    let initial_cells = result.cells;
     let info = result.info;
 
     // Handshake reports 0 cells (streaming load is deferred)
@@ -981,9 +1039,8 @@ async fn test_streaming_load_via_open_notebook() {
     assert!(info.error.is_none());
 
     // The sync task runs in the background. Wait for cells to arrive.
-    // In pipe mode, initial_cells may be empty; cells come via sync.
     let start = std::time::Instant::now();
-    let mut cells = initial_cells;
+    let mut cells = handle.get_cells();
     while cells.len() < 7 && start.elapsed() < Duration::from_secs(5) {
         sleep(Duration::from_millis(50)).await;
         cells = handle.get_cells();
@@ -1315,6 +1372,10 @@ async fn test_pipe_mode_only_pipes_allowed_frame_types() {
     .await
     .unwrap()
     .handle;
+    assert!(
+        wait_for_cells_map(&client2, Duration::from_secs(2)).await,
+        "initial sync did not deliver the cells map within 2s"
+    );
     client2.add_cell_after("bc-cell", "code", None).unwrap();
     client2.update_source("bc-cell", "x = 1").unwrap();
 
@@ -1334,19 +1395,21 @@ async fn test_pipe_mode_only_pipes_allowed_frame_types() {
     );
 
     // Every piped frame must have a valid type byte from the forwarded set:
-    // AutomergeSync, Broadcast, Presence, or RuntimeStateSync — never Request or Response.
+    // AutomergeSync, Broadcast, Presence, RuntimeStateSync, PoolStateSync,
+    // or SessionControl — never Request or Response.
     let allowed_types = [
         frame_types::AUTOMERGE_SYNC,
         frame_types::BROADCAST,
         frame_types::PRESENCE,
         frame_types::RUNTIME_STATE_SYNC,
         frame_types::POOL_STATE_SYNC,
+        frame_types::SESSION_CONTROL,
     ];
     for (i, frame) in frames.iter().enumerate() {
         assert!(!frame.is_empty(), "frame {} should not be empty", i);
         assert!(
             allowed_types.contains(&frame[0]),
-            "frame {} has unexpected type byte 0x{:02x} — only AUTOMERGE_SYNC, BROADCAST, PRESENCE, RUNTIME_STATE_SYNC, and POOL_STATE_SYNC are piped",
+            "frame {} has unexpected type byte 0x{:02x} — only AUTOMERGE_SYNC, BROADCAST, PRESENCE, RUNTIME_STATE_SYNC, POOL_STATE_SYNC, and SESSION_CONTROL are piped",
             i,
             frame[0]
         );
@@ -1540,6 +1603,10 @@ async fn test_pipe_mode_preserves_frame_order() {
     .await
     .unwrap()
     .handle;
+    assert!(
+        wait_for_session_ready(&client3, Duration::from_secs(2)).await,
+        "third client should reach session-ready state within 2s"
+    );
     let cells = client3.get_cells();
     assert_eq!(cells.len(), 3, "third client should see all 3 cells");
     assert_eq!(cells[0].id, "cell-1");

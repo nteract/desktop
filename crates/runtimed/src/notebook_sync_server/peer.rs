@@ -515,10 +515,10 @@ where
         }
     }
 
-    // Send capabilities response (v2 protocol) unless already sent via NotebookConnectionInfo
+    // Send capabilities response (v3 protocol) unless already sent via NotebookConnectionInfo
     if !skip_capabilities {
         let caps = connection::ProtocolCapabilities {
-            protocol: connection::PROTOCOL_V2.to_string(),
+            protocol: connection::PROTOCOL_V3.to_string(),
             protocol_version: Some(connection::PROTOCOL_VERSION),
             daemon_version: Some(crate::daemon_version().to_string()),
         };
@@ -529,20 +529,6 @@ where
     // whether the sync loop exits with Ok or Err.
     let peer_id = uuid::Uuid::new_v4().to_string();
 
-    // Pre-send the initial notebook-doc AutomergeSync frame BEFORE entering
-    // the background sync loop. This guarantees the first AutomergeSync
-    // frame is on the wire before the client's `do_initial_sync` starts
-    // ticking its 100ms-per-frame convergence timeout.
-    // Without this ordering, under CI load a spawned-but-unscheduled handler
-    // task can race with the client's timeout, flaking tests like
-    // `test_pipe_mode_forwards_sync_frames`.
-    //
-    // State/pool/presence initial syncs stay inside `run_sync_loop_v2`
-    // because they must run AFTER streaming load populates per-cell
-    // outputs in the RuntimeStateDoc, and AFTER the broadcast channels
-    // are subscribed.
-    let initial_sync_state = send_initial_notebook_doc_sync(&mut writer, &room).await?;
-
     let result = run_sync_loop_v2(
         &mut reader,
         &mut writer,
@@ -552,7 +538,6 @@ where
         daemon.clone(),
         needs_load.as_deref(),
         &peer_id,
-        initial_sync_state,
     )
     .await;
 
@@ -996,8 +981,31 @@ pub(crate) fn sanitize_peer_label(raw: Option<&str>, fallback: &str) -> String {
     }
 }
 
-/// State carried from the pre-send initial notebook-doc sync into the
-/// steady-state loop.
+async fn send_session_status<W>(
+    writer: &mut W,
+    notebook_doc: notebook_protocol::protocol::NotebookDocPhaseWire,
+    runtime_state: notebook_protocol::protocol::RuntimeStatePhaseWire,
+    initial_load: notebook_protocol::protocol::InitialLoadPhaseWire,
+) -> anyhow::Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    connection::send_typed_json_frame(
+        writer,
+        NotebookFrameType::SessionControl,
+        &notebook_protocol::protocol::SessionControlMessage::SyncStatus(
+            notebook_protocol::protocol::SessionSyncStatusWire {
+                notebook_doc,
+                runtime_state,
+                initial_load,
+            },
+        ),
+    )
+    .await?;
+    Ok(())
+}
+
+/// State carried from the initial notebook-doc sync into the steady-state loop.
 ///
 /// See [`send_initial_notebook_doc_sync`]. `peer_state` tracks what the
 /// daemon has already advertised about the notebook doc so subsequent
@@ -1015,26 +1023,9 @@ impl InitialSyncState {
     }
 }
 
-/// Generate and send the initial notebook-doc AutomergeSync frame before
-/// entering the background sync loop.
+/// Generate and send the initial notebook-doc AutomergeSync frame.
 ///
-/// Runs synchronously as part of the handshake path so the first
-/// AutomergeSync frame is on the wire before the client's `do_initial_sync`
-/// starts ticking its 100ms-per-frame convergence timeout. Without this
-/// ordering, under CI load the per-connection handler can be
-/// spawned-but-not-yet-scheduled while the client is already timing out
-/// waiting for the first sync frame, which flakes
-/// `test_pipe_mode_forwards_sync_frames` and similar sync-sensitive tests.
-///
-/// Only the notebook-doc frame is pre-sent. The RuntimeStateDoc/PoolDoc
-/// initial syncs and the eager RuntimeStateSnapshot/presence broadcasts
-/// continue to run inside `run_sync_loop_v2` AFTER `streaming_load_cells`
-/// populates per-cell outputs, and AFTER the broadcast channels are
-/// subscribed. Pre-sending those here would either advertise an empty
-/// state doc or drop auto-launch broadcasts that land between pre-send
-/// and subscription.
-///
-/// Returns the `peer_state` so the steady-state loop (and streaming load)
+/// Returns the `peer_state` so the rest of bootstrap (and streaming load)
 /// continues from the same baseline and emits correct deltas.
 pub(crate) async fn send_initial_notebook_doc_sync<W>(
     writer: &mut W,
@@ -1079,11 +1070,6 @@ where
 ///
 /// Handles both Automerge sync messages and NotebookRequest messages.
 /// This protocol supports daemon-owned kernel execution (Phase 8).
-///
-/// The caller must have already run [`send_initial_notebook_doc_sync`] and
-/// pass the resulting [`InitialSyncState`] via `initial_sync_state` so the
-/// streaming load and steady-state loop continue on the same notebook-doc
-/// `peer_state`.
 #[allow(clippy::too_many_arguments)]
 async fn run_sync_loop_v2<R, W>(
     reader: &mut R,
@@ -1094,63 +1080,13 @@ async fn run_sync_loop_v2<R, W>(
     daemon: std::sync::Arc<crate::daemon::Daemon>,
     needs_load: Option<&Path>,
     peer_id: &str,
-    initial_sync_state: InitialSyncState,
 ) -> anyhow::Result<()>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    let InitialSyncState { mut peer_state } = initial_sync_state;
-
-    // Streaming load: add cells in batches and sync after each batch so
-    // the frontend renders progressively. This runs before we subscribe
-    // to changed_rx to avoid backlog from our own notifications.
-    //
-    // The initial AutomergeSync frame generated before this loop used the
-    // empty-doc peer_state; streaming_load_cells continues on the same
-    // peer_state so each batch emits a delta against what the client has
-    // already been told about. streaming_load_cells also writes synthetic
-    // execution outputs into the RuntimeStateDoc — that's why the initial
-    // RuntimeStateDoc sync below runs AFTER load, not before.
-    if let Some(load_path) = needs_load {
-        if room.try_start_loading() {
-            match streaming_load_cells(reader, writer, room, load_path, &mut peer_state).await {
-                Ok(count) => {
-                    room.finish_loading();
-                    info!(
-                        "[notebook-sync] Streaming load complete: {} cells from {}",
-                        count,
-                        load_path.display()
-                    );
-                }
-                Err(e) => {
-                    room.finish_loading();
-                    // Clear partial cells so the next connection can retry
-                    {
-                        let mut doc = room.doc.write().await;
-                        let _ = doc.clear_all_cells();
-                    }
-                    // Notify other peers so they converge to the cleared state
-                    let _ = room.changed_tx.send(());
-                    warn!(
-                        "[notebook-sync] Streaming load failed for {}: {}",
-                        load_path.display(),
-                        e
-                    );
-                    return Err(anyhow::anyhow!("Streaming load failed: {}", e));
-                }
-            }
-        }
-        // If we lost the race (try_start_loading returned false), another
-        // connection is loading. We'll pick up cells via changed_rx below.
-    }
-
-    // Subscribe to change notifications BEFORE sending the state/pool
-    // initial syncs and eager snapshots, so any writes that land between
-    // the snapshot read and the select loop are still delivered to this
-    // peer as steady-state deltas. Without this, an auto-launch broadcast
-    // (kernel status, env progress) fired during connection setup could
-    // fall into the gap between "snapshot read" and "subscribe".
+    // Subscribe before sending bootstrap traffic so any writes that land
+    // during connection setup are still observed as steady-state deltas.
     let mut changed_rx = room.changed_tx.subscribe();
     let mut kernel_broadcast_rx = room.kernel_broadcast_tx.subscribe();
     let mut presence_rx = room.presence_tx.subscribe();
@@ -1159,10 +1095,36 @@ where
     // PoolDoc — global daemon pool state (UV/Conda availability, errors).
     let mut pool_changed_rx = daemon.pool_doc_changed.subscribe();
 
+    let mut notebook_doc_phase = notebook_protocol::protocol::NotebookDocPhaseWire::Pending;
+    let mut runtime_state_phase = notebook_protocol::protocol::RuntimeStatePhaseWire::Pending;
+    let mut initial_load_phase = if needs_load.is_some() {
+        notebook_protocol::protocol::InitialLoadPhaseWire::Streaming
+    } else {
+        notebook_protocol::protocol::InitialLoadPhaseWire::NotNeeded
+    };
+
+    send_session_status(
+        writer,
+        notebook_doc_phase,
+        runtime_state_phase,
+        initial_load_phase.clone(),
+    )
+    .await?;
+
+    let InitialSyncState { mut peer_state } = send_initial_notebook_doc_sync(writer, room).await?;
+    notebook_doc_phase = notebook_protocol::protocol::NotebookDocPhaseWire::Syncing;
+    send_session_status(
+        writer,
+        notebook_doc_phase,
+        runtime_state_phase,
+        initial_load_phase.clone(),
+    )
+    .await?;
+
     let mut state_peer_state = sync::State::new();
     let mut pool_peer_state = sync::State::new();
 
-    // Phase 1.1: Initial RuntimeStateDoc sync — encode inside lock, send outside.
+    // Initial RuntimeStateDoc sync — encode inside lock, send outside.
     // Uses bounded generation to compact atomically if the message would exceed
     // the 100 MiB frame limit.
     let initial_state_encoded = {
@@ -1193,8 +1155,64 @@ where
     if let Some(encoded) = initial_state_encoded {
         connection::send_typed_frame(writer, NotebookFrameType::RuntimeStateSync, &encoded).await?;
     }
+    runtime_state_phase = notebook_protocol::protocol::RuntimeStatePhaseWire::Syncing;
+    send_session_status(
+        writer,
+        notebook_doc_phase,
+        runtime_state_phase,
+        initial_load_phase.clone(),
+    )
+    .await?;
 
-    // Phase 1.1b: Initial PoolDoc sync — global pool state
+    // Streaming load: add cells in batches and sync after each batch so the
+    // frontend can observe progressive notebook-doc updates.
+    if let Some(load_path) = needs_load {
+        if room.try_start_loading() {
+            match streaming_load_cells(reader, writer, room, load_path, &mut peer_state).await {
+                Ok(count) => {
+                    room.finish_loading();
+                    info!(
+                        "[notebook-sync] Streaming load complete: {} cells from {}",
+                        count,
+                        load_path.display()
+                    );
+                    initial_load_phase = notebook_protocol::protocol::InitialLoadPhaseWire::Ready;
+                    send_session_status(
+                        writer,
+                        notebook_doc_phase,
+                        runtime_state_phase,
+                        initial_load_phase.clone(),
+                    )
+                    .await?;
+                }
+                Err(e) => {
+                    room.finish_loading();
+                    {
+                        let mut doc = room.doc.write().await;
+                        let _ = doc.clear_all_cells();
+                    }
+                    let _ = room.changed_tx.send(());
+                    warn!(
+                        "[notebook-sync] Streaming load failed for {}: {}",
+                        load_path.display(),
+                        e
+                    );
+                    send_session_status(
+                        writer,
+                        notebook_doc_phase,
+                        runtime_state_phase,
+                        notebook_protocol::protocol::InitialLoadPhaseWire::Failed {
+                            reason: e.clone(),
+                        },
+                    )
+                    .await?;
+                    return Err(anyhow::anyhow!("Streaming load failed: {}", e));
+                }
+            }
+        }
+    }
+
+    // Initial PoolDoc sync — global pool state
     let initial_pool_encoded = {
         let mut pool_doc = daemon.pool_doc.write().await;
         match catch_automerge_panic("initial-pool-sync", || {
@@ -1215,23 +1233,6 @@ where
     };
     if let Some(encoded) = initial_pool_encoded {
         connection::send_typed_frame(writer, NotebookFrameType::PoolStateSync, &encoded).await?;
-    }
-
-    // Phase 1.2: Eagerly send RuntimeState snapshot so the client has
-    // kernel status immediately, without waiting for Automerge sync convergence.
-    // The sync handshake takes multiple roundtrips; by the time it completes,
-    // transient states like starting phases may have already passed.
-    {
-        let state = {
-            let sd = room.state_doc.read().await;
-            sd.read_state()
-        };
-        connection::send_typed_json_frame(
-            writer,
-            NotebookFrameType::Broadcast,
-            &NotebookBroadcast::RuntimeStateSnapshot { state },
-        )
-        .await?;
     }
 
     // Phase 1.5 (removed): CommSync broadcast is no longer needed.
@@ -1362,6 +1363,20 @@ where
                                         writer,
                                         NotebookFrameType::AutomergeSync,
                                         &encoded,
+                                    )
+                                    .await?;
+                                }
+
+                                if notebook_doc_phase
+                                    != notebook_protocol::protocol::NotebookDocPhaseWire::Interactive
+                                {
+                                    notebook_doc_phase =
+                                        notebook_protocol::protocol::NotebookDocPhaseWire::Interactive;
+                                    send_session_status(
+                                        writer,
+                                        notebook_doc_phase,
+                                        runtime_state_phase,
+                                        initial_load_phase.clone(),
                                     )
                                     .await?;
                                 }
@@ -1591,6 +1606,20 @@ where
                                     )
                                     .await?;
                                 }
+
+                                if runtime_state_phase
+                                    != notebook_protocol::protocol::RuntimeStatePhaseWire::Ready
+                                {
+                                    runtime_state_phase =
+                                        notebook_protocol::protocol::RuntimeStatePhaseWire::Ready;
+                                    send_session_status(
+                                        writer,
+                                        notebook_doc_phase,
+                                        runtime_state_phase,
+                                        initial_load_phase.clone(),
+                                    )
+                                    .await?;
+                                }
                             }
 
                             NotebookFrameType::PoolStateSync => {
@@ -1646,7 +1675,9 @@ where
                                 }
                             }
 
-                            NotebookFrameType::Response | NotebookFrameType::Broadcast => {
+                            NotebookFrameType::Response
+                            | NotebookFrameType::Broadcast
+                            | NotebookFrameType::SessionControl => {
                                 // Clients shouldn't send these
                                 warn!(
                                     "[notebook-sync] Unexpected frame type from client: {:?}",
@@ -1690,6 +1721,24 @@ where
                         writer,
                         NotebookFrameType::AutomergeSync,
                         &encoded,
+                    )
+                    .await?;
+                }
+
+                if matches!(
+                    initial_load_phase,
+                    notebook_protocol::protocol::InitialLoadPhaseWire::Streaming
+                ) && !room
+                    .is_loading
+                    .load(std::sync::atomic::Ordering::Acquire)
+                {
+                    initial_load_phase =
+                        notebook_protocol::protocol::InitialLoadPhaseWire::Ready;
+                    send_session_status(
+                        writer,
+                        notebook_doc_phase,
+                        runtime_state_phase,
+                        initial_load_phase.clone(),
                     )
                     .await?;
                 }

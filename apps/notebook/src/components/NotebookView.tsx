@@ -37,6 +37,7 @@ import { RawCell } from "./RawCell";
 interface NotebookViewProps {
   cellIds: string[];
   isLoading?: boolean;
+  loadError?: string | null;
   runtime?: Runtime | null;
   onFocusCell: (cellId: string) => void;
   onExecuteCell: (cellId: string) => void;
@@ -342,6 +343,7 @@ function SortableCell({
 function NotebookViewContent({
   cellIds,
   isLoading = false,
+  loadError = null,
   runtime = "python",
   onFocusCell,
   onExecuteCell,
@@ -757,9 +759,19 @@ function NotebookViewContent({
       data-notebook-synced={!isLoading && cellIds.length > 0}
       data-cell-count={cellIds.length}
     >
+      {loadError ? (
+        <div className="mb-4 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+          Notebook failed to finish loading: {loadError}
+        </div>
+      ) : null}
       {cellIds.length === 0 ? (
         isLoading ? (
           <CellSkeleton />
+        ) : loadError ? (
+          <div className="flex flex-col items-center justify-center py-20 text-center text-destructive">
+            <p className="text-sm font-medium">Notebook load failed</p>
+            <p className="mt-1 max-w-xl text-xs text-muted-foreground">{loadError}</p>
+          </div>
         ) : (
           <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
             <p className="text-sm">Empty notebook</p>

@@ -80,6 +80,44 @@ impl OutputChangeset {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum SessionControlMessage {
+    SyncStatus(SessionSyncStatusWire),
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct SessionSyncStatusWire {
+    pub notebook_doc: NotebookDocPhaseWire,
+    pub runtime_state: RuntimeStatePhaseWire,
+    pub initial_load: InitialLoadPhaseWire,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotebookDocPhaseWire {
+    Pending,
+    Syncing,
+    Interactive,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeStatePhaseWire {
+    Pending,
+    Syncing,
+    Ready,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "phase", rename_all = "snake_case")]
+pub enum InitialLoadPhaseWire {
+    NotNeeded,
+    Streaming,
+    Ready,
+    Failed { reason: String },
+}
+
 /// Event returned from `receive_frame()` for the frontend to handle.
 ///
 /// Converted directly to a JS object via `serde-wasm-bindgen` — no JSON
@@ -116,6 +154,11 @@ pub enum FrameEvent {
     Presence {
         /// The decoded presence message (decoded from CBOR, passed through as-is).
         payload: serde_json::Value,
+    },
+    /// Connection-local session status from the daemon.
+    SessionControl {
+        /// Full bootstrap/readiness snapshot for this socket.
+        status: SessionSyncStatusWire,
     },
     /// Runtime state document was synced — frontend should update runtime state UI.
     RuntimeStateSyncApplied {
@@ -1705,6 +1748,22 @@ impl NotebookHandle {
                     }
                 };
                 events.push(FrameEvent::Presence { payload: value });
+            }
+            frame_types::SESSION_CONTROL => {
+                let msg = match serde_json::from_slice::<SessionControlMessage>(payload) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        web_sys::console::warn_1(
+                            &format!("[wasm] session_control frame parse failed: {e}").into(),
+                        );
+                        return JsValue::UNDEFINED;
+                    }
+                };
+                match msg {
+                    SessionControlMessage::SyncStatus(status) => {
+                        events.push(FrameEvent::SessionControl { status });
+                    }
+                }
             }
             frame_types::RUNTIME_STATE_SYNC => {
                 // Apply daemon's RuntimeStateDoc sync message to our local replica.

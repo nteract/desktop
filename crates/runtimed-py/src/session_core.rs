@@ -181,6 +181,11 @@ pub(crate) async fn connect_with_socket(
         notebook_sync::connect::connect(socket_path.clone(), notebook_id.to_string(), &actor_label)
             .await
             .map_err(to_py_err)?;
+    result
+        .handle
+        .await_session_ready()
+        .await
+        .map_err(to_py_err)?;
 
     // Resolve blob paths from daemon info
     let (blob_base_url, blob_store_path) = resolve_blob_paths(&socket_path).await;
@@ -275,6 +280,11 @@ pub(crate) async fn connect_open(
         notebook_sync::connect::connect_open(socket_path.clone(), PathBuf::from(path), label)
             .await
             .map_err(to_py_err)?;
+    result
+        .handle
+        .await_session_ready()
+        .await
+        .map_err(to_py_err)?;
 
     let notebook_id = result.info.notebook_id.clone();
     let (blob_base_url, blob_store_path) = resolve_blob_paths(&socket_path).await;
@@ -344,6 +354,11 @@ pub(crate) async fn connect_create(
     )
     .await
     .map_err(to_py_err)?;
+    result
+        .handle
+        .await_session_ready()
+        .await
+        .map_err(to_py_err)?;
 
     let notebook_id = result.info.notebook_id.clone();
     let (blob_base_url, blob_store_path) = resolve_blob_paths(&socket_path).await;

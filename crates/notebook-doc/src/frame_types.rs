@@ -34,3 +34,7 @@ pub const RUNTIME_STATE_SYNC: u8 = 0x05;
 /// Daemon-authoritative — client changes are stripped on receive.
 /// Unlike RuntimeStateSync (per-notebook), this is global (one per daemon).
 pub const POOL_STATE_SYNC: u8 = 0x06;
+
+/// Session-control message (JSON).
+/// Carries per-connection sync/readiness status emitted by the daemon.
+pub const SESSION_CONTROL: u8 = 0x07;

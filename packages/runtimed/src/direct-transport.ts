@@ -91,6 +91,10 @@ export class DirectTransport implements NotebookTransport {
       throw new Error("DirectTransport: not connected");
     }
 
+    if (frameType === FrameType.SESSION_CONTROL) {
+      throw new Error("DirectTransport: SESSION_CONTROL is server-originated only");
+    }
+
     if (this.simulateFailure) {
       this.sendFailureCount++;
       throw new Error("DirectTransport: simulated send failure");

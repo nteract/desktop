@@ -14,6 +14,7 @@ mod tests {
     use crate::handle::DocHandle;
     use crate::shared::SharedDocState;
     use crate::snapshot::NotebookSnapshot;
+    use crate::status::SyncStatus;
 
     /// Create a DocHandle wired up with channels but no sync task.
     /// Good for testing the handle's local behavior in isolation.
@@ -30,6 +31,7 @@ mod tests {
         let initial_snapshot = NotebookSnapshot::empty();
         let (snapshot_tx, snapshot_rx) = watch::channel(initial_snapshot);
         let snapshot_tx = Arc::new(snapshot_tx);
+        let (_status_tx, status_rx) = watch::channel(SyncStatus::connected_pending());
         let (changed_tx, changed_rx) = mpsc::unbounded_channel();
         let (cmd_tx, cmd_rx) = mpsc::channel(32);
 
@@ -39,6 +41,7 @@ mod tests {
             cmd_tx,
             snapshot_tx,
             snapshot_rx,
+            status_rx,
             "test-notebook".into(),
         );
 
@@ -605,6 +608,7 @@ mod tests {
         let initial_snapshot = NotebookSnapshot::empty();
         let (snapshot_tx, snapshot_rx) = watch::channel(initial_snapshot);
         let snapshot_tx = Arc::new(snapshot_tx);
+        let (_status_tx, status_rx) = watch::channel(SyncStatus::connected_pending());
         let (changed_tx, changed_rx) = mpsc::unbounded_channel();
         let (cmd_tx, cmd_rx) = mpsc::channel(32);
 
@@ -614,6 +618,7 @@ mod tests {
             cmd_tx,
             snapshot_tx,
             snapshot_rx,
+            status_rx,
             "test-notebook".into(),
         );
 

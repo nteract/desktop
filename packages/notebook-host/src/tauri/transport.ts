@@ -15,7 +15,13 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import type { FrameListener, NotebookRequest, NotebookResponse, NotebookTransport } from "runtimed";
+import {
+  FrameType,
+  type FrameListener,
+  type NotebookRequest,
+  type NotebookResponse,
+  type NotebookTransport,
+} from "runtimed";
 
 const FRAME_TYPE_REQUEST = 0x01;
 const FRAME_TYPE_RESPONSE = 0x02;
@@ -54,6 +60,9 @@ export class TauriTransport implements NotebookTransport {
   }
 
   async sendFrame(frameType: number, payload: Uint8Array): Promise<void> {
+    if (frameType === FrameType.SESSION_CONTROL) {
+      throw new Error("SESSION_CONTROL is server-originated only");
+    }
     const frame = new Uint8Array(1 + payload.length);
     frame[0] = frameType;
     frame.set(payload, 1);

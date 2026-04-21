@@ -26,9 +26,7 @@ import { subscribeBroadcast } from "../lib/notebook-frame-bus";
 import {
   diffExecutions,
   type ExecutionState,
-  type RuntimeState,
   resetRuntimeState,
-  setRuntimeState,
   useRuntimeState,
 } from "../lib/runtime-state";
 import type { DaemonBroadcast, JupyterOutput } from "../types";
@@ -290,11 +288,6 @@ export function useDaemonKernel({
 
         case "env_progress":
           break;
-
-        case "runtime_state_snapshot": {
-          setRuntimeState(broadcast.state as RuntimeState);
-          break;
-        }
 
         case "kernel_error": {
           callbacksRef.current.onKernelError?.(broadcast.error);

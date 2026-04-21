@@ -5,8 +5,8 @@
 //! the frontend owns the sync state and the relay just forwards bytes.
 //!
 //! This eliminates the "dual sync" problem where both the relay and the WASM
-//! generate sync messages on the same daemon connection, and removes the 100ms
-//! convergence floor from `do_initial_sync` (which the relay never calls).
+//! generate sync messages on the same daemon connection. The relay never owns
+//! bootstrap or readiness heuristics; it only forwards daemon frames.
 //!
 //! ## API surface
 //!

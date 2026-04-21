@@ -24,16 +24,20 @@ use std::time::Duration;
 use automerge::sync;
 use log::{debug, info, warn};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 use notebook_protocol::connection::{self, NotebookFrameType};
-use notebook_protocol::protocol::{NotebookBroadcast, NotebookRequest, NotebookResponse};
+use notebook_protocol::protocol::{
+    NotebookBroadcast, NotebookRequest, NotebookResponse, SessionControlMessage,
+    SessionSyncStatusWire,
+};
 
 use automerge::AutoCommit;
 
 use crate::error::SyncError;
 use crate::shared::SharedDocState;
 use crate::snapshot::NotebookSnapshot;
+use crate::status::{ConnectionState, InitialLoadPhase, SyncStatus};
 
 /// Rebuild a `SharedDocState` after an automerge panic by round-tripping
 /// save→load to clear corrupted internal indices, then resetting the
@@ -124,12 +128,11 @@ pub struct SyncTaskConfig {
     /// Watch sender for publishing snapshots after applying remote changes.
     pub snapshot_tx: Arc<tokio::sync::watch::Sender<NotebookSnapshot>>,
 
+    /// Watch sender for publishing connection/bootstrap status.
+    pub status_tx: watch::Sender<SyncStatus>,
+
     /// Broadcast sender for kernel/execution events from the daemon.
     pub broadcast_tx: broadcast::Sender<NotebookBroadcast>,
-
-    /// Frames observed during connect-time bootstrap after the notebook doc
-    /// sync completed but before the background task took over the socket.
-    pub pending_frames: Vec<connection::TypedNotebookFrame>,
 }
 
 /// Run the sync task.
@@ -153,27 +156,13 @@ where
     };
 
     let mut loop_count: u64 = 0;
+    let mut saw_session_status = false;
 
     // Track last metadata for change detection (used for SyncUpdate-like behavior)
     let mut _last_metadata: Option<notebook_doc::metadata::NotebookMetadataSnapshot> = {
         let state = config.doc.lock().unwrap_or_else(|e| e.into_inner());
         notebook_doc::get_metadata_snapshot_from_doc(&state.doc)
     };
-
-    // Connect-time bootstrap may have already read a late notebook sync frame
-    // while finishing RuntimeStateDoc convergence. Replay those frames before
-    // we start polling the socket so no notebook updates are lost.
-    for frame in std::mem::take(&mut config.pending_frames) {
-        handle_incoming_frame(
-            &frame,
-            &config.doc,
-            &mut writer,
-            &config.snapshot_tx,
-            &config.broadcast_tx,
-            &notebook_id,
-        )
-        .await;
-    }
 
     loop {
         loop_count += 1;
@@ -247,8 +236,10 @@ where
                             &config.doc,
                             &mut writer,
                             &config.snapshot_tx,
+                            &config.status_tx,
                             &config.broadcast_tx,
                             &notebook_id,
+                            &mut saw_session_status,
                         )
                         .await;
                     }
@@ -288,10 +279,12 @@ where
                             &mut reader,
                             &mut writer,
                             &config.snapshot_tx,
+                            &config.status_tx,
                             &config.broadcast_tx,
                             req_broadcast_tx.as_ref(),
                             &request,
                             &notebook_id,
+                            &mut saw_session_status,
                         )
                         .await;
                         let _ = reply.send(result);
@@ -303,8 +296,10 @@ where
                             &mut reader,
                             &mut writer,
                             &config.snapshot_tx,
+                            &config.status_tx,
                             &config.broadcast_tx,
                             &notebook_id,
+                            &mut saw_session_status,
                         )
                         .await;
                         let _ = reply.send(result);
@@ -316,8 +311,10 @@ where
                             &mut reader,
                             &mut writer,
                             &config.snapshot_tx,
+                            &config.status_tx,
                             &config.broadcast_tx,
                             &notebook_id,
+                            &mut saw_session_status,
                         )
                         .await;
                         let _ = reply.send(result);
@@ -344,8 +341,10 @@ where
                         &config.doc,
                         &mut writer,
                         &config.snapshot_tx,
+                        &config.status_tx,
                         &config.broadcast_tx,
                         &notebook_id,
+                        &mut saw_session_status,
                     )
                     .await;
                 }
@@ -367,6 +366,8 @@ where
         }
     }
 
+    mark_disconnected(&config.status_tx);
+
     info!(
         "[notebook-sync] Stopped for {} after {} loop iterations",
         notebook_id, loop_count
@@ -383,8 +384,10 @@ async fn handle_incoming_frame<W: AsyncWrite + Unpin>(
     doc: &Arc<Mutex<SharedDocState>>,
     writer: &mut W,
     snapshot_tx: &Arc<tokio::sync::watch::Sender<NotebookSnapshot>>,
+    status_tx: &watch::Sender<SyncStatus>,
     broadcast_tx: &broadcast::Sender<NotebookBroadcast>,
     notebook_id: &str,
+    saw_session_status: &mut bool,
 ) {
     match frame.frame_type {
         NotebookFrameType::AutomergeSync => {
@@ -610,6 +613,25 @@ async fn handle_incoming_frame<W: AsyncWrite + Unpin>(
                 notebook_id
             );
         }
+
+        NotebookFrameType::SessionControl => {
+            let message = match serde_json::from_slice::<SessionControlMessage>(&frame.payload) {
+                Ok(message) => message,
+                Err(e) => {
+                    warn!(
+                        "[notebook-sync] Failed to parse SessionControl for {}: {}",
+                        notebook_id, e
+                    );
+                    return;
+                }
+            };
+
+            match message {
+                SessionControlMessage::SyncStatus(status) => {
+                    apply_sync_status(status_tx, notebook_id, saw_session_status, status);
+                }
+            }
+        }
     }
 }
 
@@ -623,10 +645,12 @@ async fn send_request_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     reader: &mut R,
     writer: &mut W,
     snapshot_tx: &Arc<tokio::sync::watch::Sender<NotebookSnapshot>>,
+    status_tx: &watch::Sender<SyncStatus>,
     broadcast_tx: &broadcast::Sender<NotebookBroadcast>,
     req_broadcast_tx: Option<&broadcast::Sender<NotebookBroadcast>>,
     request: &NotebookRequest,
     notebook_id: &str,
+    saw_session_status: &mut bool,
 ) -> Result<NotebookResponse, SyncError> {
     // Serialize and send the request
     let payload =
@@ -650,9 +674,11 @@ async fn send_request_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
             reader,
             writer,
             snapshot_tx,
+            status_tx,
             broadcast_tx,
             req_broadcast_tx,
             notebook_id,
+            saw_session_status,
         ),
     )
     .await;
@@ -670,9 +696,11 @@ async fn wait_for_response<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     reader: &mut R,
     writer: &mut W,
     snapshot_tx: &Arc<tokio::sync::watch::Sender<NotebookSnapshot>>,
+    status_tx: &watch::Sender<SyncStatus>,
     broadcast_tx: &broadcast::Sender<NotebookBroadcast>,
     req_broadcast_tx: Option<&broadcast::Sender<NotebookBroadcast>>,
     notebook_id: &str,
+    saw_session_status: &mut bool,
 ) -> Result<NotebookResponse, SyncError> {
     loop {
         let frame = connection::recv_typed_frame(reader)
@@ -769,8 +797,17 @@ async fn wait_for_response<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
             // acknowledges. A dropped RuntimeStateSync causes permanent sync
             // stall for RuntimeStateDoc (no execution results, no status updates).
             _ => {
-                handle_incoming_frame(&frame, doc, writer, snapshot_tx, broadcast_tx, notebook_id)
-                    .await;
+                handle_incoming_frame(
+                    &frame,
+                    doc,
+                    writer,
+                    snapshot_tx,
+                    status_tx,
+                    broadcast_tx,
+                    notebook_id,
+                    saw_session_status,
+                )
+                .await;
             }
         }
     }
@@ -785,8 +822,10 @@ async fn confirm_sync_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     reader: &mut R,
     writer: &mut W,
     snapshot_tx: &Arc<tokio::sync::watch::Sender<NotebookSnapshot>>,
+    status_tx: &watch::Sender<SyncStatus>,
     broadcast_tx: &broadcast::Sender<NotebookBroadcast>,
     notebook_id: &str,
+    saw_session_status: &mut bool,
 ) -> Result<(), SyncError> {
     for round in 0..5 {
         // Generate and send sync message
@@ -822,8 +861,17 @@ async fn confirm_sync_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
         .await
         {
             Ok(Ok(Some(frame))) => {
-                handle_incoming_frame(&frame, doc, writer, snapshot_tx, broadcast_tx, notebook_id)
-                    .await;
+                handle_incoming_frame(
+                    &frame,
+                    doc,
+                    writer,
+                    snapshot_tx,
+                    status_tx,
+                    broadcast_tx,
+                    notebook_id,
+                    saw_session_status,
+                )
+                .await;
             }
             Ok(Ok(None)) => {
                 return Err(SyncError::Protocol(
@@ -861,8 +909,10 @@ async fn confirm_state_sync_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     reader: &mut R,
     writer: &mut W,
     snapshot_tx: &Arc<tokio::sync::watch::Sender<NotebookSnapshot>>,
+    status_tx: &watch::Sender<SyncStatus>,
     broadcast_tx: &broadcast::Sender<NotebookBroadcast>,
     notebook_id: &str,
+    saw_session_status: &mut bool,
 ) -> Result<(), SyncError> {
     // Send our state doc heads so the daemon knows what we have.
     let msg_bytes = {
@@ -884,8 +934,17 @@ async fn confirm_state_sync_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
         .await
         {
             Ok(Ok(Some(frame))) => {
-                handle_incoming_frame(&frame, doc, writer, snapshot_tx, broadcast_tx, notebook_id)
-                    .await;
+                handle_incoming_frame(
+                    &frame,
+                    doc,
+                    writer,
+                    snapshot_tx,
+                    status_tx,
+                    broadcast_tx,
+                    notebook_id,
+                    saw_session_status,
+                )
+                .await;
             }
             Ok(Ok(None)) => {
                 return Err(SyncError::Protocol(
@@ -914,61 +973,177 @@ fn publish_snapshot(
     let _ = snapshot_tx.send(snapshot);
 }
 
+fn mark_disconnected(status_tx: &watch::Sender<SyncStatus>) {
+    let mut next = status_tx.borrow().clone();
+    if next.connection != ConnectionState::Disconnected {
+        next.connection = ConnectionState::Disconnected;
+        let _ = status_tx.send(next);
+    }
+}
+
+fn initial_load_transition_valid(current: &InitialLoadPhase, next: &InitialLoadPhase) -> bool {
+    match current {
+        InitialLoadPhase::NotNeeded => matches!(next, InitialLoadPhase::NotNeeded),
+        InitialLoadPhase::Streaming => matches!(
+            next,
+            InitialLoadPhase::Streaming | InitialLoadPhase::Ready | InitialLoadPhase::Failed { .. }
+        ),
+        InitialLoadPhase::Ready => matches!(next, InitialLoadPhase::Ready),
+        InitialLoadPhase::Failed { .. } => matches!(next, InitialLoadPhase::Failed { .. }),
+    }
+}
+
+fn apply_sync_status(
+    status_tx: &watch::Sender<SyncStatus>,
+    notebook_id: &str,
+    saw_session_status: &mut bool,
+    incoming_wire: SessionSyncStatusWire,
+) {
+    let current = status_tx.borrow().clone();
+    let mut incoming: SyncStatus = incoming_wire.into();
+    incoming.connection = current.connection;
+
+    if !*saw_session_status {
+        let _ = status_tx.send(incoming);
+        *saw_session_status = true;
+        return;
+    }
+
+    let mut next = current.clone();
+
+    if incoming.notebook_doc >= current.notebook_doc {
+        next.notebook_doc = incoming.notebook_doc;
+    } else {
+        warn!(
+            "[notebook-sync] Ignoring regressing notebook_doc status for {}: {:?} -> {:?}",
+            notebook_id, current.notebook_doc, incoming.notebook_doc
+        );
+    }
+
+    if incoming.runtime_state >= current.runtime_state {
+        next.runtime_state = incoming.runtime_state;
+    } else {
+        warn!(
+            "[notebook-sync] Ignoring regressing runtime_state status for {}: {:?} -> {:?}",
+            notebook_id, current.runtime_state, incoming.runtime_state
+        );
+    }
+
+    if initial_load_transition_valid(&current.initial_load, &incoming.initial_load) {
+        next.initial_load = incoming.initial_load;
+    } else {
+        warn!(
+            "[notebook-sync] Ignoring invalid initial_load status for {}: {:?} -> {:?}",
+            notebook_id, current.initial_load, incoming.initial_load
+        );
+    }
+
+    if next != current {
+        let _ = status_tx.send(next);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    use notebook_doc::{NotebookDoc, TextEncoding};
+    use notebook_protocol::protocol::{
+        InitialLoadPhaseWire, NotebookDocPhaseWire, RuntimeStatePhaseWire,
+    };
     use tokio::sync::{broadcast, mpsc, watch};
 
     #[tokio::test]
-    async fn pending_notebook_sync_frames_are_replayed_before_socket_reads() {
-        let mut daemon = NotebookDoc::new_with_actor("pending-frame-test", "runtimed");
-        daemon.add_cell(0, "cell-1", "code").unwrap();
-        daemon
-            .update_source("cell-1", "print('late sync')")
-            .unwrap();
+    async fn first_session_status_accepts_streaming_initial_load() {
+        let (status_tx, status_rx) = watch::channel(SyncStatus::connected_pending());
+        let mut saw = false;
 
-        let mut daemon_peer_state = sync::State::new();
-        let mut client = NotebookDoc::bootstrap(TextEncoding::UnicodeCodePoint, "test");
-        let mut client_peer_state = sync::State::new();
-
-        let first_msg = daemon
-            .generate_sync_message(&mut daemon_peer_state)
-            .unwrap();
-        client
-            .receive_sync_message(&mut client_peer_state, first_msg)
-            .unwrap();
-        assert_eq!(
-            client.cell_count(),
-            0,
-            "bootstrap client should still need a follow-up sync frame",
+        apply_sync_status(
+            &status_tx,
+            "test-notebook",
+            &mut saw,
+            SessionSyncStatusWire {
+                notebook_doc: NotebookDocPhaseWire::Pending,
+                runtime_state: RuntimeStatePhaseWire::Pending,
+                initial_load: InitialLoadPhaseWire::Streaming,
+            },
         );
 
-        let client_reply = client
-            .generate_sync_message(&mut client_peer_state)
-            .unwrap();
-        daemon
-            .receive_sync_message(&mut daemon_peer_state, client_reply)
-            .unwrap();
-        let late_msg = daemon
-            .generate_sync_message(&mut daemon_peer_state)
-            .unwrap();
+        let status = status_rx.borrow().clone();
+        assert!(saw);
+        assert_eq!(status.initial_load, InitialLoadPhase::Streaming);
+    }
 
-        let mut shared_state =
-            SharedDocState::new(client.into_inner(), "pending-frame-test".into());
-        shared_state.peer_state = client_peer_state;
-        let shared = Arc::new(Mutex::new(shared_state));
+    #[tokio::test]
+    async fn regressing_session_status_components_are_ignored() {
+        let (status_tx, status_rx) = watch::channel(SyncStatus::connected_pending());
+        let mut saw = false;
 
+        apply_sync_status(
+            &status_tx,
+            "test-notebook",
+            &mut saw,
+            SessionSyncStatusWire {
+                notebook_doc: NotebookDocPhaseWire::Interactive,
+                runtime_state: RuntimeStatePhaseWire::Ready,
+                initial_load: InitialLoadPhaseWire::Streaming,
+            },
+        );
+
+        apply_sync_status(
+            &status_tx,
+            "test-notebook",
+            &mut saw,
+            SessionSyncStatusWire {
+                notebook_doc: NotebookDocPhaseWire::Syncing,
+                runtime_state: RuntimeStatePhaseWire::Syncing,
+                initial_load: InitialLoadPhaseWire::NotNeeded,
+            },
+        );
+
+        let status = status_rx.borrow().clone();
+        assert_eq!(
+            status.notebook_doc,
+            crate::status::NotebookDocPhase::Interactive
+        );
+        assert_eq!(
+            status.runtime_state,
+            crate::status::RuntimeStatePhase::Ready
+        );
+        assert_eq!(status.initial_load, InitialLoadPhase::Streaming);
+
+        apply_sync_status(
+            &status_tx,
+            "test-notebook",
+            &mut saw,
+            SessionSyncStatusWire {
+                notebook_doc: NotebookDocPhaseWire::Interactive,
+                runtime_state: RuntimeStatePhaseWire::Ready,
+                initial_load: InitialLoadPhaseWire::Ready,
+            },
+        );
+
+        assert_eq!(
+            status_rx.borrow().initial_load.clone(),
+            InitialLoadPhase::Ready
+        );
+    }
+
+    #[tokio::test]
+    async fn run_marks_status_disconnected_on_exit() {
+        let shared = Arc::new(Mutex::new(SharedDocState::new(
+            notebook_doc::NotebookDoc::new("test-notebook").into_inner(),
+            "test-notebook".into(),
+        )));
         let initial_snapshot = {
             let state = shared.lock().unwrap();
             NotebookSnapshot::from_doc(&state.doc)
         };
         let (snapshot_tx, _snapshot_rx) = watch::channel(initial_snapshot);
         let snapshot_tx = Arc::new(snapshot_tx);
-        let (_broadcast_tx, _broadcast_rx) = broadcast::channel::<NotebookBroadcast>(8);
+        let (status_tx, status_rx) = watch::channel(SyncStatus::connected_pending());
         let (changed_tx, changed_rx) = mpsc::unbounded_channel();
         let (cmd_tx, cmd_rx) = mpsc::channel(1);
+        let (broadcast_tx, _broadcast_rx) = broadcast::channel::<NotebookBroadcast>(8);
         drop(changed_tx);
         drop(cmd_tx);
 
@@ -978,24 +1153,14 @@ mod tests {
                 changed_rx,
                 cmd_rx,
                 snapshot_tx,
-                broadcast_tx: _broadcast_tx,
-                pending_frames: vec![connection::TypedNotebookFrame {
-                    frame_type: NotebookFrameType::AutomergeSync,
-                    payload: late_msg.encode(),
-                }],
+                status_tx,
+                broadcast_tx,
             },
             tokio::io::empty(),
             tokio::io::sink(),
         )
         .await;
 
-        let cell_count = {
-            let state = shared.lock().unwrap();
-            notebook_doc::get_cells_from_doc(&state.doc).len()
-        };
-        assert_eq!(
-            cell_count, 1,
-            "pending notebook frame should populate the cells map"
-        );
+        assert_eq!(status_rx.borrow().connection, ConnectionState::Disconnected);
     }
 }
