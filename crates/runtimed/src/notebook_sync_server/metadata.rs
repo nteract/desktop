@@ -2,8 +2,10 @@ use super::*;
 
 pub struct TrustState {
     pub status: runt_trust::TrustStatus,
+    #[allow(dead_code)]
     pub info: runt_trust::TrustInfo,
     /// If true, kernel launch is pending user trust approval
+    #[allow(dead_code)]
     pub pending_launch: bool,
 }
 

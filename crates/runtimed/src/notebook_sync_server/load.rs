@@ -618,13 +618,10 @@ where
     Ok(total_cells)
 }
 
-/// Load notebook cells and metadata from a .ipynb file into a NotebookDoc.
-///
-/// Called by daemon-owned notebook loading (`OpenNotebook` handshake).
-/// Parses the file and populates the Automerge doc with cells and metadata.
-///
-/// Returns the cell count on success.
-pub async fn load_notebook_from_disk(
+/// Test helper for loading notebook cells and metadata from a `.ipynb` file
+/// into a `NotebookDoc`.
+#[cfg(test)]
+pub(crate) async fn load_notebook_from_disk(
     doc: &mut NotebookDoc,
     path: &std::path::Path,
     blob_store: &BlobStore,
@@ -632,9 +629,10 @@ pub async fn load_notebook_from_disk(
     load_notebook_from_disk_with_state_doc(doc, None, path, blob_store).await
 }
 
-/// Load a notebook from disk, populating both the notebook doc and optionally
-/// the RuntimeStateDoc with outputs keyed by synthetic execution_ids.
-pub async fn load_notebook_from_disk_with_state_doc(
+/// Test helper for loading a notebook from disk into the notebook doc and,
+/// optionally, the `RuntimeStateDoc`.
+#[cfg(test)]
+pub(crate) async fn load_notebook_from_disk_with_state_doc(
     doc: &mut NotebookDoc,
     mut state_doc: Option<&mut RuntimeStateDoc>,
     path: &std::path::Path,
