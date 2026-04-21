@@ -2203,16 +2203,19 @@ where
     // whether the sync loop exits with Ok or Err.
     let peer_id = uuid::Uuid::new_v4().to_string();
 
-    // Pre-send the initial Automerge sync frames (notebook doc, state doc,
-    // pool doc) plus the eager RuntimeStateSnapshot broadcast and presence
-    // snapshot BEFORE entering the background sync loop. This guarantees
-    // the first AutomergeSync frame is on the wire before the client's
-    // `do_initial_sync` starts ticking its 100ms-per-frame timeout.
+    // Pre-send the initial notebook-doc AutomergeSync frame BEFORE entering
+    // the background sync loop. This guarantees the first AutomergeSync
+    // frame is on the wire before the client's `do_initial_sync` starts
+    // ticking its 100ms-per-frame convergence timeout.
     // Without this ordering, under CI load a spawned-but-unscheduled handler
     // task can race with the client's timeout, flaking tests like
     // `test_pipe_mode_forwards_sync_frames`.
-    let initial_sync_state =
-        send_initial_sync_frames(&mut writer, &room, &daemon, &peer_id).await?;
+    //
+    // State/pool/presence initial syncs stay inside `run_sync_loop_v2`
+    // because they must run AFTER streaming load populates per-cell
+    // outputs in the RuntimeStateDoc, and AFTER the broadcast channels
+    // are subscribed.
+    let initial_sync_state = send_initial_notebook_doc_sync(&mut writer, &room).await?;
 
     let result = run_sync_loop_v2(
         &mut reader,
@@ -2667,52 +2670,55 @@ fn sanitize_peer_label(raw: Option<&str>, fallback: &str) -> String {
     }
 }
 
-/// State carried from the pre-send initial sync into the steady-state loop.
+/// State carried from the pre-send initial notebook-doc sync into the
+/// steady-state loop.
 ///
-/// See [`send_initial_sync_frames`]. Each peer_state tracks what the daemon
-/// has already advertised to this client per Automerge doc so subsequent
-/// generate_sync_message calls compute correct deltas.
+/// See [`send_initial_notebook_doc_sync`]. `peer_state` tracks what the
+/// daemon has already advertised about the notebook doc so subsequent
+/// generate_sync_message calls compute correct deltas (including deltas
+/// emitted by `streaming_load_cells`).
 pub(crate) struct InitialSyncState {
     pub(crate) peer_state: sync::State,
-    pub(crate) state_peer_state: sync::State,
-    pub(crate) pool_peer_state: sync::State,
 }
 
 impl InitialSyncState {
     fn new() -> Self {
         Self {
             peer_state: sync::State::new(),
-            state_peer_state: sync::State::new(),
-            pool_peer_state: sync::State::new(),
         }
     }
 }
 
-/// Generate and send the initial Automerge sync frames for the notebook doc,
-/// RuntimeStateDoc, and PoolDoc, plus the eager RuntimeStateSnapshot broadcast
-/// and presence snapshot.
+/// Generate and send the initial notebook-doc AutomergeSync frame before
+/// entering the background sync loop.
 ///
-/// Runs synchronously as part of the handshake path so the first AutomergeSync
-/// frame is on the wire before any background work (auto-launch kernel,
-/// streaming load, steady-state select loop). Without this ordering the
-/// per-connection handler can be spawned-but-not-yet-scheduled while the
-/// client's `do_initial_sync` is already ticking its 100ms-per-frame timeout,
-/// which flakes under CI load.
+/// Runs synchronously as part of the handshake path so the first
+/// AutomergeSync frame is on the wire before the client's `do_initial_sync`
+/// starts ticking its 100ms-per-frame convergence timeout. Without this
+/// ordering, under CI load the per-connection handler can be
+/// spawned-but-not-yet-scheduled while the client is already timing out
+/// waiting for the first sync frame, which flakes
+/// `test_pipe_mode_forwards_sync_frames` and similar sync-sensitive tests.
 ///
-/// Returns the peer_states so the steady-state loop threads them through
-/// without reallocation.
-pub(crate) async fn send_initial_sync_frames<W>(
+/// Only the notebook-doc frame is pre-sent. The RuntimeStateDoc/PoolDoc
+/// initial syncs and the eager RuntimeStateSnapshot/presence broadcasts
+/// continue to run inside `run_sync_loop_v2` AFTER `streaming_load_cells`
+/// populates per-cell outputs, and AFTER the broadcast channels are
+/// subscribed. Pre-sending those here would either advertise an empty
+/// state doc or drop auto-launch broadcasts that land between pre-send
+/// and subscription.
+///
+/// Returns the `peer_state` so the steady-state loop (and streaming load)
+/// continues from the same baseline and emits correct deltas.
+pub(crate) async fn send_initial_notebook_doc_sync<W>(
     writer: &mut W,
     room: &Arc<NotebookRoom>,
-    daemon: &Arc<crate::daemon::Daemon>,
-    peer_id: &str,
 ) -> anyhow::Result<InitialSyncState>
 where
     W: AsyncWrite + Unpin,
 {
     let mut sync_state = InitialSyncState::new();
 
-    // Phase 1: Initial notebook-doc sync — server sends first (typed frame).
     // Encode the sync message inside the lock, then send outside it to avoid
     // holding the write lock across async I/O.
     let initial_encoded = {
@@ -2740,6 +2746,96 @@ where
         connection::send_typed_frame(writer, NotebookFrameType::AutomergeSync, &encoded).await?;
     }
 
+    Ok(sync_state)
+}
+
+/// Typed frames sync loop with first-byte type indicator.
+///
+/// Handles both Automerge sync messages and NotebookRequest messages.
+/// This protocol supports daemon-owned kernel execution (Phase 8).
+///
+/// The caller must have already run [`send_initial_notebook_doc_sync`] and
+/// pass the resulting [`InitialSyncState`] via `initial_sync_state` so the
+/// streaming load and steady-state loop continue on the same notebook-doc
+/// `peer_state`.
+#[allow(clippy::too_many_arguments)]
+async fn run_sync_loop_v2<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    room: &Arc<NotebookRoom>,
+    _rooms: NotebookRooms,
+    _notebook_id: String,
+    daemon: std::sync::Arc<crate::daemon::Daemon>,
+    needs_load: Option<&Path>,
+    peer_id: &str,
+    initial_sync_state: InitialSyncState,
+) -> anyhow::Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let InitialSyncState { mut peer_state } = initial_sync_state;
+
+    // Streaming load: add cells in batches and sync after each batch so
+    // the frontend renders progressively. This runs before we subscribe
+    // to changed_rx to avoid backlog from our own notifications.
+    //
+    // The initial AutomergeSync frame generated before this loop used the
+    // empty-doc peer_state; streaming_load_cells continues on the same
+    // peer_state so each batch emits a delta against what the client has
+    // already been told about. streaming_load_cells also writes synthetic
+    // execution outputs into the RuntimeStateDoc — that's why the initial
+    // RuntimeStateDoc sync below runs AFTER load, not before.
+    if let Some(load_path) = needs_load {
+        if room.try_start_loading() {
+            match streaming_load_cells(reader, writer, room, load_path, &mut peer_state).await {
+                Ok(count) => {
+                    room.finish_loading();
+                    info!(
+                        "[notebook-sync] Streaming load complete: {} cells from {}",
+                        count,
+                        load_path.display()
+                    );
+                }
+                Err(e) => {
+                    room.finish_loading();
+                    // Clear partial cells so the next connection can retry
+                    {
+                        let mut doc = room.doc.write().await;
+                        let _ = doc.clear_all_cells();
+                    }
+                    // Notify other peers so they converge to the cleared state
+                    let _ = room.changed_tx.send(());
+                    warn!(
+                        "[notebook-sync] Streaming load failed for {}: {}",
+                        load_path.display(),
+                        e
+                    );
+                    return Err(anyhow::anyhow!("Streaming load failed: {}", e));
+                }
+            }
+        }
+        // If we lost the race (try_start_loading returned false), another
+        // connection is loading. We'll pick up cells via changed_rx below.
+    }
+
+    // Subscribe to change notifications BEFORE sending the state/pool
+    // initial syncs and eager snapshots, so any writes that land between
+    // the snapshot read and the select loop are still delivered to this
+    // peer as steady-state deltas. Without this, an auto-launch broadcast
+    // (kernel status, env progress) fired during connection setup could
+    // fall into the gap between "snapshot read" and "subscribe".
+    let mut changed_rx = room.changed_tx.subscribe();
+    let mut kernel_broadcast_rx = room.kernel_broadcast_tx.subscribe();
+    let mut presence_rx = room.presence_tx.subscribe();
+    let mut state_changed_rx = room.state_changed_tx.subscribe();
+
+    // PoolDoc — global daemon pool state (UV/Conda availability, errors).
+    let mut pool_changed_rx = daemon.pool_doc_changed.subscribe();
+
+    let mut state_peer_state = sync::State::new();
+    let mut pool_peer_state = sync::State::new();
+
     // Phase 1.1: Initial RuntimeStateDoc sync — encode inside lock, send outside.
     // Uses bounded generation to compact atomically if the message would exceed
     // the 100 MiB frame limit.
@@ -2753,7 +2849,7 @@ where
         }
         match catch_automerge_panic("initial-state-sync", || {
             state_doc.generate_sync_message_bounded_encoded(
-                &mut sync_state.state_peer_state,
+                &mut state_peer_state,
                 STATE_SYNC_COMPACT_THRESHOLD,
             )
         }) {
@@ -2761,9 +2857,9 @@ where
             Err(e) => {
                 warn!("{}", e);
                 state_doc.rebuild_from_save();
-                sync_state.state_peer_state = sync::State::new();
+                state_peer_state = sync::State::new();
                 state_doc
-                    .generate_sync_message(&mut sync_state.state_peer_state)
+                    .generate_sync_message(&mut state_peer_state)
                     .map(|msg| msg.encode())
             }
         }
@@ -2777,16 +2873,16 @@ where
         let mut pool_doc = daemon.pool_doc.write().await;
         match catch_automerge_panic("initial-pool-sync", || {
             pool_doc
-                .generate_sync_message(&mut sync_state.pool_peer_state)
+                .generate_sync_message(&mut pool_peer_state)
                 .map(|msg| msg.encode())
         }) {
             Ok(encoded) => encoded,
             Err(e) => {
                 warn!("{}", e);
                 pool_doc.rebuild_from_save();
-                sync_state.pool_peer_state = sync::State::new();
+                pool_peer_state = sync::State::new();
                 pool_doc
-                    .generate_sync_message(&mut sync_state.pool_peer_state)
+                    .generate_sync_message(&mut pool_peer_state)
                     .map(|msg| msg.encode())
             }
         }
@@ -2857,90 +2953,6 @@ where
                 .await?;
         }
     }
-
-    Ok(sync_state)
-}
-
-/// Typed frames sync loop with first-byte type indicator.
-///
-/// Handles both Automerge sync messages and NotebookRequest messages.
-/// This protocol supports daemon-owned kernel execution (Phase 8).
-///
-/// The caller must have already run [`send_initial_sync_frames`] and pass
-/// the resulting [`InitialSyncState`] via `initial_sync_state` so the
-/// steady-state loop uses the same peer_states.
-#[allow(clippy::too_many_arguments)]
-async fn run_sync_loop_v2<R, W>(
-    reader: &mut R,
-    writer: &mut W,
-    room: &Arc<NotebookRoom>,
-    _rooms: NotebookRooms,
-    _notebook_id: String,
-    daemon: std::sync::Arc<crate::daemon::Daemon>,
-    needs_load: Option<&Path>,
-    peer_id: &str,
-    initial_sync_state: InitialSyncState,
-) -> anyhow::Result<()>
-where
-    R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
-{
-    let InitialSyncState {
-        mut peer_state,
-        mut state_peer_state,
-        mut pool_peer_state,
-    } = initial_sync_state;
-
-    // Streaming load: add cells in batches and sync after each batch so
-    // the frontend renders progressively. This runs before we subscribe
-    // to changed_rx to avoid backlog from our own notifications.
-    //
-    // The initial AutomergeSync frame generated before this loop used the
-    // empty-doc peer_state; streaming_load_cells continues on the same
-    // peer_state so each batch emits a delta against what the client has
-    // already been told about.
-    if let Some(load_path) = needs_load {
-        if room.try_start_loading() {
-            match streaming_load_cells(reader, writer, room, load_path, &mut peer_state).await {
-                Ok(count) => {
-                    room.finish_loading();
-                    info!(
-                        "[notebook-sync] Streaming load complete: {} cells from {}",
-                        count,
-                        load_path.display()
-                    );
-                }
-                Err(e) => {
-                    room.finish_loading();
-                    // Clear partial cells so the next connection can retry
-                    {
-                        let mut doc = room.doc.write().await;
-                        let _ = doc.clear_all_cells();
-                    }
-                    // Notify other peers so they converge to the cleared state
-                    let _ = room.changed_tx.send(());
-                    warn!(
-                        "[notebook-sync] Streaming load failed for {}: {}",
-                        load_path.display(),
-                        e
-                    );
-                    return Err(anyhow::anyhow!("Streaming load failed: {}", e));
-                }
-            }
-        }
-        // If we lost the race (try_start_loading returned false), another
-        // connection is loading. We'll pick up cells via changed_rx below.
-    }
-
-    // Subscribe to change notifications AFTER streaming load to avoid
-    // backlog from our own changed_tx.send(()) calls during loading.
-    let mut changed_rx = room.changed_tx.subscribe();
-    let mut kernel_broadcast_rx = room.kernel_broadcast_tx.subscribe();
-    let mut presence_rx = room.presence_tx.subscribe();
-    let mut state_changed_rx = room.state_changed_tx.subscribe();
-
-    // PoolDoc — global daemon pool state (UV/Conda availability, errors).
-    let mut pool_changed_rx = daemon.pool_doc_changed.subscribe();
 
     // Periodic pruning of stale presence peers (e.g. clients that silently dropped).
     let prune_period = std::time::Duration::from_millis(presence::DEFAULT_HEARTBEAT_MS);
