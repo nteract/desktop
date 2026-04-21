@@ -1251,6 +1251,13 @@ impl NotebookRoom {
             if !ephemeral && persist_path.exists() {
                 if crate::paths::snapshot_before_delete(&persist_path, docs_dir) {
                     let _ = std::fs::remove_file(&persist_path);
+                    // Delete the state sidecar in lockstep. Leaving it
+                    // behind would pair the fresh notebook doc with
+                    // stale outputs on the next offline recovery.
+                    let state_sidecar = state_persist_path_for(&persist_path);
+                    if state_sidecar.exists() {
+                        let _ = std::fs::remove_file(&state_sidecar);
+                    }
                 } else {
                     warn!(
                         "[notebook-sync] Keeping persisted doc (snapshot failed): {:?}",

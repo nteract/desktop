@@ -5094,9 +5094,13 @@ fn find_latest_snapshot(snapshots_dir: &std::path::Path, stem: &str) -> Option<s
         .ok()?
         .flatten()
         .filter(|e| {
-            e.file_name()
-                .to_str()
-                .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".automerge"))
+            e.file_name().to_str().is_some_and(|name| {
+                // `{hash}-{ts}.automerge` only — skip `{hash}-{ts}.state.automerge`
+                // sidecars so a state snapshot isn't mistaken for a notebook doc.
+                name.starts_with(&prefix)
+                    && name.ends_with(".automerge")
+                    && !name.ends_with(".state.automerge")
+            })
         })
         .collect();
 
@@ -5107,6 +5111,19 @@ fn find_latest_snapshot(snapshots_dir: &std::path::Path, stem: &str) -> Option<s
     // Sort by filename descending (latest timestamp last in ascending, so reverse)
     matches.sort_by_key(|e| e.file_name());
     matches.last().map(|e| e.path())
+}
+
+/// Return `true` when `entry` is a notebook `.automerge` file eligible
+/// for `runt recover --list` and path-based recovery.
+///
+/// Filters out `{stem}.state.automerge` sidecars the daemon writes
+/// alongside the notebook doc to persist the RuntimeStateDoc.
+fn is_recoverable_automerge_file(entry: &std::fs::DirEntry) -> bool {
+    let name = entry.file_name();
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    name.ends_with(".automerge") && !name.ends_with(".state.automerge")
 }
 
 /// Export a NotebookDoc to .ipynb JSON, resolving outputs through an
@@ -5416,6 +5433,32 @@ fn blob_path_for(
     Some(dir.join(shard).join(rest))
 }
 
+/// Derive the `blobs/` directory that sits alongside the `notebook-docs/`
+/// directory containing the given `.automerge` file.
+///
+/// Cache layouts we handle:
+///
+/// - `{cache}/notebook-docs/{hash}.automerge`
+/// - `{cache}/notebook-docs/snapshots/{hash}-{ts}.automerge`
+/// - `{cache}/worktrees/{id}/notebook-docs/{hash}.automerge`
+/// - `{cache}/worktrees/{id}/notebook-docs/snapshots/…`
+///
+/// In all four cases the matching blob store lives at
+/// `{cache-or-worktree}/blobs`. Returns `None` if the path doesn't fit —
+/// callers fall back to [`runtimed::default_blob_store_dir`].
+fn blob_store_dir_for_automerge(automerge_path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut parent = automerge_path.parent()?;
+    // Peel snapshots/ if present.
+    if parent.file_name().is_some_and(|n| n == "snapshots") {
+        parent = parent.parent()?;
+    }
+    if parent.file_name().is_some_and(|n| n == "notebook-docs") {
+        let cache_root = parent.parent()?;
+        return Some(cache_root.join("blobs"));
+    }
+    None
+}
+
 /// Look for a `{stem}.state.automerge` sibling of the given notebook doc
 /// file.
 ///
@@ -5480,9 +5523,11 @@ fn recover_notebook(
     output: Option<&std::path::Path>,
     list: bool,
 ) -> Result<()> {
-    let dirs = all_notebook_docs_dirs();
-    let blob_store_dir = runtimed::default_blob_store_dir();
-    recover_notebook_from_dirs(path, output, list, &dirs, Some(&blob_store_dir))
+    // Blob store root is resolved per-recovery from the matching
+    // `.automerge` path so cross-namespace / cross-worktree lookups land
+    // on the right `blobs/` directory. `default_blob_store_dir()` is the
+    // fallback when the path doesn't fit the expected layout.
+    recover_notebook_from_dirs(path, output, list, &all_notebook_docs_dirs(), None)
 }
 
 /// Inner recover flow with explicit lookup dirs and blob store root.
@@ -5507,7 +5552,7 @@ fn recover_notebook_from_dirs(
             // List live docs
             if let Ok(entries) = std::fs::read_dir(dir) {
                 for entry in entries.flatten() {
-                    if entry.path().extension().is_some_and(|e| e == "automerge") {
+                    if is_recoverable_automerge_file(&entry) {
                         found |= print_automerge_entry(&entry, "");
                     }
                 }
@@ -5517,7 +5562,7 @@ fn recover_notebook_from_dirs(
             let snapshots_dir = dir.join("snapshots");
             if let Ok(entries) = std::fs::read_dir(&snapshots_dir) {
                 for entry in entries.flatten() {
-                    if entry.path().extension().is_some_and(|e| e == "automerge") {
+                    if is_recoverable_automerge_file(&entry) {
                         found |= print_automerge_entry(&entry, " [snapshot]");
                     }
                 }
@@ -5570,8 +5615,17 @@ fn recover_notebook_from_dirs(
     // `doc_to_ipynb_with_state` still surfaces legacy cell-local outputs.
     let state_doc = load_sibling_state_doc(&automerge_path);
 
+    // Pick the blob store root to resolve against. Caller-supplied value
+    // wins (tests); otherwise derive it from the `.automerge` location so
+    // a doc recovered out of `~/.cache/runt-nightly/worktrees/{id}/…`
+    // reads from that worktree's `blobs/`, not the default cache.
+    let resolved_blob_dir = blob_store_dir
+        .map(std::path::Path::to_path_buf)
+        .or_else(|| blob_store_dir_for_automerge(&automerge_path))
+        .unwrap_or_else(runtimed::default_blob_store_dir);
+
     let cell_count = doc.cell_count();
-    let notebook_json = doc_to_ipynb_with_state(&doc, state_doc.as_ref(), blob_store_dir);
+    let notebook_json = doc_to_ipynb_with_state(&doc, state_doc.as_ref(), Some(&resolved_blob_dir));
 
     let output_path = match output {
         Some(p) => p.to_path_buf(),
@@ -6030,6 +6084,68 @@ mod tests {
             "blob ContentRef did not resolve from the on-disk blob store"
         );
         assert_eq!(cells[1]["execution_count"], 2);
+    }
+
+    #[test]
+    fn test_blob_store_dir_for_automerge_cache_layouts() {
+        use std::path::{Path, PathBuf};
+        // Stable cache → `~/.cache/runt/blobs`.
+        assert_eq!(
+            super::blob_store_dir_for_automerge(Path::new(
+                "/home/user/.cache/runt/notebook-docs/abc.automerge",
+            )),
+            Some(PathBuf::from("/home/user/.cache/runt/blobs")),
+        );
+        // Nightly cache → `~/.cache/runt-nightly/blobs`.
+        assert_eq!(
+            super::blob_store_dir_for_automerge(Path::new(
+                "/home/user/.cache/runt-nightly/notebook-docs/abc.automerge",
+            )),
+            Some(PathBuf::from("/home/user/.cache/runt-nightly/blobs")),
+        );
+        // Snapshot under notebook-docs/snapshots → still the same blobs root.
+        assert_eq!(
+            super::blob_store_dir_for_automerge(Path::new(
+                "/home/user/.cache/runt/notebook-docs/snapshots/abc-123.automerge",
+            )),
+            Some(PathBuf::from("/home/user/.cache/runt/blobs")),
+        );
+        // Per-worktree dev daemon → `.../worktrees/{id}/blobs`.
+        assert_eq!(
+            super::blob_store_dir_for_automerge(Path::new(
+                "/home/user/.cache/runt-nightly/worktrees/w1/notebook-docs/abc.automerge",
+            )),
+            Some(PathBuf::from(
+                "/home/user/.cache/runt-nightly/worktrees/w1/blobs"
+            )),
+        );
+        // Shape we don't recognize → None so the caller falls back.
+        assert_eq!(
+            super::blob_store_dir_for_automerge(Path::new("/tmp/standalone.automerge")),
+            None,
+        );
+    }
+
+    #[test]
+    fn test_is_recoverable_automerge_file_skips_state_sidecars() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("abc.automerge"), b"").unwrap();
+        std::fs::write(tmp.path().join("abc.state.automerge"), b"").unwrap();
+        let entries: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .flatten()
+            .filter(super::is_recoverable_automerge_file)
+            .collect();
+        assert_eq!(
+            entries.len(),
+            1,
+            "state sidecar must not list as recoverable"
+        );
+        assert_eq!(
+            entries[0].file_name().to_str().unwrap(),
+            "abc.automerge",
+            "only the notebook doc should list"
+        );
     }
 
     /// Verifies MIME-aware ContentRef resolution for display_data bundles.

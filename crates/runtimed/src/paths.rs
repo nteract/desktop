@@ -52,7 +52,10 @@ const MAX_SNAPSHOTS_PER_NOTEBOOK: usize = 5;
 /// Snapshot a persisted automerge doc before deleting it.
 ///
 /// Copies the file to `{docs_dir}/snapshots/{stem}-{millis}.automerge`
-/// and prunes old snapshots beyond `MAX_SNAPSHOTS_PER_NOTEBOOK`.
+/// and prunes old snapshots beyond `MAX_SNAPSHOTS_PER_NOTEBOOK`. If a
+/// paired `{stem}.state.automerge` sidecar exists, it gets a matching
+/// `{stem}-{millis}.state.automerge` snapshot so offline recovery can
+/// still pair outputs with the notebook doc it found.
 ///
 /// Returns `true` if the snapshot was created successfully. The caller
 /// should only delete the original file when this returns `true`.
@@ -93,16 +96,34 @@ pub(crate) fn snapshot_before_delete(persist_path: &Path, docs_dir: &Path) -> bo
         }
     }
 
-    // Prune old snapshots for this hash (keep most recent MAX_SNAPSHOTS_PER_NOTEBOOK)
+    // Snapshot the state sidecar with the same timestamp so the pair
+    // stays consistent. Absence is normal (pre-v3 rooms, ephemeral),
+    // so missing is not an error.
+    let state_src = state_persist_path_alongside(persist_path);
+    if state_src.exists() {
+        let state_snapshot = snapshots_dir.join(format!("{}-{}.state.automerge", stem, timestamp));
+        if let Err(e) = std::fs::copy(&state_src, &state_snapshot) {
+            warn!(
+                "[notebook-sync] Failed to snapshot state sidecar {:?}: {}",
+                state_src, e
+            );
+        }
+    }
+
+    // Prune old snapshots for this hash (keep most recent MAX_SNAPSHOTS_PER_NOTEBOOK).
+    // Count only notebook-doc snapshots; state-doc siblings are pruned in
+    // lockstep via their matching timestamp.
     let prefix = format!("{}-", stem);
     let mut snapshots: Vec<_> = std::fs::read_dir(&snapshots_dir)
         .into_iter()
         .flatten()
         .flatten()
         .filter(|e| {
-            e.file_name()
-                .to_str()
-                .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".automerge"))
+            e.file_name().to_str().is_some_and(|name| {
+                name.starts_with(&prefix)
+                    && name.ends_with(".automerge")
+                    && !name.ends_with(".state.automerge")
+            })
         })
         .collect();
 
@@ -110,11 +131,35 @@ pub(crate) fn snapshot_before_delete(persist_path: &Path, docs_dir: &Path) -> bo
         // Sort by filename (which embeds timestamp) — ascending order
         snapshots.sort_by_key(|e| e.file_name());
         for entry in &snapshots[..snapshots.len() - MAX_SNAPSHOTS_PER_NOTEBOOK] {
-            let _ = std::fs::remove_file(entry.path());
+            let snapshot_path = entry.path();
+            let _ = std::fs::remove_file(&snapshot_path);
+            // Prune matching state sidecar snapshot if present.
+            if let Some(state_sibling) = state_sidecar_for_snapshot(&snapshot_path) {
+                let _ = std::fs::remove_file(state_sibling);
+            }
         }
     }
 
     true
+}
+
+/// Compute `{stem}.state.automerge` next to a `{stem}.automerge` file.
+fn state_persist_path_alongside(notebook_path: &Path) -> PathBuf {
+    let parent = notebook_path.parent().unwrap_or_else(|| Path::new("."));
+    let stem = notebook_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("doc");
+    parent.join(format!("{stem}.state.automerge"))
+}
+
+/// Given a snapshot path `{stem}-{ts}.automerge`, compute the matching
+/// state sidecar snapshot path `{stem}-{ts}.state.automerge`. Returns
+/// `None` when the input doesn't match the expected shape.
+fn state_sidecar_for_snapshot(snapshot_path: &Path) -> Option<PathBuf> {
+    let parent = snapshot_path.parent()?;
+    let stem = snapshot_path.file_stem()?.to_str()?;
+    Some(parent.join(format!("{stem}.state.automerge")))
 }
 
 /// Normalize a user-supplied save target: append `.ipynb` if missing, reject
@@ -176,5 +221,51 @@ mod tests {
     #[test]
     fn normalize_save_target_rejects_relative() {
         assert!(normalize_save_target("foo.ipynb").is_err());
+    }
+
+    /// snapshot_before_delete must mirror the notebook doc snapshot onto
+    /// its paired `.state.automerge` sidecar so offline recovery pairs
+    /// outputs with the right notebook snapshot.
+    #[test]
+    fn snapshot_before_delete_preserves_state_sidecar() {
+        let tmp = tempfile::tempdir().unwrap();
+        let docs_dir = tmp.path().to_path_buf();
+
+        let persist_path = docs_dir.join("abc.automerge");
+        let state_path = docs_dir.join("abc.state.automerge");
+        std::fs::write(&persist_path, b"notebook-bytes").unwrap();
+        std::fs::write(&state_path, b"state-bytes").unwrap();
+
+        assert!(snapshot_before_delete(&persist_path, &docs_dir));
+
+        let snapshots_dir = docs_dir.join("snapshots");
+        let mut notebook_snapshots: Vec<_> = std::fs::read_dir(&snapshots_dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                e.file_name().to_str().is_some_and(|n| {
+                    n.starts_with("abc-")
+                        && n.ends_with(".automerge")
+                        && !n.ends_with(".state.automerge")
+                })
+            })
+            .collect();
+        notebook_snapshots.sort_by_key(|e| e.file_name());
+        assert_eq!(notebook_snapshots.len(), 1, "notebook snapshot missing");
+
+        let state_snapshots: Vec<_> = std::fs::read_dir(&snapshots_dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                e.file_name()
+                    .to_str()
+                    .is_some_and(|n| n.starts_with("abc-") && n.ends_with(".state.automerge"))
+            })
+            .collect();
+        assert_eq!(
+            state_snapshots.len(),
+            1,
+            "state sidecar snapshot missing — offline recovery would pair the notebook snapshot with stale outputs"
+        );
     }
 }
