@@ -2348,6 +2348,85 @@ pub fn diff_execution_outputs(
     (changed_cells, new_snapshot)
 }
 
+/// Extract the `output_id` from an output manifest, if present.
+///
+/// Outputs emitted by the daemon carry a `"output_id"` string field (UUIDv4)
+/// for stable addressable identity. Older outputs or synthesized payloads
+/// without one return `None`.
+pub fn extract_output_id(output: &serde_json::Value) -> Option<String> {
+    output
+        .get("output_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+/// Result of a per-output-id diff between two execution snapshots.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct OutputIdDiff {
+    /// Output IDs that were added or whose manifest changed.
+    pub changed_output_ids: Vec<String>,
+    /// Output IDs that were removed (present in `prev`, absent now).
+    pub removed_output_ids: Vec<String>,
+}
+
+/// Diff execution outputs by `output_id`.
+///
+/// Walks every current execution's output list, extracts per-output manifests
+/// keyed by `output_id`, and compares them to the previous snapshot. Returns
+/// the changed + removed output_ids plus the new `output_id -> manifest`
+/// snapshot so callers can track state between sync frames.
+///
+/// Outputs without an `output_id` (legacy / synthesized) are skipped here —
+/// they still get picked up by `diff_execution_outputs` at the cell level.
+pub fn diff_output_ids(
+    prev: &HashMap<String, serde_json::Value>,
+    current_executions: &HashMap<String, ExecutionState>,
+) -> (OutputIdDiff, HashMap<String, serde_json::Value>) {
+    let mut new_snapshot: HashMap<String, serde_json::Value> = HashMap::new();
+    let mut changed = Vec::new();
+
+    for exec in current_executions.values() {
+        for output in &exec.outputs {
+            let Some(oid) = extract_output_id(output) else {
+                continue;
+            };
+            let is_changed = match prev.get(&oid) {
+                None => true,
+                Some(prev_output) => prev_output != output,
+            };
+            if is_changed {
+                changed.push(oid.clone());
+            }
+            new_snapshot.insert(oid, output.clone());
+        }
+    }
+
+    let removed: Vec<String> = prev
+        .keys()
+        .filter(|k| !new_snapshot.contains_key(k.as_str()))
+        .cloned()
+        .collect();
+
+    (
+        OutputIdDiff {
+            changed_output_ids: changed,
+            removed_output_ids: removed,
+        },
+        new_snapshot,
+    )
+}
+
+/// Collect the ordered list of `output_id`s for a single execution.
+///
+/// Returns the output_ids in order. Outputs without an `output_id` are skipped
+/// (they should not exist on the daemon write path, but we tolerate them).
+pub fn output_ids_for_execution(exec: &ExecutionState) -> Vec<String> {
+    exec.outputs
+        .iter()
+        .filter_map(extract_output_id)
+        .collect()
+}
+
 // ── Tests ───────────────────────────────────────────────────────────
 
 #[cfg(test)]

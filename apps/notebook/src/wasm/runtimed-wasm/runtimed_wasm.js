@@ -742,6 +742,32 @@ export class NotebookHandle {
         }
     }
     /**
+     * Return the `execution_id` currently stamped on a cell, if any.
+     *
+     * Cells with no active execution (never queued, or outputs cleared)
+     * return `None`.
+     * @param {string} cell_id
+     * @returns {string | undefined}
+     */
+    get_cell_execution_id(cell_id) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(cell_id, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.notebookhandle_get_cell_execution_id(retptr, this.__wbg_ptr, ptr0, len0);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            let v2;
+            if (r0 !== 0) {
+                v2 = getStringFromWasm0(r0, r1).slice();
+                wasm.__wbindgen_export4(r0, r1 * 1, 1);
+            }
+            return v2;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
      * Get ordered cell IDs (sorted by position, tiebreak on ID).
      * @returns {string[]}
      */
@@ -907,6 +933,24 @@ export class NotebookHandle {
         }
     }
     /**
+     * Return a summary of the execution for the given `execution_id`, or
+     * `undefined` when that execution is unknown.
+     *
+     * Shape: `{ cell_id, execution_count, status, success, output_ids }`.
+     * `output_ids` preserves the daemon's emission order. Full output
+     * manifests are available via `get_output_by_id(output_id)` — this
+     * method intentionally keeps the payload small so execution-level
+     * subscriptions stay cheap.
+     * @param {string} execution_id
+     * @returns {any}
+     */
+    get_execution_by_id(execution_id) {
+        const ptr0 = passStringToWasm0(execution_id, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.notebookhandle_get_execution_by_id(this.__wbg_ptr, ptr0, len0);
+        return takeObject(ret);
+    }
+    /**
      * Get a metadata value by key (legacy string API).
      * @param {string} key
      * @returns {string | undefined}
@@ -1003,6 +1047,46 @@ export class NotebookHandle {
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.notebookhandle_get_metadata_value(this.__wbg_ptr, ptr0, len0);
         return takeObject(ret);
+    }
+    /**
+     * Return a single output manifest by `output_id`, narrowed to the
+     * active MIME priority set. Returns `undefined` when no output carries
+     * that id.
+     *
+     * Walks all executions in the runtime state doc. The runtime state
+     * maintains O(executions) entries, each with at most a few dozen
+     * outputs, so this is fine for reactive reads. If it ever becomes a
+     * hot path we can cache an `output_id -> (execution_id, index)` map
+     * here — the doc is already the source of truth.
+     * @param {string} output_id
+     * @returns {any}
+     */
+    get_output_by_id(output_id) {
+        const ptr0 = passStringToWasm0(output_id, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.notebookhandle_get_output_by_id(this.__wbg_ptr, ptr0, len0);
+        return takeObject(ret);
+    }
+    /**
+     * Return the ordered list of `output_id`s for an execution, or an empty
+     * list when the execution is unknown.
+     * @param {string} execution_id
+     * @returns {string[]}
+     */
+    get_output_ids_for_execution(execution_id) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(execution_id, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.notebookhandle_get_output_ids_for_execution(retptr, this.__wbg_ptr, ptr0, len0);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var v2 = getArrayJsValueFromWasm0(r0, r1).slice();
+            wasm.__wbindgen_export4(r0, r1 * 4, 4);
+            return v2;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
     }
     /**
      * Read the current pool state snapshot from the WASM doc.
