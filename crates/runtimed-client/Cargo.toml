@@ -9,6 +9,12 @@ license.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Enable ts-rs TypeScript binding generation. Off by default — only needed
+# when regenerating src/bindings/ via `cargo test`. Pulls in dprint/SWC/deno_ast
+# (~159 transitive crates).
+ts-bindings = ["dep:ts-rs"]
+
 [dependencies]
 notebook-protocol = { path = "../notebook-protocol" }
 notebook-doc = { path = "../notebook-doc" }
@@ -26,7 +32,7 @@ reqwest = { version = "0.12", default-features = false, features = ["native-tls"
 uuid = { workspace = true }
 automerge = "0.8"
 schemars = { workspace = true }
-ts-rs = { workspace = true }
+ts-rs = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 smappservice-rs = "0.1"

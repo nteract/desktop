@@ -6,6 +6,8 @@ TypeScript types in `src/bindings/` are auto-generated from Rust structs and enu
 
 The `ts-rs` crate generates TypeScript type definitions from Rust types annotated with `#[derive(TS)]`. This ensures type safety between the Rust daemon and TypeScript frontend.
 
+**`ts-rs` is an optional dependency**, gated behind `features = ["ts-bindings"]` in `runtimed-client`. It pulls in ~159 transitive crates (dprint, SWC, deno_ast) that are only needed when regenerating bindings, not during normal development.
+
 ## Source Files
 
 | Rust File | Generated Types |
@@ -66,34 +68,34 @@ TS_RS_EXPORT_DIR = { value = "src/bindings", relative = true }
 
 ## Regenerating Bindings
 
-Run `cargo test` to regenerate bindings:
+Run `cargo test` with the `ts-bindings` feature enabled:
 
 ```bash
-cargo test
+cargo test -p runtimed-client --features ts-bindings
 ```
 
 The ts-rs procedural macro exports types during test compilation. Generated files appear in `src/bindings/`.
 
+Without the feature flag, `cargo test` still runs all other tests — it just skips the binding export tests.
+
 ## Adding New Bindings
 
-1. Add the `ts-rs` dependency to your crate's `Cargo.toml`:
-   ```toml
-   [dependencies]
-   ts-rs = { version = "12", features = ["serde-compat"] }
-   ```
+1. The `ts-rs` dependency is already available in `runtimed-client` behind the `ts-bindings` feature. No need to add it to other crates — put your types in `runtimed-client`.
 
-2. Annotate your type:
+2. Annotate your type with `cfg_attr` so it compiles with or without the feature:
    ```rust
+   #[cfg(feature = "ts-bindings")]
    use ts_rs::TS;
 
-   #[derive(TS)]
-   #[ts(export)]
+   #[derive(Debug, Clone, Serialize, Deserialize)]
+   #[cfg_attr(feature = "ts-bindings", derive(TS))]
+   #[cfg_attr(feature = "ts-bindings", ts(export))]
    pub struct MyNewType {
        pub field: String,
    }
    ```
 
-3. Run `cargo test` to generate the TypeScript file
+3. Run `cargo test -p runtimed-client --features ts-bindings` to generate the TypeScript file
 
 4. Import from `src/bindings/index.ts`:
    ```typescript

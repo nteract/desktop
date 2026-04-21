@@ -27,12 +27,14 @@ use automerge::{AutoCommit, AutomergeError, ObjId, ObjType, ReadDoc};
 use log::info;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "ts-bindings")]
 use ts_rs::TS;
 
 /// UI theme mode for the notebook editor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
 #[serde(rename_all = "lowercase")]
-#[ts(export)]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 pub enum ThemeMode {
     /// Follow the OS preference and update automatically
     #[default]
@@ -54,9 +56,10 @@ impl std::fmt::Display for ThemeMode {
 }
 
 /// Color theme for the notebook editor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
 #[serde(rename_all = "lowercase")]
-#[ts(export)]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 pub enum ColorTheme {
     /// Neutral palette matching the notebook design system
     #[default]
@@ -71,9 +74,13 @@ use crate::runtime::Runtime;
 ///
 /// Unknown values are captured in the `Other` variant so they survive
 /// serialization round-trips across branches that add new env types.
-#[derive(Debug, Clone, PartialEq, Eq, Default, TS)]
-#[ts(export)]
-#[ts(type = "\"uv\" | \"conda\" | \"pixi\" | (string & {})")]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
+#[cfg_attr(
+    feature = "ts-bindings",
+    ts(type = "\"uv\" | \"conda\" | \"pixi\" | (string & {})")
+)]
 pub enum PythonEnvType {
     /// Use uv for Python package management (fast, pip-compatible)
     #[default]
@@ -137,22 +144,25 @@ impl std::str::FromStr for PythonEnvType {
 }
 
 /// Default packages for uv environments.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 pub struct UvDefaults {
     pub default_packages: Vec<String>,
 }
 
 /// Default packages for conda environments.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 pub struct CondaDefaults {
     pub default_packages: Vec<String>,
 }
 
 /// Default packages for pixi environments.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 pub struct PixiDefaults {
     pub default_packages: Vec<String>,
 }
@@ -173,8 +183,9 @@ pub const DEFAULT_PIXI_POOL_SIZE: u64 = 2;
 pub const MAX_POOL_SIZE: u64 = 20;
 
 /// Snapshot of all synced settings.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 pub struct SyncedSettings {
     /// UI theme mode (light/dark/system)
     #[serde(default)]

@@ -4,15 +4,20 @@
 //! so they round-trip through settings without being silently replaced.
 
 use schemars::JsonSchema;
+#[cfg(feature = "ts-bindings")]
 use ts_rs::TS;
 
 /// Supported notebook runtime environments.
 ///
 /// Unknown values are captured in the `Other` variant so they survive
 /// serialization round-trips across branches that add new runtimes.
-#[derive(Debug, Clone, PartialEq, Eq, Default, TS)]
-#[ts(export)]
-#[ts(type = "\"python\" | \"deno\" | (string & {})")]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
+#[cfg_attr(
+    feature = "ts-bindings",
+    ts(type = "\"python\" | \"deno\" | (string & {})")
+)]
 pub enum Runtime {
     #[default]
     Python,
