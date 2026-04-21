@@ -2610,10 +2610,7 @@ impl Daemon {
                             .collect();
                         (cells, eids)
                     };
-                    let outputs_by_cell: std::collections::HashMap<
-                        String,
-                        Vec<serde_json::Value>,
-                    > = {
+                    let outputs_by_cell: std::collections::HashMap<String, Vec<serde_json::Value>> = {
                         let state_doc = room.state_doc.read().await;
                         eids_by_cell
                             .into_iter()
