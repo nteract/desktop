@@ -685,41 +685,6 @@ impl NotebookDoc {
         }
     }
 
-    /// Migrate from schema v2 to v3: outputs moved to RuntimeStateDoc.
-    ///
-    /// This migration just bumps the schema version. Cell outputs are
-    /// **not** deleted from the doc (Automerge tombstones would bloat it);
-    /// `read_cell()` simply ignores the outputs field. Schema v1 docs
-    /// (cells as List) predate the `.automerge` files that exist in the
-    /// wild and are no longer supported — `load_or_create_inner` starts
-    /// the migration chain at v2→v3.
-    pub fn migrate_v2_to_v3(&mut self) -> Result<(), AutomergeError> {
-        if self.schema_version().unwrap_or(0) >= 3 {
-            return Ok(());
-        }
-        self.doc
-            .put(automerge::ROOT, "schema_version", SCHEMA_VERSION)?;
-        #[cfg(feature = "persistence")]
-        info!("[notebook-doc] Migrated schema v2 → v3 (outputs moved to RuntimeStateDoc)");
-        Ok(())
-    }
-
-    /// Migrate from schema v3 to v4: addressable outputs with `output_id`.
-    ///
-    /// The notebook doc itself doesn't change — outputs live in RuntimeStateDoc.
-    /// This just bumps the schema version so the daemon knows to mint `output_id`s
-    /// for legacy outputs during RuntimeStateDoc population.
-    pub fn migrate_v3_to_v4(&mut self) -> Result<(), AutomergeError> {
-        if self.schema_version().unwrap_or(0) >= 4 {
-            return Ok(());
-        }
-        self.doc
-            .put(automerge::ROOT, "schema_version", SCHEMA_VERSION)?;
-        #[cfg(feature = "persistence")]
-        info!("[notebook-doc] Migrated schema v3 → v4 (addressable outputs with output_id)");
-        Ok(())
-    }
-
     /// Create a client-side bootstrap document for sync.
     ///
     /// Every client — WASM frontend, Python bindings, future Swift, etc. —
