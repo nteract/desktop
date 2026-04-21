@@ -1171,6 +1171,13 @@ pub struct NotebookRoom {
     ///
     /// `None` for ephemeral rooms, matching `persist_tx`.
     pub state_persist_tx: Option<watch::Sender<Option<Vec<u8>>>>,
+    /// When cleared, the state-persist forwarder stops pushing new
+    /// snapshots. Flipped to `false` by `finalize_untitled_promotion`:
+    /// after a notebook is saved to a `.ipynb` path, the `.ipynb` itself
+    /// owns outputs and the UUID-keyed state sidecar would go stale
+    /// without a notebook doc next to it. Shared as `Arc` so the
+    /// forwarder task can consult it without keeping the whole room alive.
+    pub state_persist_enabled: Arc<AtomicBool>,
     /// Notification channel for RuntimeStateDoc changes.
     /// Peer sync loops subscribe to push RuntimeStateSync frames.
     pub state_changed_tx: broadcast::Sender<()>,
@@ -1393,6 +1400,7 @@ impl NotebookRoom {
         ));
 
         let (state_changed_tx, _) = broadcast::channel(16);
+        let state_persist_enabled = Arc::new(AtomicBool::new(true));
 
         // Forward RuntimeStateDoc changes into the state-persist debouncer.
         // The forwarder subscribes to `state_changed_tx` (every mutation
@@ -1404,6 +1412,7 @@ impl NotebookRoom {
                 state_doc.clone(),
                 state_changed_tx.subscribe(),
                 tx.clone(),
+                state_persist_enabled.clone(),
             );
         }
 
@@ -1434,6 +1443,7 @@ impl NotebookRoom {
             watcher_shutdown_tx: Mutex::new(None),
             state_doc,
             state_persist_tx,
+            state_persist_enabled,
             state_changed_tx,
             runtime_agent_handle: Arc::new(Mutex::new(None)),
             runtime_agent_env_path: Arc::new(RwLock::new(None)),
@@ -1505,10 +1515,12 @@ impl NotebookRoom {
         let (state_changed_tx, _) = broadcast::channel(16);
         let (state_persist_tx, state_persist_rx) = watch::channel::<Option<Vec<u8>>>(None);
         spawn_state_persist_debouncer(state_persist_rx, state_persist_path_for(&persist_path));
+        let state_persist_enabled = Arc::new(AtomicBool::new(true));
         spawn_state_persist_forwarder(
             state_doc.clone(),
             state_changed_tx.subscribe(),
             state_persist_tx.clone(),
+            state_persist_enabled.clone(),
         );
         Self {
             id,
@@ -1537,6 +1549,7 @@ impl NotebookRoom {
             watcher_shutdown_tx: Mutex::new(None),
             state_doc,
             state_persist_tx: Some(state_persist_tx),
+            state_persist_enabled,
             state_changed_tx,
             runtime_agent_handle: Arc::new(Mutex::new(None)),
             runtime_agent_env_path: Arc::new(RwLock::new(None)),
@@ -6932,6 +6945,15 @@ pub(crate) async fn finalize_untitled_promotion(room: &Arc<NotebookRoom>, canoni
         }
     }
 
+    // Stop the forwarder from rewriting `{uuid-hash}.state.automerge`
+    // now that the notebook's source of truth is the `.ipynb` file.
+    // Must be flipped BEFORE deleting the sidecar — otherwise a racing
+    // forwarder write could recreate the file between our removal call
+    // and subsequent GC passes. After this flag is off, even a pending
+    // write in the debouncer runs against stale bytes but hits a path
+    // we then delete; the next-pass delete covers it.
+    room.state_persist_enabled.store(false, Ordering::Relaxed);
+
     // Remove the paired state sidecar too. Without this, the forwarder
     // would keep rewriting `{uuid-hash}.state.automerge` even though the
     // notebook's source of truth is now the `.ipynb` file — `runt recover`
@@ -7473,10 +7495,15 @@ fn spawn_state_persist_debouncer_with_config(
 /// doc write), serializes the current state doc to bytes, and pushes
 /// them to the debouncer's watch channel. Coalescing and on-disk writes
 /// happen inside `spawn_state_persist_debouncer`.
+///
+/// `enabled` lets the room turn off state persistence mid-session
+/// (e.g. after an untitled notebook is promoted to a `.ipynb` path and
+/// the UUID-keyed state sidecar would go stale).
 fn spawn_state_persist_forwarder(
     state_doc: Arc<RwLock<RuntimeStateDoc>>,
     mut state_changed_rx: broadcast::Receiver<()>,
     state_persist_tx: watch::Sender<Option<Vec<u8>>>,
+    enabled: Arc<AtomicBool>,
 ) {
     spawn_supervised(
         "state-persist-forwarder",
@@ -7484,6 +7511,9 @@ fn spawn_state_persist_forwarder(
             loop {
                 match state_changed_rx.recv().await {
                     Ok(()) => {
+                        if !enabled.load(Ordering::Relaxed) {
+                            continue;
+                        }
                         let bytes = {
                             let mut sd = state_doc.write().await;
                             sd.doc_mut().save()
@@ -7501,6 +7531,9 @@ fn spawn_state_persist_forwarder(
                         // doc reflects the union. Re-serialize now so
                         // the sidecar doesn't stay stale if no further
                         // events arrive before idle / shutdown.
+                        if !enabled.load(Ordering::Relaxed) {
+                            continue;
+                        }
                         debug!(
                             "[notebook-sync] State-persist forwarder lagged {n} events; \
                              reserializing state doc to avoid stale sidecar"
@@ -9854,6 +9887,7 @@ mod tests {
             watcher_shutdown_tx: Mutex::new(None),
             state_doc,
             state_persist_tx: None,
+            state_persist_enabled: Arc::new(AtomicBool::new(false)),
             state_changed_tx,
             runtime_agent_handle: Arc::new(Mutex::new(None)),
             runtime_agent_env_path: Arc::new(RwLock::new(None)),

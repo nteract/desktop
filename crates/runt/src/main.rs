@@ -5386,11 +5386,14 @@ fn resolve_text_content_ref(
 /// - `{"blob": "<64-hex>", "size": <non-negative-integer>}` — exactly
 ///   two fields, blob is a 64-char hex string
 ///
-/// User-supplied JSON output payloads (for `application/vnd.*+json`
-/// MIMEs) are arbitrary — they might legitimately contain
-/// `{"inline": "hello"}` or `{"blob": "abc"}`. Strictness on field set
-/// plus the 64-char hex check for blob hashes narrows the false-positive
-/// window enough that well-formed user JSON is unlikely to match.
+/// Called only on positions the daemon's output-store layout designates
+/// as ContentRef (stream `text`, error `traceback`, and each MIME entry
+/// in display_data / execute_result `data`). Even at those positions a
+/// user's JSON payload could be stored raw on older captures, so we
+/// gate on the strict shape above. In practice the daemon always wraps
+/// user JSON in a ContentRef before writing the state doc, so the
+/// stricter check buys the common case with no behaviour loss for
+/// current captures.
 fn looks_like_content_ref(map: &serde_json::Map<String, serde_json::Value>) -> bool {
     // Inline shape: exactly `{"inline": <string>}`.
     if map.len() == 1 {
