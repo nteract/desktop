@@ -2090,6 +2090,9 @@ async fn save_notebook_as(
     sync_ready.update_cached_path(window.label(), Some(&saved_path.to_string_lossy()));
     dirty.store(false, Ordering::SeqCst);
 
+    // Promote the new path onto the Open Recent list so Save As destinations
+    // behave like any other opened notebook.
+    runt_workspace::recent::record_open(&saved_path);
     refresh_native_menu(window.app_handle(), registry.inner());
 
     // Restart the kernel only if one was already running. This preserves
@@ -2349,7 +2352,12 @@ fn open_notebook_window(
         },
         None,
     )
-    .map(|_| ())
+    .map(|_| ())?;
+    // Record the successful open on the MRU list and refresh the menu so every
+    // window's native menu reflects the new entry immediately.
+    runt_workspace::recent::record_open(path);
+    refresh_native_menu(app, registry);
+    Ok(())
 }
 
 /// Process a single file-open URL: focus existing window, reuse empty window, or open new.
@@ -3399,7 +3407,14 @@ fn window_menu_display_names(
 
 fn refresh_native_menu(app: &tauri::AppHandle, registry: &WindowNotebookRegistry) {
     let window_display_names = window_menu_display_names(app, registry);
-    match crate::menu::create_menu(app, &window_display_names) {
+    let recent = runt_workspace::recent::load_recent();
+    // Filter out entries whose file is no longer on disk so the submenu stays honest.
+    let live: Vec<_> = recent
+        .entries
+        .into_iter()
+        .filter(|e| e.path.try_exists().unwrap_or(false))
+        .collect();
+    match crate::menu::create_menu(app, &window_display_names, &live) {
         Ok(menu) => {
             if let Err(error) = app.set_menu(menu) {
                 warn!("[menu] Failed to update native menu: {}", error);
@@ -4221,7 +4236,17 @@ pub fn run(
             // Set up native menu bar
             let window_display_names =
                 window_menu_display_names(app.handle(), app.state::<WindowNotebookRegistry>().inner());
-            let menu = crate::menu::create_menu(app.handle(), &window_display_names)?;
+            let recent_startup = runt_workspace::recent::load_recent();
+            let recent_startup_live: Vec<_> = recent_startup
+                .entries
+                .into_iter()
+                .filter(|e| e.path.try_exists().unwrap_or(false))
+                .collect();
+            let menu = crate::menu::create_menu(
+                app.handle(),
+                &window_display_names,
+                &recent_startup_live,
+            )?;
             app.set_menu(menu)?;
 
             let has_session_to_clear = restored_session.is_some();
@@ -4449,6 +4474,45 @@ pub fn run(
                 return;
             }
             let registry = app.state::<WindowNotebookRegistry>();
+            if menu_id == crate::menu::MENU_OPEN_RECENT_CLEAR {
+                runt_workspace::recent::clear();
+                refresh_native_menu(app, registry.inner());
+                return;
+            }
+            if let Some(index) = crate::menu::index_for_open_recent_menu_item_id(menu_id) {
+                let recent = runt_workspace::recent::load_recent();
+                let Some(entry) = recent.entries.get(index).cloned() else {
+                    // The snapshot changed between paint and click; just rebuild.
+                    refresh_native_menu(app, registry.inner());
+                    return;
+                };
+                if !entry.path.try_exists().unwrap_or(false) {
+                    warn!(
+                        "[open-recent] Entry no longer exists: {}",
+                        entry.path.display()
+                    );
+                    runt_workspace::recent::remove_entry(&entry.path);
+                    refresh_native_menu(app, registry.inner());
+                    let app_handle = app.clone();
+                    let missing = entry.path.display().to_string();
+                    tauri::async_runtime::spawn(async move {
+                        tauri_plugin_dialog::DialogExt::dialog(&app_handle)
+                            .message(format!("Notebook no longer exists:\n{missing}"))
+                            .title("File Not Found")
+                            .kind(tauri_plugin_dialog::MessageDialogKind::Warning)
+                            .blocking_show();
+                    });
+                    return;
+                }
+                if let Err(e) = open_notebook_window(app, registry.inner(), &entry.path) {
+                    warn!(
+                        "[open-recent] Failed to open '{}': {}",
+                        entry.path.display(),
+                        e
+                    );
+                }
+                return;
+            }
             match menu_id {
                 crate::menu::MENU_NEW_NOTEBOOK => {
                     // Spawn notebook using the user's default runtime preference

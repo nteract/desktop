@@ -4,6 +4,8 @@ use tauri::menu::{
 };
 use tauri::{AppHandle, Manager, Wry};
 
+use runt_workspace::recent::{RecentNotebook, RECENT_MAX_ENTRIES};
+
 pub struct BundledSampleNotebook {
     pub title: &'static str,
     pub file_name: &'static str,
@@ -19,6 +21,8 @@ pub const MENU_OPEN_SAMPLE: &str = "open_sample";
 pub const MENU_SAVE: &str = "save";
 pub const MENU_CLONE_NOTEBOOK: &str = "clone_notebook";
 pub const MENU_WINDOW_FOCUS_PREFIX: &str = "focus_window:";
+pub const MENU_OPEN_RECENT_PREFIX: &str = "open_recent:";
+pub const MENU_OPEN_RECENT_CLEAR: &str = "open_recent:clear";
 
 // Menu item IDs for zoom
 pub const MENU_ZOOM_IN: &str = "zoom_in";
@@ -75,6 +79,20 @@ pub fn window_label_for_menu_item_id(menu_id: &str) -> Option<&str> {
     menu_id.strip_prefix(MENU_WINDOW_FOCUS_PREFIX)
 }
 
+pub fn open_recent_menu_item_id(index: usize) -> String {
+    format!("{MENU_OPEN_RECENT_PREFIX}{index}")
+}
+
+/// Returns the index for an indexed `open_recent:N` menu id. The `open_recent:clear`
+/// id is explicitly not an index and returns `None`.
+pub fn index_for_open_recent_menu_item_id(menu_id: &str) -> Option<usize> {
+    let rest = menu_id.strip_prefix(MENU_OPEN_RECENT_PREFIX)?;
+    if rest == "clear" {
+        return None;
+    }
+    rest.parse().ok()
+}
+
 fn build_about_metadata() -> AboutMetadata<'static> {
     AboutMetadataBuilder::new()
         .name(Some(app_name()))
@@ -89,6 +107,7 @@ fn build_about_metadata() -> AboutMetadata<'static> {
 pub fn create_menu(
     app: &AppHandle,
     window_display_names: &HashMap<String, String>,
+    recent: &[RecentNotebook],
 ) -> tauri::Result<Menu<Wry>> {
     let menu = Menu::new(app)?;
     let about_metadata = build_about_metadata();
@@ -186,6 +205,37 @@ pub fn create_menu(
         true,
         None::<&str>,
     )?)?;
+
+    // Open Recent submenu — dynamic list, rebuilt on each `refresh_native_menu`.
+    let has_recent = !recent.is_empty();
+    let open_recent_submenu = Submenu::new(app, "Open Recent", has_recent)?;
+    for (idx, entry) in recent.iter().enumerate().take(RECENT_MAX_ENTRIES) {
+        let label = entry
+            .path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("<unknown>")
+            .to_string();
+        open_recent_submenu.append(&MenuItem::with_id(
+            app,
+            open_recent_menu_item_id(idx),
+            label,
+            true,
+            None::<&str>,
+        )?)?;
+    }
+    if has_recent {
+        open_recent_submenu.append(&PredefinedMenuItem::separator(app)?)?;
+    }
+    open_recent_submenu.append(&MenuItem::with_id(
+        app,
+        MENU_OPEN_RECENT_CLEAR,
+        "Clear Menu",
+        has_recent,
+        None::<&str>,
+    )?)?;
+    file_menu.append(&open_recent_submenu)?;
+
     file_menu.append(&PredefinedMenuItem::separator(app)?)?;
     file_menu.append(&MenuItem::with_id(
         app,
@@ -346,9 +396,10 @@ pub fn create_menu(
 #[cfg(test)]
 mod tests {
     use super::{
-        about_menu_label, app_name, build_about_metadata, window_label_for_menu_item_id,
-        window_menu_item_id, APP_COMMIT_SHA, APP_RELEASE_DATE, APP_VERSION,
-        BUNDLED_SAMPLE_NOTEBOOK,
+        about_menu_label, app_name, build_about_metadata, index_for_open_recent_menu_item_id,
+        open_recent_menu_item_id, window_label_for_menu_item_id, window_menu_item_id,
+        APP_COMMIT_SHA, APP_RELEASE_DATE, APP_VERSION, BUNDLED_SAMPLE_NOTEBOOK,
+        MENU_OPEN_RECENT_CLEAR,
     };
 
     #[test]
@@ -364,6 +415,23 @@ mod tests {
             assert_eq!(resolved, label);
         }
         assert!(window_label_for_menu_item_id("new_notebook").is_none());
+    }
+
+    #[test]
+    fn open_recent_ids_round_trip() {
+        for idx in [0usize, 1, 9, 42] {
+            let id = open_recent_menu_item_id(idx);
+            assert_eq!(index_for_open_recent_menu_item_id(&id), Some(idx));
+        }
+        // Clear is not an index.
+        assert_eq!(
+            index_for_open_recent_menu_item_id(MENU_OPEN_RECENT_CLEAR),
+            None
+        );
+        // Unrelated ids do not parse.
+        assert_eq!(index_for_open_recent_menu_item_id("new_notebook"), None);
+        assert_eq!(index_for_open_recent_menu_item_id("open_recent:"), None);
+        assert_eq!(index_for_open_recent_menu_item_id("open_recent:abc"), None);
     }
 
     #[test]
