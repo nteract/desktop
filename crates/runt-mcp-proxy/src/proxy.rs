@@ -441,17 +441,22 @@ impl McpProxy {
                 tokio::time::sleep(Duration::from_millis(proxy.config.monitor_poll_interval_ms))
                     .await;
 
-                // Check if child is closed
-                let is_closed = {
+                // `is_transport_closed()` flips when the rmcp service loop
+                // breaks because the child's stdout hit EOF (i.e. the
+                // process exited). Don't use `is_closed()` here: it only
+                // reports "someone consumed the handle via .waiting()" or
+                // "the cancellation token was cancelled," neither of which
+                // happens on a natural child exit. See child::tests.
+                let transport_closed = {
                     let state = proxy.state.read().await;
                     state
                         .child_client
                         .as_ref()
-                        .map(|c| c.is_closed())
+                        .map(|c| c.is_transport_closed())
                         .unwrap_or(true)
                 };
 
-                if !is_closed {
+                if !transport_closed {
                     continue;
                 }
 
@@ -507,7 +512,10 @@ impl McpProxy {
             }
             Err(e) => {
                 let state = self.state.read().await;
-                let child_alive = state.child_client.as_ref().is_some_and(|c| !c.is_closed());
+                let child_alive = state
+                    .child_client
+                    .as_ref()
+                    .is_some_and(|c| !c.is_transport_closed());
                 drop(state);
                 if child_alive {
                     warn!("Tool call failed but child still connected, not restarting: {e}");
@@ -554,7 +562,10 @@ impl McpProxy {
             Ok(result) => return Ok(result),
             Err(e) => {
                 let state = self.state.read().await;
-                let child_alive = state.child_client.as_ref().is_some_and(|c| !c.is_closed());
+                let child_alive = state
+                    .child_client
+                    .as_ref()
+                    .is_some_and(|c| !c.is_transport_closed());
                 drop(state);
                 if child_alive {
                     return Err(e);
