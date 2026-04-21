@@ -213,6 +213,10 @@ describe("fixture-based integration: daemon-authored docs through WASM sync", ()
     });
 
     it("broadcasts arrive independently of sync frames", async () => {
+      const manifest = loadManifest("output_streaming");
+      const expectedIds = manifest.expected!.output_ids as string[];
+      const expectedTexts = manifest.expected!.output_texts as string[];
+
       const broadcastFrames = loadBroadcastFrames("output_streaming");
       const h = await setupFixtureSync("output_streaming");
 
@@ -225,17 +229,21 @@ describe("fixture-based integration: daemon-authored docs through WASM sync", ()
         h.transport.deliver(Array.from(frame));
       }
 
-      expect(broadcasts.length).toBe(3);
-      for (const b of broadcasts) {
-        const payload = b as Record<string, unknown>;
+      expect(broadcasts.length).toBe(expectedIds.length);
+      for (let i = 0; i < broadcasts.length; i++) {
+        const payload = broadcasts[i] as Record<string, unknown>;
         expect(payload.event).toBe("output");
         expect(payload.cell_id).toBe("cell-1");
         expect(payload.output_type).toBe("stream");
-        // output_json is the serialized inline manifest — parse and spot-check.
+        expect(payload.output_index).toBe(i);
+        // output_json is the serialized inline manifest. Compare against the
+        // exact (id, text) pair the fixture generator wrote so a dropped /
+        // duplicated / reordered broadcast would fail here.
         const parsed = JSON.parse(payload.output_json as string);
         expect(parsed.output_type).toBe("stream");
-        expect(parsed.output_id).toMatch(UUID_RE);
-        expect(resolveInline(parsed.text)).toMatch(/^\d\n$/);
+        expect(parsed.output_id).toBe(expectedIds[i]);
+        expect(parsed.name).toBe("stdout");
+        expect(resolveInline(parsed.text)).toBe(expectedTexts[i]);
       }
 
       sub.unsubscribe();
@@ -353,15 +361,16 @@ describe("fixture-based integration: daemon-authored docs through WASM sync", ()
       // text/plain is inlined
       expect(resolveInline(data["text/plain"])).toBe("<Figure size 640x480>");
 
-      // image/png has a ContentRef — after narrowing, binary blob refs should
-      // carry a `url` (blob_port set) or `blob` variant. Without a blob port
-      // configured in this test, we expect the raw blob shape.
+      // image/png has a blob ContentRef. No blob_port is set on the client
+      // handle in this test, so WASM's `resolve_content_ref` keeps binary
+      // blob refs as `{blob, size}` — that is the exact shape that should
+      // reach the UI here. A regression to `{inline}` or `{url}` would mean
+      // binary MIME handling changed silently.
       const image = data["image/png"] as Record<string, unknown>;
-      expect(typeof image).toBe("object");
-      // One of: `{inline}`, `{blob}`, `{url}`. All legal — the narrowing is
-      // what matters, not the variant. Assert the shape loosely.
-      const hasKnownVariant = "inline" in image || "blob" in image || "url" in image;
-      expect(hasKnownVariant).toBe(true);
+      expect(image.blob).toBe("fake_image_blob_hash_for_fixture_testing_only_not_real");
+      expect(image.size).toBe(12345);
+      expect("inline" in image).toBe(false);
+      expect("url" in image).toBe(false);
 
       h.dispose();
     });
