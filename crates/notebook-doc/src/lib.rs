@@ -93,6 +93,12 @@ pub struct StreamOutputState {
 }
 
 /// Snapshot of a single cell's state, suitable for serialization.
+///
+/// `CellSnapshot` represents only the fields that live in the notebook
+/// Automerge document. Outputs moved to `RuntimeStateDoc` in schema v3
+/// and are looked up separately, keyed by the cell's `execution_id`.
+/// Callers that need outputs should use a dedicated lookup such as
+/// `DocHandle::get_cell_outputs(cell_id)` or `DocHandle::get_all_outputs()`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CellSnapshot {
     pub id: String,
@@ -104,8 +110,6 @@ pub struct CellSnapshot {
     pub source: String,
     /// JSON-encoded execution count: a number string like "5" or "null"
     pub execution_count: String,
-    /// Inline output manifests (structured JSON with ContentRef blob/inline refs)
-    pub outputs: Vec<serde_json::Value>,
     /// Cell metadata (arbitrary JSON object, preserves unknown keys)
     #[serde(default = "default_empty_object")]
     pub metadata: serde_json::Value,
@@ -755,10 +759,10 @@ impl NotebookDoc {
             self.doc
                 .put(&cell_obj, "execution_count", cell.execution_count.as_str())?;
 
-            let outputs_id = self.doc.put_object(&cell_obj, "outputs", ObjType::List)?;
-            for (j, output) in cell.outputs.iter().enumerate() {
-                insert_json_at_index(&mut self.doc, &outputs_id, j, output)?;
-            }
+            // Outputs moved to RuntimeStateDoc in schema v3. The v1→v2 step
+            // no longer carries them — a subsequent v2→v3 migration step
+            // moves any pre-existing outputs into RuntimeStateDoc via
+            // `extract_cell_outputs` before callers reach this point.
 
             if cell.metadata != serde_json::Value::Object(serde_json::Map::new()) {
                 let meta_str =
@@ -2022,9 +2026,8 @@ impl NotebookDoc {
             .and_then(|text_id| self.doc.text(&text_id).ok())
             .unwrap_or_default();
 
-        // Outputs live in RuntimeStateDoc, not in the notebook doc.
-        // DocHandle and WASM populate CellSnapshot.outputs from RuntimeStateDoc.
-        let outputs = vec![];
+        // Outputs live in RuntimeStateDoc, keyed by execution_id. Callers
+        // that need them must fetch explicitly (see DocHandle::get_cell_outputs).
 
         // Read metadata (native Automerge map with legacy string fallback)
         let metadata = read_cell_metadata(&self.doc, cell_obj);
@@ -2052,7 +2055,6 @@ impl NotebookDoc {
             position,
             source,
             execution_count,
-            outputs,
             metadata,
             resolved_assets,
         })
@@ -2564,15 +2566,7 @@ pub fn get_cells_from_doc(doc: &AutoCommit) -> Vec<CellSnapshot> {
                 })
                 .unwrap_or_default();
 
-            let outputs = match doc.get(&cell_obj, "outputs").ok().flatten() {
-                Some((automerge::Value::Object(ObjType::List), list_id)) => {
-                    let len = doc.length(&list_id);
-                    (0..len)
-                        .filter_map(|j| read_json_value(doc, &list_id, j))
-                        .collect()
-                }
-                _ => vec![],
-            };
+            // Outputs live in RuntimeStateDoc, keyed by execution_id.
 
             // Read metadata (native Automerge map with legacy string fallback)
             let metadata = read_cell_metadata(doc, &cell_obj);
@@ -2599,7 +2593,6 @@ pub fn get_cells_from_doc(doc: &AutoCommit) -> Vec<CellSnapshot> {
                 position,
                 source,
                 execution_count,
-                outputs,
                 metadata,
                 resolved_assets,
             })
@@ -2873,7 +2866,6 @@ mod tests {
         assert_eq!(cell.cell_type, "code");
         assert_eq!(cell.source, "");
         assert_eq!(cell.execution_count, "null");
-        assert!(cell.outputs.is_empty());
     }
 
     #[test]
@@ -3879,8 +3871,9 @@ mod tests {
         let cells = doc.get_cells();
         assert_eq!(cells.len(), 1);
         assert_eq!(cells[0].execution_count, "5");
-        // outputs are no longer read from the notebook doc (always vec![])
-        assert!(cells[0].outputs.is_empty());
+        // Outputs no longer live on CellSnapshot — they're keyed by
+        // execution_id in RuntimeStateDoc. The migration path drops the
+        // legacy per-cell `outputs` list entirely.
     }
 
     #[test]

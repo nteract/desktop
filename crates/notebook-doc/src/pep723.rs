@@ -318,7 +318,6 @@ print(os.getcwd())"#;
             source: source.to_string(),
             position: position.to_string(),
             execution_count: "null".to_string(),
-            outputs: vec![],
             metadata: serde_json::json!({}),
             resolved_assets: std::collections::HashMap::new(),
         }
