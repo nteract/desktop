@@ -3358,6 +3358,62 @@ impl Daemon {
                     tokio::task::yield_now().await;
                 }
             }
+
+            // Snapshots under `notebook-docs/snapshots/` are recoverable by
+            // `runt recover` when the live doc is gone, so their blob refs
+            // must survive GC too. Walk both the notebook snapshots and
+            // their paired state sidecars.
+            let snapshots_dir = notebook_docs_dir.join("snapshots");
+            if snapshots_dir.exists() {
+                let mut snapshot_doc_paths: Vec<PathBuf> = Vec::new();
+                let mut snapshot_state_paths: Vec<PathBuf> = Vec::new();
+                match tokio::fs::read_dir(&snapshots_dir).await {
+                    Ok(mut entries) => {
+                        while let Ok(Some(entry)) = entries.next_entry().await {
+                            let name = entry.file_name().to_string_lossy().to_string();
+                            if !name.ends_with(".automerge") {
+                                continue;
+                            }
+                            if name.ends_with(".state.automerge") {
+                                snapshot_state_paths.push(entry.path());
+                            } else {
+                                snapshot_doc_paths.push(entry.path());
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            "[runtimed] GC: failed to read snapshots dir {:?}: {}",
+                            snapshots_dir, e
+                        );
+                    }
+                }
+                if !snapshot_doc_paths.is_empty() {
+                    debug!(
+                        "[runtimed] GC: walking {} notebook-doc snapshots for blob refs",
+                        snapshot_doc_paths.len()
+                    );
+                    for batch in snapshot_doc_paths.chunks(DOC_BATCH_SIZE) {
+                        for path in batch {
+                            collect_hashes_from_persisted_doc(path, &mut referenced_hashes).await;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                }
+                if !snapshot_state_paths.is_empty() {
+                    debug!(
+                        "[runtimed] GC: walking {} state-doc snapshot sidecars for blob refs",
+                        snapshot_state_paths.len()
+                    );
+                    for batch in snapshot_state_paths.chunks(DOC_BATCH_SIZE) {
+                        for path in batch {
+                            collect_hashes_from_persisted_state_doc(path, &mut referenced_hashes)
+                                .await;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                }
+            }
         }
 
         referenced_hashes
