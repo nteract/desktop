@@ -114,4 +114,48 @@ describe("Phase C-lite: cell subscription / outputs decoupling", () => {
     expect(result.current.cell).toBe(initialCell);
     expect(result.current.outputs).toHaveLength(2);
   });
+
+  it("does not re-render cell A when only cell B's outputs change", () => {
+    // Seed both cells with one output each.
+    const oA = streamOutput("cell-a-initial");
+    const oB = streamOutput("cell-b-initial");
+    act(() => {
+      setOutput("oA", oA);
+      setOutput("oB", oB);
+      setExecution("exec-a", {
+        cell_id: "A",
+        execution_count: 1,
+        status: "running",
+        success: null,
+        output_ids: ["oA"],
+      });
+      setExecution("exec-b", {
+        cell_id: "B",
+        execution_count: 1,
+        status: "running",
+        success: null,
+        output_ids: ["oB"],
+      });
+      setCellExecutionPointer("A", "exec-a");
+      setCellExecutionPointer("B", "exec-b");
+    });
+
+    const { result } = renderHook(() => {
+      const rendersA = useRef(0);
+      rendersA.current += 1;
+      const outputs = useCellOutputs("A");
+      return { outputs, rendersA };
+    });
+
+    const rendersBeforeB = result.current.rendersA.current;
+    const outputsBeforeB = result.current.outputs;
+
+    // Mutate cell B's output. Cell A's hook should not react.
+    act(() => {
+      setOutput("oB", streamOutput("cell-b-updated"));
+    });
+
+    expect(result.current.rendersA.current).toBe(rendersBeforeB);
+    expect(result.current.outputs).toBe(outputsBeforeB);
+  });
 });

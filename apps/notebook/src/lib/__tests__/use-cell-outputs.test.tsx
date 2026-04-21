@@ -93,6 +93,38 @@ describe("useCellOutputs", () => {
     expect(second[1]).toBe(b2); // swapped ref
   });
 
+  it("drops outputs immediately when the execution's output_ids are cleared", () => {
+    const a = streamOutput("a");
+    act(() => {
+      setOutput("out-a", a);
+      setExecution("exec-1", {
+        cell_id: "cell-1",
+        execution_count: 1,
+        status: "running",
+        success: null,
+        output_ids: ["out-a"],
+      });
+      setCellExecutionPointer("cell-1", "exec-1");
+    });
+
+    const { result } = renderHook(() => useCellOutputs("cell-1"));
+    expect(result.current).toEqual([a]);
+
+    // Simulate clearOutputsFromDaemon: empty the execution's output_ids
+    // while keeping the pointer in place.
+    act(() => {
+      setExecution("exec-1", {
+        cell_id: "cell-1",
+        execution_count: 1,
+        status: "running",
+        success: null,
+        output_ids: [],
+      });
+    });
+
+    expect(result.current).toHaveLength(0);
+  });
+
   it("returns the empty singleton when execution exists with no outputs", () => {
     act(() => {
       setExecution("exec-1", {

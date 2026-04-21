@@ -26,6 +26,8 @@ import {
   resetRuntimeStoresProjection,
   updateCellExecutionPointersFromHandle,
 } from "../lib/project-runtime-stores";
+import { getCellExecutionId, getExecutionById, setExecution } from "../lib/notebook-executions";
+import { deleteOutputs } from "../lib/notebook-outputs";
 import { cloneNotebookFile, openNotebookFile, saveNotebook } from "../lib/notebook-file-ops";
 import { emitBroadcast, emitPresence, subscribeBroadcast } from "../lib/notebook-frame-bus";
 import { notifyMetadataChanged, setNotebookHandle } from "../lib/notebook-metadata";
@@ -39,6 +41,26 @@ import init, { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 const wasmReady: Promise<void> = init().then(() => {
   logger.info("[automerge-notebook] WASM initialized");
 });
+
+/**
+ * Phase C-lite helper: clear the per-execution / per-output store entries
+ * a cell points at. Used when the daemon signals an `outputs_cleared` event
+ * so `<OutputArea>` (which reads from those stores via `useCellOutputs`)
+ * updates immediately instead of waiting for the next `runtime_state`
+ * snapshot to rebuild the projection.
+ */
+function clearCellOutputsStore(cellId: string): void {
+  const executionId = getCellExecutionId(cellId);
+  if (!executionId) return;
+  const snap = getExecutionById(executionId);
+  if (snap && snap.output_ids.length > 0) {
+    deleteOutputs(snap.output_ids);
+    setExecution(executionId, { ...snap, output_ids: [] });
+  }
+  // Leave the pointer in place. The next execution_started broadcast will
+  // swap it to a fresh execution_id; clearing it here causes a transient
+  // "no execution" state that would hide the execution count prompt.
+}
 
 // ---------------------------------------------------------------------------
 // Hook
@@ -356,6 +378,13 @@ export function useAutomergeNotebook() {
               : c,
           ),
         );
+        // Phase C-lite: <OutputArea> reads from the per-output / per-
+        // execution stores now. Clear those immediately for each cell so
+        // the UI reacts without waiting for the next RuntimeStateDoc
+        // snapshot tick.
+        for (const cellId of payload) {
+          clearCellOutputsStore(cellId);
+        }
       },
     );
 
@@ -425,6 +454,7 @@ export function useAutomergeNotebook() {
     updateCellById(cellId, (c) =>
       c.cell_type === "code" ? { ...c, outputs: [], execution_count: null } : c,
     );
+    clearCellOutputsStore(cellId);
   }, []);
 
   const addCell = useCallback(

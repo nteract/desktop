@@ -27,6 +27,7 @@ import { EditorRegistryProvider, useEditorRegistry } from "../hooks/useEditorReg
 import { useFocusedCellId, useSearchCurrentMatch } from "../lib/cell-ui-state";
 import { logger } from "../lib/logger";
 import { getNotebookCellsSnapshot, useCell, useMaterializeVersion } from "../lib/notebook-cells";
+import { getCellOutputsSnapshot, useOutputsVersion } from "../lib/notebook-outputs";
 import type { CodeCell as CodeCellType, NotebookCell } from "../types";
 import { CellSkeleton } from "./CellSkeleton";
 import { CodeCell } from "./CodeCell";
@@ -228,8 +229,12 @@ function isCellFullyHidden(cell: NotebookCell): boolean {
     | undefined;
   if (!jupyter?.source_hidden) return false;
   // Fully hidden when source is hidden AND either outputs are explicitly
-  // hidden or there are no outputs to show.
-  return jupyter.outputs_hidden === true || cell.outputs.length === 0;
+  // hidden or there are no outputs to show. Read outputs from the
+  // per-output store (source of truth post Phase C-lite) rather than
+  // `cell.outputs`, which the frame pipeline no longer updates on
+  // output-only frames.
+  if (jupyter.outputs_hidden === true) return true;
+  return getCellOutputsSnapshot(cell.id).length === 0;
 }
 
 /**
@@ -363,6 +368,11 @@ function NotebookViewContent({
 
   // Track full materializations for cross-cell derived state
   const materializeVersion = useMaterializeVersion();
+  // Recompute hidden-group membership when any output changes. Phase
+  // C-lite stopped updating `cell.outputs` on output-only frames, so
+  // without this subscription a source-hidden cell receiving its first
+  // output would stay collapsed until a structural change fired.
+  const outputsVersion = useOutputsVersion();
 
   // Drag-and-drop state
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -430,11 +440,12 @@ function NotebookViewContent({
   // Maps cell ID → { count, isFirst, groupCellIds }
   // Recomputes on structural changes and full materializations (metadata changes)
   const hiddenGroups = useMemo(() => {
-    // Depend on cellIds (structural changes) and materializeVersion
-    // (metadata changes like source_hidden) to recompute.
-    // We read cells imperatively since this is cross-cell derived state.
+    // Depend on cellIds (structural changes), materializeVersion (metadata
+    // changes like source_hidden), and outputsVersion (output appends that
+    // expand a source-hidden cell out of its collapsed group).
     void cellIds;
     void materializeVersion;
+    void outputsVersion;
     const cells = getNotebookCellsSnapshot();
     const groups = new Map<
       string,
@@ -454,7 +465,11 @@ function NotebookViewContent({
           const c = cells[i];
           groupCellIds.push(c.id);
           if (c.cell_type === "code") {
-            groupErrorCount += c.outputs.filter((o) => o.output_type === "error").length;
+            // Read from the outputs store - `c.outputs` is stale under
+            // Phase C-lite on output-only frame updates.
+            groupErrorCount += getCellOutputsSnapshot(c.id).filter(
+              (o) => o.output_type === "error",
+            ).length;
           }
           i++;
         }
@@ -471,7 +486,7 @@ function NotebookViewContent({
       }
     }
     return groups;
-  }, [cellIds, materializeVersion]);
+  }, [cellIds, materializeVersion, outputsVersion]);
   const hiddenGroupsRef = useRef(hiddenGroups);
   hiddenGroupsRef.current = hiddenGroups;
 
