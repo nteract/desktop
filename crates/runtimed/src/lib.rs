@@ -38,6 +38,7 @@ pub mod output_store;
 pub mod paths;
 pub mod process_groups;
 pub mod project_file;
+pub(crate) mod requests;
 pub mod runtime_agent;
 pub mod runtime_agent_handle;
 pub mod singleton;

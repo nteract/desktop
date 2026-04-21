@@ -44,9 +44,7 @@ use crate::notebook_doc::{CellSnapshot, NotebookDoc};
 use crate::notebook_metadata::NotebookMetadataSnapshot;
 use crate::output_prep::{DenoLaunchedConfig, LaunchedEnvConfig};
 use crate::paths::notebook_doc_filename;
-use crate::protocol::{
-    EnvSyncDiff, NotebookBroadcast, NotebookRequest, NotebookResponse, QueueEntry,
-};
+use crate::protocol::{EnvSyncDiff, NotebookBroadcast, NotebookRequest, NotebookResponse};
 use crate::task_supervisor::{spawn_best_effort, spawn_supervised};
 use notebook_doc::diff::diff_metadata_touched;
 use notebook_doc::presence::{self, PresenceState};
@@ -216,7 +214,7 @@ pub struct TrustState {
 /// Returns the appropriate env_source if found ("uv:inline", "conda:inline", or "deno").
 ///
 /// Priority: Deno is checked first, then UV deps, then conda deps.
-fn check_inline_deps(snapshot: &NotebookMetadataSnapshot) -> Option<String> {
+pub(crate) fn check_inline_deps(snapshot: &NotebookMetadataSnapshot) -> Option<String> {
     // Check for Deno config first (runt.deno)
     if snapshot.runt.deno.is_some() {
         return Some("deno".to_string());
@@ -248,7 +246,7 @@ fn check_inline_deps(snapshot: &NotebookMetadataSnapshot) -> Option<String> {
 
 /// Extract inline conda dependencies from a metadata snapshot.
 /// Returns the list of dependency strings if conda deps are present.
-fn get_inline_conda_deps(snapshot: &NotebookMetadataSnapshot) -> Option<Vec<String>> {
+pub(crate) fn get_inline_conda_deps(snapshot: &NotebookMetadataSnapshot) -> Option<Vec<String>> {
     if let Some(ref conda) = snapshot.runt.conda {
         if !conda.dependencies.is_empty() {
             return Some(conda.dependencies.clone());
@@ -259,7 +257,7 @@ fn get_inline_conda_deps(snapshot: &NotebookMetadataSnapshot) -> Option<Vec<Stri
 
 /// Extract inline UV dependencies from a metadata snapshot.
 /// Returns the list of dependency strings if UV deps are present.
-fn get_inline_uv_deps(snapshot: &NotebookMetadataSnapshot) -> Option<Vec<String>> {
+pub(crate) fn get_inline_uv_deps(snapshot: &NotebookMetadataSnapshot) -> Option<Vec<String>> {
     if let Some(ref uv) = snapshot.runt.uv {
         if !uv.dependencies.is_empty() {
             return Some(uv.dependencies.clone());
@@ -269,7 +267,7 @@ fn get_inline_uv_deps(snapshot: &NotebookMetadataSnapshot) -> Option<Vec<String>
 }
 
 /// Extract UV prerelease strategy from a metadata snapshot.
-fn get_inline_uv_prerelease(snapshot: &NotebookMetadataSnapshot) -> Option<String> {
+pub(crate) fn get_inline_uv_prerelease(snapshot: &NotebookMetadataSnapshot) -> Option<String> {
     snapshot
         .runt
         .uv
@@ -279,7 +277,7 @@ fn get_inline_uv_prerelease(snapshot: &NotebookMetadataSnapshot) -> Option<Strin
 
 /// Extract conda channels from a metadata snapshot.
 /// Returns the list of channel strings, or defaults to ["conda-forge"].
-fn get_inline_conda_channels(snapshot: &NotebookMetadataSnapshot) -> Vec<String> {
+pub(crate) fn get_inline_conda_channels(snapshot: &NotebookMetadataSnapshot) -> Vec<String> {
     if let Some(ref conda) = snapshot.runt.conda {
         if !conda.channels.is_empty() {
             return conda.channels.clone();
@@ -293,7 +291,7 @@ fn get_inline_conda_channels(snapshot: &NotebookMetadataSnapshot) -> Vec<String>
 /// Section-aware: only collects `key = value` lines from `[dependencies]`,
 /// `[pypi-dependencies]`, `[tool.pixi.dependencies]`, `[tool.pixi.pypi-dependencies]`.
 /// Stores the full line (trimmed) so version constraint changes are detected.
-fn extract_pixi_toml_deps(content: &str) -> Vec<String> {
+pub(crate) fn extract_pixi_toml_deps(content: &str) -> Vec<String> {
     let dep_sections = [
         "[dependencies]",
         "[pypi-dependencies]",
@@ -381,7 +379,7 @@ fn extract_pyproject_deps(content: &str) -> Vec<String> {
 /// Build a LaunchedEnvConfig from the current metadata snapshot.
 /// This captures what configuration was used at kernel launch time.
 #[allow(clippy::too_many_arguments)]
-fn build_launched_config(
+pub(crate) fn build_launched_config(
     kernel_type: &str,
     env_source: &str,
     inline_deps: Option<&[String]>,
@@ -801,7 +799,7 @@ async fn process_markdown_assets(room: &NotebookRoom) {
 /// Handles two cases:
 /// 1. Kernel launched with inline deps - track drift (additions/removals)
 /// 2. Kernel launched with prewarmed - detect when user adds inline deps (needs restart)
-async fn check_and_broadcast_sync_state(room: &NotebookRoom) {
+pub(crate) async fn check_and_broadcast_sync_state(room: &NotebookRoom) {
     // Get current metadata from doc
     let current_metadata = {
         let doc = room.doc.read().await;
@@ -919,7 +917,7 @@ async fn check_and_broadcast_sync_state(room: &NotebookRoom) {
 /// a trust signature (via approve_notebook_trust). Without this, room.trust_state
 /// would remain stale from initial room creation and the trust banner would
 /// reappear on reconnection.
-async fn check_and_update_trust_state(room: &NotebookRoom) {
+pub(crate) async fn check_and_update_trust_state(room: &NotebookRoom) {
     let current_metadata = {
         let doc = room.doc.read().await;
         doc.get_metadata_snapshot()
@@ -971,7 +969,7 @@ async fn check_and_update_trust_state(room: &NotebookRoom) {
 /// Resolve the metadata snapshot for a notebook, trying the Automerge doc first
 /// and falling back to disk if the doc doesn't have metadata yet (e.g., before
 /// the first client has synced).
-async fn resolve_metadata_snapshot(
+pub(crate) async fn resolve_metadata_snapshot(
     room: &NotebookRoom,
     notebook_path: Option<&Path>,
 ) -> Option<NotebookMetadataSnapshot> {
@@ -1186,13 +1184,13 @@ pub struct NotebookRoom {
     /// generation's runtime agent has established its sync connection.
     /// Replaced on each agent spawn; previous sender is dropped (cancelling
     /// the old receiver). The connect handler `take()`s the sender.
-    pending_runtime_agent_connect_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+    pub(crate) pending_runtime_agent_connect_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
     /// Monotonic generation counter for runtime agent spawns. Incremented
     /// before each spawn installs its oneshot/channels. Used by
     /// `reset_starting_state` to detect interleaving spawns: the generation
     /// is checked while holding each field's lock, so if it hasn't changed,
     /// no newer spawn has (or can) store a value in that field.
-    runtime_agent_generation: Arc<AtomicU64>,
+    pub(crate) runtime_agent_generation: Arc<AtomicU64>,
     /// Monotonic counter for execution queue ordering.
     /// The coordinator bumps this for each ExecuteCell and stamps the seq
     /// on the execution entry. The runtime agent sorts by seq to determine order.
@@ -3603,7 +3601,7 @@ async fn send_doc_sync<W: tokio::io::AsyncWrite + Unpin>(
 
 /// Which runtime this capture applies to — UV pool envs or Conda pool envs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CapturedEnvRuntime {
+pub(crate) enum CapturedEnvRuntime {
     Uv,
     Conda,
 }
@@ -3792,7 +3790,7 @@ async fn flush_launched_deps_to_metadata(
 /// whenever a user edits `runt.uv.prerelease`, `runt.uv.requires-python`,
 /// `runt.conda.channels`, or `runt.conda.python` after capture.
 #[derive(Debug, Clone)]
-enum CapturedEnv {
+pub(crate) enum CapturedEnv {
     Uv {
         deps: kernel_env::UvDependencies,
         env_id: String,
@@ -3830,7 +3828,7 @@ impl CapturedEnv {
 /// Missing `runt.uv` / `runt.conda` sections yield default (empty) deps with
 /// `None` resolver fields, which matches the on-disk hash at first-launch
 /// capture time (when those sections are written with defaults).
-fn captured_env_for_runtime(
+pub(crate) fn captured_env_for_runtime(
     snapshot: Option<&NotebookMetadataSnapshot>,
     runtime: CapturedEnvRuntime,
 ) -> Option<CapturedEnv> {
@@ -3888,7 +3886,7 @@ fn captured_env_for_runtime(
 
 /// Check whether a captured env exists on disk at the unified-hash path.
 /// Returns the cache path + python path if present.
-fn unified_env_on_disk(captured: &CapturedEnv) -> Option<(PathBuf, PathBuf)> {
+pub(crate) fn unified_env_on_disk(captured: &CapturedEnv) -> Option<(PathBuf, PathBuf)> {
     unified_env_on_disk_in(
         captured,
         &kernel_env::uv::default_cache_dir_uv(),
@@ -4067,7 +4065,7 @@ async fn rename_env_dir_to_unified_hash(
 /// capture path on reopen, even when `check_inline_deps` would otherwise
 /// route them through the inline-deps flow based on their captured
 /// (non-empty) dep list.
-fn captured_env_source_override(
+pub(crate) fn captured_env_source_override(
     metadata_snapshot: Option<&NotebookMetadataSnapshot>,
 ) -> Option<String> {
     resolve_captured_env_override(metadata_snapshot).0
@@ -4116,7 +4114,7 @@ fn resolve_captured_env_override(
 /// pool is empty but the caller should continue (unused by the prewarmed
 /// paths today). Returns `None` when a fatal error was broadcast and the
 /// caller should unwind.
-async fn acquire_prewarmed_env_with_capture(
+pub(crate) async fn acquire_prewarmed_env_with_capture(
     env_source: &str,
     daemon: &std::sync::Arc<crate::daemon::Daemon>,
     room: &NotebookRoom,
@@ -4396,7 +4394,10 @@ fn is_untitled_notebook(notebook_id: &str) -> bool {
 /// `expected_runtime_agent_id`: If `Some`, only reset if the current runtime agent
 /// matches — prevents a stale error handler from clobbering a newer agent's state.
 /// Pre-spawn callers pass `None` (no agent exists yet, always safe to reset).
-async fn reset_starting_state(room: &NotebookRoom, expected_runtime_agent_id: Option<&str>) {
+pub(crate) async fn reset_starting_state(
+    room: &NotebookRoom,
+    expected_runtime_agent_id: Option<&str>,
+) {
     // For guarded resets (post-spawn error paths), atomically check-and-clear
     // provenance AND capture the generation counter in a single write lock scope.
     // Clearing provenance to None immediately blocks late-arriving stale agents
@@ -4478,7 +4479,7 @@ async fn reset_starting_state(room: &NotebookRoom, expected_runtime_agent_id: Op
 /// Takes the pool env first, then compares against its *actual* `prewarmed_packages`
 /// (not current settings) to avoid misclassifying stale pool entries.
 /// Returns `Ok((PooledEnv, actual_packages))` on success, `Err(())` on failure.
-async fn try_uv_pool_for_inline_deps(
+pub(crate) async fn try_uv_pool_for_inline_deps(
     deps: &[String],
     daemon: &std::sync::Arc<crate::daemon::Daemon>,
     progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler>,
@@ -4583,7 +4584,7 @@ async fn try_uv_pool_for_inline_deps(
 /// Only attempts pool reuse when channels are default (conda-forge).
 /// Takes the pool env first, then compares against its *actual* `prewarmed_packages`.
 /// Returns `Ok((PooledEnv, actual_packages))` on success, `Err(())` on failure.
-async fn try_conda_pool_for_inline_deps(
+pub(crate) async fn try_conda_pool_for_inline_deps(
     deps: &[String],
     channels: &[String],
     daemon: &std::sync::Arc<crate::daemon::Daemon>,
@@ -5610,7 +5611,7 @@ async fn auto_launch_kernel(
 
 /// Publish the daemon's `KernelState` presence so late-joining peers
 /// receive kernel status in their `PresenceSnapshot`.
-async fn publish_kernel_state_presence(
+pub(crate) async fn publish_kernel_state_presence(
     room: &NotebookRoom,
     status: presence::KernelStatus,
     env_source: &str,
@@ -5668,2039 +5669,80 @@ async fn handle_notebook_request(
             env_source,
             notebook_path,
         } => {
-            // Fall back to the room's on-disk path when the caller doesn't
-            // supply one. The frontend typically launches with
-            // `notebook_path: None` and relies on the room knowing its own
-            // path; without this fallback, notebook-relative working dirs
-            // and auto-detection of `pyproject.toml` / `environment.yml` /
-            // `pixi.toml` silently stop working for saved notebooks.
-            let notebook_path = match notebook_path {
-                Some(p) => Some(p),
-                None => room
-                    .path
-                    .read()
-                    .await
-                    .as_ref()
-                    .map(|p| p.to_string_lossy().into_owned()),
-            };
-            // Check RuntimeStateDoc for launch serialization.
-            // Uses write lock so we can atomically check + set "starting"
-            // to prevent two concurrent LaunchKernel requests from both
-            // proceeding past this gate.
-            //
-            // Scope the write guard so it drops before any async work
-            // (deadlock prevention: no lock held across `.await`).
-            let kernel_status = {
-                let mut sd = room.state_doc.write().await;
-                let status = sd.read_state().kernel.status.clone();
-                if status != "idle" && status != "busy" && status != "starting" {
-                    // not_started, error, shutdown — atomically claim the
-                    // launch by writing "starting" while we hold the write lock.
-                    // This prevents a concurrent LaunchKernel from also proceeding.
-                    let mut changed = false;
-                    changed |= sd.clear_comms();
-                    changed |= sd.set_trust("trusted", false);
-                    changed |= sd.set_kernel_status("starting");
-                    changed |= sd.set_starting_phase("resolving");
-                    if changed {
-                        let _ = room.state_changed_tx.send(());
-                    }
-                }
-                status
-            };
-            match kernel_status.as_str() {
-                "idle" | "busy" => {
-                    // Agent already has a running kernel — check for restart path below
-                }
-                "starting" => {
-                    // Another launch in progress — wait for it to complete
-                    let wait_result =
-                        tokio::time::timeout(std::time::Duration::from_secs(60), async {
-                            loop {
-                                let s = room
-                                    .state_doc
-                                    .read()
-                                    .await
-                                    .read_state()
-                                    .kernel
-                                    .status
-                                    .clone();
-                                if s == "idle"
-                                    || s == "busy"
-                                    || s == "error"
-                                    || s == "shutdown"
-                                    || s == "not_started"
-                                {
-                                    return s;
-                                }
-                                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                            }
-                        })
-                        .await;
-
-                    match wait_result {
-                        Ok(ref s) if s == "idle" || s == "busy" => {
-                            // Launch completed — fall through to restart check below
-                        }
-                        Ok(_) | Err(_) => {
-                            return NotebookResponse::Error {
-                                error: "Kernel launch timed out or failed".to_string(),
-                            };
-                        }
-                    }
-                }
-                _ => {
-                    // Already handled above (set to "starting") — fall through
-                }
-            }
-
-            let notebook_path = notebook_path.map(std::path::PathBuf::from);
-            // Fall back to room.working_dir for untitled notebooks (mirrors auto-launch path).
-            // Enables project file detection (environment.yaml, pyproject.toml, pixi.toml)
-            // when MCP callers send notebook_path: None for UUID-based notebooks.
-            let notebook_path = match notebook_path {
-                some @ Some(_) => some,
-                None => {
-                    let wd = room.working_dir.read().await;
-                    wd.clone().inspect(|p| {
-                        info!(
-                            "[notebook-sync] LaunchKernel: using room working_dir for project file detection: {}",
-                            p.display()
-                        );
-                    })
-                }
-            };
-
-            // Resolve metadata snapshot from Automerge doc (preferred) or disk
-            let mut metadata_snapshot =
-                resolve_metadata_snapshot(room, notebook_path.as_deref()).await;
-
-            // Auto-detect kernel type if "auto" or empty
-            let resolved_kernel_type = if kernel_type == "auto" || kernel_type.is_empty() {
-                metadata_snapshot
-                    .as_ref()
-                    .and_then(|s| s.detect_runtime())
-                    .unwrap_or_else(|| {
-                        info!("[notebook-sync] LaunchKernel: kernel type unknown, defaulting to python");
-                        "python".to_string()
-                    })
-            } else {
-                kernel_type.clone()
-            };
-            info!(
-                "[notebook-sync] LaunchKernel: resolved kernel_type='{}' (from '{}')",
-                resolved_kernel_type, kernel_type
-            );
-
-            // Deno kernels don't use Python environments - always use "deno" regardless
-            // of what env_source was requested. Log a warning if caller passed a Python env.
-            let resolved_env_source = if resolved_kernel_type == "deno" {
-                if !env_source.is_empty()
-                    && env_source != "auto"
-                    && env_source != "auto:uv"
-                    && env_source != "auto:conda"
-                    && env_source != "auto:pixi"
-                    && env_source != "deno"
-                    && env_source != "prewarmed"
-                {
-                    warn!(
-                        "[notebook-sync] Deno kernel requested with Python env_source '{}' - \
-                         ignoring and using 'deno' instead",
-                        env_source
-                    );
-                } else {
-                    info!("[notebook-sync] Deno kernel detected, using 'deno' env_source");
-                }
-                "deno".to_string()
-            } else if env_source == "auto"
-                || env_source == "auto:uv"
-                || env_source == "auto:conda"
-                || env_source == "auto:pixi"
-                || env_source.is_empty()
-                || env_source == "prewarmed"
-            {
-                // Auto-detect Python environment, optionally scoped to a package manager family.
-                // "auto:uv" constrains to UV sources, "auto:conda" to conda sources,
-                // "auto:pixi" to pixi sources.
-                let auto_scope = if env_source == "auto:uv" {
-                    Some("uv")
-                } else if env_source == "auto:conda" {
-                    Some("conda")
-                } else if env_source == "auto:pixi" {
-                    Some("pixi")
-                } else {
-                    None
-                };
-
-                // Priority 1: Detect project files near notebook path.
-                // Project file wins because inline deps get promoted to the
-                // project file at sync/launch time (project is source of truth).
-                // A project file added after capture means the user wants the
-                // project env, not the stale captured one.
-                if let Some(detected) = notebook_path.as_ref().and_then(|path| match auto_scope {
-                    Some("uv") => crate::project_file::find_nearest_project_file(
-                        path,
-                        &[crate::project_file::ProjectFileKind::PyprojectToml],
-                    ),
-                    Some("conda") => crate::project_file::find_nearest_project_file(
-                        path,
-                        &[crate::project_file::ProjectFileKind::EnvironmentYml],
-                    ),
-                    Some("pixi") => crate::project_file::find_nearest_project_file(
-                        path,
-                        &[crate::project_file::ProjectFileKind::PixiToml],
-                    ),
-                    _ => crate::project_file::detect_project_file(path),
-                }) {
-                    info!(
-                        "[notebook-sync] Auto-detected project file: {:?} -> {}",
-                        detected.path,
-                        detected.to_env_source()
-                    );
-                    detected.to_env_source().to_string()
-                }
-                // Priority 2: Captured prewarmed env wins over inline deps.
-                // Captured deps look structurally identical to user-authored
-                // inline deps, so without this override, reopening a captured
-                // notebook would route through the inline-deps path and miss
-                // the already-claimed env. Ordering is project file > captured
-                // > inline > default so a pyproject.toml added post-capture
-                // still wins.
-                //
-                // Respects `auto_scope`: `auto:uv` with a conda-captured
-                // notebook (or vice versa) falls through. `auto:pixi` always
-                // falls through — no pixi capture path yet.
-                else if let Some(captured_src) =
-                    captured_env_source_override(metadata_snapshot.as_ref()).filter(|src| {
-                        match auto_scope {
-                            Some("uv") => src == "uv:prewarmed",
-                            Some("conda") => src == "conda:prewarmed",
-                            Some("pixi") => false,
-                            _ => true,
-                        }
-                    })
-                {
-                    info!(
-                        "[notebook-sync] LaunchKernel: captured env on disk -> {}",
-                        captured_src
-                    );
-                    captured_src
-                }
-                // Priority 3: Check inline deps in notebook metadata
-                else if let Some(inline_source) =
-                    metadata_snapshot
-                        .as_ref()
-                        .and_then(|snap| match auto_scope {
-                            Some("uv") => snap
-                                .runt
-                                .uv
-                                .as_ref()
-                                .filter(|uv| !uv.dependencies.is_empty())
-                                .map(|_| "uv:inline".to_string()),
-                            Some("conda") => snap
-                                .runt
-                                .conda
-                                .as_ref()
-                                .filter(|c| !c.dependencies.is_empty())
-                                .map(|_| "conda:inline".to_string()),
-                            Some("pixi") => snap
-                                .runt
-                                .pixi
-                                .as_ref()
-                                .filter(|p| !p.dependencies.is_empty())
-                                .map(|_| "pixi:inline".to_string()),
-                            _ => check_inline_deps(snap).filter(|s| s != "deno"),
-                        })
-                {
-                    info!(
-                        "[notebook-sync] Found inline deps in notebook metadata -> {}",
-                        inline_source
-                    );
-                    inline_source
-                } else {
-                    // Priority 3: Check PEP 723 script blocks in cell source
-                    let has_pep723_deps = if auto_scope == Some("conda") {
-                        false
-                    } else {
-                        let cells = room.doc.read().await.get_cells();
-                        match notebook_doc::pep723::find_pep723_in_cells(&cells) {
-                            Ok(Some(ref m)) if !m.dependencies.is_empty() => true,
-                            Ok(_) => false,
-                            Err(e) => {
-                                warn!(
-                                    "[notebook-sync] Failed to parse PEP 723 script blocks: {}",
-                                    e
-                                );
-                                false
-                            }
-                        }
-                    };
-
-                    if has_pep723_deps {
-                        let pep723_source = match auto_scope {
-                            Some("uv") => "uv:pep723",
-                            Some("pixi") => "pixi:pep723",
-                            Some("conda") => unreachable!("conda scope skips PEP 723"),
-                            _ => {
-                                let default_env = daemon.default_python_env().await;
-                                match default_env {
-                                    crate::settings_doc::PythonEnvType::Pixi => "pixi:pep723",
-                                    _ => "uv:pep723",
-                                }
-                            }
-                        };
-                        info!(
-                            "[notebook-sync] Found PEP 723 deps in cell source ({})",
-                            pep723_source
-                        );
-                        pep723_source.to_string()
-                    }
-                    // Priority 4: Fall back to prewarmed (scoped to family)
-                    else {
-                        let fallback = match auto_scope {
-                            Some("conda") => "conda:prewarmed",
-                            Some("pixi") => "pixi:prewarmed",
-                            _ => {
-                                let default_env = daemon.default_python_env().await;
-                                match default_env {
-                                    crate::settings_doc::PythonEnvType::Conda => "conda:prewarmed",
-                                    crate::settings_doc::PythonEnvType::Pixi => "pixi:prewarmed",
-                                    _ => "uv:prewarmed",
-                                }
-                            }
-                        };
-                        info!(
-                            "[notebook-sync] No project file detected, using {}",
-                            fallback
-                        );
-                        fallback.to_string()
-                    }
-                }
-            } else {
-                // Use explicit env_source (e.g., "uv:inline", "conda:inline")
-                env_source.clone()
-            };
-
-            // For pixi:toml, verify ipykernel is declared before launching
-            if resolved_env_source == "pixi:toml" {
-                let pixi_path = notebook_path.as_ref().and_then(|nb| {
-                    crate::project_file::detect_project_file(nb)
-                        .filter(|d| d.kind == crate::project_file::ProjectFileKind::PixiToml)
-                        .map(|d| d.path)
-                });
-                if let Some(ref path) = pixi_path {
-                    let has_ipykernel = match kernel_launch::tools::pixi_info(path).await {
-                        Ok(info) => info.has_ipykernel(),
-                        Err(_) => crate::project_file::pixi_toml_has_ipykernel(path),
-                    };
-                    if !has_ipykernel {
-                        warn!(
-                            "[notebook-sync] pixi.toml at {:?} does not declare ipykernel",
-                            path
-                        );
-                        reset_starting_state(room, None).await;
-                        return NotebookResponse::Error {
-                            error: "ipykernel not found in pixi.toml — run `pixi add ipykernel` in your project directory".to_string(),
-                        };
-                    }
-                }
-            }
-
-            // For project-backed envs, promote any inline deps to the project
-            // file before launching. This handles the case where add_dependency
-            // wrote to CRDT metadata and then triggered a restart.
-            if resolved_env_source == "pixi:toml"
-                || resolved_env_source == "uv:pyproject"
-                || resolved_env_source == "conda:env_yml"
-            {
-                if let Some(ref snap) = metadata_snapshot {
-                    let has_inline = match resolved_env_source.as_str() {
-                        "pixi:toml" => snap
-                            .runt
-                            .pixi
-                            .as_ref()
-                            .is_some_and(|p| !p.dependencies.is_empty()),
-                        "uv:pyproject" => snap
-                            .runt
-                            .uv
-                            .as_ref()
-                            .is_some_and(|u| !u.dependencies.is_empty()),
-                        "conda:env_yml" => snap
-                            .runt
-                            .conda
-                            .as_ref()
-                            .is_some_and(|c| !c.dependencies.is_empty()),
-                        _ => false,
-                    };
-                    if has_inline {
-                        // Build a minimal launched config with project paths for promotion
-                        let mut promo_config =
-                            notebook_protocol::protocol::LaunchedEnvConfig::default();
-                        if resolved_env_source == "pixi:toml" {
-                            promo_config.pixi_toml_path = notebook_path.as_ref().and_then(|p| {
-                                crate::project_file::detect_project_file(p)
-                                    .filter(|d| {
-                                        d.kind == crate::project_file::ProjectFileKind::PixiToml
-                                    })
-                                    .map(|d| d.path)
-                            });
-                            // Launched baseline = current pixi.toml deps (before promotion)
-                            if let Some(ref path) = promo_config.pixi_toml_path {
-                                if let Ok(content) = std::fs::read_to_string(path) {
-                                    promo_config.pixi_toml_deps =
-                                        Some(extract_pixi_toml_deps(&content));
-                                }
-                            }
-                        } else if resolved_env_source == "conda:env_yml" {
-                            promo_config.environment_yml_path =
-                                notebook_path.as_ref().and_then(|p| {
-                                    crate::project_file::find_nearest_project_file(
-                                        p,
-                                        &[crate::project_file::ProjectFileKind::EnvironmentYml],
-                                    )
-                                    .map(|d| d.path)
-                                });
-                            // Launched baseline = current env.yml deps (before promotion)
-                            if let Some(ref path) = promo_config.environment_yml_path {
-                                if let Ok(env_config) =
-                                    crate::project_file::parse_environment_yml(path)
-                                {
-                                    let mut deps = env_config.dependencies;
-                                    deps.sort();
-                                    promo_config.environment_yml_deps = Some(deps);
-                                }
-                            }
-                        } else {
-                            promo_config.pyproject_path = notebook_path.as_ref().and_then(|p| {
-                                crate::project_file::detect_project_file(p)
-                                    .filter(|d| {
-                                        d.kind
-                                            == crate::project_file::ProjectFileKind::PyprojectToml
-                                    })
-                                    .map(|d| d.path)
-                            });
-                        }
-                        match promote_inline_deps_to_project(
-                            room,
-                            &resolved_env_source,
-                            &promo_config,
-                        )
-                        .await
-                        {
-                            Ok(promoted) if !promoted.is_empty() => {
-                                info!(
-                                    "[notebook-sync] Promoted deps to project file: {:?}",
-                                    promoted
-                                );
-                                // Re-read metadata snapshot after CRDT was updated
-                                metadata_snapshot =
-                                    resolve_metadata_snapshot(room, notebook_path.as_deref()).await;
-                            }
-                            Err(e) => {
-                                warn!("[notebook-sync] Failed to promote deps: {}", e);
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            }
-
-            // Transition to "preparing_env" phase
-            {
-                let mut sd = room.state_doc.write().await;
-                if sd.set_starting_phase("preparing_env") {
-                    let _ = room.state_changed_tx.send(());
-                }
-            }
-
-            // Deno kernels don't need pooled environments
-            let pooled_env = if resolved_kernel_type == "deno" {
-                info!("[notebook-sync] LaunchKernel: Deno kernel (no pooled env)");
-                None
-            } else {
-                // Python kernels require pooled environment
-                match resolved_env_source.as_str() {
-                    "uv:prewarmed" | "conda:prewarmed" => {
-                        // Route through the capture-aware acquirer so:
-                        //  - Reopen path: if metadata has env_id + captured
-                        //    deps and the unified-hash env exists on disk,
-                        //    we cache-hit instead of taking from the pool.
-                        //  - First-launch path: take from pool, strip base,
-                        //    claim into `{cache}/{unified_hash}/`, write
-                        //    captured deps + env_id back into metadata.
-                        //
-                        // Without this, a manual LaunchKernel after capture
-                        // would take a fresh pool env instead of reusing
-                        // the claimed one, leaking envs and bypassing drift
-                        // detection's "captured baseline" logic.
-                        match acquire_prewarmed_env_with_capture(
-                            &resolved_env_source,
-                            &daemon,
-                            room,
-                            metadata_snapshot.as_ref(),
-                        )
-                        .await
-                        {
-                            Some(Some(env)) => {
-                                info!(
-                                    "[notebook-sync] LaunchKernel: acquired {} env: {:?}",
-                                    resolved_env_source, env.python_path
-                                );
-                                Some(env)
-                            }
-                            Some(None) => None,
-                            None => {
-                                // `acquire_prewarmed_env_with_capture`
-                                // already broadcast the error; bail out.
-                                reset_starting_state(room, None).await;
-                                return NotebookResponse::Error {
-                                    error: format!(
-                                        "{} pool empty - no environment available",
-                                        if resolved_env_source == "uv:prewarmed" {
-                                            "UV"
-                                        } else {
-                                            "Conda"
-                                        }
-                                    ),
-                                };
-                            }
-                        }
-                    }
-                    "uv:pyproject" | "uv:inline" | "uv:pep723" | "conda:inline"
-                    | "conda:env_yml" | "pixi:toml" | "pixi:inline" | "pixi:pep723" => {
-                        // These sources prepare their own environments, no pooled env needed
-                        info!(
-                            "[notebook-sync] LaunchKernel: {} prepares its own env, no pool env",
-                            resolved_env_source
-                        );
-                        None
-                    }
-                    other => {
-                        // For remaining conda sources, route to conda pool
-                        if other.starts_with("conda:") {
-                            match daemon.take_conda_env().await {
-                                Some(env) => Some(env),
-                                None => {
-                                    reset_starting_state(room, None).await;
-                                    return NotebookResponse::Error {
-                                        error: "Conda pool empty".to_string(),
-                                    };
-                                }
-                            }
-                        } else {
-                            // Prewarmed UV
-                            match daemon.take_uv_env().await {
-                                Some(env) => Some(env),
-                                None => {
-                                    reset_starting_state(room, None).await;
-                                    return NotebookResponse::Error {
-                                        error: "UV pool empty".to_string(),
-                                    };
-                                }
-                            }
-                        }
-                    }
-                }
-            };
-
-            // For inline deps, prepare a cached environment with rich progress
-            let launch_progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler> =
-                std::sync::Arc::new(crate::inline_env::BroadcastProgressHandler::new(
-                    room.kernel_broadcast_tx.clone(),
-                ));
-
-            // Fetch feature flags up front so inline env hashing matches
-            // the kernel's install set (bootstrap_dx adds `dx`).
-            let feature_flags_for_inline = daemon.feature_flags().await;
-            let bootstrap_dx = feature_flags_for_inline.bootstrap_dx;
-
-            let (pooled_env, inline_deps) = if resolved_env_source == "uv:pep723" {
-                // Extract PEP 723 deps from cell source
-                let cells = room.doc.read().await.get_cells();
-                let pep723_deps = match notebook_doc::pep723::find_pep723_in_cells(&cells) {
-                    Ok(Some(m)) if !m.dependencies.is_empty() => Some(m.dependencies),
-                    Ok(_) => None,
-                    Err(e) => {
-                        error!(
-                            "[notebook-sync] Invalid PEP 723 metadata in notebook: {}",
-                            e
-                        );
-                        reset_starting_state(room, None).await;
-                        return NotebookResponse::Error {
-                            error: format!("Invalid PEP 723 metadata in notebook: {}", e),
-                        };
-                    }
-                };
-
-                if let Some(deps) = pep723_deps {
-                    info!(
-                        "[notebook-sync] LaunchKernel: Preparing cached UV env for PEP 723 deps: {:?}",
-                        deps
-                    );
-                    match crate::inline_env::prepare_uv_inline_env(
-                        &deps,
-                        None,
-                        launch_progress_handler.clone(),
-                        bootstrap_dx,
-                    )
-                    .await
-                    {
-                        Ok(prepared) => {
-                            info!(
-                                "[notebook-sync] LaunchKernel: Using cached PEP 723 env at {:?}",
-                                prepared.python_path
-                            );
-                            let env = Some(crate::PooledEnv {
-                                env_type: crate::EnvType::Uv,
-                                venv_path: prepared.env_path,
-                                python_path: prepared.python_path,
-                                prewarmed_packages: vec![],
-                            });
-                            (env, Some(deps))
-                        }
-                        Err(e) => {
-                            error!("[notebook-sync] Failed to prepare PEP 723 env: {}", e);
-                            reset_starting_state(room, None).await;
-                            return NotebookResponse::Error {
-                                error: format!("Failed to prepare PEP 723 environment: {}", e),
-                            };
-                        }
-                    }
-                } else {
-                    reset_starting_state(room, None).await;
-                    return NotebookResponse::Error {
-                        error: "No PEP 723 dependencies found in notebook cells for requested env_source \"uv:pep723\""
-                            .to_string(),
-                    };
-                }
-            } else if resolved_env_source == "uv:inline" {
-                if let Some(deps) = metadata_snapshot.as_ref().and_then(get_inline_uv_deps) {
-                    let prerelease = metadata_snapshot
-                        .as_ref()
-                        .and_then(get_inline_uv_prerelease);
-
-                    // Fast path: check inline env cache first (instant on hit)
-                    if let Some(cached) = crate::inline_env::check_uv_inline_cache(
-                        &deps,
-                        prerelease.as_deref(),
-                        bootstrap_dx,
-                    ) {
-                        info!(
-                            "[notebook-sync] LaunchKernel: UV inline cache hit at {:?}",
-                            cached.python_path
-                        );
-                        let env = Some(crate::PooledEnv {
-                            env_type: crate::EnvType::Uv,
-                            venv_path: cached.env_path,
-                            python_path: cached.python_path,
-                            prewarmed_packages: vec![],
-                        });
-                        (env, Some(deps))
-                    } else if prerelease.is_none() {
-                        // Try pool reuse for bare deps without prerelease
-                        match try_uv_pool_for_inline_deps(
-                            &deps,
-                            &daemon,
-                            launch_progress_handler.clone(),
-                        )
-                        .await
-                        {
-                            Ok((env, pool_pkgs)) => {
-                                let mut pooled = env;
-                                pooled.prewarmed_packages = pool_pkgs;
-                                (Some(pooled), Some(deps))
-                            }
-                            Err(_) => {
-                                // Pool path failed, fall back to full build
-                                info!(
-                                    "[notebook-sync] LaunchKernel: Preparing cached UV env for inline deps: {:?}",
-                                    deps
-                                );
-                                match crate::inline_env::prepare_uv_inline_env(
-                                    &deps,
-                                    prerelease.as_deref(),
-                                    launch_progress_handler.clone(),
-                                    bootstrap_dx,
-                                )
-                                .await
-                                {
-                                    Ok(prepared) => {
-                                        let env = Some(crate::PooledEnv {
-                                            env_type: crate::EnvType::Uv,
-                                            venv_path: prepared.env_path,
-                                            python_path: prepared.python_path,
-                                            prewarmed_packages: vec![],
-                                        });
-                                        (env, Some(deps))
-                                    }
-                                    Err(e) => {
-                                        reset_starting_state(room, None).await;
-                                        return NotebookResponse::Error {
-                                            error: format!(
-                                                "Failed to prepare inline environment: {}",
-                                                e
-                                            ),
-                                        };
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        // Has prerelease — can't use pool, go straight to full build
-                        info!(
-                            "[notebook-sync] LaunchKernel: Preparing cached UV env for inline deps: {:?} (prerelease: {:?})",
-                            deps, prerelease
-                        );
-                        match crate::inline_env::prepare_uv_inline_env(
-                            &deps,
-                            prerelease.as_deref(),
-                            launch_progress_handler.clone(),
-                            bootstrap_dx,
-                        )
-                        .await
-                        {
-                            Ok(prepared) => {
-                                let env = Some(crate::PooledEnv {
-                                    env_type: crate::EnvType::Uv,
-                                    venv_path: prepared.env_path,
-                                    python_path: prepared.python_path,
-                                    prewarmed_packages: vec![],
-                                });
-                                (env, Some(deps))
-                            }
-                            Err(e) => {
-                                reset_starting_state(room, None).await;
-                                return NotebookResponse::Error {
-                                    error: format!("Failed to prepare inline environment: {}", e),
-                                };
-                            }
-                        }
-                    }
-                } else {
-                    (pooled_env, None)
-                }
-            } else if resolved_env_source == "conda:inline" {
-                if let Some(deps) = metadata_snapshot.as_ref().and_then(get_inline_conda_deps) {
-                    let channels = metadata_snapshot
-                        .as_ref()
-                        .map(get_inline_conda_channels)
-                        .unwrap_or_else(|| vec!["conda-forge".to_string()]);
-
-                    // Fast path: check inline env cache first (instant on hit)
-                    if let Some(cached) =
-                        crate::inline_env::check_conda_inline_cache(&deps, &channels)
-                    {
-                        info!(
-                            "[notebook-sync] LaunchKernel: Conda inline cache hit at {:?}",
-                            cached.python_path
-                        );
-                        let env = Some(crate::PooledEnv {
-                            env_type: crate::EnvType::Conda,
-                            venv_path: cached.env_path,
-                            python_path: cached.python_path,
-                            prewarmed_packages: vec![],
-                        });
-                        (env, Some(deps))
-                    } else {
-                        // Try pool reuse (only for default conda-forge channel)
-                        match try_conda_pool_for_inline_deps(
-                            &deps,
-                            &channels,
-                            &daemon,
-                            launch_progress_handler.clone(),
-                        )
-                        .await
-                        {
-                            Ok((env, pool_pkgs)) => {
-                                let mut pooled = env;
-                                pooled.prewarmed_packages = pool_pkgs;
-                                (Some(pooled), Some(deps))
-                            }
-                            Err(_) => {
-                                // Pool path failed, fall back to full build
-                                info!(
-                                    "[notebook-sync] LaunchKernel: Preparing cached Conda env for inline deps: {:?} (channels: {:?})",
-                                    deps, channels
-                                );
-                                match crate::inline_env::prepare_conda_inline_env(
-                                    &deps,
-                                    &channels,
-                                    launch_progress_handler.clone(),
-                                )
-                                .await
-                                {
-                                    Ok(prepared) => {
-                                        let env = Some(crate::PooledEnv {
-                                            env_type: crate::EnvType::Conda,
-                                            venv_path: prepared.env_path,
-                                            python_path: prepared.python_path,
-                                            prewarmed_packages: vec![],
-                                        });
-                                        (env, Some(deps))
-                                    }
-                                    Err(e) => {
-                                        reset_starting_state(room, None).await;
-                                        return NotebookResponse::Error {
-                                            error: format!(
-                                                "Failed to prepare conda inline environment: {}",
-                                                e
-                                            ),
-                                        };
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    (pooled_env, None)
-                }
-            } else if resolved_env_source == "conda:env_yml" {
-                // conda:env_yml: find or create a named conda env from environment.yml.
-                // Uses standard conda env discovery: name: field → search conda env dirs,
-                // prefix: field → use that path directly. Falls back to creating via rattler.
-                let yml_path = notebook_path.as_ref().and_then(|p| {
-                    crate::project_file::find_nearest_project_file(
-                        p,
-                        &[crate::project_file::ProjectFileKind::EnvironmentYml],
-                    )
-                    .map(|d| d.path)
-                });
-
-                if let Some(ref yml) = yml_path {
-                    match crate::project_file::parse_environment_yml(yml) {
-                        Ok(env_config) => {
-                            // Resolve the conda prefix: prefix: → direct path,
-                            // name: → search standard dirs, create if not found.
-                            let conda_prefix = if let Some(ref prefix) = env_config.prefix {
-                                // Explicit prefix: path from environment.yml
-                                prefix.clone()
-                            } else if let Some(ref name) = env_config.name {
-                                // Named env — search for existing, or determine creation path
-                                crate::project_file::find_named_conda_env(name).unwrap_or_else(
-                                    || {
-                                        // Will create at default location
-                                        crate::project_file::default_conda_envs_dir().join(name)
-                                    },
-                                )
-                            } else {
-                                // No name or prefix — use a hash-based env in cache
-                                let cache_dir =
-                                    crate::paths::default_cache_dir().join("conda-envs");
-                                let conda_deps_tmp = kernel_env::CondaDependencies {
-                                    dependencies: env_config.dependencies.clone(),
-                                    channels: env_config.channels.clone(),
-                                    python: env_config.python.clone(),
-                                    env_id: None,
-                                };
-                                cache_dir.join(kernel_env::conda::compute_env_hash(&conda_deps_tmp))
-                            };
-
-                            // Merge env.yml deps with any CRDT notebook deps (additive)
-                            let mut all_deps = env_config.dependencies.clone();
-                            if let Some(crdt_deps) =
-                                metadata_snapshot.as_ref().and_then(get_inline_conda_deps)
-                            {
-                                let base_names: std::collections::HashSet<String> = all_deps
-                                    .iter()
-                                    .map(|d| {
-                                        notebook_doc::metadata::extract_package_name(d)
-                                            .to_lowercase()
-                                    })
-                                    .collect();
-                                for dep in &crdt_deps {
-                                    let name = notebook_doc::metadata::extract_package_name(dep)
-                                        .to_lowercase();
-                                    if !base_names.contains(&name) {
-                                        all_deps.push(dep.clone());
-                                    }
-                                }
-                            }
-
-                            // Always include ipykernel
-                            let base_names: std::collections::HashSet<String> = all_deps
-                                .iter()
-                                .map(|d| {
-                                    notebook_doc::metadata::extract_package_name(d).to_lowercase()
-                                })
-                                .collect();
-                            if !base_names.contains("ipykernel") {
-                                all_deps.push("ipykernel".to_string());
-                            }
-
-                            let channels = if env_config.channels.is_empty() {
-                                vec!["conda-forge".to_string()]
-                            } else {
-                                env_config.channels.clone()
-                            };
-
-                            let env_name_display =
-                                env_config.name.as_deref().unwrap_or("<unnamed>");
-                            info!(
-                                "[notebook-sync] conda:env_yml: env '{}' at {:?} with {} deps",
-                                env_name_display,
-                                conda_prefix,
-                                all_deps.len()
-                            );
-
-                            let conda_deps = kernel_env::CondaDependencies {
-                                dependencies: all_deps,
-                                channels,
-                                python: env_config.python.clone(),
-                                env_id: None,
-                            };
-
-                            let python_path = crate::project_file::conda_python_path(&conda_prefix);
-
-                            if python_path.exists() {
-                                // Existing env — sync deps into it
-                                let conda_env = kernel_env::CondaEnvironment {
-                                    env_path: conda_prefix.clone(),
-                                    python_path: python_path.clone(),
-                                };
-                                launch_progress_handler.on_progress(
-                                    "conda",
-                                    kernel_env::EnvProgressPhase::Installing {
-                                        total: conda_deps.dependencies.len(),
-                                    },
-                                );
-                                if let Err(e) =
-                                    kernel_env::conda::sync_dependencies(&conda_env, &conda_deps)
-                                        .await
-                                {
-                                    warn!(
-                                        "[notebook-sync] conda:env_yml sync into existing env failed: {}, continuing with existing env",
-                                        e
-                                    );
-                                }
-                                let env = Some(crate::PooledEnv {
-                                    env_type: crate::EnvType::Conda,
-                                    venv_path: conda_prefix,
-                                    python_path,
-                                    prewarmed_packages: vec![],
-                                });
-                                (
-                                    env,
-                                    metadata_snapshot.as_ref().and_then(get_inline_conda_deps),
-                                )
-                            } else {
-                                // No existing env — create it via rattler at the target path.
-                                // prepare_environment_in creates {cache_dir}/{hash}/, so we
-                                // pass the parent and then rename to the target name.
-                                let parent = conda_prefix
-                                    .parent()
-                                    .unwrap_or_else(|| std::path::Path::new("/tmp"));
-                                if let Err(e) = tokio::fs::create_dir_all(parent).await {
-                                    reset_starting_state(room, None).await;
-                                    return NotebookResponse::Error {
-                                        error: format!(
-                                            "Failed to create conda envs directory {:?}: {}",
-                                            parent, e
-                                        ),
-                                    };
-                                }
-                                match kernel_env::conda::prepare_environment_in(
-                                    &conda_deps,
-                                    parent,
-                                    launch_progress_handler.clone(),
-                                )
-                                .await
-                                {
-                                    Ok(prepared) => {
-                                        // Rename hash-based dir to the target env name
-                                        let final_prefix = if prepared.env_path != conda_prefix {
-                                            match tokio::fs::rename(
-                                                &prepared.env_path,
-                                                &conda_prefix,
-                                            )
-                                            .await
-                                            {
-                                                Ok(()) => conda_prefix.clone(),
-                                                Err(e) => {
-                                                    warn!(
-                                                        "[notebook-sync] Failed to rename {:?} -> {:?}: {}, using hash path",
-                                                        prepared.env_path, conda_prefix, e
-                                                    );
-                                                    prepared.env_path
-                                                }
-                                            }
-                                        } else {
-                                            prepared.env_path
-                                        };
-                                        let python =
-                                            crate::project_file::conda_python_path(&final_prefix);
-                                        let env = Some(crate::PooledEnv {
-                                            env_type: crate::EnvType::Conda,
-                                            venv_path: final_prefix,
-                                            python_path: python,
-                                            prewarmed_packages: vec![],
-                                        });
-                                        (
-                                            env,
-                                            metadata_snapshot
-                                                .as_ref()
-                                                .and_then(get_inline_conda_deps),
-                                        )
-                                    }
-                                    Err(e) => {
-                                        reset_starting_state(room, None).await;
-                                        return NotebookResponse::Error {
-                                            error: format!(
-                                                "Failed to create conda env '{}' from environment.yml: {}",
-                                                env_name_display, e
-                                            ),
-                                        };
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            reset_starting_state(room, None).await;
-                            return NotebookResponse::Error {
-                                error: format!("Failed to parse environment.yml: {}", e),
-                            };
-                        }
-                    }
-                } else {
-                    warn!("[notebook-sync] conda:env_yml but no environment.yml found");
-                    (pooled_env, None)
-                }
-            } else if resolved_env_source == "pixi:inline" {
-                // pixi exec handles its own caching — just extract deps for -w flags
-                let deps = metadata_snapshot
-                    .as_ref()
-                    .and_then(|s| s.runt.pixi.as_ref())
-                    .map(|p| p.dependencies.clone())
-                    .unwrap_or_default();
-                if !deps.is_empty() {
-                    info!(
-                        "[notebook-sync] LaunchKernel: pixi:inline deps for pixi exec: {:?}",
-                        deps
-                    );
-                    (None, Some(deps))
-                } else {
-                    (pooled_env, None)
-                }
-            } else if resolved_env_source == "pixi:pep723" {
-                // PEP 723 deps via pixi exec -w
-                let cells = room.doc.read().await.get_cells();
-                match notebook_doc::pep723::find_pep723_in_cells(&cells) {
-                    Ok(Some(meta)) if !meta.dependencies.is_empty() => {
-                        info!(
-                            "[notebook-sync] LaunchKernel: pixi:pep723 deps: {:?}",
-                            meta.dependencies
-                        );
-                        (None, Some(meta.dependencies))
-                    }
-                    _ => (pooled_env, None),
-                }
-            } else {
-                (pooled_env, None)
-            };
-
-            // Register the env path for GC protection immediately after pool.take(),
-            // BEFORE any async work (agent spawn, connect timeout, delta install).
-            if let Some(ref env) = pooled_env {
-                let mut ep = room.runtime_agent_env_path.write().await;
-                *ep = Some(env.venv_path.clone());
-            }
-
-            // Build LaunchedEnvConfig to track what config the kernel was launched with.
-            //
-            // For captured-prewarmed launches, pass the captured deps through
-            // `captured_env_for_config` so `build_launched_config` records them
-            // as the launch baseline. That way drift detection treats the
-            // launch as "tracking" and won't falsely report captured deps as
-            // pending additions on every reopen (see P3 in the codex review).
-            //
-            // `captured_env_for_config` must match the *final* resolved env
-            // source — if the user explicitly asked for e.g. `uv:inline` and
-            // we routed through inline flow, don't drag captured prewarmed
-            // baselines along.
-            let venv_path = pooled_env.as_ref().map(|e| e.venv_path.clone());
-            let python_path = pooled_env.as_ref().map(|e| e.python_path.clone());
-            let prewarmed_pkgs = pooled_env.as_ref().map(|e| e.prewarmed_packages.clone());
-            let feature_flags = feature_flags_for_inline;
-            let captured_env_for_config = match resolved_env_source.as_str() {
-                "uv:prewarmed" => {
-                    captured_env_for_runtime(metadata_snapshot.as_ref(), CapturedEnvRuntime::Uv)
-                        .filter(|c| unified_env_on_disk(c).is_some())
-                }
-                "conda:prewarmed" => {
-                    captured_env_for_runtime(metadata_snapshot.as_ref(), CapturedEnvRuntime::Conda)
-                        .filter(|c| unified_env_on_disk(c).is_some())
-                }
-                _ => None,
-            };
-            let launched_config = build_launched_config(
-                &resolved_kernel_type,
-                &resolved_env_source,
-                inline_deps.as_deref(),
-                metadata_snapshot.as_ref(),
-                venv_path,
-                python_path,
-                prewarmed_pkgs.as_deref(),
-                notebook_path.as_deref(),
-                feature_flags,
-                captured_env_for_config.as_ref(),
-            );
-
-            // Transition to "launching" phase before starting the kernel process
-            {
-                let mut sd = room.state_doc.write().await;
-                if sd.set_starting_phase("launching") {
-                    let _ = room.state_changed_tx.send(());
-                }
-            }
-
-            // If runtime agent is already connected, restart kernel in-place
-            // (handles the shutdown → launch sequence without subprocess respawn)
-            {
-                let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
-                if has_runtime_agent {
-                    info!("[notebook-sync] Agent connected — sending RestartKernel");
-                    let restart_request =
-                        notebook_protocol::protocol::RuntimeAgentRequest::RestartKernel {
-                            kernel_type: resolved_kernel_type.clone(),
-                            env_source: resolved_env_source.clone(),
-                            notebook_path: notebook_path
-                                .as_deref()
-                                .map(|p| p.to_str().unwrap_or("").to_string()),
-                            launched_config: launched_config.clone(),
-                            env_vars: Default::default(),
-                        };
-                    match send_runtime_agent_request(room, restart_request).await {
-                        Ok(
-                            notebook_protocol::protocol::RuntimeAgentResponse::KernelRestarted {
-                                env_source: es,
-                            },
-                        ) => {
-                            // Store launched config for env sync drift detection
-                            {
-                                let mut lc = room.runtime_agent_launched_config.write().await;
-                                *lc = Some(launched_config.clone());
-                            }
-
-                            publish_kernel_state_presence(room, presence::KernelStatus::Idle, &es)
-                                .await;
-                            {
-                                let mut sd = room.state_doc.write().await;
-                                let mut changed = false;
-                                changed |= sd.set_kernel_status("idle");
-                                changed |= sd.set_kernel_info(
-                                    &resolved_kernel_type,
-                                    &resolved_kernel_type,
-                                    &es,
-                                );
-                                changed |=
-                                    sd.set_prewarmed_packages(&launched_config.prewarmed_packages);
-                                // runtime_agent_id doesn't change on restart — same runtime agent
-                                if changed {
-                                    let _ = room.state_changed_tx.send(());
-                                }
-                            }
-
-                            // Compute env sync state against the freshly
-                            // stored launched_config (updated above).
-                            // Covers both inline-dep drift and the
-                            // prewarmed-with-added-inline-deps case.
-                            check_and_broadcast_sync_state(room).await;
-
-                            return NotebookResponse::KernelLaunched {
-                                kernel_type: resolved_kernel_type,
-                                env_source: es,
-                                launched_config,
-                            };
-                        }
-                        Ok(notebook_protocol::protocol::RuntimeAgentResponse::Error { error }) => {
-                            reset_starting_state(room, None).await;
-                            return NotebookResponse::Error {
-                                error: format!("Agent restart failed: {}", error),
-                            };
-                        }
-                        Ok(_) => {
-                            reset_starting_state(room, None).await;
-                            return NotebookResponse::Error {
-                                error: "Unexpected runtime agent response to RestartKernel"
-                                    .to_string(),
-                            };
-                        }
-                        Err(e) => {
-                            warn!(
-                                "[notebook-sync] RestartKernel RPC failed: {} — spawning new runtime agent",
-                                e
-                            );
-                            // Fall through to spawn new runtime agent below
-                        }
-                    }
-                }
-            }
-
-            // Spawn runtime agent subprocess for kernel execution
-            {
-                info!("[notebook-sync] Spawning runtime agent subprocess");
-
-                // Always pass the room UUID so the agent's RuntimeAgent
-                // handshake finds the room in the UUID-keyed rooms map.
-                let notebook_id = room.id.to_string();
-                let runtime_agent_id =
-                    format!("runtime-agent:{}", &uuid::Uuid::new_v4().to_string()[..8]);
-                let socket_path = daemon.socket_path().clone();
-
-                // Set provenance + bump generation + create oneshot BEFORE spawn
-                // (see auto_launch_kernel for ordering rationale).
-                {
-                    let mut id = room.current_runtime_agent_id.write().await;
-                    *id = Some(runtime_agent_id.clone());
-                }
-                room.runtime_agent_generation
-                    .fetch_add(1, Ordering::Release);
-                let runtime_agent_connect_rx = {
-                    let (tx, rx) = oneshot::channel();
-                    let mut guard = room.pending_runtime_agent_connect_tx.lock().await;
-                    *guard = Some(tx);
-                    rx
-                };
-
-                match crate::runtime_agent_handle::RuntimeAgentHandle::spawn(
-                    notebook_id,
-                    runtime_agent_id.clone(),
-                    room.blob_store.root().to_path_buf(),
-                    socket_path,
-                )
-                .await
-                {
-                    Ok(ra) => {
-                        {
-                            let mut ra_guard = room.runtime_agent_handle.lock().await;
-                            *ra_guard = Some(ra);
-                        }
-
-                        // Write "connecting" phase — fills the gap between spawn and connect
-                        {
-                            let mut sd = room.state_doc.write().await;
-                            if sd.set_starting_phase("connecting") {
-                                let _ = room.state_changed_tx.send(());
-                            }
-                        }
-
-                        // Wait for THIS runtime agent to connect back via socket
-                        match tokio::time::timeout(
-                            std::time::Duration::from_secs(30),
-                            runtime_agent_connect_rx,
-                        )
-                        .await
-                        {
-                            Ok(Ok(())) => {}
-                            Ok(Err(_)) => {
-                                reset_starting_state(room, Some(&runtime_agent_id)).await;
-                                return NotebookResponse::Error {
-                                    error: "Runtime agent connect cancelled (superseded or died)"
-                                        .to_string(),
-                                };
-                            }
-                            Err(_) => {
-                                reset_starting_state(room, Some(&runtime_agent_id)).await;
-                                return NotebookResponse::Error {
-                                    error: "Agent failed to connect within 30s".to_string(),
-                                };
-                            }
-                        }
-
-                        // Send LaunchKernel RPC
-                        let launch_request =
-                            notebook_protocol::protocol::RuntimeAgentRequest::LaunchKernel {
-                                kernel_type: resolved_kernel_type.clone(),
-                                env_source: resolved_env_source.clone(),
-                                notebook_path: notebook_path
-                                    .as_deref()
-                                    .map(|p| p.to_str().unwrap_or("").to_string()),
-                                launched_config: launched_config.clone(),
-                                env_vars: Default::default(),
-                            };
-
-                        match send_runtime_agent_request(room, launch_request).await {
-                            Ok(
-                                notebook_protocol::protocol::RuntimeAgentResponse::KernelLaunched {
-                                    env_source: es,
-                                },
-                            ) => {
-                                // Store launched config for env sync drift detection
-                                {
-                                    let mut lc = room.runtime_agent_launched_config.write().await;
-                                    *lc = Some(launched_config.clone());
-                                }
-
-                                publish_kernel_state_presence(
-                                    room,
-                                    presence::KernelStatus::Idle,
-                                    &es,
-                                )
-                                .await;
-
-                                // Write kernel status + info + prewarmed packages
-                                // to RuntimeStateDoc
-                                {
-                                    // Read agent ID before taking the write lock to
-                                    // avoid holding state_doc across an .await.
-                                    let agent_id =
-                                        room.current_runtime_agent_id.read().await.clone();
-                                    let mut sd = room.state_doc.write().await;
-                                    let mut changed = false;
-                                    changed |= sd.set_kernel_status("idle");
-                                    changed |= sd.set_kernel_info(
-                                        &resolved_kernel_type,
-                                        &resolved_kernel_type,
-                                        &es,
-                                    );
-                                    changed |= sd.set_prewarmed_packages(
-                                        &launched_config.prewarmed_packages,
-                                    );
-                                    if let Some(ref aid) = agent_id {
-                                        changed |= sd.set_runtime_agent_id(aid);
-                                    }
-                                    if changed {
-                                        let _ = room.state_changed_tx.send(());
-                                    }
-                                }
-
-                                // Compute env sync state against the freshly
-                                // stored launched_config (updated above).
-                                check_and_broadcast_sync_state(room).await;
-
-                                NotebookResponse::KernelLaunched {
-                                    kernel_type: resolved_kernel_type,
-                                    env_source: es,
-                                    launched_config,
-                                }
-                            }
-                            Ok(notebook_protocol::protocol::RuntimeAgentResponse::Error {
-                                error,
-                            }) => {
-                                reset_starting_state(room, Some(&runtime_agent_id)).await;
-                                NotebookResponse::Error {
-                                    error: format!("Agent kernel launch failed: {}", error),
-                                }
-                            }
-                            Ok(_) => {
-                                reset_starting_state(room, Some(&runtime_agent_id)).await;
-                                NotebookResponse::Error {
-                                    error: "Unexpected runtime agent response".to_string(),
-                                }
-                            }
-                            Err(e) => {
-                                reset_starting_state(room, Some(&runtime_agent_id)).await;
-                                NotebookResponse::Error {
-                                    error: format!("Agent communication error: {}", e),
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        reset_starting_state(room, None).await;
-                        NotebookResponse::Error {
-                            error: format!("Failed to spawn runtime agent: {}", e),
-                        }
-                    }
-                }
-            }
+            crate::requests::launch_kernel::handle(
+                room,
+                &daemon,
+                kernel_type,
+                env_source,
+                notebook_path,
+            )
+            .await
         }
 
         NotebookRequest::ExecuteCell { cell_id } => {
-            // Read cell source FIRST (before kernel lock) to avoid holding
-            // kernel mutex while waiting on doc lock
-            let (source, cell_type) = {
-                let doc = room.doc.read().await;
-                match doc.get_cell(&cell_id) {
-                    Some(c) => (c.source, c.cell_type),
-                    None => {
-                        let cells = doc.get_cells();
-                        let cell_ids: Vec<&str> = cells.iter().map(|c| c.id.as_str()).collect();
-                        warn!(
-                            "[notebook-sync] ExecuteCell: cell {} not found in document \
-                             (doc has {} cells: {:?})",
-                            cell_id,
-                            cells.len(),
-                            cell_ids,
-                        );
-                        return NotebookResponse::Error {
-                            error: format!("Cell not found in document: {}", cell_id),
-                        };
-                    }
-                }
-            }; // doc lock released here
-
-            // Only execute code cells
-            if cell_type != "code" {
-                return NotebookResponse::Error {
-                    error: format!(
-                        "Cannot execute non-code cell: {} (type: {})",
-                        cell_id, cell_type
-                    ),
-                };
-            }
-
-            // Agent-backed kernel: write execution to RuntimeStateDoc queue.
-            // The runtime agent discovers it via CRDT sync and executes.
-            // Check runtime_agent_request_tx (not runtime_agent_handle) to ensure the runtime agent's
-            // sync connection is still live — a stale handle with no connection
-            // would leave queued executions orphaned.
-            {
-                let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
-                if has_runtime_agent {
-                    // Check if kernel is shut down — return NoKernel instead
-                    // of silently queuing into a dead kernel
-                    {
-                        let sd = room.state_doc.read().await;
-                        let status = sd.read_state().kernel.status;
-                        if status == "shutdown" || status == "error" {
-                            return NotebookResponse::NoKernel {};
-                        }
-                    }
-
-                    // Idempotency: if the cell already has an active (queued or
-                    // running) execution, return the existing execution_id instead
-                    // of creating a new one. Lookup follows the ownership model:
-                    // NotebookDoc owns the cell→execution_id mapping,
-                    // RuntimeStateDoc owns execution lifecycle state.
-                    {
-                        let eid = {
-                            let doc = room.doc.read().await;
-                            doc.get_execution_id(&cell_id)
-                        };
-                        if let Some(eid) = eid {
-                            let sd = room.state_doc.read().await;
-                            if let Some(exec) = sd.get_execution(&eid) {
-                                if exec.status == "queued" || exec.status == "running" {
-                                    return NotebookResponse::CellQueued {
-                                        cell_id,
-                                        execution_id: eid,
-                                    };
-                                }
-                            }
-                        }
-                    }
-
-                    let execution_id = uuid::Uuid::new_v4().to_string();
-                    let seq = room
-                        .next_queue_seq
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-                    // Write execution entry with source to RuntimeStateDoc first
-                    // so that NotebookDoc's cell→execution_id pointer never
-                    // dangles. If this fails we bail before stamping the cell.
-                    {
-                        let mut sd = room.state_doc.write().await;
-                        if let Err(e) =
-                            sd.create_execution_with_source(&execution_id, &cell_id, &source, seq)
-                        {
-                            warn!(
-                                "[notebook-sync] Failed to create_execution_with_source for {}: {}",
-                                execution_id, e
-                            );
-                            return NotebookResponse::Error {
-                                error: format!("failed to queue execution: {e}"),
-                            };
-                        }
-                        let _ = room.state_changed_tx.send(());
-                    }
-
-                    // Stamp execution_id on the cell in NotebookDoc
-                    {
-                        let mut doc = room.doc.write().await;
-                        let _ = doc.set_execution_id(&cell_id, Some(&execution_id));
-                        let _ = room.changed_tx.send(());
-                    }
-
-                    // Best-effort background formatting via fork+merge
-                    let fork = {
-                        let mut doc = room.doc.write().await;
-                        doc.fork()
-                    };
-                    let room_clone = Arc::clone(room);
-                    let cell_id_clone = cell_id.clone();
-                    let source_clone = source.clone();
-                    spawn_best_effort("cell-formatter", async move {
-                        if let Some(runtime) = detect_room_runtime(&room_clone).await {
-                            if let Some(formatted) = format_source(&source_clone, &runtime).await {
-                                // Actor is assigned here (not via fork_with_actor)
-                                // because the formatter identity depends on the
-                                // runtime, which is detected after the fork was
-                                // created. The UUID suffix keeps concurrent
-                                // formatter forks from colliding on `(actor, seq)`.
-                                let mut fork = fork;
-                                fork.set_actor(&format!(
-                                    "{}:{}",
-                                    formatter_actor(&runtime),
-                                    uuid::Uuid::new_v4()
-                                ));
-                                if fork.update_source(&cell_id_clone, &formatted).is_ok() {
-                                    let mut doc = room_clone.doc.write().await;
-                                    if let Err(e) = catch_automerge_panic("format-merge", || {
-                                        doc.merge(&mut fork)
-                                    }) {
-                                        warn!("{}", e);
-                                        doc.rebuild_from_save();
-                                    }
-                                    let _ = room_clone.changed_tx.send(());
-                                }
-                            }
-                        }
-                    });
-
-                    return NotebookResponse::CellQueued {
-                        cell_id,
-                        execution_id,
-                    };
-                }
-            }
-
-            // No runtime agent available — kernel not running
-            NotebookResponse::NoKernel {}
+            crate::requests::execute_cell::handle(room, cell_id).await
         }
 
         NotebookRequest::ClearOutputs { cell_id } => {
-            // Clear outputs by nulling the execution_id pointer on the cell.
-            // Outputs live in RuntimeStateDoc keyed by execution_id — with no
-            // execution_id, the frontend sees no outputs. The old execution's
-            // outputs remain in RuntimeStateDoc until natural trim.
-            let old_eid = {
-                let doc = room.doc.read().await;
-                doc.get_execution_id(&cell_id)
-            };
-
-            let persist_bytes = {
-                let mut doc = room.doc.write().await;
-                let _ = doc.set_execution_id(&cell_id, None);
-                let bytes = doc.save();
-                let _ = room.changed_tx.send(());
-                bytes
-            };
-
-            // Optionally clean up the old execution's outputs in RuntimeStateDoc
-            if let Some(ref eid) = old_eid {
-                let mut sd = room.state_doc.write().await;
-                let _ = sd.clear_execution_outputs(eid);
-                let _ = room.state_changed_tx.send(());
-            }
-
-            // Send to debounced persistence task
-            if let Some(ref tx) = room.persist_tx {
-                let _ = tx.send(Some(persist_bytes));
-            }
-
-            // Broadcast for cross-window UI sync (fast path)
-            let _ = room
-                .kernel_broadcast_tx
-                .send(NotebookBroadcast::OutputsCleared {
-                    cell_id: cell_id.clone(),
-                });
-
-            NotebookResponse::OutputsCleared { cell_id }
+            crate::requests::clear_outputs::handle(room, cell_id).await
         }
 
         NotebookRequest::InterruptExecution {} => {
-            let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
-            if has_runtime_agent {
-                // Fire-and-forget: the agent handles interrupt and updates
-                // RuntimeStateDoc CRDT directly (clears queue, marks executions).
-                match send_runtime_agent_command(
-                    room,
-                    notebook_protocol::protocol::RuntimeAgentRequest::InterruptExecution,
-                )
-                .await
-                {
-                    Ok(()) => NotebookResponse::InterruptSent {},
-                    Err(e) => NotebookResponse::Error {
-                        error: format!("Agent interrupt error: {}", e),
-                    },
-                }
-            } else {
-                NotebookResponse::NoKernel {}
-            }
+            crate::requests::interrupt_execution::handle(room).await
         }
 
-        NotebookRequest::ShutdownKernel {} => {
-            // Send shutdown RPC but keep the runtime agent alive — it stays
-            // connected for potential RestartKernel. The kernel process dies
-            // but the runtime agent subprocess and socket connection remain.
-            let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
-            if has_runtime_agent {
-                let _ = send_runtime_agent_request(
-                    room,
-                    notebook_protocol::protocol::RuntimeAgentRequest::ShutdownKernel,
-                )
-                .await;
-                // Keep runtime agent alive (runtime_agent_handle + runtime_agent_request_tx stay set)
-                // so LaunchKernel can send RestartKernel. ExecuteCell/RunAllCells
-                // check kernel.status from RuntimeStateDoc and return NoKernel
-                // when status is "shutdown".
-                //
-                // Update RuntimeStateDoc to reflect shutdown
-                {
-                    let mut sd = room.state_doc.write().await;
-                    let mut changed = false;
-                    changed |= sd.set_kernel_status("shutdown");
-                    changed |= sd.set_queue(None, &[]);
-                    if changed {
-                        let _ = room.state_changed_tx.send(());
-                    }
-                }
-                NotebookResponse::KernelShuttingDown {}
-            } else {
-                NotebookResponse::NoKernel {}
-            }
-        }
+        NotebookRequest::ShutdownKernel {} => crate::requests::shutdown_kernel::handle(room).await,
 
-        NotebookRequest::GetKernelInfo {} => {
-            // Read from RuntimeStateDoc (source of truth for runtime agent)
-            let sd = room.state_doc.read().await;
-            let state = sd.read_state();
-            if state.kernel.status != "not_started" && !state.kernel.status.is_empty() {
-                NotebookResponse::KernelInfo {
-                    kernel_type: if state.kernel.name.is_empty() {
-                        None
-                    } else {
-                        Some(state.kernel.name)
-                    },
-                    env_source: if state.kernel.env_source.is_empty() {
-                        None
-                    } else {
-                        Some(state.kernel.env_source)
-                    },
-                    status: state.kernel.status,
-                }
-            } else {
-                NotebookResponse::KernelInfo {
-                    kernel_type: None,
-                    env_source: None,
-                    status: "not_started".to_string(),
-                }
-            }
-        }
+        NotebookRequest::GetKernelInfo {} => crate::requests::get_kernel_info::handle(room).await,
 
-        NotebookRequest::GetQueueState {} => {
-            // Read from RuntimeStateDoc (source of truth for runtime agent)
-            let sd = room.state_doc.read().await;
-            let state = sd.read_state();
-            NotebookResponse::QueueState {
-                executing: state.queue.executing.map(|e| QueueEntry {
-                    cell_id: e.cell_id,
-                    execution_id: e.execution_id,
-                }),
-                queued: state
-                    .queue
-                    .queued
-                    .into_iter()
-                    .map(|e| QueueEntry {
-                        cell_id: e.cell_id,
-                        execution_id: e.execution_id,
-                    })
-                    .collect(),
-            }
-        }
+        NotebookRequest::GetQueueState {} => crate::requests::get_queue_state::handle(room).await,
 
-        NotebookRequest::RunAllCells {} => {
-            // Agent path — write all cells to RuntimeStateDoc queue
-            {
-                let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
-                if has_runtime_agent {
-                    // Check if kernel is shut down
-                    {
-                        let sd = room.state_doc.read().await;
-                        let status = sd.read_state().kernel.status;
-                        if status == "shutdown" || status == "error" {
-                            return NotebookResponse::NoKernel {};
-                        }
-                    }
-
-                    let cells = {
-                        let doc = room.doc.read().await;
-                        doc.get_cells()
-                    };
-
-                    // Pre-compute execution entries so we can write to
-                    // state_doc and doc in separate scoped blocks, avoiding
-                    // holding one lock across the other's `.await` (deadlock
-                    // prevention).
-                    let mut queued = Vec::new();
-                    let mut entries: Vec<(String, String, String, u64)> = Vec::new();
-                    for cell in &cells {
-                        if cell.cell_type == "code" {
-                            let execution_id = uuid::Uuid::new_v4().to_string();
-                            let seq = room
-                                .next_queue_seq
-                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            entries.push((
-                                execution_id.clone(),
-                                cell.id.clone(),
-                                cell.source.clone(),
-                                seq,
-                            ));
-                            queued.push(QueueEntry {
-                                cell_id: cell.id.clone(),
-                                execution_id,
-                            });
-                        }
-                    }
-                    // Write RuntimeStateDoc entries first; on failure bail
-                    // before stamping NotebookDoc so cell→execution_id pointers
-                    // cannot dangle. Any single failure aborts the whole batch.
-                    {
-                        let mut sd = room.state_doc.write().await;
-                        for (execution_id, cell_id, source, seq) in &entries {
-                            if let Err(e) =
-                                sd.create_execution_with_source(execution_id, cell_id, source, *seq)
-                            {
-                                warn!(
-                                    "[notebook-sync] Failed to create_execution_with_source for {}: {}",
-                                    execution_id, e
-                                );
-                                return NotebookResponse::Error {
-                                    error: format!("failed to queue execution: {e}"),
-                                };
-                            }
-                        }
-                        let _ = room.state_changed_tx.send(());
-                    }
-                    {
-                        let mut doc = room.doc.write().await;
-                        for (execution_id, cell_id, _, _) in &entries {
-                            let _ = doc.set_execution_id(cell_id, Some(execution_id));
-                        }
-                        let _ = room.changed_tx.send(());
-                    }
-
-                    return NotebookResponse::AllCellsQueued { queued };
-                }
-            }
-
-            // No runtime agent available — kernel not running
-            NotebookResponse::NoKernel {}
-        }
+        NotebookRequest::RunAllCells {} => crate::requests::run_all_cells::handle(room).await,
 
         NotebookRequest::SendComm { message } => {
-            // Agent path: forward comm message via RPC
-            let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
-            if has_runtime_agent {
-                match send_runtime_agent_request(
-                    room,
-                    notebook_protocol::protocol::RuntimeAgentRequest::SendComm {
-                        message: message.clone(),
-                    },
-                )
-                .await
-                {
-                    Ok(_) => NotebookResponse::Ok {},
-                    Err(e) => NotebookResponse::Error {
-                        error: format!("Agent comm error: {}", e),
-                    },
-                }
-            } else {
-                NotebookResponse::NoKernel {}
-            }
+            crate::requests::send_comm::handle(room, message).await
         }
 
         NotebookRequest::GetHistory { pattern, n, unique } => {
-            // Agent path: forward via RPC
-            let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
-            if has_runtime_agent {
-                match send_runtime_agent_request(
-                    room,
-                    notebook_protocol::protocol::RuntimeAgentRequest::GetHistory {
-                        pattern: pattern.clone(),
-                        n,
-                        unique,
-                    },
-                )
-                .await
-                {
-                    Ok(notebook_protocol::protocol::RuntimeAgentResponse::HistoryResult {
-                        entries,
-                    }) => NotebookResponse::HistoryResult { entries },
-                    Ok(notebook_protocol::protocol::RuntimeAgentResponse::Error { error }) => {
-                        NotebookResponse::Error { error }
-                    }
-                    Ok(_) => NotebookResponse::Error {
-                        error: "Unexpected runtime agent response".to_string(),
-                    },
-                    Err(e) => NotebookResponse::Error {
-                        error: format!("Agent error: {}", e),
-                    },
-                }
-            } else {
-                NotebookResponse::NoKernel {}
-            }
+            crate::requests::get_history::handle(room, pattern, n, unique).await
         }
 
         NotebookRequest::Complete { code, cursor_pos } => {
-            // Agent path: forward via RPC
-            let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
-            if has_runtime_agent {
-                match send_runtime_agent_request(
-                    room,
-                    notebook_protocol::protocol::RuntimeAgentRequest::Complete {
-                        code: code.clone(),
-                        cursor_pos,
-                    },
-                )
-                .await
-                {
-                    Ok(notebook_protocol::protocol::RuntimeAgentResponse::CompletionResult {
-                        items,
-                        cursor_start,
-                        cursor_end,
-                    }) => NotebookResponse::CompletionResult {
-                        items,
-                        cursor_start,
-                        cursor_end,
-                    },
-                    Ok(notebook_protocol::protocol::RuntimeAgentResponse::Error { error }) => {
-                        NotebookResponse::Error { error }
-                    }
-                    Ok(_) => NotebookResponse::Error {
-                        error: "Unexpected runtime agent response".to_string(),
-                    },
-                    Err(e) => NotebookResponse::Error {
-                        error: format!("Agent error: {}", e),
-                    },
-                }
-            } else {
-                NotebookResponse::NoKernel {}
-            }
+            crate::requests::complete::handle(room, code, cursor_pos).await
         }
 
         NotebookRequest::SaveNotebook { format_cells, path } => {
-            // Format cells if requested (before saving)
-            if format_cells {
-                if let Err(e) = format_notebook_cells(room).await {
-                    warn!("[save] Format cells failed (continuing with save): {}", e);
-                }
-            }
-
-            // Capture was_untitled and old_path in a single critical section to
-            // avoid a TOCTOU race between the two reads.
-            let (was_untitled, old_path) = {
-                let p = room.path.read().await;
-                (p.is_none(), p.clone())
-            };
-
-            // For any save that writes to a NEW path (untitled promotion or
-            // save-as rename), claim path_index BEFORE touching disk. Writing
-            // first and then checking the claim would overwrite another room's
-            // file if both happen to target the same path — the overwritten
-            // file then trips the other room's watcher, wiping its CRDT cells.
-            //
-            // Compute the pre-write canonical target. For untitled rooms a path
-            // is required; for file-backed rooms we only need a pre-write claim
-            // if the caller specified a path different from room.path.
-            let target_for_claim: Option<PathBuf> = match (&path, was_untitled) {
-                (Some(p), _) => match crate::paths::normalize_save_target(p) {
-                    Ok(normalized) => Some(canonical_target_path(&normalized).await),
-                    Err(msg) => {
-                        return NotebookResponse::SaveError {
-                            error: notebook_protocol::protocol::SaveErrorKind::Io { message: msg },
-                        };
-                    }
-                },
-                (None, true) => {
-                    // Untitled save with no path — the daemon requires one.
-                    // Fall through to save_notebook_to_disk which returns the
-                    // structured error; no claim needed (no write happens).
-                    None
-                }
-                (None, false) => None, // save-in-place on file-backed room
-            };
-
-            // The new path that needs a pre-write claim (if any). Separates
-            // "claim required" from "have a claim path" so downstream branches
-            // don't need a runtime is_some + unwrap.
-            let pre_claim: Option<PathBuf> = match (&target_for_claim, &old_path) {
-                (Some(t), Some(old)) if t != old => Some(t.clone()),
-                (Some(t), None) => Some(t.clone()),
-                _ => None,
-            };
-
-            if let Some(ref canonical_pre) = pre_claim {
-                if let Err(kind) = try_claim_path(&daemon.path_index, canonical_pre, room.id).await
-                {
-                    return NotebookResponse::SaveError { error: kind };
-                }
-            }
-
-            let written = match save_notebook_to_disk(room, path.as_deref()).await {
-                Ok(p) => p,
-                Err(e) => {
-                    // Rollback the path_index claim we just made so the room
-                    // stays untitled / its old path stays claimed.
-                    if let Some(ref canonical_pre) = pre_claim {
-                        daemon.path_index.lock().await.remove(canonical_pre);
-                    }
-                    // Emergency persist for ephemeral rooms: if saving to .ipynb
-                    // failed, at least write the Automerge doc so data isn't lost.
-                    if room.is_ephemeral.load(Ordering::Relaxed) && room.persist_tx.is_none() {
-                        let bytes = room.doc.write().await.save();
-                        persist_notebook_bytes(&bytes, &room.persist_path);
-                        warn!(
-                            "[notebook-sync] Save failed for ephemeral room — emergency persist to {:?}",
-                            room.persist_path
-                        );
-                    }
-                    let kind = match e {
-                        SaveError::Unrecoverable(msg) | SaveError::Retryable(msg) => {
-                            notebook_protocol::protocol::SaveErrorKind::Io { message: msg }
-                        }
-                    };
-                    return NotebookResponse::SaveError { error: kind };
-                }
-            };
-
-            // Post-write canonicalize. Usually matches the pre-write key. If it
-            // differs (uncommon — only when parent-canonicalize disagreed with
-            // full canonicalize), swap the path_index entry.
-            let canonical = match tokio::fs::canonicalize(&written).await {
-                Ok(c) => c,
-                Err(e) => {
-                    warn!(
-                        "[notebook-sync] post-save canonicalize({}) failed: {} — using raw path. \
-                         Duplicate-room detection may be weakened.",
-                        written, e
-                    );
-                    PathBuf::from(&written)
-                }
-            };
-
-            if let Some(ref canonical_pre) = pre_claim {
-                if canonical_pre != &canonical {
-                    let mut idx = daemon.path_index.lock().await;
-                    idx.remove(canonical_pre);
-                    // Best-effort reinsert under the post-write canonical.
-                    if let Err(e) = idx.insert(canonical.clone(), room.id) {
-                        warn!(
-                            "[notebook-sync] post-write path_index reinsert failed for {:?}: {} \
-                             — room {} may be orphaned from path lookup",
-                            canonical, e, room.id
-                        );
-                    }
-                }
-            }
-
-            if was_untitled {
-                finalize_untitled_promotion(room, canonical.clone()).await;
-            } else if let Some(old) = old_path.as_ref() {
-                let path_changed = old != &canonical;
-                if path_changed {
-                    // Save-as rename: new path already claimed above; remove
-                    // the old path_index entry and update room.path.
-                    {
-                        let mut idx = daemon.path_index.lock().await;
-                        idx.remove(old);
-                    }
-                    *room.path.write().await = Some(canonical.clone());
-                    let _ = room
-                        .kernel_broadcast_tx
-                        .send(NotebookBroadcast::PathChanged {
-                            path: Some(canonical.to_string_lossy().into_owned()),
-                        });
-                }
-                // If path didn't change, this is save-in-place: nothing else.
-            }
-
-            NotebookResponse::NotebookSaved { path: written }
+            crate::requests::save_notebook::handle(room, &daemon, format_cells, path).await
         }
 
         NotebookRequest::CloneNotebook { path } => {
-            match clone_notebook_to_disk(room, &path).await {
-                Ok(cloned_path) => NotebookResponse::NotebookCloned { path: cloned_path },
-                Err(e) => NotebookResponse::Error {
-                    error: format!("Failed to clone notebook: {e}"),
-                },
-            }
+            crate::requests::clone_notebook::handle(room, path).await
         }
 
-        NotebookRequest::SyncEnvironment {} => handle_sync_environment(room).await,
-
-        NotebookRequest::GetDocBytes {} => {
-            let mut doc = room.doc.write().await;
-            let bytes = doc.save();
-            NotebookResponse::DocBytes { bytes }
+        NotebookRequest::SyncEnvironment {} => {
+            crate::requests::sync_environment::handle(room).await
         }
+
+        NotebookRequest::GetDocBytes {} => crate::requests::get_doc_bytes::handle(room).await,
 
         NotebookRequest::GetRawMetadata { key } => {
-            let doc = room.doc.read().await;
-            let value = doc.get_metadata(&key);
-            NotebookResponse::RawMetadata { value }
+            crate::requests::get_raw_metadata::handle(room, key).await
         }
 
         NotebookRequest::SetRawMetadata { key, value } => {
-            let mut doc = room.doc.write().await;
-            match doc.set_metadata(&key, &value) {
-                Ok(()) => {
-                    // Notify peers of the change
-                    let _ = room.changed_tx.send(());
-                    // Persist
-                    if let Some(ref tx) = room.persist_tx {
-                        let bytes = doc.save();
-                        let _ = tx.send(Some(bytes));
-                    }
-                    NotebookResponse::MetadataSet {}
-                }
-                Err(e) => NotebookResponse::Error {
-                    error: format!("Failed to set metadata: {e}"),
-                },
-            }
+            crate::requests::set_raw_metadata::handle(room, key, value).await
         }
 
         NotebookRequest::GetMetadataSnapshot {} => {
-            let doc = room.doc.read().await;
-            let snapshot = doc
-                .get_metadata_snapshot()
-                .and_then(|s| serde_json::to_string(&s).ok());
-            NotebookResponse::MetadataSnapshot { snapshot }
+            crate::requests::get_metadata_snapshot::handle(room).await
         }
 
         NotebookRequest::SetMetadataSnapshot { snapshot } => {
-            match serde_json::from_str::<NotebookMetadataSnapshot>(&snapshot) {
-                Ok(snap) => {
-                    // Scope the doc write guard so it drops before the async
-                    // sync/trust checks (deadlock prevention).
-                    let result = {
-                        let mut doc = room.doc.write().await;
-                        match doc.set_metadata_snapshot(&snap) {
-                            Ok(()) => {
-                                // Notify peers of the change
-                                let _ = room.changed_tx.send(());
-                                // Persist
-                                if let Some(ref tx) = room.persist_tx {
-                                    let bytes = doc.save();
-                                    let _ = tx.send(Some(bytes));
-                                }
-                                Ok(())
-                            }
-                            Err(e) => Err(format!("Failed to set metadata snapshot: {e}")),
-                        }
-                    };
-                    match result {
-                        Ok(()) => {
-                            // Check for env sync state and trust changes
-                            check_and_broadcast_sync_state(room).await;
-                            check_and_update_trust_state(room).await;
-                            NotebookResponse::MetadataSet {}
-                        }
-                        Err(error) => NotebookResponse::Error { error },
-                    }
-                }
-                Err(e) => NotebookResponse::Error {
-                    error: format!("Failed to parse metadata snapshot: {e}"),
-                },
-            }
+            crate::requests::set_metadata_snapshot::handle(room, snapshot).await
         }
 
         NotebookRequest::CheckToolAvailable { tool } => {
-            let available = match tool.as_str() {
-                "deno" => kernel_launch::tools::check_deno_available_without_bootstrap().await,
-                _ => false,
-            };
-            NotebookResponse::ToolAvailable { available }
+            crate::requests::check_tool_available::handle(tool).await
         }
     }
 }
@@ -7748,7 +5790,7 @@ fn find_env_yml_deps_insertion_point(content: &str) -> Option<usize> {
 /// `pixi remove` / `uv remove` for any deps that were removed.
 ///
 /// Returns the list of packages that were added or removed.
-async fn promote_inline_deps_to_project(
+pub(crate) async fn promote_inline_deps_to_project(
     room: &NotebookRoom,
     env_source: &str,
     launched_config: &notebook_protocol::protocol::LaunchedEnvConfig,
@@ -8037,7 +6079,7 @@ async fn promote_inline_deps_to_project(
 ///
 /// Only supported for UV inline dependencies when there are only additions (no removals).
 /// Conda and other env types fall back to restart.
-async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResponse {
+pub(crate) async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResponse {
     // Read launched config from room
     let launched = {
         let guard = room.runtime_agent_launched_config.read().await;
@@ -8280,7 +6322,7 @@ async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResponse {
 ///
 /// Returns the formatted source with trailing newline stripped (cells shouldn't
 /// end with \n), or None if formatting failed or wasn't applicable.
-async fn format_source(source: &str, runtime: &str) -> Option<String> {
+pub(crate) async fn format_source(source: &str, runtime: &str) -> Option<String> {
     use kernel_launch::tools;
     use std::process::Stdio;
     use tokio::io::AsyncWriteExt;
@@ -8346,7 +6388,7 @@ async fn format_source(source: &str, runtime: &str) -> Option<String> {
 }
 
 /// Map a runtime name to its formatter's CRDT actor label.
-fn formatter_actor(runtime: &str) -> String {
+pub(crate) fn formatter_actor(runtime: &str) -> String {
     let tool = match runtime {
         "python" => "ruff",
         other => other, // "deno" stays "deno"
@@ -8355,7 +6397,7 @@ fn formatter_actor(runtime: &str) -> String {
 }
 
 /// Detect the runtime from room metadata, returning "python", "deno", or None.
-async fn detect_room_runtime(room: &NotebookRoom) -> Option<String> {
+pub(crate) async fn detect_room_runtime(room: &NotebookRoom) -> Option<String> {
     let doc = room.doc.read().await;
     doc.get_metadata_snapshot()
         .and_then(|snapshot| snapshot.detect_runtime())
@@ -8366,7 +6408,7 @@ async fn detect_room_runtime(room: &NotebookRoom) -> Option<String> {
 /// Reads the runtime type from the notebook metadata and formats accordingly.
 /// Updates the Automerge doc with formatted sources and broadcasts changes.
 /// Formatting errors are logged but don't fail the operation (best-effort).
-async fn format_notebook_cells(room: &NotebookRoom) -> Result<usize, String> {
+pub(crate) async fn format_notebook_cells(room: &NotebookRoom) -> Result<usize, String> {
     let runtime = match detect_room_runtime(room).await {
         Some(rt) => rt,
         None => {
@@ -8439,7 +6481,7 @@ async fn format_notebook_cells(room: &NotebookRoom) -> Result<usize, String> {
 ///
 /// Errors from save_notebook_to_disk.
 #[derive(Debug)]
-enum SaveError {
+pub(crate) enum SaveError {
     /// Transient / potentially recoverable (e.g. disk full, busy)
     Retryable(String),
     /// Permanent — retrying will never help (path is a directory, permission denied, invalid path)
@@ -8455,7 +6497,7 @@ impl std::fmt::Display for SaveError {
 }
 
 /// Returns the absolute path where the notebook was written.
-async fn save_notebook_to_disk(
+pub(crate) async fn save_notebook_to_disk(
     room: &NotebookRoom,
     target_path: Option<&str>,
 ) -> Result<String, SaveError> {
@@ -8727,7 +6769,7 @@ async fn save_notebook_to_disk(
 /// `tokio::fs::canonicalize` requires the target to exist. For pre-write
 /// collision checks, we canonicalize the parent directory and append the
 /// filename. Falls back to the raw path if even the parent is unresolvable.
-async fn canonical_target_path(target: &Path) -> PathBuf {
+pub(crate) async fn canonical_target_path(target: &Path) -> PathBuf {
     if let Ok(c) = tokio::fs::canonicalize(target).await {
         return c;
     }
@@ -8741,7 +6783,7 @@ async fn canonical_target_path(target: &Path) -> PathBuf {
 
 /// Try to claim a path in the path_index for a given room. Returns the
 /// structured `PathAlreadyOpen` error if another room already holds it.
-async fn try_claim_path(
+pub(crate) async fn try_claim_path(
     path_index: &Arc<tokio::sync::Mutex<PathIndex>>,
     canonical: &Path,
     uuid: uuid::Uuid,
@@ -8762,7 +6804,7 @@ async fn try_claim_path(
 /// written and path_index already holds the claim. This is the non-claim half
 /// of the promotion: path field update, persist file cleanup, file watcher +
 /// autosave debouncer spawn, ephemeral marker clear, and PathChanged broadcast.
-async fn finalize_untitled_promotion(room: &Arc<NotebookRoom>, canonical: PathBuf) {
+pub(crate) async fn finalize_untitled_promotion(room: &Arc<NotebookRoom>, canonical: PathBuf) {
     // Update room's path now that path_index owns it.
     *room.path.write().await = Some(canonical.clone());
 
@@ -8825,7 +6867,10 @@ async fn finalize_untitled_promotion(room: &Arc<NotebookRoom>, canonical: PathBu
 /// - All outputs cleared
 /// - All execution_counts reset to null
 /// - Cell metadata and nbformat attachments preserved from the source notebook
-async fn clone_notebook_to_disk(room: &NotebookRoom, target_path: &str) -> Result<String, String> {
+pub(crate) async fn clone_notebook_to_disk(
+    room: &NotebookRoom,
+    target_path: &str,
+) -> Result<String, String> {
     let path = PathBuf::from(target_path);
 
     // Reject relative paths
