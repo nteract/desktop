@@ -54,6 +54,10 @@ use tokio::net::windows::named_pipe::ClientOptions;
 pub struct InspectResult {
     pub notebook_id: String,
     pub cells: Vec<crate::notebook_doc::CellSnapshot>,
+    /// Outputs keyed by cell_id. Outputs live in `RuntimeStateDoc` keyed
+    /// by `execution_id` and travel alongside the cell snapshot rather
+    /// than on it. Cells without outputs are absent from the map.
+    pub outputs_by_cell: std::collections::HashMap<String, Vec<serde_json::Value>>,
     pub source: String,
     pub kernel_info: Option<crate::protocol::NotebookKernelInfo>,
 }
@@ -327,11 +331,13 @@ impl PoolClient {
             Response::NotebookState {
                 notebook_id,
                 cells,
+                outputs_by_cell,
                 source,
                 kernel_info,
             } => Ok(InspectResult {
                 notebook_id,
                 cells,
+                outputs_by_cell,
                 source,
                 kernel_info,
             }),

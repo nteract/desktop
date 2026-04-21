@@ -149,6 +149,12 @@ pub enum Response {
         notebook_id: String,
         /// Cell snapshots from the Automerge doc.
         cells: Vec<crate::notebook_doc::CellSnapshot>,
+        /// Outputs keyed by cell_id. Outputs live in `RuntimeStateDoc`
+        /// keyed by `execution_id`, so they travel here as a parallel map
+        /// rather than on `CellSnapshot`. Only cells with non-empty outputs
+        /// appear.
+        #[serde(default)]
+        outputs_by_cell: std::collections::HashMap<String, Vec<serde_json::Value>>,
         /// Whether this was loaded from a live room or from disk.
         source: String,
         /// Kernel info if a kernel is running.

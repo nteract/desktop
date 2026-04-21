@@ -237,7 +237,6 @@ mod tests {
             position: "80".into(),
             source: "print('hi')".into(),
             execution_count: "null".into(),
-            outputs: vec![],
             metadata,
             resolved_assets: HashMap::new(),
         }

@@ -848,7 +848,7 @@ pub(crate) async fn set_cell_type(
 
 /// Get a single cell by ID, with resolved outputs.
 pub(crate) async fn get_cell(state: &Arc<Mutex<SessionState>>, cell_id: &str) -> PyResult<Cell> {
-    let (snapshot, blob_base_url, blob_store_path, comms) = {
+    let (snapshot, raw_outputs, blob_base_url, blob_store_path, comms) = {
         let st = state.lock().await;
         let handle = st
             .handle
@@ -862,12 +862,15 @@ pub(crate) async fn get_cell(state: &Arc<Mutex<SessionState>>, cell_id: &str) ->
         let snapshot = handle
             .get_cell(cell_id)
             .ok_or_else(|| to_py_err(format!("Cell not found: {}", cell_id)))?;
+        // Outputs live in RuntimeStateDoc — fetch them alongside the snapshot
+        // so downstream resolution sees the latest manifests.
+        let raw_outputs = handle.get_cell_outputs(cell_id).unwrap_or_default();
 
-        (snapshot, blob_base_url, blob_store_path, comms)
+        (snapshot, raw_outputs, blob_base_url, blob_store_path, comms)
     };
 
     let outputs = output_resolver::resolve_cell_outputs(
-        &snapshot.outputs,
+        &raw_outputs,
         &blob_base_url,
         &blob_store_path,
         comms.as_ref(),
@@ -879,7 +882,7 @@ pub(crate) async fn get_cell(state: &Arc<Mutex<SessionState>>, cell_id: &str) ->
 
 /// Get all cells with resolved outputs.
 pub(crate) async fn get_cells(state: &Arc<Mutex<SessionState>>) -> PyResult<Vec<Cell>> {
-    let (snapshots, blob_base_url, blob_store_path, comms) = {
+    let (snapshots, mut outputs_by_cell, blob_base_url, blob_store_path, comms) = {
         let st = state.lock().await;
         let handle = st
             .handle
@@ -890,14 +893,24 @@ pub(crate) async fn get_cells(state: &Arc<Mutex<SessionState>>) -> PyResult<Vec<
         let blob_store_path = st.blob_store_path.clone();
         let comms = handle.get_runtime_state().ok().map(|rs| rs.comms);
         let snapshots = handle.get_cells();
+        // Outputs live in RuntimeStateDoc. Fetch them once in bulk rather
+        // than a lookup per cell — avoids O(N) roundtrips for large notebooks.
+        let outputs_by_cell = handle.get_all_outputs();
 
-        (snapshots, blob_base_url, blob_store_path, comms)
+        (
+            snapshots,
+            outputs_by_cell,
+            blob_base_url,
+            blob_store_path,
+            comms,
+        )
     };
 
     let mut cells = Vec::with_capacity(snapshots.len());
     for snapshot in snapshots {
+        let raw_outputs = outputs_by_cell.remove(&snapshot.id).unwrap_or_default();
         let outputs = output_resolver::resolve_cell_outputs(
-            &snapshot.outputs,
+            &raw_outputs,
             &blob_base_url,
             &blob_store_path,
             comms.as_ref(),
@@ -1442,6 +1455,7 @@ pub(crate) async fn collect_outputs(
     // carry an execution_id pointer and outputs are keyed by execution_id
     // in the RuntimeStateDoc.
     let mut snapshot = None;
+    let mut raw_outputs_out: Vec<serde_json::Value> = Vec::new();
     let mut blob_base_url_out = None;
     let mut blob_store_path_out = None;
     let mut comms_out = None;
@@ -1462,8 +1476,9 @@ pub(crate) async fn collect_outputs(
                 cell_id
             ))
         })?;
+        let raw_outputs = handle.get_cell_outputs(cell_id).unwrap_or_default();
 
-        let has_outputs = !snap.outputs.is_empty();
+        let has_outputs = !raw_outputs.is_empty();
         let has_ec = snap.execution_count != "null" && !snap.execution_count.is_empty();
 
         if has_outputs || has_ec || attempt >= 4 {
@@ -1471,6 +1486,7 @@ pub(crate) async fn collect_outputs(
             blob_store_path_out = blob_store_path.clone();
             comms_out = handle.get_runtime_state().ok().map(|rs| rs.comms);
             snapshot = Some(snap);
+            raw_outputs_out = raw_outputs;
             break;
         }
 
@@ -1483,7 +1499,7 @@ pub(crate) async fn collect_outputs(
     let execution_count = snapshot.execution_count.parse::<i64>().ok();
 
     let outputs = output_resolver::resolve_cell_outputs(
-        &snapshot.outputs,
+        &raw_outputs_out,
         &blob_base_url_out,
         &blob_store_path_out,
         comms_out.as_ref(),
