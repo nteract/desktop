@@ -1,6 +1,13 @@
 /** A single output from a cell execution */
 export interface CellOutput {
   output_type: "stream" | "error" | "display_data" | "execute_result";
+  /**
+   * Stable UUID stamped by the daemon on every output manifest. Used as the
+   * React key inside the output list so a stream append doesn't re-mount
+   * sibling outputs. Optional only to tolerate older hosts that may not
+   * surface it — renderers fall back to the positional index in that case.
+   */
+  output_id?: string;
   /** Stream name: "stdout" or "stderr" */
   name?: string;
   /** Stream text content (inline string or blob URL) */

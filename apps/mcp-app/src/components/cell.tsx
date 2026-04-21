@@ -75,15 +75,21 @@ export function Cell({ cell, blobBaseUrl, defaultExpanded, forceExpanded, hideSo
           {cell.outputs?.length > 0 && (
             <div className="outputs">
               {cell.outputs.map((output, i) => {
+                // Prefer the daemon-stamped output_id so stream appends
+                // don't re-mount sibling outputs. Fall back to position
+                // only if a legacy host hasn't surfaced the id.
+                const key = output.output_id ?? `output-${i}`;
                 switch (output.output_type) {
                   case "stream":
-                    return <StreamOutput key={i} output={output} />;
+                    return <StreamOutput key={key} output={output} />;
                   case "error":
-                    return <ErrorOutput key={i} output={output} />;
+                    return <ErrorOutput key={key} output={output} />;
                   case "display_data":
                   case "execute_result":
                     if (output.data) {
-                      return <MimeRenderer key={i} data={output.data} blobBaseUrl={blobBaseUrl} />;
+                      return (
+                        <MimeRenderer key={key} data={output.data} blobBaseUrl={blobBaseUrl} />
+                      );
                     }
                     return null;
                   default:

@@ -389,6 +389,12 @@ export function OutputArea({
     const batch: import("@/components/isolated/frame-bridge").RenderPayload[] = [];
 
     outputs.forEach((output, index) => {
+      // output_id is the daemon-stamped UUID (non-empty invariant). Threading
+      // it through lets the iframe React key reconciliation survive
+      // display_update, stream append, and cell reorder without re-mounting
+      // sibling outputs. outputIndex stays as a fallback for render paths
+      // that don't surface an id.
+      const outputId = output.output_id;
       if (output.output_type === "execute_result" || output.output_type === "display_data") {
         const mimeType = selectMimeType(output.data, priority);
         if (mimeType) {
@@ -396,6 +402,7 @@ export function OutputArea({
             mimeType,
             data: output.data[mimeType],
             metadata: output.metadata?.[mimeType] as Record<string, unknown> | undefined,
+            outputId,
             cellId,
             outputIndex: index,
           });
@@ -405,6 +412,7 @@ export function OutputArea({
           mimeType: "text/plain",
           data: normalizeText(output.text),
           metadata: { streamName: output.name },
+          outputId,
           cellId,
           outputIndex: index,
         });
@@ -418,6 +426,7 @@ export function OutputArea({
             evalue: output.evalue,
             traceback: output.traceback,
           },
+          outputId,
           cellId,
           outputIndex: index,
         });
@@ -535,25 +544,31 @@ export function OutputArea({
           {/* In-DOM outputs (when not using isolation) */}
           {!shouldIsolate && (
             <div ref={inDomOutputRef}>
-              {outputs.map((output, index) => (
-                <div key={`output-${index}`} data-slot="output-item" data-output-index={index}>
-                  <ErrorBoundary
-                    resetKeys={[output]}
-                    fallback={(error, reset) => (
-                      <OutputErrorFallback error={error} outputIndex={index} onRetry={reset} />
-                    )}
-                    onError={(error, errorInfo) => {
-                      console.error(
-                        `[OutputArea] Error rendering output ${index}:`,
-                        error,
-                        errorInfo.componentStack,
-                      );
-                    }}
-                  >
-                    {renderOutput(output, index, renderers, priority)}
-                  </ErrorBoundary>
-                </div>
-              ))}
+              {outputs.map((output, index) => {
+                // Prefer daemon-stamped output_id for stable React keys so a
+                // stream append doesn't re-mount sibling outputs. Fall back
+                // to positional when a render path skipped the id.
+                const key = output.output_id ?? `output-${index}`;
+                return (
+                  <div key={key} data-slot="output-item" data-output-index={index}>
+                    <ErrorBoundary
+                      resetKeys={[output]}
+                      fallback={(error, reset) => (
+                        <OutputErrorFallback error={error} outputIndex={index} onRetry={reset} />
+                      )}
+                      onError={(error, errorInfo) => {
+                        console.error(
+                          `[OutputArea] Error rendering output ${index}:`,
+                          error,
+                          errorInfo.componentStack,
+                        );
+                      }}
+                    >
+                      {renderOutput(output, index, renderers, priority)}
+                    </ErrorBoundary>
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>

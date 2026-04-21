@@ -263,10 +263,16 @@ function IsolatedRendererApp() {
       case "render": {
         const renderPayload = payload as RenderPayload;
 
-        // Generate stable ID when cellId is provided for better React reconciliation
-        const id = renderPayload.cellId
-          ? `${renderPayload.cellId}-${renderPayload.outputIndex ?? 0}`
-          : `output-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        // Prefer the daemon-stamped output_id when available — it is stable
+        // across display_update, stream appends, and cell reorders, so
+        // React reconciliation won't re-mount sibling outputs. Fall back
+        // to cellId+outputIndex for render paths that don't carry one
+        // (e.g. the markdown cell renders a single payload with no id).
+        const id = renderPayload.outputId
+          ? renderPayload.outputId
+          : renderPayload.cellId
+            ? `${renderPayload.cellId}-${renderPayload.outputIndex ?? 0}`
+            : `output-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
         setState((prev) => {
           if (renderPayload.replace) {
@@ -296,7 +302,14 @@ function IsolatedRendererApp() {
       case "renderBatch": {
         const batchPayload = payload as { outputs: RenderPayload[] };
         const entries: OutputEntry[] = (batchPayload.outputs ?? []).map((p, i) => ({
-          id: p.cellId ? `${p.cellId}-${p.outputIndex ?? i}` : `output-${i}`,
+          // Prefer daemon-stamped output_id (stable across stream append /
+          // display_update / reorder). Fall back to positional key only for
+          // payloads without an id (legacy render paths).
+          id: p.outputId
+            ? p.outputId
+            : p.cellId
+              ? `${p.cellId}-${p.outputIndex ?? i}`
+              : `output-${i}`,
           payload: p,
         }));
         setState((prev) => ({ ...prev, outputs: entries }));

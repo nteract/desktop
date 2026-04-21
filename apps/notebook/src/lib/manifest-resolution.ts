@@ -32,31 +32,36 @@ export type ContentRef =
 /**
  * An output manifest with content refs that may need blob-store resolution.
  */
+interface ManifestCommon {
+  /** Daemon-stamped UUID. Always non-empty on the write path. */
+  output_id?: string;
+}
+
 export type OutputManifest =
-  | {
+  | (ManifestCommon & {
       output_type: "display_data";
       data: Record<string, ContentRef>;
       metadata?: Record<string, unknown>;
       transient?: { display_id?: string };
-    }
-  | {
+    })
+  | (ManifestCommon & {
       output_type: "execute_result";
       data: Record<string, ContentRef>;
       metadata?: Record<string, unknown>;
       execution_count?: number | null;
       transient?: { display_id?: string };
-    }
-  | {
+    })
+  | (ManifestCommon & {
       output_type: "stream";
       name: string;
       text: ContentRef;
-    }
-  | {
+    })
+  | (ManifestCommon & {
       output_type: "error";
       ename: string;
       evalue: string;
       traceback: ContentRef;
-    };
+    });
 
 /**
  * Type guard: returns true if `value` looks like a structured OutputManifest
@@ -230,10 +235,12 @@ export async function resolveManifest(
   manifest: OutputManifest,
   blobPort: number,
 ): Promise<JupyterOutput> {
+  const output_id = manifest.output_id;
   switch (manifest.output_type) {
     case "display_data": {
       const data = await resolveDataBundle(manifest.data, blobPort);
       return {
+        output_id,
         output_type: "display_data",
         data,
         metadata: manifest.metadata ?? {},
@@ -243,6 +250,7 @@ export async function resolveManifest(
     case "execute_result": {
       const data = await resolveDataBundle(manifest.data, blobPort);
       return {
+        output_id,
         output_type: "execute_result",
         data,
         metadata: manifest.metadata ?? {},
@@ -253,6 +261,7 @@ export async function resolveManifest(
     case "stream": {
       const text = await resolveContentRef(manifest.text, blobPort);
       return {
+        output_id,
         output_type: "stream",
         name: manifest.name as "stdout" | "stderr",
         text,
@@ -265,6 +274,7 @@ export async function resolveManifest(
       );
       const traceback = JSON.parse(tracebackJson) as string[];
       return {
+        output_id,
         output_type: "error",
         ename: manifest.ename,
         evalue: manifest.evalue,
@@ -287,11 +297,13 @@ export function resolveManifestSync(
   manifest: OutputManifest,
   blobPort: number,
 ): JupyterOutput | null {
+  const output_id = manifest.output_id;
   switch (manifest.output_type) {
     case "display_data": {
       const data = resolveDataBundleSync(manifest.data, blobPort);
       if (data === null) return null;
       return {
+        output_id,
         output_type: "display_data",
         data,
         metadata: manifest.metadata ?? {},
@@ -302,6 +314,7 @@ export function resolveManifestSync(
       const data = resolveDataBundleSync(manifest.data, blobPort);
       if (data === null) return null;
       return {
+        output_id,
         output_type: "execute_result",
         data,
         metadata: manifest.metadata ?? {},
@@ -313,6 +326,7 @@ export function resolveManifestSync(
       const text = resolveContentRefSync(manifest.text, blobPort);
       if (text === null) return null;
       return {
+        output_id,
         output_type: "stream",
         name: manifest.name as "stdout" | "stderr",
         text,
@@ -323,6 +337,7 @@ export function resolveManifestSync(
       if (tracebackJson === null) return null;
       const traceback = JSON.parse(tracebackJson) as string[];
       return {
+        output_id,
         output_type: "error",
         ename: manifest.ename,
         evalue: manifest.evalue,
