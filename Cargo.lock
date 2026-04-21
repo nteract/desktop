@@ -4487,6 +4487,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "notebook-persistence"
+version = "0.1.0"
+dependencies = [
+ "automerge",
+ "loro_fractional_index",
+ "notebook-doc",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "notebook-protocol"
 version = "0.2.0"
 dependencies = [

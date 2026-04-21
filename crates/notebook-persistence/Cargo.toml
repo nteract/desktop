@@ -1,0 +1,21 @@
+[package]
+name = "notebook-persistence"
+version = "0.1.0"
+edition.workspace = true
+description = "ipynb <-> NotebookDoc conversion shared between the daemon and the CLI recovery path"
+repository.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+automerge = "0.8"
+loro_fractional_index = { workspace = true }
+notebook-doc = { path = "../notebook-doc" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
