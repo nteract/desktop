@@ -78,6 +78,40 @@ describe("projectRuntimeStateToExecutions", () => {
     expect((stored as { text: string }).text).toBe("legacy output");
   });
 
+  it("produces distinct synthesized ids for multiple empty-id outputs", () => {
+    const a = {
+      output_id: "",
+      output_type: "stream",
+      name: "stdout",
+      text: "alpha",
+    };
+    const b = {
+      output_id: "",
+      output_type: "stream",
+      name: "stdout",
+      text: "beta",
+    };
+    projectRuntimeStateToExecutions({
+      executions: {
+        "exec-x": {
+          cell_id: "c",
+          execution_count: 1,
+          status: "done",
+          success: true,
+          outputs: [a, b],
+        },
+      },
+    });
+    const snap = getExecutionById("exec-x");
+    expect(snap?.output_ids).toEqual(["legacy:exec-x:0", "legacy:exec-x:1"]);
+    expect((getOutputById("legacy:exec-x:0") as { text: string }).text).toBe(
+      "alpha",
+    );
+    expect((getOutputById("legacy:exec-x:1") as { text: string }).text).toBe(
+      "beta",
+    );
+  });
+
   it("evicts trimmed executions on the next tick", () => {
     projectRuntimeStateToExecutions({
       executions: {

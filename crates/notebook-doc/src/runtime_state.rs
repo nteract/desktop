@@ -2352,11 +2352,15 @@ pub fn diff_execution_outputs(
 ///
 /// Outputs emitted by the daemon carry a `"output_id"` string field (UUIDv4)
 /// for stable addressable identity. Older outputs or synthesized payloads
-/// without one return `None`.
+/// without one (or with a literal empty string) return `None` - the
+/// per-output diff and the JS projection both treat missing and empty
+/// as "no identity", and collapsing every empty-id output onto the same
+/// key would break the `changed/removed` channel.
 pub fn extract_output_id(output: &serde_json::Value) -> Option<String> {
     output
         .get("output_id")
         .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
 }
 
@@ -3393,6 +3397,20 @@ mod tests {
         assert!(!updated);
         assert_eq!(idx, 1);
         assert_eq!(doc.get_outputs("exec-1"), vec![m_a, m_b]);
+    }
+
+    #[test]
+    fn test_extract_output_id_filters_empty_strings() {
+        // Legacy fixtures and in-flight manifests sometimes serialize
+        // `"output_id": ""`. The id diff must treat those as missing so
+        // every such output does not collapse onto the empty-string key
+        // and drop sibling entries.
+        let with_id = serde_json::json!({ "output_id": "abc" });
+        let empty = serde_json::json!({ "output_id": "" });
+        let missing = serde_json::json!({});
+        assert_eq!(extract_output_id(&with_id), Some("abc".to_string()));
+        assert_eq!(extract_output_id(&empty), None);
+        assert_eq!(extract_output_id(&missing), None);
     }
 
     #[test]

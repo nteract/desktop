@@ -10,6 +10,7 @@
 import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 import { refreshBlobPort } from "./blob-port";
 import { logger } from "./logger";
+import { getBlobPort } from "./blob-port";
 import {
   resolveManifest,
   resolveManifestSync,
@@ -175,31 +176,53 @@ export function projectRuntimeStateToExecutions(state: {
  * `output_id` values. Real daemon-stamped ids flow through the
  * `outputIdChanges$` pipeline; this is the fallback for legacy snapshots
  * and fixtures. We synthesize a deterministic id (`legacy:<exec>:<idx>`)
- * and push the raw manifest through if it's already directly consumable.
- * Anything that needs async blob resolution is skipped - those paths
- * have their own channel already.
+ * and push whatever we can resolve synchronously (inline data, plain
+ * JupyterOutput shapes). Manifest entries that need async blob fetches
+ * are kicked to the async path below so they land as soon as they
+ * resolve, without blocking the projection tick.
  */
 function seedLegacyOutputsForExecution(
   execution_id: string,
   raw: { outputs?: unknown[] },
 ): void {
   if (!Array.isArray(raw.outputs)) return;
+  const pendingAsync: Array<{ synthesized: string; raw: unknown }> = [];
   for (let i = 0; i < raw.outputs.length; i++) {
     const output = raw.outputs[i];
     if (!output || typeof output !== "object") continue;
     const oidField = (output as { output_id?: unknown }).output_id;
     if (typeof oidField === "string" && oidField.length > 0) continue;
     const synthesized = `legacy:${execution_id}:${i}`;
-    // Plain `JupyterOutput` shape (already resolved) goes straight in.
-    // Structured manifests with ContentRefs need the real pipeline, so
-    // skip them - they'd arrive through `applyOutputIdChanges` once the
-    // daemon stamps a real id.
-    if ("output_type" in output && !isOutputManifest(output)) {
-      const existing = getOutputById(synthesized);
-      if (existing === output) continue;
-      setOutput(synthesized, output as JupyterOutput);
+    // Skip if we already have a matching resolved value for this key.
+    const existing = getOutputById(synthesized);
+    if (existing && existing === output) continue;
+
+    const sync = tryResolveSync(output, getBlobPort(), new Map());
+    if (sync) {
+      setOutput(synthesized, sync);
+      continue;
     }
+    // Needs async blob resolution (manifest with blob ContentRefs).
+    pendingAsync.push({ synthesized, raw: output });
   }
+  if (pendingAsync.length === 0) return;
+  void (async () => {
+    let port = getBlobPort();
+    if (port === null) port = await refreshBlobPort();
+    if (port === null) return;
+    for (const { synthesized, raw: rawOutput } of pendingAsync) {
+      if (!isOutputManifest(rawOutput)) continue;
+      try {
+        const resolved = await resolveManifest(rawOutput, port);
+        setOutput(synthesized, resolved);
+      } catch (err) {
+        logger.warn(
+          `[outputs-store] failed to resolve legacy output ${synthesized}:`,
+          err,
+        );
+      }
+    }
+  })();
 }
 
 /**
