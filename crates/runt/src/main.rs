@@ -5060,13 +5060,9 @@ fn all_notebook_docs_dirs() -> Vec<std::path::PathBuf> {
     dirs
 }
 
-/// Find the automerge file for a notebook by its hash across all cache directories.
+/// Search a given list of notebook-docs directories for an automerge file.
+///
 /// Checks live docs first, then falls back to the most recent snapshot.
-fn find_automerge_file(filename: &str) -> Option<std::path::PathBuf> {
-    find_automerge_file_in_dirs(&all_notebook_docs_dirs(), filename)
-}
-
-/// Core logic: search a given list of notebook-docs directories for an automerge file.
 fn find_automerge_file_in_dirs(
     dirs: &[std::path::PathBuf],
     filename: &str,
@@ -5214,13 +5210,30 @@ fn recover_notebook(
     output: Option<&std::path::Path>,
     list: bool,
 ) -> Result<()> {
+    let dirs = all_notebook_docs_dirs();
+    let blob_store_dir = runtimed::default_blob_store_dir();
+    recover_notebook_from_dirs(path, output, list, &dirs, Some(&blob_store_dir))
+}
+
+/// Inner recover flow with explicit lookup dirs and blob store root.
+///
+/// Separated from [`recover_notebook`] so tests can invoke it against a
+/// temp directory without touching the user's real cache. `blob_store_dir`
+/// may be `None` when outputs only use inline `ContentRef`s, or when the
+/// caller wants blob references to pass through unresolved.
+fn recover_notebook_from_dirs(
+    path: Option<&std::path::Path>,
+    output: Option<&std::path::Path>,
+    list: bool,
+    docs_dirs: &[std::path::PathBuf],
+    _blob_store_dir: Option<&std::path::Path>,
+) -> Result<()> {
     use notebook_doc::{notebook_doc_filename, NotebookDoc};
 
     if list {
-        let dirs = all_notebook_docs_dirs();
         let mut found = false;
 
-        for dir in &dirs {
+        for dir in docs_dirs {
             // List live docs
             if let Ok(entries) = std::fs::read_dir(dir) {
                 for entry in entries.flatten() {
@@ -5263,7 +5276,7 @@ fn recover_notebook(
     let notebook_id = abs_path.to_string_lossy().to_string();
     let filename = notebook_doc_filename(&notebook_id);
 
-    let automerge_path = match find_automerge_file(&filename) {
+    let automerge_path = match find_automerge_file_in_dirs(docs_dirs, &filename) {
         Some(p) => p,
         None => {
             eprintln!(
@@ -5608,6 +5621,140 @@ mod tests {
         let result = super::doc_to_ipynb(&doc);
         let source = result["cells"][0]["source"].as_array().unwrap();
         assert!(source.is_empty());
+    }
+
+    /// Regression test for silent output loss in `runt recover`.
+    ///
+    /// Schema v3 moved cell outputs from `NotebookDoc` into the daemon's
+    /// `RuntimeStateDoc`. Recover was reading `CellSnapshot.outputs` —
+    /// which is always empty since that move — and shipping `.ipynb`
+    /// files with blank output arrays.
+    ///
+    /// This test writes a paired `{hash}.automerge` + `{hash}.state.automerge`
+    /// alongside a blob store directory, runs the recover flow against those
+    /// temp dirs, and asserts both inline and blob-resolved outputs land
+    /// in the emitted ipynb.
+    #[test]
+    fn test_recover_outputs_from_runtime_state_doc() {
+        use notebook_doc::runtime_state::RuntimeStateDoc;
+        use notebook_doc::{notebook_doc_filename, NotebookDoc};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let docs_dir = tmp.path().join("notebook-docs");
+        let blobs_dir = tmp.path().join("blobs");
+        std::fs::create_dir_all(&docs_dir).unwrap();
+        std::fs::create_dir_all(&blobs_dir).unwrap();
+
+        // Synthesize an absolute notebook path. The file need not exist on
+        // disk — recover canonicalizes only when the file exists, else it
+        // falls back to treating the path as absolute verbatim.
+        let notebook_path = tmp.path().join("recover_bug.ipynb");
+        let notebook_id = notebook_path.to_string_lossy().to_string();
+
+        // Build the NotebookDoc with two code cells. Each cell points at
+        // an execution_id that lives in the RuntimeStateDoc below.
+        let mut doc = NotebookDoc::new(&notebook_id);
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        doc.update_source("cell-1", "print('hello')").unwrap();
+        doc.set_execution_id("cell-1", Some("exec-1")).unwrap();
+        doc.add_cell(1, "cell-2", "code").unwrap();
+        doc.update_source("cell-2", "print('big')").unwrap();
+        doc.set_execution_id("cell-2", Some("exec-2")).unwrap();
+
+        // Cell 1 output: inline stream ContentRef (under the 1KiB inlining
+        // threshold), mirroring what the daemon writes for small text.
+        let inline_output = serde_json::json!({
+            "output_type": "stream",
+            "output_id": "out-1",
+            "name": "stdout",
+            "text": { "inline": "hello\n" },
+        });
+
+        // Cell 2 output: blob ContentRef pointing at a file we'll seed in
+        // the content-addressed store. Hash is arbitrary 64-hex — the
+        // recover path reads from `{shard}/{rest}` without verifying.
+        let blob_hash = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+        let blob_content = "big kernel output spilled to the blob store\n";
+        let shard = &blob_hash[..2];
+        let rest = &blob_hash[2..];
+        let shard_dir = blobs_dir.join(shard);
+        std::fs::create_dir_all(&shard_dir).unwrap();
+        std::fs::write(shard_dir.join(rest), blob_content).unwrap();
+
+        let blob_output = serde_json::json!({
+            "output_type": "stream",
+            "output_id": "out-2",
+            "name": "stdout",
+            "text": { "blob": blob_hash, "size": blob_content.len() },
+        });
+
+        let mut state_doc = RuntimeStateDoc::new();
+        state_doc.create_execution("exec-1", "cell-1");
+        state_doc.set_execution_count("exec-1", 1);
+        state_doc.set_outputs("exec-1", &[inline_output]).unwrap();
+        state_doc.set_execution_done("exec-1", true);
+        state_doc.create_execution("exec-2", "cell-2");
+        state_doc.set_execution_count("exec-2", 2);
+        state_doc.set_outputs("exec-2", &[blob_output]).unwrap();
+        state_doc.set_execution_done("exec-2", true);
+
+        // Persist both docs side-by-side, same stem, differing extensions.
+        let filename = notebook_doc_filename(&notebook_id);
+        let stem = filename.strip_suffix(".automerge").unwrap();
+        std::fs::write(docs_dir.join(&filename), doc.save()).unwrap();
+        std::fs::write(
+            docs_dir.join(format!("{stem}.state.automerge")),
+            state_doc.doc_mut().save(),
+        )
+        .unwrap();
+
+        // Run recover against the temp dirs.
+        let output_path = tmp.path().join("recovered.ipynb");
+        super::recover_notebook_from_dirs(
+            Some(&notebook_path),
+            Some(&output_path),
+            false,
+            &[docs_dir],
+            Some(&blobs_dir),
+        )
+        .expect("recover_notebook_from_dirs");
+
+        // Parse the emitted ipynb and verify outputs arrived intact.
+        let recovered: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&output_path).unwrap()).unwrap();
+        let cells = recovered["cells"].as_array().expect("cells array");
+        assert_eq!(cells.len(), 2, "expected 2 cells");
+
+        // Cell 1: inline output should surface as "hello\n".
+        let outputs_1 = cells[0]["outputs"].as_array().expect("outputs[0] array");
+        assert_eq!(
+            outputs_1.len(),
+            1,
+            "cell 1 outputs were dropped during recover: {:#?}",
+            cells[0]
+        );
+        assert_eq!(outputs_1[0]["output_type"], "stream");
+        assert_eq!(outputs_1[0]["name"], "stdout");
+        assert_eq!(
+            outputs_1[0]["text"], "hello\n",
+            "inline ContentRef did not resolve to its string content"
+        );
+        assert_eq!(cells[0]["execution_count"], 1);
+
+        // Cell 2: blob output should be resolved from the content store.
+        let outputs_2 = cells[1]["outputs"].as_array().expect("outputs[1] array");
+        assert_eq!(
+            outputs_2.len(),
+            1,
+            "cell 2 outputs were dropped during recover: {:#?}",
+            cells[1]
+        );
+        assert_eq!(outputs_2[0]["output_type"], "stream");
+        assert_eq!(
+            outputs_2[0]["text"], blob_content,
+            "blob ContentRef did not resolve from the on-disk blob store"
+        );
+        assert_eq!(cells[1]["execution_count"], 2);
     }
 
     #[cfg(unix)]
