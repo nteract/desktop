@@ -48,6 +48,10 @@ export interface FrameEvent {
   state?: unknown;
   /** Cell IDs whose outputs changed in RuntimeStateDoc (from WASM-side diff). */
   output_changed_cells?: string[];
+  /** Output IDs added or modified, keyed by the UUIDv4 the daemon stamps. */
+  output_changed_ids?: string[];
+  /** Output IDs no longer present in any execution (cleared or replaced). */
+  output_removed_ids?: string[];
 }
 
 // ── SyncableHandle ───────────────────────────────────────────────────

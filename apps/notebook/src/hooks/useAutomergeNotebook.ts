@@ -20,6 +20,11 @@ import {
   updateNotebookCells,
   useCellIds,
 } from "../lib/notebook-cells";
+import {
+  applyOutputIdChanges,
+  projectRuntimeStateToExecutions,
+  resetRuntimeStoresProjection,
+} from "../lib/project-runtime-stores";
 import { cloneNotebookFile, openNotebookFile, saveNotebook } from "../lib/notebook-file-ops";
 import { emitBroadcast, emitPresence, subscribeBroadcast } from "../lib/notebook-frame-bus";
 import { notifyMetadataChanged, setNotebookHandle } from "../lib/notebook-metadata";
@@ -260,9 +265,35 @@ export function useAutomergeNotebook() {
     // Presence → frame bus.
     const presenceSub = engine.presence$.subscribe((payload) => emitPresence(payload));
 
-    // Runtime state → store.
-    const runtimeStateSub = engine.runtimeState$.subscribe((state) =>
-      setRuntimeState(state as RuntimeState),
+    // Runtime state → store + executions projection. The executions store
+    // is a narrow per-execution_id projection that lets <CellLabel> /
+    // <OutputArea> subscribe at execution granularity instead of at the
+    // cell granularity. See lib/notebook-executions.ts.
+    const runtimeStateSub = engine.runtimeState$.subscribe((state) => {
+      const typed = state as RuntimeState;
+      setRuntimeState(typed);
+      projectRuntimeStateToExecutions(
+        typed as unknown as { executions?: Record<string, unknown> },
+      );
+    });
+
+    // Per-output changes → outputs store. Stream appends only touch the
+    // affected output's subscribers, keeping parent cell components still.
+    const outputIdChangesSub = engine.outputIdChanges$.subscribe(
+      ({ changed_ids, removed_ids }) => {
+        const handle = handleRef.current;
+        if (!handle && changed_ids.length === 0 && removed_ids.length === 0)
+          return;
+        void applyOutputIdChanges(
+          handle,
+          changed_ids,
+          removed_ids,
+          getBlobPort(),
+          outputCacheRef.current,
+        ).catch((err) =>
+          logger.warn("[automerge-notebook] output store projection failed:", err),
+        );
+      },
     );
 
     // Pool state → store.
@@ -287,6 +318,7 @@ export function useAutomergeNotebook() {
           refreshBlobPort();
           resetNotebookCells();
           resetRuntimeState();
+          resetRuntimeStoresProjection();
           resetPoolState();
           outputCacheRef.current.clear();
           setIsLoading(true);
@@ -332,6 +364,7 @@ export function useAutomergeNotebook() {
       broadcastsSub.unsubscribe();
       presenceSub.unsubscribe();
       runtimeStateSub.unsubscribe();
+      outputIdChangesSub.unsubscribe();
       poolStateSub.unsubscribe();
       lifecycleSub.unsubscribe();
       clearOutputsSub.unsubscribe();
@@ -341,6 +374,7 @@ export function useAutomergeNotebook() {
 
       resetNotebookCells();
       resetRuntimeState();
+      resetRuntimeStoresProjection();
       resetPoolState();
       setNotebookHandle(null);
       handleRef.current?.free();
