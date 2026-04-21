@@ -6885,6 +6885,7 @@ version = "2.2.0"
 dependencies = [
  "anyhow",
  "automerge",
+ "base64 0.22.1",
  "chrono",
  "clap",
  "colored",

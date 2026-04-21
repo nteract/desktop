@@ -5258,77 +5258,162 @@ fn resolve_cell_outputs_for_recovery(
 
 /// Resolve a single output manifest into an nbformat-shaped JSON value.
 ///
-/// Walks the manifest and swaps every `ContentRef` shape
-/// (`{"inline": "..."}` or `{"blob": "<hash>", "size": N}`) for its
-/// resolved string content. Unknown shapes pass through unchanged so
-/// raw nbformat outputs from legacy captures keep working.
+/// Dispatches on `output_type` and uses MIME context for MIME-keyed data
+/// bundles (display_data, execute_result) so JSON-typed payloads round-trip
+/// as structured JSON and binary-typed payloads are base64-encoded back to
+/// their nbformat wire shape.
 fn resolve_recover_output(
     mut output: serde_json::Value,
     blob_store_dir: Option<&std::path::Path>,
 ) -> serde_json::Value {
-    resolve_content_refs_in_place(&mut output, blob_store_dir);
+    match output.get("output_type").and_then(|v| v.as_str()) {
+        Some("display_data" | "execute_result") => {
+            if let Some(data) = output.get_mut("data").and_then(|v| v.as_object_mut()) {
+                for (mime, value) in data.iter_mut() {
+                    resolve_mime_content_ref(value, mime, blob_store_dir);
+                }
+            }
+        }
+        Some("stream") => {
+            if let Some(text) = output.get_mut("text") {
+                // Stream text is always UTF-8.
+                resolve_text_content_ref(text, blob_store_dir);
+            }
+        }
+        Some("error") => {
+            if let Some(tb) = output.get_mut("traceback") {
+                // Traceback is a JSON array stored as a text ContentRef.
+                if let Some(map) = tb.as_object() {
+                    if let Some(resolved) = resolve_content_ref_as_text(map, blob_store_dir) {
+                        *tb = serde_json::from_str(&resolved)
+                            .unwrap_or(serde_json::Value::String(resolved));
+                    }
+                }
+            }
+        }
+        _ => {
+            // Unknown shape — best-effort pass-through.
+        }
+    }
     output
 }
 
-/// Recursively walk a JSON value, replacing ContentRef objects with their
-/// resolved string content in place.
+/// Resolve a ContentRef in place, interpreting the payload per MIME type.
 ///
-/// A ContentRef is a `{"inline": <string>}` or `{"blob": <hash>, "size":
-/// <n>}` object. Resolution is a pure read — no blob store writes. Binary
-/// MIMEs (images, audio, etc.) are not re-encoded here; the daemon's save
-/// path handles base64 for live notebooks, and the offline recover path
-/// only surfaces text content today. Binary content falls through
-/// unresolved rather than silently corrupting data.
-fn resolve_content_refs_in_place(
+/// Text MIMEs (`text/*`, SVG, `application/javascript`, etc.) resolve to
+/// a plain string. JSON MIMEs (`application/json`, `*+json`) resolve to
+/// a parsed `serde_json::Value` so nbformat keeps structured objects.
+/// Binary MIMEs (PNG, audio, video, opaque application/*) base64-encode
+/// the raw bytes, mirroring the Jupyter wire format on save.
+fn resolve_mime_content_ref(
     value: &mut serde_json::Value,
+    mime: &str,
     blob_store_dir: Option<&std::path::Path>,
 ) {
-    match value {
-        serde_json::Value::Object(map) => {
-            // Detect a ContentRef at this level before recursing.
-            let looks_like_content_ref =
-                map.len() <= 2 && (map.contains_key("inline") || map.contains_key("blob"));
-            if looks_like_content_ref {
-                if let Some(resolved) = resolve_content_ref_object(map, blob_store_dir) {
-                    *value = serde_json::Value::String(resolved);
-                    return;
-                }
-            }
-            for (_, v) in map.iter_mut() {
-                resolve_content_refs_in_place(v, blob_store_dir);
+    let Some(map) = value.as_object() else {
+        return;
+    };
+    if !looks_like_content_ref(map) {
+        return;
+    }
+    match notebook_doc::mime::mime_kind(mime) {
+        notebook_doc::mime::MimeKind::Text => {
+            if let Some(s) = resolve_content_ref_as_text(map, blob_store_dir) {
+                *value = serde_json::Value::String(s);
             }
         }
-        serde_json::Value::Array(items) => {
-            for item in items.iter_mut() {
-                resolve_content_refs_in_place(item, blob_store_dir);
+        notebook_doc::mime::MimeKind::Json => {
+            if let Some(s) = resolve_content_ref_as_text(map, blob_store_dir) {
+                *value = serde_json::from_str(&s).unwrap_or(serde_json::Value::String(s));
             }
         }
-        _ => {}
+        notebook_doc::mime::MimeKind::Binary => {
+            if let Some(s) = resolve_content_ref_as_base64(map, blob_store_dir) {
+                *value = serde_json::Value::String(s);
+            }
+        }
     }
 }
 
-/// Resolve a `ContentRef`-shaped JSON object to its string content.
+/// Resolve a ContentRef known to hold text, replacing it with the string.
+fn resolve_text_content_ref(
+    value: &mut serde_json::Value,
+    blob_store_dir: Option<&std::path::Path>,
+) {
+    if let Some(map) = value.as_object() {
+        if looks_like_content_ref(map) {
+            if let Some(s) = resolve_content_ref_as_text(map, blob_store_dir) {
+                *value = serde_json::Value::String(s);
+            }
+        }
+    }
+}
+
+/// Returns true if a JSON object looks like a ContentRef shape.
 ///
-/// Returns `None` when the shape is unrecognized, when the blob file is
-/// missing, or when the bytes are not valid UTF-8 — the caller then
-/// leaves the original object in place so whatever structure survived
-/// the daemon still round-trips.
-fn resolve_content_ref_object(
+/// The daemon writes ContentRef manifests with exactly one of `inline`
+/// or `blob`, optionally plus `size`. Anything else is a user-facing
+/// object (metadata, transient, traceback array element, etc.) and must
+/// not be mistaken for a ContentRef.
+fn looks_like_content_ref(map: &serde_json::Map<String, serde_json::Value>) -> bool {
+    if map.contains_key("inline") && map.get("inline").is_some_and(|v| v.is_string()) {
+        return map.len() == 1;
+    }
+    if map.contains_key("blob") && map.get("blob").is_some_and(|v| v.is_string()) {
+        // Allow optional `size` sibling for forward compatibility.
+        let extras_ok = map.keys().all(|k| k == "blob" || k == "size");
+        return extras_ok;
+    }
+    false
+}
+
+/// Resolve a `ContentRef`-shaped map to its text content.
+///
+/// Returns `None` when the blob file is missing, unreadable, or non-UTF-8
+/// — callers leave the original object in place so whatever structure
+/// survived the daemon still round-trips (even if unresolved).
+fn resolve_content_ref_as_text(
     map: &serde_json::Map<String, serde_json::Value>,
     blob_store_dir: Option<&std::path::Path>,
 ) -> Option<String> {
     if let Some(inline) = map.get("inline").and_then(|v| v.as_str()) {
         return Some(inline.to_string());
     }
-    let blob_hash = map.get("blob").and_then(|v| v.as_str())?;
+    let blob_path = blob_path_for(map, blob_store_dir)?;
+    std::fs::read_to_string(&blob_path).ok()
+}
+
+/// Resolve a `ContentRef`-shaped map to a base64-encoded string for
+/// binary nbformat outputs. Inline entries pass through as-is (they are
+/// already base64 from the Jupyter wire protocol for small images).
+fn resolve_content_ref_as_base64(
+    map: &serde_json::Map<String, serde_json::Value>,
+    blob_store_dir: Option<&std::path::Path>,
+) -> Option<String> {
+    use base64::Engine as _;
+    if let Some(inline) = map.get("inline").and_then(|v| v.as_str()) {
+        return Some(inline.to_string());
+    }
+    let blob_path = blob_path_for(map, blob_store_dir)?;
+    let bytes = std::fs::read(&blob_path).ok()?;
+    Some(base64::engine::general_purpose::STANDARD.encode(&bytes))
+}
+
+/// Compute the on-disk path for a `{"blob": "<hash>", ...}` ContentRef.
+///
+/// Returns `None` when no blob store root was supplied or the hash is
+/// implausibly short. Does not check file existence.
+fn blob_path_for(
+    map: &serde_json::Map<String, serde_json::Value>,
+    blob_store_dir: Option<&std::path::Path>,
+) -> Option<std::path::PathBuf> {
     let dir = blob_store_dir?;
-    // Blob store layout: two-char shard dir + remaining chars.
+    let blob_hash = map.get("blob").and_then(|v| v.as_str())?;
     if blob_hash.len() < 3 {
         return None;
     }
     let (shard, rest) = blob_hash.split_at(2);
-    let blob_path = dir.join(shard).join(rest);
-    std::fs::read_to_string(&blob_path).ok()
+    Some(dir.join(shard).join(rest))
 }
 
 /// Look for a `{stem}.state.automerge` sibling of the given notebook doc
@@ -5945,6 +6030,134 @@ mod tests {
             "blob ContentRef did not resolve from the on-disk blob store"
         );
         assert_eq!(cells[1]["execution_count"], 2);
+    }
+
+    /// Verifies MIME-aware ContentRef resolution for display_data bundles.
+    ///
+    /// Text MIMEs resolve to strings, JSON MIMEs resolve to structured
+    /// JSON (not stringified), and binary MIMEs base64-encode their raw
+    /// bytes back to the Jupyter wire shape.
+    #[test]
+    fn test_recover_display_data_mime_aware() {
+        use notebook_doc::runtime_state::RuntimeStateDoc;
+        use notebook_doc::{notebook_doc_filename, NotebookDoc};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let docs_dir = tmp.path().join("notebook-docs");
+        let blobs_dir = tmp.path().join("blobs");
+        std::fs::create_dir_all(&docs_dir).unwrap();
+        std::fs::create_dir_all(&blobs_dir).unwrap();
+
+        let notebook_path = tmp.path().join("display_data.ipynb");
+        let notebook_id = notebook_path.to_string_lossy().to_string();
+
+        let mut doc = NotebookDoc::new(&notebook_id);
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        doc.set_execution_id("cell-1", Some("exec-1")).unwrap();
+
+        // Seed three blobs: text HTML, JSON Vega-Lite spec, binary PNG.
+        let html_content = "<h1>recovered</h1>\n".repeat(200); // > 1 KiB
+        let html_hash = "11ff11ff11ff11ff11ff11ff11ff11ff11ff11ff11ff11ff11ff11ff11ff1100";
+        std::fs::create_dir_all(blobs_dir.join(&html_hash[..2])).unwrap();
+        std::fs::write(
+            blobs_dir.join(&html_hash[..2]).join(&html_hash[2..]),
+            &html_content,
+        )
+        .unwrap();
+
+        let vega_spec = serde_json::json!({
+            "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+            "data": {"values": [{"a": "A", "b": 28}]},
+            "mark": "bar",
+            "encoding": {"x": {"field": "a"}, "y": {"field": "b"}},
+        });
+        let vega_text = serde_json::to_string(&vega_spec).unwrap();
+        let vega_hash = "22aa22aa22aa22aa22aa22aa22aa22aa22aa22aa22aa22aa22aa22aa22aa2200";
+        std::fs::create_dir_all(blobs_dir.join(&vega_hash[..2])).unwrap();
+        std::fs::write(
+            blobs_dir.join(&vega_hash[..2]).join(&vega_hash[2..]),
+            &vega_text,
+        )
+        .unwrap();
+
+        // 8-byte PNG header + IHDR chunk start — any bytes work here, we
+        // just need a non-UTF-8 sequence to prove the binary path doesn't
+        // go through `read_to_string`.
+        let png_bytes: Vec<u8> = vec![
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xd8, 0xff, 0xe0,
+        ];
+        let png_hash = "33cc33cc33cc33cc33cc33cc33cc33cc33cc33cc33cc33cc33cc33cc33cc3300";
+        std::fs::create_dir_all(blobs_dir.join(&png_hash[..2])).unwrap();
+        std::fs::write(
+            blobs_dir.join(&png_hash[..2]).join(&png_hash[2..]),
+            &png_bytes,
+        )
+        .unwrap();
+
+        let output = serde_json::json!({
+            "output_type": "display_data",
+            "output_id": "out-1",
+            "data": {
+                "text/html": {"blob": html_hash, "size": html_content.len()},
+                "application/vnd.vegalite.v5+json": {"blob": vega_hash, "size": vega_text.len()},
+                "image/png": {"blob": png_hash, "size": png_bytes.len()},
+                "text/plain": {"inline": "[Chart]"},
+            },
+            "metadata": {},
+        });
+
+        let mut state_doc = RuntimeStateDoc::new();
+        state_doc.create_execution("exec-1", "cell-1");
+        state_doc.set_outputs("exec-1", &[output]).unwrap();
+        state_doc.set_execution_done("exec-1", true);
+
+        let filename = notebook_doc_filename(&notebook_id);
+        let stem = filename.strip_suffix(".automerge").unwrap();
+        std::fs::write(docs_dir.join(&filename), doc.save()).unwrap();
+        std::fs::write(
+            docs_dir.join(format!("{stem}.state.automerge")),
+            state_doc.doc_mut().save(),
+        )
+        .unwrap();
+
+        let output_path = tmp.path().join("recovered.ipynb");
+        super::recover_notebook_from_dirs(
+            Some(&notebook_path),
+            Some(&output_path),
+            false,
+            &[docs_dir],
+            Some(&blobs_dir),
+        )
+        .expect("recover_notebook_from_dirs");
+
+        let recovered: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&output_path).unwrap()).unwrap();
+        let data = &recovered["cells"][0]["outputs"][0]["data"];
+
+        // text/html: blob-resolved UTF-8 string.
+        assert_eq!(
+            data["text/html"].as_str(),
+            Some(html_content.as_str()),
+            "text MIME should resolve to UTF-8 string"
+        );
+
+        // application/vnd.vegalite.v5+json: structured JSON, not a string.
+        assert_eq!(
+            data["application/vnd.vegalite.v5+json"], vega_spec,
+            "JSON MIME must round-trip as structured JSON"
+        );
+
+        // image/png: base64 of raw bytes.
+        use base64::Engine as _;
+        let expected_b64 = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
+        assert_eq!(
+            data["image/png"].as_str(),
+            Some(expected_b64.as_str()),
+            "binary MIME must base64-encode raw bytes"
+        );
+
+        // text/plain inline survives.
+        assert_eq!(data["text/plain"], "[Chart]");
     }
 
     #[cfg(unix)]

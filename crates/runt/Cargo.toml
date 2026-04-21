@@ -24,6 +24,7 @@ runtimelib = { workspace = true, features = ["tokio-runtime", "aws-lc-rs"] }
 runtimed-client = { path = "../runtimed-client" }
 notebook-doc = { path = "../notebook-doc", features = ["persistence"] }
 automerge = "0.8"
+base64 = "0.22"
 runt-workspace = { path = "../runt-workspace" }
 runt-mcp = { path = "../runt-mcp" }
 kernel-env = { path = "../kernel-env" }
