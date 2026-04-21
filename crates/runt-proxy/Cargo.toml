@@ -14,7 +14,6 @@ path = "src/main.rs"
 [dependencies]
 runt-mcp-proxy = { path = "../runt-mcp-proxy" }
 runt-workspace = { path = "../runt-workspace" }
-runtimed-client = { path = "../runtimed-client" }
 rmcp = { version = "1.4", features = ["transport-io"] }
 tokio = { workspace = true }
 tracing = "0.1"

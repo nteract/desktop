@@ -166,11 +166,11 @@ async fn main() -> ExitCode {
     // spawns a long-lived `DaemonConnection` against this socket and
     // uses its cached `DaemonInfo` to detect daemon upgrades.
     let build_channel = if channel == "nightly" {
-        runtimed_client::BuildChannel::Nightly
+        runt_workspace::BuildChannel::Nightly
     } else {
-        runtimed_client::BuildChannel::Stable
+        runt_workspace::BuildChannel::Stable
     };
-    let daemon_socket_path = Some(runtimed_client::socket_path_for_channel(build_channel));
+    let daemon_socket_path = Some(runt_workspace::socket_path_for_channel(build_channel));
 
     // Build child environment
     let mut child_env = HashMap::new();
