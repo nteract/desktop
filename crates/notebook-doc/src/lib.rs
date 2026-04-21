@@ -9,11 +9,15 @@
 //! copy in a "room"; each connected notebook window holds a local replica
 //! that syncs via the Automerge sync protocol.
 //!
-//! ## Document schema (v2)
+//! ## Document schema (v4)
+//!
+//! Outputs live in `RuntimeStateDoc` (keyed by `execution_id`) with
+//! per-output `output_id` UUIDs on their manifests — they are not stored
+//! in the notebook doc itself.
 //!
 //! ```text
 //! ROOT/
-//!   schema_version: u64           ← Document schema version (2 = fractional-indexed map cells)
+//!   schema_version: u64           ← Document schema version (currently 4)
 //!   notebook_id: Str
 //!   cells/                        ← Map keyed by cell ID (O(1) lookup)
 //!     {cell_id}/
@@ -22,8 +26,6 @@
 //!       position: Str             ← Fractional index hex string for ordering
 //!       source: Text              ← Automerge Text CRDT (character-level merging)
 //!       execution_count: Str      ← JSON-encoded i32 or "null"
-//!       outputs/                  ← List of Str
-//!         [j]: Str                ← JSON-encoded Jupyter output (Phase 5: manifest hash)
 //!       metadata/                 ← Map (native Automerge types, legacy: JSON string fallback)
 //!       resolved_assets/          ← Map of markdown asset ref -> blob hash
 //!   metadata/                     ← Map
@@ -51,15 +53,20 @@ use std::collections::HashMap;
 /// Current document schema version.
 ///
 /// Bump this when making incompatible changes to the Automerge document
-/// structure (e.g., switching cells from an ordered list to a fractional-indexed map).
+/// structure. Future bumps MUST ship a matching `migrate_vN_to_v(N+1)`
+/// function that preserves user data — see the "one-time cleanup"
+/// comment in `load_or_create_inner` for why the current fallback path
+/// is not a template.
 ///
+/// History:
 /// - **1** — Original schema: `cells` is an ordered `List` of `Map`.
 /// - **2** — Fractional indexing: `cells` is a `Map` keyed by cell ID, each cell has a `position` field.
-/// - **3** — Outputs moved to RuntimeStateDoc: cell outputs are no longer stored in the notebook
-///   doc. Existing outputs are extracted during migration so the caller can create synthetic
-///   execution entries in RuntimeStateDoc.
-/// - **4** — Addressable outputs: `OutputManifest` gains a required `output_id` (UUIDv4) field.
-///   Daemon mints IDs on emission; legacy outputs get IDs on first load.
+/// - **3** — Outputs moved to RuntimeStateDoc: cell outputs are no longer stored in the notebook doc.
+/// - **4** — Addressable outputs: `OutputManifest` carries a required `output_id` (UUIDv4).
+///   Outputs live in RuntimeStateDoc keyed by `execution_id`; manifests carry `output_id`.
+///
+/// v1–v3 predate the nteract 2.0 pre-release series and are no longer
+/// supported. `load_or_create_inner` discards pre-v4 documents on load.
 pub const SCHEMA_VERSION: u64 = 4;
 
 use automerge::sync;
@@ -693,9 +700,7 @@ impl NotebookDoc {
     ///
     /// ```text
     /// ROOT/
-    ///   schema_version: 2
-    ///   cells: {}          (empty Map)
-    ///   metadata: {}       (empty Map)
+    ///   schema_version: <SCHEMA_VERSION>  (scalar only — no cells/metadata maps)
     /// ```
     ///
     /// Both parameters are required:

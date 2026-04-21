@@ -25,7 +25,7 @@ Standard semver rules apply:
 Two independent version numbers handle compatibility, separate from the artifact version:
 
 - **Protocol version** (`PROTOCOL_VERSION` in `crates/notebook-protocol/src/connection.rs`) — governs wire compatibility. Validated by the magic bytes preamble at connection time. Bump when the framing, handshake shape, or message serialization format changes.
-- **Schema version** (`SCHEMA_VERSION` in `notebook-doc/src/lib.rs`) — governs Automerge document compatibility. Stored in the doc root. Bump when the document structure changes (v2 switched cells from an ordered list to a fractional-indexed map).
+- **Schema version** (`SCHEMA_VERSION` in `notebook-doc/src/lib.rs`) — governs Automerge document compatibility. Stored in the doc root. Bump when the document structure changes. Every bump MUST ship a matching `migrate_vN_to_v(N+1)` function that preserves user data. The pre-release v1–v3 schemas are discarded on load by v4; do not take that as a template for real migrations.
 
 These are just incrementing integers. They evolve independently from each other and from the artifact version. A protocol bump doesn't force a major version bump — it depends on whether the change is user-facing.
 

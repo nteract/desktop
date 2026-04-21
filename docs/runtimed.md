@@ -208,11 +208,11 @@ The daemon holds the canonical document, persisted to `~/.cache/runt/settings.au
 
 Each open notebook gets a "room" in the daemon. Multiple windows editing the same notebook sync through the room's canonical document.
 
-**Document schema** (Automerge CRDT):
+**Document schema** (Automerge CRDT, currently v4):
 
 ```
 ROOT/
-  schema_version: u64           <- Document schema version (2 = fractional-indexed map cells)
+  schema_version: u64           <- Document schema version (currently 4)
   notebook_id: Str
   cells/                        <- Map keyed by cell ID (O(1) lookup)
     {cell_id}/
@@ -221,19 +221,23 @@ ROOT/
       position: Str             <- Fractional index hex string for ordering
       source: Text              <- Automerge Text CRDT (character-level merging)
       execution_count: Str      <- JSON-encoded i32 or "null"
-      outputs/                  <- List of Str
-        [j]: Str                <- JSON-encoded Jupyter output (manifest hash)
-      metadata: Str             <- JSON-encoded cell metadata object
+      metadata/                 <- Native Automerge map (legacy: JSON string fallback)
+      resolved_assets/          <- Map of markdown asset ref -> blob hash
   metadata/                     <- Map
     runtime: Str
-    notebook_metadata: Str      <- JSON-encoded NotebookMetadataSnapshot
+    kernelspec/                 <- Native Automerge map
+    language_info/              <- Native Automerge map
+    runt/                       <- Native Automerge map
+    notebook_metadata: Str      <- Legacy JSON mirror (dual-written)
 ```
+
+Outputs live in `RuntimeStateDoc` (separate Automerge doc, frame type `0x05`) keyed by `execution_id`, with each manifest carrying an `output_id` UUID for addressable references. They are not stored in the notebook doc.
 
 Cell ordering uses fractional indexing via the `position` field. Cells are sorted lexicographically by `position`, with `cell_id` as a tiebreaker for the (rare) case where two cells receive the same fractional index.
 
 **Design decisions**:
 - Cell `source` uses `ObjType::Text` for proper concurrent edit merging. `update_source()` uses Automerge's `update_text()` (Myers diff internally) for efficient character-level patches.
-- `outputs` are write-once from a single actor (the kernel), so they don't need CRDT text semantics. Stored as JSON strings now. Phase 6 changes these to output manifest hashes.
+- Outputs are write-once from the runtime agent, keyed by `execution_id` in `RuntimeStateDoc` so they never touch the notebook doc's CRDT ops.
 - `execution_count` is a string for JSON serialization consistency.
 
 ### Room architecture
@@ -897,7 +901,7 @@ If latency becomes an issue during rapid output bursts (e.g., training loops), t
 
 ### Schema versioning: lightweight, not a framework
 
-The notebook doc root contains a `schema_version: u64` field. Current docs are v4 (cells as a `Map` with fractional indexing, outputs in RuntimeStateDoc, per-output `output_id`). `load_or_create_inner` runs the `migrate_v2_to_v3` and `migrate_v3_to_v4` steps on load when needed. Schema v1 (cells as a `List`) predates the `.automerge` files that exist in the wild and is no longer supported — loading a v1 doc produces a fresh doc with a warning. No formal migration framework — the schema is simple enough that version-checking `if` branches suffice.
+The notebook doc root contains a `schema_version: u64` field. Current docs are v4 (cells as a `Map` with fractional indexing, outputs in `RuntimeStateDoc` keyed by `execution_id`, per-output `output_id` UUIDs on manifests). `load_or_create_inner` only accepts v4 docs; anything else drops to a fresh doc with a loud warning. v1–v3 predate the nteract 2.0 pre-release series and have no real users, so dropping them is a no-op in practice — **not** a template for future bumps. Any v5 schema MUST ship a `migrate_v4_to_v5` function that preserves user data. No formal migration framework — the schema is simple enough that version-checking `if` branches suffice, but the branch is only correct when the migration actually carries data forward.
 
 For output manifests, the `output_type` field provides structural versioning. New fields can be added without breaking old readers.
 
