@@ -291,6 +291,7 @@ export function useAutomergeNotebook() {
             const rs = getRuntimeState();
             projectRuntimeStateToExecutions(
               rs as unknown as { executions?: Record<string, unknown> },
+              handle,
             );
             setIsLoading(false);
             notifyMetadataChanged();
@@ -355,7 +356,10 @@ export function useAutomergeNotebook() {
     const runtimeStateSub = engine.runtimeState$.subscribe((state) => {
       const typed = state as RuntimeState;
       setRuntimeState(typed);
-      projectRuntimeStateToExecutions(typed as unknown as { executions?: Record<string, unknown> });
+      projectRuntimeStateToExecutions(
+        typed as unknown as { executions?: Record<string, unknown> },
+        handleRef.current,
+      );
     });
 
     // Per-output changes → outputs store. Stream appends only touch the
@@ -364,6 +368,7 @@ export function useAutomergeNotebook() {
       ({ changed_ids, removed_ids, state }) => {
         if (changed_ids.length === 0 && removed_ids.length === 0) return;
         void applyOutputIdChanges(
+          handleRef.current,
           changed_ids,
           removed_ids,
           state as unknown as { executions?: Record<string, { outputs?: unknown[] }> },

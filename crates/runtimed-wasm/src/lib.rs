@@ -669,6 +669,23 @@ impl NotebookHandle {
         JsValue::UNDEFINED
     }
 
+    /// Apply MIME narrowing + ContentRef resolution to a raw output manifest.
+    ///
+    /// The runtime-state snapshot carries manifests in their un-narrowed
+    /// on-the-wire shape (all MIME types, raw `{inline}`/`{blob}` refs).
+    /// The output-store projection uses this to re-apply the same
+    /// narrowing logic `get_output_by_id` does, but without a per-id
+    /// `read_state()` walk — callers pass the raw manifest they already
+    /// have and get back a manifest ready for the renderer. Returns
+    /// `undefined` when the input can't be deserialized.
+    pub fn narrow_raw_output(&self, raw: JsValue) -> JsValue {
+        let Ok(value) = serde_wasm_bindgen::from_value::<serde_json::Value>(raw) else {
+            return JsValue::UNDEFINED;
+        };
+        let narrowed = self.narrow_output_data(value);
+        serialize_to_js(&narrowed).unwrap_or(JsValue::UNDEFINED)
+    }
+
     /// Set the MIME type priority list for output selection.
     /// Types earlier in the list are preferred when narrowing output data bundles.
     /// If empty, all MIME types are returned (backward compatible).

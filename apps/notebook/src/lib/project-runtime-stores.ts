@@ -11,6 +11,30 @@ import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 import { refreshBlobPort } from "./blob-port";
 import { logger } from "./logger";
 import { getBlobPort } from "./blob-port";
+
+/**
+ * Route a raw manifest through WASM's narrowing pipeline.
+ *
+ * The RuntimeState snapshot carries outputs in their un-narrowed on-the-
+ * wire shape: all MIME types, raw `{inline}`/`{blob}` ContentRefs. WASM's
+ * `narrow_raw_output` applies MIME priority filtering and resolves binary
+ * blob refs to `{url}` variants (using the current blob port). Without
+ * this hop, binary types outside the `looksLikeBinaryMime` safety net —
+ * e.g., `application/vnd.apache.parquet` — fall through the text-blob
+ * async path in `resolveContentRef` and get corrupted. Returns the raw
+ * value unchanged if WASM is unavailable or the narrowing fails, so the
+ * downstream resolver can still make a best-effort render.
+ */
+function narrowThroughWasm(handle: NotebookHandle | null, raw: unknown): unknown {
+  if (!handle) return raw;
+  try {
+    const narrowed = handle.narrow_raw_output(raw);
+    return narrowed === undefined ? raw : narrowed;
+  } catch (err) {
+    logger.warn("[outputs-store] narrow_raw_output failed:", err);
+    return raw;
+  }
+}
 import {
   resolveManifest,
   resolveManifestSync,
@@ -136,9 +160,12 @@ function buildExecutionSnapshot(
  * it flows through a separate path (see
  * `updateCellExecutionPointersFromHandle`).
  */
-export function projectRuntimeStateToExecutions(state: {
-  executions?: Record<string, unknown>;
-}): void {
+export function projectRuntimeStateToExecutions(
+  state: {
+    executions?: Record<string, unknown>;
+  },
+  handle: NotebookHandle | null = null,
+): void {
   const execs = state.executions;
   const nextIds = new Set<string>();
   if (execs) {
@@ -154,7 +181,7 @@ export function projectRuntimeStateToExecutions(state: {
       // `outputIdChanges$` stream only covers real output ids, so
       // without this the outputs store would miss them and
       // `useCellOutputs` would render empty.
-      seedLegacyOutputsForExecution(execution_id, entry);
+      seedLegacyOutputsForExecution(execution_id, entry, handle);
     }
   }
 
@@ -184,6 +211,7 @@ export function projectRuntimeStateToExecutions(state: {
 function seedLegacyOutputsForExecution(
   execution_id: string,
   raw: { outputs?: unknown[] },
+  handle: NotebookHandle | null,
 ): void {
   if (!Array.isArray(raw.outputs)) return;
   const pendingAsync: Array<{ synthesized: string; raw: unknown }> = [];
@@ -197,13 +225,14 @@ function seedLegacyOutputsForExecution(
     const existing = getOutputById(synthesized);
     if (existing && existing === output) continue;
 
-    const sync = tryResolveSync(output, getBlobPort(), new Map());
+    const narrowed = narrowThroughWasm(handle, output);
+    const sync = tryResolveSync(narrowed, getBlobPort(), new Map());
     if (sync) {
       setOutput(synthesized, sync);
       continue;
     }
     // Needs async blob resolution (manifest with blob ContentRefs).
-    pendingAsync.push({ synthesized, raw: output });
+    pendingAsync.push({ synthesized, raw: narrowed });
   }
   if (pendingAsync.length === 0) return;
   void (async () => {
@@ -319,6 +348,7 @@ export function updateCellExecutionPointersFromHandle(
  * IDs are dropped from the store via `deleteOutputs`.
  */
 export async function applyOutputIdChanges(
+  handle: NotebookHandle | null,
   changed_ids: string[],
   removed_ids: string[],
   state: {
@@ -334,13 +364,17 @@ export async function applyOutputIdChanges(
 
   // Pluck the changed manifests out of the RuntimeState snapshot we
   // already have in hand. Avoids `handle.get_output_by_id()` per id,
-  // which would re-clone and walk the entire state doc each call.
+  // which would re-clone and walk the entire state doc each call. Each
+  // raw manifest is still routed through `narrow_raw_output` so MIME
+  // narrowing + ContentRef resolution match what `get_output_by_id`
+  // would have produced — required for correct rendering of binary
+  // types outside the `looksLikeBinaryMime` safety net (parquet, etc.).
   const byId = indexOutputsById(state);
   const pending: Array<{ output_id: string; raw: unknown }> = [];
   for (const output_id of changed_ids) {
     const raw = byId.get(output_id);
     if (raw === undefined) continue;
-    pending.push({ output_id, raw });
+    pending.push({ output_id, raw: narrowThroughWasm(handle, raw) });
   }
 
   // `output_changed_ids` only fires when an output's manifest changes. If

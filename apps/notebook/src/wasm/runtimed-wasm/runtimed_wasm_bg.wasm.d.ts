@@ -62,6 +62,7 @@ export const notebookhandle_get_runtime_state: (a: number) => number;
 export const notebookhandle_load: (a: number, b: number, c: number) => void;
 export const notebookhandle_load_state_doc: (a: number, b: number, c: number, d: number) => void;
 export const notebookhandle_move_cell: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+export const notebookhandle_narrow_raw_output: (a: number, b: number) => number;
 export const notebookhandle_new: (a: number, b: number) => number;
 export const notebookhandle_receive_frame: (a: number, b: number, c: number) => number;
 export const notebookhandle_receive_sync_message: (a: number, b: number, c: number, d: number) => void;
