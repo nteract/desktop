@@ -12,7 +12,7 @@ The daemon uses `tracing` with `tracing-subscriber` (layered subscribers for std
 use tracing::{debug, info, warn, error};
 ```
 
-Dependencies that use the `log` crate (runtimelib, automerge, rattler, etc.) are automatically bridged into the tracing subscriber via `tracing-log`.
+Dependencies that use the `log` crate (runtimelib, automerge, etc.) are automatically bridged into the tracing subscriber via `tracing-log`.
 
 ### Tauri app (notebook crate)
 

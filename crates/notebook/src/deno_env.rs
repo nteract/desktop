@@ -1,7 +1,7 @@
 //! Deno environment detection and configuration for notebook environments.
 //!
 //! This module handles:
-//! - Detecting if Deno is installed (or bootstrapping via rattler if not)
+//! - Detecting if Deno is installed (or downloading from GitHub releases if not)
 //! - Finding deno.json/deno.jsonc configuration files
 //! - Extracting Deno configuration from notebook metadata
 //! - Managing Deno permissions for kernel execution

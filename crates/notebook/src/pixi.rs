@@ -294,7 +294,7 @@ pub fn create_pixi_info(config: &PixiConfig, notebook_path: &Path) -> PixiInfo {
     }
 }
 
-/// Convert a PixiConfig to CondaDependencies for use with rattler.
+/// Convert a PixiConfig to CondaDependencies for use with the conda solver.
 pub fn convert_to_conda_dependencies(config: &PixiConfig) -> CondaDependencies {
     CondaDependencies {
         dependencies: config.dependencies.clone(),

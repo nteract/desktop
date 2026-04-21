@@ -242,7 +242,7 @@ pub fn create_environment_yml_info(
     }
 }
 
-/// Convert an EnvironmentYmlConfig to CondaDependencies for use with rattler.
+/// Convert an EnvironmentYmlConfig to CondaDependencies for use with the conda solver.
 pub fn convert_to_conda_dependencies(config: &EnvironmentYmlConfig) -> CondaDependencies {
     CondaDependencies {
         dependencies: config.dependencies.clone(),

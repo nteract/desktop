@@ -16,7 +16,7 @@ Notebook opened
   │
   ├─ Check notebook kernelspec ────────── metadata.kernelspec.name
   │   │
-  │   ├─ "deno" ───────────────────────── Launch Deno kernel (bootstrap via rattler)
+  │   ├─ "deno" ───────────────────────── Launch Deno kernel (bootstrap via GitHub releases)
   │   │
   │   ├─ "python" / "python3" ─────────── Resolve Python environment:
   │   │   │
@@ -41,7 +41,7 @@ Kernel launching is handled by the `runtimed` daemon, which manages both Python 
 
 ### Tool Bootstrapping
 
-Tools (deno, uv, ruff) are automatically installed from conda-forge if not found on PATH:
+Tools (deno, uv, ruff, pixi) are automatically downloaded from GitHub releases if not found on PATH:
 
 ```rust
 use kernel_launch::tools;
@@ -558,7 +558,7 @@ The kernel lifecycle is managed by `useDaemonKernel.ts`, which:
 | File | Role |
 |------|------|
 | `crates/kernel-launch/src/lib.rs` | Public API for kernel launching |
-| `crates/kernel-launch/src/tools.rs` | Tool bootstrapping (deno, uv, ruff) via rattler |
+| `crates/kernel-launch/src/tools.rs` | Tool bootstrapping (deno, uv, ruff, pixi) via GitHub releases |
 
 ### Daemon (Kernel Management)
 
