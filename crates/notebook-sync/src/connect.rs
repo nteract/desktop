@@ -908,6 +908,11 @@ where
 /// that gets this far has a matching wire format. This check surfaces
 /// version differences for debugging (e.g., a daemon rebuilt from a
 /// different commit).
+///
+/// Also notes whether the daemon signalled `handler_ready`. When the
+/// field is absent, the daemon is older and emitted caps from its
+/// handshake prelude instead of from inside the sync loop — the client
+/// falls back to the legacy behavior (wait for the first sync frame).
 fn check_daemon_protocol_version(caps: &ProtocolCapabilities) {
     let expected = notebook_protocol::connection::PROTOCOL_VERSION;
 
@@ -924,5 +929,23 @@ fn check_daemon_protocol_version(caps: &ProtocolCapabilities) {
 
     if let Some(ref ver) = caps.daemon_version {
         debug!("[notebook-sync] Connected to daemon version {}", ver);
+    }
+
+    match caps.handler_ready {
+        Some(true) => {
+            debug!("[notebook-sync] Daemon signalled handler_ready — initial sync frames imminent");
+        }
+        Some(false) => {
+            log::warn!(
+                "[notebook-sync] Daemon reported handler_ready=false. This is unexpected; \
+                 sync may proceed but proceed with caution."
+            );
+        }
+        None => {
+            debug!(
+                "[notebook-sync] Daemon did not advertise handler_ready — legacy (pre-Option-A) \
+                 daemon, initial sync may race under load"
+            );
+        }
     }
 }
