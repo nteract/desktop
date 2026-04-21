@@ -7539,26 +7539,7 @@ async fn outputs_to_manifest_refs(
             Ok(manifest) => manifest.to_json(),
             Err(e) => {
                 warn!("[notebook-sync] Failed to create output manifest: {}", e);
-                // Stamp an output_id on the fallback so the frontend's
-                // per-output store always has a valid key. Without this,
-                // a manifest-creation failure on disk load would emit an
-                // output with no output_id and the WASM OutputChangeset
-                // path would silently drop it.
-                let mut fallback = output_value.clone();
-                if let Some(obj) = fallback.as_object_mut() {
-                    let needs_id = obj
-                        .get("output_id")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.is_empty())
-                        .unwrap_or(true);
-                    if needs_id {
-                        obj.insert(
-                            "output_id".to_string(),
-                            serde_json::Value::String(uuid::Uuid::new_v4().to_string()),
-                        );
-                    }
-                }
-                fallback
+                fallback_output_with_id(output_value)
             }
         };
         refs.push(output_ref);
@@ -7770,9 +7751,32 @@ async fn output_value_to_manifest_ref(
         Ok(manifest) => manifest.to_json(),
         Err(e) => {
             warn!("[streaming-load] Failed to create output manifest: {}", e);
-            output.clone()
+            fallback_output_with_id(output)
         }
     }
+}
+
+/// Ensure a raw output carries a non-empty `output_id` before it lands in
+/// RuntimeStateDoc. Used by every call site that falls back to the raw
+/// input on `create_manifest` failure — the frontend's per-output store
+/// drops outputs without a real id, so the daemon invariant has to hold
+/// on the error path too.
+pub(crate) fn fallback_output_with_id(output: &serde_json::Value) -> serde_json::Value {
+    let mut fallback = output.clone();
+    if let Some(obj) = fallback.as_object_mut() {
+        let needs_id = obj
+            .get("output_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.is_empty())
+            .unwrap_or(true);
+        if needs_id {
+            obj.insert(
+                "output_id".to_string(),
+                serde_json::Value::String(uuid::Uuid::new_v4().to_string()),
+            );
+        }
+    }
+    fallback
 }
 
 /// Placeholder for draining incoming sync replies during streaming load.
@@ -8932,6 +8936,49 @@ mod tests {
     use super::*;
     use serial_test::serial;
     use uuid::Uuid;
+
+    #[test]
+    fn fallback_output_stamps_id_when_missing() {
+        let raw = serde_json::json!({
+            "output_type": "stream",
+            "name": "stdout",
+            "text": "hi\n",
+        });
+        let out = fallback_output_with_id(&raw);
+        let id = out
+            .get("output_id")
+            .and_then(|v| v.as_str())
+            .expect("output_id set");
+        assert!(!id.is_empty(), "fallback must stamp a non-empty id");
+        // Rest of the payload passes through untouched.
+        assert_eq!(out["output_type"], "stream");
+        assert_eq!(out["name"], "stdout");
+    }
+
+    #[test]
+    fn fallback_output_preserves_existing_id() {
+        let raw = serde_json::json!({
+            "output_type": "stream",
+            "output_id": "existing-id",
+        });
+        let out = fallback_output_with_id(&raw);
+        assert_eq!(out["output_id"], "existing-id");
+    }
+
+    #[test]
+    fn fallback_output_replaces_empty_id() {
+        let raw = serde_json::json!({
+            "output_type": "stream",
+            "output_id": "",
+        });
+        let out = fallback_output_with_id(&raw);
+        let id = out
+            .get("output_id")
+            .and_then(|v| v.as_str())
+            .expect("output_id set");
+        assert!(!id.is_empty());
+        assert_ne!(id, "");
+    }
 
     #[test]
     fn test_sanitize_peer_label_basic() {

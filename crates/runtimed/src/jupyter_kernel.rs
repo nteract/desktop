@@ -1148,7 +1148,7 @@ impl KernelConnection for JupyterKernel {
                                                         "[jupyter-kernel] Failed to create manifest: {}",
                                                         e
                                                     );
-                                                    nbformat_value.clone()
+                                                    crate::notebook_sync_server::fallback_output_with_id(&nbformat_value)
                                                 }
                                             };
 
