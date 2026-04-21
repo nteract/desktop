@@ -14,13 +14,6 @@ candidate_paths=()
 
 case "$(uname -s)" in
   Darwin)
-    # Dev-installed nightly (cargo xtask install-nightly) lands binaries with
-    # channel-suffixed names outside the app bundle. Prefer those when
-    # channel != stable.
-    if [[ "$channel" != "stable" ]]; then
-      candidate_paths+=("/usr/local/bin/runt-proxy-${channel}")
-      candidate_paths+=("${HOME}/.local/share/runt-${channel}/bin/runt-proxy-${channel}")
-    fi
     for app_name in "${app_names[@]}"; do
       candidate_paths+=("/Applications/${app_name}.app/Contents/MacOS/${binary_name}")
       candidate_paths+=("${HOME}/Applications/${app_name}.app/Contents/MacOS/${binary_name}")
