@@ -283,20 +283,18 @@ export class SyncEngine {
   /**
    * Per-output changes emitted from the WASM runtime-state sync path.
    *
-   * `changed_ids` covers new or mutated outputs, `removed_ids` covers
-   * outputs no longer present in any execution. `state` is the RuntimeState
-   * snapshot that produced these deltas so consumers can pluck the
-   * changed manifests out of its executions map without asking the WASM
-   * handle per-id (each of those calls re-reads the entire state doc).
+   * `changed` pairs carry the output_id with its already-narrowed manifest
+   * (WASM applied MIME priority + ContentRef resolution). `removed_ids`
+   * covers outputs no longer present in any execution. Consumers route
+   * these into the per-output React store; no second state-doc lookup is
+   * needed, so a stream append on one output only touches its own
+   * `<Output>` subscriber.
    *
-   * Consumers route these into the per-output React store so a stream
-   * append on one output does not re-render every component under the
-   * parent cell. See `apps/notebook/src/lib/notebook-outputs.ts`.
+   * See `apps/notebook/src/lib/notebook-outputs.ts`.
    */
   readonly outputIdChanges$: Observable<{
-    changed_ids: string[];
+    changed: Array<[string, unknown]>;
     removed_ids: string[];
-    state: RuntimeState;
   }>;
 
   /**
@@ -355,9 +353,8 @@ export class SyncEngine {
   private readonly _initialSyncComplete$ = new Subject<void>();
   private readonly _commChanges$ = new Subject<CommChanges>();
   private readonly _outputIdChanges$ = new Subject<{
-    changed_ids: string[];
+    changed: Array<[string, unknown]>;
     removed_ids: string[];
-    state: RuntimeState;
   }>();
 
   constructor(opts: SyncEngineOptions) {
@@ -719,13 +716,15 @@ export class SyncEngine {
 
               // Per-output-id projection. Feeds the outputs store so single
               // output appends only notify their own `<Output>` subscriber.
-              const changedOutputIds = e.output_changed_ids ?? [];
-              const removedOutputIds = e.output_removed_ids ?? [];
-              if (changedOutputIds.length > 0 || removedOutputIds.length > 0) {
+              // Manifests arrive already narrowed from WASM — the store
+              // writes them in directly.
+              const changeset = e.output_changeset;
+              const changedPairs = changeset?.changed ?? [];
+              const removedOutputIds = changeset?.removed ?? [];
+              if (changedPairs.length > 0 || removedOutputIds.length > 0) {
                 this._outputIdChanges$.next({
-                  changed_ids: changedOutputIds,
+                  changed: changedPairs,
                   removed_ids: removedOutputIds,
-                  state,
                 });
               }
 

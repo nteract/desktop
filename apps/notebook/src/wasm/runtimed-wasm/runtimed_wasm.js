@@ -1189,23 +1189,6 @@ export class NotebookHandle {
         }
     }
     /**
-     * Apply MIME narrowing + ContentRef resolution to a raw output manifest.
-     *
-     * The runtime-state snapshot carries manifests in their un-narrowed
-     * on-the-wire shape (all MIME types, raw `{inline}`/`{blob}` refs).
-     * The output-store projection uses this to re-apply the same
-     * narrowing logic `get_output_by_id` does, but without a per-id
-     * `read_state()` walk — callers pass the raw manifest they already
-     * have and get back a manifest ready for the renderer. Returns
-     * `undefined` when the input can't be deserialized.
-     * @param {any} raw
-     * @returns {any}
-     */
-    narrow_raw_output(raw) {
-        const ret = wasm.notebookhandle_narrow_raw_output(this.__wbg_ptr, addHeapObject(raw));
-        return takeObject(ret);
-    }
-    /**
      * Create a new empty notebook document.
      * @param {string} notebook_id
      */

@@ -1,3 +1,4 @@
+import { DEFAULT_RUNTIME_STATE, type RuntimeState } from "runtimed";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import {
   getCellExecutionId,
@@ -16,11 +17,16 @@ afterEach(() => {
   resetNotebookOutputs();
 });
 
+function stateWith(
+  executions: RuntimeState["executions"],
+): RuntimeState {
+  return { ...DEFAULT_RUNTIME_STATE, executions };
+}
+
 describe("projectRuntimeStateToExecutions", () => {
   it("captures same-length output_id replacements (e.g. clear_output(wait=True))", () => {
-    // First tick: single output with id "old"
-    projectRuntimeStateToExecutions({
-      executions: {
+    projectRuntimeStateToExecutions(
+      stateWith({
         "exec-1": {
           cell_id: "cell-1",
           execution_count: 1,
@@ -30,14 +36,14 @@ describe("projectRuntimeStateToExecutions", () => {
             { output_id: "old", output_type: "stream", name: "stdout", text: "a" },
           ],
         },
-      },
-    });
+      }),
+    );
     expect(getExecutionById("exec-1")?.output_ids).toEqual(["old"]);
 
     // Second tick: same length, different output_id - must not be skipped
     // by the scalar fingerprint.
-    projectRuntimeStateToExecutions({
-      executions: {
+    projectRuntimeStateToExecutions(
+      stateWith({
         "exec-1": {
           cell_id: "cell-1",
           execution_count: 1,
@@ -47,74 +53,39 @@ describe("projectRuntimeStateToExecutions", () => {
             { output_id: "new", output_type: "stream", name: "stdout", text: "b" },
           ],
         },
-      },
-    });
+      }),
+    );
     expect(getExecutionById("exec-1")?.output_ids).toEqual(["new"]);
   });
 
-  it("seeds the outputs store for legacy outputs without a non-empty output_id", () => {
-    const rawOutput = {
-      output_id: "",
-      output_type: "stream",
-      name: "stdout",
-      text: "legacy output",
-    };
-    projectRuntimeStateToExecutions({
-      executions: {
+  it("drops outputs with empty output_id from the execution snapshot", () => {
+    // Daemon invariant: `create_manifest` (and the error-path fallback in
+    // `outputs_to_manifest_refs`) always stamp an `output_id`. If an
+    // un-stamped manifest ever reaches the frontend, the projection
+    // filters it out rather than inventing a synthetic key.
+    projectRuntimeStateToExecutions(
+      stateWith({
         "exec-legacy": {
           cell_id: "cell-legacy",
           execution_count: 1,
           status: "done",
           success: true,
-          outputs: [rawOutput],
+          outputs: [
+            { output_id: "", output_type: "stream", name: "stdout", text: "x" },
+            { output_id: "real-id", output_type: "stream", name: "stdout", text: "y" },
+          ],
         },
-      },
-    });
+      }),
+    );
 
     const snap = getExecutionById("exec-legacy");
-    expect(snap?.output_ids).toEqual(["legacy:exec-legacy:0"]);
-    const stored = getOutputById("legacy:exec-legacy:0");
-    expect(stored).toBeTruthy();
-    expect((stored as { text: string }).text).toBe("legacy output");
-  });
-
-  it("produces distinct synthesized ids for multiple empty-id outputs", () => {
-    const a = {
-      output_id: "",
-      output_type: "stream",
-      name: "stdout",
-      text: "alpha",
-    };
-    const b = {
-      output_id: "",
-      output_type: "stream",
-      name: "stdout",
-      text: "beta",
-    };
-    projectRuntimeStateToExecutions({
-      executions: {
-        "exec-x": {
-          cell_id: "c",
-          execution_count: 1,
-          status: "done",
-          success: true,
-          outputs: [a, b],
-        },
-      },
-    });
-    const snap = getExecutionById("exec-x");
-    expect(snap?.output_ids).toEqual(["legacy:exec-x:0", "legacy:exec-x:1"]);
-    expect((getOutputById("legacy:exec-x:0") as { text: string }).text).toBe(
-      "alpha",
-    );
-    expect((getOutputById("legacy:exec-x:1") as { text: string }).text).toBe(
-      "beta",
-    );
+    expect(snap?.output_ids).toEqual(["real-id"]);
+    expect(getOutputById("real-id")).toBeUndefined();
   });
 
   it("evicts trimmed executions on the next tick", () => {
-    projectRuntimeStateToExecutions({
-      executions: {
+    projectRuntimeStateToExecutions(
+      stateWith({
         "exec-1": {
           cell_id: "cell-1",
           execution_count: 1,
@@ -122,13 +93,13 @@ describe("projectRuntimeStateToExecutions", () => {
           success: true,
           outputs: [],
         },
-      },
-    });
+      }),
+    );
     setCellExecutionPointer("cell-1", "exec-1");
     expect(getExecutionById("exec-1")).toBeTruthy();
 
     // Tick with the execution removed
-    projectRuntimeStateToExecutions({ executions: {} });
+    projectRuntimeStateToExecutions(stateWith({}));
     expect(getExecutionById("exec-1")).toBeUndefined();
     expect(getCellExecutionId("cell-1")).toBeNull();
   });

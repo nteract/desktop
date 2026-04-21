@@ -44,7 +44,13 @@ export interface ExecutionState {
   status: "queued" | "running" | "done" | "error";
   execution_count: number | null;
   success: boolean | null;
-  outputs?: string[];
+  /**
+   * Output manifests in emission order, as the WASM runtime-state snapshot
+   * exposes them. Each entry is the raw on-the-wire manifest (un-narrowed,
+   * with `{inline}`/`{blob}` ContentRefs). Resolved manifests live in the
+   * per-output store, not here.
+   */
+  outputs?: unknown[];
 }
 
 /** Snapshot of a comm channel from RuntimeStateDoc. */

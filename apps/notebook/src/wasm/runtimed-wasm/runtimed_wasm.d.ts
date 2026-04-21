@@ -374,18 +374,6 @@ export class NotebookHandle {
      */
     move_cell(cell_id: string, after_cell_id?: string | null): string;
     /**
-     * Apply MIME narrowing + ContentRef resolution to a raw output manifest.
-     *
-     * The runtime-state snapshot carries manifests in their un-narrowed
-     * on-the-wire shape (all MIME types, raw `{inline}`/`{blob}` refs).
-     * The output-store projection uses this to re-apply the same
-     * narrowing logic `get_output_by_id` does, but without a per-id
-     * `read_state()` walk — callers pass the raw manifest they already
-     * have and get back a manifest ready for the renderer. Returns
-     * `undefined` when the input can't be deserialized.
-     */
-    narrow_raw_output(raw: any): any;
-    /**
      * Create a new empty notebook document.
      */
     constructor(notebook_id: string);
@@ -700,7 +688,6 @@ export interface InitOutput {
     readonly notebookhandle_load: (a: number, b: number, c: number) => void;
     readonly notebookhandle_load_state_doc: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_move_cell: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
-    readonly notebookhandle_narrow_raw_output: (a: number, b: number) => number;
     readonly notebookhandle_new: (a: number, b: number) => number;
     readonly notebookhandle_receive_frame: (a: number, b: number, c: number) => number;
     readonly notebookhandle_receive_sync_message: (a: number, b: number, c: number, d: number) => void;

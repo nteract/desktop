@@ -21,7 +21,7 @@ import {
   useCellIds,
 } from "../lib/notebook-cells";
 import {
-  applyOutputIdChanges,
+  applyOutputChangeset,
   projectRuntimeStateToExecutions,
   resetRuntimeStoresProjection,
   seedOutputStoresFromHandle,
@@ -38,12 +38,7 @@ import { cloneNotebookFile, openNotebookFile, saveNotebook } from "../lib/notebo
 import { emitBroadcast, emitPresence, subscribeBroadcast } from "../lib/notebook-frame-bus";
 import { notifyMetadataChanged, setNotebookHandle } from "../lib/notebook-metadata";
 import { type PoolState, resetPoolState, setPoolState } from "../lib/pool-state";
-import {
-  type RuntimeState,
-  getRuntimeState,
-  resetRuntimeState,
-  setRuntimeState,
-} from "../lib/runtime-state";
+import { getRuntimeState, resetRuntimeState, setRuntimeState } from "../lib/runtime-state";
 import { fromTauriEvent } from "../lib/tauri-rx";
 import type { DaemonBroadcast, JupyterOutput } from "../types";
 import init, { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
@@ -288,11 +283,7 @@ export function useAutomergeNotebook() {
             // on top. If the runtime-state frame arrived first this is
             // the authoritative pass; otherwise it's a no-op that the
             // runtimeState$ subscription will redo on the next tick.
-            const rs = getRuntimeState();
-            projectRuntimeStateToExecutions(
-              rs as unknown as { executions?: Record<string, unknown> },
-              handle,
-            );
+            projectRuntimeStateToExecutions(getRuntimeState());
             setIsLoading(false);
             notifyMetadataChanged();
             logger.info("[automerge-notebook] Initial materialization done");
@@ -354,29 +345,19 @@ export function useAutomergeNotebook() {
     // <OutputArea> subscribe at execution granularity instead of at the
     // cell granularity. See lib/notebook-executions.ts.
     const runtimeStateSub = engine.runtimeState$.subscribe((state) => {
-      const typed = state as RuntimeState;
-      setRuntimeState(typed);
-      projectRuntimeStateToExecutions(
-        typed as unknown as { executions?: Record<string, unknown> },
-        handleRef.current,
-      );
+      setRuntimeState(state);
+      projectRuntimeStateToExecutions(state);
     });
 
-    // Per-output changes → outputs store. Stream appends only touch the
-    // affected output's subscribers, keeping parent cell components still.
-    const outputIdChangesSub = engine.outputIdChanges$.subscribe(
-      ({ changed_ids, removed_ids, state }) => {
-        if (changed_ids.length === 0 && removed_ids.length === 0) return;
-        void applyOutputIdChanges(
-          handleRef.current,
-          changed_ids,
-          removed_ids,
-          state as unknown as { executions?: Record<string, { outputs?: unknown[] }> },
-          getBlobPort(),
-          outputCacheRef.current,
-        ).catch((err) => logger.warn("[automerge-notebook] output store projection failed:", err));
-      },
-    );
+    // Per-output changes → outputs store. WASM narrows each manifest
+    // before emitting, so stream appends only touch the affected
+    // output's subscribers and no second state-doc walk is needed.
+    const outputIdChangesSub = engine.outputIdChanges$.subscribe(({ changed, removed_ids }) => {
+      if (changed.length === 0 && removed_ids.length === 0) return;
+      void applyOutputChangeset(changed, removed_ids).catch((err) =>
+        logger.warn("[automerge-notebook] output store projection failed:", err),
+      );
+    });
 
     // Pool state → store.
     const poolStateSub = engine.poolState$.subscribe((state) => setPoolState(state as PoolState));

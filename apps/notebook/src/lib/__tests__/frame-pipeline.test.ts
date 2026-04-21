@@ -593,7 +593,7 @@ describe("materializeChangeset", () => {
   it("updates cell store chrome fields without rebuilding outputs", async () => {
     // After Phase C-lite, the frame pipeline's incremental path no longer
     // resolves uncached manifest objects — that work belongs to the
-    // per-output store (see `applyOutputIdChanges`). When a chrome field
+    // per-output store (see `applyOutputChangeset`). When a chrome field
     // (here: `source`) changes alongside `outputs`, the cell store is
     // still updated with the new source, but outputs are carried forward
     // from whatever `materializeCellFromWasm` returns (cache-only).
