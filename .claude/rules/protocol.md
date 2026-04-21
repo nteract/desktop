@@ -13,7 +13,7 @@ paths:
 Two independent version numbers, separate from the artifact version:
 
 - **Protocol version** (`PROTOCOL_VERSION` in `connection.rs`, currently `2`) -- governs wire compatibility. Validated by the 5-byte magic preamble at connection start. Bump when framing, handshake shape, or serialization format changes.
-- **Schema version** (`SCHEMA_VERSION` in `notebook-doc/src/lib.rs`, currently `2`) -- governs Automerge document compatibility. Bump when document structure changes.
+- **Schema version** (`SCHEMA_VERSION` in `notebook-doc/src/lib.rs`, currently `4`) -- governs Automerge document compatibility. Bump when document structure changes.
 
 These are just incrementing integers that evolve independently from each other and from the artifact version.
 

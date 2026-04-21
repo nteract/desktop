@@ -9,11 +9,15 @@
 //! copy in a "room"; each connected notebook window holds a local replica
 //! that syncs via the Automerge sync protocol.
 //!
-//! ## Document schema (v2)
+//! ## Document schema (v4)
+//!
+//! Outputs live in `RuntimeStateDoc` (keyed by `execution_id`) with
+//! per-output `output_id` UUIDs on their manifests — they are not stored
+//! in the notebook doc itself.
 //!
 //! ```text
 //! ROOT/
-//!   schema_version: u64           ← Document schema version (2 = fractional-indexed map cells)
+//!   schema_version: u64           ← Document schema version (currently 4)
 //!   notebook_id: Str
 //!   cells/                        ← Map keyed by cell ID (O(1) lookup)
 //!     {cell_id}/
@@ -22,8 +26,6 @@
 //!       position: Str             ← Fractional index hex string for ordering
 //!       source: Text              ← Automerge Text CRDT (character-level merging)
 //!       execution_count: Str      ← JSON-encoded i32 or "null"
-//!       outputs/                  ← List of Str
-//!         [j]: Str                ← JSON-encoded Jupyter output (Phase 5: manifest hash)
 //!       metadata/                 ← Map (native Automerge types, legacy: JSON string fallback)
 //!       resolved_assets/          ← Map of markdown asset ref -> blob hash
 //!   metadata/                     ← Map
@@ -51,15 +53,20 @@ use std::collections::HashMap;
 /// Current document schema version.
 ///
 /// Bump this when making incompatible changes to the Automerge document
-/// structure (e.g., switching cells from an ordered list to a fractional-indexed map).
+/// structure. Future bumps MUST ship a matching `migrate_vN_to_v(N+1)`
+/// function that preserves user data — see the "one-time cleanup"
+/// comment in `load_or_create_inner` for why the current fallback path
+/// is not a template.
 ///
+/// History:
 /// - **1** — Original schema: `cells` is an ordered `List` of `Map`.
 /// - **2** — Fractional indexing: `cells` is a `Map` keyed by cell ID, each cell has a `position` field.
-/// - **3** — Outputs moved to RuntimeStateDoc: cell outputs are no longer stored in the notebook
-///   doc. Existing outputs are extracted during migration so the caller can create synthetic
-///   execution entries in RuntimeStateDoc.
-/// - **4** — Addressable outputs: `OutputManifest` gains a required `output_id` (UUIDv4) field.
-///   Daemon mints IDs on emission; legacy outputs get IDs on first load.
+/// - **3** — Outputs moved to RuntimeStateDoc: cell outputs are no longer stored in the notebook doc.
+/// - **4** — Addressable outputs: `OutputManifest` carries a required `output_id` (UUIDv4).
+///   Outputs live in RuntimeStateDoc keyed by `execution_id`; manifests carry `output_id`.
+///
+/// v1–v3 predate the nteract 2.0 pre-release series and are no longer
+/// supported. `load_or_create_inner` discards pre-v4 documents on load.
 pub const SCHEMA_VERSION: u64 = 4;
 
 use automerge::sync;
@@ -685,41 +692,6 @@ impl NotebookDoc {
         }
     }
 
-    /// Migrate from schema v2 to v3: outputs moved to RuntimeStateDoc.
-    ///
-    /// This migration just bumps the schema version. Cell outputs are
-    /// **not** deleted from the doc (Automerge tombstones would bloat it);
-    /// `read_cell()` simply ignores the outputs field. Schema v1 docs
-    /// (cells as List) predate the `.automerge` files that exist in the
-    /// wild and are no longer supported — `load_or_create_inner` starts
-    /// the migration chain at v2→v3.
-    pub fn migrate_v2_to_v3(&mut self) -> Result<(), AutomergeError> {
-        if self.schema_version().unwrap_or(0) >= 3 {
-            return Ok(());
-        }
-        self.doc
-            .put(automerge::ROOT, "schema_version", SCHEMA_VERSION)?;
-        #[cfg(feature = "persistence")]
-        info!("[notebook-doc] Migrated schema v2 → v3 (outputs moved to RuntimeStateDoc)");
-        Ok(())
-    }
-
-    /// Migrate from schema v3 to v4: addressable outputs with `output_id`.
-    ///
-    /// The notebook doc itself doesn't change — outputs live in RuntimeStateDoc.
-    /// This just bumps the schema version so the daemon knows to mint `output_id`s
-    /// for legacy outputs during RuntimeStateDoc population.
-    pub fn migrate_v3_to_v4(&mut self) -> Result<(), AutomergeError> {
-        if self.schema_version().unwrap_or(0) >= 4 {
-            return Ok(());
-        }
-        self.doc
-            .put(automerge::ROOT, "schema_version", SCHEMA_VERSION)?;
-        #[cfg(feature = "persistence")]
-        info!("[notebook-doc] Migrated schema v3 → v4 (addressable outputs with output_id)");
-        Ok(())
-    }
-
     /// Create a client-side bootstrap document for sync.
     ///
     /// Every client — WASM frontend, Python bindings, future Swift, etc. —
@@ -728,9 +700,7 @@ impl NotebookDoc {
     ///
     /// ```text
     /// ROOT/
-    ///   schema_version: 2
-    ///   cells: {}          (empty Map)
-    ///   metadata: {}       (empty Map)
+    ///   schema_version: <SCHEMA_VERSION>  (scalar only — no cells/metadata maps)
     /// ```
     ///
     /// Both parameters are required:
@@ -825,52 +795,35 @@ impl NotebookDoc {
                     Ok(doc) => {
                         let mut loaded = Self { doc };
                         let version = loaded.schema_version().unwrap_or(1);
-                        if version < SCHEMA_VERSION {
-                            info!(
-                                "[notebook-doc] Migrating schema v{} → v{} at {:?} for {}",
-                                version, SCHEMA_VERSION, path, notebook_id
-                            );
-                            let mut ok = true;
-                            if version < 2 {
-                                warn!(
-                                    "[notebook-doc] v1 schema is no longer supported for {}. \
-                                     Creating fresh doc.",
-                                    notebook_id
-                                );
-                                ok = false;
-                            }
-                            if ok && version < 3 {
-                                if let Err(e) = loaded.migrate_v2_to_v3() {
-                                    warn!(
-                                        "[notebook-doc] v2→v3 migration failed for {}: {}. Creating fresh doc.",
-                                        notebook_id, e
-                                    );
-                                    ok = false;
-                                }
-                            }
-                            if ok && version < 4 {
-                                if let Err(e) = loaded.migrate_v3_to_v4() {
-                                    warn!(
-                                        "[notebook-doc] v3→v4 migration failed for {}: {}. Creating fresh doc.",
-                                        notebook_id, e
-                                    );
-                                    ok = false;
-                                }
-                            }
-                            if ok {
-                                info!("[notebook-doc] Migration complete for {}", notebook_id);
-                                if let Some(label) = actor_label {
-                                    loaded.set_actor(label);
-                                }
-                                return loaded;
-                            }
-                        } else {
+                        if version == SCHEMA_VERSION {
                             info!("[notebook-doc] Loaded from {:?} for {}", path, notebook_id);
                             if let Some(label) = actor_label {
                                 loaded.set_actor(label);
                             }
                             return loaded;
                         }
+                        // CRITICAL: one-time cleanup for pre-release schemas
+                        // (v1–v3 predate nteract 2.0). All current users are on
+                        // v4, so dropping older docs on the floor is safe here
+                        // by historical accident, not by policy.
+                        //
+                        // DO NOT COPY THIS PATTERN FOR FUTURE SCHEMA BUMPS.
+                        // Any real migration (v4 → v5 onward) MUST implement a
+                        // `migrate_vN_to_v(N+1)` function that preserves user
+                        // data. Falling back to a fresh doc is a data-loss
+                        // operation and only acceptable when there is no
+                        // meaningful data to lose.
+                        //
+                        // Belt-and-suspenders: rename the unexpected-version doc
+                        // to `{path}.corrupt` before we replace it. That leaves
+                        // the original bytes on disk for manual recovery if a
+                        // future downgrade ever lands someone here (e.g. user
+                        // runs a newer build once, then rolls back).
+                        warn!(
+                            "[notebook-doc] Rejecting schema v{} notebook at {:?} for {}; only v{} is supported. Preserving as .corrupt and starting fresh untitled notebook.",
+                            version, path, notebook_id, SCHEMA_VERSION
+                        );
+                        Self::preserve_corrupt(path);
                     }
                     Err(e) => {
                         warn!(
