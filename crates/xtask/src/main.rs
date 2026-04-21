@@ -148,6 +148,7 @@ fn main() {
             let check = args.iter().any(|a| a == "--check");
             cmd_sync_tool_cache(check);
         }
+        "check-dep-budget" => cmd_check_dep_budget(),
         "--help" | "-h" | "help" => print_help(),
         cmd => {
             eprintln!("Unknown command: {cmd}");
@@ -214,6 +215,7 @@ Other:
   mcpb --output <path>       Write the .mcpb archive to a custom path
   sync-tool-cache            Regenerate tool-cache.json + MCPB manifests from runt binary
   sync-tool-cache --check    Check caches are up to date + description byte budget (for CI)
+  check-dep-budget           Check transitive dependency counts against per-crate budgets
   help                       Show this help
 "
     );
@@ -3336,6 +3338,82 @@ fn update_manifest_tools(manifest_json: &str, tools: &[serde_json::Value]) -> St
     let mut buf = serde_json::to_string_pretty(&manifest).expect("format manifest");
     buf.push('\n');
     buf
+}
+
+fn cmd_check_dep_budget() {
+    ensure_workspace_root_cwd();
+
+    // Budgets are unique crate counts (deduplicated, excluding the root crate).
+    const BUDGETS: &[(&str, usize)] = &[
+        ("xtask", 30),
+        ("runt-workspace", 25),
+        ("runt-trust", 50),
+        ("notebook-doc", 110),
+        ("kernel-launch", 175),
+    ];
+
+    println!("{:<20} {:>5}  {:>6}  Status", "Crate", "Deps", "Budget");
+
+    let mut any_over = false;
+
+    for &(crate_name, budget) in BUDGETS {
+        let output = Command::new("cargo")
+            .args(["tree", "-e", "normal", "--prefix", "none", "-p", crate_name])
+            .output()
+            .unwrap_or_else(|e| {
+                eprintln!("Failed to run cargo tree for {crate_name}: {e}");
+                exit(1);
+            });
+
+        if !output.status.success() {
+            eprintln!(
+                "cargo tree failed for {crate_name}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            exit(1);
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut seen = std::collections::HashSet::new();
+        let mut count = 0usize;
+        for line in stdout.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            // Strip trailing (*) duplicate markers
+            let line = line.trim_end_matches(" (*)").trim();
+            // Use the crate name + version (first two tokens) as the dedup key
+            let key: String = line
+                .split_whitespace()
+                .take(2)
+                .collect::<Vec<_>>()
+                .join(" ");
+            if seen.insert(key) {
+                count += 1;
+            }
+        }
+        // Subtract the root crate itself
+        count = count.saturating_sub(1);
+
+        let (status, over) = if count > budget {
+            (format!("\u{2717} OVER BUDGET (+{})", count - budget), true)
+        } else {
+            ("\u{2713}".to_string(), false)
+        };
+
+        println!("{:<20} {:>5}  {:>6}  {}", crate_name, count, budget, status);
+
+        if over {
+            any_over = true;
+        }
+    }
+
+    if any_over {
+        eprintln!();
+        eprintln!("One or more crates exceed their dependency budget.");
+        exit(1);
+    }
 }
 
 #[cfg(test)]
