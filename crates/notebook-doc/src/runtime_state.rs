@@ -2421,10 +2421,7 @@ pub fn diff_output_ids(
 /// Returns the output_ids in order. Outputs without an `output_id` are skipped
 /// (they should not exist on the daemon write path, but we tolerate them).
 pub fn output_ids_for_execution(exec: &ExecutionState) -> Vec<String> {
-    exec.outputs
-        .iter()
-        .filter_map(extract_output_id)
-        .collect()
+    exec.outputs.iter().filter_map(extract_output_id).collect()
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
