@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# Build and install runtimed, runt, and runt-proxy as the local nightly install.
+#
+# Linux-only. macOS devs use the nteract Nightly app bundle or `cargo xtask
+# dev-daemon`. Windows users install the app. This script is the path headless
+# Linux dev boxes (the agent lab, cloud instances) use to bring a source-built
+# nightly online.
+#
+# Replaces the old `cargo xtask install-nightly` path that pulled runtimed-client
+# (~750 crates) into xtask just for ServiceManager. Moving it to a shell script
+# keeps xtask fast for `cargo xtask lint` and friends.
+#
+# Idempotent. Safe to re-run after a git pull.
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
+
+if [[ "$(uname -s)" != "Linux" ]]; then
+  echo "install-nightly is Linux-only." >&2
+  echo "macOS: use the nteract Nightly app or \`cargo xtask dev-daemon\`." >&2
+  echo "Windows: install the app from https://nteract.io." >&2
+  exit 1
+fi
+
+INSTALL_DIR="$HOME/.local/share/runt-nightly/bin"
+SERVICE_DIR="$HOME/.config/systemd/user"
+SERVICE_NAME="runtimed-nightly"
+SERVICE_UNIT="$SERVICE_NAME.service"
+
+echo "=== install-nightly ==="
+
+echo "Building runtimed, runt-cli, runt-proxy (release, channel=nightly)..."
+RUNT_BUILD_CHANNEL=nightly cargo build --release \
+  -p runtimed -p runt-cli -p runt-proxy
+
+mkdir -p "$INSTALL_DIR" "$SERVICE_DIR"
+
+# Atomic install: write to a temp file, set perms, rename into place. A plain
+# `cp` over a memory-mapped binary can corrupt a running daemon's mmap.
+atomic_install() {
+  local src="$1" dest="$2"
+  local tmp="$dest.new"
+  cp "$src" "$tmp"
+  chmod 0755 "$tmp"
+  mv -f "$tmp" "$dest"
+  echo "Installed $dest"
+}
+
+atomic_install target/release/runtimed   "$INSTALL_DIR/runtimed-nightly"
+atomic_install target/release/runt       "$INSTALL_DIR/runt-nightly"
+atomic_install target/release/runt-proxy "$INSTALL_DIR/runt-proxy-nightly"
+
+# Link the nightly plugin's expected runt-proxy path to the just-installed
+# binary. The plugin's .mcp.json points at ${CLAUDE_PLUGIN_ROOT}/bin/runt-proxy
+# and Claude Code spawns it from the plugin-cache copy, so the link must
+# resolve from the cache location. `readlink -f` is Linux-specific.
+PLUGIN_BIN="$REPO_ROOT/plugins/nteract-nightly/bin"
+mkdir -p "$PLUGIN_BIN"
+ln -sfn "$INSTALL_DIR/runt-proxy-nightly" "$PLUGIN_BIN/runt-proxy"
+echo "Linked $PLUGIN_BIN/runt-proxy -> $INSTALL_DIR/runt-proxy-nightly"
+
+# Write the systemd user unit. Matches the template in
+# crates/runtimed-client/src/service.rs::create_linux_systemd so future tweaks
+# to that template should also land here (or vice versa).
+cat > "$SERVICE_DIR/$SERVICE_UNIT" <<UNIT
+[Unit]
+Description=$SERVICE_NAME - Jupyter Runtime Daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=$INSTALL_DIR/runtimed-nightly
+Restart=on-failure
+RestartSec=5
+Environment=HOME=$HOME
+Environment=PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target
+UNIT
+echo "Wrote $SERVICE_DIR/$SERVICE_UNIT"
+
+systemctl --user daemon-reload
+systemctl --user enable "$SERVICE_UNIT" >/dev/null 2>&1
+systemctl --user restart "$SERVICE_UNIT"
+
+# Wait for the daemon to write its status file so we know it started. The
+# daemon writes ~/.cache/runt-nightly/daemon.json on boot; a fresh mtime plus a
+# parseable version proves the *new* build is running.
+DAEMON_JSON="$HOME/.cache/runt-nightly/daemon.json"
+for _ in $(seq 1 10); do
+  sleep 0.5
+  if [[ -f "$DAEMON_JSON" ]] && jq -e .version "$DAEMON_JSON" >/dev/null 2>&1; then
+    version="$(jq -r .version "$DAEMON_JSON")"
+    echo "✓ nightly install complete — daemon running: version $version"
+    exit 0
+  fi
+done
+
+echo "⚠️  Binaries installed and systemctl returned success, but $DAEMON_JSON" >&2
+echo "   did not appear within 5s. Check: systemctl --user status $SERVICE_UNIT" >&2
+exit 1
