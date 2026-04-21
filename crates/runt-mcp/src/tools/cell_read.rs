@@ -55,7 +55,7 @@ pub async fn get_cell(
 
     // No presence on read — get_cell is read-only, shouldn't move the cursor.
 
-    let mut cell = match handle.get_cell(cell_id) {
+    let cell = match handle.get_cell(cell_id) {
         Some(c) => c,
         None => return tool_error(&format!("Cell not found: {cell_id}")),
     };
@@ -63,19 +63,22 @@ pub async fn get_cell(
     // Get execution_count from RuntimeStateDoc (the source of truth)
     let ec = get_cell_execution_count_from_runtime(&handle, cell_id);
 
+    // Outputs live in RuntimeStateDoc keyed by execution_id. Fetch them
+    // via the dedicated lookup rather than reading a (now-gone) field
+    // on CellSnapshot.
+    let mut raw_outputs = handle.get_cell_outputs(cell_id).unwrap_or_default();
+
     // If the cell has been executed but outputs haven't synced yet,
     // force a sync round-trip to process pending RuntimeStateSync frames.
-    if cell.outputs.is_empty() && !ec.is_empty() {
+    if raw_outputs.is_empty() && !ec.is_empty() {
         let _ = handle.confirm_sync().await;
-        if let Some(c) = handle.get_cell(cell_id) {
-            cell = c;
-        }
+        raw_outputs = handle.get_cell_outputs(cell_id).unwrap_or_default();
     }
 
     // Resolve outputs (with widget state synthesis)
     let comms = handle.get_runtime_state().ok().map(|rs| rs.comms);
     let outputs = output_resolver::resolve_cell_outputs_for_llm(
-        &cell.outputs,
+        &raw_outputs,
         &server.blob_base_url,
         &server.blob_store_path,
         comms.as_ref(),
@@ -154,10 +157,14 @@ pub async fn get_all_cells(
     };
     let slice = &cells[start.min(cells.len())..end.min(cells.len())];
 
-    // Build cell status map, execution count map, and comms from RuntimeState
+    // Build cell status map, execution count map, and comms from RuntimeState.
+    // Outputs live in RuntimeStateDoc keyed by execution_id; fetch them in
+    // bulk once so large notebooks don't pay O(N) state-doc reads.
     let cell_status_map = build_cell_status_map(&handle);
     let cell_ec_map = build_cell_execution_count_map(&handle);
     let comms = handle.get_runtime_state().ok().map(|rs| rs.comms);
+    let outputs_by_cell = handle.get_all_outputs();
+    let empty_outputs: Vec<serde_json::Value> = Vec::new();
 
     match format {
         "json" => {
@@ -165,11 +172,12 @@ pub async fn get_all_cells(
             for cell in slice {
                 let status = cell_status_map.get(&cell.id).map(String::as_str);
                 let ec: Option<i64> = cell_ec_map.get(&cell.id).and_then(|s| s.parse().ok());
+                let raw_outputs = outputs_by_cell.get(&cell.id).unwrap_or(&empty_outputs);
 
                 // Resolve outputs through the output resolver so that
                 // text/llm+plain is synthesized and viz specs are summarized.
                 let resolved = output_resolver::resolve_cell_outputs_for_llm(
-                    &cell.outputs,
+                    raw_outputs,
                     &server.blob_base_url,
                     &server.blob_store_path,
                     comms.as_ref(),
@@ -205,8 +213,9 @@ pub async fn get_all_cells(
             for cell in slice {
                 let status = cell_status_map.get(&cell.id).map(String::as_str);
                 let ec = cell_ec_map.get(&cell.id).map(String::as_str);
+                let raw_outputs = outputs_by_cell.get(&cell.id).unwrap_or(&empty_outputs);
                 let outputs = output_resolver::resolve_cell_outputs_for_llm(
-                    &cell.outputs,
+                    raw_outputs,
                     &server.blob_base_url,
                     &server.blob_store_path,
                     comms.as_ref(),
@@ -247,9 +256,10 @@ pub async fn get_all_cells(
                     status,
                     preview_chars,
                 );
-                if include_outputs && !cell.outputs.is_empty() {
+                let raw_outputs = outputs_by_cell.get(&cell.id).unwrap_or(&empty_outputs);
+                if include_outputs && !raw_outputs.is_empty() {
                     let outputs = output_resolver::resolve_cell_outputs_for_llm(
-                        &cell.outputs,
+                        raw_outputs,
                         &server.blob_base_url,
                         &server.blob_store_path,
                         comms.as_ref(),

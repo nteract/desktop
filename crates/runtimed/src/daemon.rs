@@ -2596,10 +2596,39 @@ impl Daemon {
                         .and_then(|uuid| rooms.get(&uuid).cloned())
                 };
                 if let Some(room) = maybe_room {
+                    // Outputs live in RuntimeStateDoc keyed by execution_id.
+                    // Collect the execution_id map under the doc read guard,
+                    // drop it, then look up outputs under the state_doc read
+                    // guard. Never hold both at once — the tokio-mutex lint
+                    // forbids guards across .await.
                     let cells = {
                         let doc = room.doc.read().await;
                         doc.get_cells()
-                    }; // doc read lock dropped
+                    };
+                    let eids_by_cell: std::collections::HashMap<String, String> = {
+                        let doc = room.doc.read().await;
+                        cells
+                            .iter()
+                            .filter_map(|c| doc.get_execution_id(&c.id).map(|e| (c.id.clone(), e)))
+                            .collect()
+                    };
+                    let outputs_by_cell: std::collections::HashMap<
+                        String,
+                        Vec<serde_json::Value>,
+                    > = {
+                        let state_doc = room.state_doc.read().await;
+                        eids_by_cell
+                            .into_iter()
+                            .filter_map(|(cell_id, eid)| {
+                                let outputs = state_doc.get_outputs(&eid);
+                                if outputs.is_empty() {
+                                    None
+                                } else {
+                                    Some((cell_id, outputs))
+                                }
+                            })
+                            .collect()
+                    };
                     let kernel_info = room.kernel_info().await.map(|(kt, es, status)| {
                         crate::protocol::NotebookKernelInfo {
                             kernel_type: kt,
@@ -2610,6 +2639,7 @@ impl Daemon {
                     Response::NotebookState {
                         notebook_id,
                         cells,
+                        outputs_by_cell,
                         source: "live_room".to_string(),
                         kernel_info,
                     }
@@ -2622,9 +2652,26 @@ impl Daemon {
                             Ok(data) => match crate::notebook_doc::NotebookDoc::load(&data) {
                                 Ok(doc) => {
                                     let cells = doc.get_cells();
+                                    // Persisted docs may carry legacy pre-v3
+                                    // outputs (extract_cell_outputs returns
+                                    // empty for current-schema docs).
+                                    let mut outputs_by_cell: std::collections::HashMap<
+                                        String,
+                                        Vec<serde_json::Value>,
+                                    > = std::collections::HashMap::new();
+                                    for (cell_id, legacy) in doc.extract_cell_outputs() {
+                                        let parsed: Vec<serde_json::Value> = legacy
+                                            .into_iter()
+                                            .filter_map(|s| serde_json::from_str(&s).ok())
+                                            .collect();
+                                        if !parsed.is_empty() {
+                                            outputs_by_cell.insert(cell_id, parsed);
+                                        }
+                                    }
                                     Response::NotebookState {
                                         notebook_id,
                                         cells,
+                                        outputs_by_cell,
                                         source: "persisted_file".to_string(),
                                         kernel_info: None,
                                     }
@@ -3099,14 +3146,15 @@ pub(crate) fn blob_gc_grace() -> std::time::Duration {
 /// Walk a persisted notebook-doc `.automerge` file and collect blob refs.
 ///
 /// Mirrors the in-memory mark phase: we load the saved document, read its
-/// cells, and pull blob refs from `cell.outputs` (inline manifests) and
-/// `cell.resolved_assets` (markdown image refs). Returns `None` if the
-/// file cannot be read or decoded — the caller logs and moves on.
+/// cells, pull blob refs from legacy pre-v3 outputs (via
+/// `extract_cell_outputs`), and from `cell.resolved_assets` (markdown
+/// image refs). Returns `None` if the file cannot be read or decoded —
+/// the caller logs and moves on.
 ///
-/// Note: `RuntimeStateDoc` is not persisted to disk separately; the
-/// notebook doc's `cell.outputs` (legacy pre-v3 layout, plus future
-/// `.ipynb`-backed outputs from spec 2) is the on-disk record of blob
-/// references for a closed room.
+/// Note: `RuntimeStateDoc` is not persisted to disk separately. Current
+/// schema-v3+ notebook docs store outputs in RuntimeStateDoc while the
+/// room is loaded; once evicted, those outputs are discarded. Only
+/// legacy docs still carry on-disk output refs.
 pub(crate) async fn collect_hashes_from_persisted_doc(
     path: &Path,
     hashes: &mut std::collections::HashSet<String>,
@@ -3131,10 +3179,20 @@ pub(crate) async fn collect_hashes_from_persisted_doc(
             return false;
         }
     };
-    for cell in doc.get_cells() {
-        for output in &cell.outputs {
-            collect_blob_hashes(output, hashes);
+    // Legacy pre-v3 notebook docs carry outputs on the cell itself; new docs
+    // store outputs in RuntimeStateDoc and leave the cell shape alone.
+    // `extract_cell_outputs` returns the legacy, JSON-encoded list when
+    // present. For current-schema persisted docs this returns an empty vec,
+    // which is fine — those docs have no ephemeral blobs to mark anyway
+    // (outputs are only alive while a room is loaded).
+    for (_cell_id, legacy_outputs) in doc.extract_cell_outputs() {
+        for raw in legacy_outputs {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
+                collect_blob_hashes(&value, hashes);
+            }
         }
+    }
+    for cell in doc.get_cells() {
         for hash in cell.resolved_assets.values() {
             hashes.insert(hash.clone());
         }

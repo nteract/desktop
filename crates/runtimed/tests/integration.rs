@@ -1010,13 +1010,18 @@ async fn test_streaming_load_via_open_notebook() {
     assert_eq!(cells[6].source, "import os");
 
     // Outputs live in RuntimeStateDoc (separate Automerge doc synced via
-    // frame type 0x05). Poll for convergence — if it arrives, verify hashes.
+    // frame type 0x05) and are looked up via `handle.get_cell_outputs`.
+    // Poll for convergence — if it arrives, verify hashes.
     let start = std::time::Instant::now();
+    let mut c0_outputs: Vec<serde_json::Value> = Vec::new();
     while start.elapsed() < Duration::from_secs(10) {
         sleep(Duration::from_millis(100)).await;
         cells = handle.get_cells();
-        if !cells.is_empty() && !cells[0].outputs.is_empty() {
-            break;
+        if !cells.is_empty() {
+            c0_outputs = handle.get_cell_outputs(&cells[0].id).unwrap_or_default();
+            if !c0_outputs.is_empty() {
+                break;
+            }
         }
     }
 
@@ -1024,17 +1029,17 @@ async fn test_streaming_load_via_open_notebook() {
     // On slow CI runners, the sync may not complete within the timeout.
     // The output pipeline is verified end-to-end by the fixture integration
     // tests and manual testing — this checks the streaming load path specifically.
-    if !cells[0].outputs.is_empty() {
-        let output = &cells[0].outputs[0];
+    if !c0_outputs.is_empty() {
+        let output = &c0_outputs[0];
         assert!(
             output.get("output_type").is_some(),
             "output should be a manifest object with output_type, got: {}",
             output
         );
-        assert_eq!(cells[3].outputs.len(), 1, "c4 should have 1 output");
-        let c4_output = &cells[3].outputs[0];
+        let c4_outputs = handle.get_cell_outputs(&cells[3].id).unwrap_or_default();
+        assert_eq!(c4_outputs.len(), 1, "c4 should have 1 output");
         assert!(
-            c4_output.get("output_type").is_some(),
+            c4_outputs[0].get("output_type").is_some(),
             "c4 output should be a manifest object with output_type"
         );
     }
@@ -1043,8 +1048,14 @@ async fn test_streaming_load_via_open_notebook() {
     assert_eq!(cells[0].execution_count, "1");
     assert_eq!(cells[2].execution_count, "3");
 
-    // Verify c7 (no outputs) has empty outputs list
-    assert!(cells[6].outputs.is_empty(), "c7 should have no outputs");
+    // Verify c7 (no outputs) has no outputs
+    assert!(
+        handle
+            .get_cell_outputs(&cells[6].id)
+            .unwrap_or_default()
+            .is_empty(),
+        "c7 should have no outputs"
+    );
 
     // Shutdown
     pool_client.shutdown().await.ok();

@@ -5026,6 +5026,13 @@ async fn inspect_notebook(path: &PathBuf, full_outputs: bool, json_output: bool)
 
     match client.inspect_notebook(&notebook_id).await {
         Ok(result) => {
+            let empty_outputs: Vec<serde_json::Value> = Vec::new();
+            let cell_outputs = |cell_id: &str| -> &Vec<serde_json::Value> {
+                result
+                    .outputs_by_cell
+                    .get(cell_id)
+                    .unwrap_or(&empty_outputs)
+            };
             if json_output {
                 // Full JSON output
                 let output = serde_json::json!({
@@ -5033,10 +5040,11 @@ async fn inspect_notebook(path: &PathBuf, full_outputs: bool, json_output: bool)
                     "source": result.source,
                     "kernel_info": result.kernel_info,
                     "cells": result.cells.iter().map(|c| {
+                        let outs = cell_outputs(&c.id);
                         let outputs_info: Vec<serde_json::Value> = if full_outputs {
-                            c.outputs.clone()
+                            outs.clone()
                         } else {
-                            c.outputs.iter().map(|o| {
+                            outs.iter().map(|o| {
                                 let size = serde_json::to_string(o).map(|s| s.len()).unwrap_or(0);
                                 if let Some(otype) = o.get("output_type").and_then(|v| v.as_str()) {
                                     serde_json::json!({
@@ -5092,17 +5100,18 @@ async fn inspect_notebook(path: &PathBuf, full_outputs: bool, json_output: bool)
                         format!("[{}]", cell.execution_count)
                     };
 
+                    let outs = cell_outputs(&cell.id);
                     println!(
                         "{:2}. {} {:8} | {} | outputs: {}",
                         i + 1,
                         exec_count,
                         cell.cell_type,
                         source_preview,
-                        cell.outputs.len()
+                        outs.len()
                     );
 
-                    if full_outputs && !cell.outputs.is_empty() {
-                        for (j, output) in cell.outputs.iter().enumerate() {
+                    if full_outputs && !outs.is_empty() {
+                        for (j, output) in outs.iter().enumerate() {
                             println!(
                                 "      output[{}]: {}",
                                 j,

@@ -459,9 +459,12 @@ pub async fn build_execution_result(
 
     // Build structured content directly from manifest Values + blob URLs.
     // No blob fetches — inline ContentRefs pass through, blobs become URLs.
+    // Outputs live in RuntimeStateDoc, keyed by execution_id, so we fetch
+    // them separately from the cell snapshot.
     let cell_snapshot = handle.get_cell(&result.cell_id);
     let structured_content = if let Some(snap) = cell_snapshot {
-        if snap.outputs.is_empty() {
+        let outputs = handle.get_cell_outputs(&result.cell_id).unwrap_or_default();
+        if outputs.is_empty() {
             None
         } else {
             let ec_str = cell_read::get_cell_execution_count_from_runtime(handle, &snap.id);
@@ -474,7 +477,7 @@ pub async fn build_execution_result(
                 &snap.id,
                 &snap.cell_type,
                 &snap.source,
-                &snap.outputs,
+                &outputs,
                 ec,
                 &result.status,
                 &server.blob_base_url,

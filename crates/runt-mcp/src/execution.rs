@@ -133,16 +133,21 @@ pub async fn execute_and_wait(
             comms.as_ref(),
         )
         .await
-    } else if let Some(cell_snapshot) = handle.get_cell(cell_id) {
-        output_resolver::resolve_cell_outputs_for_llm(
-            &cell_snapshot.outputs,
-            blob_base_url,
-            blob_store_path,
-            comms.as_ref(),
-        )
-        .await
     } else {
-        Vec::new()
+        // Outputs live in RuntimeStateDoc keyed by execution_id. Fetch via
+        // the explicit lookup — CellSnapshot no longer carries them.
+        let raw_outputs = handle.get_cell_outputs(cell_id).unwrap_or_default();
+        if raw_outputs.is_empty() {
+            Vec::new()
+        } else {
+            output_resolver::resolve_cell_outputs_for_llm(
+                &raw_outputs,
+                blob_base_url,
+                blob_store_path,
+                comms.as_ref(),
+            )
+            .await
+        }
     };
 
     // Determine status from outputs if we didn't get it from RuntimeState

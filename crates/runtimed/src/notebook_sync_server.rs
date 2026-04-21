@@ -7415,13 +7415,26 @@ const SELF_WRITE_SKIP_WINDOW_MS: u64 = 600;
 /// merging changes from externally-generated notebooks.
 ///
 /// Positions are generated incrementally using fractional indexing.
-fn parse_cells_from_ipynb(json: &serde_json::Value) -> Option<Vec<CellSnapshot>> {
+/// Parsed result of an `.ipynb` file: cell snapshots and the outputs pulled
+/// from disk, keyed by cell id.
+///
+/// `CellSnapshot` no longer carries outputs (outputs live in `RuntimeStateDoc`
+/// keyed by `execution_id`). Callers that need both pieces — notebook load,
+/// external-edit merge — receive them here as two parallel structures and
+/// thread the outputs map separately.
+pub(crate) struct ParsedIpynbCells {
+    pub cells: Vec<CellSnapshot>,
+    pub outputs_by_cell: HashMap<String, Vec<serde_json::Value>>,
+}
+
+fn parse_cells_from_ipynb(json: &serde_json::Value) -> Option<ParsedIpynbCells> {
     use loro_fractional_index::FractionalIndex;
 
     let cells_json = json.get("cells").and_then(|c| c.as_array())?;
 
     // Generate positions incrementally
     let mut prev_position: Option<FractionalIndex> = None;
+    let mut outputs_by_cell: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
 
     let parsed_cells = cells_json
         .iter()
@@ -7466,12 +7479,17 @@ fn parse_cells_from_ipynb(json: &serde_json::Value) -> Option<Vec<CellSnapshot>>
                 _ => "null".to_string(),
             };
 
-            // Outputs: keep as serde_json::Value
+            // Outputs travel alongside the snapshot, not on it — they're
+            // destined for RuntimeStateDoc, keyed by execution_id, once the
+            // caller mints a synthetic execution for this cell.
             let outputs: Vec<serde_json::Value> = cell
                 .get("outputs")
                 .and_then(|v| v.as_array())
                 .cloned()
                 .unwrap_or_default();
+            if !outputs.is_empty() {
+                outputs_by_cell.insert(id.clone(), outputs);
+            }
 
             // Cell metadata (preserves all fields, normalize to object)
             let metadata = match cell.get("metadata") {
@@ -7485,14 +7503,16 @@ fn parse_cells_from_ipynb(json: &serde_json::Value) -> Option<Vec<CellSnapshot>>
                 position: position_str,
                 source,
                 execution_count,
-                outputs,
                 metadata,
                 resolved_assets: std::collections::HashMap::new(),
             }
         })
         .collect();
 
-    Some(parsed_cells)
+    Some(ParsedIpynbCells {
+        cells: parsed_cells,
+        outputs_by_cell,
+    })
 }
 
 /// Parse nbformat attachment payloads from a .ipynb JSON value.
@@ -7585,9 +7605,11 @@ fn should_resolve_markdown_assets(cell_type: &str) -> bool {
 
 /// Cell data parsed for streaming load.
 ///
-/// Unlike `CellSnapshot` which stores outputs as `Vec<String>` (JSON strings),
-/// this stores outputs as `serde_json::Value` to avoid the serialize→parse
-/// round-trip when processing through `create_manifest`.
+/// Unlike `CellSnapshot` — which no longer carries outputs at all (they live
+/// in `RuntimeStateDoc` keyed by `execution_id`) — this struct pairs the
+/// cell fields with its parsed outputs in one value. Outputs are kept as
+/// `serde_json::Value` to avoid the serialize→parse round-trip when
+/// processing through `create_manifest`.
 struct StreamingCell {
     id: String,
     cell_type: String,
@@ -8011,8 +8033,13 @@ pub async fn load_notebook_from_disk_with_state_doc(
     let json: serde_json::Value =
         serde_json::from_str(&content).map_err(|e| format!("Invalid notebook JSON: {}", e))?;
 
-    // Parse cells
-    let cells = parse_cells_from_ipynb(&json)
+    // Parse cells. Outputs come back in a parallel map keyed by cell_id —
+    // they're destined for RuntimeStateDoc, keyed by a freshly-minted
+    // synthetic execution_id per cell.
+    let ParsedIpynbCells {
+        cells,
+        outputs_by_cell,
+    } = parse_cells_from_ipynb(&json)
         .ok_or_else(|| "Failed to parse cells from notebook".to_string())?;
     let nbformat_attachments = parse_nbformat_attachments_from_ipynb(&json);
 
@@ -8024,15 +8051,16 @@ pub async fn load_notebook_from_disk_with_state_doc(
             .map_err(|e| format!("Failed to update source: {}", e))?;
         // Parse execution_count from the .ipynb cell snapshot
         let parsed_ec: Option<i64> = cell.execution_count.parse::<i64>().ok();
-        let has_outputs = !cell.outputs.is_empty();
+        let cell_outputs = outputs_by_cell.get(&cell.id);
+        let has_outputs = cell_outputs.map(|o| !o.is_empty()).unwrap_or(false);
         let has_ec = parsed_ec.is_some();
 
         // Create a synthetic execution entry in RuntimeStateDoc if the cell
         // has outputs or an execution_count. The execution_id links the cell
         // to its outputs and execution_count in RuntimeStateDoc.
         if has_outputs || has_ec {
-            let output_refs = if has_outputs {
-                outputs_to_manifest_refs(&cell.outputs, blob_store).await
+            let output_refs = if let Some(outs) = cell_outputs.filter(|o| !o.is_empty()) {
+                outputs_to_manifest_refs(outs, blob_store).await
             } else {
                 Vec::new()
             };
@@ -8216,6 +8244,7 @@ fn build_new_notebook_metadata(
 async fn apply_ipynb_changes(
     room: &NotebookRoom,
     external_cells: &[CellSnapshot],
+    external_outputs: &HashMap<String, Vec<serde_json::Value>>,
     external_attachments: &HashMap<String, serde_json::Value>,
     has_running_kernel: bool,
 ) -> bool {
@@ -8229,10 +8258,10 @@ async fn apply_ipynb_changes(
     // the doc's existing manifest hashes work correctly.
     let converted_outputs: HashMap<String, Vec<serde_json::Value>> = {
         let mut map = HashMap::new();
-        for cell in external_cells {
-            if !cell.outputs.is_empty() {
-                let refs = outputs_to_manifest_refs(&cell.outputs, &room.blob_store).await;
-                map.insert(cell.id.clone(), refs);
+        for (cell_id, raw_outputs) in external_outputs {
+            if !raw_outputs.is_empty() {
+                let refs = outputs_to_manifest_refs(raw_outputs, &room.blob_store).await;
+                map.insert(cell_id.clone(), refs);
             }
         }
         map
@@ -8823,8 +8852,11 @@ pub(crate) fn spawn_notebook_file_watcher(
 
                             // Parse cells from the .ipynb
                             // None = parse failure (missing cells key), Some([]) = valid empty notebook
-                            let external_cells = match parse_cells_from_ipynb(&json) {
-                                Some(cells) => cells,
+                            let ParsedIpynbCells {
+                                cells: external_cells,
+                                outputs_by_cell: external_outputs,
+                            } = match parse_cells_from_ipynb(&json) {
+                                Some(parsed) => parsed,
                                 None => {
                                     warn!(
                                         "[notebook-watch] Cannot parse cells from {:?} - skipping",
@@ -8843,6 +8875,7 @@ pub(crate) fn spawn_notebook_file_watcher(
                             let cells_changed = apply_ipynb_changes(
                                 &room,
                                 &external_cells,
+                                &external_outputs,
                                 &external_attachments,
                                 has_kernel,
                             )
@@ -9910,7 +9943,8 @@ mod tests {
             ]
         });
 
-        let cells = parse_cells_from_ipynb(&json).expect("Should parse valid notebook");
+        let parsed = parse_cells_from_ipynb(&json).expect("Should parse valid notebook");
+        let cells = &parsed.cells;
         assert_eq!(cells.len(), 2);
         assert_eq!(cells[0].id, "cell-1");
         assert_eq!(cells[0].cell_type, "code");
@@ -9920,6 +9954,8 @@ mod tests {
         assert_eq!(cells[1].cell_type, "markdown");
         assert_eq!(cells[1].source, "# Title\nBody");
         assert_eq!(cells[1].execution_count, "null");
+        // Empty `outputs` arrays on disk produce no entries in the outputs map.
+        assert!(parsed.outputs_by_cell.is_empty());
     }
 
     #[test]
@@ -9942,7 +9978,8 @@ mod tests {
             ]
         });
 
-        let cells = parse_cells_from_ipynb(&json).expect("Should parse valid notebook");
+        let parsed = parse_cells_from_ipynb(&json).expect("Should parse valid notebook");
+        let cells = &parsed.cells;
         assert_eq!(cells.len(), 2);
         // Should generate fallback IDs based on index
         assert_eq!(cells[0].id, "__external_cell_0");
@@ -9957,8 +9994,9 @@ mod tests {
         let json = serde_json::json!({
             "cells": []
         });
-        let cells = parse_cells_from_ipynb(&json).expect("Should parse valid empty notebook");
-        assert!(cells.is_empty());
+        let parsed = parse_cells_from_ipynb(&json).expect("Should parse valid empty notebook");
+        assert!(parsed.cells.is_empty());
+        assert!(parsed.outputs_by_cell.is_empty());
     }
 
     #[test]
@@ -9998,7 +10036,14 @@ mod tests {
         // Apply empty external cells - should delete all cells (we have
         // a save baseline confirming cell-1 was on disk before)
         let external_cells = vec![];
-        let changed = apply_ipynb_changes(&room, &external_cells, &HashMap::new(), false).await;
+        let changed = apply_ipynb_changes(
+            &room,
+            &external_cells,
+            &HashMap::new(),
+            &HashMap::new(),
+            false,
+        )
+        .await;
         assert!(changed, "Should apply changes to clear all cells");
 
         // Verify all cells were deleted
@@ -10027,12 +10072,18 @@ mod tests {
             position: "80".to_string(),
             source: String::new(),
             execution_count: "42".to_string(),
-            outputs: vec![],
             metadata: serde_json::json!({}),
             resolved_assets: std::collections::HashMap::new(),
         }];
 
-        let changed = apply_ipynb_changes(&room, &external_cells, &HashMap::new(), false).await;
+        let changed = apply_ipynb_changes(
+            &room,
+            &external_cells,
+            &HashMap::new(),
+            &HashMap::new(),
+            false,
+        )
+        .await;
         assert!(changed, "Should detect execution_count change");
 
         // execution_count is now in RuntimeStateDoc via synthetic execution_id
@@ -10071,12 +10122,18 @@ mod tests {
             position: "80".to_string(),
             source: "new source".to_string(),
             execution_count: "5".to_string(),
-            outputs: vec![],
             metadata: serde_json::json!({}),
             resolved_assets: std::collections::HashMap::new(),
         }];
 
-        let changed = apply_ipynb_changes(&room, &external_cells, &HashMap::new(), true).await;
+        let changed = apply_ipynb_changes(
+            &room,
+            &external_cells,
+            &HashMap::new(),
+            &HashMap::new(),
+            true,
+        )
+        .await;
         assert!(changed, "Should apply source change");
 
         let cells = {
@@ -10112,7 +10169,6 @@ mod tests {
                 position: "80".to_string(),
                 source: String::new(),
                 execution_count: "null".to_string(),
-                outputs: vec![],
                 metadata: serde_json::json!({}),
                 resolved_assets: std::collections::HashMap::new(),
             },
@@ -10122,13 +10178,24 @@ mod tests {
                 position: "81".to_string(),
                 source: "print('new')".to_string(),
                 execution_count: "42".to_string(),
-                outputs: vec![serde_json::json!({"output_type":"execute_result"})],
                 metadata: serde_json::json!({}),
                 resolved_assets: std::collections::HashMap::new(),
             },
         ];
+        let mut external_outputs: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
+        external_outputs.insert(
+            "new-cell".to_string(),
+            vec![serde_json::json!({"output_type":"execute_result"})],
+        );
 
-        let changed = apply_ipynb_changes(&room, &external_cells, &HashMap::new(), true).await;
+        let changed = apply_ipynb_changes(
+            &room,
+            &external_cells,
+            &external_outputs,
+            &HashMap::new(),
+            true,
+        )
+        .await;
         assert!(changed, "Should add new cell");
 
         let cells = {
@@ -10194,7 +10261,6 @@ mod tests {
                 position: "80".to_string(),
                 source: "a = 10".to_string(),
                 execution_count: "1".to_string(),
-                outputs: vec![],
                 metadata: serde_json::json!({}),
                 resolved_assets: std::collections::HashMap::new(),
             },
@@ -10204,13 +10270,19 @@ mod tests {
                 position: "81".to_string(),
                 source: "b = 20".to_string(),
                 execution_count: "2".to_string(),
-                outputs: vec![],
                 metadata: serde_json::json!({}),
                 resolved_assets: std::collections::HashMap::new(),
             },
         ];
 
-        let changed = apply_ipynb_changes(&room, &external_cells, &HashMap::new(), false).await;
+        let changed = apply_ipynb_changes(
+            &room,
+            &external_cells,
+            &HashMap::new(),
+            &HashMap::new(),
+            false,
+        )
+        .await;
         assert!(changed, "Should detect wholesale replacement");
 
         let cells = {
@@ -10262,12 +10334,18 @@ mod tests {
             position: "80".to_string(),
             source: "x = 1".to_string(),
             execution_count: "null".to_string(),
-            outputs: vec![],
             metadata: serde_json::json!({}),
             resolved_assets: std::collections::HashMap::new(),
         }];
 
-        let changed = apply_ipynb_changes(&room, &external_cells, &HashMap::new(), false).await;
+        let changed = apply_ipynb_changes(
+            &room,
+            &external_cells,
+            &HashMap::new(),
+            &HashMap::new(),
+            false,
+        )
+        .await;
         assert!(changed);
 
         let cells = {
@@ -10317,7 +10395,14 @@ mod tests {
         // External file has 0 cells (the autosave wrote an empty notebook)
         let external_cells: Vec<CellSnapshot> = vec![];
 
-        let changed = apply_ipynb_changes(&room, &external_cells, &HashMap::new(), false).await;
+        let changed = apply_ipynb_changes(
+            &room,
+            &external_cells,
+            &HashMap::new(),
+            &HashMap::new(),
+            false,
+        )
+        .await;
         // No changes should be applied — cells preserved
         assert!(
             !changed,
