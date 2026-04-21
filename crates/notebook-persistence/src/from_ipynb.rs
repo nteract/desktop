@@ -6,17 +6,19 @@
 //! and `RuntimeStateDoc` updates, so the pure "JSON -> snapshot" step is the
 //! natural seam to share.
 //!
-//! For a fully-built `NotebookDoc` (useful in tests and for tools that don't
-//! need output persistence), see [`build_notebook_doc`].
+//! There is no `build_notebook_doc`-style fully-assembled helper. Since
+//! schema v3, cell outputs live in `RuntimeStateDoc` rather than the
+//! notebook doc, and any "standalone" converter would silently drop
+//! outputs. Callers that need a notebook doc with outputs must walk through
+//! the daemon's load path (see `runtimed::notebook_sync_server`); callers
+//! that only need snapshot data can combine these parsers themselves.
 
 use std::collections::HashMap;
 
 use loro_fractional_index::FractionalIndex;
 use notebook_doc::metadata::NotebookMetadataSnapshot;
-use notebook_doc::{CellSnapshot, NotebookDoc};
+use notebook_doc::CellSnapshot;
 use serde_json::Value;
-
-use crate::error::{PersistenceError, Result};
 
 /// Parse the `cells` array from a `.ipynb` JSON value into `CellSnapshot`s.
 ///
@@ -149,42 +151,6 @@ pub fn parse_metadata_from_ipynb(json: &Value) -> Option<NotebookMetadataSnapsho
     Some(NotebookMetadataSnapshot::from_metadata_value(metadata))
 }
 
-/// Build a full `NotebookDoc` from a parsed `.ipynb` JSON value.
-///
-/// This is the self-contained inverse of [`crate::to_ipynb::doc_to_ipynb`]:
-/// it takes a JSON notebook and produces a fully-populated Automerge
-/// document with the supplied `notebook_id`. The daemon does **not** use
-/// this function because it needs to interleave parsing with blob-store
-/// writes and `RuntimeStateDoc` population. Tools that just need a doc to
-/// inspect or export (tests, standalone converters) can use it.
-///
-/// Outputs are attached to cells only on pre-schema-v3 documents. For v3+
-/// docs the outputs need to live in a `RuntimeStateDoc`; see the daemon's
-/// load path for the full pipeline.
-pub fn build_notebook_doc(notebook_id: &str, json: &Value) -> Result<NotebookDoc> {
-    let cells = parse_cells_from_ipynb(json)
-        .ok_or_else(|| PersistenceError::InvalidIpynb("missing top-level `cells` array".into()))?;
-
-    let mut doc = NotebookDoc::new(notebook_id);
-
-    for cell in &cells {
-        doc.add_cell_full(
-            &cell.id,
-            &cell.cell_type,
-            &cell.position,
-            &cell.source,
-            &cell.execution_count,
-            &cell.metadata,
-        )?;
-    }
-
-    if let Some(snapshot) = parse_metadata_from_ipynb(json) {
-        doc.set_metadata_snapshot(&snapshot)?;
-    }
-
-    Ok(doc)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,39 +234,5 @@ mod tests {
         let map = parse_nbformat_attachments_from_ipynb(&json);
         assert_eq!(map.len(), 1);
         assert!(map.contains_key("c1"));
-    }
-
-    #[test]
-    fn build_notebook_doc_roundtrip_preserves_cells() {
-        let json = serde_json::json!({
-            "nbformat": 4,
-            "nbformat_minor": 5,
-            "metadata": {},
-            "cells": [
-                {
-                    "id": "c1",
-                    "cell_type": "code",
-                    "source": "print('hi')\n",
-                    "execution_count": 2,
-                    "outputs": []
-                }
-            ]
-        });
-        let doc = build_notebook_doc("test.ipynb", &json).unwrap();
-        let cells = doc.get_cells();
-        assert_eq!(cells.len(), 1);
-        assert_eq!(cells[0].id, "c1");
-        assert_eq!(cells[0].source, "print('hi')\n");
-        assert_eq!(cells[0].execution_count, "2");
-    }
-
-    #[test]
-    fn build_notebook_doc_rejects_missing_cells_array() {
-        let json = serde_json::json!({ "metadata": {} });
-        match build_notebook_doc("x", &json) {
-            Ok(_) => panic!("expected InvalidIpynb error"),
-            Err(PersistenceError::InvalidIpynb(_)) => (),
-            Err(other) => panic!("unexpected error: {other:?}"),
-        }
     }
 }

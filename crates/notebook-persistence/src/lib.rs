@@ -13,13 +13,10 @@
 //! `automerge`, `notebook-doc`, `loro_fractional_index`, `serde`, and
 //! `serde_json`.
 
-pub mod error;
 pub mod from_ipynb;
 pub mod to_ipynb;
 
-pub use error::{PersistenceError, Result};
 pub use from_ipynb::{
-    build_notebook_doc, parse_cells_from_ipynb, parse_metadata_from_ipynb,
-    parse_nbformat_attachments_from_ipynb,
+    parse_cells_from_ipynb, parse_metadata_from_ipynb, parse_nbformat_attachments_from_ipynb,
 };
 pub use to_ipynb::{build_ipynb, doc_to_ipynb, BuildError, BuildInputs, CellOutputData};

@@ -10,12 +10,6 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-automerge = "0.8"
 loro_fractional_index = { workspace = true }
 notebook-doc = { path = "../notebook-doc" }
-serde = { workspace = true }
-serde_json = { workspace = true }
-thiserror = { workspace = true }
-
-[dev-dependencies]
 serde_json = { workspace = true }
