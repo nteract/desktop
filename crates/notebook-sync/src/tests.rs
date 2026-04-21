@@ -987,14 +987,16 @@ mod integration_tests {
             .await
             .expect("confirm_sync after exec");
 
-        // Read outputs from the Automerge doc (source of truth)
-        // Outputs are stored as manifest hashes (blob references) or raw JSON —
-        // the important thing is that they exist after execution.
+        // Read outputs via the explicit lookup — outputs now live in
+        // RuntimeStateDoc keyed by execution_id, not on CellSnapshot.
         let snap = handle.snapshot();
         let cell = snap.get_cell("cell-exec").expect("cell should exist");
 
+        let outputs = handle
+            .get_cell_outputs("cell-exec")
+            .expect("Cell should have outputs after execution");
         assert!(
-            !cell.outputs.is_empty(),
+            !outputs.is_empty(),
             "Cell should have outputs after execution"
         );
 

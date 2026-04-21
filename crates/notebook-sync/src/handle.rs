@@ -409,19 +409,13 @@ impl DocHandle {
     }
 
     /// Get a single cell by ID from the latest snapshot.
+    ///
+    /// Outputs are not included — they live in `RuntimeStateDoc` keyed by
+    /// `execution_id`. Call [`Self::get_cell_outputs`] or
+    /// [`Self::get_all_outputs`] alongside this method when you need them.
     pub fn get_cell(&self, cell_id: &str) -> Option<notebook_doc::CellSnapshot> {
         let snapshot = self.snapshot_rx.borrow();
-        let mut cell = snapshot.cells.iter().find(|c| c.id == cell_id).cloned()?;
-        // Populate outputs from RuntimeStateDoc via execution_id facade
-        if let Ok(state) = self.doc.lock() {
-            if let Some(eid) = read_execution_id(&state.doc, cell_id) {
-                let outputs = state.state_doc.get_outputs(&eid);
-                if !outputs.is_empty() {
-                    cell.outputs = outputs;
-                }
-            }
-        }
-        Some(cell)
+        snapshot.cells.iter().find(|c| c.id == cell_id).cloned()
     }
 
     /// Get the ordered list of cell IDs from the latest snapshot.
@@ -664,21 +658,43 @@ impl DocHandle {
         self.snapshot_rx.borrow().clone()
     }
 
-    /// Get all cells from the latest snapshot with outputs from RuntimeStateDoc.
+    /// Get all cells from the latest snapshot.
+    ///
+    /// Outputs are not included — they live in `RuntimeStateDoc` keyed by
+    /// `execution_id`. Call [`Self::get_all_outputs`] alongside this method
+    /// when you need them.
     pub fn get_cells(&self) -> Vec<notebook_doc::CellSnapshot> {
-        let mut cells = self.snapshot_rx.borrow().cells.as_ref().clone();
-        // Populate outputs from RuntimeStateDoc for each cell
-        if let Ok(state) = self.doc.lock() {
-            for cell in &mut cells {
-                if let Some(eid) = read_execution_id(&state.doc, &cell.id) {
-                    let outputs = state.state_doc.get_outputs(&eid);
-                    if !outputs.is_empty() {
-                        cell.outputs = outputs;
-                    }
+        self.snapshot_rx.borrow().cells.as_ref().clone()
+    }
+
+    /// Get outputs for every cell that currently has an execution_id.
+    ///
+    /// Outputs are looked up in `RuntimeStateDoc` keyed by `execution_id`.
+    /// Cells without an execution_id or with empty outputs are omitted from
+    /// the returned map. Prefer this over calling [`Self::get_cell_outputs`]
+    /// in a loop — it walks the doc once.
+    pub fn get_all_outputs(&self) -> std::collections::HashMap<String, Vec<serde_json::Value>> {
+        let mut map = std::collections::HashMap::new();
+        let state = match self.doc.lock() {
+            Ok(guard) => guard,
+            Err(_) => return map,
+        };
+        let cell_ids: Vec<String> = self
+            .snapshot_rx
+            .borrow()
+            .cells
+            .iter()
+            .map(|c| c.id.clone())
+            .collect();
+        for cell_id in cell_ids {
+            if let Some(eid) = read_execution_id(&state.doc, &cell_id) {
+                let outputs = state.state_doc.get_outputs(&eid);
+                if !outputs.is_empty() {
+                    map.insert(cell_id, outputs);
                 }
             }
         }
-        cells
+        map
     }
 
     /// Get the typed notebook metadata from the latest snapshot.
