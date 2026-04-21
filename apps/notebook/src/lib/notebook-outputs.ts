@@ -187,6 +187,30 @@ export function getOutputById(output_id: string): JupyterOutput | undefined {
   return _outputMap.get(output_id);
 }
 
+/**
+ * Apply a display_update to every output in the store with the matching
+ * `display_id`. The daemon also writes the update into RuntimeStateDoc,
+ * but that sync may lag the broadcast; patching the store directly gives
+ * the UI instant feedback. Only touches outputs that carry a `data`
+ * payload (display_data / execute_result) - stream / error outputs have
+ * no display_id.
+ */
+export function updateOutputsByDisplayId(
+  display_id: string,
+  data: Record<string, unknown>,
+  metadata?: Record<string, unknown>,
+): void {
+  for (const [output_id, output] of _outputMap) {
+    if (
+      (output.output_type === "display_data" ||
+        output.output_type === "execute_result") &&
+      output.display_id === display_id
+    ) {
+      setOutput(output_id, { ...output, data, metadata });
+    }
+  }
+}
+
 /** Reset the entire store. Called on notebook switch or full reset. */
 export function resetNotebookOutputs(): void {
   const ids = [..._outputMap.keys()];

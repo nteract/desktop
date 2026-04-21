@@ -226,6 +226,69 @@ function seedLegacyOutputsForExecution(
 }
 
 /**
+ * Seed the outputs / executions stores directly from the WASM handle.
+ *
+ * `initialSyncComplete$` can fire before the RuntimeStateDoc sync frame
+ * lands, so `projectRuntimeStateToExecutions` alone may run against an
+ * empty snapshot on notebook open. Walking the handle for each cell's
+ * current `execution_id` fills the gap - any outputs already stored in
+ * the notebook doc show up in `useCellOutputs` immediately rather than
+ * waiting for the runtime-state catch-up tick.
+ */
+export function seedOutputStoresFromHandle(
+  handle: NotebookHandle,
+  cell_ids: string[],
+): void {
+  for (const cellId of cell_ids) {
+    const executionId = handle.get_cell_execution_id(cellId) ?? null;
+    if (!executionId) continue;
+    const rawOutputs = (handle.get_cell_outputs(cellId) as unknown[]) ?? [];
+    if (rawOutputs.length === 0) continue;
+
+    const output_ids: string[] = [];
+    for (let i = 0; i < rawOutputs.length; i++) {
+      const output = rawOutputs[i];
+      const oidField =
+        output && typeof output === "object"
+          ? (output as { output_id?: unknown }).output_id
+          : undefined;
+      output_ids.push(
+        typeof oidField === "string" && oidField.length > 0
+          ? oidField
+          : `legacy:${executionId}:${i}`,
+      );
+    }
+    // Build a minimal execution snapshot. We don't have status / success
+    // in the notebook doc (those live in RuntimeStateDoc) - fill them in
+    // as defaults so `useExecution` resolves to something; the runtime-
+    // state projection will overwrite with authoritative values when the
+    // doc's sync frame lands.
+    setExecution(executionId, {
+      cell_id: cellId,
+      execution_count: null,
+      status: "done",
+      success: null,
+      output_ids,
+    });
+
+    // Populate the outputs store for each output. Plain JupyterOutputs
+    // (already resolved by full materialization) go in directly;
+    // manifests kick through the sync resolver.
+    for (let i = 0; i < rawOutputs.length; i++) {
+      const output = rawOutputs[i];
+      if (!output || typeof output !== "object") continue;
+      const oid = output_ids[i];
+      const existing = getOutputById(oid);
+      if (existing === output) continue;
+      const sync = tryResolveSync(output, getBlobPort(), new Map());
+      if (sync) {
+        setOutput(oid, sync);
+      }
+    }
+  }
+}
+
+/**
  * Re-read every cell's canonical `execution_id` pointer from the WASM
  * handle and update the per-cell pointer store. Call this whenever the
  * notebook doc heads move so `useCellExecutionId(cellId)` reflects the
