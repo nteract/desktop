@@ -2119,15 +2119,12 @@ where
         }
     }
 
-    // Send capabilities response (v2 protocol) unless already sent via NotebookConnectionInfo
-    if !skip_capabilities {
-        let caps = connection::ProtocolCapabilities {
-            protocol: connection::PROTOCOL_V2.to_string(),
-            protocol_version: Some(connection::PROTOCOL_VERSION),
-            daemon_version: Some(crate::daemon_version().to_string()),
-        };
-        connection::send_json_frame(&mut writer, &caps).await?;
-    }
+    // NOTE: ProtocolCapabilities is no longer sent here. It is now emitted
+    // from inside `run_sync_loop_v2` immediately before the first
+    // AutomergeSync frame. That closes a scheduling race where the client
+    // could parse caps and enter `do_initial_sync` while the daemon's
+    // handler task was still suspended between caps-send and sync-send
+    // under loaded CI. See `fix(runtimed): Option A` PR for details.
 
     // Generate peer_id here so it's available for cleanup regardless of
     // whether the sync loop exits with Ok or Err.
@@ -2142,6 +2139,7 @@ where
         daemon.clone(),
         needs_load.as_deref(),
         &peer_id,
+        skip_capabilities,
     )
     .await;
 
@@ -2599,6 +2597,11 @@ async fn run_sync_loop_v2<R, W>(
     daemon: std::sync::Arc<crate::daemon::Daemon>,
     needs_load: Option<&Path>,
     peer_id: &str,
+    // True when the caller already emitted NotebookConnectionInfo
+    // (OpenNotebook / CreateNotebook paths). In that case we skip
+    // emitting `ProtocolCapabilities` here — the client on those paths
+    // does not expect a second control frame.
+    skip_capabilities: bool,
 ) -> anyhow::Result<()>
 where
     R: AsyncRead + Unpin,
@@ -2658,6 +2661,29 @@ where
     let prune_period = std::time::Duration::from_millis(presence::DEFAULT_HEARTBEAT_MS);
     let mut prune_interval = tokio::time::interval(prune_period);
     prune_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    // Phase 0: "Handler ready" signal.
+    //
+    // Emit `ProtocolCapabilities` with `handler_ready: true` from inside
+    // the sync loop, immediately before the first sync frame. This is
+    // the explicit protocol-level guarantee that the daemon's
+    // per-connection handler task is scheduled and is about to stream
+    // initial sync frames. Older daemons emitted this frame earlier
+    // (from the handshake prelude), which left a scheduling gap under
+    // loaded CI.
+    //
+    // Skipped for the OpenNotebook / CreateNotebook handshake paths —
+    // those already sent `NotebookConnectionInfo` as their control
+    // frame; the client does not expect an additional caps frame there.
+    if !skip_capabilities {
+        let caps = connection::ProtocolCapabilities {
+            protocol: connection::PROTOCOL_V2.to_string(),
+            protocol_version: Some(connection::PROTOCOL_VERSION),
+            daemon_version: Some(crate::daemon_version().to_string()),
+            handler_ready: Some(true),
+        };
+        connection::send_json_frame(writer, &caps).await?;
+    }
 
     // Phase 1: Initial sync — server sends first (typed frame)
     // Encode the sync message inside the lock, then send outside it
