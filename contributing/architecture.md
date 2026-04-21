@@ -37,7 +37,7 @@ The `.ipynb` file on disk is a checkpoint/snapshot. The Automerge document is th
 **Crash recovery:**
 - Untitled notebooks (UUID-keyed rooms) persist their Automerge doc to `notebook-docs/{hash}.automerge` in the cache directory. On daemon restart, the room loads from this file.
 - Saved notebooks reload from `.ipynb` (which autosave keeps current). Before deleting a persisted Automerge doc on reopen, the daemon snapshots it to `notebook-docs/snapshots/` (max 5 per notebook).
-- `runt recover` can list all snapshots and export any to `.ipynb`.
+- Outputs are ephemeral. They live in the per-notebook RuntimeStateDoc and are not persisted.
 
 **UUID-stable rooms:** Room keys are always UUIDs. When an untitled notebook is first saved, the daemon updates a secondary `path_index` map and broadcasts `PathChanged { path }` so peers can update local path tracking. The UUID never changes.
 

@@ -323,7 +323,7 @@ Stream outputs (stdout/stderr) are special: text is fed through a terminal emula
 
 **UUID-stable rooms:** Room keys are always UUIDs. Saving an untitled notebook updates a secondary `path_index` map and broadcasts `PathChanged { path }` so peers can update their local path tracking. The UUID never changes.
 
-**Crash recovery:** Untitled notebooks persist their Automerge doc to `notebook-docs/{hash}.automerge`. Before overwriting on reopen, the daemon snapshots to `notebook-docs/snapshots/`. `runt recover` exports snapshots to `.ipynb`.
+**Crash recovery:** Untitled notebooks persist their Automerge doc to `notebook-docs/{hash}.automerge`. Before overwriting on reopen, the daemon snapshots to `notebook-docs/snapshots/`. Outputs are ephemeral (RuntimeStateDoc, not persisted), so snapshots hold source and metadata only.
 
 **Multi-window:** Multiple windows join the same room as separate Automerge peers. Each gets sync frames and broadcasts independently. The daemon tracks `active_peers` per room for eviction.
 

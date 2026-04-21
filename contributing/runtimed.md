@@ -200,7 +200,7 @@ The `NotebookSaved` response returns the room's UUID (unchanged).
 
 Untitled notebooks persist their Automerge doc to `notebook-docs/{hash}.automerge`. Before deleting a persisted doc on reopen (saved notebooks reload from `.ipynb`), the daemon snapshots it to `notebook-docs/snapshots/` (max 5 per notebook hash).
 
-`runt recover --list` scans all cache namespaces (stable, nightly, per-worktree). `runt recover <path>` finds the live doc or most recent snapshot and exports to `.ipynb`.
+Snapshots hold source and structural metadata only. Outputs live in the RuntimeStateDoc and are not persisted to disk for ephemeral notebooks.
 
 ### Multi-window
 

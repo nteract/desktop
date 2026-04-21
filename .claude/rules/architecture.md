@@ -130,7 +130,7 @@ Per-cell WASM accessors (O(1) Automerge map lookups): `get_cell_source(id)`, `ge
 
 - **Autosave:** 2s quiet period, 10s max interval. `NotebookAutosaved` broadcast clears the frontend dirty flag.
 - **UUID-stable rooms:** Room keys are always UUIDs. Saving an untitled notebook updates `path_index` and broadcasts `PathChanged { path }` to peers. The UUID never changes.
-- **Crash recovery:** Untitled notebooks persist to `notebook-docs/{hash}.automerge`. Snapshots go to `notebook-docs/snapshots/`. `runt recover` exports to `.ipynb`.
+- **Crash recovery:** Untitled notebooks persist to `notebook-docs/{hash}.automerge`. Snapshots go to `notebook-docs/snapshots/`. Outputs are ephemeral — they live in RuntimeStateDoc and are not persisted.
 - **Multi-window:** Multiple windows join the same room as separate Automerge peers.
 - **Eviction:** After all peers disconnect, delayed eviction (default 30s via `keep_alive_secs`) shuts down the kernel and removes the room.
 

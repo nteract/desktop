@@ -95,7 +95,7 @@ Room keys are always UUIDs (never change). When an untitled notebook is first sa
 
 ### Crash Recovery
 
-Untitled notebooks persist to `notebook-docs/{hash}.automerge`. Before deletion on reopen, snapshots go to `notebook-docs/snapshots/` (max 5 per hash). `runt recover --list` scans all cache namespaces. `runt recover <path>` exports to `.ipynb`.
+Untitled notebooks persist to `notebook-docs/{hash}.automerge`. Before deletion on reopen, snapshots go to `notebook-docs/snapshots/` (max 5 per hash). Snapshots hold source and metadata only; outputs live in the per-notebook RuntimeStateDoc and are not persisted.
 
 ### Multi-Window
 
