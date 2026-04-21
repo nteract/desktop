@@ -4,8 +4,8 @@
     "cell_id": "cell-1",
     "execution_count": "1",
     "output_count": 1,
-    "output_hashes": [
-      "cdc6331e7cec211831ac43f0be6ff36d60aedb0d1d47939360786e13e5bbff79"
+    "output_ids": [
+      "40f20c3c-ae42-53f0-ab79-b3b909fa7893"
     ],
     "source": "1 / 0"
   },

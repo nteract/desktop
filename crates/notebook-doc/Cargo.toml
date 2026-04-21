@@ -23,6 +23,7 @@ hex = "0.4"
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.11"
 tempfile = "3"
+uuid = { version = "1", features = ["v5"] }
 
 [features]
 default = []

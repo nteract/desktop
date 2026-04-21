@@ -1,11 +1,11 @@
 {
-  "description": "Cell produces display_data with manifest hash (text + image)",
+  "description": "Cell produces display_data with inline text and a blob-ref image",
   "expected": {
     "cell_id": "cell-1",
     "execution_count": "1",
     "output_count": 1,
-    "output_hashes": [
-      "5a109dfec0da1c126ae650dcf09f876e030529cabdb3f53cd50937396a394b04"
+    "output_ids": [
+      "fa1e36e9-38dd-5162-80cc-030a554bbd5c"
     ]
   },
   "scenario": "display_data_output"
