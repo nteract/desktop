@@ -106,11 +106,7 @@ pub fn read_parquet_rows(
         }
 
         // Read rows from this batch
-        let start = if row_idx < offset {
-            offset - row_idx
-        } else {
-            0
-        };
+        let start = offset.saturating_sub(row_idx);
         let end = batch_rows.min(start + limit - rows.len());
 
         for r in start..end {

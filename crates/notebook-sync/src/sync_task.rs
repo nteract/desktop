@@ -29,6 +29,14 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use notebook_protocol::connection::{self, NotebookFrameType};
 use notebook_protocol::protocol::{NotebookBroadcast, NotebookRequest, NotebookResponse};
 
+/// Timeout for socket write operations.
+///
+/// If a `send_typed_frame` call blocks longer than this, the daemon
+/// connection is presumed dead (write buffer full, peer stopped
+/// reading) and the sync task should tear down rather than hang the
+/// entire MCP call chain indefinitely.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+
 use automerge::AutoCommit;
 
 use crate::error::SyncError;
@@ -68,6 +76,33 @@ fn rebuild_shared_doc_state(state: &mut SharedDocState) {
             warn!("[notebook-sync] Failed to rebuild doc after panic: {}", e);
             state.peer_state = sync::State::new();
         }
+    }
+}
+
+/// Send a typed frame with [`WRITE_TIMEOUT`].
+///
+/// Returns `Err(io::ErrorKind::TimedOut)` if the write doesn't complete
+/// in time, which the caller converts to `SyncError::Io` (triggering a
+/// connection tear-down).
+async fn send_frame_bounded<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    frame_type: NotebookFrameType,
+    payload: &[u8],
+) -> std::io::Result<()> {
+    match tokio::time::timeout(
+        WRITE_TIMEOUT,
+        connection::send_typed_frame(writer, frame_type, payload),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_elapsed) => Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!(
+                "send_typed_frame({:?}) blocked for >{:?} — daemon connection presumed dead",
+                frame_type, WRITE_TIMEOUT
+            ),
+        )),
     }
 }
 
@@ -200,12 +235,9 @@ where
                 };
 
                 if let Some(bytes) = msg_bytes {
-                    if let Err(e) = connection::send_typed_frame(
-                        &mut writer,
-                        NotebookFrameType::AutomergeSync,
-                        &bytes,
-                    )
-                    .await
+                    if let Err(e) =
+                        send_frame_bounded(&mut writer, NotebookFrameType::AutomergeSync, &bytes)
+                            .await
                     {
                         warn!(
                             "[notebook-sync] Failed to send sync message for {}: {}",
@@ -305,13 +337,10 @@ where
                     }
 
                     SyncCommand::SendPresence { data, reply } => {
-                        let result = connection::send_typed_frame(
-                            &mut writer,
-                            NotebookFrameType::Presence,
-                            &data,
-                        )
-                        .await
-                        .map_err(SyncError::Io);
+                        let result =
+                            send_frame_bounded(&mut writer, NotebookFrameType::Presence, &data)
+                                .await
+                                .map_err(SyncError::Io);
                         let _ = reply.send(result);
                     }
                 }
@@ -445,8 +474,7 @@ async fn handle_incoming_frame<W: AsyncWrite + Unpin>(
             // Send ack if needed (outside the lock — never hold across I/O)
             if let Some(bytes) = ack_bytes {
                 if let Err(e) =
-                    connection::send_typed_frame(writer, NotebookFrameType::AutomergeSync, &bytes)
-                        .await
+                    send_frame_bounded(writer, NotebookFrameType::AutomergeSync, &bytes).await
                 {
                     warn!(
                         "[notebook-sync] Failed to send sync ack for {}: {}",
@@ -568,12 +596,8 @@ async fn handle_incoming_frame<W: AsyncWrite + Unpin>(
             };
 
             if let Some(bytes) = reply_bytes {
-                if let Err(e) = connection::send_typed_frame(
-                    writer,
-                    NotebookFrameType::RuntimeStateSync,
-                    &bytes,
-                )
-                .await
+                if let Err(e) =
+                    send_frame_bounded(writer, NotebookFrameType::RuntimeStateSync, &bytes).await
                 {
                     warn!(
                         "[notebook-sync] Failed to send RuntimeStateSync reply for {}: {}",
@@ -613,7 +637,7 @@ async fn send_request_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     let payload =
         serde_json::to_vec(request).map_err(|e| SyncError::Serialization(e.to_string()))?;
 
-    connection::send_typed_frame(writer, NotebookFrameType::Request, &payload)
+    send_frame_bounded(writer, NotebookFrameType::Request, &payload)
         .await
         .map_err(SyncError::Io)?;
 
@@ -725,7 +749,7 @@ async fn wait_for_response<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
                 publish_snapshot(doc, snapshot_tx);
 
                 if let Some(bytes) = ack_bytes {
-                    connection::send_typed_frame(writer, NotebookFrameType::AutomergeSync, &bytes)
+                    send_frame_bounded(writer, NotebookFrameType::AutomergeSync, &bytes)
                         .await
                         .map_err(SyncError::Io)?;
                 }
@@ -790,7 +814,7 @@ async fn confirm_sync_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 
         // Send sync message if there is one
         if let Some(bytes) = msg_bytes {
-            connection::send_typed_frame(writer, NotebookFrameType::AutomergeSync, &bytes)
+            send_frame_bounded(writer, NotebookFrameType::AutomergeSync, &bytes)
                 .await
                 .map_err(SyncError::Io)?;
         }
@@ -851,7 +875,7 @@ async fn confirm_state_sync_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
         state.generate_state_sync_message().map(|m| m.encode())
     };
     if let Some(bytes) = msg_bytes {
-        connection::send_typed_frame(writer, NotebookFrameType::RuntimeStateSync, &bytes)
+        send_frame_bounded(writer, NotebookFrameType::RuntimeStateSync, &bytes)
             .await
             .map_err(SyncError::Io)?;
     }
