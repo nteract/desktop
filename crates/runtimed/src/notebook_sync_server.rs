@@ -2349,6 +2349,33 @@ where
                     delay = FLUSH_RETRY_DELAY;
                     continue;
                 }
+
+                // Synchronously flush the state sidecar alongside the notebook
+                // doc. Without this a fast reconnect can race the debouncer
+                // and reopen the room against a stale `.state.automerge`,
+                // dropping the last session's outputs.
+                if let Some(ref tx) = room_for_eviction.state_persist_tx {
+                    let bytes = {
+                        let mut sd = room_for_eviction.state_doc.write().await;
+                        sd.doc_mut().save()
+                    };
+                    // Push the freshest snapshot into the debouncer (kicks
+                    // any coalesced older bytes) then also write directly
+                    // to disk so we don't depend on the debouncer's own
+                    // exit timing.
+                    let _ = tx.send(Some(bytes.clone()));
+                    let state_path = state_persist_path_for(&room_for_eviction.persist_path);
+                    if let Some(parent) = state_path.parent() {
+                        let _ = tokio::fs::create_dir_all(parent).await;
+                    }
+                    if let Err(e) = tokio::fs::write(&state_path, &bytes).await {
+                        warn!(
+                            "[notebook-sync] Eviction state-sidecar write failed for {:?}: {}",
+                            state_path, e
+                        );
+                    }
+                }
+
                 break;
             }
 

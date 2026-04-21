@@ -2900,7 +2900,11 @@ impl Daemon {
                 }
             }
 
-            // Clean up orphaned notebook-docs (emergency persist files, legacy untitled docs)
+            // Clean up orphaned notebook-docs (emergency persist files, legacy untitled docs).
+            // State sidecars (`{stem}.state.automerge`) are treated as owned by
+            // the notebook-doc with the same stem — they're deleted when the
+            // main doc is deleted, kept otherwise. Deleting them independently
+            // would strand `runt recover` with a notebook doc and no outputs.
             let notebook_docs_dir = self.config.notebook_docs_dir.clone();
             if notebook_docs_dir.exists() {
                 let active_rooms = self.notebook_rooms.lock().await;
@@ -2918,6 +2922,11 @@ impl Daemon {
                         if !name.ends_with(".automerge") {
                             continue;
                         }
+                        // Skip state sidecars — we handle them in lockstep with
+                        // the notebook doc below so the pair stays consistent.
+                        if name.ends_with(".state.automerge") {
+                            continue;
+                        }
                         if active_hashes.contains(&name) {
                             continue;
                         }
@@ -2927,8 +2936,19 @@ impl Daemon {
                             .ok()
                             .and_then(|m| m.modified().ok())
                             .is_some_and(|t| t.elapsed().unwrap_or_default() > docs_max_age);
-                        if is_stale && tokio::fs::remove_file(entry.path()).await.is_ok() {
-                            docs_cleaned += 1;
+                        if is_stale {
+                            let doc_path = entry.path();
+                            if tokio::fs::remove_file(&doc_path).await.is_ok() {
+                                docs_cleaned += 1;
+                                // Delete the state sidecar with the notebook
+                                // doc so closed notebooks can't accumulate
+                                // orphan sidecars.
+                                if let Some(stem) = doc_path.file_stem().and_then(|s| s.to_str()) {
+                                    let sidecar =
+                                        doc_path.with_file_name(format!("{stem}.state.automerge"));
+                                    let _ = tokio::fs::remove_file(&sidecar).await;
+                                }
+                            }
                         }
                     }
                 }
@@ -3099,14 +3119,12 @@ pub(crate) fn blob_gc_grace() -> std::time::Duration {
 /// Walk a persisted notebook-doc `.automerge` file and collect blob refs.
 ///
 /// Mirrors the in-memory mark phase: we load the saved document, read its
-/// cells, and pull blob refs from `cell.outputs` (inline manifests) and
-/// `cell.resolved_assets` (markdown image refs). Returns `None` if the
-/// file cannot be read or decoded — the caller logs and moves on.
-///
-/// Note: `RuntimeStateDoc` is not persisted to disk separately; the
-/// notebook doc's `cell.outputs` (legacy pre-v3 layout, plus future
-/// `.ipynb`-backed outputs from spec 2) is the on-disk record of blob
-/// references for a closed room.
+/// cells, and pull blob refs from `cell.outputs` (legacy pre-v3 layout)
+/// and `cell.resolved_assets` (markdown image refs). For v3+ rooms the
+/// paired `{stem}.state.automerge` sidecar holds the authoritative output
+/// manifests — see [`collect_hashes_from_persisted_state_doc`]. Returns
+/// `false` if the file cannot be read or decoded — the caller logs and
+/// moves on.
 pub(crate) async fn collect_hashes_from_persisted_doc(
     path: &Path,
     hashes: &mut std::collections::HashSet<String>,
@@ -3138,6 +3156,54 @@ pub(crate) async fn collect_hashes_from_persisted_doc(
         for hash in cell.resolved_assets.values() {
             hashes.insert(hash.clone());
         }
+    }
+    true
+}
+
+/// Walk a persisted `{stem}.state.automerge` sidecar and collect blob refs.
+///
+/// After schema v3 the RuntimeStateDoc is the authoritative source of cell
+/// outputs. For closed notebooks this is the only on-disk record of those
+/// manifests, so GC has to scan it alongside the notebook doc — otherwise
+/// the blob grace window ticks out and blob-backed outputs (HTML,
+/// base64-encoded images, large stream spills) get reclaimed while the
+/// state sidecar still references them.
+pub(crate) async fn collect_hashes_from_persisted_state_doc(
+    path: &Path,
+    hashes: &mut std::collections::HashSet<String>,
+) -> bool {
+    let bytes = match tokio::fs::read(path).await {
+        Ok(b) => b,
+        Err(e) => {
+            warn!(
+                "[runtimed] GC: failed to read persisted state doc {:?}: {}",
+                path, e
+            );
+            return false;
+        }
+    };
+    let doc = match automerge::AutoCommit::load(&bytes) {
+        Ok(d) => d,
+        Err(e) => {
+            warn!(
+                "[runtimed] GC: failed to decode persisted state doc {:?}: {}",
+                path, e
+            );
+            return false;
+        }
+    };
+    let state_doc = notebook_doc::runtime_state::RuntimeStateDoc::from_doc(doc);
+    let state = state_doc.read_state();
+    for exec in state.executions.values() {
+        for output in &exec.outputs {
+            collect_blob_hashes(output, hashes);
+        }
+    }
+    for comm in state.comms.values() {
+        for output in &comm.outputs {
+            collect_blob_hashes(output, hashes);
+        }
+        collect_blob_hashes_recursive(&comm.state, hashes);
     }
     true
 }
@@ -3220,7 +3286,9 @@ impl Daemon {
 
         // 2. On-disk: persisted notebook-doc files for closed notebooks.
         // Skip files that correspond to an active room (their refs were
-        // already collected above).
+        // already collected above). Each notebook doc is paired with a
+        // `{stem}.state.automerge` sidecar holding v3+ output manifests —
+        // GC must scan both to keep blob refs alive for closed notebooks.
         if notebook_docs_dir.exists() {
             let active_filenames: std::collections::HashSet<String> = rooms
                 .iter()
@@ -3228,11 +3296,27 @@ impl Daemon {
                 .collect();
 
             let mut persisted_paths: Vec<PathBuf> = Vec::new();
+            let mut persisted_state_paths: Vec<PathBuf> = Vec::new();
             match tokio::fs::read_dir(notebook_docs_dir).await {
                 Ok(mut entries) => {
                     while let Ok(Some(entry)) = entries.next_entry().await {
                         let name = entry.file_name().to_string_lossy().to_string();
                         if !name.ends_with(".automerge") {
+                            continue;
+                        }
+                        if name.ends_with(".state.automerge") {
+                            // Sidecar: active ones are covered by the
+                            // in-memory state_doc read above; closed ones
+                            // contribute blob refs for the mark phase.
+                            let notebook_name = name
+                                .strip_suffix(".state.automerge")
+                                .map(|stem| format!("{stem}.automerge"));
+                            if let Some(n) = notebook_name {
+                                if active_filenames.contains(&n) {
+                                    continue;
+                                }
+                            }
+                            persisted_state_paths.push(entry.path());
                             continue;
                         }
                         if active_filenames.contains(&name) {
@@ -3257,6 +3341,19 @@ impl Daemon {
                 for batch in persisted_paths.chunks(DOC_BATCH_SIZE) {
                     for path in batch {
                         collect_hashes_from_persisted_doc(path, &mut referenced_hashes).await;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            }
+
+            if !persisted_state_paths.is_empty() {
+                debug!(
+                    "[runtimed] GC: walking {} persisted state-doc sidecars for blob refs",
+                    persisted_state_paths.len()
+                );
+                for batch in persisted_state_paths.chunks(DOC_BATCH_SIZE) {
+                    for path in batch {
+                        collect_hashes_from_persisted_state_doc(path, &mut referenced_hashes).await;
                     }
                     tokio::task::yield_now().await;
                 }
