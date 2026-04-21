@@ -3,7 +3,7 @@
 //! This crate provides the client-facing API for runtimed: IPC client,
 //! settings sync, daemon discovery, service management, and shared types.
 //! It does NOT include any server-side daemon code or heavy dependencies
-//! like rattler, kernel-env, or kernel-launch.
+//! like kernel-env or kernel-launch.
 //!
 //! ## Crate consumers
 //!

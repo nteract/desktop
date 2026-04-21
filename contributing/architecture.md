@@ -177,7 +177,7 @@ Every kernel runs in a separate **runtime agent subprocess** (`runtimed runtime-
 **Implications:**
 - Clients request kernel launch; they don't spawn kernels directly
 - Environment selection is the daemon's decision based on notebook metadata
-- Tool availability is the daemon's responsibility (bootstrap via rattler if needed)
+- Tool availability is the daemon's responsibility (bootstrap via GitHub releases if needed)
 - Clients are stateless with respect to runtime resources
 - Each kernel is sandboxable at the OS level (process isolation enables future cgroup/seatbelt)
 - Runtime agents can survive temporary disconnection and sync outputs on reconnect

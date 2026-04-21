@@ -85,7 +85,7 @@ pub enum PythonEnvType {
     /// Use uv for Python package management (fast, pip-compatible)
     #[default]
     Uv,
-    /// Use conda/rattler for Python package management (supports conda packages)
+    /// Use conda for Python package management (supports conda packages)
     Conda,
     /// Use pixi for Python package management (conda + pip unified)
     Pixi,
