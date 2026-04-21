@@ -7402,19 +7402,6 @@ pub(crate) fn persist_notebook_bytes(data: &[u8], path: &Path) -> bool {
 /// Must be larger than the debounce window (500ms) to reliably skip self-writes.
 const SELF_WRITE_SKIP_WINDOW_MS: u64 = 600;
 
-/// Parse cells from a Jupyter notebook JSON object.
-///
-/// Returns `Some(cells)` if parsing succeeded (including empty `cells: []`),
-/// or `None` if the `cells` key is missing or invalid (parse failure).
-///
-/// The source field can be either a string or an array of strings (lines).
-/// We normalize it to a single string.
-///
-/// For older notebooks (pre-nbformat 4.5) that don't have cell IDs, we generate
-/// stable fallback IDs based on the cell index. This prevents data loss when
-/// merging changes from externally-generated notebooks.
-///
-/// Positions are generated incrementally using fractional indexing.
 /// Parsed result of an `.ipynb` file: cell snapshots and the outputs pulled
 /// from disk, keyed by cell id.
 ///
@@ -7427,6 +7414,19 @@ pub(crate) struct ParsedIpynbCells {
     pub outputs_by_cell: HashMap<String, Vec<serde_json::Value>>,
 }
 
+/// Parse cells from a Jupyter notebook JSON object.
+///
+/// Returns `Some(ParsedIpynbCells)` if parsing succeeded (including empty
+/// `cells: []`), or `None` if the `cells` key is missing or invalid.
+///
+/// The source field can be either a string or an array of strings (lines).
+/// We normalize it to a single string.
+///
+/// For older notebooks (pre-nbformat 4.5) that don't have cell IDs, we generate
+/// stable fallback IDs based on the cell index. This prevents data loss when
+/// merging changes from externally-generated notebooks.
+///
+/// Positions are generated incrementally using fractional indexing.
 fn parse_cells_from_ipynb(json: &serde_json::Value) -> Option<ParsedIpynbCells> {
     use loro_fractional_index::FractionalIndex;
 

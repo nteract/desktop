@@ -2597,20 +2597,18 @@ impl Daemon {
                 };
                 if let Some(room) = maybe_room {
                     // Outputs live in RuntimeStateDoc keyed by execution_id.
-                    // Collect the execution_id map under the doc read guard,
+                    // Collect cells + execution_ids under one doc read guard,
                     // drop it, then look up outputs under the state_doc read
                     // guard. Never hold both at once — the tokio-mutex lint
                     // forbids guards across .await.
-                    let cells = {
+                    let (cells, eids_by_cell) = {
                         let doc = room.doc.read().await;
-                        doc.get_cells()
-                    };
-                    let eids_by_cell: std::collections::HashMap<String, String> = {
-                        let doc = room.doc.read().await;
-                        cells
+                        let cells = doc.get_cells();
+                        let eids: std::collections::HashMap<String, String> = cells
                             .iter()
                             .filter_map(|c| doc.get_execution_id(&c.id).map(|e| (c.id.clone(), e)))
-                            .collect()
+                            .collect();
+                        (cells, eids)
                     };
                     let outputs_by_cell: std::collections::HashMap<
                         String,
@@ -2621,11 +2619,7 @@ impl Daemon {
                             .into_iter()
                             .filter_map(|(cell_id, eid)| {
                                 let outputs = state_doc.get_outputs(&eid);
-                                if outputs.is_empty() {
-                                    None
-                                } else {
-                                    Some((cell_id, outputs))
-                                }
+                                (!outputs.is_empty()).then_some((cell_id, outputs))
                             })
                             .collect()
                     };

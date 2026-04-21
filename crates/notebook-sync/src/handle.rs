@@ -674,11 +674,10 @@ impl DocHandle {
     /// the returned map. Prefer this over calling [`Self::get_cell_outputs`]
     /// in a loop — it walks the doc once.
     pub fn get_all_outputs(&self) -> std::collections::HashMap<String, Vec<serde_json::Value>> {
-        let mut map = std::collections::HashMap::new();
-        let state = match self.doc.lock() {
-            Ok(guard) => guard,
-            Err(_) => return map,
-        };
+        // Snapshot the cell ids first so we never hold the watch-channel
+        // borrow across the shared doc lock. Another task calling `with_doc`
+        // acquires the doc lock and then publishes to the watch channel —
+        // holding both locks in the reverse order here would deadlock.
         let cell_ids: Vec<String> = self
             .snapshot_rx
             .borrow()
@@ -686,15 +685,19 @@ impl DocHandle {
             .iter()
             .map(|c| c.id.clone())
             .collect();
-        for cell_id in cell_ids {
-            if let Some(eid) = read_execution_id(&state.doc, &cell_id) {
+        // Poisoned shared state returns empty — matches the silent-fallback
+        // pattern used elsewhere in this handle for mutex-locked reads.
+        let Ok(state) = self.doc.lock() else {
+            return std::collections::HashMap::new();
+        };
+        cell_ids
+            .into_iter()
+            .filter_map(|cell_id| {
+                let eid = read_execution_id(&state.doc, &cell_id)?;
                 let outputs = state.state_doc.get_outputs(&eid);
-                if !outputs.is_empty() {
-                    map.insert(cell_id, outputs);
-                }
-            }
-        }
-        map
+                (!outputs.is_empty()).then_some((cell_id, outputs))
+            })
+            .collect()
     }
 
     /// Get the typed notebook metadata from the latest snapshot.
