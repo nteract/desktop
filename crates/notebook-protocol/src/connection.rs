@@ -235,8 +235,14 @@ pub async fn recv_preamble<R: AsyncRead + Unpin>(reader: &mut R) -> std::io::Res
 
 /// Server response indicating protocol capabilities.
 ///
-/// Sent immediately after handshake, before starting sync.
-/// Used by the `NotebookSync` handshake variant.
+/// Sent immediately before the initial Automerge sync frame, from inside
+/// the per-connection handler task. Used by the `NotebookSync` handshake
+/// variant.
+///
+/// The `handler_ready` field is the explicit "sync loop is running and
+/// initial sync frames are on the way" signal. New daemons set it to
+/// `Some(true)`. Old daemons omit it; new clients treat absence as
+/// legacy behavior (no explicit guarantee, but wire-compatible).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProtocolCapabilities {
     /// Protocol version string (currently always "v2").
@@ -249,6 +255,18 @@ pub struct ProtocolCapabilities {
     /// Useful for debugging version mismatches.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub daemon_version: Option<String>,
+    /// `Some(true)` when the daemon emits this frame from inside the
+    /// per-connection sync loop, immediately before the first
+    /// AutomergeSync frame. This closes a scheduling race where the
+    /// client could begin `do_initial_sync` before the daemon task had
+    /// actually started emitting sync frames.
+    ///
+    /// Absent on older daemons that sent `ProtocolCapabilities` from the
+    /// handshake prelude rather than the sync loop. New clients treat
+    /// absence as a legacy daemon and fall back to waiting indefinitely
+    /// for the first sync frame.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handler_ready: Option<bool>,
 }
 
 /// Server response for `OpenNotebook` and `CreateNotebook` handshakes.
@@ -798,6 +816,60 @@ mod tests {
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains(r#""error":"File not found""#));
+    }
+
+    #[test]
+    fn test_protocol_capabilities_serialization() {
+        // Minimal caps — nothing optional.
+        let caps = ProtocolCapabilities {
+            protocol: "v2".into(),
+            protocol_version: None,
+            daemon_version: None,
+            handler_ready: None,
+        };
+        let json = serde_json::to_string(&caps).unwrap();
+        assert_eq!(json, r#"{"protocol":"v2"}"#);
+
+        // Full caps — the shape a new daemon emits from inside the sync loop.
+        let caps = ProtocolCapabilities {
+            protocol: PROTOCOL_V2.into(),
+            protocol_version: Some(PROTOCOL_VERSION),
+            daemon_version: Some("2.0.0+abc123".into()),
+            handler_ready: Some(true),
+        };
+        let json = serde_json::to_string(&caps).unwrap();
+        assert!(json.contains(&format!(r#""protocol_version":{}"#, PROTOCOL_VERSION)));
+        assert!(json.contains(r#""daemon_version":"2.0.0+abc123""#));
+        assert!(json.contains(r#""handler_ready":true"#));
+    }
+
+    #[test]
+    fn test_protocol_capabilities_backward_compat() {
+        // Old daemon (no handler_ready, no protocol_version) — must still deserialize.
+        let legacy = r#"{"protocol":"v2"}"#;
+        let caps: ProtocolCapabilities = serde_json::from_str(legacy).unwrap();
+        assert_eq!(caps.protocol, "v2");
+        assert_eq!(caps.protocol_version, None);
+        assert_eq!(caps.daemon_version, None);
+        assert_eq!(caps.handler_ready, None);
+
+        // Mid-life daemon (protocol_version + daemon_version but no handler_ready)
+        let mid = r#"{"protocol":"v2","protocol_version":2,"daemon_version":"2.0.0"}"#;
+        let caps: ProtocolCapabilities = serde_json::from_str(mid).unwrap();
+        assert_eq!(caps.handler_ready, None);
+
+        // New daemon (all fields).
+        let new = r#"{"protocol":"v2","protocol_version":2,"daemon_version":"2.0.0","handler_ready":true}"#;
+        let caps: ProtocolCapabilities = serde_json::from_str(new).unwrap();
+        assert_eq!(caps.handler_ready, Some(true));
+    }
+
+    #[test]
+    fn test_protocol_capabilities_ignores_unknown_fields() {
+        // Future daemon may add fields; older clients must not blow up.
+        let future = r#"{"protocol":"v2","handler_ready":true,"future_field":"ignored"}"#;
+        let caps: ProtocolCapabilities = serde_json::from_str(future).unwrap();
+        assert_eq!(caps.handler_ready, Some(true));
     }
 
     #[tokio::test]
