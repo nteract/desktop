@@ -897,7 +897,7 @@ If latency becomes an issue during rapid output bursts (e.g., training loops), t
 
 ### Schema versioning: lightweight, not a framework
 
-The notebook doc root contains a `schema_version: u64` field. Version 1 stored cells as an ordered `List`; version 2 stores cells as a `Map` with fractional indexing (see Phase 2 schema above). The v1→v2 migration is automatic on load via `migrate_v1_to_v2()`. The reader checks this on load and handles both versions with simple branching. No formal migration framework — the schema is simple enough that version-checking `if` branches suffice. This mirrors how settings doc migration already works (flat keys -> nested structure).
+The notebook doc root contains a `schema_version: u64` field. Current docs are v4 (cells as a `Map` with fractional indexing, outputs in RuntimeStateDoc, per-output `output_id`). `load_or_create_inner` runs the `migrate_v2_to_v3` and `migrate_v3_to_v4` steps on load when needed. Schema v1 (cells as a `List`) predates the `.automerge` files that exist in the wild and is no longer supported — loading a v1 doc produces a fresh doc with a warning. No formal migration framework — the schema is simple enough that version-checking `if` branches suffice.
 
 For output manifests, the `output_type` field provides structural versioning. New fields can be added without breaking old readers.
 

@@ -1300,44 +1300,6 @@ impl NotebookRoom {
 
         let state_doc = Arc::new(RwLock::new(RuntimeStateDoc::new()));
 
-        // Migrate outputs from notebook doc to RuntimeStateDoc for pre-v3 untitled notebooks.
-        // .ipynb files already create synthetic execution_ids on load; this handles
-        // persisted .automerge files that have outputs in the old cell.outputs location.
-        if path.is_none() {
-            let cell_outputs = doc.extract_cell_outputs();
-            if !cell_outputs.is_empty() {
-                let mut sd = state_doc.blocking_write();
-                for (cell_id, outputs) in &cell_outputs {
-                    let synthetic_eid = uuid::Uuid::new_v4().to_string();
-                    sd.create_execution(&synthetic_eid, cell_id);
-                    let json_outputs: Vec<serde_json::Value> = outputs
-                        .iter()
-                        .map(|s| {
-                            let mut val = serde_json::from_str(s)
-                                .unwrap_or_else(|_| serde_json::Value::String(s.clone()));
-                            // Mint output_id for legacy outputs that lack one
-                            if let serde_json::Value::Object(ref mut map) = val {
-                                if !map.contains_key("output_id") {
-                                    map.insert(
-                                        "output_id".to_string(),
-                                        serde_json::Value::String(uuid::Uuid::new_v4().to_string()),
-                                    );
-                                }
-                            }
-                            val
-                        })
-                        .collect();
-                    let _ = sd.set_outputs(&synthetic_eid, &json_outputs);
-                    sd.set_execution_done(&synthetic_eid, true);
-                    let _ = doc.set_execution_id(cell_id, Some(&synthetic_eid));
-                }
-                info!(
-                    "[notebook-sync] Migrated outputs for {} cells from notebook doc to RuntimeStateDoc",
-                    cell_outputs.len()
-                );
-            }
-        }
-
         let (state_changed_tx, _) = broadcast::channel(16);
 
         Self {
