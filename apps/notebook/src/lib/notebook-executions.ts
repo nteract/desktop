@@ -146,7 +146,15 @@ function getCellExecutionIdGetter(cell_id: string): () => string | null {
 
 // ── Write operations ────────────────────────────────────────────────────
 
-/** Upsert an execution snapshot. Notifies only that execution's subscribers. */
+/**
+ * Upsert an execution snapshot. Notifies only that execution's subscribers.
+ *
+ * Does NOT update the cell -> execution pointer. `RuntimeStateDoc` keeps
+ * historical executions per cell, so iterating it cannot reliably pick
+ * the current one. Callers set the cell pointer explicitly via
+ * `setCellExecutionPointer`, driven by the canonical `cells/{id}/execution_id`
+ * field in the notebook doc.
+ */
 export function setExecution(
   execution_id: string,
   snap: ExecutionSnapshot,
@@ -155,17 +163,6 @@ export function setExecution(
   if (prev && snapshotsEqual(prev, snap)) return;
   _executionMap.set(execution_id, snap);
   emitExecutionChange(execution_id);
-
-  // Maintain the cell -> execution pointer. Only update when this execution
-  // is at least as recent as whatever we have recorded for the cell. The
-  // frontend tracks "latest execution_id per cell" as a projection of the
-  // RuntimeStateDoc, so the last writer wins here — if the daemon queues a
-  // second execution, it calls setExecution with the new one.
-  const prevEid = _cellToExecution.get(snap.cell_id);
-  if (prevEid !== execution_id) {
-    _cellToExecution.set(snap.cell_id, execution_id);
-    emitCellExecutionPointerChange(snap.cell_id);
-  }
 }
 
 /**
@@ -185,6 +182,26 @@ export function setCellExecutionPointer(
     _cellToExecution.set(cell_id, execution_id);
   }
   emitCellExecutionPointerChange(cell_id);
+}
+
+/**
+ * Drop a batch of executions from the store.
+ *
+ * Notifies per-execution subscribers with `undefined` and clears any cell
+ * pointer that referenced one of the removed ids. Used by the projection
+ * when the daemon trims an execution out of `RuntimeStateDoc` so the
+ * store doesn't drift monotonically larger.
+ */
+export function deleteExecutions(execution_ids: Iterable<string>): void {
+  for (const eid of execution_ids) {
+    const snap = _executionMap.get(eid);
+    if (!_executionMap.delete(eid)) continue;
+    emitExecutionChange(eid);
+    if (snap && _cellToExecution.get(snap.cell_id) === eid) {
+      _cellToExecution.delete(snap.cell_id);
+      emitCellExecutionPointerChange(snap.cell_id);
+    }
+  }
 }
 
 /** Read a snapshot without subscribing. */

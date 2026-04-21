@@ -24,6 +24,7 @@ import {
   applyOutputIdChanges,
   projectRuntimeStateToExecutions,
   resetRuntimeStoresProjection,
+  updateCellExecutionPointersFromHandle,
 } from "../lib/project-runtime-stores";
 import { cloneNotebookFile, openNotebookFile, saveNotebook } from "../lib/notebook-file-ops";
 import { emitBroadcast, emitPresence, subscribeBroadcast } from "../lib/notebook-frame-bus";
@@ -251,9 +252,32 @@ export function useAutomergeNotebook() {
               getHandle: () => handleRef.current,
               materializeCells,
               outputCache: outputCacheRef.current,
-            }).catch((err: unknown) =>
-              logger.warn("[automerge-notebook] materialize changeset failed:", err),
-            ),
+            })
+              .then(() => {
+                // After cells update, refresh per-cell execution_id pointers
+                // from the canonical notebook doc so <CellLabel> / future
+                // Out[N] readers see the current execution, not whatever
+                // RuntimeStateDoc entry happened to land last.
+                const handle = handleRef.current;
+                if (!handle) return;
+                if (changeset && changeset.added.length === 0) {
+                  const touched = new Set<string>(
+                    changeset.changed.map((c) => c.cell_id),
+                  );
+                  if (touched.size > 0) {
+                    updateCellExecutionPointersFromHandle(handle, [...touched]);
+                  }
+                } else {
+                  // Full materialization or added cells — refresh all.
+                  updateCellExecutionPointersFromHandle(
+                    handle,
+                    [...handle.get_cell_ids()],
+                  );
+                }
+              })
+              .catch((err: unknown) =>
+                logger.warn("[automerge-notebook] materialize changeset failed:", err),
+              ),
           ),
         ),
       )

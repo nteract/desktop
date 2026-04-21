@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import {
+  deleteExecutions,
   getCellExecutionId,
   getExecutionById,
   resetNotebookExecutions,
@@ -33,14 +34,19 @@ describe("notebook-executions store", () => {
     expect(getExecutionById("exec-1")).toBe(s);
   });
 
-  it("maintains a cell -> execution_id pointer", () => {
+  it("does NOT auto-update the cell pointer from setExecution", () => {
+    // setExecution keeps per-eid snapshots only. The cell pointer is
+    // driven separately by setCellExecutionPointer (canonical source is
+    // the notebook doc's cells.{id}.execution_id field).
     setExecution("exec-1", snap({ cell_id: "cell-1" }));
-    expect(getCellExecutionId("cell-1")).toBe("exec-1");
+    expect(getCellExecutionId("cell-1")).toBeNull();
   });
 
-  it("updates the cell pointer when a fresh execution arrives", () => {
+  it("respects explicit cell pointer updates", () => {
     setExecution("exec-1", snap({ cell_id: "cell-1" }));
+    setCellExecutionPointer("cell-1", "exec-1");
     setExecution("exec-2", snap({ cell_id: "cell-1", execution_count: 2 }));
+    setCellExecutionPointer("cell-1", "exec-2");
     expect(getCellExecutionId("cell-1")).toBe("exec-2");
   });
 
@@ -66,8 +72,31 @@ describe("notebook-executions store", () => {
 
   it("clears the cell pointer explicitly", () => {
     setExecution("exec-1", snap({ cell_id: "cell-1" }));
+    setCellExecutionPointer("cell-1", "exec-1");
     setCellExecutionPointer("cell-1", null);
     expect(getCellExecutionId("cell-1")).toBeNull();
+  });
+
+  it("evicts executions and clears matching cell pointers", () => {
+    setExecution("exec-1", snap({ cell_id: "cell-1" }));
+    setExecution("exec-2", snap({ cell_id: "cell-2" }));
+    setCellExecutionPointer("cell-1", "exec-1");
+    setCellExecutionPointer("cell-2", "exec-2");
+    deleteExecutions(["exec-1"]);
+    expect(getExecutionById("exec-1")).toBeUndefined();
+    expect(getCellExecutionId("cell-1")).toBeNull();
+    // Other cell's pointer survives.
+    expect(getCellExecutionId("cell-2")).toBe("exec-2");
+  });
+
+  it("leaves the cell pointer alone when evicting an older execution", () => {
+    setExecution("exec-1", snap({ cell_id: "cell-1" }));
+    setExecution("exec-2", snap({ cell_id: "cell-1", execution_count: 2 }));
+    // Pointer is at the latest execution.
+    setCellExecutionPointer("cell-1", "exec-2");
+    // Dropping the older (non-current) execution must not clear the pointer.
+    deleteExecutions(["exec-1"]);
+    expect(getCellExecutionId("cell-1")).toBe("exec-2");
   });
 
   it("exports hook functions for React integration", () => {
