@@ -86,8 +86,23 @@ fn main() {
         "build-dmg" => cmd_build_dmg(),
         "build-app" => cmd_build_app(),
         "install-nightly" => {
-            let sub_args: Vec<String> = args[1..].to_vec();
-            cmd_install_nightly(&sub_args);
+            #[cfg(feature = "install-nightly")]
+            {
+                let sub_args: Vec<String> = args[1..].to_vec();
+                install_nightly::cmd_install_nightly(&sub_args);
+            }
+            #[cfg(not(feature = "install-nightly"))]
+            {
+                eprintln!("install-nightly requires the `install-nightly` cargo feature.");
+                eprintln!(
+                    "runtimed-client pulls ~750 transitive crates into xtask; it's off by default."
+                );
+                eprintln!();
+                eprintln!(
+                    "  cargo run -p xtask --features xtask/install-nightly -- install-nightly"
+                );
+                exit(1);
+            }
         }
         "dev-daemon" => {
             let release = args.iter().any(|a| a == "--release");
@@ -107,6 +122,7 @@ fn main() {
             let fix = args.iter().any(|a| a == "--fix");
             cmd_lint(fix);
         }
+        "clippy" => cmd_clippy(),
         "integration" => {
             let filter = args.iter().find(|a| !a.starts_with('-')).cloned();
             cmd_integration(filter);
@@ -176,8 +192,9 @@ MCP:
   mcp-inspector              Launch MCPJam Inspector UI to test runt mcp (MCP Apps)
 
 Linting:
-  lint                       Check formatting and linting (Rust, JS/TS, Python)
+  lint                       Check formatting and linting (Rust fmt, JS/TS, Python)
   lint --fix                 Auto-fix formatting and linting issues
+  clippy                     Run cargo clippy (excludes runtimed-py; CI covers it)
 
 Testing:
   integration [filter]       Run Python integration tests with an isolated daemon
@@ -1470,427 +1487,442 @@ fn generate_launch_agent_plist() {
     println!("Generated launch agent plist: {}", output_path.display());
 }
 
-/// Build and install runtimed + runt + runt-proxy from this source tree
-/// as the local nightly install.
-///
-/// This is the cloud-box / headless-Linux first-install flow. On macOS, the
-/// install pattern is the `.app` bundle — reinstalling from source out of
-/// bundle is a footgun, so we refuse by default (overridable with
-/// `--on-macos`). If an nteract app bundle is already installed on any
-/// platform we also refuse unless `--replace-installed-app` is passed, since
-/// the app auto-manages its own daemon.
-///
-/// What it does (once the guards pass):
-///
-/// 1. Build runtimed, runt-cli, runt-proxy (release)
-/// 2. Install the daemon via `ServiceManager::install()` (first-time) or
-///    `upgrade()` (when the service is already configured). This writes the
-///    systemd user unit or launchd plist, atomic-copies the binary, and
-///    starts the service.
-/// 3. Copy `runt` and `runt-proxy` into the same install dir, named after
-///    the channel (e.g. `runt-nightly`, `runt-proxy-nightly`).
-/// 4. Print follow-up steps (symlink into `/usr/local/bin`, `loginctl
-///    enable-linger`) — both require sudo, so we don't run them.
-#[allow(clippy::expect_used)] // xtask is a dev tool; panics with context are fine here
-fn cmd_install_nightly(args: &[String]) {
-    let on_macos_override = args.iter().any(|a| a == "--on-macos");
-    let replace_installed_app = args.iter().any(|a| a == "--replace-installed-app");
+// ── install-nightly (feature-gated) ─────────────────────────────────────
+//
+// These functions depend on runtimed_client::service::ServiceManager, which
+// pulls runtimed-client (~750 transitive crates: automerge, reqwest, tokio…)
+// into xtask. Gated behind `features = ["install-nightly"]` so normal xtask
+// usage doesn't pay the compile cost.
+#[cfg(feature = "install-nightly")]
+mod install_nightly {
+    use super::*;
 
-    // ── Windows platform gate ────────────────────────────────────────────
-    // The atomic temp-file + rename helper below fails when the destination
-    // already exists on Windows, and the post-install symlink/linger
-    // guidance is Linux-specific. Installing the nightly daemon from source
-    // isn't a supported Windows workflow — users should install the app.
-    if cfg!(target_os = "windows") {
-        eprintln!("install-nightly is not supported on Windows.");
-        eprintln!();
-        eprintln!("Install the nteract Nightly app from https://nteract.io for the");
-        eprintln!("Windows daemon + CLI + runt-proxy bundle.");
-        exit(1);
-    }
+    /// Build and install runtimed + runt + runt-proxy from this source tree
+    /// as the local nightly install.
+    ///
+    /// This is the cloud-box / headless-Linux first-install flow. On macOS, the
+    /// install pattern is the `.app` bundle — reinstalling from source out of
+    /// bundle is a footgun, so we refuse by default (overridable with
+    /// `--on-macos`). If an nteract app bundle is already installed on any
+    /// platform we also refuse unless `--replace-installed-app` is passed, since
+    /// the app auto-manages its own daemon.
+    ///
+    /// What it does (once the guards pass):
+    ///
+    /// 1. Build runtimed, runt-cli, runt-proxy (release)
+    /// 2. Install the daemon via `ServiceManager::install()` (first-time) or
+    ///    `upgrade()` (when the service is already configured). This writes the
+    ///    systemd user unit or launchd plist, atomic-copies the binary, and
+    ///    starts the service.
+    /// 3. Copy `runt` and `runt-proxy` into the same install dir, named after
+    ///    the channel (e.g. `runt-nightly`, `runt-proxy-nightly`).
+    /// 4. Print follow-up steps (symlink into `/usr/local/bin`, `loginctl
+    ///    enable-linger`) — both require sudo, so we don't run them.
+    #[allow(clippy::expect_used)] // xtask is a dev tool; panics with context are fine here
+    pub(crate) fn cmd_install_nightly(args: &[String]) {
+        let on_macos_override = args.iter().any(|a| a == "--on-macos");
+        let replace_installed_app = args.iter().any(|a| a == "--replace-installed-app");
 
-    // ── Guard 0: xtask must itself be a nightly-channel build ───────────
-    // `ServiceManager` and `runt_workspace::*` helpers derive service
-    // names, binary basenames, and install paths from `build_channel()`,
-    // which is baked into this xtask binary at compile time via
-    // `RUNT_BUILD_CHANNEL`. If someone built xtask with
-    // `RUNT_BUILD_CHANNEL=stable` (the release-validation path), running
-    // `install-nightly` would silently touch the stable namespace and
-    // potentially clobber a real stable install. Refuse loudly instead.
-    if runt_workspace::build_channel() != runt_workspace::BuildChannel::Nightly {
-        eprintln!(
-            "Refusing to run: this xtask was built with RUNT_BUILD_CHANNEL=stable, but \
+        // ── Windows platform gate ────────────────────────────────────────────
+        // The atomic temp-file + rename helper below fails when the destination
+        // already exists on Windows, and the post-install symlink/linger
+        // guidance is Linux-specific. Installing the nightly daemon from source
+        // isn't a supported Windows workflow — users should install the app.
+        if cfg!(target_os = "windows") {
+            eprintln!("install-nightly is not supported on Windows.");
+            eprintln!();
+            eprintln!("Install the nteract Nightly app from https://nteract.io for the");
+            eprintln!("Windows daemon + CLI + runt-proxy bundle.");
+            exit(1);
+        }
+
+        // ── Guard 0: xtask must itself be a nightly-channel build ───────────
+        // `ServiceManager` and `runt_workspace::*` helpers derive service
+        // names, binary basenames, and install paths from `build_channel()`,
+        // which is baked into this xtask binary at compile time via
+        // `RUNT_BUILD_CHANNEL`. If someone built xtask with
+        // `RUNT_BUILD_CHANNEL=stable` (the release-validation path), running
+        // `install-nightly` would silently touch the stable namespace and
+        // potentially clobber a real stable install. Refuse loudly instead.
+        if runt_workspace::build_channel() != runt_workspace::BuildChannel::Nightly {
+            eprintln!(
+                "Refusing to run: this xtask was built with RUNT_BUILD_CHANNEL=stable, but \
              `install-nightly` only targets the nightly channel."
-        );
-        eprintln!();
-        eprintln!("Re-run without the stable override so xtask is built as nightly:");
-        eprintln!();
-        eprintln!("    unset RUNT_BUILD_CHANNEL");
-        eprintln!("    cargo xtask install-nightly");
-        exit(1);
-    }
-
-    // ── Guard 1: macOS platform gate ─────────────────────────────────────
-    if cfg!(target_os = "macos") && !on_macos_override {
-        eprintln!("Refusing to run on macOS by default.");
-        eprintln!();
-        eprintln!("macOS's install pattern is the nteract/nteract Nightly .app bundle,");
-        eprintln!("which manages its own daemon via SMAppService. Installing binaries");
-        eprintln!("out-of-bundle from source is a footgun and will diverge from the");
-        eprintln!("auto-update flow.");
-        eprintln!();
-        eprintln!("For local daemon development use:  cargo xtask dev-daemon");
-        eprintln!("To override anyway pass:           --on-macos");
-        exit(1);
-    }
-
-    // ── Guard 2: existing app bundle detection (macOS only) ──────────────
-    // On macOS the .app bundle manages its own daemon via SMAppService —
-    // overwriting it from source is the specific footgun we're avoiding.
-    //
-    // On Linux, by contrast, replacing whatever's installed *is* the
-    // explicit goal of this command: cloud boxes and headless dev
-    // environments want to bring their source tree's build online as the
-    // running nightly, whether or not a prior .deb/AppImage put something
-    // there. So the installed-app guard is macOS-scoped intentionally.
-    #[cfg(target_os = "macos")]
-    if !replace_installed_app {
-        if let Some((bundle_path, app_name)) = runt_workspace::find_any_installed_nteract_bundle() {
-            eprintln!(
-                "Refusing to install: {app_name} is already installed at {}.",
-                bundle_path.display()
             );
             eprintln!();
-            eprintln!("That app auto-updates itself and manages its own daemon. Installing");
-            eprintln!("nightly binaries from this source tree will diverge from the app's");
-            eprintln!("copies and can cause confusing 'which one is running' situations.");
+            eprintln!("Re-run without the stable override so xtask is built as nightly:");
             eprintln!();
-            eprintln!("To override anyway pass: --replace-installed-app");
+            eprintln!("    unset RUNT_BUILD_CHANNEL");
+            eprintln!("    cargo xtask install-nightly");
             exit(1);
         }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        // Flag accepted silently on non-macOS so the CLI surface matches.
-        let _ = replace_installed_app;
-    }
 
-    // ── Branch warning ───────────────────────────────────────────────────
-    if let Ok(branch) = std::process::Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .output()
-    {
-        let branch = String::from_utf8_lossy(&branch.stdout).trim().to_string();
-        if branch != "main" && !branch.is_empty() {
-            eprintln!("⚠️  You are on branch '{branch}', not 'main'.");
-            eprintln!("   This will install your local build as the nightly daemon,");
-            eprintln!("   replacing the current nightly install on this machine.");
+        // ── Guard 1: macOS platform gate ─────────────────────────────────────
+        if cfg!(target_os = "macos") && !on_macos_override {
+            eprintln!("Refusing to run on macOS by default.");
             eprintln!();
-            eprintln!("   For per-worktree dev, use: cargo xtask dev-daemon");
-            eprintln!("   Press Ctrl+C within 5 seconds to abort...");
+            eprintln!("macOS's install pattern is the nteract/nteract Nightly .app bundle,");
+            eprintln!("which manages its own daemon via SMAppService. Installing binaries");
+            eprintln!("out-of-bundle from source is a footgun and will diverge from the");
+            eprintln!("auto-update flow.");
             eprintln!();
-            std::thread::sleep(Duration::from_secs(5));
-        }
-    }
-
-    // ── Build ────────────────────────────────────────────────────────────
-    // Force RUNT_BUILD_CHANNEL=nightly for the child cargo build. Running
-    // the binary's guard already proved *this* xtask is a nightly build,
-    // but the child cargo inherits env from the caller — if the user has
-    // `RUNT_BUILD_CHANNEL=stable` exported for release validation, a naive
-    // `cargo build` would produce stable binaries that then get installed
-    // into the nightly namespace.
-    println!("Building runtimed, runt-cli, runt-proxy (release, channel=nightly)...");
-    let mut build_cmd = Command::new("cargo");
-    build_cmd.args([
-        "build",
-        "--release",
-        "-p",
-        "runtimed",
-        "-p",
-        "runt-cli",
-        "-p",
-        "runt-proxy",
-    ]);
-    build_cmd.env("RUNT_BUILD_CHANNEL", "nightly");
-    apply_sccache_env(&mut build_cmd);
-    let status = build_cmd.status().unwrap_or_else(|e| {
-        eprintln!("Failed to run cargo build: {e}");
-        exit(1);
-    });
-    if !status.success() {
-        eprintln!("cargo build --release failed");
-        exit(status.code().unwrap_or(1));
-    }
-
-    let exe_suffix = if cfg!(windows) { ".exe" } else { "" };
-    let release_dir = Path::new("target/release");
-    let runtimed_source = release_dir.join(format!("runtimed{exe_suffix}"));
-    let runt_source = release_dir.join(format!("runt{exe_suffix}"));
-    let proxy_source = release_dir.join(format!("runt-proxy{exe_suffix}"));
-
-    for (label, path) in [
-        ("runtimed", &runtimed_source),
-        ("runt", &runt_source),
-        ("runt-proxy", &proxy_source),
-    ] {
-        if !path.exists() {
-            eprintln!(
-                "Build succeeded but {label} binary not found at {}",
-                path.display()
-            );
+            eprintln!("For local daemon development use:  cargo xtask dev-daemon");
+            eprintln!("To override anyway pass:           --on-macos");
             exit(1);
         }
-    }
 
-    // ── Capture daemon.json pre-state (for restart verification) ─────────
-    // The post-start check needs to prove the *new* daemon wrote daemon.json,
-    // not just that *some* daemon.json exists. A previous daemon's file can
-    // linger (stale pid/version) when the restart fails. Record the mtime
-    // before starting so the verification loop can require a fresher write.
-    let daemon_json = dirs::cache_dir()
-        .unwrap_or_else(|| Path::new("/tmp").to_path_buf())
-        .join(runt_workspace::cache_namespace())
-        .join("daemon.json");
-    let pre_start_mtime = fs::metadata(&daemon_json)
-        .ok()
-        .and_then(|m| m.modified().ok());
-
-    // ── Install the daemon via ServiceManager ────────────────────────────
-    let mut manager = runtimed_client::service::ServiceManager::default();
-    let was_installed = manager.is_installed();
-
-    if was_installed {
-        println!("Upgrading daemon service...");
-        if let Err(e) = manager.upgrade(&runtimed_source) {
-            eprintln!("Failed to upgrade daemon: {e}");
-            exit(1);
-        }
-    } else {
-        println!("Installing daemon service (first time)...");
-        if let Err(e) = manager.install(&runtimed_source) {
-            eprintln!("Failed to install daemon: {e}");
-            exit(1);
-        }
-        if let Err(e) = manager.start() {
-            eprintln!("Failed to start daemon service: {e}");
-            eprintln!();
-            eprintln!("The service file was written, but starting it failed. Common causes on");
-            eprintln!("a fresh Linux box:");
-            eprintln!();
-            eprintln!("  - `loginctl enable-linger $USER` hasn't been run yet, so the user");
-            eprintln!("    manager isn't available for a non-login session. Enable linger, then");
-            eprintln!("    re-run `cargo xtask install-nightly`.");
-            eprintln!("  - systemctl --user isn't reachable (no DBUS session).");
-            eprintln!();
-            eprintln!(
-                "Diagnose with: systemctl --user status {}",
-                runt_workspace::daemon_service_basename()
-            );
-            exit(1);
-        }
-    }
-
-    // ── Install runt + runt-proxy into the same bin dir ──────────────────
-    let install_dir = dirs::data_local_dir()
-        .expect("Could not determine data directory")
-        .join(runt_workspace::cache_namespace())
-        .join("bin");
-    fs::create_dir_all(&install_dir).unwrap_or_else(|e| {
-        eprintln!(
-            "Failed to create install dir {}: {e}",
-            install_dir.display()
-        );
-        exit(1);
-    });
-
-    let runt_dest = install_dir.join(format!(
-        "{}{exe_suffix}",
-        runt_workspace::cli_command_name()
-    ));
-    let proxy_dest = install_dir.join(format!(
-        "{}{exe_suffix}",
-        runt_workspace::proxy_binary_basename()
-    ));
-
-    for (src, dest, label) in [
-        (&runt_source, &runt_dest, "runt"),
-        (&proxy_source, &proxy_dest, "runt-proxy"),
-    ] {
-        atomic_install(src, dest).unwrap_or_else(|e| {
-            eprintln!("Failed to install {label} to {}: {e}", dest.display());
-            exit(1);
-        });
-        println!("Installed {}", dest.display());
-    }
-
-    // ── Verify the daemon is actually up (fresh daemon.json write) ───────
-    // systemctl returning success isn't quite enough — the daemon writes
-    // daemon.json on startup, so the combination of "file mtime advanced
-    // beyond our pre-start snapshot" AND "parseable version" proves the
-    // *new* daemon restarted and is serving. Without the mtime check, a
-    // stale daemon.json from a previous daemon (killed / crashed / never
-    // restarted) would satisfy the verification.
-    let mut verified_version: Option<String> = None;
-    for _ in 0..10 {
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        let Ok(meta) = fs::metadata(&daemon_json) else {
-            continue;
-        };
-        let Ok(mtime) = meta.modified() else {
-            continue;
-        };
-        if let Some(pre) = pre_start_mtime {
-            if mtime <= pre {
-                // Still the pre-start file — the new daemon hasn't written yet.
-                continue;
+        // ── Guard 2: existing app bundle detection (macOS only) ──────────────
+        // On macOS the .app bundle manages its own daemon via SMAppService —
+        // overwriting it from source is the specific footgun we're avoiding.
+        //
+        // On Linux, by contrast, replacing whatever's installed *is* the
+        // explicit goal of this command: cloud boxes and headless dev
+        // environments want to bring their source tree's build online as the
+        // running nightly, whether or not a prior .deb/AppImage put something
+        // there. So the installed-app guard is macOS-scoped intentionally.
+        #[cfg(target_os = "macos")]
+        if !replace_installed_app {
+            if let Some((bundle_path, app_name)) =
+                runt_workspace::find_any_installed_nteract_bundle()
+            {
+                eprintln!(
+                    "Refusing to install: {app_name} is already installed at {}.",
+                    bundle_path.display()
+                );
+                eprintln!();
+                eprintln!("That app auto-updates itself and manages its own daemon. Installing");
+                eprintln!("nightly binaries from this source tree will diverge from the app's");
+                eprintln!("copies and can cause confusing 'which one is running' situations.");
+                eprintln!();
+                eprintln!("To override anyway pass: --replace-installed-app");
+                exit(1);
             }
         }
-        if let Ok(contents) = fs::read_to_string(&daemon_json) {
-            if let Ok(info) = serde_json::from_str::<serde_json::Value>(&contents) {
-                if let Some(version) = info.get("version").and_then(|v| v.as_str()) {
-                    verified_version = Some(version.to_string());
-                    break;
+        #[cfg(not(target_os = "macos"))]
+        {
+            // Flag accepted silently on non-macOS so the CLI surface matches.
+            let _ = replace_installed_app;
+        }
+
+        // ── Branch warning ───────────────────────────────────────────────────
+        if let Ok(branch) = std::process::Command::new("git")
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .output()
+        {
+            let branch = String::from_utf8_lossy(&branch.stdout).trim().to_string();
+            if branch != "main" && !branch.is_empty() {
+                eprintln!("⚠️  You are on branch '{branch}', not 'main'.");
+                eprintln!("   This will install your local build as the nightly daemon,");
+                eprintln!("   replacing the current nightly install on this machine.");
+                eprintln!();
+                eprintln!("   For per-worktree dev, use: cargo xtask dev-daemon");
+                eprintln!("   Press Ctrl+C within 5 seconds to abort...");
+                eprintln!();
+                std::thread::sleep(Duration::from_secs(5));
+            }
+        }
+
+        // ── Build ────────────────────────────────────────────────────────────
+        // Force RUNT_BUILD_CHANNEL=nightly for the child cargo build. Running
+        // the binary's guard already proved *this* xtask is a nightly build,
+        // but the child cargo inherits env from the caller — if the user has
+        // `RUNT_BUILD_CHANNEL=stable` exported for release validation, a naive
+        // `cargo build` would produce stable binaries that then get installed
+        // into the nightly namespace.
+        println!("Building runtimed, runt-cli, runt-proxy (release, channel=nightly)...");
+        let mut build_cmd = Command::new("cargo");
+        build_cmd.args([
+            "build",
+            "--release",
+            "-p",
+            "runtimed",
+            "-p",
+            "runt-cli",
+            "-p",
+            "runt-proxy",
+        ]);
+        build_cmd.env("RUNT_BUILD_CHANNEL", "nightly");
+        apply_sccache_env(&mut build_cmd);
+        let status = build_cmd.status().unwrap_or_else(|e| {
+            eprintln!("Failed to run cargo build: {e}");
+            exit(1);
+        });
+        if !status.success() {
+            eprintln!("cargo build --release failed");
+            exit(status.code().unwrap_or(1));
+        }
+
+        let exe_suffix = if cfg!(windows) { ".exe" } else { "" };
+        let release_dir = Path::new("target/release");
+        let runtimed_source = release_dir.join(format!("runtimed{exe_suffix}"));
+        let runt_source = release_dir.join(format!("runt{exe_suffix}"));
+        let proxy_source = release_dir.join(format!("runt-proxy{exe_suffix}"));
+
+        for (label, path) in [
+            ("runtimed", &runtimed_source),
+            ("runt", &runt_source),
+            ("runt-proxy", &proxy_source),
+        ] {
+            if !path.exists() {
+                eprintln!(
+                    "Build succeeded but {label} binary not found at {}",
+                    path.display()
+                );
+                exit(1);
+            }
+        }
+
+        // ── Capture daemon.json pre-state (for restart verification) ─────────
+        // The post-start check needs to prove the *new* daemon wrote daemon.json,
+        // not just that *some* daemon.json exists. A previous daemon's file can
+        // linger (stale pid/version) when the restart fails. Record the mtime
+        // before starting so the verification loop can require a fresher write.
+        let daemon_json = dirs::cache_dir()
+            .unwrap_or_else(|| Path::new("/tmp").to_path_buf())
+            .join(runt_workspace::cache_namespace())
+            .join("daemon.json");
+        let pre_start_mtime = fs::metadata(&daemon_json)
+            .ok()
+            .and_then(|m| m.modified().ok());
+
+        // ── Install the daemon via ServiceManager ────────────────────────────
+        let mut manager = runtimed_client::service::ServiceManager::default();
+        let was_installed = manager.is_installed();
+
+        if was_installed {
+            println!("Upgrading daemon service...");
+            if let Err(e) = manager.upgrade(&runtimed_source) {
+                eprintln!("Failed to upgrade daemon: {e}");
+                exit(1);
+            }
+        } else {
+            println!("Installing daemon service (first time)...");
+            if let Err(e) = manager.install(&runtimed_source) {
+                eprintln!("Failed to install daemon: {e}");
+                exit(1);
+            }
+            if let Err(e) = manager.start() {
+                eprintln!("Failed to start daemon service: {e}");
+                eprintln!();
+                eprintln!("The service file was written, but starting it failed. Common causes on");
+                eprintln!("a fresh Linux box:");
+                eprintln!();
+                eprintln!("  - `loginctl enable-linger $USER` hasn't been run yet, so the user");
+                eprintln!(
+                    "    manager isn't available for a non-login session. Enable linger, then"
+                );
+                eprintln!("    re-run `cargo xtask install-nightly`.");
+                eprintln!("  - systemctl --user isn't reachable (no DBUS session).");
+                eprintln!();
+                eprintln!(
+                    "Diagnose with: systemctl --user status {}",
+                    runt_workspace::daemon_service_basename()
+                );
+                exit(1);
+            }
+        }
+
+        // ── Install runt + runt-proxy into the same bin dir ──────────────────
+        let install_dir = dirs::data_local_dir()
+            .expect("Could not determine data directory")
+            .join(runt_workspace::cache_namespace())
+            .join("bin");
+        fs::create_dir_all(&install_dir).unwrap_or_else(|e| {
+            eprintln!(
+                "Failed to create install dir {}: {e}",
+                install_dir.display()
+            );
+            exit(1);
+        });
+
+        let runt_dest = install_dir.join(format!(
+            "{}{exe_suffix}",
+            runt_workspace::cli_command_name()
+        ));
+        let proxy_dest = install_dir.join(format!(
+            "{}{exe_suffix}",
+            runt_workspace::proxy_binary_basename()
+        ));
+
+        for (src, dest, label) in [
+            (&runt_source, &runt_dest, "runt"),
+            (&proxy_source, &proxy_dest, "runt-proxy"),
+        ] {
+            atomic_install(src, dest).unwrap_or_else(|e| {
+                eprintln!("Failed to install {label} to {}: {e}", dest.display());
+                exit(1);
+            });
+            println!("Installed {}", dest.display());
+        }
+
+        // ── Verify the daemon is actually up (fresh daemon.json write) ───────
+        // systemctl returning success isn't quite enough — the daemon writes
+        // daemon.json on startup, so the combination of "file mtime advanced
+        // beyond our pre-start snapshot" AND "parseable version" proves the
+        // *new* daemon restarted and is serving. Without the mtime check, a
+        // stale daemon.json from a previous daemon (killed / crashed / never
+        // restarted) would satisfy the verification.
+        let mut verified_version: Option<String> = None;
+        for _ in 0..10 {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            let Ok(meta) = fs::metadata(&daemon_json) else {
+                continue;
+            };
+            let Ok(mtime) = meta.modified() else {
+                continue;
+            };
+            if let Some(pre) = pre_start_mtime {
+                if mtime <= pre {
+                    // Still the pre-start file — the new daemon hasn't written yet.
+                    continue;
+                }
+            }
+            if let Ok(contents) = fs::read_to_string(&daemon_json) {
+                if let Ok(info) = serde_json::from_str::<serde_json::Value>(&contents) {
+                    if let Some(version) = info.get("version").and_then(|v| v.as_str()) {
+                        verified_version = Some(version.to_string());
+                        break;
+                    }
                 }
             }
         }
-    }
 
-    // ── Post-install guidance ────────────────────────────────────────────
-    println!();
-    match verified_version {
-        Some(version) => {
-            println!("✓ nightly install complete — daemon running: version {version}");
-        }
-        None => {
-            eprintln!(
-                "⚠️  Binaries installed and service command returned success, but could not \
+        // ── Post-install guidance ────────────────────────────────────────────
+        println!();
+        match verified_version {
+            Some(version) => {
+                println!("✓ nightly install complete — daemon running: version {version}");
+            }
+            None => {
+                eprintln!(
+                    "⚠️  Binaries installed and service command returned success, but could not \
                  verify the daemon is running ({} did not appear within 5s).",
-                daemon_json.display()
-            );
-            eprintln!();
-            eprintln!(
-                "Check status with: systemctl --user status {}",
-                runt_workspace::daemon_service_basename()
-            );
-            exit(1);
+                    daemon_json.display()
+                );
+                eprintln!();
+                eprintln!(
+                    "Check status with: systemctl --user status {}",
+                    runt_workspace::daemon_service_basename()
+                );
+                exit(1);
+            }
         }
-    }
-    println!();
-    print_post_install_guidance(&install_dir, was_installed);
-}
-
-/// Atomic binary install: write to a temp sibling, set perms, rename into place.
-///
-/// Mirrors the approach in `runtimed_client::service::ServiceManager::atomic_copy_binary`
-/// so upgrading a running `runt` or `runt-proxy` (e.g. the proxy being driven
-/// by a Claude Code session) doesn't corrupt a memory-mapped inode.
-///
-/// Unix only. Windows is refused at the top of `cmd_install_nightly` because
-/// `fs::rename` does not overwrite an existing destination on Windows.
-fn atomic_install(source: &Path, dest: &Path) -> std::io::Result<()> {
-    let tmp = dest.with_extension("new");
-    fs::copy(source, &tmp)?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755))?;
+        println!();
+        print_post_install_guidance(&install_dir, was_installed);
     }
 
-    fs::rename(&tmp, dest)?;
-    Ok(())
-}
+    /// Atomic binary install: write to a temp sibling, set perms, rename into place.
+    ///
+    /// Mirrors the approach in `runtimed_client::service::ServiceManager::atomic_copy_binary`
+    /// so upgrading a running `runt` or `runt-proxy` (e.g. the proxy being driven
+    /// by a Claude Code session) doesn't corrupt a memory-mapped inode.
+    ///
+    /// Unix only. Windows is refused at the top of `cmd_install_nightly` because
+    /// `fs::rename` does not overwrite an existing destination on Windows.
+    fn atomic_install(source: &Path, dest: &Path) -> std::io::Result<()> {
+        let tmp = dest.with_extension("new");
+        fs::copy(source, &tmp)?;
 
-/// Print follow-up steps the user needs to take themselves (they require sudo).
-///
-/// `was_upgrade` is taken from `ServiceManager::is_installed()`, which only
-/// tells us whether the service config existed before this run — it doesn't
-/// guarantee the user ever completed the sudo follow-up steps (`ln -sf` into
-/// `/usr/local/bin`, `loginctl enable-linger`). To avoid leaving someone
-/// stuck on a half-finished install that reports success, inspect the
-/// expected symlinks and always print guidance when any are missing.
-fn print_post_install_guidance(install_dir: &Path, was_upgrade: bool) {
-    let runt_name = runt_workspace::cli_command_name();
-    let proxy_name = runt_workspace::proxy_binary_basename();
-    let daemon_name = runt_workspace::daemon_binary_basename();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755))?;
+        }
 
-    let symlinks_complete = {
-        let expected = [daemon_name, runt_name, proxy_name];
-        expected.iter().all(|name| {
-            let link = Path::new("/usr/local/bin").join(name);
-            fs::symlink_metadata(&link)
-                .ok()
-                .and_then(|m| if m.is_symlink() { Some(()) } else { None })
-                .is_some()
-        })
-    };
+        fs::rename(&tmp, dest)?;
+        Ok(())
+    }
 
-    // Show the full guidance on first install, or on any subsequent run
-    // where the expected `/usr/local/bin` symlinks don't all resolve —
-    // the prior install may have aborted before the user ran the sudo
-    // step, and we don't want a retry to silently stop at a working
-    // daemon with a still-missing CLI on PATH.
-    if !was_upgrade || !symlinks_complete {
-        if was_upgrade {
-            println!(
+    /// Print follow-up steps the user needs to take themselves (they require sudo).
+    ///
+    /// `was_upgrade` is taken from `ServiceManager::is_installed()`, which only
+    /// tells us whether the service config existed before this run — it doesn't
+    /// guarantee the user ever completed the sudo follow-up steps (`ln -sf` into
+    /// `/usr/local/bin`, `loginctl enable-linger`). To avoid leaving someone
+    /// stuck on a half-finished install that reports success, inspect the
+    /// expected symlinks and always print guidance when any are missing.
+    fn print_post_install_guidance(install_dir: &Path, was_upgrade: bool) {
+        let runt_name = runt_workspace::cli_command_name();
+        let proxy_name = runt_workspace::proxy_binary_basename();
+        let daemon_name = runt_workspace::daemon_binary_basename();
+
+        let symlinks_complete = {
+            let expected = [daemon_name, runt_name, proxy_name];
+            expected.iter().all(|name| {
+                let link = Path::new("/usr/local/bin").join(name);
+                fs::symlink_metadata(&link)
+                    .ok()
+                    .and_then(|m| if m.is_symlink() { Some(()) } else { None })
+                    .is_some()
+            })
+        };
+
+        // Show the full guidance on first install, or on any subsequent run
+        // where the expected `/usr/local/bin` symlinks don't all resolve —
+        // the prior install may have aborted before the user ran the sudo
+        // step, and we don't want a retry to silently stop at a working
+        // daemon with a still-missing CLI on PATH.
+        if !was_upgrade || !symlinks_complete {
+            if was_upgrade {
+                println!(
                 "Upgrade complete — but /usr/local/bin/{daemon_name}, /{runt_name}, or /{proxy_name} \
                  is missing, so finish the setup now:"
             );
+            } else {
+                println!("First-time install — a few follow-up steps are needed:");
+            }
+            println!();
+
+            #[cfg(target_os = "linux")]
+            {
+                println!("  1. Put binaries on PATH (requires sudo):");
+                println!();
+                println!("     for bin in {daemon_name} {runt_name} {proxy_name}; do");
+                println!(
+                    "       sudo ln -sf \"{}/$bin\" \"/usr/local/bin/$bin\"",
+                    install_dir.display()
+                );
+                println!("     done");
+                println!();
+                println!("  2. Make the user service survive shell logout (requires sudo):");
+                println!();
+                println!("     sudo loginctl enable-linger \"$USER\"");
+                println!();
+                println!("  3. Verify the daemon is running:");
+                println!();
+                println!("     {runt_name} daemon status");
+            }
+
+            #[cfg(target_os = "macos")]
+            {
+                println!("  1. Put binaries on PATH (requires sudo):");
+                println!();
+                println!("     for bin in {daemon_name} {runt_name} {proxy_name}; do");
+                println!(
+                    "       sudo ln -sf \"{}/$bin\" \"/usr/local/bin/$bin\"",
+                    install_dir.display()
+                );
+                println!("     done");
+                println!();
+                println!("  2. Verify the daemon is running:");
+                println!();
+                println!("     {runt_name} daemon status");
+            }
+
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            {
+                let _ = (install_dir, daemon_name, runt_name, proxy_name);
+                println!("  Put binaries on PATH and verify with `{runt_name} daemon status`.");
+            }
         } else {
-            println!("First-time install — a few follow-up steps are needed:");
+            // Upgrade path — symlinks and linger are already in place from the
+            // prior first-install. Just point at verification.
+            println!("Upgrade complete. Verify:");
+            println!();
+            println!("  {runt_name} daemon status");
         }
-        println!();
-
-        #[cfg(target_os = "linux")]
-        {
-            println!("  1. Put binaries on PATH (requires sudo):");
-            println!();
-            println!("     for bin in {daemon_name} {runt_name} {proxy_name}; do");
-            println!(
-                "       sudo ln -sf \"{}/$bin\" \"/usr/local/bin/$bin\"",
-                install_dir.display()
-            );
-            println!("     done");
-            println!();
-            println!("  2. Make the user service survive shell logout (requires sudo):");
-            println!();
-            println!("     sudo loginctl enable-linger \"$USER\"");
-            println!();
-            println!("  3. Verify the daemon is running:");
-            println!();
-            println!("     {runt_name} daemon status");
-        }
-
-        #[cfg(target_os = "macos")]
-        {
-            println!("  1. Put binaries on PATH (requires sudo):");
-            println!();
-            println!("     for bin in {daemon_name} {runt_name} {proxy_name}; do");
-            println!(
-                "       sudo ln -sf \"{}/$bin\" \"/usr/local/bin/$bin\"",
-                install_dir.display()
-            );
-            println!("     done");
-            println!();
-            println!("  2. Verify the daemon is running:");
-            println!();
-            println!("     {runt_name} daemon status");
-        }
-
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        {
-            let _ = (install_dir, daemon_name, runt_name, proxy_name);
-            println!("  Put binaries on PATH and verify with `{runt_name} daemon status`.");
-        }
-    } else {
-        // Upgrade path — symlinks and linger are already in place from the
-        // prior first-install. Just point at verification.
-        println!("Upgrade complete. Verify:");
-        println!();
-        println!("  {runt_name} daemon status");
     }
-}
+} // mod install_nightly
 
 /// Build and run runtimed in per-worktree development mode.
 ///
@@ -2444,6 +2476,8 @@ fn cmd_lint(fix: bool) {
     // Track if any linter failed
     let mut failed = false;
 
+    // Fast checks first — these finish in seconds and catch the most common issues.
+
     // Rust formatting
     println!("=== Rust formatting ===");
     if fix {
@@ -2451,23 +2485,6 @@ fn cmd_lint(fix: bool) {
             failed = true;
         }
     } else if !run_cmd_ok("cargo", &["fmt", "--check"]) {
-        failed = true;
-    }
-    println!();
-
-    // Rust clippy (always check-only — clippy doesn't auto-fix)
-    println!("=== Rust clippy ===");
-    if !run_cmd_ok(
-        "cargo",
-        &[
-            "clippy",
-            "--workspace",
-            "--all-targets",
-            "--",
-            "-D",
-            "warnings",
-        ],
-    ) {
         failed = true;
     }
     println!();
@@ -2542,6 +2559,40 @@ fn cmd_lint(fix: bool) {
     }
 
     println!("All checks passed!");
+}
+
+fn cmd_clippy() {
+    println!("Running clippy...");
+    println!();
+
+    // Exclude runtimed-py to avoid the pyo3/maturin compile cost locally.
+    // CI covers it in the runtimed-py-integration job.
+    // Also exclude notebook (needs bundled sidecar binaries) and WASM crates
+    // (need wasm-pack), matching CI's clippy-and-tests job.
+    if !run_cmd_ok(
+        "cargo",
+        &[
+            "clippy",
+            "--workspace",
+            "--exclude",
+            "runtimed-py",
+            "--exclude",
+            "notebook",
+            "--exclude",
+            "runtimed-wasm",
+            "--exclude",
+            "sift-wasm",
+            "--all-targets",
+            "--",
+            "-D",
+            "warnings",
+        ],
+    ) {
+        exit(1);
+    }
+
+    println!();
+    println!("Clippy passed!");
 }
 
 /// Run a command and return true if it succeeded.

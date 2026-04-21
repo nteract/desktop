@@ -413,8 +413,9 @@ All build, lint, and dev commands go through `cargo xtask`. **Run `cargo xtask h
 | | `cargo xtask dev-mcp` | Direct `runt mcp` (no proxy, no auto-restart) |
 | | `cargo xtask dev-mcp --print-config` | Print direct MCP client config JSON |
 | | `cargo xtask mcp-inspector` | Launch MCP Inspector UI for testing runt mcp |
-| Lint | `cargo xtask lint` | Check formatting (Rust, JS/TS, Python) |
+| Lint | `cargo xtask lint` | Check formatting (Rust fmt, JS/TS, Python) |
 | | `cargo xtask lint --fix` | Auto-fix formatting |
+| | `cargo xtask clippy` | Run cargo clippy (excludes runtimed-py; CI covers it) |
 | Test | `cargo xtask integration [filter]` | Python integration tests with isolated daemon |
 | | `cargo xtask e2e [build|test|test-fixture|test-all]` | E2E testing (WebdriverIO) |
 | Other | `cargo xtask wasm` | Rebuild runtimed-wasm |

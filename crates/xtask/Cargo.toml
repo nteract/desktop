@@ -9,8 +9,15 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+# Enables `cargo xtask install-nightly`. Off by default because runtimed-client
+# pulls in ~750 transitive crates (automerge, reqwest, tokio…) that make every
+# xtask invocation unreasonably slow to compile. The lab can enable this with:
+#   cargo xtask --features install-nightly install-nightly
+install-nightly = ["dep:runtimed-client"]
+
 [dependencies]
 dirs = "6"
 runt-workspace = { path = "../runt-workspace" }
-runtimed-client = { path = "../runtimed-client" }
+runtimed-client = { path = "../runtimed-client", optional = true }
 serde_json.workspace = true
