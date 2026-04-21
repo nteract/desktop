@@ -237,10 +237,10 @@ export class NotebookHandle {
      * Each element is a structured output manifest (with MIME bundles and
      * ContentRef blob/inline refs). Returns undefined if the cell doesn't exist.
      *
-     * Outputs now live in the RuntimeStateDoc keyed by execution_id. This
-     * method reads the cell's `execution_id` from the notebook doc, then
-     * looks up outputs in the state doc — providing a transparent facade
-     * for all existing callers.
+     * Outputs live in the RuntimeStateDoc keyed by execution_id. This method
+     * reads the cell's `execution_id` from the notebook doc, then looks up
+     * outputs in the state doc — the dedicated outputs lookup that replaces
+     * the old "read the snapshot and inspect `snapshot.outputs`" path.
      */
     get_cell_outputs(cell_id: string): any;
     /**
@@ -257,14 +257,20 @@ export class NotebookHandle {
     get_cell_type(cell_id: string): string | undefined;
     /**
      * Get all cells as an array of JsCell objects.
+     *
+     * Outputs are fetched from `RuntimeStateDoc` keyed by each cell's
+     * `execution_id`. Cells without an execution_id or with empty outputs
+     * return an empty outputs vec.
      */
     get_cells(): JsCell[];
     /**
      * Get all cells as a JSON string (for bulk materialization).
      *
-     * Populates each cell's outputs from the RuntimeStateDoc via
-     * the cell's execution_id, since NotebookDoc.get_cells() returns
-     * empty outputs (outputs moved to RuntimeStateDoc in #1343).
+     * Serializes the same shape as `get_cells()` but as a single JSON
+     * string — cheaper to cross the WASM boundary than many individual
+     * property getters. Outputs are fetched from `RuntimeStateDoc` keyed
+     * by each cell's `execution_id`; `CellSnapshot` itself no longer
+     * carries outputs.
      */
     get_cells_json(): string;
     /**
