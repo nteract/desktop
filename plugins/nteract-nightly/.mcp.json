@@ -1,10 +1,12 @@
 {
   "mcpServers": {
     "nteract-nightly": {
-      "command": "./bin/nteract-runt-proxy",
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/runt-proxy",
       "args": [],
       "env": {
-        "NTERACT_CHANNEL": "nightly"
+        "NTERACT_CHANNEL": "nightly",
+        "RUNTIMED_DEV": "",
+        "RUNTIMED_WORKSPACE_PATH": ""
       }
     }
   }
