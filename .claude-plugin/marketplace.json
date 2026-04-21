@@ -1,0 +1,14 @@
+{
+  "name": "nteract",
+  "owner": {
+    "name": "nteract"
+  },
+  "plugins": [
+    {
+      "name": "nteract",
+      "source": "./plugins/nteract",
+      "description": "Skills for working with nteract notebooks",
+      "version": "0.1.0"
+    }
+  ]
+}
