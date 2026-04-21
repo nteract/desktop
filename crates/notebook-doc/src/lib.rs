@@ -813,10 +813,17 @@ impl NotebookDoc {
                         // data. Falling back to a fresh doc is a data-loss
                         // operation and only acceptable when there is no
                         // meaningful data to lose.
+                        //
+                        // Belt-and-suspenders: rename the unexpected-version doc
+                        // to `{path}.corrupt` before we replace it. That leaves
+                        // the original bytes on disk for manual recovery if a
+                        // future downgrade ever lands someone here (e.g. user
+                        // runs a newer build once, then rolls back).
                         warn!(
-                            "[notebook-doc] Rejecting schema v{} notebook at {:?} for {}; only v{} is supported. Starting fresh untitled notebook.",
+                            "[notebook-doc] Rejecting schema v{} notebook at {:?} for {}; only v{} is supported. Preserving as .corrupt and starting fresh untitled notebook.",
                             version, path, notebook_id, SCHEMA_VERSION
                         );
+                        Self::preserve_corrupt(path);
                     }
                     Err(e) => {
                         warn!(
