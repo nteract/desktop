@@ -43,6 +43,11 @@ case "$(uname -s)" in
     ;;
 esac
 
+# RUNTIMED_DEV / RUNTIMED_WORKSPACE_PATH are set by the nteract/desktop
+# .envrc for developers. They must not leak into the MCP proxy, which
+# should always talk to the installed daemon, not a dev workspace.
+unset RUNTIMED_DEV RUNTIMED_WORKSPACE_PATH
+
 for candidate in "${candidate_paths[@]}"; do
   if [[ -f "$candidate" ]]; then
     exec "$candidate" "$@"
