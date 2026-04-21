@@ -4,9 +4,7 @@
       "command": "${CLAUDE_PLUGIN_ROOT}/bin/runt-proxy",
       "args": [],
       "env": {
-        "NTERACT_CHANNEL": "nightly",
-        "RUNTIMED_DEV": "",
-        "RUNTIMED_WORKSPACE_PATH": ""
+        "NTERACT_CHANNEL": "nightly"
       }
     }
   }
