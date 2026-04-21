@@ -2900,11 +2900,11 @@ impl Daemon {
                 }
             }
 
-            // Clean up orphaned notebook-docs (emergency persist files, legacy untitled docs).
-            // State sidecars (`{stem}.state.automerge`) are treated as owned by
-            // the notebook-doc with the same stem — they're deleted when the
-            // main doc is deleted, kept otherwise. Deleting them independently
-            // would strand `runt recover` with a notebook doc and no outputs.
+            // Clean up orphaned notebook-docs (emergency persist files, legacy
+            // untitled docs) and state sidecars. Sidecars are normally deleted
+            // in lockstep with their notebook doc, but untitled-to-saved
+            // promotion and crash scenarios can strand them — so we also
+            // sweep sidecars whose sibling notebook doc is missing.
             let notebook_docs_dir = self.config.notebook_docs_dir.clone();
             if notebook_docs_dir.exists() {
                 let active_rooms = self.notebook_rooms.lock().await;
@@ -2914,41 +2914,66 @@ impl Daemon {
                     .collect();
                 drop(active_rooms);
 
-                let docs_max_age = std::time::Duration::from_secs(24 * 3600); // 24 hours
-                let mut docs_cleaned = 0;
+                // First pass: collect every `*.automerge` entry so we can
+                // tell sidecars from docs without racing the filesystem.
+                let mut doc_names: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
+                #[allow(clippy::type_complexity)]
+                let mut all_entries: Vec<(
+                    std::path::PathBuf,
+                    String,
+                    std::time::SystemTime,
+                )> = Vec::new();
                 if let Ok(mut entries) = tokio::fs::read_dir(&notebook_docs_dir).await {
                     while let Ok(Some(entry)) = entries.next_entry().await {
                         let name = entry.file_name().to_string_lossy().to_string();
                         if !name.ends_with(".automerge") {
                             continue;
                         }
-                        // Skip state sidecars — we handle them in lockstep with
-                        // the notebook doc below so the pair stays consistent.
-                        if name.ends_with(".state.automerge") {
+                        let Some(modified) =
+                            entry.metadata().await.ok().and_then(|m| m.modified().ok())
+                        else {
                             continue;
+                        };
+                        if !name.ends_with(".state.automerge") {
+                            doc_names.insert(name.clone());
                         }
-                        if active_hashes.contains(&name) {
-                            continue;
+                        all_entries.push((entry.path(), name, modified));
+                    }
+                }
+
+                let docs_max_age = std::time::Duration::from_secs(24 * 3600); // 24 hours
+                let mut docs_cleaned = 0;
+                let mut sidecars_cleaned = 0;
+                for (path, name, modified) in all_entries {
+                    let is_stale = modified.elapsed().unwrap_or_default() > docs_max_age;
+                    if !is_stale {
+                        continue;
+                    }
+
+                    if name.ends_with(".state.automerge") {
+                        // Orphaned sidecar: notebook doc gone (promoted,
+                        // crashed, or already cleaned). Safe to reclaim.
+                        let sibling_name = name
+                            .strip_suffix(".state.automerge")
+                            .map(|stem| format!("{stem}.automerge"));
+                        let has_sibling =
+                            sibling_name.as_ref().is_some_and(|n| doc_names.contains(n));
+                        if !has_sibling && tokio::fs::remove_file(&path).await.is_ok() {
+                            sidecars_cleaned += 1;
                         }
-                        let is_stale = entry
-                            .metadata()
-                            .await
-                            .ok()
-                            .and_then(|m| m.modified().ok())
-                            .is_some_and(|t| t.elapsed().unwrap_or_default() > docs_max_age);
-                        if is_stale {
-                            let doc_path = entry.path();
-                            if tokio::fs::remove_file(&doc_path).await.is_ok() {
-                                docs_cleaned += 1;
-                                // Delete the state sidecar with the notebook
-                                // doc so closed notebooks can't accumulate
-                                // orphan sidecars.
-                                if let Some(stem) = doc_path.file_stem().and_then(|s| s.to_str()) {
-                                    let sidecar =
-                                        doc_path.with_file_name(format!("{stem}.state.automerge"));
-                                    let _ = tokio::fs::remove_file(&sidecar).await;
-                                }
-                            }
+                        continue;
+                    }
+
+                    if active_hashes.contains(&name) {
+                        continue;
+                    }
+                    if tokio::fs::remove_file(&path).await.is_ok() {
+                        docs_cleaned += 1;
+                        // Delete the state sidecar in lockstep.
+                        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                            let sidecar = path.with_file_name(format!("{stem}.state.automerge"));
+                            let _ = tokio::fs::remove_file(&sidecar).await;
                         }
                     }
                 }
@@ -2956,6 +2981,12 @@ impl Daemon {
                     info!(
                         "[runtimed] GC: cleaned up {} orphaned notebook-doc files",
                         docs_cleaned
+                    );
+                }
+                if sidecars_cleaned > 0 {
+                    info!(
+                        "[runtimed] GC: cleaned up {} orphaned state sidecars",
+                        sidecars_cleaned
                     );
                 }
             }

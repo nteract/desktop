@@ -6932,6 +6932,21 @@ pub(crate) async fn finalize_untitled_promotion(room: &Arc<NotebookRoom>, canoni
         }
     }
 
+    // Remove the paired state sidecar too. Without this, the forwarder
+    // would keep rewriting `{uuid-hash}.state.automerge` even though the
+    // notebook's source of truth is now the `.ipynb` file — `runt recover`
+    // would pick up a doc-less sidecar and GC would keep its blob refs
+    // live forever.
+    let state_sidecar = state_persist_path_for(&room.persist_path);
+    if state_sidecar.exists() {
+        if let Err(e) = tokio::fs::remove_file(&state_sidecar).await {
+            warn!(
+                "[notebook-sync] Failed to remove stale state sidecar {:?}: {}",
+                state_sidecar, e
+            );
+        }
+    }
+
     // Spawn .ipynb file watcher.
     if canonical.extension().is_some_and(|ext| ext == "ipynb") {
         let shutdown_tx = spawn_notebook_file_watcher(canonical.clone(), Arc::clone(room));

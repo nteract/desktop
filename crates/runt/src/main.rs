@@ -5378,20 +5378,34 @@ fn resolve_text_content_ref(
     }
 }
 
-/// Returns true if a JSON object looks like a ContentRef shape.
+/// Returns true if a JSON object looks like a serialized `ContentRef`.
 ///
-/// The daemon writes ContentRef manifests with exactly one of `inline`
-/// or `blob`, optionally plus `size`. Anything else is a user-facing
-/// object (metadata, transient, traceback array element, etc.) and must
-/// not be mistaken for a ContentRef.
+/// The canonical shapes the daemon writes (via `ContentRef::serialize`):
+///
+/// - `{"inline": "<string>"}` — exactly one field
+/// - `{"blob": "<64-hex>", "size": <non-negative-integer>}` — exactly
+///   two fields, blob is a 64-char hex string
+///
+/// User-supplied JSON output payloads (for `application/vnd.*+json`
+/// MIMEs) are arbitrary — they might legitimately contain
+/// `{"inline": "hello"}` or `{"blob": "abc"}`. Strictness on field set
+/// plus the 64-char hex check for blob hashes narrows the false-positive
+/// window enough that well-formed user JSON is unlikely to match.
 fn looks_like_content_ref(map: &serde_json::Map<String, serde_json::Value>) -> bool {
-    if map.contains_key("inline") && map.get("inline").is_some_and(|v| v.is_string()) {
-        return map.len() == 1;
+    // Inline shape: exactly `{"inline": <string>}`.
+    if map.len() == 1 {
+        return map.get("inline").is_some_and(|v| v.is_string());
     }
-    if map.contains_key("blob") && map.get("blob").is_some_and(|v| v.is_string()) {
-        // Allow optional `size` sibling for forward compatibility.
-        let extras_ok = map.keys().all(|k| k == "blob" || k == "size");
-        return extras_ok;
+    // Blob shape: exactly `{"blob": <64-hex-string>, "size": <u64>}`.
+    if map.len() == 2 {
+        let blob_ok = map
+            .get("blob")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit()));
+        let size_ok = map
+            .get("size")
+            .is_some_and(|v| v.as_u64().is_some() || v.as_i64().is_some_and(|n| n >= 0));
+        return blob_ok && size_ok;
     }
     false
 }
@@ -6136,6 +6150,34 @@ mod tests {
             super::blob_store_dir_for_automerge(Path::new("/tmp/standalone.automerge")),
             None,
         );
+    }
+
+    #[test]
+    fn test_looks_like_content_ref_rejects_user_json() {
+        use serde_json::json;
+        // User JSON that happens to have `inline` as a field but with
+        // extras must not be unwrapped.
+        let user1 = json!({"inline": "hello", "other": 1});
+        let user1_map = user1.as_object().unwrap();
+        assert!(!super::looks_like_content_ref(user1_map));
+
+        // `blob` without `size` or with a non-hex value must not be
+        // treated as a ContentRef.
+        let user2 = json!({"blob": "abc"});
+        assert!(!super::looks_like_content_ref(user2.as_object().unwrap()));
+        let user3 = json!({"blob": "not-hex-at-all-64-chars-long-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "size": 0});
+        assert!(!super::looks_like_content_ref(user3.as_object().unwrap()));
+
+        // Canonical shapes: accepted.
+        let ok_inline = json!({"inline": "hi"});
+        assert!(super::looks_like_content_ref(
+            ok_inline.as_object().unwrap()
+        ));
+        let ok_blob = json!({
+            "blob": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+            "size": 12,
+        });
+        assert!(super::looks_like_content_ref(ok_blob.as_object().unwrap()));
     }
 
     #[test]
