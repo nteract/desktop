@@ -816,8 +816,10 @@ pub fn is_dev_mode() -> bool {
     {
         return true;
     }
-    // Workspace path presence enables dev mode
-    std::env::var("RUNTIMED_WORKSPACE_PATH").is_ok()
+    // Workspace path presence enables dev mode (empty string treated as unset)
+    std::env::var("RUNTIMED_WORKSPACE_PATH")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
 }
 
 /// Get the workspace path for dev mode.
@@ -825,7 +827,9 @@ pub fn is_dev_mode() -> bool {
 /// Uses `RUNTIMED_WORKSPACE_PATH` if available, otherwise detects via git.
 pub fn get_workspace_path() -> Option<PathBuf> {
     if let Ok(path) = std::env::var("RUNTIMED_WORKSPACE_PATH") {
-        return Some(PathBuf::from(path));
+        if !path.is_empty() {
+            return Some(PathBuf::from(path));
+        }
     }
     // Fallback to git detection
     detect_worktree_root()
@@ -1220,5 +1224,42 @@ mod tests {
                 OsString::from("deno"),
             ]
         );
+    }
+
+    #[test]
+    fn test_is_dev_mode_empty_string_is_not_dev() {
+        let orig_dev = std::env::var("RUNTIMED_DEV").ok();
+        let orig_ws = std::env::var("RUNTIMED_WORKSPACE_PATH").ok();
+
+        std::env::set_var("RUNTIMED_DEV", "");
+        std::env::set_var("RUNTIMED_WORKSPACE_PATH", "");
+        assert!(!is_dev_mode());
+
+        std::env::remove_var("RUNTIMED_DEV");
+        std::env::remove_var("RUNTIMED_WORKSPACE_PATH");
+        assert!(!is_dev_mode());
+
+        match orig_dev {
+            Some(v) => std::env::set_var("RUNTIMED_DEV", v),
+            None => std::env::remove_var("RUNTIMED_DEV"),
+        }
+        match orig_ws {
+            Some(v) => std::env::set_var("RUNTIMED_WORKSPACE_PATH", v),
+            None => std::env::remove_var("RUNTIMED_WORKSPACE_PATH"),
+        }
+    }
+
+    #[test]
+    fn test_get_workspace_path_empty_string_falls_through() {
+        let orig = std::env::var("RUNTIMED_WORKSPACE_PATH").ok();
+
+        std::env::set_var("RUNTIMED_WORKSPACE_PATH", "");
+        let result = get_workspace_path();
+        assert!(result != Some(PathBuf::from("")));
+
+        match orig {
+            Some(v) => std::env::set_var("RUNTIMED_WORKSPACE_PATH", v),
+            None => std::env::remove_var("RUNTIMED_WORKSPACE_PATH"),
+        }
     }
 }
