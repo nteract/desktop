@@ -1,5 +1,7 @@
 import { useMemo, useSyncExternalStore } from "react";
 import type { JupyterOutput } from "../types";
+import { useCellExecutionId } from "./notebook-executions";
+import { getExecutionById } from "./notebook-executions";
 
 // ---------------------------------------------------------------------------
 // Reactive outputs store keyed by `output_id`.
@@ -26,10 +28,16 @@ const _outputMap: Map<string, JupyterOutput> = new Map();
 
 const _subscribers = new Map<string, Set<() => void>>();
 
-function emitOutputChange(output_id: string): void {
-  const subs = _subscribers.get(output_id);
-  if (!subs) return;
-  for (const cb of subs) {
+// Global "any output changed" version counter. Bumped on every
+// setOutput / deleteOutput / resetNotebookOutputs. Lets hooks that
+// resolve an output_ids[] list (e.g. `useCellOutputs`) re-derive the
+// resolved array without subscribing to every individual output id.
+let _outputsVersion = 0;
+const _outputsVersionSubscribers = new Set<() => void>();
+
+function bumpOutputsVersion(): void {
+  _outputsVersion = (_outputsVersion + 1) | 0;
+  for (const cb of _outputsVersionSubscribers) {
     try {
       cb();
     } catch {
@@ -38,6 +46,25 @@ function emitOutputChange(output_id: string): void {
   }
 }
 
+function emitOutputChange(output_id: string): void {
+  const subs = _subscribers.get(output_id);
+  if (subs) {
+    for (const cb of subs) {
+      try {
+        cb();
+      } catch {
+        // subscriber errors must not break the dispatch loop
+      }
+    }
+  }
+  bumpOutputsVersion();
+}
+
+/** Singleton returned by `useCellOutputs` when a cell has no outputs.
+ *  Having a stable reference avoids downstream re-renders that would
+ *  otherwise see a fresh `[]` identity on every mount. */
+const EMPTY_OUTPUTS: readonly JupyterOutput[] = Object.freeze([]);
+
 // ── Hooks ───────────────────────────────────────────────────────────────
 
 /** Subscribe to a single output by id. Re-renders only when that output changes. */
@@ -45,6 +72,60 @@ export function useOutput(output_id: string): JupyterOutput | undefined {
   const subscribe = useMemo(() => subscribeOutputById(output_id), [output_id]);
   const getSnapshot = useMemo(() => getOutputSnapshot(output_id), [output_id]);
   return useSyncExternalStore(subscribe, getSnapshot);
+}
+
+/** Subscribe to the global outputs version counter. Re-renders whenever any
+ *  output in the store changes. Used by `useCellOutputs` to rebuild its
+ *  resolved array — cheaper than registering N per-output subscriptions. */
+function subscribeOutputsVersion(callback: () => void): () => void {
+  _outputsVersionSubscribers.add(callback);
+  return () => {
+    _outputsVersionSubscribers.delete(callback);
+  };
+}
+
+function getOutputsVersion(): number {
+  return _outputsVersion;
+}
+
+/**
+ * Resolve the current output list for a cell.
+ *
+ * Chains `useCellExecutionId(cell_id)` → `useExecution(execution_id)` →
+ * `_outputMap[output_id]` and memoizes the resolved array against the
+ * global version counter. Callers get a stable array reference when
+ * nothing has changed, which keeps `<OutputArea>` from rebuilding its
+ * children on unrelated store updates.
+ *
+ * Returns `EMPTY_OUTPUTS` (a frozen singleton) when the cell has no
+ * execution yet, so components that start in the "no output" state
+ * don't see a fresh `[]` each render.
+ */
+export function useCellOutputs(cell_id: string): JupyterOutput[] {
+  const execution_id = useCellExecutionId(cell_id);
+  const version = useSyncExternalStore(
+    subscribeOutputsVersion,
+    getOutputsVersion,
+  );
+
+  return useMemo(() => {
+    if (!execution_id) return EMPTY_OUTPUTS as JupyterOutput[];
+    const snap = getExecutionById(execution_id);
+    if (!snap || snap.output_ids.length === 0) {
+      return EMPTY_OUTPUTS as JupyterOutput[];
+    }
+    const resolved: JupyterOutput[] = [];
+    for (const output_id of snap.output_ids) {
+      const out = _outputMap.get(output_id);
+      if (out) resolved.push(out);
+    }
+    if (resolved.length === 0) return EMPTY_OUTPUTS as JupyterOutput[];
+    return resolved;
+    // `version` is read only to invalidate the memo when any output
+    // changes; the value itself isn't used inside the callback. We
+    // intentionally depend on it so that per-output mutations refresh
+    // the array.
+  }, [execution_id, version]);
 }
 
 // ── Subscription helpers ────────────────────────────────────────────────

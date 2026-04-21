@@ -6,6 +6,15 @@ export interface CodeCell {
   id: string;
   source: string;
   execution_count: number | null;
+  /**
+   * Legacy: after Phase C-lite, the frame pipeline no longer populates
+   * this field on incremental output changes. Full materialization and
+   * local CRDT mutations still write it, and a few cross-cell readers
+   * (drag preview, hidden-group error count) still look at it — those
+   * paths recompute on structural changes only and tolerate staleness
+   * during a live session. New code should subscribe via
+   * `useCellOutputs(cell_id)` from `notebook-outputs.ts` instead.
+   */
   outputs: JupyterOutput[];
   metadata: CellMetadata;
 }
