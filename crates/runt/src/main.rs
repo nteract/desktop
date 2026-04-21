@@ -5233,49 +5233,45 @@ fn resolve_cell_outputs_for_recovery(
 ) -> (Vec<serde_json::Value>, Option<serde_json::Value>) {
     // Preferred path: schema v3+. The NotebookDoc points at an execution_id
     // in the RuntimeStateDoc; output manifests (inline or blob ContentRef)
-    // live there. The notebook doc and state sidecar persist independently,
-    // so a stale sidecar (or one missing the referenced execution_id) is a
-    // real case — fall through to the legacy path instead of returning
-    // empty outputs when the state doc can't help.
-    let mut exec_count_from_state: Option<serde_json::Value> = None;
+    // live there. On v3+ docs the state doc is authoritative — empty or
+    // missing outputs mean the user cleared them (or never ran the cell),
+    // not a signal to revive stale legacy outputs.
     if let Some(state_doc) = state_doc {
         if let Some(execution_id) = doc.get_execution_id(cell_id) {
-            exec_count_from_state = state_doc
+            let exec_count = state_doc
                 .get_execution(&execution_id)
                 .and_then(|exec| exec.execution_count)
                 .map(|n| serde_json::Value::Number(serde_json::Number::from(n)));
             let raw = state_doc.get_outputs(&execution_id);
-            if !raw.is_empty() {
-                let resolved = raw
-                    .into_iter()
-                    .map(|o| resolve_recover_output(o, blob_store_dir))
-                    .collect();
-                return (resolved, exec_count_from_state);
-            }
-            // Fall through: state doc exists but has no outputs for this
-            // execution. If legacy cell-local outputs survive in the
-            // notebook doc, recover those instead of shipping blanks.
+            let resolved: Vec<serde_json::Value> = raw
+                .into_iter()
+                .map(|o| resolve_recover_output(o, blob_store_dir))
+                .collect();
+            return (resolved, exec_count);
         }
     }
 
-    // Legacy / fallback path. Pre-v3 docs stored outputs as raw JSON
-    // strings on the cell itself; `extract_cell_outputs` returns them
-    // verbatim. Also used when the state sidecar is stale or missing
-    // the cell's execution_id — preferring surviving cell-local outputs
-    // over silently shipping empty arrays.
-    if let Some(outputs) = legacy_outputs {
-        let resolved = outputs
-            .iter()
-            .map(|s| {
-                let value: serde_json::Value = serde_json::from_str(s)
-                    .unwrap_or_else(|_| serde_json::Value::String(s.clone()));
-                resolve_recover_output(value, blob_store_dir)
-            })
-            .collect();
-        return (resolved, exec_count_from_state);
+    // Legacy path. Pre-v3 docs (`schema_version < 3`) stored outputs as
+    // raw JSON strings on the cell itself, before the daemon migrated
+    // them into a RuntimeStateDoc. `extract_cell_outputs` returns them
+    // verbatim. Guarded on schema version so a v3+ doc where the user
+    // cleared outputs (execution_id = None) does not resurrect stale
+    // cell-local records from the Automerge history.
+    if doc.schema_version().unwrap_or(0) < 3 {
+        if let Some(outputs) = legacy_outputs {
+            let resolved = outputs
+                .iter()
+                .map(|s| {
+                    let value: serde_json::Value = serde_json::from_str(s)
+                        .unwrap_or_else(|_| serde_json::Value::String(s.clone()));
+                    resolve_recover_output(value, blob_store_dir)
+                })
+                .collect();
+            return (resolved, None);
+        }
     }
 
-    (Vec::new(), exec_count_from_state)
+    (Vec::new(), None)
 }
 
 /// Resolve a single output manifest into an nbformat-shaped JSON value.

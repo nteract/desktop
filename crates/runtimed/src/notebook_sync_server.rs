@@ -1326,15 +1326,34 @@ impl NotebookRoom {
 
         let (presence_tx, _) = broadcast::channel(64);
 
-        let state_doc = Arc::new(RwLock::new(RuntimeStateDoc::new()));
+        // Start with the persisted state sidecar if present. Otherwise
+        // the forwarder would immediately overwrite the on-disk file
+        // with an empty state_doc on the next kernel event, losing the
+        // outputs it had just spent the previous session recording.
+        //
+        // The check is sync so `new_inner` stays safe to call under the
+        // async runtime (blocking_read would panic inside a tokio task).
+        let mut loaded_state = if !ephemeral && path.is_none() {
+            load_persisted_state_doc(&persist_path)
+        } else {
+            None
+        };
+        let has_loaded_state_outputs = loaded_state
+            .as_ref()
+            .map(|sd| !sd.get_all_outputs().is_empty())
+            .unwrap_or(false);
 
         // Migrate outputs from notebook doc to RuntimeStateDoc for pre-v3 untitled notebooks.
         // .ipynb files already create synthetic execution_ids on load; this handles
         // persisted .automerge files that have outputs in the old cell.outputs location.
-        if path.is_none() {
+        //
+        // Only run migration when the state doc has no outputs yet — a
+        // freshly-loaded state sidecar already holds v3+ outputs and
+        // shouldn't get clobbered by legacy synthesis.
+        if path.is_none() && !has_loaded_state_outputs {
             let cell_outputs = doc.extract_cell_outputs();
             if !cell_outputs.is_empty() {
-                let mut sd = state_doc.blocking_write();
+                let sd = loaded_state.get_or_insert_with(RuntimeStateDoc::new);
                 for (cell_id, outputs) in &cell_outputs {
                     let synthetic_eid = uuid::Uuid::new_v4().to_string();
                     sd.create_execution(&synthetic_eid, cell_id);
@@ -1365,6 +1384,13 @@ impl NotebookRoom {
                 );
             }
         }
+
+        // Commit the chosen initial state (loaded sidecar, legacy
+        // migration, or fresh-empty) into the Arc<RwLock<...>> that
+        // every other task consumes from here on.
+        let state_doc = Arc::new(RwLock::new(
+            loaded_state.unwrap_or_else(RuntimeStateDoc::new),
+        ));
 
         let (state_changed_tx, _) = broadcast::channel(16);
 
@@ -7259,6 +7285,47 @@ fn spawn_persist_debouncer_with_config(
             trigger_global_shutdown();
         },
     );
+}
+
+/// Load a persisted `{stem}.state.automerge` next to the given notebook
+/// doc path, if one exists and decodes. Absence returns `None` so the
+/// caller starts with an empty `RuntimeStateDoc::new()`.
+///
+/// Used when a room is reopened from its persisted `.automerge` (untitled
+/// notebooks). Without this, the forwarder would immediately overwrite
+/// the good on-disk state sidecar with an empty state doc the first time
+/// any state change fires.
+fn load_persisted_state_doc(notebook_persist_path: &Path) -> Option<RuntimeStateDoc> {
+    let state_path = state_persist_path_for(notebook_persist_path);
+    if !state_path.is_file() {
+        return None;
+    }
+    let bytes = match std::fs::read(&state_path) {
+        Ok(b) => b,
+        Err(e) => {
+            warn!(
+                "[notebook-sync] Failed to read persisted state doc {:?}: {}",
+                state_path, e
+            );
+            return None;
+        }
+    };
+    match automerge::AutoCommit::load(&bytes) {
+        Ok(doc) => {
+            info!(
+                "[notebook-sync] Loaded persisted state doc from {:?}",
+                state_path
+            );
+            Some(RuntimeStateDoc::from_doc(doc))
+        }
+        Err(e) => {
+            warn!(
+                "[notebook-sync] Failed to decode persisted state doc {:?}: {}",
+                state_path, e
+            );
+            None
+        }
+    }
 }
 
 /// Derive the sibling state persistence path for a given notebook doc path.
