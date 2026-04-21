@@ -22,7 +22,12 @@ import {
   setCellExecutionPointer,
   setExecution,
 } from "./notebook-executions";
-import { deleteOutputs, resetNotebookOutputs, setOutput } from "./notebook-outputs";
+import {
+  deleteOutputs,
+  getOutputById,
+  resetNotebookOutputs,
+  setOutput,
+} from "./notebook-outputs";
 import type { JupyterOutput } from "../types";
 
 // ── Executions store projection ──────────────────────────────────────
@@ -43,41 +48,75 @@ let _knownExecutionIds: Set<string> = new Set();
  */
 const _prevExecutionFingerprint: Map<string, string> = new Map();
 
-function executionFingerprint(raw: {
-  cell_id?: string;
-  execution_count?: number | null;
-  status?: string;
-  success?: boolean | null;
-  outputs?: unknown[];
-}): string {
-  const outLen = Array.isArray(raw.outputs) ? raw.outputs.length : 0;
-  return `${raw.cell_id ?? ""}|${raw.execution_count ?? ""}|${raw.status ?? ""}|${raw.success ?? ""}|${outLen}`;
+/**
+ * Normalize an output's effective id for the per-output store.
+ *
+ * Most outputs carry a daemon-stamped UUID in `output_id`. Some legacy
+ * fixtures (see `packages/runtimed/tests/fixtures`) and in-flight
+ * outputs whose manifest is still being built carry an empty string.
+ * Those outputs still need a stable key so `useCellOutputs` can resolve
+ * them - we synthesize one using the execution id + position.
+ */
+function effectiveOutputId(
+  execution_id: string,
+  index: number,
+  raw: unknown,
+): string {
+  if (raw && typeof raw === "object") {
+    const oid = (raw as { output_id?: unknown }).output_id;
+    if (typeof oid === "string" && oid.length > 0) return oid;
+  }
+  return `legacy:${execution_id}:${index}`;
 }
 
-function buildExecutionSnapshot(raw: {
-  cell_id?: string;
-  execution_count?: number | null;
-  status?: string;
-  success?: boolean | null;
-  outputs?: unknown[];
-}): ExecutionSnapshot {
-  const output_ids: string[] = [];
+function collectExecutionOutputIds(
+  execution_id: string,
+  raw: { outputs?: unknown[] },
+): string[] {
+  const ids: string[] = [];
   if (Array.isArray(raw.outputs)) {
-    for (const output of raw.outputs) {
-      if (output && typeof output === "object") {
-        const oid = (output as { output_id?: unknown }).output_id;
-        if (typeof oid === "string" && oid.length > 0) {
-          output_ids.push(oid);
-        }
-      }
+    for (let i = 0; i < raw.outputs.length; i++) {
+      ids.push(effectiveOutputId(execution_id, i, raw.outputs[i]));
     }
   }
+  return ids;
+}
+
+function executionFingerprint(
+  execution_id: string,
+  raw: {
+    cell_id?: string;
+    execution_count?: number | null;
+    status?: string;
+    success?: boolean | null;
+    outputs?: unknown[];
+  },
+): string {
+  // Include the ordered `output_id` list so same-length replacements
+  // (e.g. `clear_output(wait=True)` or a remove+add that keeps the list
+  // length constant) still invalidate the snapshot. Without this, the
+  // outputs store drifts past the execution's canonical pointer list and
+  // `useCellOutputs` resolves stale entries.
+  const ids = collectExecutionOutputIds(execution_id, raw);
+  return `${raw.cell_id ?? ""}|${raw.execution_count ?? ""}|${raw.status ?? ""}|${raw.success ?? ""}|${ids.join(",")}`;
+}
+
+function buildExecutionSnapshot(
+  execution_id: string,
+  raw: {
+    cell_id?: string;
+    execution_count?: number | null;
+    status?: string;
+    success?: boolean | null;
+    outputs?: unknown[];
+  },
+): ExecutionSnapshot {
   return {
     cell_id: raw.cell_id ?? "",
     execution_count: raw.execution_count ?? null,
     status: raw.status ?? "",
     success: raw.success ?? null,
-    output_ids,
+    output_ids: collectExecutionOutputIds(execution_id, raw),
   };
 }
 
@@ -103,12 +142,18 @@ export function projectRuntimeStateToExecutions(state: {
   const nextIds = new Set<string>();
   if (execs) {
     for (const [execution_id, raw] of Object.entries(execs)) {
-      const entry = raw as Parameters<typeof executionFingerprint>[0];
+      const entry = raw as Parameters<typeof executionFingerprint>[1];
       nextIds.add(execution_id);
-      const fp = executionFingerprint(entry);
+      const fp = executionFingerprint(execution_id, entry);
       if (_prevExecutionFingerprint.get(execution_id) === fp) continue;
       _prevExecutionFingerprint.set(execution_id, fp);
-      setExecution(execution_id, buildExecutionSnapshot(entry));
+      setExecution(execution_id, buildExecutionSnapshot(execution_id, entry));
+      // Fallback seeding for outputs that don't carry a non-empty
+      // `output_id` (legacy fixtures, in-flight manifests). The
+      // `outputIdChanges$` stream only covers real output ids, so
+      // without this the outputs store would miss them and
+      // `useCellOutputs` would render empty.
+      seedLegacyOutputsForExecution(execution_id, entry);
     }
   }
 
@@ -123,6 +168,38 @@ export function projectRuntimeStateToExecutions(state: {
     for (const eid of removed) _prevExecutionFingerprint.delete(eid);
   }
   _knownExecutionIds = nextIds;
+}
+
+/**
+ * Seed the outputs store for an execution whose outputs lack proper
+ * `output_id` values. Real daemon-stamped ids flow through the
+ * `outputIdChanges$` pipeline; this is the fallback for legacy snapshots
+ * and fixtures. We synthesize a deterministic id (`legacy:<exec>:<idx>`)
+ * and push the raw manifest through if it's already directly consumable.
+ * Anything that needs async blob resolution is skipped - those paths
+ * have their own channel already.
+ */
+function seedLegacyOutputsForExecution(
+  execution_id: string,
+  raw: { outputs?: unknown[] },
+): void {
+  if (!Array.isArray(raw.outputs)) return;
+  for (let i = 0; i < raw.outputs.length; i++) {
+    const output = raw.outputs[i];
+    if (!output || typeof output !== "object") continue;
+    const oidField = (output as { output_id?: unknown }).output_id;
+    if (typeof oidField === "string" && oidField.length > 0) continue;
+    const synthesized = `legacy:${execution_id}:${i}`;
+    // Plain `JupyterOutput` shape (already resolved) goes straight in.
+    // Structured manifests with ContentRefs need the real pipeline, so
+    // skip them - they'd arrive through `applyOutputIdChanges` once the
+    // daemon stamps a real id.
+    if ("output_type" in output && !isOutputManifest(output)) {
+      const existing = getOutputById(synthesized);
+      if (existing === output) continue;
+      setOutput(synthesized, output as JupyterOutput);
+    }
+  }
 }
 
 /**

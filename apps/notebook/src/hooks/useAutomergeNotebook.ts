@@ -250,6 +250,13 @@ export function useAutomergeNotebook() {
       if (handle) {
         materializeCells(handle)
           .then(() => {
+            // Seed the cell -> execution_id pointer store from the doc.
+            // `cellChanges$` doesn't emit during `awaitingInitialSync`,
+            // so without this every `useCellOutputs(cellId)` would see
+            // `execution_id === null` until some later incremental
+            // changeset arrived - existing notebooks would render empty
+            // outputs on open.
+            updateCellExecutionPointersFromHandle(handle, [...handle.get_cell_ids()]);
             setIsLoading(false);
             notifyMetadataChanged();
             logger.info("[automerge-notebook] Initial materialization done");
