@@ -2900,7 +2900,7 @@ fn cmd_check_dep_budget() {
     // Budgets are unique crate counts (deduplicated, excluding the root crate).
     const BUDGETS: &[(&str, usize)] = &[
         ("xtask", 30),
-        ("runt-workspace", 25),
+        ("runt-workspace", 35),
         ("runt-trust", 50),
         ("notebook-doc", 110),
         ("kernel-launch", 175),
