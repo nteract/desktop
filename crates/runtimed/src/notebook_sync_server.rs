@@ -5691,15 +5691,11 @@ async fn handle_notebook_request(
             crate::requests::interrupt_execution::handle(room).await
         }
 
-        NotebookRequest::ShutdownKernel {} => {
-            crate::requests::shutdown_kernel::handle(room).await
-        }
+        NotebookRequest::ShutdownKernel {} => crate::requests::shutdown_kernel::handle(room).await,
 
         NotebookRequest::GetKernelInfo {} => crate::requests::get_kernel_info::handle(room).await,
 
-        NotebookRequest::GetQueueState {} => {
-            crate::requests::get_queue_state::handle(room).await
-        }
+        NotebookRequest::GetQueueState {} => crate::requests::get_queue_state::handle(room).await,
 
         NotebookRequest::RunAllCells {} => crate::requests::run_all_cells::handle(room).await,
 
@@ -5723,7 +5719,9 @@ async fn handle_notebook_request(
             crate::requests::clone_notebook::handle(room, path).await
         }
 
-        NotebookRequest::SyncEnvironment {} => handle_sync_environment(room).await,
+        NotebookRequest::SyncEnvironment {} => {
+            crate::requests::sync_environment::handle(room).await
+        }
 
         NotebookRequest::GetDocBytes {} => crate::requests::get_doc_bytes::handle(room).await,
 

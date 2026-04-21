@@ -231,8 +231,8 @@ pub(crate) async fn handle(
         // Respects `auto_scope`: `auto:uv` with a conda-captured
         // notebook (or vice versa) falls through. `auto:pixi` always
         // falls through — no pixi capture path yet.
-        else if let Some(captured_src) =
-            captured_env_source_override(metadata_snapshot.as_ref()).filter(|src| match auto_scope {
+        else if let Some(captured_src) = captured_env_source_override(metadata_snapshot.as_ref())
+            .filter(|src| match auto_scope {
                 Some("uv") => src == "uv:prewarmed",
                 Some("conda") => src == "conda:prewarmed",
                 Some("pixi") => false,
@@ -627,11 +627,9 @@ pub(crate) async fn handle(
                 .and_then(get_inline_uv_prerelease);
 
             // Fast path: check inline env cache first (instant on hit)
-            if let Some(cached) = crate::inline_env::check_uv_inline_cache(
-                &deps,
-                prerelease.as_deref(),
-                bootstrap_dx,
-            ) {
+            if let Some(cached) =
+                crate::inline_env::check_uv_inline_cache(&deps, prerelease.as_deref(), bootstrap_dx)
+            {
                 info!(
                     "[notebook-sync] LaunchKernel: UV inline cache hit at {:?}",
                     cached.python_path
@@ -837,13 +835,11 @@ pub(crate) async fn handle(
                     {
                         let base_names: std::collections::HashSet<String> = all_deps
                             .iter()
-                            .map(|d| {
-                                notebook_doc::metadata::extract_package_name(d).to_lowercase()
-                            })
+                            .map(|d| notebook_doc::metadata::extract_package_name(d).to_lowercase())
                             .collect();
                         for dep in &crdt_deps {
-                            let name = notebook_doc::metadata::extract_package_name(dep)
-                                .to_lowercase();
+                            let name =
+                                notebook_doc::metadata::extract_package_name(dep).to_lowercase();
                             if !base_names.contains(&name) {
                                 all_deps.push(dep.clone());
                             }
@@ -938,8 +934,7 @@ pub(crate) async fn handle(
                             Ok(prepared) => {
                                 // Rename hash-based dir to the target env name
                                 let final_prefix = if prepared.env_path != conda_prefix {
-                                    match tokio::fs::rename(&prepared.env_path, &conda_prefix)
-                                        .await
+                                    match tokio::fs::rename(&prepared.env_path, &conda_prefix).await
                                     {
                                         Ok(()) => conda_prefix.clone(),
                                         Err(e) => {
@@ -953,8 +948,7 @@ pub(crate) async fn handle(
                                 } else {
                                     prepared.env_path
                                 };
-                                let python =
-                                    crate::project_file::conda_python_path(&final_prefix);
+                                let python = crate::project_file::conda_python_path(&final_prefix);
                                 let env = Some(crate::PooledEnv {
                                     env_type: crate::EnvType::Conda,
                                     venv_path: final_prefix,
@@ -1158,8 +1152,7 @@ pub(crate) async fn handle(
         // Always pass the room UUID so the agent's RuntimeAgent
         // handshake finds the room in the UUID-keyed rooms map.
         let notebook_id = room.id.to_string();
-        let runtime_agent_id =
-            format!("runtime-agent:{}", &uuid::Uuid::new_v4().to_string()[..8]);
+        let runtime_agent_id = format!("runtime-agent:{}", &uuid::Uuid::new_v4().to_string()[..8]);
         let socket_path = daemon.socket_path().clone();
 
         // Set provenance + bump generation + create oneshot BEFORE spawn
@@ -1223,15 +1216,16 @@ pub(crate) async fn handle(
                 }
 
                 // Send LaunchKernel RPC
-                let launch_request = notebook_protocol::protocol::RuntimeAgentRequest::LaunchKernel {
-                    kernel_type: resolved_kernel_type.clone(),
-                    env_source: resolved_env_source.clone(),
-                    notebook_path: notebook_path
-                        .as_deref()
-                        .map(|p| p.to_str().unwrap_or("").to_string()),
-                    launched_config: launched_config.clone(),
-                    env_vars: Default::default(),
-                };
+                let launch_request =
+                    notebook_protocol::protocol::RuntimeAgentRequest::LaunchKernel {
+                        kernel_type: resolved_kernel_type.clone(),
+                        env_source: resolved_env_source.clone(),
+                        notebook_path: notebook_path
+                            .as_deref()
+                            .map(|p| p.to_str().unwrap_or("").to_string()),
+                        launched_config: launched_config.clone(),
+                        env_vars: Default::default(),
+                    };
 
                 match send_runtime_agent_request(room, launch_request).await {
                     Ok(notebook_protocol::protocol::RuntimeAgentResponse::KernelLaunched {

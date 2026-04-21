@@ -31,3 +31,4 @@ pub(crate) mod send_comm;
 pub(crate) mod set_metadata_snapshot;
 pub(crate) mod set_raw_metadata;
 pub(crate) mod shutdown_kernel;
+pub(crate) mod sync_environment;
