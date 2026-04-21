@@ -44,9 +44,7 @@ use crate::notebook_doc::{CellSnapshot, NotebookDoc};
 use crate::notebook_metadata::NotebookMetadataSnapshot;
 use crate::output_prep::{DenoLaunchedConfig, LaunchedEnvConfig};
 use crate::paths::notebook_doc_filename;
-use crate::protocol::{
-    EnvSyncDiff, NotebookBroadcast, NotebookRequest, NotebookResponse, QueueEntry,
-};
+use crate::protocol::{EnvSyncDiff, NotebookBroadcast, NotebookRequest, NotebookResponse};
 use crate::task_supervisor::{spawn_best_effort, spawn_supervised};
 use notebook_doc::diff::diff_metadata_touched;
 use notebook_doc::presence::{self, PresenceState};
@@ -801,7 +799,7 @@ async fn process_markdown_assets(room: &NotebookRoom) {
 /// Handles two cases:
 /// 1. Kernel launched with inline deps - track drift (additions/removals)
 /// 2. Kernel launched with prewarmed - detect when user adds inline deps (needs restart)
-async fn check_and_broadcast_sync_state(room: &NotebookRoom) {
+pub(crate) async fn check_and_broadcast_sync_state(room: &NotebookRoom) {
     // Get current metadata from doc
     let current_metadata = {
         let doc = room.doc.read().await;
@@ -919,7 +917,7 @@ async fn check_and_broadcast_sync_state(room: &NotebookRoom) {
 /// a trust signature (via approve_notebook_trust). Without this, room.trust_state
 /// would remain stale from initial room creation and the trust banner would
 /// reappear on reconnection.
-async fn check_and_update_trust_state(room: &NotebookRoom) {
+pub(crate) async fn check_and_update_trust_state(room: &NotebookRoom) {
     let current_metadata = {
         let doc = room.doc.read().await;
         doc.get_metadata_snapshot()
@@ -7006,701 +7004,71 @@ async fn handle_notebook_request(
         }
 
         NotebookRequest::ExecuteCell { cell_id } => {
-            // Read cell source FIRST (before kernel lock) to avoid holding
-            // kernel mutex while waiting on doc lock
-            let (source, cell_type) = {
-                let doc = room.doc.read().await;
-                match doc.get_cell(&cell_id) {
-                    Some(c) => (c.source, c.cell_type),
-                    None => {
-                        let cells = doc.get_cells();
-                        let cell_ids: Vec<&str> = cells.iter().map(|c| c.id.as_str()).collect();
-                        warn!(
-                            "[notebook-sync] ExecuteCell: cell {} not found in document \
-                             (doc has {} cells: {:?})",
-                            cell_id,
-                            cells.len(),
-                            cell_ids,
-                        );
-                        return NotebookResponse::Error {
-                            error: format!("Cell not found in document: {}", cell_id),
-                        };
-                    }
-                }
-            }; // doc lock released here
-
-            // Only execute code cells
-            if cell_type != "code" {
-                return NotebookResponse::Error {
-                    error: format!(
-                        "Cannot execute non-code cell: {} (type: {})",
-                        cell_id, cell_type
-                    ),
-                };
-            }
-
-            // Agent-backed kernel: write execution to RuntimeStateDoc queue.
-            // The runtime agent discovers it via CRDT sync and executes.
-            // Check runtime_agent_request_tx (not runtime_agent_handle) to ensure the runtime agent's
-            // sync connection is still live — a stale handle with no connection
-            // would leave queued executions orphaned.
-            {
-                let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
-                if has_runtime_agent {
-                    // Check if kernel is shut down — return NoKernel instead
-                    // of silently queuing into a dead kernel
-                    {
-                        let sd = room.state_doc.read().await;
-                        let status = sd.read_state().kernel.status;
-                        if status == "shutdown" || status == "error" {
-                            return NotebookResponse::NoKernel {};
-                        }
-                    }
-
-                    // Idempotency: if the cell already has an active (queued or
-                    // running) execution, return the existing execution_id instead
-                    // of creating a new one. Lookup follows the ownership model:
-                    // NotebookDoc owns the cell→execution_id mapping,
-                    // RuntimeStateDoc owns execution lifecycle state.
-                    {
-                        let eid = {
-                            let doc = room.doc.read().await;
-                            doc.get_execution_id(&cell_id)
-                        };
-                        if let Some(eid) = eid {
-                            let sd = room.state_doc.read().await;
-                            if let Some(exec) = sd.get_execution(&eid) {
-                                if exec.status == "queued" || exec.status == "running" {
-                                    return NotebookResponse::CellQueued {
-                                        cell_id,
-                                        execution_id: eid,
-                                    };
-                                }
-                            }
-                        }
-                    }
-
-                    let execution_id = uuid::Uuid::new_v4().to_string();
-                    let seq = room
-                        .next_queue_seq
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-                    // Write execution entry with source to RuntimeStateDoc first
-                    // so that NotebookDoc's cell→execution_id pointer never
-                    // dangles. If this fails we bail before stamping the cell.
-                    {
-                        let mut sd = room.state_doc.write().await;
-                        if let Err(e) =
-                            sd.create_execution_with_source(&execution_id, &cell_id, &source, seq)
-                        {
-                            warn!(
-                                "[notebook-sync] Failed to create_execution_with_source for {}: {}",
-                                execution_id, e
-                            );
-                            return NotebookResponse::Error {
-                                error: format!("failed to queue execution: {e}"),
-                            };
-                        }
-                        let _ = room.state_changed_tx.send(());
-                    }
-
-                    // Stamp execution_id on the cell in NotebookDoc
-                    {
-                        let mut doc = room.doc.write().await;
-                        let _ = doc.set_execution_id(&cell_id, Some(&execution_id));
-                        let _ = room.changed_tx.send(());
-                    }
-
-                    // Best-effort background formatting via fork+merge
-                    let fork = {
-                        let mut doc = room.doc.write().await;
-                        doc.fork()
-                    };
-                    let room_clone = Arc::clone(room);
-                    let cell_id_clone = cell_id.clone();
-                    let source_clone = source.clone();
-                    spawn_best_effort("cell-formatter", async move {
-                        if let Some(runtime) = detect_room_runtime(&room_clone).await {
-                            if let Some(formatted) = format_source(&source_clone, &runtime).await {
-                                // Actor is assigned here (not via fork_with_actor)
-                                // because the formatter identity depends on the
-                                // runtime, which is detected after the fork was
-                                // created. The UUID suffix keeps concurrent
-                                // formatter forks from colliding on `(actor, seq)`.
-                                let mut fork = fork;
-                                fork.set_actor(&format!(
-                                    "{}:{}",
-                                    formatter_actor(&runtime),
-                                    uuid::Uuid::new_v4()
-                                ));
-                                if fork.update_source(&cell_id_clone, &formatted).is_ok() {
-                                    let mut doc = room_clone.doc.write().await;
-                                    if let Err(e) = catch_automerge_panic("format-merge", || {
-                                        doc.merge(&mut fork)
-                                    }) {
-                                        warn!("{}", e);
-                                        doc.rebuild_from_save();
-                                    }
-                                    let _ = room_clone.changed_tx.send(());
-                                }
-                            }
-                        }
-                    });
-
-                    return NotebookResponse::CellQueued {
-                        cell_id,
-                        execution_id,
-                    };
-                }
-            }
-
-            // No runtime agent available — kernel not running
-            NotebookResponse::NoKernel {}
+            crate::requests::execute_cell::handle(room, cell_id).await
         }
 
         NotebookRequest::ClearOutputs { cell_id } => {
-            // Clear outputs by nulling the execution_id pointer on the cell.
-            // Outputs live in RuntimeStateDoc keyed by execution_id — with no
-            // execution_id, the frontend sees no outputs. The old execution's
-            // outputs remain in RuntimeStateDoc until natural trim.
-            let old_eid = {
-                let doc = room.doc.read().await;
-                doc.get_execution_id(&cell_id)
-            };
-
-            let persist_bytes = {
-                let mut doc = room.doc.write().await;
-                let _ = doc.set_execution_id(&cell_id, None);
-                let bytes = doc.save();
-                let _ = room.changed_tx.send(());
-                bytes
-            };
-
-            // Optionally clean up the old execution's outputs in RuntimeStateDoc
-            if let Some(ref eid) = old_eid {
-                let mut sd = room.state_doc.write().await;
-                let _ = sd.clear_execution_outputs(eid);
-                let _ = room.state_changed_tx.send(());
-            }
-
-            // Send to debounced persistence task
-            if let Some(ref tx) = room.persist_tx {
-                let _ = tx.send(Some(persist_bytes));
-            }
-
-            // Broadcast for cross-window UI sync (fast path)
-            let _ = room
-                .kernel_broadcast_tx
-                .send(NotebookBroadcast::OutputsCleared {
-                    cell_id: cell_id.clone(),
-                });
-
-            NotebookResponse::OutputsCleared { cell_id }
+            crate::requests::clear_outputs::handle(room, cell_id).await
         }
 
         NotebookRequest::InterruptExecution {} => {
-            let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
-            if has_runtime_agent {
-                // Fire-and-forget: the agent handles interrupt and updates
-                // RuntimeStateDoc CRDT directly (clears queue, marks executions).
-                match send_runtime_agent_command(
-                    room,
-                    notebook_protocol::protocol::RuntimeAgentRequest::InterruptExecution,
-                )
-                .await
-                {
-                    Ok(()) => NotebookResponse::InterruptSent {},
-                    Err(e) => NotebookResponse::Error {
-                        error: format!("Agent interrupt error: {}", e),
-                    },
-                }
-            } else {
-                NotebookResponse::NoKernel {}
-            }
+            crate::requests::interrupt_execution::handle(room).await
         }
 
         NotebookRequest::ShutdownKernel {} => {
-            // Send shutdown RPC but keep the runtime agent alive — it stays
-            // connected for potential RestartKernel. The kernel process dies
-            // but the runtime agent subprocess and socket connection remain.
-            let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
-            if has_runtime_agent {
-                let _ = send_runtime_agent_request(
-                    room,
-                    notebook_protocol::protocol::RuntimeAgentRequest::ShutdownKernel,
-                )
-                .await;
-                // Keep runtime agent alive (runtime_agent_handle + runtime_agent_request_tx stay set)
-                // so LaunchKernel can send RestartKernel. ExecuteCell/RunAllCells
-                // check kernel.status from RuntimeStateDoc and return NoKernel
-                // when status is "shutdown".
-                //
-                // Update RuntimeStateDoc to reflect shutdown
-                {
-                    let mut sd = room.state_doc.write().await;
-                    let mut changed = false;
-                    changed |= sd.set_kernel_status("shutdown");
-                    changed |= sd.set_queue(None, &[]);
-                    if changed {
-                        let _ = room.state_changed_tx.send(());
-                    }
-                }
-                NotebookResponse::KernelShuttingDown {}
-            } else {
-                NotebookResponse::NoKernel {}
-            }
+            crate::requests::shutdown_kernel::handle(room).await
         }
 
-        NotebookRequest::GetKernelInfo {} => {
-            // Read from RuntimeStateDoc (source of truth for runtime agent)
-            let sd = room.state_doc.read().await;
-            let state = sd.read_state();
-            if state.kernel.status != "not_started" && !state.kernel.status.is_empty() {
-                NotebookResponse::KernelInfo {
-                    kernel_type: if state.kernel.name.is_empty() {
-                        None
-                    } else {
-                        Some(state.kernel.name)
-                    },
-                    env_source: if state.kernel.env_source.is_empty() {
-                        None
-                    } else {
-                        Some(state.kernel.env_source)
-                    },
-                    status: state.kernel.status,
-                }
-            } else {
-                NotebookResponse::KernelInfo {
-                    kernel_type: None,
-                    env_source: None,
-                    status: "not_started".to_string(),
-                }
-            }
-        }
+        NotebookRequest::GetKernelInfo {} => crate::requests::get_kernel_info::handle(room).await,
 
         NotebookRequest::GetQueueState {} => {
-            // Read from RuntimeStateDoc (source of truth for runtime agent)
-            let sd = room.state_doc.read().await;
-            let state = sd.read_state();
-            NotebookResponse::QueueState {
-                executing: state.queue.executing.map(|e| QueueEntry {
-                    cell_id: e.cell_id,
-                    execution_id: e.execution_id,
-                }),
-                queued: state
-                    .queue
-                    .queued
-                    .into_iter()
-                    .map(|e| QueueEntry {
-                        cell_id: e.cell_id,
-                        execution_id: e.execution_id,
-                    })
-                    .collect(),
-            }
+            crate::requests::get_queue_state::handle(room).await
         }
 
-        NotebookRequest::RunAllCells {} => {
-            // Agent path — write all cells to RuntimeStateDoc queue
-            {
-                let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
-                if has_runtime_agent {
-                    // Check if kernel is shut down
-                    {
-                        let sd = room.state_doc.read().await;
-                        let status = sd.read_state().kernel.status;
-                        if status == "shutdown" || status == "error" {
-                            return NotebookResponse::NoKernel {};
-                        }
-                    }
-
-                    let cells = {
-                        let doc = room.doc.read().await;
-                        doc.get_cells()
-                    };
-
-                    // Pre-compute execution entries so we can write to
-                    // state_doc and doc in separate scoped blocks, avoiding
-                    // holding one lock across the other's `.await` (deadlock
-                    // prevention).
-                    let mut queued = Vec::new();
-                    let mut entries: Vec<(String, String, String, u64)> = Vec::new();
-                    for cell in &cells {
-                        if cell.cell_type == "code" {
-                            let execution_id = uuid::Uuid::new_v4().to_string();
-                            let seq = room
-                                .next_queue_seq
-                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            entries.push((
-                                execution_id.clone(),
-                                cell.id.clone(),
-                                cell.source.clone(),
-                                seq,
-                            ));
-                            queued.push(QueueEntry {
-                                cell_id: cell.id.clone(),
-                                execution_id,
-                            });
-                        }
-                    }
-                    // Write RuntimeStateDoc entries first; on failure bail
-                    // before stamping NotebookDoc so cell→execution_id pointers
-                    // cannot dangle. Any single failure aborts the whole batch.
-                    {
-                        let mut sd = room.state_doc.write().await;
-                        for (execution_id, cell_id, source, seq) in &entries {
-                            if let Err(e) =
-                                sd.create_execution_with_source(execution_id, cell_id, source, *seq)
-                            {
-                                warn!(
-                                    "[notebook-sync] Failed to create_execution_with_source for {}: {}",
-                                    execution_id, e
-                                );
-                                return NotebookResponse::Error {
-                                    error: format!("failed to queue execution: {e}"),
-                                };
-                            }
-                        }
-                        let _ = room.state_changed_tx.send(());
-                    }
-                    {
-                        let mut doc = room.doc.write().await;
-                        for (execution_id, cell_id, _, _) in &entries {
-                            let _ = doc.set_execution_id(cell_id, Some(execution_id));
-                        }
-                        let _ = room.changed_tx.send(());
-                    }
-
-                    return NotebookResponse::AllCellsQueued { queued };
-                }
-            }
-
-            // No runtime agent available — kernel not running
-            NotebookResponse::NoKernel {}
-        }
+        NotebookRequest::RunAllCells {} => crate::requests::run_all_cells::handle(room).await,
 
         NotebookRequest::SendComm { message } => {
-            // Agent path: forward comm message via RPC
-            let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
-            if has_runtime_agent {
-                match send_runtime_agent_request(
-                    room,
-                    notebook_protocol::protocol::RuntimeAgentRequest::SendComm {
-                        message: message.clone(),
-                    },
-                )
-                .await
-                {
-                    Ok(_) => NotebookResponse::Ok {},
-                    Err(e) => NotebookResponse::Error {
-                        error: format!("Agent comm error: {}", e),
-                    },
-                }
-            } else {
-                NotebookResponse::NoKernel {}
-            }
+            crate::requests::send_comm::handle(room, message).await
         }
 
         NotebookRequest::GetHistory { pattern, n, unique } => {
-            // Agent path: forward via RPC
-            let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
-            if has_runtime_agent {
-                match send_runtime_agent_request(
-                    room,
-                    notebook_protocol::protocol::RuntimeAgentRequest::GetHistory {
-                        pattern: pattern.clone(),
-                        n,
-                        unique,
-                    },
-                )
-                .await
-                {
-                    Ok(notebook_protocol::protocol::RuntimeAgentResponse::HistoryResult {
-                        entries,
-                    }) => NotebookResponse::HistoryResult { entries },
-                    Ok(notebook_protocol::protocol::RuntimeAgentResponse::Error { error }) => {
-                        NotebookResponse::Error { error }
-                    }
-                    Ok(_) => NotebookResponse::Error {
-                        error: "Unexpected runtime agent response".to_string(),
-                    },
-                    Err(e) => NotebookResponse::Error {
-                        error: format!("Agent error: {}", e),
-                    },
-                }
-            } else {
-                NotebookResponse::NoKernel {}
-            }
+            crate::requests::get_history::handle(room, pattern, n, unique).await
         }
 
         NotebookRequest::Complete { code, cursor_pos } => {
-            // Agent path: forward via RPC
-            let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
-            if has_runtime_agent {
-                match send_runtime_agent_request(
-                    room,
-                    notebook_protocol::protocol::RuntimeAgentRequest::Complete {
-                        code: code.clone(),
-                        cursor_pos,
-                    },
-                )
-                .await
-                {
-                    Ok(notebook_protocol::protocol::RuntimeAgentResponse::CompletionResult {
-                        items,
-                        cursor_start,
-                        cursor_end,
-                    }) => NotebookResponse::CompletionResult {
-                        items,
-                        cursor_start,
-                        cursor_end,
-                    },
-                    Ok(notebook_protocol::protocol::RuntimeAgentResponse::Error { error }) => {
-                        NotebookResponse::Error { error }
-                    }
-                    Ok(_) => NotebookResponse::Error {
-                        error: "Unexpected runtime agent response".to_string(),
-                    },
-                    Err(e) => NotebookResponse::Error {
-                        error: format!("Agent error: {}", e),
-                    },
-                }
-            } else {
-                NotebookResponse::NoKernel {}
-            }
+            crate::requests::complete::handle(room, code, cursor_pos).await
         }
 
         NotebookRequest::SaveNotebook { format_cells, path } => {
-            // Format cells if requested (before saving)
-            if format_cells {
-                if let Err(e) = format_notebook_cells(room).await {
-                    warn!("[save] Format cells failed (continuing with save): {}", e);
-                }
-            }
-
-            // Capture was_untitled and old_path in a single critical section to
-            // avoid a TOCTOU race between the two reads.
-            let (was_untitled, old_path) = {
-                let p = room.path.read().await;
-                (p.is_none(), p.clone())
-            };
-
-            // For any save that writes to a NEW path (untitled promotion or
-            // save-as rename), claim path_index BEFORE touching disk. Writing
-            // first and then checking the claim would overwrite another room's
-            // file if both happen to target the same path — the overwritten
-            // file then trips the other room's watcher, wiping its CRDT cells.
-            //
-            // Compute the pre-write canonical target. For untitled rooms a path
-            // is required; for file-backed rooms we only need a pre-write claim
-            // if the caller specified a path different from room.path.
-            let target_for_claim: Option<PathBuf> = match (&path, was_untitled) {
-                (Some(p), _) => match crate::paths::normalize_save_target(p) {
-                    Ok(normalized) => Some(canonical_target_path(&normalized).await),
-                    Err(msg) => {
-                        return NotebookResponse::SaveError {
-                            error: notebook_protocol::protocol::SaveErrorKind::Io { message: msg },
-                        };
-                    }
-                },
-                (None, true) => {
-                    // Untitled save with no path — the daemon requires one.
-                    // Fall through to save_notebook_to_disk which returns the
-                    // structured error; no claim needed (no write happens).
-                    None
-                }
-                (None, false) => None, // save-in-place on file-backed room
-            };
-
-            // The new path that needs a pre-write claim (if any). Separates
-            // "claim required" from "have a claim path" so downstream branches
-            // don't need a runtime is_some + unwrap.
-            let pre_claim: Option<PathBuf> = match (&target_for_claim, &old_path) {
-                (Some(t), Some(old)) if t != old => Some(t.clone()),
-                (Some(t), None) => Some(t.clone()),
-                _ => None,
-            };
-
-            if let Some(ref canonical_pre) = pre_claim {
-                if let Err(kind) = try_claim_path(&daemon.path_index, canonical_pre, room.id).await
-                {
-                    return NotebookResponse::SaveError { error: kind };
-                }
-            }
-
-            let written = match save_notebook_to_disk(room, path.as_deref()).await {
-                Ok(p) => p,
-                Err(e) => {
-                    // Rollback the path_index claim we just made so the room
-                    // stays untitled / its old path stays claimed.
-                    if let Some(ref canonical_pre) = pre_claim {
-                        daemon.path_index.lock().await.remove(canonical_pre);
-                    }
-                    // Emergency persist for ephemeral rooms: if saving to .ipynb
-                    // failed, at least write the Automerge doc so data isn't lost.
-                    if room.is_ephemeral.load(Ordering::Relaxed) && room.persist_tx.is_none() {
-                        let bytes = room.doc.write().await.save();
-                        persist_notebook_bytes(&bytes, &room.persist_path);
-                        warn!(
-                            "[notebook-sync] Save failed for ephemeral room — emergency persist to {:?}",
-                            room.persist_path
-                        );
-                    }
-                    let kind = match e {
-                        SaveError::Unrecoverable(msg) | SaveError::Retryable(msg) => {
-                            notebook_protocol::protocol::SaveErrorKind::Io { message: msg }
-                        }
-                    };
-                    return NotebookResponse::SaveError { error: kind };
-                }
-            };
-
-            // Post-write canonicalize. Usually matches the pre-write key. If it
-            // differs (uncommon — only when parent-canonicalize disagreed with
-            // full canonicalize), swap the path_index entry.
-            let canonical = match tokio::fs::canonicalize(&written).await {
-                Ok(c) => c,
-                Err(e) => {
-                    warn!(
-                        "[notebook-sync] post-save canonicalize({}) failed: {} — using raw path. \
-                         Duplicate-room detection may be weakened.",
-                        written, e
-                    );
-                    PathBuf::from(&written)
-                }
-            };
-
-            if let Some(ref canonical_pre) = pre_claim {
-                if canonical_pre != &canonical {
-                    let mut idx = daemon.path_index.lock().await;
-                    idx.remove(canonical_pre);
-                    // Best-effort reinsert under the post-write canonical.
-                    if let Err(e) = idx.insert(canonical.clone(), room.id) {
-                        warn!(
-                            "[notebook-sync] post-write path_index reinsert failed for {:?}: {} \
-                             — room {} may be orphaned from path lookup",
-                            canonical, e, room.id
-                        );
-                    }
-                }
-            }
-
-            if was_untitled {
-                finalize_untitled_promotion(room, canonical.clone()).await;
-            } else if let Some(old) = old_path.as_ref() {
-                let path_changed = old != &canonical;
-                if path_changed {
-                    // Save-as rename: new path already claimed above; remove
-                    // the old path_index entry and update room.path.
-                    {
-                        let mut idx = daemon.path_index.lock().await;
-                        idx.remove(old);
-                    }
-                    *room.path.write().await = Some(canonical.clone());
-                    let _ = room
-                        .kernel_broadcast_tx
-                        .send(NotebookBroadcast::PathChanged {
-                            path: Some(canonical.to_string_lossy().into_owned()),
-                        });
-                }
-                // If path didn't change, this is save-in-place: nothing else.
-            }
-
-            NotebookResponse::NotebookSaved { path: written }
+            crate::requests::save_notebook::handle(room, &daemon, format_cells, path).await
         }
 
         NotebookRequest::CloneNotebook { path } => {
-            match clone_notebook_to_disk(room, &path).await {
-                Ok(cloned_path) => NotebookResponse::NotebookCloned { path: cloned_path },
-                Err(e) => NotebookResponse::Error {
-                    error: format!("Failed to clone notebook: {e}"),
-                },
-            }
+            crate::requests::clone_notebook::handle(room, path).await
         }
 
         NotebookRequest::SyncEnvironment {} => handle_sync_environment(room).await,
 
-        NotebookRequest::GetDocBytes {} => {
-            let mut doc = room.doc.write().await;
-            let bytes = doc.save();
-            NotebookResponse::DocBytes { bytes }
-        }
+        NotebookRequest::GetDocBytes {} => crate::requests::get_doc_bytes::handle(room).await,
 
         NotebookRequest::GetRawMetadata { key } => {
-            let doc = room.doc.read().await;
-            let value = doc.get_metadata(&key);
-            NotebookResponse::RawMetadata { value }
+            crate::requests::get_raw_metadata::handle(room, key).await
         }
 
         NotebookRequest::SetRawMetadata { key, value } => {
-            let mut doc = room.doc.write().await;
-            match doc.set_metadata(&key, &value) {
-                Ok(()) => {
-                    // Notify peers of the change
-                    let _ = room.changed_tx.send(());
-                    // Persist
-                    if let Some(ref tx) = room.persist_tx {
-                        let bytes = doc.save();
-                        let _ = tx.send(Some(bytes));
-                    }
-                    NotebookResponse::MetadataSet {}
-                }
-                Err(e) => NotebookResponse::Error {
-                    error: format!("Failed to set metadata: {e}"),
-                },
-            }
+            crate::requests::set_raw_metadata::handle(room, key, value).await
         }
 
         NotebookRequest::GetMetadataSnapshot {} => {
-            let doc = room.doc.read().await;
-            let snapshot = doc
-                .get_metadata_snapshot()
-                .and_then(|s| serde_json::to_string(&s).ok());
-            NotebookResponse::MetadataSnapshot { snapshot }
+            crate::requests::get_metadata_snapshot::handle(room).await
         }
 
         NotebookRequest::SetMetadataSnapshot { snapshot } => {
-            match serde_json::from_str::<NotebookMetadataSnapshot>(&snapshot) {
-                Ok(snap) => {
-                    // Scope the doc write guard so it drops before the async
-                    // sync/trust checks (deadlock prevention).
-                    let result = {
-                        let mut doc = room.doc.write().await;
-                        match doc.set_metadata_snapshot(&snap) {
-                            Ok(()) => {
-                                // Notify peers of the change
-                                let _ = room.changed_tx.send(());
-                                // Persist
-                                if let Some(ref tx) = room.persist_tx {
-                                    let bytes = doc.save();
-                                    let _ = tx.send(Some(bytes));
-                                }
-                                Ok(())
-                            }
-                            Err(e) => Err(format!("Failed to set metadata snapshot: {e}")),
-                        }
-                    };
-                    match result {
-                        Ok(()) => {
-                            // Check for env sync state and trust changes
-                            check_and_broadcast_sync_state(room).await;
-                            check_and_update_trust_state(room).await;
-                            NotebookResponse::MetadataSet {}
-                        }
-                        Err(error) => NotebookResponse::Error { error },
-                    }
-                }
-                Err(e) => NotebookResponse::Error {
-                    error: format!("Failed to parse metadata snapshot: {e}"),
-                },
-            }
+            crate::requests::set_metadata_snapshot::handle(room, snapshot).await
         }
 
         NotebookRequest::CheckToolAvailable { tool } => {
-            let available = match tool.as_str() {
-                "deno" => kernel_launch::tools::check_deno_available_without_bootstrap().await,
-                _ => false,
-            };
-            NotebookResponse::ToolAvailable { available }
+            crate::requests::check_tool_available::handle(tool).await
         }
     }
 }
@@ -8037,7 +7405,7 @@ async fn promote_inline_deps_to_project(
 ///
 /// Only supported for UV inline dependencies when there are only additions (no removals).
 /// Conda and other env types fall back to restart.
-async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResponse {
+pub(crate) async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResponse {
     // Read launched config from room
     let launched = {
         let guard = room.runtime_agent_launched_config.read().await;
@@ -8280,7 +7648,7 @@ async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResponse {
 ///
 /// Returns the formatted source with trailing newline stripped (cells shouldn't
 /// end with \n), or None if formatting failed or wasn't applicable.
-async fn format_source(source: &str, runtime: &str) -> Option<String> {
+pub(crate) async fn format_source(source: &str, runtime: &str) -> Option<String> {
     use kernel_launch::tools;
     use std::process::Stdio;
     use tokio::io::AsyncWriteExt;
@@ -8346,7 +7714,7 @@ async fn format_source(source: &str, runtime: &str) -> Option<String> {
 }
 
 /// Map a runtime name to its formatter's CRDT actor label.
-fn formatter_actor(runtime: &str) -> String {
+pub(crate) fn formatter_actor(runtime: &str) -> String {
     let tool = match runtime {
         "python" => "ruff",
         other => other, // "deno" stays "deno"
@@ -8355,7 +7723,7 @@ fn formatter_actor(runtime: &str) -> String {
 }
 
 /// Detect the runtime from room metadata, returning "python", "deno", or None.
-async fn detect_room_runtime(room: &NotebookRoom) -> Option<String> {
+pub(crate) async fn detect_room_runtime(room: &NotebookRoom) -> Option<String> {
     let doc = room.doc.read().await;
     doc.get_metadata_snapshot()
         .and_then(|snapshot| snapshot.detect_runtime())
@@ -8366,7 +7734,7 @@ async fn detect_room_runtime(room: &NotebookRoom) -> Option<String> {
 /// Reads the runtime type from the notebook metadata and formats accordingly.
 /// Updates the Automerge doc with formatted sources and broadcasts changes.
 /// Formatting errors are logged but don't fail the operation (best-effort).
-async fn format_notebook_cells(room: &NotebookRoom) -> Result<usize, String> {
+pub(crate) async fn format_notebook_cells(room: &NotebookRoom) -> Result<usize, String> {
     let runtime = match detect_room_runtime(room).await {
         Some(rt) => rt,
         None => {
@@ -8439,7 +7807,7 @@ async fn format_notebook_cells(room: &NotebookRoom) -> Result<usize, String> {
 ///
 /// Errors from save_notebook_to_disk.
 #[derive(Debug)]
-enum SaveError {
+pub(crate) enum SaveError {
     /// Transient / potentially recoverable (e.g. disk full, busy)
     Retryable(String),
     /// Permanent — retrying will never help (path is a directory, permission denied, invalid path)
@@ -8455,7 +7823,7 @@ impl std::fmt::Display for SaveError {
 }
 
 /// Returns the absolute path where the notebook was written.
-async fn save_notebook_to_disk(
+pub(crate) async fn save_notebook_to_disk(
     room: &NotebookRoom,
     target_path: Option<&str>,
 ) -> Result<String, SaveError> {
@@ -8727,7 +8095,7 @@ async fn save_notebook_to_disk(
 /// `tokio::fs::canonicalize` requires the target to exist. For pre-write
 /// collision checks, we canonicalize the parent directory and append the
 /// filename. Falls back to the raw path if even the parent is unresolvable.
-async fn canonical_target_path(target: &Path) -> PathBuf {
+pub(crate) async fn canonical_target_path(target: &Path) -> PathBuf {
     if let Ok(c) = tokio::fs::canonicalize(target).await {
         return c;
     }
@@ -8741,7 +8109,7 @@ async fn canonical_target_path(target: &Path) -> PathBuf {
 
 /// Try to claim a path in the path_index for a given room. Returns the
 /// structured `PathAlreadyOpen` error if another room already holds it.
-async fn try_claim_path(
+pub(crate) async fn try_claim_path(
     path_index: &Arc<tokio::sync::Mutex<PathIndex>>,
     canonical: &Path,
     uuid: uuid::Uuid,
@@ -8762,7 +8130,7 @@ async fn try_claim_path(
 /// written and path_index already holds the claim. This is the non-claim half
 /// of the promotion: path field update, persist file cleanup, file watcher +
 /// autosave debouncer spawn, ephemeral marker clear, and PathChanged broadcast.
-async fn finalize_untitled_promotion(room: &Arc<NotebookRoom>, canonical: PathBuf) {
+pub(crate) async fn finalize_untitled_promotion(room: &Arc<NotebookRoom>, canonical: PathBuf) {
     // Update room's path now that path_index owns it.
     *room.path.write().await = Some(canonical.clone());
 
@@ -8825,7 +8193,10 @@ async fn finalize_untitled_promotion(room: &Arc<NotebookRoom>, canonical: PathBu
 /// - All outputs cleared
 /// - All execution_counts reset to null
 /// - Cell metadata and nbformat attachments preserved from the source notebook
-async fn clone_notebook_to_disk(room: &NotebookRoom, target_path: &str) -> Result<String, String> {
+pub(crate) async fn clone_notebook_to_disk(
+    room: &NotebookRoom,
+    target_path: &str,
+) -> Result<String, String> {
     let path = PathBuf::from(target_path);
 
     // Reject relative paths
