@@ -284,14 +284,19 @@ export class SyncEngine {
    * Per-output changes emitted from the WASM runtime-state sync path.
    *
    * `changed_ids` covers new or mutated outputs, `removed_ids` covers
-   * outputs no longer present in any execution. Consumers route these
-   * into the per-output React store so a stream append on one output
-   * does not re-render every component under the parent cell. See
-   * `apps/notebook/src/lib/notebook-outputs.ts`.
+   * outputs no longer present in any execution. `state` is the RuntimeState
+   * snapshot that produced these deltas so consumers can pluck the
+   * changed manifests out of its executions map without asking the WASM
+   * handle per-id (each of those calls re-reads the entire state doc).
+   *
+   * Consumers route these into the per-output React store so a stream
+   * append on one output does not re-render every component under the
+   * parent cell. See `apps/notebook/src/lib/notebook-outputs.ts`.
    */
   readonly outputIdChanges$: Observable<{
     changed_ids: string[];
     removed_ids: string[];
+    state: RuntimeState;
   }>;
 
   /**
@@ -352,6 +357,7 @@ export class SyncEngine {
   private readonly _outputIdChanges$ = new Subject<{
     changed_ids: string[];
     removed_ids: string[];
+    state: RuntimeState;
   }>();
 
   constructor(opts: SyncEngineOptions) {
@@ -719,6 +725,7 @@ export class SyncEngine {
                 this._outputIdChanges$.next({
                   changed_ids: changedOutputIds,
                   removed_ids: removedOutputIds,
+                  state,
                 });
               }
 

@@ -35,18 +35,66 @@ import type { JupyterOutput } from "../types";
 let _knownExecutionIds: Set<string> = new Set();
 
 /**
+ * Previously-seen scalar fingerprint per execution (`status`, count, success,
+ * and output-list length). Lets the projection short-circuit on untouched
+ * executions instead of rebuilding `output_ids` for every execution on
+ * every tick — critical because `runtimeState$` emits once per stream
+ * append.
+ */
+const _prevExecutionFingerprint: Map<string, string> = new Map();
+
+function executionFingerprint(raw: {
+  cell_id?: string;
+  execution_count?: number | null;
+  status?: string;
+  success?: boolean | null;
+  outputs?: unknown[];
+}): string {
+  const outLen = Array.isArray(raw.outputs) ? raw.outputs.length : 0;
+  return `${raw.cell_id ?? ""}|${raw.execution_count ?? ""}|${raw.status ?? ""}|${raw.success ?? ""}|${outLen}`;
+}
+
+function buildExecutionSnapshot(raw: {
+  cell_id?: string;
+  execution_count?: number | null;
+  status?: string;
+  success?: boolean | null;
+  outputs?: unknown[];
+}): ExecutionSnapshot {
+  const output_ids: string[] = [];
+  if (Array.isArray(raw.outputs)) {
+    for (const output of raw.outputs) {
+      if (output && typeof output === "object") {
+        const oid = (output as { output_id?: unknown }).output_id;
+        if (typeof oid === "string" && oid.length > 0) {
+          output_ids.push(oid);
+        }
+      }
+    }
+  }
+  return {
+    cell_id: raw.cell_id ?? "",
+    execution_count: raw.execution_count ?? null,
+    status: raw.status ?? "",
+    success: raw.success ?? null,
+    output_ids,
+  };
+}
+
+/**
  * Project the current RuntimeState into the executions store.
  *
- * Runs on every `runtimeState$` tick. Writes are idempotent and only notify
- * subscribers when a snapshot actually changed (see `setExecution`). Iterating
- * the full executions map is O(executions) per tick — kept tight so the
- * snapshot rate can stay high.
+ * Runs on every `runtimeState$` tick. Uses a cheap per-execution scalar
+ * fingerprint to skip executions that haven't moved — without this, long
+ * sessions pay O(total_outputs) JS work on every stream append because
+ * the snapshot list is rebuilt from scratch each time.
  *
- * The cell -> execution pointer is NOT derived here. `RuntimeStateDoc` keeps
- * historical executions for each cell, and the iteration order of a JS object
- * built from a Rust `HashMap` is not the execution order. The notebook doc's
- * `cells.{id}.execution_id` is the canonical pointer; it flows through a
- * separate path (see `updateCellExecutionPointersFromHandle`).
+ * The cell -> execution pointer is NOT derived here. `RuntimeStateDoc`
+ * keeps historical executions for each cell, and the iteration order of
+ * a JS object built from a Rust `HashMap` is not the execution order.
+ * The notebook doc's `cells.{id}.execution_id` is the canonical pointer;
+ * it flows through a separate path (see
+ * `updateCellExecutionPointersFromHandle`).
  */
 export function projectRuntimeStateToExecutions(state: {
   executions?: Record<string, unknown>;
@@ -55,33 +103,12 @@ export function projectRuntimeStateToExecutions(state: {
   const nextIds = new Set<string>();
   if (execs) {
     for (const [execution_id, raw] of Object.entries(execs)) {
-      const entry = raw as {
-        cell_id?: string;
-        execution_count?: number | null;
-        status?: string;
-        success?: boolean | null;
-        outputs?: unknown[];
-      };
-      const output_ids: string[] = [];
-      if (Array.isArray(entry.outputs)) {
-        for (const output of entry.outputs) {
-          if (output && typeof output === "object") {
-            const oid = (output as { output_id?: unknown }).output_id;
-            if (typeof oid === "string" && oid.length > 0) {
-              output_ids.push(oid);
-            }
-          }
-        }
-      }
-      const snap: ExecutionSnapshot = {
-        cell_id: entry.cell_id ?? "",
-        execution_count: entry.execution_count ?? null,
-        status: entry.status ?? "",
-        success: entry.success ?? null,
-        output_ids,
-      };
-      setExecution(execution_id, snap);
+      const entry = raw as Parameters<typeof executionFingerprint>[0];
       nextIds.add(execution_id);
+      const fp = executionFingerprint(entry);
+      if (_prevExecutionFingerprint.get(execution_id) === fp) continue;
+      _prevExecutionFingerprint.set(execution_id, fp);
+      setExecution(execution_id, buildExecutionSnapshot(entry));
     }
   }
 
@@ -91,7 +118,10 @@ export function projectRuntimeStateToExecutions(state: {
   for (const prev of _knownExecutionIds) {
     if (!nextIds.has(prev)) removed.push(prev);
   }
-  if (removed.length > 0) deleteExecutions(removed);
+  if (removed.length > 0) {
+    deleteExecutions(removed);
+    for (const eid of removed) _prevExecutionFingerprint.delete(eid);
+  }
   _knownExecutionIds = nextIds;
 }
 
@@ -126,22 +156,26 @@ export function updateCellExecutionPointersFromHandle(
  * IDs are dropped from the store via `deleteOutputs`.
  */
 export async function applyOutputIdChanges(
-  handle: NotebookHandle | null,
   changed_ids: string[],
   removed_ids: string[],
+  state: {
+    executions?: Record<string, { outputs?: unknown[] }>;
+  },
   blobPort: number | null,
   cache: Map<string, JupyterOutput>,
 ): Promise<void> {
   if (removed_ids.length > 0) {
     deleteOutputs(removed_ids);
   }
-  if (!handle || changed_ids.length === 0) return;
+  if (changed_ids.length === 0) return;
 
-  // Fetch raw manifests synchronously — cheap WASM call, lets us fast-path
-  // cache hits without awaiting.
+  // Pluck the changed manifests out of the RuntimeState snapshot we
+  // already have in hand. Avoids `handle.get_output_by_id()` per id,
+  // which would re-clone and walk the entire state doc each call.
+  const byId = indexOutputsById(state);
   const pending: Array<{ output_id: string; raw: unknown }> = [];
   for (const output_id of changed_ids) {
-    const raw = handle.get_output_by_id(output_id);
+    const raw = byId.get(output_id);
     if (raw === undefined) continue;
     pending.push({ output_id, raw });
   }
@@ -180,6 +214,33 @@ export async function applyOutputIdChanges(
   }
 }
 
+/**
+ * Flat `output_id -> manifest` map built from a RuntimeState snapshot.
+ *
+ * Walks every execution's outputs once per tick. Used by the outputs-store
+ * projection and by `applyOutputIdChanges` to avoid per-id WASM reads.
+ */
+function indexOutputsById(state: {
+  executions?: Record<string, { outputs?: unknown[] }>;
+}): Map<string, unknown> {
+  const result = new Map<string, unknown>();
+  const execs = state.executions;
+  if (!execs) return result;
+  for (const raw of Object.values(execs)) {
+    const outputs = (raw as { outputs?: unknown[] }).outputs;
+    if (!Array.isArray(outputs)) continue;
+    for (const output of outputs) {
+      if (output && typeof output === "object") {
+        const oid = (output as { output_id?: unknown }).output_id;
+        if (typeof oid === "string" && oid.length > 0) {
+          result.set(oid, output);
+        }
+      }
+    }
+  }
+  return result;
+}
+
 function tryResolveSync(
   raw: unknown,
   blobPort: number | null,
@@ -205,6 +266,7 @@ function tryResolveSync(
 
 export function resetRuntimeStoresProjection(): void {
   _knownExecutionIds = new Set();
+  _prevExecutionFingerprint.clear();
   resetNotebookExecutions();
   resetNotebookOutputs();
 }

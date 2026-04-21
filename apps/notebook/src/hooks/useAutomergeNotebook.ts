@@ -296,17 +296,18 @@ export function useAutomergeNotebook() {
 
     // Per-output changes → outputs store. Stream appends only touch the
     // affected output's subscribers, keeping parent cell components still.
-    const outputIdChangesSub = engine.outputIdChanges$.subscribe(({ changed_ids, removed_ids }) => {
-      const handle = handleRef.current;
-      if (!handle && changed_ids.length === 0 && removed_ids.length === 0) return;
-      void applyOutputIdChanges(
-        handle,
-        changed_ids,
-        removed_ids,
-        getBlobPort(),
-        outputCacheRef.current,
-      ).catch((err) => logger.warn("[automerge-notebook] output store projection failed:", err));
-    });
+    const outputIdChangesSub = engine.outputIdChanges$.subscribe(
+      ({ changed_ids, removed_ids, state }) => {
+        if (changed_ids.length === 0 && removed_ids.length === 0) return;
+        void applyOutputIdChanges(
+          changed_ids,
+          removed_ids,
+          state as unknown as { executions?: Record<string, { outputs?: unknown[] }> },
+          getBlobPort(),
+          outputCacheRef.current,
+        ).catch((err) => logger.warn("[automerge-notebook] output store projection failed:", err));
+      },
+    );
 
     // Pool state → store.
     const poolStateSub = engine.poolState$.subscribe((state) => setPoolState(state as PoolState));
