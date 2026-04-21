@@ -1,13 +1,18 @@
 {
-  "description": "Daemon creates cell, executes, streams 3 stdout lines via manifest hashes",
+  "description": "Daemon creates cell, executes, streams 3 stdout lines as inline manifests",
   "expected": {
     "cell_id": "cell-1",
     "execution_count": "1",
     "output_count": 3,
-    "output_hashes": [
-      "d19cd18f01370881ef54c609f5fb84b720282249cf19e5dee52e5951fc0cfc18",
-      "cba45b7938d787b585c03c17d8d7e7f46622a0b2965c8326d3894426c98f2d10",
-      "1188e00d560248430d290298a90acd20dec857a0ba990bb6c0d4bf45e2f3561a"
+    "output_ids": [
+      "c8b09c2d-a456-5186-b875-441a5fadf374",
+      "58af4526-9a90-5bca-98de-d8d0e36718b2",
+      "cad63e3f-42e3-542b-b28b-5d3acde7906d"
+    ],
+    "output_texts": [
+      "0\n",
+      "1\n",
+      "2\n"
     ],
     "source": "for i in range(3):\n    print(i)"
   },
