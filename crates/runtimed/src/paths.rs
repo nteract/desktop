@@ -97,16 +97,25 @@ pub(crate) fn snapshot_before_delete(persist_path: &Path, docs_dir: &Path) -> bo
     }
 
     // Snapshot the state sidecar with the same timestamp so the pair
-    // stays consistent. Absence is normal (pre-v3 rooms, ephemeral),
-    // so missing is not an error.
+    // stays consistent. Absence is normal (pre-v3 rooms, ephemeral);
+    // missing is not an error. A failed copy *is* — if we return true
+    // here the caller deletes the live sidecar, losing the only on-disk
+    // copy of RuntimeStateDoc. Better to fail the whole snapshot so the
+    // live files stay put.
     let state_src = state_persist_path_alongside(persist_path);
     if state_src.exists() {
         let state_snapshot = snapshots_dir.join(format!("{}-{}.state.automerge", stem, timestamp));
         if let Err(e) = std::fs::copy(&state_src, &state_snapshot) {
             warn!(
-                "[notebook-sync] Failed to snapshot state sidecar {:?}: {}",
+                "[notebook-sync] Failed to snapshot state sidecar {:?} \
+                 (aborting refresh to avoid losing output history): {}",
                 state_src, e
             );
+            // Roll back the notebook doc snapshot we just created —
+            // leaving it orphaned would pair a snapshot doc with no
+            // outputs on the next offline recovery.
+            let _ = std::fs::remove_file(&snapshot_path);
+            return false;
         }
     }
 
@@ -221,6 +230,46 @@ mod tests {
     #[test]
     fn normalize_save_target_rejects_relative() {
         assert!(normalize_save_target("foo.ipynb").is_err());
+    }
+
+    /// When the state sidecar's snapshot copy fails,
+    /// `snapshot_before_delete` must return false and roll back the
+    /// notebook-doc snapshot. Otherwise the caller would delete the
+    /// live sidecar and leave an orphaned notebook snapshot that
+    /// recovers with blank outputs.
+    #[test]
+    fn snapshot_before_delete_rolls_back_when_state_copy_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let docs_dir = tmp.path().to_path_buf();
+
+        let persist_path = docs_dir.join("abc.automerge");
+        let state_path = docs_dir.join("abc.state.automerge");
+        std::fs::write(&persist_path, b"notebook").unwrap();
+        // Write the sidecar as a directory so std::fs::copy fails on it.
+        std::fs::create_dir(&state_path).unwrap();
+
+        let ok = snapshot_before_delete(&persist_path, &docs_dir);
+        assert!(
+            !ok,
+            "snapshot_before_delete must fail when state copy fails"
+        );
+
+        // And the doc snapshot must not be left orphaned.
+        let snapshots_dir = docs_dir.join("snapshots");
+        let leftover: Vec<_> = std::fs::read_dir(&snapshots_dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                e.file_name()
+                    .to_str()
+                    .is_some_and(|n| n.starts_with("abc-") && n.ends_with(".automerge"))
+            })
+            .collect();
+        assert!(
+            leftover.is_empty(),
+            "orphaned notebook snapshot left behind: {:?}",
+            leftover
+        );
     }
 
     /// snapshot_before_delete must mirror the notebook doc snapshot onto

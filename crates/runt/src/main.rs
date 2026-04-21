@@ -5233,10 +5233,14 @@ fn resolve_cell_outputs_for_recovery(
 ) -> (Vec<serde_json::Value>, Option<serde_json::Value>) {
     // Preferred path: schema v3+. The NotebookDoc points at an execution_id
     // in the RuntimeStateDoc; output manifests (inline or blob ContentRef)
-    // live there.
+    // live there. The notebook doc and state sidecar persist independently,
+    // so a stale sidecar (or one missing the referenced execution_id) is a
+    // real case — fall through to the legacy path instead of returning
+    // empty outputs when the state doc can't help.
+    let mut exec_count_from_state: Option<serde_json::Value> = None;
     if let Some(state_doc) = state_doc {
         if let Some(execution_id) = doc.get_execution_id(cell_id) {
-            let exec_count = state_doc
+            exec_count_from_state = state_doc
                 .get_execution(&execution_id)
                 .and_then(|exec| exec.execution_count)
                 .map(|n| serde_json::Value::Number(serde_json::Number::from(n)));
@@ -5246,18 +5250,19 @@ fn resolve_cell_outputs_for_recovery(
                     .into_iter()
                     .map(|o| resolve_recover_output(o, blob_store_dir))
                     .collect();
-                return (resolved, exec_count);
+                return (resolved, exec_count_from_state);
             }
-            // Execution exists but has no outputs — surface the count
-            // anyway so recovered cells still display `[N]:` correctly.
-            return (Vec::new(), exec_count);
+            // Fall through: state doc exists but has no outputs for this
+            // execution. If legacy cell-local outputs survive in the
+            // notebook doc, recover those instead of shipping blanks.
         }
     }
 
-    // Legacy path: pre-v3 docs stored outputs as raw JSON strings on the
-    // cell itself. `extract_cell_outputs` returns these verbatim; we
-    // parse each back into a Value and still run ContentRef resolution
-    // so that older manifest hashes (if any) get a chance.
+    // Legacy / fallback path. Pre-v3 docs stored outputs as raw JSON
+    // strings on the cell itself; `extract_cell_outputs` returns them
+    // verbatim. Also used when the state sidecar is stale or missing
+    // the cell's execution_id — preferring surviving cell-local outputs
+    // over silently shipping empty arrays.
     if let Some(outputs) = legacy_outputs {
         let resolved = outputs
             .iter()
@@ -5267,10 +5272,10 @@ fn resolve_cell_outputs_for_recovery(
                 resolve_recover_output(value, blob_store_dir)
             })
             .collect();
-        return (resolved, None);
+        return (resolved, exec_count_from_state);
     }
 
-    (Vec::new(), None)
+    (Vec::new(), exec_count_from_state)
 }
 
 /// Resolve a single output manifest into an nbformat-shaped JSON value.
@@ -6146,6 +6151,63 @@ mod tests {
             "abc.automerge",
             "only the notebook doc should list"
         );
+    }
+
+    /// When the state sidecar is present but missing the cell's
+    /// `execution_id`, recovery must not ship a half-empty cell with a
+    /// stale execution_count. Current cells get empty outputs; there is
+    /// no other available source of outputs in a pure schema-v3 doc.
+    ///
+    /// This guards the P2 case from codex review: a stale state sidecar
+    /// paired with a newer notebook doc shouldn't silently drop outputs
+    /// *or* lie about execution status.
+    #[test]
+    fn test_recover_tolerates_stale_state_sidecar() {
+        use notebook_doc::runtime_state::RuntimeStateDoc;
+        use notebook_doc::{notebook_doc_filename, NotebookDoc};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let docs_dir = tmp.path().join("notebook-docs");
+        std::fs::create_dir_all(&docs_dir).unwrap();
+
+        let notebook_path = tmp.path().join("stale.ipynb");
+        let notebook_id = notebook_path.to_string_lossy().to_string();
+
+        let mut doc = NotebookDoc::new(&notebook_id);
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        doc.set_execution_id("cell-1", Some("exec-new")).unwrap();
+
+        // State sidecar exists but only knows about a *different* run.
+        let mut state_doc = RuntimeStateDoc::new();
+        state_doc.create_execution("exec-old", "cell-1");
+        state_doc.set_outputs("exec-old", &[]).unwrap();
+
+        let filename = notebook_doc_filename(&notebook_id);
+        let stem = filename.strip_suffix(".automerge").unwrap();
+        std::fs::write(docs_dir.join(&filename), doc.save()).unwrap();
+        std::fs::write(
+            docs_dir.join(format!("{stem}.state.automerge")),
+            state_doc.doc_mut().save(),
+        )
+        .unwrap();
+
+        let output_path = tmp.path().join("recovered.ipynb");
+        super::recover_notebook_from_dirs(
+            Some(&notebook_path),
+            Some(&output_path),
+            false,
+            &[docs_dir],
+            None,
+        )
+        .expect("recover_notebook_from_dirs");
+
+        let recovered: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&output_path).unwrap()).unwrap();
+        let cell = &recovered["cells"][0];
+        // No outputs to recover; an empty array is correct.
+        assert_eq!(cell["outputs"].as_array().unwrap().len(), 0);
+        // exec_count must not surface a foreign execution's count.
+        assert!(cell["execution_count"].is_null());
     }
 
     /// Verifies MIME-aware ContentRef resolution for display_data bundles.
