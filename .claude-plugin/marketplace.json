@@ -9,6 +9,12 @@
       "source": "./plugins/nteract",
       "description": "Skills for working with nteract notebooks",
       "version": "0.1.0"
+    },
+    {
+      "name": "nteract-nightly",
+      "source": "./plugins/nteract-nightly",
+      "description": "Skills for working with nteract notebooks (nightly channel)",
+      "version": "0.1.0"
     }
   ]
 }

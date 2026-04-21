@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "nteract-nightly": {
+      "command": "./bin/nteract-runt-proxy",
+      "args": [],
+      "env": {
+        "NTERACT_CHANNEL": "nightly"
+      }
+    }
+  }
+}

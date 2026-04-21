@@ -1,0 +1,6 @@
+{
+  "name": "nteract-nightly",
+  "version": "0.1.0",
+  "description": "Skills for working with nteract notebooks (nightly channel)",
+  "repository": "https://github.com/nteract/desktop"
+}
