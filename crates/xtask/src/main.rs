@@ -2904,6 +2904,7 @@ fn cmd_check_dep_budget() {
         ("runt-trust", 50),
         ("notebook-doc", 110),
         ("kernel-launch", 175),
+        ("runtimed-client", 310),
     ];
 
     println!("{:<20} {:>5}  {:>6}  Status", "Crate", "Deps", "Budget");

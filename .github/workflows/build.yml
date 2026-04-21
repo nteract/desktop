@@ -374,6 +374,9 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --exclude notebook --exclude runtimed-wasm --exclude sift-wasm --exclude runtimed-py --all-targets -- -D warnings
 
+      - name: Dependency budget check
+        run: cargo xtask check-dep-budget
+
       - name: Run tests
         run: cargo test --workspace --exclude notebook --exclude runtimed-wasm --exclude sift-wasm --exclude runtimed-py --exclude runtimed-node --verbose
 
