@@ -6884,6 +6884,7 @@ name = "runt-cli"
 version = "2.2.0"
 dependencies = [
  "anyhow",
+ "automerge",
  "chrono",
  "clap",
  "colored",

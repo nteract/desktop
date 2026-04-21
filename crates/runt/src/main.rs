@@ -5109,10 +5109,33 @@ fn find_latest_snapshot(snapshots_dir: &std::path::Path, stem: &str) -> Option<s
     matches.last().map(|e| e.path())
 }
 
-/// Export a NotebookDoc to .ipynb JSON.
-fn doc_to_ipynb(doc: &notebook_doc::NotebookDoc) -> serde_json::Value {
+/// Export a NotebookDoc to .ipynb JSON, resolving outputs through an
+/// optional paired `RuntimeStateDoc` and on-disk blob store.
+///
+/// Schema v3 moved cell outputs from the NotebookDoc into the daemon's
+/// RuntimeStateDoc. When `state_doc` is provided, outputs are pulled
+/// from there keyed by each cell's `execution_id` pointer, and inline
+/// / blob `ContentRef` entries inside those manifests get resolved to
+/// their string content. Blob references require `blob_store_dir` to
+/// point at the content-addressed store (two-char shard directories);
+/// missing blob files pass through unresolved so something still lands
+/// in the recovered ipynb.
+///
+/// When `state_doc` is `None`, falls back to the pre-v3 layout — raw
+/// JSON strings stored on the cell itself via `extract_cell_outputs`.
+fn doc_to_ipynb_with_state(
+    doc: &notebook_doc::NotebookDoc,
+    state_doc: Option<&notebook_doc::runtime_state::RuntimeStateDoc>,
+    blob_store_dir: Option<&std::path::Path>,
+) -> serde_json::Value {
     let cells = doc.get_cells();
     let metadata_snapshot = doc.get_metadata_snapshot();
+
+    // Pre-v3 fallback: some `.automerge` captures still carry outputs on
+    // the cell itself as raw JSON strings. Read them up front so the
+    // per-cell loop can consult this map when state_doc lookup misses.
+    let legacy_outputs: std::collections::HashMap<String, Vec<String>> =
+        doc.extract_cell_outputs().into_iter().collect();
 
     let mut nb_cells = Vec::new();
     for cell in &cells {
@@ -5140,11 +5163,22 @@ fn doc_to_ipynb(doc: &notebook_doc::NotebookDoc) -> serde_json::Value {
         });
 
         if cell.cell_type == "code" {
-            // Outputs are already structured serde_json::Value manifests
-            cell_json["outputs"] = serde_json::Value::Array(cell.outputs.clone());
+            let (outputs, exec_count_from_state) = resolve_cell_outputs_for_recovery(
+                doc,
+                &cell.id,
+                state_doc,
+                blob_store_dir,
+                legacy_outputs.get(&cell.id),
+            );
+            cell_json["outputs"] = serde_json::Value::Array(outputs);
 
-            let exec_count: serde_json::Value =
-                serde_json::from_str(&cell.execution_count).unwrap_or(serde_json::Value::Null);
+            // RuntimeStateDoc wins for execution_count when present — it's
+            // the authoritative post-v3 source. Fall back to the cached
+            // CellSnapshot string (populated by legacy migrations / ipynb
+            // load) when the state doc has nothing to say.
+            let exec_count = exec_count_from_state.unwrap_or_else(|| {
+                serde_json::from_str(&cell.execution_count).unwrap_or(serde_json::Value::Null)
+            });
             cell_json["execution_count"] = exec_count;
         }
 
@@ -5165,6 +5199,157 @@ fn doc_to_ipynb(doc: &notebook_doc::NotebookDoc) -> serde_json::Value {
         "metadata": metadata,
         "cells": nb_cells,
     })
+}
+
+/// Resolve outputs and execution_count for one code cell during recovery.
+///
+/// Returns the nbformat outputs array and, if the RuntimeStateDoc records
+/// an `execution_count` for this cell's latest execution, its serialized
+/// JSON form. Callers fall back to the NotebookDoc's cached string when
+/// this returns `None`.
+fn resolve_cell_outputs_for_recovery(
+    doc: &notebook_doc::NotebookDoc,
+    cell_id: &str,
+    state_doc: Option<&notebook_doc::runtime_state::RuntimeStateDoc>,
+    blob_store_dir: Option<&std::path::Path>,
+    legacy_outputs: Option<&Vec<String>>,
+) -> (Vec<serde_json::Value>, Option<serde_json::Value>) {
+    // Preferred path: schema v3+. The NotebookDoc points at an execution_id
+    // in the RuntimeStateDoc; output manifests (inline or blob ContentRef)
+    // live there.
+    if let Some(state_doc) = state_doc {
+        if let Some(execution_id) = doc.get_execution_id(cell_id) {
+            let exec_count = state_doc
+                .get_execution(&execution_id)
+                .and_then(|exec| exec.execution_count)
+                .map(|n| serde_json::Value::Number(serde_json::Number::from(n)));
+            let raw = state_doc.get_outputs(&execution_id);
+            if !raw.is_empty() {
+                let resolved = raw
+                    .into_iter()
+                    .map(|o| resolve_recover_output(o, blob_store_dir))
+                    .collect();
+                return (resolved, exec_count);
+            }
+            // Execution exists but has no outputs — surface the count
+            // anyway so recovered cells still display `[N]:` correctly.
+            return (Vec::new(), exec_count);
+        }
+    }
+
+    // Legacy path: pre-v3 docs stored outputs as raw JSON strings on the
+    // cell itself. `extract_cell_outputs` returns these verbatim; we
+    // parse each back into a Value and still run ContentRef resolution
+    // so that older manifest hashes (if any) get a chance.
+    if let Some(outputs) = legacy_outputs {
+        let resolved = outputs
+            .iter()
+            .map(|s| {
+                let value: serde_json::Value = serde_json::from_str(s)
+                    .unwrap_or_else(|_| serde_json::Value::String(s.clone()));
+                resolve_recover_output(value, blob_store_dir)
+            })
+            .collect();
+        return (resolved, None);
+    }
+
+    (Vec::new(), None)
+}
+
+/// Resolve a single output manifest into an nbformat-shaped JSON value.
+///
+/// Walks the manifest and swaps every `ContentRef` shape
+/// (`{"inline": "..."}` or `{"blob": "<hash>", "size": N}`) for its
+/// resolved string content. Unknown shapes pass through unchanged so
+/// raw nbformat outputs from legacy captures keep working.
+fn resolve_recover_output(
+    mut output: serde_json::Value,
+    blob_store_dir: Option<&std::path::Path>,
+) -> serde_json::Value {
+    resolve_content_refs_in_place(&mut output, blob_store_dir);
+    output
+}
+
+/// Recursively walk a JSON value, replacing ContentRef objects with their
+/// resolved string content in place.
+///
+/// A ContentRef is a `{"inline": <string>}` or `{"blob": <hash>, "size":
+/// <n>}` object. Resolution is a pure read — no blob store writes. Binary
+/// MIMEs (images, audio, etc.) are not re-encoded here; the daemon's save
+/// path handles base64 for live notebooks, and the offline recover path
+/// only surfaces text content today. Binary content falls through
+/// unresolved rather than silently corrupting data.
+fn resolve_content_refs_in_place(
+    value: &mut serde_json::Value,
+    blob_store_dir: Option<&std::path::Path>,
+) {
+    match value {
+        serde_json::Value::Object(map) => {
+            // Detect a ContentRef at this level before recursing.
+            let looks_like_content_ref =
+                map.len() <= 2 && (map.contains_key("inline") || map.contains_key("blob"));
+            if looks_like_content_ref {
+                if let Some(resolved) = resolve_content_ref_object(map, blob_store_dir) {
+                    *value = serde_json::Value::String(resolved);
+                    return;
+                }
+            }
+            for (_, v) in map.iter_mut() {
+                resolve_content_refs_in_place(v, blob_store_dir);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items.iter_mut() {
+                resolve_content_refs_in_place(item, blob_store_dir);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Resolve a `ContentRef`-shaped JSON object to its string content.
+///
+/// Returns `None` when the shape is unrecognized, when the blob file is
+/// missing, or when the bytes are not valid UTF-8 — the caller then
+/// leaves the original object in place so whatever structure survived
+/// the daemon still round-trips.
+fn resolve_content_ref_object(
+    map: &serde_json::Map<String, serde_json::Value>,
+    blob_store_dir: Option<&std::path::Path>,
+) -> Option<String> {
+    if let Some(inline) = map.get("inline").and_then(|v| v.as_str()) {
+        return Some(inline.to_string());
+    }
+    let blob_hash = map.get("blob").and_then(|v| v.as_str())?;
+    let dir = blob_store_dir?;
+    // Blob store layout: two-char shard dir + remaining chars.
+    if blob_hash.len() < 3 {
+        return None;
+    }
+    let (shard, rest) = blob_hash.split_at(2);
+    let blob_path = dir.join(shard).join(rest);
+    std::fs::read_to_string(&blob_path).ok()
+}
+
+/// Look for a `{stem}.state.automerge` sibling of the given notebook doc
+/// file.
+///
+/// The daemon writes this file alongside `{hash}.automerge` so offline
+/// recovery can read the post-v3 output layout (cell outputs live in
+/// `RuntimeStateDoc`, not in the notebook doc). Missing siblings are
+/// normal for pre-v3 captures or rooms that never flushed state.
+fn load_sibling_state_doc(
+    automerge_path: &std::path::Path,
+) -> Option<notebook_doc::runtime_state::RuntimeStateDoc> {
+    let parent = automerge_path.parent()?;
+    let stem = automerge_path.file_stem()?.to_str()?;
+    let sibling = parent.join(format!("{stem}.state.automerge"));
+    if !sibling.is_file() {
+        return None;
+    }
+    let bytes = std::fs::read(&sibling).ok()?;
+    let doc = automerge::AutoCommit::load(&bytes).ok()?;
+    Some(notebook_doc::runtime_state::RuntimeStateDoc::from_doc(doc))
 }
 
 fn format_file_modified(entry: &std::fs::DirEntry) -> String {
@@ -5226,7 +5411,7 @@ fn recover_notebook_from_dirs(
     output: Option<&std::path::Path>,
     list: bool,
     docs_dirs: &[std::path::PathBuf],
-    _blob_store_dir: Option<&std::path::Path>,
+    blob_store_dir: Option<&std::path::Path>,
 ) -> Result<()> {
     use notebook_doc::{notebook_doc_filename, NotebookDoc};
 
@@ -5295,8 +5480,13 @@ fn recover_notebook_from_dirs(
     let doc = NotebookDoc::load(&data)
         .map_err(|e| anyhow::anyhow!("Failed to load automerge document: {}", e))?;
 
+    // Try to load the sibling RuntimeStateDoc. Missing is normal for pre-v3
+    // captures or rooms that never flushed state — the fallback path in
+    // `doc_to_ipynb_with_state` still surfaces legacy cell-local outputs.
+    let state_doc = load_sibling_state_doc(&automerge_path);
+
     let cell_count = doc.cell_count();
-    let notebook_json = doc_to_ipynb(&doc);
+    let notebook_json = doc_to_ipynb_with_state(&doc, state_doc.as_ref(), blob_store_dir);
 
     let output_path = match output {
         Some(p) => p.to_path_buf(),
@@ -5564,7 +5754,7 @@ mod tests {
         doc.add_cell(1, "cell-2", "markdown").unwrap();
         doc.update_source("cell-2", "# Title").unwrap();
 
-        let result = super::doc_to_ipynb(&doc);
+        let result = super::doc_to_ipynb_with_state(&doc, None, None);
 
         assert_eq!(result["nbformat"], 4);
         assert_eq!(result["nbformat_minor"], 5);
@@ -5601,7 +5791,7 @@ mod tests {
         doc.add_cell(0, "cell-1", "code").unwrap();
         doc.update_source("cell-1", "line1\nline2\nline3").unwrap();
 
-        let result = super::doc_to_ipynb(&doc);
+        let result = super::doc_to_ipynb_with_state(&doc, None, None);
         let source: Vec<&str> = result["cells"][0]["source"]
             .as_array()
             .unwrap()
@@ -5618,7 +5808,7 @@ mod tests {
         let mut doc = NotebookDoc::new("test");
         doc.add_cell(0, "cell-1", "code").unwrap();
 
-        let result = super::doc_to_ipynb(&doc);
+        let result = super::doc_to_ipynb_with_state(&doc, None, None);
         let source = result["cells"][0]["source"].as_array().unwrap();
         assert!(source.is_empty());
     }
