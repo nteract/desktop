@@ -77,14 +77,13 @@ pub async fn restart_kernel(
 
     // Step 2: Get a fresh handle (the original may have been invalidated by
     // a daemon restart during the shutdown sequence). If the session was
-    // replaced by the health monitor's auto_rejoin, we pick up the new one.
+    // replaced by daemon_watch's rejoin, we pick up the new one.
     let handle = {
         let guard = server.session.read().await;
         match guard.as_ref() {
             Some(s) => s.handle.clone(),
             None => {
-                // Session dropped — wait for health monitor to reconnect.
-                // PING_INTERVAL is 5s; give it two cycles plus margin.
+                // Session dropped — wait for daemon_watch to rejoin.
                 drop(guard);
                 tokio::time::sleep(std::time::Duration::from_secs(8)).await;
                 let guard = server.session.read().await;

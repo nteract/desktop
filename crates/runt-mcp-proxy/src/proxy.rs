@@ -25,6 +25,10 @@ use crate::session;
 use crate::tools::{self, ToolDivergence};
 use crate::version::ReconnectionEvent;
 
+/// Env var name passed to a freshly respawned child to seed its rejoin
+/// target. Must match `runt_mcp::daemon_watch::REJOIN_ENV_VAR`.
+const REJOIN_ENV_VAR: &str = "NTERACT_MCP_REJOIN_NOTEBOOK";
+
 /// Configuration for the MCP proxy.
 pub struct ProxyConfig {
     /// Resolver that returns the path to the child binary.
@@ -294,15 +298,28 @@ impl McpProxy {
             }
         };
 
-        let (upstream_name, upstream_title) = {
+        let (upstream_name, upstream_title, rejoin_target) = {
             let state = self.state.read().await;
-            (state.upstream_name.clone(), state.upstream_title.clone())
+            (
+                state.upstream_name.clone(),
+                state.upstream_title.clone(),
+                state.last_notebook_id.clone(),
+            )
         };
+
+        // Seed the respawned child with the previous notebook target so
+        // its `daemon_watch` loop rejoins on the first `Connected` event
+        // without us having to call `open_notebook` over the child MCP
+        // channel.
+        let mut child_env = self.config.child_env.clone();
+        if let Some(ref target) = rejoin_target {
+            child_env.insert(REJOIN_ENV_VAR.to_string(), target.clone());
+        }
 
         match child::spawn_child(
             &child_command,
             &self.config.child_args,
-            &self.config.child_env,
+            &child_env,
             &upstream_name,
             upstream_title.as_deref(),
         )
@@ -353,49 +370,21 @@ impl McpProxy {
                 };
                 state.last_daemon_version = new_version.clone();
 
+                // Session rejoin is now the child's responsibility
+                // (`daemon_watch` consumes the seeded REJOIN env var on
+                // its first `Connected` event). We still record whether
+                // we handed off a target so reconnection messages are
+                // informative.
+                let session_rejoined = rejoin_target.is_some();
                 let reconnection_event = match (old_version.as_deref(), new_version.as_deref()) {
-                    (Some(old), Some(new)) if old != new => {
-                        Some(ReconnectionEvent::DaemonUpgrade {
-                            old_version: old.to_string(),
-                            new_version: new.to_string(),
-                            session_rejoined: false,
-                        })
-                    }
-                    _ => Some(ReconnectionEvent::ChildRestart {
-                        session_rejoined: false,
-                    }),
+                    (Some(old), Some(new)) if old != new => ReconnectionEvent::DaemonUpgrade {
+                        old_version: old.to_string(),
+                        new_version: new.to_string(),
+                        session_rejoined,
+                    },
+                    _ => ReconnectionEvent::ChildRestart { session_rejoined },
                 };
-
-                // Auto-rejoin session
-                let mut session_rejoined = false;
-                if let Some(ref notebook_id) = state.last_notebook_id.clone() {
-                    if let Some(ref client) = state.child_client {
-                        session_rejoined = session::auto_rejoin(client, notebook_id).await;
-                        if !session_rejoined {
-                            state.last_notebook_id = None;
-                        }
-                    }
-                }
-
-                // Update the reconnection event with session status
-                if let Some(event) = reconnection_event {
-                    let msg = match event {
-                        ReconnectionEvent::DaemonUpgrade {
-                            old_version,
-                            new_version,
-                            ..
-                        } => ReconnectionEvent::DaemonUpgrade {
-                            old_version,
-                            new_version,
-                            session_rejoined,
-                        }
-                        .message(),
-                        ReconnectionEvent::ChildRestart { .. } => {
-                            ReconnectionEvent::ChildRestart { session_rejoined }.message()
-                        }
-                    };
-                    state.reconnection_message = Some(msg);
-                }
+                state.reconnection_message = Some(reconnection_event.message());
 
                 drop(state);
 

@@ -796,45 +796,14 @@ async fn run_mcp_server(no_show: bool) -> Result<()> {
     let (blob_base_url, blob_store_path) =
         runtimed_client::daemon_paths::get_blob_paths_async(&socket_path).await;
 
-    // Capture initial daemon info for health monitoring.
-    // Must query the SAME socket the health monitor will poll — otherwise
-    // a non-default RUNTIMED_SOCKET_PATH seeds state from the wrong daemon
-    // and the first successful ping flags a phantom version-mismatch
-    // "upgrade" (EXIT_DAEMON_UPGRADED).
-    let initial_state =
-        match runtimed_client::singleton::query_daemon_info(socket_path.clone()).await {
-            Some(info) => runt_mcp::health::DaemonState::Connected { info },
-            None => {
-                // Daemon not yet available — start in reconnecting mode with no
-                // prior version info. The health monitor will treat the first
-                // successful connection as a fresh connect (not an upgrade).
-                runt_mcp::health::DaemonState::Reconnecting {
-                    since: std::time::Instant::now(),
-                    attempt: 0,
-                    last_info: None,
-                }
-            }
-        };
-
     use rmcp::service::ServiceExt;
     let server = if no_show {
-        runt_mcp::NteractMcp::new_no_show(
-            socket_path.clone(),
-            blob_base_url,
-            blob_store_path,
-            initial_state,
-        )
+        runt_mcp::NteractMcp::new_no_show(socket_path.clone(), blob_base_url, blob_store_path)
     } else {
-        runt_mcp::NteractMcp::new(
-            socket_path.clone(),
-            blob_base_url,
-            blob_store_path,
-            initial_state,
-        )
+        runt_mcp::NteractMcp::new(socket_path.clone(), blob_base_url, blob_store_path)
     };
 
     // Grab shared state handles before serving (serve consumes the server)
-    let daemon_state = server.daemon_state().clone();
     let session = server.session().clone();
     let peer_label = server.peer_label_shared().clone();
 
@@ -846,11 +815,15 @@ async fn run_mcp_server(no_show: bool) -> Result<()> {
     // client sees a clean EOF instead of a broken pipe.
     let cancel_token = handle.cancellation_token();
 
-    // Spawn the health monitor alongside the MCP server
-    let monitor_socket = socket_path;
-    let monitor_handle = tokio::spawn(async move {
-        runt_mcp::health::daemon_health_monitor(monitor_socket, daemon_state, session, peer_label)
-            .await
+    // Spawn the daemon watcher alongside the MCP server. It subscribes to
+    // `DaemonConnection` events and (a) returns EXIT_DAEMON_UPGRADED on a
+    // version change, (b) re-joins the notebook session on reconnect.
+    let daemon_conn = std::sync::Arc::new(
+        runtimed_client::daemon_connection::DaemonConnection::spawn(socket_path.clone()),
+    );
+    let watch_socket = socket_path;
+    let watch_handle = tokio::spawn(async move {
+        runt_mcp::daemon_watch::watch(daemon_conn, watch_socket, session, peer_label).await
     });
 
     tokio::select! {
@@ -858,12 +831,12 @@ async fn run_mcp_server(no_show: bool) -> Result<()> {
             // MCP client disconnected — normal shutdown
             result?;
         }
-        exit_code = monitor_handle => {
-            // Health monitor returned — daemon was upgraded.
+        exit_code = watch_handle => {
+            // Watcher returned — daemon was upgraded.
             // Gracefully close the MCP transport so the client sees a clean
             // EOF rather than a broken pipe, then exit with EX_TEMPFAIL (75)
             // so the wrapper or client knows to restart us.
-            let code = exit_code.unwrap_or(runt_mcp::health::EXIT_DAEMON_UPGRADED);
+            let code = exit_code.unwrap_or(runt_mcp::daemon_watch::EXIT_DAEMON_UPGRADED);
             eprintln!("Daemon upgraded, exiting for restart (exit code {code}).");
             cancel_token.cancel();
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
