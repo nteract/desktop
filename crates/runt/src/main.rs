@@ -5189,13 +5189,24 @@ fn doc_to_ipynb_with_state(
             );
             cell_json["outputs"] = serde_json::Value::Array(outputs);
 
-            // RuntimeStateDoc wins for execution_count when present — it's
-            // the authoritative post-v3 source. Fall back to the cached
-            // CellSnapshot string (populated by legacy migrations / ipynb
-            // load) when the state doc has nothing to say.
-            let exec_count = exec_count_from_state.unwrap_or_else(|| {
-                serde_json::from_str(&cell.execution_count).unwrap_or(serde_json::Value::Null)
-            });
+            // execution_count sourcing depends on schema version:
+            //
+            // - v3+ with a state sidecar: state doc is authoritative. Use
+            //   its value when present; otherwise null — never fall back
+            //   to the cached `CellSnapshot.execution_count`, which would
+            //   pair `outputs: []` with a stale `[N]:` on a stale sidecar.
+            // - pre-v3 (no state sidecar): fall back to the cached
+            //   `CellSnapshot.execution_count` string because that's the
+            //   only record on disk.
+            let exec_count = match exec_count_from_state {
+                Some(v) => v,
+                None if state_doc.is_some() || doc.schema_version().unwrap_or(0) >= 3 => {
+                    serde_json::Value::Null
+                }
+                None => {
+                    serde_json::from_str(&cell.execution_count).unwrap_or(serde_json::Value::Null)
+                }
+            };
             cell_json["execution_count"] = exec_count;
         }
 

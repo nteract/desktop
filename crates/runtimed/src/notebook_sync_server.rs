@@ -7479,12 +7479,22 @@ fn spawn_state_persist_forwarder(
                         let _ = state_persist_tx.send(Some(bytes));
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
-                    Err(broadcast::error::RecvError::Lagged(_)) => {
-                        // Fell behind on the broadcast channel. The next
-                        // state_changed signal will still pick up the
-                        // current state_doc snapshot, so lagging is a
-                        // no-op for persistence.
-                        continue;
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        // Fell behind on the broadcast channel. We can't
+                        // replay the skipped signals, but each of them
+                        // meant "state_doc changed"; the current state
+                        // doc reflects the union. Re-serialize now so
+                        // the sidecar doesn't stay stale if no further
+                        // events arrive before idle / shutdown.
+                        debug!(
+                            "[notebook-sync] State-persist forwarder lagged {n} events; \
+                             reserializing state doc to avoid stale sidecar"
+                        );
+                        let bytes = {
+                            let mut sd = state_doc.write().await;
+                            sd.doc_mut().save()
+                        };
+                        let _ = state_persist_tx.send(Some(bytes));
                     }
                 }
             }
