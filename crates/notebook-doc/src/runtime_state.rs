@@ -2365,10 +2365,15 @@ pub fn extract_output_id(output: &serde_json::Value) -> Option<String> {
 }
 
 /// Result of a per-output-id diff between two execution snapshots.
+///
+/// Each changed entry carries the full (un-narrowed) manifest so callers
+/// can emit it directly without re-reading the state doc.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct OutputIdDiff {
-    /// Output IDs that were added or whose manifest changed.
-    pub changed_output_ids: Vec<String>,
+    /// Added or modified outputs, paired `(output_id, manifest)`. Manifest
+    /// is the raw on-the-wire shape from `ExecutionState::outputs`; callers
+    /// apply MIME narrowing + ContentRef resolution before handing to the UI.
+    pub changed: Vec<(String, serde_json::Value)>,
     /// Output IDs that were removed (present in `prev`, absent now).
     pub removed_output_ids: Vec<String>,
 }
@@ -2377,17 +2382,20 @@ pub struct OutputIdDiff {
 ///
 /// Walks every current execution's output list, extracts per-output manifests
 /// keyed by `output_id`, and compares them to the previous snapshot. Returns
-/// the changed + removed output_ids plus the new `output_id -> manifest`
-/// snapshot so callers can track state between sync frames.
+/// `(diff, new_snapshot)`. The diff carries `(id, manifest)` pairs for
+/// changed entries so callers can emit the manifest directly without a
+/// second lookup against the state doc. The new snapshot is the updated
+/// `output_id -> manifest` map the caller should persist for the next diff.
 ///
-/// Outputs without an `output_id` (legacy / synthesized) are skipped here —
-/// they still get picked up by `diff_execution_outputs` at the cell level.
+/// Outputs without an `output_id` are skipped. The daemon invariant is that
+/// `create_manifest` always stamps one; if an un-stamped manifest reaches
+/// this function, that is a bug upstream.
 pub fn diff_output_ids(
     prev: &HashMap<String, serde_json::Value>,
     current_executions: &HashMap<String, ExecutionState>,
 ) -> (OutputIdDiff, HashMap<String, serde_json::Value>) {
     let mut new_snapshot: HashMap<String, serde_json::Value> = HashMap::new();
-    let mut changed = Vec::new();
+    let mut changed: Vec<(String, serde_json::Value)> = Vec::new();
 
     for exec in current_executions.values() {
         for output in &exec.outputs {
@@ -2399,7 +2407,7 @@ pub fn diff_output_ids(
                 Some(prev_output) => prev_output != output,
             };
             if is_changed {
-                changed.push(oid.clone());
+                changed.push((oid.clone(), output.clone()));
             }
             new_snapshot.insert(oid, output.clone());
         }
@@ -2413,7 +2421,7 @@ pub fn diff_output_ids(
 
     (
         OutputIdDiff {
-            changed_output_ids: changed,
+            changed,
             removed_output_ids: removed,
         },
         new_snapshot,

@@ -24,7 +24,7 @@ import {
 //   _outputMap    — output manifest by output_id
 //   subscribers   — per-output set of callbacks
 //
-// Writers: the frame pipeline, fed by `RuntimeStateSyncApplied.output_changed_ids`
+// Writers: the frame pipeline, fed by `RuntimeStateSyncApplied.output_changeset`
 // from the WASM handle. See `frame-pipeline.ts` for the dispatch path.
 // ---------------------------------------------------------------------------
 

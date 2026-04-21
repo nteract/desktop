@@ -144,7 +144,7 @@ export async function materializeChangeset(
 
     if (!chromeChanged) {
       // Output-only change — the outputs store already has the new data
-      // from `applyOutputIdChanges`. Still warm the plugin cache for any
+      // from `applyOutputChangeset`. Still warm the plugin cache for any
       // rich MIME types so <OutputArea> renders without waiting for async
       // loads, but don't touch the cell store.
       if (fields.outputs) {

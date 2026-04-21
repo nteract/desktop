@@ -48,10 +48,16 @@ export interface FrameEvent {
   state?: unknown;
   /** Cell IDs whose outputs changed in RuntimeStateDoc (from WASM-side diff). */
   output_changed_cells?: string[];
-  /** Output IDs added or modified, keyed by the UUIDv4 the daemon stamps. */
-  output_changed_ids?: string[];
-  /** Output IDs no longer present in any execution (cleared or replaced). */
-  output_removed_ids?: string[];
+  /**
+   * Per-output diff for RuntimeStateSyncApplied events. Each `changed` entry
+   * is `[output_id, narrowed_manifest]` — manifests are already MIME-narrowed
+   * + ContentRef-resolved so the frontend's outputs store can write them
+   * directly. `removed` lists output_ids no longer present in any execution.
+   */
+  output_changeset?: {
+    changed?: Array<[string, unknown]>;
+    removed?: string[];
+  };
 }
 
 // ── SyncableHandle ───────────────────────────────────────────────────

@@ -7539,7 +7539,26 @@ async fn outputs_to_manifest_refs(
             Ok(manifest) => manifest.to_json(),
             Err(e) => {
                 warn!("[notebook-sync] Failed to create output manifest: {}", e);
-                output_value.clone()
+                // Stamp an output_id on the fallback so the frontend's
+                // per-output store always has a valid key. Without this,
+                // a manifest-creation failure on disk load would emit an
+                // output with no output_id and the WASM OutputChangeset
+                // path would silently drop it.
+                let mut fallback = output_value.clone();
+                if let Some(obj) = fallback.as_object_mut() {
+                    let needs_id = obj
+                        .get("output_id")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.is_empty())
+                        .unwrap_or(true);
+                    if needs_id {
+                        obj.insert(
+                            "output_id".to_string(),
+                            serde_json::Value::String(uuid::Uuid::new_v4().to_string()),
+                        );
+                    }
+                }
+                fallback
             }
         };
         refs.push(output_ref);

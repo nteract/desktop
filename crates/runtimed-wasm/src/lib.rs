@@ -19,7 +19,7 @@ use notebook_doc::runtime_state::{
     RuntimeState, RuntimeStateDoc,
 };
 use notebook_doc::{CellSnapshot, NotebookDoc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
 /// Serialize a Rust value to a `JsValue`, forcing maps to plain JS Objects.
@@ -56,6 +56,28 @@ pub struct TextAttribution {
     pub deleted: usize,
     /// Actor label(s) that contributed to this sync batch.
     pub actors: Vec<String>,
+}
+
+/// Per-output diff emitted alongside `RuntimeStateSyncApplied`.
+///
+/// `changed` carries `(output_id, narrowed_manifest)` pairs — manifests
+/// are already MIME-narrowed + ContentRef-resolved, so the frontend's
+/// outputs store writes them in directly. Mirrors the `CellChangeset`
+/// model: WASM owns both the diff and the view projection for outputs.
+#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
+pub struct OutputChangeset {
+    /// Added or modified outputs `(output_id, manifest)`, in no particular order.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub changed: Vec<(String, serde_json::Value)>,
+    /// Output IDs no longer present in any execution.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub removed: Vec<String>,
+}
+
+impl OutputChangeset {
+    pub fn is_empty(&self) -> bool {
+        self.changed.is_empty() && self.removed.is_empty()
+    }
 }
 
 /// Event returned from `receive_frame()` for the frontend to handle.
@@ -106,19 +128,17 @@ pub enum FrameEvent {
         /// Cell IDs whose outputs changed in this sync frame.
         #[serde(skip_serializing_if = "Vec::is_empty")]
         output_changed_cells: Vec<String>,
-        /// Output IDs that were added or modified in this sync frame.
+        /// Per-output diff for this sync frame. Added or modified outputs
+        /// arrive here with their narrowed manifest inline; the frontend's
+        /// outputs store can write them straight in with no second
+        /// lookup against the state doc.
         ///
         /// Keyed by the `output_id` field on each output manifest (UUIDv4
-        /// stamped by the daemon). The frontend's outputs store uses this
-        /// to notify per-output subscribers without touching parent cells.
-        /// Outputs without an `output_id` (legacy) are skipped here and
-        /// still covered by `output_changed_cells`.
-        #[serde(skip_serializing_if = "Vec::is_empty")]
-        output_changed_ids: Vec<String>,
-        /// Output IDs that no longer appear in any execution (cleared or
-        /// replaced). The frontend's outputs store drops these.
-        #[serde(skip_serializing_if = "Vec::is_empty")]
-        output_removed_ids: Vec<String>,
+        /// stamped by the daemon). Removed output_ids are carried alongside
+        /// so the store can drop them.
+        #[serde(skip_serializing_if = "OutputChangeset::is_empty")]
+        #[serde(default)]
+        output_changeset: OutputChangeset,
     },
     /// Sync error recovered — doc rebuilt and sync state normalized.
     ///
@@ -191,7 +211,7 @@ pub struct NotebookHandle {
     prev_execution_outputs: std::collections::HashMap<String, Vec<serde_json::Value>>,
     /// Previous per-`output_id` manifest snapshot. Used alongside
     /// `prev_execution_outputs` to produce the finer-grained per-output
-    /// diff emitted on `RuntimeStateSyncApplied.output_changed_ids`.
+    /// diff emitted on `RuntimeStateSyncApplied.output_changeset`.
     prev_output_by_id: std::collections::HashMap<String, serde_json::Value>,
     /// Pool state doc — daemon-authoritative, global, synced read-only.
     pool_doc: PoolDoc,
@@ -667,23 +687,6 @@ impl NotebookHandle {
             }
         }
         JsValue::UNDEFINED
-    }
-
-    /// Apply MIME narrowing + ContentRef resolution to a raw output manifest.
-    ///
-    /// The runtime-state snapshot carries manifests in their un-narrowed
-    /// on-the-wire shape (all MIME types, raw `{inline}`/`{blob}` refs).
-    /// The output-store projection uses this to re-apply the same
-    /// narrowing logic `get_output_by_id` does, but without a per-id
-    /// `read_state()` walk — callers pass the raw manifest they already
-    /// have and get back a manifest ready for the renderer. Returns
-    /// `undefined` when the input can't be deserialized.
-    pub fn narrow_raw_output(&self, raw: JsValue) -> JsValue {
-        let Ok(value) = serde_wasm_bindgen::from_value::<serde_json::Value>(raw) else {
-            return JsValue::UNDEFINED;
-        };
-        let narrowed = self.narrow_output_data(value);
-        serialize_to_js(&narrowed).unwrap_or(JsValue::UNDEFINED)
     }
 
     /// Set the MIME type priority list for output selection.
@@ -1757,7 +1760,7 @@ impl NotebookHandle {
                 // changes (stream append, display update, error). `state` is
                 // Some iff `changed` is true, so this also covers the
                 // `changed` branch without a separate check.
-                let (output_changed_cells, output_changed_ids, output_removed_ids) =
+                let (output_changed_cells, output_changeset) =
                     if let Some(current_state) = state.as_ref() {
                         let (changed_cells, new_snapshot) = diff_execution_outputs(
                             &self.prev_execution_outputs,
@@ -1768,21 +1771,31 @@ impl NotebookHandle {
                         let (id_diff, new_id_snapshot) =
                             diff_output_ids(&self.prev_output_by_id, &current_state.executions);
                         self.prev_output_by_id = new_id_snapshot;
+
+                        // Narrow each changed manifest inline so the frontend
+                        // writes directly into the outputs store with no
+                        // second snapshot walk.
+                        let changed: Vec<(String, serde_json::Value)> = id_diff
+                            .changed
+                            .into_iter()
+                            .map(|(id, manifest)| (id, self.narrow_output_data(manifest)))
+                            .collect();
                         (
                             changed_cells,
-                            id_diff.changed_output_ids,
-                            id_diff.removed_output_ids,
+                            OutputChangeset {
+                                changed,
+                                removed: id_diff.removed_output_ids,
+                            },
                         )
                     } else {
-                        (Vec::new(), Vec::new(), Vec::new())
+                        (Vec::new(), OutputChangeset::default())
                     };
 
                 events.push(FrameEvent::RuntimeStateSyncApplied {
                     changed,
                     state,
                     output_changed_cells,
-                    output_changed_ids,
-                    output_removed_ids,
+                    output_changeset,
                 });
             }
             frame_types::POOL_STATE_SYNC => {
