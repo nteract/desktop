@@ -844,7 +844,7 @@ mod integration_tests {
         if let Ok(path) = std::env::var("RUNTIMED_SOCKET_PATH") {
             return PathBuf::from(path);
         }
-        runtimed_client::default_socket_path()
+        runt_workspace::default_socket_path()
     }
 
     /// Check if a daemon is running and available.
