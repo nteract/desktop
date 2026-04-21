@@ -21,6 +21,13 @@ export interface RenderPayload {
   data: unknown;
   /** Optional metadata for the output */
   metadata?: Record<string, unknown>;
+  /**
+   * Stable daemon-stamped UUID for this output. When present, the iframe
+   * uses it as the React key so display_update and reorder operations
+   * don't re-mount sibling outputs. Falls back to `cellId`+`outputIndex`
+   * for payloads that don't carry one (e.g. markdown cell render paths).
+   */
+  outputId?: string;
   /** Cell ID this output belongs to (for routing) */
   cellId?: string;
   /** Output index within the cell */

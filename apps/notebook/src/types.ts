@@ -37,25 +37,34 @@ export interface RawCell {
 
 export type NotebookCell = CodeCell | MarkdownCell | RawCell;
 
+/**
+ * Common fields on every nbformat output. `output_id` is a stable
+ * daemon-stamped UUID — always non-empty on the daemon write path,
+ * optional here only so in-flight / local-only outputs typecheck.
+ */
+interface OutputCommon {
+  output_id?: string;
+}
+
 export type JupyterOutput =
-  | {
+  | (OutputCommon & {
       output_type: "execute_result" | "display_data";
       data: Record<string, unknown>;
       metadata?: Record<string, unknown>;
       execution_count?: number | null;
       display_id?: string;
-    }
-  | {
+    })
+  | (OutputCommon & {
       output_type: "stream";
       name: "stdout" | "stderr";
       text: string;
-    }
-  | {
+    })
+  | (OutputCommon & {
       output_type: "error";
       ename: string;
       evalue: string;
       traceback: string[];
-    };
+    });
 
 export interface KernelspecInfo {
   name: string;

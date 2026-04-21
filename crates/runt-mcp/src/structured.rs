@@ -64,6 +64,24 @@ fn manifest_output_to_structured(manifest: &Value, blob_base_url: &Option<String
         .and_then(|v| v.as_str())
         .unwrap_or("");
 
+    // The daemon stamps `output_id` on every manifest (non-empty UUID). The
+    // MCP-App renderer uses it as a stable React key so stream appends don't
+    // re-mount sibling outputs. Propagate it on every variant.
+    let output_id = manifest
+        .get("output_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| Value::String(s.to_string()));
+
+    let attach_id = |mut out: Value| -> Value {
+        if let Some(id) = output_id.as_ref() {
+            if let Some(obj) = out.as_object_mut() {
+                obj.insert("output_id".to_string(), id.clone());
+            }
+        }
+        out
+    };
+
     match output_type {
         "stream" => {
             let name = manifest.get("name").cloned().unwrap_or(Value::Null);
@@ -80,7 +98,7 @@ fn manifest_output_to_structured(manifest: &Value, blob_base_url: &Option<String
             if let Some(preview) = manifest.get("llm_preview") {
                 out["llm_preview"] = preview.clone();
             }
-            out
+            attach_id(out)
         }
         "error" => {
             // traceback is a ContentRef (inline JSON string or blob), not a
@@ -115,7 +133,7 @@ fn manifest_output_to_structured(manifest: &Value, blob_base_url: &Option<String
             if let Some(preview) = manifest.get("llm_preview") {
                 out["llm_preview"] = preview.clone();
             }
-            out
+            attach_id(out)
         }
         "display_data" | "execute_result" => {
             let mut data = serde_json::Map::new();
@@ -208,9 +226,9 @@ fn manifest_output_to_structured(manifest: &Value, blob_base_url: &Option<String
                 result["execution_count"] = json!(count);
             }
 
-            result
+            attach_id(result)
         }
-        _ => json!({"output_type": output_type}),
+        _ => attach_id(json!({"output_type": output_type})),
     }
 }
 
@@ -331,6 +349,74 @@ mod tests {
         };
         assert!(!data.contains_key("text/html"));
         assert_eq!(data["image/png"], "http://localhost:9999/blob/img_hash");
+    }
+
+    #[test]
+    fn structured_output_id_propagates_on_every_variant() {
+        // The daemon stamps `output_id` on every manifest and the MCP App
+        // uses it as a React key. Structured output must preserve it.
+        let blob_base = Some("http://localhost:9999".to_string());
+
+        let stream = json!({
+            "output_type": "stream",
+            "output_id": "id-stream",
+            "name": "stdout",
+            "text": inline_ref("hi"),
+        });
+        assert_eq!(
+            manifest_output_to_structured(&stream, &blob_base)["output_id"],
+            "id-stream"
+        );
+
+        let error = json!({
+            "output_type": "error",
+            "output_id": "id-error",
+            "ename": "E",
+            "evalue": "v",
+            "traceback": inline_ref("[\"l1\"]"),
+        });
+        assert_eq!(
+            manifest_output_to_structured(&error, &blob_base)["output_id"],
+            "id-error"
+        );
+
+        let display = json!({
+            "output_type": "display_data",
+            "output_id": "id-display",
+            "data": {
+                "text/plain": inline_ref("hello"),
+            },
+        });
+        assert_eq!(
+            manifest_output_to_structured(&display, &blob_base)["output_id"],
+            "id-display"
+        );
+    }
+
+    #[test]
+    fn structured_missing_output_id_is_omitted() {
+        // If a manifest arrives without output_id (legacy fixture,
+        // pre-create_manifest write path), we don't synthesize one —
+        // the renderer falls back to its positional key.
+        let manifest = json!({
+            "output_type": "stream",
+            "name": "stdout",
+            "text": inline_ref("hi"),
+        });
+        let result = manifest_output_to_structured(&manifest, &None);
+        assert!(result.get("output_id").is_none());
+    }
+
+    #[test]
+    fn structured_empty_output_id_is_omitted() {
+        let manifest = json!({
+            "output_type": "stream",
+            "output_id": "",
+            "name": "stdout",
+            "text": inline_ref("hi"),
+        });
+        let result = manifest_output_to_structured(&manifest, &None);
+        assert!(result.get("output_id").is_none());
     }
 
     #[test]
