@@ -126,6 +126,10 @@ pub struct SyncTaskConfig {
 
     /// Broadcast sender for kernel/execution events from the daemon.
     pub broadcast_tx: broadcast::Sender<NotebookBroadcast>,
+
+    /// Frames observed during connect-time bootstrap after the notebook doc
+    /// sync completed but before the background task took over the socket.
+    pub pending_frames: Vec<connection::TypedNotebookFrame>,
 }
 
 /// Run the sync task.
@@ -155,6 +159,21 @@ where
         let state = config.doc.lock().unwrap_or_else(|e| e.into_inner());
         notebook_doc::get_metadata_snapshot_from_doc(&state.doc)
     };
+
+    // Connect-time bootstrap may have already read a late notebook sync frame
+    // while finishing RuntimeStateDoc convergence. Replay those frames before
+    // we start polling the socket so no notebook updates are lost.
+    for frame in std::mem::take(&mut config.pending_frames) {
+        handle_incoming_frame(
+            &frame,
+            &config.doc,
+            &mut writer,
+            &config.snapshot_tx,
+            &config.broadcast_tx,
+            &notebook_id,
+        )
+        .await;
+    }
 
     loop {
         loop_count += 1;
@@ -893,4 +912,90 @@ fn publish_snapshot(
         NotebookSnapshot::from_doc(&state.doc)
     };
     let _ = snapshot_tx.send(snapshot);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use notebook_doc::{NotebookDoc, TextEncoding};
+    use tokio::sync::{broadcast, mpsc, watch};
+
+    #[tokio::test]
+    async fn pending_notebook_sync_frames_are_replayed_before_socket_reads() {
+        let mut daemon = NotebookDoc::new_with_actor("pending-frame-test", "runtimed");
+        daemon.add_cell(0, "cell-1", "code").unwrap();
+        daemon
+            .update_source("cell-1", "print('late sync')")
+            .unwrap();
+
+        let mut daemon_peer_state = sync::State::new();
+        let mut client = NotebookDoc::bootstrap(TextEncoding::UnicodeCodePoint, "test");
+        let mut client_peer_state = sync::State::new();
+
+        let first_msg = daemon
+            .generate_sync_message(&mut daemon_peer_state)
+            .unwrap();
+        client
+            .receive_sync_message(&mut client_peer_state, first_msg)
+            .unwrap();
+        assert_eq!(
+            client.cell_count(),
+            0,
+            "bootstrap client should still need a follow-up sync frame",
+        );
+
+        let client_reply = client
+            .generate_sync_message(&mut client_peer_state)
+            .unwrap();
+        daemon
+            .receive_sync_message(&mut daemon_peer_state, client_reply)
+            .unwrap();
+        let late_msg = daemon
+            .generate_sync_message(&mut daemon_peer_state)
+            .unwrap();
+
+        let mut shared_state =
+            SharedDocState::new(client.into_inner(), "pending-frame-test".into());
+        shared_state.peer_state = client_peer_state;
+        let shared = Arc::new(Mutex::new(shared_state));
+
+        let initial_snapshot = {
+            let state = shared.lock().unwrap();
+            NotebookSnapshot::from_doc(&state.doc)
+        };
+        let (snapshot_tx, _snapshot_rx) = watch::channel(initial_snapshot);
+        let snapshot_tx = Arc::new(snapshot_tx);
+        let (_broadcast_tx, _broadcast_rx) = broadcast::channel::<NotebookBroadcast>(8);
+        let (changed_tx, changed_rx) = mpsc::unbounded_channel();
+        let (cmd_tx, cmd_rx) = mpsc::channel(1);
+        drop(changed_tx);
+        drop(cmd_tx);
+
+        run(
+            SyncTaskConfig {
+                doc: Arc::clone(&shared),
+                changed_rx,
+                cmd_rx,
+                snapshot_tx,
+                broadcast_tx: _broadcast_tx,
+                pending_frames: vec![connection::TypedNotebookFrame {
+                    frame_type: NotebookFrameType::AutomergeSync,
+                    payload: late_msg.encode(),
+                }],
+            },
+            tokio::io::empty(),
+            tokio::io::sink(),
+        )
+        .await;
+
+        let cell_count = {
+            let state = shared.lock().unwrap();
+            notebook_doc::get_cells_from_doc(&state.doc).len()
+        };
+        assert_eq!(
+            cell_count, 1,
+            "pending notebook frame should populate the cells map"
+        );
+    }
 }

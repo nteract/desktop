@@ -27,7 +27,8 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{mpsc, watch};
 
 use notebook_protocol::connection::{
-    self, Handshake, NotebookConnectionInfo, NotebookFrameType, ProtocolCapabilities, PROTOCOL_V2,
+    self, Handshake, NotebookConnectionInfo, NotebookFrameType, ProtocolCapabilities,
+    TypedNotebookFrame, PROTOCOL_V2,
 };
 use notebook_protocol::protocol::NotebookBroadcast;
 
@@ -473,6 +474,7 @@ where
 {
     let mut shared_state = SharedDocState::new(doc, notebook_id.clone());
     shared_state.peer_state = peer_state;
+    let mut pending_frames = Vec::<TypedNotebookFrame>::new();
 
     // Complete the RuntimeStateDoc sync handshake inline so the doc is
     // fully populated before we return the handle. The Automerge sync
@@ -482,6 +484,12 @@ where
     // 1. Apply buffered frames from do_initial_sync
     // 2. Send reply messages to the daemon
     // 3. Receive follow-up frames until convergence (100ms timeout)
+    //
+    // Mixed frame types can legitimately arrive here under load. In
+    // particular, a late notebook AutomergeSync frame may show up after
+    // do_initial_sync's timeout but before this inline RuntimeStateDoc sync
+    // finishes. We must hand those frames off to the steady-state sync task
+    // instead of consuming and dropping them here.
     {
         // Step 1: Apply buffered frames
         for frame_payload in &pending_state_sync_frames {
@@ -522,11 +530,11 @@ where
                         .await?;
                     }
                 }
-                Ok(Ok(Some(_frame))) => {
-                    // Non-RuntimeStateSync frame — sync has converged,
-                    // but we received a different frame type (e.g. broadcast).
-                    // We can't put it back, so break and let the sync task
-                    // handle subsequent frames.
+                Ok(Ok(Some(frame))) => {
+                    // Non-RuntimeStateSync frame — buffer it in arrival order
+                    // and let the steady-state sync task process it before
+                    // reading new frames from the socket.
+                    pending_frames.push(frame);
                     break;
                 }
                 Ok(Ok(None)) => {
@@ -578,6 +586,7 @@ where
         cmd_rx,
         snapshot_tx: Arc::clone(&snapshot_tx),
         broadcast_tx,
+        pending_frames,
     };
 
     let notebook_id_for_task = notebook_id;
