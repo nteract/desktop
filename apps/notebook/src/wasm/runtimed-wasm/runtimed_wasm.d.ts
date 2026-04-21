@@ -222,6 +222,13 @@ export class NotebookHandle {
      */
     get_cell_execution_count(cell_id: string): string | undefined;
     /**
+     * Return the `execution_id` currently stamped on a cell, if any.
+     *
+     * Cells with no active execution (never queued, or outputs cleared)
+     * return `None`.
+     */
+    get_cell_execution_id(cell_id: string): string | undefined;
+    /**
      * Get ordered cell IDs (sorted by position, tiebreak on ID).
      */
     get_cell_ids(): string[];
@@ -274,6 +281,17 @@ export class NotebookHandle {
      */
     get_cells_json(): string;
     /**
+     * Return a summary of the execution for the given `execution_id`, or
+     * `undefined` when that execution is unknown.
+     *
+     * Shape: `{ cell_id, execution_count, status, success, output_ids }`.
+     * `output_ids` preserves the daemon's emission order. Full output
+     * manifests are available via `get_output_by_id(output_id)` — this
+     * method intentionally keeps the payload small so execution-level
+     * subscriptions stay cheap.
+     */
+    get_execution_by_id(execution_id: string): any;
+    /**
      * Get a metadata value by key (legacy string API).
      */
     get_metadata(key: string): string | undefined;
@@ -310,6 +328,23 @@ export class NotebookHandle {
      */
     get_metadata_value(key: string): any;
     /**
+     * Return a single output manifest by `output_id`, narrowed to the
+     * active MIME priority set. Returns `undefined` when no output carries
+     * that id.
+     *
+     * Walks all executions in the runtime state doc. The runtime state
+     * maintains O(executions) entries, each with at most a few dozen
+     * outputs, so this is fine for reactive reads. If it ever becomes a
+     * hot path we can cache an `output_id -> (execution_id, index)` map
+     * here — the doc is already the source of truth.
+     */
+    get_output_by_id(output_id: string): any;
+    /**
+     * Return the ordered list of `output_id`s for an execution, or an empty
+     * list when the execution is unknown.
+     */
+    get_output_ids_for_execution(execution_id: string): string[];
+    /**
      * Read the current pool state snapshot from the WASM doc.
      */
     get_pool_state(): any;
@@ -338,6 +373,18 @@ export class NotebookHandle {
      * Returns the new position string.
      */
     move_cell(cell_id: string, after_cell_id?: string | null): string;
+    /**
+     * Apply MIME narrowing + ContentRef resolution to a raw output manifest.
+     *
+     * The runtime-state snapshot carries manifests in their un-narrowed
+     * on-the-wire shape (all MIME types, raw `{inline}`/`{blob}` refs).
+     * The output-store projection uses this to re-apply the same
+     * narrowing logic `get_output_by_id` does, but without a per-id
+     * `read_state()` walk — callers pass the raw manifest they already
+     * have and get back a manifest ready for the renderer. Returns
+     * `undefined` when the input can't be deserialized.
+     */
+    narrow_raw_output(raw: any): any;
     /**
      * Create a new empty notebook document.
      */
@@ -631,6 +678,7 @@ export interface InitOutput {
     readonly notebookhandle_get_actor_id: (a: number, b: number) => void;
     readonly notebookhandle_get_cell: (a: number, b: number, c: number) => number;
     readonly notebookhandle_get_cell_execution_count: (a: number, b: number, c: number, d: number) => void;
+    readonly notebookhandle_get_cell_execution_id: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_get_cell_ids: (a: number, b: number) => void;
     readonly notebookhandle_get_cell_metadata: (a: number, b: number, c: number) => number;
     readonly notebookhandle_get_cell_outputs: (a: number, b: number, c: number) => number;
@@ -639,16 +687,20 @@ export interface InitOutput {
     readonly notebookhandle_get_cell_type: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_get_cells: (a: number, b: number) => void;
     readonly notebookhandle_get_cells_json: (a: number, b: number) => void;
+    readonly notebookhandle_get_execution_by_id: (a: number, b: number, c: number) => number;
     readonly notebookhandle_get_metadata: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_get_metadata_fingerprint: (a: number, b: number) => void;
     readonly notebookhandle_get_metadata_snapshot: (a: number) => number;
     readonly notebookhandle_get_metadata_snapshot_json: (a: number, b: number) => void;
     readonly notebookhandle_get_metadata_value: (a: number, b: number, c: number) => number;
+    readonly notebookhandle_get_output_by_id: (a: number, b: number, c: number) => number;
+    readonly notebookhandle_get_output_ids_for_execution: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_get_pool_state: (a: number) => number;
     readonly notebookhandle_get_runtime_state: (a: number) => number;
     readonly notebookhandle_load: (a: number, b: number, c: number) => void;
     readonly notebookhandle_load_state_doc: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_move_cell: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+    readonly notebookhandle_narrow_raw_output: (a: number, b: number) => number;
     readonly notebookhandle_new: (a: number, b: number) => number;
     readonly notebookhandle_receive_frame: (a: number, b: number, c: number) => number;
     readonly notebookhandle_receive_sync_message: (a: number, b: number, c: number, d: number) => void;

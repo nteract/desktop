@@ -14,7 +14,10 @@ use notebook_doc::diff::{diff_doc, CellChangeset, TextPatch};
 use notebook_doc::mime::{is_binary_mime, ResolvedContentRef};
 use notebook_doc::pool_state::{PoolDoc, PoolState};
 use notebook_doc::presence;
-use notebook_doc::runtime_state::{diff_execution_outputs, RuntimeState, RuntimeStateDoc};
+use notebook_doc::runtime_state::{
+    diff_execution_outputs, diff_output_ids, output_ids_for_execution, ExecutionState,
+    RuntimeState, RuntimeStateDoc,
+};
 use notebook_doc::{CellSnapshot, NotebookDoc};
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
@@ -103,6 +106,19 @@ pub enum FrameEvent {
         /// Cell IDs whose outputs changed in this sync frame.
         #[serde(skip_serializing_if = "Vec::is_empty")]
         output_changed_cells: Vec<String>,
+        /// Output IDs that were added or modified in this sync frame.
+        ///
+        /// Keyed by the `output_id` field on each output manifest (UUIDv4
+        /// stamped by the daemon). The frontend's outputs store uses this
+        /// to notify per-output subscribers without touching parent cells.
+        /// Outputs without an `output_id` (legacy) are skipped here and
+        /// still covered by `output_changed_cells`.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        output_changed_ids: Vec<String>,
+        /// Output IDs that no longer appear in any execution (cleared or
+        /// replaced). The frontend's outputs store drops these.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        output_removed_ids: Vec<String>,
     },
     /// Sync error recovered — doc rebuilt and sync state normalized.
     ///
@@ -173,6 +189,10 @@ pub struct NotebookHandle {
     /// `state.executions[eid].outputs` on each sync frame to detect
     /// mid-execution output changes (stream append, display update, error).
     prev_execution_outputs: std::collections::HashMap<String, Vec<serde_json::Value>>,
+    /// Previous per-`output_id` manifest snapshot. Used alongside
+    /// `prev_execution_outputs` to produce the finer-grained per-output
+    /// diff emitted on `RuntimeStateSyncApplied.output_changed_ids`.
+    prev_output_by_id: std::collections::HashMap<String, serde_json::Value>,
     /// Pool state doc — daemon-authoritative, global, synced read-only.
     pool_doc: PoolDoc,
     pool_sync_state: sync::State,
@@ -385,6 +405,7 @@ impl NotebookHandle {
             state_doc: RuntimeStateDoc::new_empty(),
             state_sync_state: sync::State::new(),
             prev_execution_outputs: std::collections::HashMap::new(),
+            prev_output_by_id: std::collections::HashMap::new(),
             pool_doc: PoolDoc::new_empty(),
             pool_sync_state: sync::State::new(),
             metadata_fingerprint_cache: None,
@@ -404,6 +425,7 @@ impl NotebookHandle {
             state_doc: RuntimeStateDoc::new_empty(),
             state_sync_state: sync::State::new(),
             prev_execution_outputs: std::collections::HashMap::new(),
+            prev_output_by_id: std::collections::HashMap::new(),
             pool_doc: PoolDoc::new_empty(),
             pool_sync_state: sync::State::new(),
             metadata_fingerprint_cache: None,
@@ -437,6 +459,7 @@ impl NotebookHandle {
             state_doc: RuntimeStateDoc::new_empty(),
             state_sync_state: sync::State::new(),
             prev_execution_outputs: std::collections::HashMap::new(),
+            prev_output_by_id: std::collections::HashMap::new(),
             pool_doc: PoolDoc::new_empty(),
             pool_sync_state: sync::State::new(),
             metadata_fingerprint_cache: None,
@@ -564,6 +587,103 @@ impl NotebookHandle {
         } else {
             serialize_to_js(&outputs).unwrap_or(JsValue::UNDEFINED)
         }
+    }
+
+    // ── Per-execution and per-output accessors ──────────────────────
+    //
+    // These let the frontend subscribe to state at the `execution_id` and
+    // `output_id` granularity instead of the cell granularity. That matters
+    // during output streaming: a single append should not force every
+    // component tree under the cell to re-render — only the affected
+    // <Output> component and any <CellLabel> that reads the execution_count
+    // off the execution should update.
+
+    /// Return the `execution_id` currently stamped on a cell, if any.
+    ///
+    /// Cells with no active execution (never queued, or outputs cleared)
+    /// return `None`.
+    pub fn get_cell_execution_id(&self, cell_id: &str) -> Option<String> {
+        self.doc.get_execution_id(cell_id)
+    }
+
+    /// Return a summary of the execution for the given `execution_id`, or
+    /// `undefined` when that execution is unknown.
+    ///
+    /// Shape: `{ cell_id, execution_count, status, success, output_ids }`.
+    /// `output_ids` preserves the daemon's emission order. Full output
+    /// manifests are available via `get_output_by_id(output_id)` — this
+    /// method intentionally keeps the payload small so execution-level
+    /// subscriptions stay cheap.
+    pub fn get_execution_by_id(&self, execution_id: &str) -> JsValue {
+        let Some(exec) = self.state_doc.get_execution(execution_id) else {
+            return JsValue::UNDEFINED;
+        };
+        let output_ids = output_ids_for_execution(&exec);
+        let ExecutionState {
+            cell_id,
+            status,
+            execution_count,
+            success,
+            ..
+        } = exec;
+        let summary = serde_json::json!({
+            "cell_id": cell_id,
+            "execution_count": execution_count,
+            "status": status,
+            "success": success,
+            "output_ids": output_ids,
+        });
+        serialize_to_js(&summary).unwrap_or(JsValue::UNDEFINED)
+    }
+
+    /// Return the ordered list of `output_id`s for an execution, or an empty
+    /// list when the execution is unknown.
+    pub fn get_output_ids_for_execution(&self, execution_id: &str) -> Vec<String> {
+        match self.state_doc.get_execution(execution_id) {
+            Some(exec) => output_ids_for_execution(&exec),
+            None => Vec::new(),
+        }
+    }
+
+    /// Return a single output manifest by `output_id`, narrowed to the
+    /// active MIME priority set. Returns `undefined` when no output carries
+    /// that id.
+    ///
+    /// Walks all executions in the runtime state doc. The runtime state
+    /// maintains O(executions) entries, each with at most a few dozen
+    /// outputs, so this is fine for reactive reads. If it ever becomes a
+    /// hot path we can cache an `output_id -> (execution_id, index)` map
+    /// here — the doc is already the source of truth.
+    pub fn get_output_by_id(&self, output_id: &str) -> JsValue {
+        let state = self.state_doc.read_state();
+        for exec in state.executions.values() {
+            for output in &exec.outputs {
+                if let Some(id) = output.get("output_id").and_then(|v| v.as_str()) {
+                    if id == output_id {
+                        let narrowed = self.narrow_output_data(output.clone());
+                        return serialize_to_js(&narrowed).unwrap_or(JsValue::UNDEFINED);
+                    }
+                }
+            }
+        }
+        JsValue::UNDEFINED
+    }
+
+    /// Apply MIME narrowing + ContentRef resolution to a raw output manifest.
+    ///
+    /// The runtime-state snapshot carries manifests in their un-narrowed
+    /// on-the-wire shape (all MIME types, raw `{inline}`/`{blob}` refs).
+    /// The output-store projection uses this to re-apply the same
+    /// narrowing logic `get_output_by_id` does, but without a per-id
+    /// `read_state()` walk — callers pass the raw manifest they already
+    /// have and get back a manifest ready for the renderer. Returns
+    /// `undefined` when the input can't be deserialized.
+    pub fn narrow_raw_output(&self, raw: JsValue) -> JsValue {
+        let Ok(value) = serde_wasm_bindgen::from_value::<serde_json::Value>(raw) else {
+            return JsValue::UNDEFINED;
+        };
+        let narrowed = self.narrow_output_data(value);
+        serialize_to_js(&narrowed).unwrap_or(JsValue::UNDEFINED)
     }
 
     /// Set the MIME type priority list for output selection.
@@ -1637,21 +1757,32 @@ impl NotebookHandle {
                 // changes (stream append, display update, error). `state` is
                 // Some iff `changed` is true, so this also covers the
                 // `changed` branch without a separate check.
-                let output_changed_cells = if let Some(current_state) = state.as_ref() {
-                    let (changed_cells, new_snapshot) = diff_execution_outputs(
-                        &self.prev_execution_outputs,
-                        &current_state.executions,
-                    );
-                    self.prev_execution_outputs = new_snapshot;
-                    changed_cells
-                } else {
-                    Vec::new()
-                };
+                let (output_changed_cells, output_changed_ids, output_removed_ids) =
+                    if let Some(current_state) = state.as_ref() {
+                        let (changed_cells, new_snapshot) = diff_execution_outputs(
+                            &self.prev_execution_outputs,
+                            &current_state.executions,
+                        );
+                        self.prev_execution_outputs = new_snapshot;
+
+                        let (id_diff, new_id_snapshot) =
+                            diff_output_ids(&self.prev_output_by_id, &current_state.executions);
+                        self.prev_output_by_id = new_id_snapshot;
+                        (
+                            changed_cells,
+                            id_diff.changed_output_ids,
+                            id_diff.removed_output_ids,
+                        )
+                    } else {
+                        (Vec::new(), Vec::new(), Vec::new())
+                    };
 
                 events.push(FrameEvent::RuntimeStateSyncApplied {
                     changed,
                     state,
                     output_changed_cells,
+                    output_changed_ids,
+                    output_removed_ids,
                 });
             }
             frame_types::POOL_STATE_SYNC => {

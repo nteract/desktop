@@ -36,6 +36,7 @@ import {
 import { onEditorRegistered, onEditorUnregistered } from "../lib/cursor-registry";
 import { registerCellEditor, unregisterCellEditor } from "../lib/editor-registry";
 import { kernelCompletionExtension } from "../lib/kernel-completion";
+import { useCellOutputs } from "../lib/notebook-outputs";
 import { openUrl } from "../lib/open-url";
 import { presenceSenderExtension } from "../lib/presence-sender";
 import { tabCompletionKeymap } from "../lib/tab-completion";
@@ -116,6 +117,10 @@ export const CodeCell = memo(function CodeCell({
   const [historyDialogOpen, setHistoryDialogOpen] = useState(false);
   const presence = usePresenceContext();
   const { extension: crdtBridgeExt, bridge } = useCrdtBridge(cell.id);
+  // Subscribe to outputs via the per-execution / per-output stores rather
+  // than `cell.outputs`. Content changes no longer invalidate the cell
+  // snapshot — CodeCell re-renders only when its chrome state changes.
+  const outputs = useCellOutputs(cell.id);
 
   // Check cell metadata for visibility (JupyterLab convention)
   const isSourceHidden =
@@ -125,7 +130,7 @@ export const CodeCell = memo(function CodeCell({
 
   // Fully collapsed when source is hidden AND there's nothing else to show
   // (outputs explicitly hidden, or no outputs at all).
-  const bothHidden = isSourceHidden && (isOutputsHidden || cell.outputs.length === 0);
+  const bothHidden = isSourceHidden && (isOutputsHidden || outputs.length === 0);
 
   // Register EditorView with the cursor registry for remote cursor rendering.
   // We use a ref + polling approach because the EditorView is created async
@@ -355,7 +360,7 @@ export const CodeCell = memo(function CodeCell({
           </>
         }
         outputContent={
-          isOutputsHidden && cell.outputs.length > 0 ? (
+          isOutputsHidden && outputs.length > 0 ? (
             <div className="flex items-center justify-start mt-0.5 pl-6">
               <button
                 type="button"
@@ -364,15 +369,15 @@ export const CodeCell = memo(function CodeCell({
                 title="Show outputs"
               >
                 <span>
-                  {cell.outputs.length} output
-                  {cell.outputs.length !== 1 ? "s" : ""}
+                  {outputs.length} output
+                  {outputs.length !== 1 ? "s" : ""}
                 </span>
                 <ChevronRight className="h-3 w-3" />
               </button>
             </div>
           ) : (
             <OutputArea
-              outputs={cell.outputs}
+              outputs={outputs}
               cellId={cell.id}
               preloadIframe
               searchQuery={searchQuery}
@@ -383,7 +388,7 @@ export const CodeCell = memo(function CodeCell({
           )
         }
         outputRightGutterContent={
-          onToggleOutputsHidden && cell.outputs.length > 0 && !isOutputsHidden ? (
+          onToggleOutputsHidden && outputs.length > 0 && !isOutputsHidden ? (
             <button
               type="button"
               tabIndex={-1}
@@ -395,7 +400,7 @@ export const CodeCell = memo(function CodeCell({
             </button>
           ) : undefined
         }
-        hideOutput={cell.outputs.length === 0 || bothHidden}
+        hideOutput={outputs.length === 0 || bothHidden}
       />
 
       {/* History Search Dialog (Ctrl+R) - lazy loaded */}

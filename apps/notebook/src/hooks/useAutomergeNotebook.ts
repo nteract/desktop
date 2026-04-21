@@ -20,11 +20,30 @@ import {
   updateNotebookCells,
   useCellIds,
 } from "../lib/notebook-cells";
+import {
+  applyOutputIdChanges,
+  projectRuntimeStateToExecutions,
+  resetRuntimeStoresProjection,
+  seedOutputStoresFromHandle,
+  updateCellExecutionPointersFromHandle,
+} from "../lib/project-runtime-stores";
+import {
+  getCellExecutionId,
+  getExecutionById,
+  setCellExecutionPointer,
+  setExecution,
+} from "../lib/notebook-executions";
+import { deleteOutputs, updateOutputsByDisplayId } from "../lib/notebook-outputs";
 import { cloneNotebookFile, openNotebookFile, saveNotebook } from "../lib/notebook-file-ops";
 import { emitBroadcast, emitPresence, subscribeBroadcast } from "../lib/notebook-frame-bus";
 import { notifyMetadataChanged, setNotebookHandle } from "../lib/notebook-metadata";
 import { type PoolState, resetPoolState, setPoolState } from "../lib/pool-state";
-import { type RuntimeState, resetRuntimeState, setRuntimeState } from "../lib/runtime-state";
+import {
+  type RuntimeState,
+  getRuntimeState,
+  resetRuntimeState,
+  setRuntimeState,
+} from "../lib/runtime-state";
 import { fromTauriEvent } from "../lib/tauri-rx";
 import type { DaemonBroadcast, JupyterOutput } from "../types";
 import init, { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
@@ -33,6 +52,31 @@ import init, { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 const wasmReady: Promise<void> = init().then(() => {
   logger.info("[automerge-notebook] WASM initialized");
 });
+
+/**
+ * Phase C-lite helper: clear the per-execution / per-output store entries
+ * a cell points at. Used when the daemon signals an `outputs_cleared` event
+ * so `<OutputArea>` (which reads from those stores via `useCellOutputs`)
+ * updates immediately instead of waiting for the next `runtime_state`
+ * snapshot to rebuild the projection.
+ */
+function clearCellOutputsStore(cellId: string): void {
+  const executionId = getCellExecutionId(cellId);
+  if (!executionId) return;
+  const snap = getExecutionById(executionId);
+  if (snap && snap.output_ids.length > 0) {
+    deleteOutputs(snap.output_ids);
+    setExecution(executionId, { ...snap, output_ids: [] });
+  }
+  // Detach the cell from the cleared execution. If we left this pointer
+  // in place and the daemon's runtime-state frame for the next execution
+  // arrived before the notebook-doc sync updated `cells.{id}.execution_id`,
+  // `useCellOutputs(cellId)` would stay attached to the cleared
+  // execution and miss the first streamed outputs of the rerun.
+  // `execution_started` broadcasts and the doc-driven pointer refresh
+  // both re-seed the pointer when the new execution lands.
+  setCellExecutionPointer(cellId, null);
+}
 
 // ---------------------------------------------------------------------------
 // Hook
@@ -222,6 +266,33 @@ export function useAutomergeNotebook() {
       if (handle) {
         materializeCells(handle)
           .then(() => {
+            // Seed the cell -> execution_id pointer store from the doc.
+            // `cellChanges$` doesn't emit during `awaitingInitialSync`,
+            // so without this every `useCellOutputs(cellId)` would see
+            // `execution_id === null` until some later incremental
+            // changeset arrived - existing notebooks would render empty
+            // outputs on open.
+            const cellIdList = [...handle.get_cell_ids()];
+            updateCellExecutionPointersFromHandle(handle, cellIdList);
+            // Seed the outputs / executions stores straight from the
+            // notebook doc. `initialSyncComplete$` fires on notebook-doc
+            // sync completion but does not wait for the RuntimeStateDoc
+            // sync, so without this a notebook reopened with existing
+            // outputs would render empty under `useCellOutputs` until
+            // the runtime-state frame arrives. The runtime-state
+            // projection below overwrites these defaults with
+            // authoritative status/success/execution_count values as
+            // soon as the doc lands.
+            seedOutputStoresFromHandle(handle, cellIdList);
+            // Project whatever RuntimeState snapshot has landed so far
+            // on top. If the runtime-state frame arrived first this is
+            // the authoritative pass; otherwise it's a no-op that the
+            // runtimeState$ subscription will redo on the next tick.
+            const rs = getRuntimeState();
+            projectRuntimeStateToExecutions(
+              rs as unknown as { executions?: Record<string, unknown> },
+              handle,
+            );
             setIsLoading(false);
             notifyMetadataChanged();
             logger.info("[automerge-notebook] Initial materialization done");
@@ -246,9 +317,27 @@ export function useAutomergeNotebook() {
               getHandle: () => handleRef.current,
               materializeCells,
               outputCache: outputCacheRef.current,
-            }).catch((err: unknown) =>
-              logger.warn("[automerge-notebook] materialize changeset failed:", err),
-            ),
+            })
+              .then(() => {
+                // After cells update, refresh per-cell execution_id pointers
+                // from the canonical notebook doc so <CellLabel> / future
+                // Out[N] readers see the current execution, not whatever
+                // RuntimeStateDoc entry happened to land last.
+                const handle = handleRef.current;
+                if (!handle) return;
+                if (changeset && changeset.added.length === 0) {
+                  const touched = new Set<string>(changeset.changed.map((c) => c.cell_id));
+                  if (touched.size > 0) {
+                    updateCellExecutionPointersFromHandle(handle, [...touched]);
+                  }
+                } else {
+                  // Full materialization or added cells — refresh all.
+                  updateCellExecutionPointersFromHandle(handle, [...handle.get_cell_ids()]);
+                }
+              })
+              .catch((err: unknown) =>
+                logger.warn("[automerge-notebook] materialize changeset failed:", err),
+              ),
           ),
         ),
       )
@@ -260,9 +349,33 @@ export function useAutomergeNotebook() {
     // Presence → frame bus.
     const presenceSub = engine.presence$.subscribe((payload) => emitPresence(payload));
 
-    // Runtime state → store.
-    const runtimeStateSub = engine.runtimeState$.subscribe((state) =>
-      setRuntimeState(state as RuntimeState),
+    // Runtime state → store + executions projection. The executions store
+    // is a narrow per-execution_id projection that lets <CellLabel> /
+    // <OutputArea> subscribe at execution granularity instead of at the
+    // cell granularity. See lib/notebook-executions.ts.
+    const runtimeStateSub = engine.runtimeState$.subscribe((state) => {
+      const typed = state as RuntimeState;
+      setRuntimeState(typed);
+      projectRuntimeStateToExecutions(
+        typed as unknown as { executions?: Record<string, unknown> },
+        handleRef.current,
+      );
+    });
+
+    // Per-output changes → outputs store. Stream appends only touch the
+    // affected output's subscribers, keeping parent cell components still.
+    const outputIdChangesSub = engine.outputIdChanges$.subscribe(
+      ({ changed_ids, removed_ids, state }) => {
+        if (changed_ids.length === 0 && removed_ids.length === 0) return;
+        void applyOutputIdChanges(
+          handleRef.current,
+          changed_ids,
+          removed_ids,
+          state as unknown as { executions?: Record<string, { outputs?: unknown[] }> },
+          getBlobPort(),
+          outputCacheRef.current,
+        ).catch((err) => logger.warn("[automerge-notebook] output store projection failed:", err));
+      },
     );
 
     // Pool state → store.
@@ -287,6 +400,7 @@ export function useAutomergeNotebook() {
           refreshBlobPort();
           resetNotebookCells();
           resetRuntimeState();
+          resetRuntimeStoresProjection();
           resetPoolState();
           outputCacheRef.current.clear();
           setIsLoading(true);
@@ -311,6 +425,13 @@ export function useAutomergeNotebook() {
               : c,
           ),
         );
+        // Phase C-lite: <OutputArea> reads from the per-output / per-
+        // execution stores now. Clear those immediately for each cell so
+        // the UI reacts without waiting for the next RuntimeStateDoc
+        // snapshot tick.
+        for (const cellId of payload) {
+          clearCellOutputsStore(cellId);
+        }
       },
     );
 
@@ -332,6 +453,7 @@ export function useAutomergeNotebook() {
       broadcastsSub.unsubscribe();
       presenceSub.unsubscribe();
       runtimeStateSub.unsubscribe();
+      outputIdChangesSub.unsubscribe();
       poolStateSub.unsubscribe();
       lifecycleSub.unsubscribe();
       clearOutputsSub.unsubscribe();
@@ -341,6 +463,7 @@ export function useAutomergeNotebook() {
 
       resetNotebookCells();
       resetRuntimeState();
+      resetRuntimeStoresProjection();
       resetPoolState();
       setNotebookHandle(null);
       handleRef.current?.free();
@@ -378,6 +501,7 @@ export function useAutomergeNotebook() {
     updateCellById(cellId, (c) =>
       c.cell_type === "code" ? { ...c, outputs: [], execution_count: null } : c,
     );
+    clearCellOutputsStore(cellId);
   }, []);
 
   const addCell = useCallback(
@@ -501,6 +625,9 @@ export function useAutomergeNotebook() {
       newData: Record<string, unknown>,
       newMetadata?: Record<string, unknown>,
     ) => {
+      // Legacy cell-store projection. New Phase C-lite consumers read
+      // from the outputs store (see `useCellOutputs`), but cross-cell
+      // readers still look at `cell.outputs` so keep it in sync.
       updateNotebookCells((prev) =>
         prev.map((c) => {
           if (c.cell_type !== "code") return c;
@@ -518,6 +645,10 @@ export function useAutomergeNotebook() {
           return changed ? { ...c, outputs: updatedOutputs } : c;
         }),
       );
+      // Per-output store projection. Patches every matching output so
+      // <OutputArea> repaints instantly without waiting for the next
+      // runtime_state sync to flow through the projection.
+      updateOutputsByDisplayId(displayId, newData, newMetadata);
     },
     [],
   );

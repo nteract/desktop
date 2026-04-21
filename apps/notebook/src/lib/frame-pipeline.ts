@@ -12,14 +12,10 @@ import {
 } from "@/components/isolated/iframe-libraries";
 import type { JupyterOutput } from "../types";
 import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
-import { getBlobPort, refreshBlobPort } from "./blob-port";
+import { getBlobPort } from "./blob-port";
 import type { CellChangeset } from "./cell-changeset";
 import { logger } from "./logger";
-import {
-  materializeCellFromWasm,
-  outputCacheKey,
-  resolveOutput,
-} from "./materialize-cells";
+import { materializeCellFromWasm } from "./materialize-cells";
 import { getCellById, updateCellById } from "./notebook-cells";
 import { notifyMetadataChanged } from "./notebook-metadata";
 
@@ -45,6 +41,33 @@ export interface MaterializeDeps {
 
   /** Shared output manifest cache (mutated in place). */
   outputCache: Map<string, JupyterOutput>;
+}
+
+// ── Plugin pre-warm helper ──────────────────────────────────────────
+
+/**
+ * Pre-warm the isolated-renderer plugin cache for any rich MIME types in
+ * a cell's raw output list. Walks the structured output manifests (which
+ * carry MIME keys even before content refs are resolved) and kicks off
+ * background plugin loads so `<OutputArea>` doesn't have to await them.
+ *
+ * We intentionally read MIME keys from the raw manifests rather than the
+ * resolved outputs — plugin discovery needs only the MIME set, not the
+ * decoded payload, so the outputs store can finish resolution in parallel.
+ */
+function preWarmPluginsForRawOutputs(rawOutputs: unknown[]): void {
+  const mimes: string[] = [];
+  for (const raw of rawOutputs) {
+    if (!raw || typeof raw !== "object") continue;
+    const type = (raw as { output_type?: unknown }).output_type;
+    if (type !== "execute_result" && type !== "display_data") continue;
+    const data = (raw as { data?: unknown }).data;
+    if (!data || typeof data !== "object") continue;
+    for (const mime of Object.keys(data as Record<string, unknown>)) {
+      if (needsPlugin(mime)) mimes.push(mime);
+    }
+  }
+  if (mimes.length > 0) preWarmForMimes(mimes);
 }
 
 // ── Batch materialization ────────────────────────────────────────────
@@ -101,95 +124,63 @@ export async function materializeChangeset(
   // ── Per-cell incremental materialization ───────────────────────────
 
   const cache = deps.outputCache;
-  let blobPort = getBlobPort();
-  let cacheHits = 0;
-  let cacheMisses = 0;
+  const blobPort = getBlobPort();
+  let cellStoreTouched = 0;
+  let outputOnlySkipped = 0;
 
   for (const { cell_id: cellId, fields } of changeset.changed) {
-    if (fields.outputs) {
-      // Check if every output for this cell is already cached.
-      const rawOutputs: unknown[] = handle.get_cell_outputs(cellId) ?? [];
-      const allCached = rawOutputs.every((o) => cache.has(outputCacheKey(o)));
+    // Phase C-lite: outputs live in the per-output / per-execution stores
+    // (see notebook-outputs.ts, notebook-executions.ts). The cell store
+    // still carries an `outputs: JupyterOutput[]` field for legacy readers
+    // on full materialization, but the frame pipeline no longer touches
+    // that field on incremental updates — the outputs store is the source
+    // of truth for <OutputArea>.
+    const chromeChanged =
+      fields.source ||
+      fields.execution_count ||
+      fields.cell_type ||
+      fields.metadata ||
+      fields.position;
 
-      if (allCached) {
-        cacheHits++;
-        // All outputs resolved from cache — fast sync path.
-        const cell = materializeCellFromWasm(
-          handle,
-          cellId,
-          cache,
-          getCellById(cellId),
-          blobPort,
-        );
-        if (cell) {
-          if (!fields.source) {
-            const existing = getCellById(cellId);
-            if (existing) cell.source = existing.source;
-          }
-          updateCellById(cellId, () => cell);
-        }
-      } else {
-        cacheMisses++;
-        // Cache miss — resolve this cell's outputs async.
-        if (blobPort === null) {
-          blobPort = await refreshBlobPort();
-        }
-        const resolved = (
-          await Promise.all(
-            rawOutputs.map((o) => resolveOutput(o, blobPort, cache)),
-          )
-        ).filter((o): o is JupyterOutput => o !== null);
-
-        const ecStr = handle.get_cell_execution_count(cellId);
-        const ec =
-          !ecStr || ecStr === "null" ? null : Number.parseInt(ecStr, 10);
-        const metadata = handle.get_cell_metadata(cellId) ?? {};
-
-        const existingCell = getCellById(cellId);
-        const source = fields.source
-          ? (handle.get_cell_source(cellId) ?? "")
-          : (existingCell?.source ?? handle.get_cell_source(cellId) ?? "");
-
-        // Pre-warm plugin cache from MIME keys so OutputArea resolves instantly
-        const pluginMimes: string[] = [];
-        for (const output of resolved) {
-          if (
-            output.output_type === "execute_result" ||
-            output.output_type === "display_data"
-          ) {
-            for (const mime of Object.keys(output.data)) {
-              if (needsPlugin(mime)) pluginMimes.push(mime);
-            }
-          }
-        }
-        if (pluginMimes.length > 0) preWarmForMimes(pluginMimes);
-
-        updateCellById(cellId, () => ({
-          id: cellId,
-          cell_type: "code" as const,
-          source,
-          execution_count: Number.isNaN(ec) ? null : ec,
-          outputs: resolved,
-          metadata,
-        }));
+    if (!chromeChanged) {
+      // Output-only change — the outputs store already has the new data
+      // from `applyOutputIdChanges`. Still warm the plugin cache for any
+      // rich MIME types so <OutputArea> renders without waiting for async
+      // loads, but don't touch the cell store.
+      if (fields.outputs) {
+        outputOnlySkipped++;
+        const rawOutputs: unknown[] = handle.get_cell_outputs(cellId) ?? [];
+        preWarmPluginsForRawOutputs(rawOutputs);
       }
-    } else {
-      // No output changes — fast sync path.
-      const cell = materializeCellFromWasm(
-        handle,
-        cellId,
-        cache,
-        getCellById(cellId),
-        blobPort,
-      );
-      if (cell) {
-        if (!fields.source) {
-          const existing = getCellById(cellId);
-          if (existing) cell.source = existing.source;
-        }
-        updateCellById(cellId, () => cell);
-      }
+      continue;
     }
+
+    // Chrome-level change — re-read source / execution_count / metadata
+    // from WASM and write to the cell store. The outputs array in the
+    // store is left as-is (preserved by `materializeCellFromWasm` via
+    // `reuseOutputsIfUnchanged` when all refs are cache hits) — the
+    // outputs store is the source of truth for <OutputArea>.
+    cellStoreTouched++;
+    const cell = materializeCellFromWasm(
+      handle,
+      cellId,
+      cache,
+      getCellById(cellId),
+      blobPort,
+    );
+    if (!cell) continue;
+
+    if (!fields.source) {
+      const existing = getCellById(cellId);
+      if (existing) cell.source = existing.source;
+    }
+
+    if (fields.outputs) {
+      // Warm plugin cache so the <OutputArea> iframe has renderers ready.
+      const rawOutputs: unknown[] = handle.get_cell_outputs(cellId) ?? [];
+      preWarmPluginsForRawOutputs(rawOutputs);
+    }
+    updateCellById(cellId, () => cell);
   }
 
   if (changeset.changed.length > 0) {
@@ -206,7 +197,7 @@ export async function materializeChangeset(
       })
       .join(" ");
     logger.debug(
-      `[frame-pipeline] incremental: ${changeset.changed.length} cells [${fieldSummary}] cache=${cacheHits}hit/${cacheMisses}miss`,
+      `[frame-pipeline] incremental: ${changeset.changed.length} cells [${fieldSummary}] cell-store=${cellStoreTouched} outputs-only-skipped=${outputOnlySkipped}`,
     );
   }
 

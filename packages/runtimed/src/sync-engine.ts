@@ -281,6 +281,25 @@ export class SyncEngine {
   readonly executionTransitions$: Observable<ExecutionTransition[]>;
 
   /**
+   * Per-output changes emitted from the WASM runtime-state sync path.
+   *
+   * `changed_ids` covers new or mutated outputs, `removed_ids` covers
+   * outputs no longer present in any execution. `state` is the RuntimeState
+   * snapshot that produced these deltas so consumers can pluck the
+   * changed manifests out of its executions map without asking the WASM
+   * handle per-id (each of those calls re-reads the entire state doc).
+   *
+   * Consumers route these into the per-output React store so a stream
+   * append on one output does not re-render every component under the
+   * parent cell. See `apps/notebook/src/lib/notebook-outputs.ts`.
+   */
+  readonly outputIdChanges$: Observable<{
+    changed_ids: string[];
+    removed_ids: string[];
+    state: RuntimeState;
+  }>;
+
+  /**
    * Throttled kernel status derived from RuntimeState.
    *
    * Applies a 60ms busy throttle to filter sub-60ms busy→idle blips
@@ -335,6 +354,11 @@ export class SyncEngine {
   private readonly _executionTransitions$ = new Subject<ExecutionTransition[]>();
   private readonly _initialSyncComplete$ = new Subject<void>();
   private readonly _commChanges$ = new Subject<CommChanges>();
+  private readonly _outputIdChanges$ = new Subject<{
+    changed_ids: string[];
+    removed_ids: string[];
+    state: RuntimeState;
+  }>();
 
   constructor(opts: SyncEngineOptions) {
     this.opts = {
@@ -352,6 +376,7 @@ export class SyncEngine {
     this.executionTransitions$ = this._executionTransitions$.asObservable();
     this.initialSyncComplete$ = this._initialSyncComplete$.asObservable();
     this.commChanges$ = this._commChanges$.asObservable();
+    this.outputIdChanges$ = this._outputIdChanges$.asObservable();
     this.kernelStatus$ = deriveKernelStatus$(this.runtimeState$);
 
     // Typed broadcast sub-observables (derived from broadcasts$)
@@ -690,6 +715,18 @@ export class SyncEngine {
                     order_changed: false,
                   });
                 }
+              }
+
+              // Per-output-id projection. Feeds the outputs store so single
+              // output appends only notify their own `<Output>` subscriber.
+              const changedOutputIds = e.output_changed_ids ?? [];
+              const removedOutputIds = e.output_removed_ids ?? [];
+              if (changedOutputIds.length > 0 || removedOutputIds.length > 0) {
+                this._outputIdChanges$.next({
+                  changed_ids: changedOutputIds,
+                  removed_ids: removedOutputIds,
+                  state,
+                });
               }
 
               // Output changes detected by WASM-side diff of RuntimeStateDoc.

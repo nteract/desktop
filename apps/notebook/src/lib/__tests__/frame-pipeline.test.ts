@@ -590,24 +590,19 @@ describe("materializeChangeset", () => {
     expect(deps.materializeCells).toHaveBeenCalledWith(handle);
   });
 
-  it("resolves uncached manifest objects via async resolution", async () => {
-    const execResult: JupyterOutput = {
-      output_type: "execute_result",
-      data: { "text/plain": "42" },
-      metadata: {},
-      execution_count: 1,
-    };
-
-    // Use a manifest object. The output cache is empty so allCached=false,
-    // triggering the async resolution path. The blobRegistry simulates the
-    // resolver returning this output.
+  it("updates cell store chrome fields without rebuilding outputs", async () => {
+    // After Phase C-lite, the frame pipeline's incremental path no longer
+    // resolves uncached manifest objects — that work belongs to the
+    // per-output store (see `applyOutputIdChanges`). When a chrome field
+    // (here: `source`) changes alongside `outputs`, the cell store is
+    // still updated with the new source, but outputs are carried forward
+    // from whatever `materializeCellFromWasm` returns (cache-only).
     const manifest = {
       output_type: "execute_result",
       data: { "text/plain": "42" },
       metadata: {},
       execution_count: 1,
     };
-    blobRegistry.set(mockOutputCacheKey(manifest), execResult);
     const cache = new Map<string, JupyterOutput>();
 
     const handle = createMockHandle({
@@ -630,8 +625,31 @@ describe("materializeChangeset", () => {
     );
 
     expect(updateCalls).toHaveLength(1);
-    expect(updateCalls[0].cell.outputs).toEqual([execResult]);
     expect(updateCalls[0].cell.source).toBe("6 * 7");
+  });
+
+  it("skips cell-store update for output-only changes", async () => {
+    // Phase C-lite: when only `fields.outputs` is set, the outputs store
+    // already has the new data via the projection pipeline. The frame
+    // pipeline no longer writes the resolved outputs into the cell store
+    // because <OutputArea> reads from `useCellOutputs` now.
+    const cache = new Map<string, JupyterOutput>();
+    const handle = createMockHandle({
+      c1: { outputs: [], execution_count: "null" },
+    });
+    const deps = createDeps(handle, cache);
+
+    await materializeChangeset(
+      {
+        changed: [{ cell_id: "c1", fields: { outputs: true } }],
+        added: [],
+        removed: [],
+        order_changed: false,
+      },
+      deps,
+    );
+
+    expect(updateCalls).toHaveLength(0);
   });
 
   it("returns early when handle is null", async () => {
