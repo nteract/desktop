@@ -1,19 +1,10 @@
-//! Tool bootstrapping via rattler and direct downloads.
+//! Tool bootstrapping via direct GitHub downloads.
 //!
-//! This module provides a way to automatically install CLI tools (like `ruff`, `deno`, `uv`)
-//! on demand. Tools are cached in `~/.cache/runt/tools/`.
-//!
-//! For Deno specifically, we download directly from GitHub releases for better reliability,
-//! with a fallback to conda-forge via rattler.
+//! This module provides a way to automatically install CLI tools (like `ruff`, `deno`, `uv`, `pixi`)
+//! on demand. Tools are downloaded from GitHub releases and cached in `~/.cache/runt/tools/`.
 
 use anyhow::{anyhow, Result};
 use log::info;
-use rattler::{default_cache_dir, install::Installer, package_cache::PackageCache};
-use rattler_conda_types::{
-    Channel, ChannelConfig, GenericVirtualPackage, MatchSpec, ParseMatchSpecOptions, Platform,
-};
-use rattler_repodata_gateway::Gateway;
-use rattler_solve::{resolvo, SolverImpl, SolverTask};
 use sha2::{Digest, Sha256};
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
@@ -27,15 +18,18 @@ pub const DENO_TARGET_VERSION: &str = "2.7.1";
 /// Target UV version for GitHub download.
 pub const UV_TARGET_VERSION: &str = "0.10.8";
 
-/// Target pixi version for rattler bootstrap.
+/// Target ruff version for GitHub download.
+pub const RUFF_TARGET_VERSION: &str = "0.15.11";
+
+/// Target pixi version for GitHub download.
 /// Pinned to ensure stable `pixi info --json` and `pixi shell-hook --json` output.
-pub const PIXI_TARGET_VERSION: &str = "0.65.0";
+pub const PIXI_TARGET_VERSION: &str = "0.67.1";
 
 /// Minimum acceptable Deno major version for system deno.
 /// If system deno is below this version, we download a newer one.
 pub const DENO_MIN_MAJOR_VERSION: u32 = 2;
 
-/// Platform information for GitHub release assets (shared by Deno and UV).
+/// Platform information for GitHub release assets (shared by Deno, UV, and ruff).
 struct GithubPlatform {
     arch: &'static str,
     platform: &'static str,
@@ -58,7 +52,8 @@ fn compute_tool_hash(tool_name: &str, version: Option<&str>) -> String {
         hasher.update(v.as_bytes());
     }
     // Include platform in hash since binaries are platform-specific
-    hasher.update(Platform::current().to_string().as_bytes());
+    let platform_string = format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS);
+    hasher.update(platform_string.as_bytes());
     let hash = hasher.finalize();
     hex::encode(hash)[..12].to_string()
 }
@@ -91,36 +86,146 @@ pub struct BootstrappedTool {
     pub env_path: PathBuf,
 }
 
-/// Bootstrap a tool from conda-forge.
+// ── GitHub platform helpers ──────────────────────────────────────────
+
+/// Get the GitHub release asset platform string for the current system.
+/// Uses glibc on Linux (matches deno, uv, ruff release naming).
+fn get_github_platform() -> Result<GithubPlatform> {
+    let arch = match std::env::consts::ARCH {
+        "aarch64" => "aarch64",
+        "x86_64" => "x86_64",
+        other => return Err(anyhow!("Unsupported architecture: {}", other)),
+    };
+
+    let platform = match std::env::consts::OS {
+        "macos" => "apple-darwin",
+        "linux" => "unknown-linux-gnu",
+        "windows" => "pc-windows-msvc",
+        other => return Err(anyhow!("Unsupported platform: {}", other)),
+    };
+
+    Ok(GithubPlatform { arch, platform })
+}
+
+/// Platform info for pixi GitHub releases (uses musl on Linux, not glibc).
+fn get_pixi_github_platform() -> Result<GithubPlatform> {
+    let arch = match std::env::consts::ARCH {
+        "aarch64" => "aarch64",
+        "x86_64" => "x86_64",
+        other => return Err(anyhow!("Unsupported architecture: {}", other)),
+    };
+
+    let platform = match std::env::consts::OS {
+        "macos" => "apple-darwin",
+        "linux" => "unknown-linux-musl",
+        "windows" => "pc-windows-msvc",
+        other => return Err(anyhow!("Unsupported platform: {}", other)),
+    };
+
+    Ok(GithubPlatform { arch, platform })
+}
+
+// ── Ruff ─────────────────────────────────────────────────────────────
+
+/// Global cache for the ruff binary path.
+/// This avoids repeated lookups once ruff is bootstrapped.
+static RUFF_PATH: OnceCell<Arc<Result<PathBuf, String>>> = OnceCell::const_new();
+
+/// Extract a named tool binary from a tar.gz archive.
 ///
-/// This installs the tool into a cached environment and returns the path to the binary.
-/// If the tool is already cached, returns immediately.
+/// Searches all entries for a file whose name matches `binary_name`
+/// (may be at the root or inside a subdirectory like `tool-arch-platform/`).
+fn extract_tool_tarball(tarball_bytes: &[u8], dest_dir: &Path, tool_name: &str) -> Result<PathBuf> {
+    use flate2::read::GzDecoder;
+    use tar::Archive;
+
+    // Create destination directory structure
+    let bin_dir = if cfg!(windows) {
+        dest_dir.join("Scripts")
+    } else {
+        dest_dir.join("bin")
+    };
+    std::fs::create_dir_all(&bin_dir)?;
+
+    // Decompress and extract
+    let decoder = GzDecoder::new(Cursor::new(tarball_bytes));
+    let mut archive = Archive::new(decoder);
+
+    let binary_name = if cfg!(windows) {
+        format!("{}.exe", tool_name)
+    } else {
+        tool_name.to_string()
+    };
+    let dest_path = bin_dir.join(&binary_name);
+
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?;
+
+        // Look for the binary (may be at root or in a subdirectory)
+        if let Some(file_name) = path.file_name() {
+            if file_name == binary_name.as_str() {
+                let mut dest_file = std::fs::File::create(&dest_path)?;
+                std::io::copy(&mut entry, &mut dest_file)?;
+
+                // Set executable permission on Unix
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let perms = std::fs::Permissions::from_mode(0o755);
+                    std::fs::set_permissions(&dest_path, perms)?;
+                }
+
+                return Ok(dest_path);
+            }
+        }
+    }
+
+    Err(anyhow!("{} binary not found in tarball", tool_name))
+}
+
+/// Download and verify the ruff binary from GitHub releases.
 ///
-/// # Arguments
-/// * `tool_name` - Name of the conda package (e.g., "ruff")
-/// * `version` - Optional version constraint (e.g., "0.8")
-///
-/// # Example
-/// ```ignore
-/// let tool = bootstrap_tool("ruff", None).await?;
-/// // Use tool.binary_path to run ruff
-/// ```
-pub async fn bootstrap_tool(tool_name: &str, version: Option<&str>) -> Result<BootstrappedTool> {
-    let hash = compute_tool_hash(tool_name, version);
+/// Ruff tags have NO `v` prefix: `https://github.com/astral-sh/ruff/releases/download/{version}/...`
+async fn download_ruff_from_github(version: &str) -> Result<BootstrappedTool> {
+    let platform = get_github_platform()?;
+
+    // Ruff uses tar.gz on Unix, zip on Windows
+    let (asset_name, is_zip) = if cfg!(windows) {
+        (
+            format!("ruff-{}-{}.zip", platform.arch, platform.platform),
+            true,
+        )
+    } else {
+        (
+            format!("ruff-{}-{}.tar.gz", platform.arch, platform.platform),
+            false,
+        )
+    };
+
+    // Build URLs — ruff tags have NO `v` prefix
+    let download_url = format!(
+        "https://github.com/astral-sh/ruff/releases/download/{}/{}",
+        version, asset_name
+    );
+    let checksum_url = format!("{}.sha256", download_url);
+
+    info!("Downloading ruff {} from GitHub...", version);
+
+    // Setup cache directory
     let cache_dir = tools_cache_dir();
-    let env_path = cache_dir.join(format!("{}-{}", tool_name, hash));
-    let binary_path = binary_path_for_env(&env_path, tool_name);
+    let hash = compute_tool_hash("ruff", Some(version));
+    let env_path = cache_dir.join(format!("ruff-{}", hash));
+    let binary_path = binary_path_for_env(&env_path, "ruff");
 
     // Check if already cached
     if binary_path.exists() {
-        info!("Using cached tool {} at {:?}", tool_name, binary_path);
+        info!("Using cached ruff at {:?}", binary_path);
         return Ok(BootstrappedTool {
             binary_path,
             env_path,
         });
     }
-
-    info!("Bootstrapping {} via rattler...", tool_name);
 
     // Ensure cache directory exists
     tokio::fs::create_dir_all(&cache_dir).await?;
@@ -130,113 +235,113 @@ pub async fn bootstrap_tool(tool_name: &str, version: Option<&str>) -> Result<Bo
         tokio::fs::remove_dir_all(&env_path).await?;
     }
 
-    // Setup channel configuration
-    let channel_config = ChannelConfig::default_with_root_dir(cache_dir.clone());
-    let channel = Channel::from_str("conda-forge", &channel_config)?;
+    // Create HTTP client
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .build()?;
 
-    // Build spec for the tool
-    let match_spec_options = ParseMatchSpecOptions::strict();
-    let spec_str = match version {
-        Some(v) => format!("{}={}", tool_name, v),
-        None => tool_name.to_string(),
-    };
-    let spec = MatchSpec::from_str(&spec_str, match_spec_options)?;
-
-    info!("Resolving {} from conda-forge...", spec_str);
-
-    // Find or create the rattler cache directory
-    let rattler_cache_dir = default_cache_dir()
-        .map_err(|e| anyhow!("could not determine rattler cache directory: {}", e))?;
-    rattler_cache::ensure_cache_dir(&rattler_cache_dir)
-        .map_err(|e| anyhow!("could not create rattler cache directory: {}", e))?;
-
-    // Create HTTP client for downloading
-    let download_client = reqwest::Client::builder().build()?;
-    let download_client = reqwest_middleware::ClientBuilder::new(download_client).build();
-
-    // Create gateway for fetching repodata
-    let gateway = Gateway::builder()
-        .with_cache_dir(rattler_cache_dir.join(rattler_cache::REPODATA_CACHE_DIR))
-        .with_package_cache(PackageCache::new(
-            rattler_cache_dir.join(rattler_cache::PACKAGE_CACHE_DIR),
-        ))
-        .with_client(download_client.clone())
-        .finish();
-
-    // Determine platforms to query
-    let install_platform = Platform::current();
-    let platforms = vec![install_platform, Platform::NoArch];
-
-    // Query repodata
-    let repo_data = gateway
-        .query(vec![channel], platforms, vec![spec.clone()])
-        .recursive(true)
-        .await
-        .map_err(|e| anyhow!("Failed to fetch repodata for {}: {}", tool_name, e))?;
-
-    // Detect virtual packages
-    let virtual_packages = rattler_virtual_packages::VirtualPackage::detect(
-        &rattler_virtual_packages::VirtualPackageOverrides::default(),
-    )?
-    .iter()
-    .map(|vpkg| GenericVirtualPackage::from(vpkg.clone()))
-    .collect::<Vec<_>>();
-
-    // Solve dependencies
-    let solver_task = SolverTask {
-        virtual_packages,
-        specs: vec![spec],
-        ..SolverTask::from_iter(&repo_data)
-    };
-
-    let solver_result = resolvo::Solver
-        .solve(solver_task)
-        .map_err(|e| anyhow!("Failed to solve {} dependencies: {}", tool_name, e))?;
-
-    let required_packages = solver_result.records;
-    info!(
-        "Installing {} ({} packages)...",
-        tool_name,
-        required_packages.len()
-    );
-
-    // Install packages
-    Installer::new()
-        .with_download_client(download_client)
-        .with_target_platform(install_platform)
-        .install(&env_path, required_packages)
-        .await
-        .map_err(|e| anyhow!("Failed to install {}: {}", tool_name, e))?;
-
-    // Verify the binary exists
-    if !binary_path.exists() {
+    // Download checksum first
+    info!("Fetching checksum from {}...", checksum_url);
+    let checksum_response = client.get(&checksum_url).send().await?;
+    if !checksum_response.status().is_success() {
         return Err(anyhow!(
-            "Tool {} was installed but binary not found at {:?}",
-            tool_name,
-            binary_path
+            "Failed to download checksum: {}",
+            checksum_response.status()
+        ));
+    }
+    let checksum_text = checksum_response.text().await?;
+    let expected_hash = checksum_text
+        .split_whitespace()
+        .next()
+        .ok_or_else(|| anyhow!("Invalid checksum format"))?
+        .to_lowercase();
+
+    // Download archive
+    info!("Downloading {}...", asset_name);
+    let archive_response = client.get(&download_url).send().await?;
+    if !archive_response.status().is_success() {
+        return Err(anyhow!(
+            "Failed to download ruff: {}",
+            archive_response.status()
+        ));
+    }
+    let archive_bytes = archive_response.bytes().await?;
+
+    // Verify checksum
+    info!("Verifying checksum...");
+    let mut hasher = Sha256::new();
+    hasher.update(&archive_bytes);
+    let actual_hash = hex::encode(hasher.finalize());
+
+    if actual_hash != expected_hash {
+        return Err(anyhow!(
+            "Checksum mismatch: expected {}, got {}",
+            expected_hash,
+            actual_hash
         ));
     }
 
-    info!(
-        "Successfully bootstrapped {} at {:?}",
-        tool_name, binary_path
-    );
+    // Extract archive (blocking IO, run on blocking thread pool)
+    info!("Extracting ruff to {:?}...", env_path);
+    let env_path_clone = env_path.clone();
+    let binary_path_clone = binary_path.clone();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        if is_zip {
+            #[cfg(target_os = "windows")]
+            {
+                let bin_dir = env_path_clone.join("Scripts");
+                std::fs::create_dir_all(&bin_dir)?;
+                let cursor = Cursor::new(&*archive_bytes);
+                let mut zip_archive = ZipArchive::new(cursor)?;
+                let binary_name = "ruff.exe";
+                let dest_path = bin_dir.join(binary_name);
+                let mut found = false;
+                for i in 0..zip_archive.len() {
+                    let mut file = zip_archive.by_index(i)?;
+                    if file.name().ends_with(binary_name) {
+                        let mut dest_file = std::fs::File::create(&dest_path)?;
+                        std::io::copy(&mut file, &mut dest_file)?;
+                        found = true;
+                        break;
+                    }
+                }
+                if !found {
+                    return Err(anyhow!("ruff.exe not found in zip archive"));
+                }
+            }
+            #[cfg(not(target_os = "windows"))]
+            return Err(anyhow!("Unexpected zip archive on non-Windows platform"));
+        } else {
+            extract_tool_tarball(&archive_bytes, &env_path_clone, "ruff")?;
+        }
 
+        // Verify binary exists at expected location
+        if !binary_path_clone.exists() {
+            return Err(anyhow!(
+                "ruff binary not found after extraction at {:?}",
+                binary_path_clone
+            ));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| anyhow!("Extraction task panicked: {}", e))??;
+
+    info!(
+        "Successfully installed ruff {} at {:?}",
+        version, binary_path
+    );
     Ok(BootstrappedTool {
         binary_path,
         env_path,
     })
 }
 
-/// Global cache for the ruff binary path.
-/// This avoids repeated lookups once ruff is bootstrapped.
-static RUFF_PATH: OnceCell<Arc<Result<PathBuf, String>>> = OnceCell::const_new();
-
-/// Get the path to ruff, bootstrapping it if necessary.
+/// Get the path to ruff, downloading from GitHub if necessary.
 ///
 /// This function:
 /// 1. First checks if ruff is available on PATH (fast path)
-/// 2. If not, bootstraps it via rattler from conda-forge
+/// 2. If not, downloads from GitHub releases
 /// 3. Caches the result for subsequent calls
 ///
 /// Returns the path to the ruff binary, or an error if it can't be obtained.
@@ -255,9 +360,12 @@ pub async fn get_ruff_path() -> Result<PathBuf> {
                 }
             }
 
-            // Not on PATH, bootstrap via rattler
-            info!("ruff not found on PATH, bootstrapping via rattler...");
-            match bootstrap_tool("ruff", None).await {
+            // Not on PATH, download from GitHub
+            info!(
+                "ruff not found on PATH, downloading {} from GitHub...",
+                RUFF_TARGET_VERSION
+            );
+            match download_ruff_from_github(RUFF_TARGET_VERSION).await {
                 Ok(tool) => Arc::new(Ok(tool.binary_path)),
                 Err(e) => Arc::new(Err(e.to_string())),
             }
@@ -270,6 +378,8 @@ pub async fn get_ruff_path() -> Result<PathBuf> {
     }
 }
 
+// ── Deno ─────────────────────────────────────────────────────────────
+
 /// Global cache for the deno binary path.
 /// This avoids repeated lookups once deno is bootstrapped.
 static DENO_PATH: OnceCell<Arc<Result<PathBuf, String>>> = OnceCell::const_new();
@@ -278,7 +388,7 @@ static DENO_PATH: OnceCell<Arc<Result<PathBuf, String>>> = OnceCell::const_new()
 ///
 /// Returns true if:
 /// - System deno exists and is version 2.x+, OR
-/// - A cached deno binary exists (either from GitHub download or rattler)
+/// - A cached deno binary exists from a GitHub download
 ///
 /// This is intended for UI availability checks where we don't want to
 /// trigger a full download during initialization.
@@ -300,30 +410,7 @@ pub async fn check_deno_available_without_bootstrap() -> bool {
     }
 
     // Check for cached GitHub download (versioned path)
-    if cached_tool_binary_path("deno", Some(DENO_TARGET_VERSION)).exists() {
-        return true;
-    }
-
-    // Check for cached rattler download (unversioned path, fallback)
-    cached_tool_binary_path("deno", None).exists()
-}
-
-/// Get the GitHub release asset platform string for the current system.
-fn get_github_platform() -> Result<GithubPlatform> {
-    let arch = match std::env::consts::ARCH {
-        "aarch64" => "aarch64",
-        "x86_64" => "x86_64",
-        other => return Err(anyhow!("Unsupported architecture: {}", other)),
-    };
-
-    let platform = match std::env::consts::OS {
-        "macos" => "apple-darwin",
-        "linux" => "unknown-linux-gnu",
-        "windows" => "pc-windows-msvc",
-        other => return Err(anyhow!("Unsupported platform: {}", other)),
-    };
-
-    Ok(GithubPlatform { arch, platform })
+    cached_tool_binary_path("deno", Some(DENO_TARGET_VERSION)).exists()
 }
 
 /// Parse a version string and return the major version number.
@@ -531,7 +618,6 @@ async fn download_deno_from_github(version: &str) -> Result<BootstrappedTool> {
 ///
 /// 1. System deno if version >= 2.x (fast path, respects user's installation)
 /// 2. Download from GitHub releases (v2.7.1) - most reliable source
-/// 3. Fallback to rattler/conda-forge if GitHub download fails
 ///
 /// Results are cached for subsequent calls.
 pub async fn get_deno_path() -> Result<PathBuf> {
@@ -542,21 +628,12 @@ pub async fn get_deno_path() -> Result<PathBuf> {
                 return Arc::new(Ok(path));
             }
 
-            // 2. Try GitHub download (primary method)
+            // 2. Download from GitHub releases
             info!(
                 "Downloading deno {} from GitHub releases...",
                 DENO_TARGET_VERSION
             );
             match download_deno_from_github(DENO_TARGET_VERSION).await {
-                Ok(tool) => return Arc::new(Ok(tool.binary_path)),
-                Err(e) => {
-                    info!("GitHub download failed: {}. Falling back to rattler...", e);
-                }
-            }
-
-            // 3. Fallback to rattler
-            info!("Bootstrapping deno via rattler from conda-forge...");
-            match bootstrap_tool("deno", None).await {
                 Ok(tool) => Arc::new(Ok(tool.binary_path)),
                 Err(e) => Arc::new(Err(e.to_string())),
             }
@@ -568,6 +645,8 @@ pub async fn get_deno_path() -> Result<PathBuf> {
         Err(e) => Err(anyhow!("{}", e)),
     }
 }
+
+// ── UV ───────────────────────────────────────────────────────────────
 
 /// Extract the uv binary from a tar.gz archive.
 fn extract_uv_tarball(tarball_bytes: &[u8], dest_dir: &Path) -> Result<PathBuf> {
@@ -779,7 +858,6 @@ static UV_PATH: OnceCell<Arc<Result<PathBuf, String>>> = OnceCell::const_new();
 ///
 /// 1. System uv if available on PATH (fast path, respects user's installation)
 /// 2. Download from GitHub releases (v0.10.8) - most reliable source
-/// 3. Fallback to rattler/conda-forge if GitHub download fails
 ///
 /// Results are cached for subsequent calls.
 pub async fn get_uv_path() -> Result<PathBuf> {
@@ -797,21 +875,12 @@ pub async fn get_uv_path() -> Result<PathBuf> {
                 }
             }
 
-            // 2. Try GitHub download (primary method)
+            // 2. Download from GitHub releases
             info!(
                 "Downloading uv {} from GitHub releases...",
                 UV_TARGET_VERSION
             );
             match download_uv_from_github(UV_TARGET_VERSION).await {
-                Ok(tool) => return Arc::new(Ok(tool.binary_path)),
-                Err(e) => {
-                    info!("GitHub download failed: {}. Falling back to rattler...", e);
-                }
-            }
-
-            // 3. Fallback to rattler
-            info!("Bootstrapping uv via rattler from conda-forge...");
-            match bootstrap_tool("uv", None).await {
                 Ok(tool) => Arc::new(Ok(tool.binary_path)),
                 Err(e) => Arc::new(Err(e.to_string())),
             }
@@ -824,10 +893,167 @@ pub async fn get_uv_path() -> Result<PathBuf> {
     }
 }
 
+// ── Pixi ─────────────────────────────────────────────────────────────
+
 /// Global cache for the pixi binary path.
 static PIXI_PATH: OnceCell<Arc<Result<PathBuf, String>>> = OnceCell::const_new();
 
-/// Get the path to the pixi binary, checking system PATH first then bootstrapping.
+/// Download and verify the pixi binary from GitHub releases.
+///
+/// Pixi tags have a `v` prefix: `https://github.com/prefix-dev/pixi/releases/download/v{version}/...`
+/// Pixi uses musl on Linux (not glibc), hence `get_pixi_github_platform()`.
+async fn download_pixi_from_github(version: &str) -> Result<BootstrappedTool> {
+    let platform = get_pixi_github_platform()?;
+
+    // Pixi uses tar.gz on Unix, zip on Windows
+    let (asset_name, is_zip) = if cfg!(windows) {
+        (
+            format!("pixi-{}-{}.zip", platform.arch, platform.platform),
+            true,
+        )
+    } else {
+        (
+            format!("pixi-{}-{}.tar.gz", platform.arch, platform.platform),
+            false,
+        )
+    };
+
+    // Build URLs — pixi tags have a `v` prefix
+    let download_url = format!(
+        "https://github.com/prefix-dev/pixi/releases/download/v{}/{}",
+        version, asset_name
+    );
+    let checksum_url = format!("{}.sha256", download_url);
+
+    info!("Downloading pixi {} from GitHub...", version);
+
+    // Setup cache directory
+    let cache_dir = tools_cache_dir();
+    let hash = compute_tool_hash("pixi", Some(version));
+    let env_path = cache_dir.join(format!("pixi-{}", hash));
+    let binary_path = binary_path_for_env(&env_path, "pixi");
+
+    // Check if already cached
+    if binary_path.exists() {
+        info!("Using cached pixi at {:?}", binary_path);
+        return Ok(BootstrappedTool {
+            binary_path,
+            env_path,
+        });
+    }
+
+    // Ensure cache directory exists
+    tokio::fs::create_dir_all(&cache_dir).await?;
+
+    // Remove partial environment if it exists
+    if env_path.exists() {
+        tokio::fs::remove_dir_all(&env_path).await?;
+    }
+
+    // Create HTTP client
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .build()?;
+
+    // Download checksum first
+    info!("Fetching checksum from {}...", checksum_url);
+    let checksum_response = client.get(&checksum_url).send().await?;
+    if !checksum_response.status().is_success() {
+        return Err(anyhow!(
+            "Failed to download checksum: {}",
+            checksum_response.status()
+        ));
+    }
+    let checksum_text = checksum_response.text().await?;
+    let expected_hash = checksum_text
+        .split_whitespace()
+        .next()
+        .ok_or_else(|| anyhow!("Invalid checksum format"))?
+        .to_lowercase();
+
+    // Download archive
+    info!("Downloading {}...", asset_name);
+    let archive_response = client.get(&download_url).send().await?;
+    if !archive_response.status().is_success() {
+        return Err(anyhow!(
+            "Failed to download pixi: {}",
+            archive_response.status()
+        ));
+    }
+    let archive_bytes = archive_response.bytes().await?;
+
+    // Verify checksum
+    info!("Verifying checksum...");
+    let mut hasher = Sha256::new();
+    hasher.update(&archive_bytes);
+    let actual_hash = hex::encode(hasher.finalize());
+
+    if actual_hash != expected_hash {
+        return Err(anyhow!(
+            "Checksum mismatch: expected {}, got {}",
+            expected_hash,
+            actual_hash
+        ));
+    }
+
+    // Extract archive (blocking IO, run on blocking thread pool)
+    info!("Extracting pixi to {:?}...", env_path);
+    let env_path_clone = env_path.clone();
+    let binary_path_clone = binary_path.clone();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        if is_zip {
+            #[cfg(target_os = "windows")]
+            {
+                let bin_dir = env_path_clone.join("Scripts");
+                std::fs::create_dir_all(&bin_dir)?;
+                let cursor = Cursor::new(&*archive_bytes);
+                let mut zip_archive = ZipArchive::new(cursor)?;
+                let binary_name = "pixi.exe";
+                let dest_path = bin_dir.join(binary_name);
+                let mut found = false;
+                for i in 0..zip_archive.len() {
+                    let mut file = zip_archive.by_index(i)?;
+                    if file.name().ends_with(binary_name) {
+                        let mut dest_file = std::fs::File::create(&dest_path)?;
+                        std::io::copy(&mut file, &mut dest_file)?;
+                        found = true;
+                        break;
+                    }
+                }
+                if !found {
+                    return Err(anyhow!("pixi.exe not found in zip archive"));
+                }
+            }
+            #[cfg(not(target_os = "windows"))]
+            return Err(anyhow!("Unexpected zip archive on non-Windows platform"));
+        } else {
+            // Pixi tarball has the binary at the root (not in a subdirectory)
+            extract_tool_tarball(&archive_bytes, &env_path_clone, "pixi")?;
+        }
+
+        // Verify binary exists at expected location
+        if !binary_path_clone.exists() {
+            return Err(anyhow!(
+                "pixi binary not found after extraction at {:?}",
+                binary_path_clone
+            ));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| anyhow!("Extraction task panicked: {}", e))??;
+
+    info!(
+        "Successfully installed pixi {} at {:?}",
+        version, binary_path
+    );
+    Ok(BootstrappedTool {
+        binary_path,
+        env_path,
+    })
+}
+
+/// Get the path to the pixi binary, checking system PATH first then downloading from GitHub.
 ///
 /// Results are cached for subsequent calls.
 pub async fn get_pixi_path() -> Result<PathBuf> {
@@ -845,12 +1071,12 @@ pub async fn get_pixi_path() -> Result<PathBuf> {
                 }
             }
 
-            // 2. Bootstrap via rattler from conda-forge (pinned version)
+            // 2. Download from GitHub releases (pinned version)
             info!(
-                "Bootstrapping pixi {} via rattler from conda-forge...",
+                "Downloading pixi {} from GitHub releases...",
                 PIXI_TARGET_VERSION
             );
-            match bootstrap_tool("pixi", Some(PIXI_TARGET_VERSION)).await {
+            match download_pixi_from_github(PIXI_TARGET_VERSION).await {
                 Ok(tool) => Arc::new(Ok(tool.binary_path)),
                 Err(e) => Arc::new(Err(e.to_string())),
             }
@@ -1097,6 +1323,35 @@ mod tests {
     }
 
     #[test]
+    fn test_get_pixi_github_platform() {
+        let result = get_pixi_github_platform();
+        #[cfg(any(
+            all(target_arch = "aarch64", target_os = "macos"),
+            all(target_arch = "x86_64", target_os = "macos"),
+            all(target_arch = "aarch64", target_os = "linux"),
+            all(target_arch = "x86_64", target_os = "linux"),
+            all(target_arch = "x86_64", target_os = "windows"),
+            all(target_arch = "aarch64", target_os = "windows"),
+        ))]
+        {
+            assert!(result.is_ok());
+            let platform = result.unwrap();
+            assert!(!platform.arch.is_empty());
+            assert!(!platform.platform.is_empty());
+        }
+
+        // Pixi uses musl on Linux, not glibc
+        #[cfg(target_os = "linux")]
+        {
+            let p = get_pixi_github_platform().unwrap();
+            assert_eq!(p.platform, "unknown-linux-musl");
+            // Contrast with get_github_platform which uses glibc
+            let glibc_p = get_github_platform().unwrap();
+            assert_eq!(glibc_p.platform, "unknown-linux-gnu");
+        }
+    }
+
+    #[test]
     fn test_deno_platform_mapping() {
         // Verify platform strings match GitHub release asset naming
         #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
@@ -1140,5 +1395,7 @@ mod tests {
         // Ensure constants are sensible - version strings contain dots
         assert!(DENO_TARGET_VERSION.contains('.'));
         assert!(UV_TARGET_VERSION.contains('.'));
+        assert!(RUFF_TARGET_VERSION.contains('.'));
+        assert!(PIXI_TARGET_VERSION.contains('.'));
     }
 }

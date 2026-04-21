@@ -3,13 +3,13 @@
 //! This crate provides the core kernel launching functionality used by both
 //! the Tauri notebook app and the runtimed daemon. It includes:
 //!
-//! - Tool bootstrapping (deno, uv, ruff) via rattler
+//! - Tool bootstrapping (deno, uv, ruff, pixi) via GitHub downloads
 //! - Environment creation (UV/Conda)
 //! - Kernel process spawning
 //!
 //! # Tool Bootstrapping
 //!
-//! Tools are automatically installed from conda-forge if not found on PATH:
+//! Tools are automatically downloaded from GitHub releases if not found on PATH:
 //!
 //! ```ignore
 //! use kernel_launch::tools;

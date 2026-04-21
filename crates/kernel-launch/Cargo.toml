@@ -23,15 +23,8 @@ tar = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# Conda/rattler for tool bootstrapping
-rattler = { version = "0.40", default-features = false, features = ["native-tls"] }
-rattler_cache = { version = "0.6", default-features = false, features = ["native-tls"] }
-rattler_conda_types = "0.44"
-rattler_repodata_gateway = { version = "0.27", default-features = false, features = ["gateway", "native-tls"] }
-rattler_solve = { version = "5.0", features = ["resolvo"] }
-rattler_virtual_packages = "2.3"
+# GitHub release downloads
 reqwest = { version = "0.12", default-features = false, features = ["native-tls"] }
-reqwest-middleware = "0.4"
 
 [dev-dependencies]
 tempfile = "3"
