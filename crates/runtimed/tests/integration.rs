@@ -1018,6 +1018,22 @@ async fn test_multiple_notebooks_concurrent_isolation() {
         "gamma client should reach session-ready state within 2s"
     );
 
+    // Wait for initial sync to deliver the cells map before reading.
+    // session_ready only guarantees status=Interactive, not that the
+    // snapshot watch channel has published cells from the sync frames.
+    assert!(
+        wait_for_cells_map(&handle_a, Duration::from_secs(2)).await,
+        "alpha sync did not deliver cells map within 2s"
+    );
+    assert!(
+        wait_for_cells_map(&handle_b, Duration::from_secs(2)).await,
+        "beta sync did not deliver cells map within 2s"
+    );
+    assert!(
+        wait_for_cells_map(&handle_c, Duration::from_secs(2)).await,
+        "gamma sync did not deliver cells map within 2s"
+    );
+
     let cells_a = handle_a.get_cells();
     assert_eq!(cells_a.len(), 1, "alpha should have 1 cell");
     assert_eq!(cells_a[0].id, "alpha-1");

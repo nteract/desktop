@@ -158,6 +158,29 @@ pub enum Handshake {
     },
 }
 
+/// Validate and normalize a package manager string.
+///
+/// Accepted values (case-sensitive):
+///   - `"uv"`, `"conda"`, `"pixi"` - returned as-is
+///   - `"pip"` - aliased to `"uv"` (uv is the pip-compatible installer)
+///   - `"mamba"` - aliased to `"conda"` (we use rattler under the hood)
+///
+/// Returns `Ok(normalized)` for valid/aliased values, `Err(message)` for
+/// unrecognized input.
+pub fn normalize_package_manager(input: &str) -> Result<&'static str, String> {
+    match input {
+        "uv" => Ok("uv"),
+        "conda" => Ok("conda"),
+        "pixi" => Ok("pixi"),
+        "pip" => Ok("uv"),
+        "mamba" => Ok("conda"),
+        _ => Err(format!(
+            "Unsupported package manager '{}'. Supported: uv, conda, pixi.",
+            input
+        )),
+    }
+}
+
 /// Protocol version constants (strings for handshake compatibility).
 pub const PROTOCOL_V2: &str = "v2";
 pub const PROTOCOL_V3: &str = "v3";
@@ -970,5 +993,25 @@ mod tests {
 
         let parsed: TestMsg = serde_json::from_slice(&frame.payload).unwrap();
         assert_eq!(parsed, msg);
+    }
+
+    #[test]
+    fn normalize_package_manager_valid() {
+        assert_eq!(normalize_package_manager("uv").unwrap(), "uv");
+        assert_eq!(normalize_package_manager("conda").unwrap(), "conda");
+        assert_eq!(normalize_package_manager("pixi").unwrap(), "pixi");
+    }
+
+    #[test]
+    fn normalize_package_manager_aliases() {
+        assert_eq!(normalize_package_manager("pip").unwrap(), "uv");
+        assert_eq!(normalize_package_manager("mamba").unwrap(), "conda");
+    }
+
+    #[test]
+    fn normalize_package_manager_rejects_unknown() {
+        let err = normalize_package_manager("npm").unwrap_err();
+        assert!(err.contains("Unsupported package manager 'npm'"));
+        assert!(err.contains("Supported: uv, conda, pixi"));
     }
 }

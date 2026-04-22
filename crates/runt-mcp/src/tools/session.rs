@@ -421,16 +421,14 @@ pub async fn create_notebook(
     let ephemeral = arg_bool(request, "ephemeral").unwrap_or(true);
 
     let deps: Vec<String> = arg_string_array(request, "dependencies").unwrap_or_default();
-    let explicit_pkg_manager = arg_str(request, "package_manager");
-
-    if let Some(pm) = explicit_pkg_manager {
-        if !matches!(pm, "uv" | "conda" | "pixi") {
-            return tool_error(&format!(
-                "Invalid package_manager '{}'. Must be 'uv', 'conda', or 'pixi'.",
-                pm
-            ));
+    let explicit_pkg_manager = match arg_str(request, "package_manager") {
+        Some(pm) => {
+            let normalized = notebook_protocol::connection::normalize_package_manager(pm)
+                .map_err(|msg| McpError::invalid_params(msg, None))?;
+            Some(normalized)
         }
-    }
+        None => None,
+    };
 
     let prev = previous_notebook_id(server).await;
 
@@ -689,14 +687,20 @@ mod tests {
         assert_eq!(result, "pixi");
     }
 
-    /// Validation rejects invalid package_manager values.
+    /// Validation rejects unknown and aliases known package_manager values.
     #[test]
-    fn invalid_pkg_manager_values() {
+    fn package_manager_validation() {
+        use notebook_protocol::connection::normalize_package_manager;
+
+        // Direct values pass through
         for valid in ["uv", "conda", "pixi"] {
-            assert!(matches!(valid, "uv" | "conda" | "pixi"));
+            assert_eq!(normalize_package_manager(valid).unwrap(), valid);
         }
-        assert!(!matches!("mamba", "uv" | "conda" | "pixi"));
-        assert!(!matches!("pip", "uv" | "conda" | "pixi"));
+        // Aliases resolve
+        assert_eq!(normalize_package_manager("pip").unwrap(), "uv");
+        assert_eq!(normalize_package_manager("mamba").unwrap(), "conda");
+        // Unknown values are rejected
+        assert!(normalize_package_manager("npm").is_err());
     }
 
     /// save_notebook response must include notebook_id (unchanged UUID) and path.

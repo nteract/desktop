@@ -214,6 +214,16 @@ impl AsyncClient {
             }
         }
 
+        // Validate and normalize package_manager before entering the async block
+        let normalized_pm = match &package_manager {
+            Some(pm) => {
+                let n = notebook_protocol::connection::normalize_package_manager(pm)
+                    .map_err(pyo3::exceptions::PyValueError::new_err)?;
+                Some(n.to_string())
+            }
+            None => None,
+        };
+
         let label = peer_label.or_else(|| self.peer_label.clone());
         let socket_path = self.socket_path.clone();
         let runtime = runtime.to_string();
@@ -225,7 +235,7 @@ impl AsyncClient {
                 runtime,
                 working_dir_buf,
                 label,
-                package_manager,
+                normalized_pm,
                 deps,
             )
             .await
