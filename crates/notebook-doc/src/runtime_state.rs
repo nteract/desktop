@@ -1171,24 +1171,13 @@ impl RuntimeStateDoc {
     }
 
     /// Ensure the `executions/{execution_id}/outputs` list exists, creating it if absent.
-    /// Returns the ObjId of the list.
-    #[allow(clippy::expect_used)]
-    fn ensure_output_list(&mut self, execution_id: &str) -> automerge::ObjId {
-        let executions = self
-            .get_map("executions")
-            .expect("executions map must exist");
-        let (_, entry) = self
-            .doc
-            .get(&executions, execution_id)
-            .ok()
-            .flatten()
-            .expect("execution entry must exist");
+    /// Returns `None` if the execution entry doesn't exist (stale IOPub race).
+    fn ensure_output_list(&mut self, execution_id: &str) -> Option<automerge::ObjId> {
+        let executions = self.get_map("executions")?;
+        let (_, entry) = self.doc.get(&executions, execution_id).ok().flatten()?;
         match self.doc.get(&entry, "outputs").ok().flatten() {
-            Some((Value::Object(ObjType::List), id)) => id,
-            _ => self
-                .doc
-                .put_object(&entry, "outputs", ObjType::List)
-                .expect("create outputs list on execution entry"),
+            Some((Value::Object(ObjType::List), id)) => Some(id),
+            _ => self.doc.put_object(&entry, "outputs", ObjType::List).ok(),
         }
     }
 
@@ -1197,14 +1186,15 @@ impl RuntimeStateDoc {
     /// The manifest is written as an Automerge Map at the list position.
     /// Creates the `outputs/{execution_id}` list if it doesn't exist.
     /// Also updates `display_index` if the manifest has a `display_id`.
-    /// Returns the output index.
-    #[allow(clippy::expect_used)]
+    /// Returns the output index, or `Ok(0)` if the execution entry is missing.
     pub fn append_output(
         &mut self,
         execution_id: &str,
         manifest: &serde_json::Value,
     ) -> Result<usize, AutomergeError> {
-        let list_id = self.ensure_output_list(execution_id);
+        let Some(list_id) = self.ensure_output_list(execution_id) else {
+            return Ok(0);
+        };
         let len = self.doc.length(&list_id);
         crate::insert_json_at_index(&mut self.doc, &list_id, len, manifest)?;
 
@@ -1227,21 +1217,17 @@ impl RuntimeStateDoc {
     /// Replace all outputs for an execution.
     ///
     /// Used during notebook load to populate outputs for synthetic execution_ids.
-    #[allow(clippy::expect_used)]
     pub fn set_outputs(
         &mut self,
         execution_id: &str,
         manifests: &[serde_json::Value],
     ) -> Result<bool, AutomergeError> {
-        let executions = self
-            .get_map("executions")
-            .expect("executions map must exist");
-        let (_, entry) = self
-            .doc
-            .get(&executions, execution_id)
-            .ok()
-            .flatten()
-            .expect("execution entry must exist");
+        let Some(executions) = self.get_map("executions") else {
+            return Ok(false);
+        };
+        let Some((_, entry)) = self.doc.get(&executions, execution_id).ok().flatten() else {
+            return Ok(false);
+        };
 
         // Delete existing list and create fresh
         self.remove_display_index_entries_for_execution(execution_id);
@@ -1275,7 +1261,6 @@ impl RuntimeStateDoc {
     /// Without nulling `execution_count`, the frontend's per-cell resolver
     /// (which walks all executions for a cell looking for a non-null count)
     /// would keep displaying the stale `[N]:` counter after a Clear Outputs.
-    #[allow(clippy::expect_used)]
     pub fn clear_execution_outputs(&mut self, execution_id: &str) -> Result<bool, AutomergeError> {
         let Some(executions) = self.get_map("executions") else {
             return Ok(false);
@@ -1397,7 +1382,9 @@ impl RuntimeStateDoc {
         manifest: &serde_json::Value,
         known_state: Option<&StreamOutputState>,
     ) -> Result<(bool, usize), AutomergeError> {
-        let list_id = self.ensure_output_list(execution_id);
+        let Some(list_id) = self.ensure_output_list(execution_id) else {
+            return Ok((false, 0));
+        };
         let output_count = self.doc.length(&list_id);
 
         // Validate cached state if provided
