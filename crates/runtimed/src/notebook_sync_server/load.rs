@@ -733,13 +733,27 @@ pub fn create_empty_notebook(
     let env_id = env_id
         .map(|s| s.to_string())
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let metadata_snapshot = build_new_notebook_metadata(
+    let mut metadata_snapshot = build_new_notebook_metadata(
         runtime,
         &env_id,
         default_python_env,
         package_manager,
         dependencies,
     );
+
+    // Sign deps so trust verification passes and auto-launch proceeds.
+    // Without this, seeded deps would be Untrusted and block kernel launch.
+    if !dependencies.is_empty() {
+        let mut trust_metadata = std::collections::HashMap::new();
+        if let Ok(runt_value) = serde_json::to_value(&metadata_snapshot.runt) {
+            trust_metadata.insert("runt".to_string(), runt_value);
+        }
+        if let Ok(sig) = runt_trust::sign_notebook_dependencies(&trust_metadata) {
+            metadata_snapshot.runt.trust_signature = Some(sig);
+            metadata_snapshot.runt.trust_timestamp =
+                Some(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+        }
+    }
 
     doc.set_metadata_snapshot(&metadata_snapshot)
         .map_err(|e| format!("Failed to set metadata: {}", e))?;
