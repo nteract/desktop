@@ -802,6 +802,67 @@ export function value_counts(ipc_bytes, column_index) {
         wasm.__wbindgen_add_to_stack_pointer(16);
     }
 }
+
+/**
+ * Build a Parquet file directly from SQLite query results. The caller
+ * supplies:
+ *
+ * - `pragma_rows`: rows returned by `PRAGMA table_info(tablename)`, i.e. an
+ *   array of `{ name, type, notnull, pk, dflt_value, cid }` objects. Schema
+ *   is taken from here; only `name` and `type` are used.
+ * - `data_rows`: rows returned by `SELECT * FROM tablename`, i.e. an array
+ *   of `{ col_name: value, ... }` objects.
+ *
+ * One row group per call, ZSTD compression.
+ * @param {any} pragma_rows
+ * @param {any} data_rows
+ * @returns {Uint8Array}
+ */
+export function write_parquet_from_sqlite(pragma_rows, data_rows) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.write_parquet_from_sqlite(retptr, addHeapObject(pragma_rows), addHeapObject(data_rows));
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+        var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
+        if (r3) {
+            throw takeObject(r2);
+        }
+        var v1 = getArrayU8FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_export4(r0, r1 * 1, 1);
+        return v1;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
+ * Write an Arrow IPC stream to a Parquet file. ZSTD compressed,
+ * one row group per input RecordBatch.
+ * @param {Uint8Array} ipc_bytes
+ * @returns {Uint8Array}
+ */
+export function write_parquet_ipc(ipc_bytes) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        const ptr0 = passArray8ToWasm0(ipc_bytes, wasm.__wbindgen_export);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.write_parquet_ipc(retptr, ptr0, len0);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+        var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
+        if (r3) {
+            throw takeObject(r2);
+        }
+        var v2 = getArrayU8FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_export4(r0, r1 * 1, 1);
+        return v2;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,
@@ -846,6 +907,10 @@ function __wbg_get_imports() {
             const ret = typeof(getObject(arg0)) === 'function';
             return ret;
         },
+        __wbg___wbindgen_is_null_52ff4ec04186736f: function(arg0) {
+            const ret = getObject(arg0) === null;
+            return ret;
+        },
         __wbg___wbindgen_is_object_63322ec0cd6ea4ef: function(arg0) {
             const val = getObject(arg0);
             const ret = typeof(val) === 'object' && val !== null;
@@ -853,6 +918,10 @@ function __wbg_get_imports() {
         },
         __wbg___wbindgen_is_string_6df3bf7ef1164ed3: function(arg0) {
             const ret = typeof(getObject(arg0)) === 'string';
+            return ret;
+        },
+        __wbg___wbindgen_is_undefined_29a43b4d42920abd: function(arg0) {
+            const ret = getObject(arg0) === undefined;
             return ret;
         },
         __wbg___wbindgen_jsval_eq_d3465d8a07697228: function(arg0, arg1) {
@@ -880,6 +949,10 @@ function __wbg_get_imports() {
         __wbg___wbindgen_throw_6b64449b9b9ed33c: function(arg0, arg1) {
             throw new Error(getStringFromWasm0(arg0, arg1));
         },
+        __wbg___wbindgen_typeof_f84d8f695b18b75f: function(arg0) {
+            const ret = typeof getObject(arg0);
+            return addHeapObject(ret);
+        },
         __wbg_call_14b169f759b26747: function() { return handleError(function (arg0, arg1) {
             const ret = getObject(arg0).call(getObject(arg1));
             return addHeapObject(ret);
@@ -903,7 +976,15 @@ function __wbg_get_imports() {
                 wasm.__wbindgen_export4(deferred0_0, deferred0_1, 1);
             }
         },
+        __wbg_from_0dbf29f09e7fb200: function(arg0) {
+            const ret = Array.from(getObject(arg0));
+            return addHeapObject(ret);
+        },
         __wbg_get_1affdbdd5573b16a: function() { return handleError(function (arg0, arg1) {
+            const ret = Reflect.get(getObject(arg0), getObject(arg1));
+            return addHeapObject(ret);
+        }, arguments); },
+        __wbg_get_6011fa3a58f61074: function() { return handleError(function (arg0, arg1) {
             const ret = Reflect.get(getObject(arg0), getObject(arg1));
             return addHeapObject(ret);
         }, arguments); },
@@ -913,6 +994,10 @@ function __wbg_get_imports() {
         },
         __wbg_get_unchecked_17f53dad852b9588: function(arg0, arg1) {
             const ret = getObject(arg0)[arg1 >>> 0];
+            return addHeapObject(ret);
+        },
+        __wbg_get_with_ref_key_6412cf3094599694: function(arg0, arg1) {
+            const ret = getObject(arg0)[getObject(arg1)];
             return addHeapObject(ret);
         },
         __wbg_instanceof_ArrayBuffer_7c8433c6ed14ffe3: function(arg0) {

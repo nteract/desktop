@@ -199,6 +199,26 @@ export function undo_cast_column(handle: number, col: number): string;
  */
 export function value_counts(ipc_bytes: Uint8Array, column_index: number): any;
 
+/**
+ * Build a Parquet file directly from SQLite query results. The caller
+ * supplies:
+ *
+ * - `pragma_rows`: rows returned by `PRAGMA table_info(tablename)`, i.e. an
+ *   array of `{ name, type, notnull, pk, dflt_value, cid }` objects. Schema
+ *   is taken from here; only `name` and `type` are used.
+ * - `data_rows`: rows returned by `SELECT * FROM tablename`, i.e. an array
+ *   of `{ col_name: value, ... }` objects.
+ *
+ * One row group per call, ZSTD compression.
+ */
+export function write_parquet_from_sqlite(pragma_rows: any, data_rows: any): Uint8Array;
+
+/**
+ * Write an Arrow IPC stream to a Parquet file. ZSTD compressed,
+ * one row group per input RecordBatch.
+ */
+export function write_parquet_ipc(ipc_bytes: Uint8Array): Uint8Array;
+
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
@@ -235,6 +255,8 @@ export interface InitOutput {
     readonly string_contains: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly undo_cast_column: (a: number, b: number, c: number) => void;
     readonly value_counts: (a: number, b: number, c: number, d: number) => void;
+    readonly write_parquet_from_sqlite: (a: number, b: number, c: number) => void;
+    readonly write_parquet_ipc: (a: number, b: number, c: number) => void;
     readonly rust_zstd_wasm_shim_calloc: (a: number, b: number) => number;
     readonly rust_zstd_wasm_shim_free: (a: number) => void;
     readonly rust_zstd_wasm_shim_malloc: (a: number) => number;
