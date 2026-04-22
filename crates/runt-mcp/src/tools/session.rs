@@ -420,6 +420,18 @@ pub async fn create_notebook(
         .or_else(|| std::env::current_dir().ok());
     let ephemeral = arg_bool(request, "ephemeral").unwrap_or(true);
 
+    let deps: Vec<String> = arg_string_array(request, "dependencies").unwrap_or_default();
+    let explicit_pkg_manager = arg_str(request, "package_manager");
+
+    if let Some(pm) = explicit_pkg_manager {
+        if !matches!(pm, "uv" | "conda" | "pixi") {
+            return tool_error(&format!(
+                "Invalid package_manager '{}'. Must be 'uv', 'conda', or 'pixi'.",
+                pm
+            ));
+        }
+    }
+
     let prev = previous_notebook_id(server).await;
 
     match notebook_sync::connect::connect_create(
@@ -428,6 +440,8 @@ pub async fn create_notebook(
         working_dir,
         &server.get_peer_label().await,
         ephemeral,
+        explicit_pkg_manager,
+        deps.clone(),
     )
     .await
     {
@@ -438,53 +452,12 @@ pub async fn create_notebook(
 
             let notebook_id = result.handle.notebook_id().to_string();
 
-            // Announce presence so the peer is visible immediately
             let peer_label = server.get_peer_label().await;
             crate::presence::announce(&result.handle, &peer_label).await;
 
-            // Add dependencies if specified
-            let deps: Vec<String> = arg_string_array(request, "dependencies").unwrap_or_default();
-
-            let explicit_pkg_manager = arg_str(request, "package_manager");
-
-            // Validate explicit package_manager if provided
-            if let Some(pm) = explicit_pkg_manager {
-                if !matches!(pm, "uv" | "conda" | "pixi") {
-                    return tool_error(&format!(
-                        "Invalid package_manager '{}'. Must be 'uv', 'conda', or 'pixi'.",
-                        pm
-                    ));
-                }
-            }
-
-            // Ensure the daemon's doc structure is fully received before
-            // any metadata writes.
-            let mut metadata_changed = false;
-            if runtime != "deno" {
-                if let Err(e) = result.handle.confirm_sync().await {
-                    tracing::warn!("confirm_sync before create_notebook metadata fix: {e}");
-                }
-
-                // Only override metadata when the user explicitly requested a
-                // package manager. When omitted, the daemon already set the
-                // correct metadata from default_python_env.
-                if let Some(pm) = explicit_pkg_manager {
-                    metadata_changed =
-                        super::deps::ensure_package_manager_metadata(&result.handle, pm);
-                }
-            }
-
-            // Effective package manager: explicit arg, or what the daemon set
-            // from default_python_env.
             let pkg_manager: String = explicit_pkg_manager
                 .map(String::from)
                 .unwrap_or_else(|| super::deps::detect_package_manager(&result.handle));
-
-            if runtime != "deno" {
-                for dep in &deps {
-                    let _ = super::deps::add_dep_for_manager(&result.handle, dep, &pkg_manager);
-                }
-            }
 
             let session = NotebookSession {
                 handle: result.handle,
@@ -494,64 +467,6 @@ pub async fn create_notebook(
             };
             *server.session.write().await = Some(session);
 
-            // Restart kernel if deps were added or package manager metadata
-            // was changed from the daemon's default (so the kernel picks up
-            // the right env). Skip for deno — deno doesn't use Python
-            // package managers.
-            let needs_restart = runtime != "deno" && (!deps.is_empty() || metadata_changed);
-            if needs_restart {
-                let session = server.session.read().await;
-                if let Some(s) = session.as_ref() {
-                    // Ensure daemon has the dep metadata before restarting
-                    if let Err(e) = s.handle.confirm_sync().await {
-                        tracing::warn!("confirm_sync failed before create_notebook relaunch: {e}");
-                    }
-
-                    // Shutdown and relaunch with scoped auto-detect so the daemon
-                    // uses the correct package manager pool (not the system default).
-                    // "auto:pixi" → pixi pool/inline, "auto:conda" → conda pool/inline,
-                    // "auto" → follows default_python_env (which may differ from requested).
-                    let scoped_env_source = match pkg_manager.as_str() {
-                        "pixi" => "auto:pixi",
-                        "conda" => "auto:conda",
-                        _ => "auto:uv",
-                    };
-                    let _ = s
-                        .handle
-                        .send_request(NotebookRequest::ShutdownKernel {})
-                        .await;
-                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-                    let _ = s
-                        .handle
-                        .send_request(NotebookRequest::LaunchKernel {
-                            kernel_type: runtime.to_string(),
-                            env_source: scoped_env_source.to_string(),
-                            notebook_path: None,
-                        })
-                        .await;
-
-                    // Wait for kernel to become ready
-                    let start = std::time::Instant::now();
-                    let timeout = std::time::Duration::from_secs(120);
-                    loop {
-                        if start.elapsed() >= timeout {
-                            break;
-                        }
-                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                        if let Ok(state) = s.handle.get_runtime_state() {
-                            if state.kernel.status == "idle" || state.kernel.status == "busy" {
-                                break;
-                            }
-                            if state.kernel.status == "error" {
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Collect resolved runtime info for the response (env_source,
-            // kernel status, etc.) so agents know what environment they got.
             let runtime_info = {
                 let guard = server.session.read().await;
                 if let Some(s) = guard.as_ref() {
@@ -561,8 +476,6 @@ pub async fn create_notebook(
                 }
             };
 
-            // Read back the full dependency list (may include project deps
-            // that were already present before the agent's deps were added).
             let all_deps = {
                 let guard = server.session.read().await;
                 guard.as_ref().map_or_else(Vec::new, |s| {
