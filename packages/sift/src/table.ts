@@ -102,8 +102,9 @@ export type TableData = {
 
 export type RangeFilter = { kind: "range"; min: number; max: number };
 export type SetFilter = { kind: "set"; values: Set<string> };
+export type NotInFilter = { kind: "not-in"; values: Set<string> };
 export type BooleanFilter = { kind: "boolean"; value: boolean };
-export type ColumnFilter = RangeFilter | SetFilter | BooleanFilter | null;
+export type ColumnFilter = RangeFilter | SetFilter | NotInFilter | BooleanFilter | null;
 
 export type TableEngineState = {
   sort: { column: string; direction: "asc" | "desc" } | null;
@@ -299,6 +300,12 @@ export function createTable(
         case "set": {
           const s = data.getCell(dataRow, c);
           if (!f.values.has(s)) return false;
+          break;
+        }
+        case "not-in": {
+          const s = data.getCell(dataRow, c);
+          // Inverted: exclude row if value IS in the exclusion set
+          if (f.values.has(s)) return false;
           break;
         }
         case "boolean": {
@@ -1774,6 +1781,11 @@ export function createTable(
         const vals = [...f.values];
         if (vals.length === 1) return vals[0];
         return `${vals.length} values`;
+      }
+      case "not-in": {
+        const vals = [...f.values];
+        if (vals.length === 1) return `not ${vals[0]}`;
+        return `not ${vals.length} values`;
       }
       case "boolean":
         return f.value ? "Yes" : "No";

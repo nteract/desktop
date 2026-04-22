@@ -256,6 +256,9 @@ export function createWasmTableData(
           case "set":
             specs.push({ kind: "set", col: c, values: Array.from(f.values) });
             break;
+          case "not-in":
+            specs.push({ kind: "not_in", col: c, values: Array.from(f.values) });
+            break;
           case "boolean":
             specs.push({ kind: "boolean", col: c, value: f.value });
             break;
