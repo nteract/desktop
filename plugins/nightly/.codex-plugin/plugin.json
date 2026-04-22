@@ -1,7 +1,7 @@
 {
-  "name": "nteract-nightly",
+  "name": "nightly",
   "version": "0.1.0",
-  "description": "Open, run, and edit nteract notebooks from Codex (nightly channel)",
+  "description": "nteract notebooks (nightly channel) for Codex.",
   "author": {
     "name": "nteract contributors",
     "url": "https://nteract.io"

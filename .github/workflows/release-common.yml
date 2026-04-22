@@ -39,13 +39,8 @@ on:
         description: Whether the updater channel release is prerelease
         required: true
         type: boolean
-      publish_plugin_repo:
-        description: owner/repo of the distribution repo for the Claude Code plugin (e.g. nteract/claude-plugin). Leave empty to skip plugin publish.
-        required: false
-        type: string
-        default: ""
       publish_plugin_channel:
-        description: stable or nightly — selects which plugin source tree (plugins/nteract or plugins/nteract-nightly) is assembled.
+        description: stable or nightly — selects which plugin slice (plugins/nteract or plugins/nightly) is assembled. Leave empty to skip plugin publish.
         required: false
         type: string
         default: ""
@@ -979,11 +974,17 @@ jobs:
           path: python/runtimed/dist
 
   publish-plugin:
-    # Assemble and push the Claude Code plugin distribution repo.
-    # Skipped when publish_plugin_repo is empty — the plain stable/nightly
-    # callers both set it, but local-testing workflow_dispatches can opt out.
+    # Assemble this release's channel-slice of the Claude Code plugin
+    # distribution repo (nteract/claude-plugin). One repo, two plugins:
+    # "nteract" (stable) and "nightly" (dev). Each channel's publish
+    # only touches its own plugins/<name>/ subtree and its entry in
+    # marketplace.json, so serial stable+nightly releases compose
+    # without stomping each other.
+    #
+    # Skipped when publish_plugin_channel is empty (workflow_dispatch
+    # testing can opt out).
     name: Publish Claude Code plugin
-    if: inputs.publish_plugin_repo != ''
+    if: inputs.publish_plugin_channel != ''
     runs-on: blacksmith-4vcpu-ubuntu-2404
     needs:
       [
@@ -1020,58 +1021,66 @@ jobs:
           echo "staged binaries:"
           ls -la plugin-binaries
 
-      - name: Assemble plugin distribution tree
-        run: |
-          ./scripts/assemble-plugin-dist.sh \
-            --channel "${{ inputs.publish_plugin_channel }}" \
-            --binaries-dir plugin-binaries \
-            --out-dir plugin-dist
-
       - name: Checkout distribution repo
         uses: actions/checkout@v6
         with:
-          repository: ${{ inputs.publish_plugin_repo }}
+          repository: nteract/claude-plugin
           token: ${{ secrets.CLAUDE_PLUGIN_DEPLOY_TOKEN }}
           path: plugin-dist-repo
           fetch-depth: 1
 
-      - name: Sync assembled tree into distribution repo (skip if identical)
-        id: sync
+      - name: Configure git identity
         working-directory: plugin-dist-repo
-        run: |
-          # Rsync from assembled tree, deleting anything not in the source
-          # (except the .git dir). Exit 0 = nothing to do, 1 = changes.
-          # We don't use git clean -fdx because we want .git preserved.
-
-          shopt -s dotglob
-          # Remove everything except .git
-          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
-          cp -R ../plugin-dist/. .
-          shopt -u dotglob
-
-          git add -A
-          if git diff --cached --quiet; then
-            echo "no changes; skipping push and tag"
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "changes detected"
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Commit, tag, and push
-        if: steps.sync.outputs.changed == 'true'
-        working-directory: plugin-dist-repo
-        env:
-          VERSION: ${{ needs.compute-version.outputs.version }}
         run: |
           git config user.name "nteract-release-bot"
           git config user.email "release-bot@nteract.io"
-          git commit -m "Release v${VERSION}" \
+
+      - name: Assemble channel slice into distribution checkout
+        run: |
+          # Assembly script only touches plugins/<channel>/ + its
+          # marketplace.json entry. The other channel's slice is left
+          # as-is, so serial runs compose.
+          ./scripts/assemble-plugin-dist.sh \
+            --channel "${{ inputs.publish_plugin_channel }}" \
+            --binaries-dir plugin-binaries \
+            --out-dir plugin-dist-repo
+
+      - name: Commit, tag, and push (with pull-rebase retry)
+        working-directory: plugin-dist-repo
+        env:
+          VERSION: ${{ needs.compute-version.outputs.version }}
+          CHANNEL: ${{ inputs.publish_plugin_channel }}
+        run: |
+          git add -A
+          if git diff --cached --quiet; then
+            echo "no changes for ${CHANNEL} slice; skipping push and tag"
+            exit 0
+          fi
+
+          git commit -m "Release v${VERSION} (${CHANNEL})" \
             -m "Generated from nteract/desktop@${GITHUB_SHA}" \
             -m "Do not hand-edit — regenerated on every release."
           git tag -f "v${VERSION}"
-          git push origin HEAD:main
-          git push origin "v${VERSION}"
+
+          # Pull-rebase-push retry handles a same-minute race between
+          # stable and nightly. Our commit only touches its own channel's
+          # paths, so rebase onto the other channel's commit is a
+          # non-overlapping fast-forward in practice.
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main && git push origin "v${VERSION}"; then
+              echo "published on attempt ${attempt}"
+              exit 0
+            fi
+            echo "push failed on attempt ${attempt}, rebasing..."
+            git fetch origin main
+            git rebase origin/main || {
+              echo "rebase conflict — abort, leave the distribution repo consistent" >&2
+              git rebase --abort
+              exit 1
+            }
+          done
+          echo "publish failed after 3 attempts" >&2
+          exit 1
 
   prerelease:
     name: ${{ inputs.release_title }}

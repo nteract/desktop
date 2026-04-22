@@ -17,10 +17,10 @@
       "category": "Coding"
     },
     {
-      "name": "nteract-nightly",
+      "name": "nightly",
       "source": {
         "source": "local",
-        "path": "./plugins/nteract-nightly"
+        "path": "./plugins/nightly"
       },
       "policy": {
         "installation": "AVAILABLE",

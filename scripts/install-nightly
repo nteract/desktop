@@ -56,7 +56,7 @@ atomic_install target/release/nteract-mcp "$INSTALL_DIR/nteract-mcp-nightly"
 # binary. The plugin's .mcp.json points at ${CLAUDE_PLUGIN_ROOT}/bin/nteract-mcp
 # and Claude Code spawns it from the plugin-cache copy, so the link must
 # resolve from the cache location. `readlink -f` is Linux-specific.
-PLUGIN_BIN="$REPO_ROOT/plugins/nteract-nightly/bin"
+PLUGIN_BIN="$REPO_ROOT/plugins/nightly/bin"
 mkdir -p "$PLUGIN_BIN"
 ln -sfn "$INSTALL_DIR/nteract-mcp-nightly" "$PLUGIN_BIN/nteract-mcp"
 echo "Linked $PLUGIN_BIN/nteract-mcp -> $INSTALL_DIR/nteract-mcp-nightly"
