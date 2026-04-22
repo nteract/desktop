@@ -248,6 +248,28 @@ pub struct SyncedSettings {
     /// feature flags are added.
     #[serde(default)]
     pub bootstrap_dx: bool,
+
+    // ── Telemetry ───────────────────────────────────────────────────
+    /// Opaque per-install UUIDv4. Generated on first heartbeat, persisted in
+    /// settings. Not derived from any identifying data.
+    #[serde(default)]
+    pub install_id: String,
+
+    /// Master telemetry switch. When false, no heartbeat pings are sent.
+    #[serde(default = "default_telemetry_enabled")]
+    pub telemetry_enabled: bool,
+
+    /// Unix-seconds timestamp of the last successful daemon heartbeat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telemetry_last_daemon_ping_at: Option<u64>,
+
+    /// Unix-seconds timestamp of the last successful app heartbeat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telemetry_last_app_ping_at: Option<u64>,
+
+    /// Unix-seconds timestamp of the last successful MCP heartbeat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telemetry_last_mcp_ping_at: Option<u64>,
 }
 
 impl SyncedSettings {
@@ -275,8 +297,17 @@ impl Default for SyncedSettings {
             conda_pool_size: DEFAULT_CONDA_POOL_SIZE,
             pixi_pool_size: DEFAULT_PIXI_POOL_SIZE,
             bootstrap_dx: false,
+            install_id: String::new(),
+            telemetry_enabled: true,
+            telemetry_last_daemon_ping_at: None,
+            telemetry_last_app_ping_at: None,
+            telemetry_last_mcp_ping_at: None,
         }
     }
+}
+
+fn default_telemetry_enabled() -> bool {
+    true
 }
 
 fn default_keep_alive_secs() -> u64 {
@@ -290,6 +321,19 @@ fn default_conda_pool_size() -> u64 {
 }
 fn default_pixi_pool_size() -> u64 {
     DEFAULT_PIXI_POOL_SIZE
+}
+
+/// Ensure an `install_id` exists in the settings doc, generating one if needed.
+/// Returns the (possibly freshly-generated) install ID.
+pub fn ensure_install_id(settings: &mut SettingsDoc) -> String {
+    if let Some(existing) = settings.get("install_id") {
+        if !existing.is_empty() {
+            return existing;
+        }
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    settings.put("install_id", &id);
+    id
 }
 
 /// Generate a JSON Schema string for the settings file.
@@ -362,6 +406,10 @@ impl SettingsDoc {
             "pixi_pool_size",
             defaults.pixi_pool_size as i64,
         );
+
+        // Telemetry defaults (install_id left empty until first heartbeat)
+        let _ = doc.put(automerge::ROOT, "install_id", "");
+        let _ = doc.put(automerge::ROOT, "telemetry_enabled", true);
 
         // Nested uv map with empty package list
         if let Ok(uv_id) = doc.put_object(automerge::ROOT, "uv", ObjType::Map) {
@@ -462,6 +510,34 @@ impl SettingsDoc {
         // bootstrap_dx: boolean
         if let Some(enabled) = json.get("bootstrap_dx").and_then(|v| v.as_bool()) {
             settings.put_bool("bootstrap_dx", enabled);
+        }
+
+        // Telemetry fields
+        if let Some(id) = json.get("install_id").and_then(|v| v.as_str()) {
+            if !id.is_empty() {
+                settings.put("install_id", id);
+            }
+        }
+        if let Some(enabled) = json.get("telemetry_enabled").and_then(|v| v.as_bool()) {
+            settings.put_bool("telemetry_enabled", enabled);
+        }
+        if let Some(ts) = json
+            .get("telemetry_last_daemon_ping_at")
+            .and_then(|v| v.as_u64())
+        {
+            settings.put_u64("telemetry_last_daemon_ping_at", ts);
+        }
+        if let Some(ts) = json
+            .get("telemetry_last_app_ping_at")
+            .and_then(|v| v.as_u64())
+        {
+            settings.put_u64("telemetry_last_app_ping_at", ts);
+        }
+        if let Some(ts) = json
+            .get("telemetry_last_mcp_ping_at")
+            .and_then(|v| v.as_u64())
+        {
+            settings.put_u64("telemetry_last_mcp_ping_at", ts);
         }
 
         // Pool sizes (numeric values, import from JSON if present)
@@ -863,6 +939,11 @@ impl SettingsDoc {
             bootstrap_dx: self
                 .get_bool("bootstrap_dx")
                 .unwrap_or(defaults.bootstrap_dx),
+            install_id: self.get("install_id").unwrap_or_default(),
+            telemetry_enabled: self.get_bool("telemetry_enabled").unwrap_or(true),
+            telemetry_last_daemon_ping_at: self.get_u64("telemetry_last_daemon_ping_at"),
+            telemetry_last_app_ping_at: self.get_u64("telemetry_last_app_ping_at"),
+            telemetry_last_mcp_ping_at: self.get_u64("telemetry_last_mcp_ping_at"),
         }
     }
 
@@ -992,6 +1073,35 @@ impl SettingsDoc {
                 );
                 self.put_bool("bootstrap_dx", enabled);
                 changed = true;
+            }
+        }
+
+        // Telemetry fields
+        if let Some(id) = json.get("install_id").and_then(|v| v.as_str()) {
+            if !id.is_empty() {
+                let current = self.get("install_id");
+                if current.as_deref() != Some(id) {
+                    self.put("install_id", id);
+                    changed = true;
+                }
+            }
+        }
+        if let Some(enabled) = json.get("telemetry_enabled").and_then(|v| v.as_bool()) {
+            if self.get_bool("telemetry_enabled") != Some(enabled) {
+                self.put_bool("telemetry_enabled", enabled);
+                changed = true;
+            }
+        }
+        for key in &[
+            "telemetry_last_daemon_ping_at",
+            "telemetry_last_app_ping_at",
+            "telemetry_last_mcp_ping_at",
+        ] {
+            if let Some(ts) = json.get(key).and_then(|v| v.as_u64()) {
+                if self.get_u64(key) != Some(ts) {
+                    self.put_u64(key, ts);
+                    changed = true;
+                }
             }
         }
 

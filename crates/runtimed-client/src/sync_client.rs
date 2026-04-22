@@ -452,6 +452,11 @@ pub fn get_all_from_doc(doc: &AutoCommit) -> SyncedSettings {
         conda_pool_size: get_u64("conda_pool_size").unwrap_or(defaults.conda_pool_size),
         pixi_pool_size: get_u64("pixi_pool_size").unwrap_or(defaults.pixi_pool_size),
         bootstrap_dx: get_bool("bootstrap_dx").unwrap_or(defaults.bootstrap_dx),
+        install_id: get_str("install_id").unwrap_or_default(),
+        telemetry_enabled: get_bool("telemetry_enabled").unwrap_or(true),
+        telemetry_last_daemon_ping_at: get_u64("telemetry_last_daemon_ping_at"),
+        telemetry_last_app_ping_at: get_u64("telemetry_last_app_ping_at"),
+        telemetry_last_mcp_ping_at: get_u64("telemetry_last_mcp_ping_at"),
     }
 }
 
