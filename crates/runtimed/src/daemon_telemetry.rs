@@ -33,12 +33,24 @@ async fn daemon_heartbeat_loop(daemon: Arc<Daemon>) {
 }
 
 async fn try_send_daemon_heartbeat(daemon: &Arc<Daemon>, client: &reqwest::Client) {
-    let (settings, install_id) = {
+    let (settings, install_id, id_was_generated) = {
         let mut settings_doc = daemon.settings.write().await;
+        let had_id = settings_doc
+            .get("install_id")
+            .map(|s| !s.is_empty())
+            .unwrap_or(false);
         let id = runtimed_client::settings_doc::ensure_install_id(&mut settings_doc);
+        let generated = !had_id;
+        if generated {
+            persist_settings(&mut settings_doc);
+        }
         let snapshot = settings_doc.get_all();
-        (snapshot, id)
+        (snapshot, id, generated)
     };
+
+    if id_was_generated {
+        tracing::info!("[telemetry] generated install_id");
+    }
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -75,7 +87,21 @@ async fn try_send_daemon_heartbeat(daemon: &Arc<Daemon>, client: &reqwest::Clien
         Err(e) => tracing::warn!("[telemetry] daemon heartbeat failed: {e}"),
     }
 
-    // Update timestamp on both success and failure
-    let mut settings_doc = daemon.settings.write().await;
-    settings_doc.put_u64("telemetry_last_daemon_ping_at", now);
+    // Update timestamp and persist to disk so it survives daemon restarts
+    {
+        let mut settings_doc = daemon.settings.write().await;
+        settings_doc.put_u64("telemetry_last_daemon_ping_at", now);
+        persist_settings(&mut settings_doc);
+    }
+}
+
+fn persist_settings(doc: &mut runtimed_client::settings_doc::SettingsDoc) {
+    let automerge_path = runtimed_client::default_settings_doc_path();
+    let json_path = runtimed_client::settings_json_path();
+    if let Err(e) = doc.save_to_file(&automerge_path) {
+        tracing::warn!("[telemetry] failed to save Automerge doc: {e}");
+    }
+    if let Err(e) = doc.save_json_mirror(&json_path) {
+        tracing::warn!("[telemetry] failed to write JSON mirror: {e}");
+    }
 }

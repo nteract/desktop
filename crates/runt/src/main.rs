@@ -839,7 +839,7 @@ async fn run_mcp_server(no_show: bool) -> Result<()> {
         runt_mcp::daemon_watch::watch(daemon_conn, watch_socket, session, peer_label).await
     });
 
-    let heartbeat_handle = tokio::spawn(async {
+    tokio::spawn(async {
         runtimed_client::telemetry::heartbeat_loop("mcp", "telemetry_last_mcp_ping_at").await;
     });
 
@@ -859,7 +859,6 @@ async fn run_mcp_server(no_show: bool) -> Result<()> {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             std::process::exit(code);
         }
-        _ = heartbeat_handle => {}
     }
 
     Ok(())
