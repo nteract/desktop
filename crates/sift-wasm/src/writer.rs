@@ -20,7 +20,7 @@ use arrow::array::builder::{
 use arrow::array::{ArrayRef, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use arrow::ipc::reader::StreamReader;
-use chrono::{NaiveDate, NaiveDateTime};
+use chrono::{DateTime, NaiveDate, NaiveDateTime};
 use parquet::arrow::ArrowWriter;
 use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::properties::WriterProperties;
@@ -196,18 +196,39 @@ fn date32_from_str(s: &str) -> Option<i32> {
 }
 
 /// Parse a SQLite datetime string into a `NaiveDateTime` (treated as UTC).
-/// Accepts common shapes: `YYYY-MM-DD HH:MM:SS[.fff]`, ISO-8601 with `T`,
-/// optional trailing `Z`, optional fractional seconds. Returns `None` for
-/// anything we don't recognize — caller writes a null.
+/// Accepts the shapes SQLite drivers actually emit:
+///
+/// - Naive:  `YYYY-MM-DD HH:MM:SS[.fff]`, `YYYY-MM-DDTHH:MM:SS[.fff]`
+/// - Trailing `Z` (UTC)
+/// - RFC 3339 with numeric offset: `2026-04-21T12:34:56+02:00`, `...-07:00`
+///
+/// Offset-qualified values are normalized to UTC so the resulting naive
+/// timestamp represents the same instant. Returns `None` for anything we
+/// don't recognize — caller writes a null.
 fn naive_datetime_from_str(s: &str) -> Option<NaiveDateTime> {
-    let trimmed = s.trim_end_matches('Z');
+    let trimmed = s.trim();
+
+    // Offset-qualified first: `+HH:MM`, `-HH:MM`, `+HHMM`, `Z`.
+    if let Ok(dt) = DateTime::parse_from_rfc3339(trimmed) {
+        return Some(dt.naive_utc());
+    }
+    if let Ok(dt) = DateTime::parse_from_str(trimmed, "%Y-%m-%d %H:%M:%S%.f%:z") {
+        return Some(dt.naive_utc());
+    }
+    if let Ok(dt) = DateTime::parse_from_str(trimmed, "%Y-%m-%d %H:%M:%S%:z") {
+        return Some(dt.naive_utc());
+    }
+
+    // Naive fallbacks (and `Z`-suffixed values that parse_from_rfc3339 missed
+    // due to missing seconds precision, etc.).
+    let naive = trimmed.trim_end_matches('Z');
     for fmt in [
         "%Y-%m-%dT%H:%M:%S%.f",
         "%Y-%m-%dT%H:%M:%S",
         "%Y-%m-%d %H:%M:%S%.f",
         "%Y-%m-%d %H:%M:%S",
     ] {
-        if let Ok(dt) = NaiveDateTime::parse_from_str(trimmed, fmt) {
+        if let Ok(dt) = NaiveDateTime::parse_from_str(naive, fmt) {
             return Some(dt);
         }
     }

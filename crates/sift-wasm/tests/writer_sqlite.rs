@@ -192,16 +192,28 @@ fn sqlite_nulls_round_trip() {
 
 /// P1: text-encoded SQLite timestamps (the common case — SQLite stores
 /// TIMESTAMP/DATETIME as ISO-8601 text in practice) round-trip instead of
-/// rejecting the export.
+/// rejecting the export. Covers naive forms, trailing `Z`, and numeric
+/// offsets (`TIMESTAMPTZ` with `+HH:MM`/`-HH:MM`).
 #[wasm_bindgen_test]
 fn sqlite_text_timestamps_round_trip() {
     let pragma = to_js(&serde_json::json!([
-        {"name": "ts_s",  "type": "TIMESTAMP"},
-        {"name": "ts_ms", "type": "DATETIME"},
+        {"name": "ts_s",   "type": "TIMESTAMP"},
+        {"name": "ts_ms",  "type": "DATETIME"},
+        {"name": "ts_tz",  "type": "TIMESTAMPTZ"},
     ]));
     let rows = to_js(&serde_json::json!([
-        {"ts_s": "2026-04-21 12:34:56",     "ts_ms": "2026-04-21T12:34:56.789"},
-        {"ts_s": "2026-04-21T12:34:56Z",    "ts_ms": "2026-04-21 12:34:56"},
+        {
+            "ts_s": "2026-04-21 12:34:56",
+            "ts_ms": "2026-04-21T12:34:56.789",
+            // 14:34:56+02:00 == 12:34:56Z
+            "ts_tz": "2026-04-21T14:34:56+02:00"
+        },
+        {
+            "ts_s": "2026-04-21T12:34:56Z",
+            "ts_ms": "2026-04-21 12:34:56",
+            // 05:34:56-07:00 == 12:34:56Z
+            "ts_tz": "2026-04-21T05:34:56-07:00"
+        },
     ]));
 
     let parquet = write_parquet_from_sqlite(pragma, rows).expect("write_parquet_from_sqlite");
@@ -234,6 +246,17 @@ fn sqlite_text_timestamps_round_trip() {
         .expect("timestamp(ms)");
     assert_eq!(ts_ms.value(0), 1_776_774_896_789);
     assert_eq!(ts_ms.value(1), 1_776_774_896_000);
+
+    let ts_tz = batch
+        .column(2)
+        .as_any()
+        .downcast_ref::<TimestampSecondArray>()
+        .expect("timestamptz (second)");
+    // Both offset-qualified values normalize to the same UTC instant.
+    assert!(!ts_tz.is_null(0), "positive offset must parse, not null");
+    assert!(!ts_tz.is_null(1), "negative offset must parse, not null");
+    assert_eq!(ts_tz.value(0), 1_776_774_896);
+    assert_eq!(ts_tz.value(1), 1_776_774_896);
 }
 
 /// P2: SQLite rows whose runtime storage class doesn't match the declared
