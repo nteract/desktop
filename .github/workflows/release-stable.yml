@@ -24,3 +24,5 @@ jobs:
       updater_channel_title: "Stable Update Channel"
       updater_channel_notes: "Rolling release for the stable auto-update channel. This release always contains the latest updater manifest. Do not delete this release."
       updater_channel_prerelease: false
+      publish_plugin_repo: "nteract/claude-plugin"
+      publish_plugin_channel: "stable"
