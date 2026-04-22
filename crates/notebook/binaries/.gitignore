@@ -1,3 +1,4 @@
 # Ignore all external binaries (built by xtask)
+nteract-mcp-*
 runtimed-*
 runt-*
