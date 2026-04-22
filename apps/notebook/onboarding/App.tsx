@@ -160,6 +160,7 @@ export default function App() {
   const [page, setPage] = useState<1 | 2>(1);
   const [runtime, setRuntime] = useState<Runtime | null>(null);
   const [pythonEnv, setPythonEnv] = useState<PythonEnv | null>(null);
+  const [telemetryEnabled, setTelemetryEnabled] = useState(true);
   const [steps, setSteps] = useState<SetupStep[]>([
     { id: "daemon", label: "Installing runtime daemon", status: "in_progress" },
     { id: "tools", label: "Preparing environments", status: "pending" },
@@ -291,6 +292,10 @@ export default function App() {
         value: pythonEnv,
       });
       await invoke("set_synced_setting", {
+        key: "telemetry_enabled",
+        value: telemetryEnabled,
+      });
+      await invoke("set_synced_setting", {
         key: "onboarding_completed",
         value: true,
       });
@@ -316,7 +321,7 @@ export default function App() {
       console.error("Failed to save onboarding settings:", e);
       setErrorMessage("Failed to save settings. Please try again.");
     }
-  }, [daemonReady, poolReady, runtime, pythonEnv]);
+  }, [daemonReady, poolReady, runtime, pythonEnv, telemetryEnabled]);
 
   // Skip onboarding when daemon failed - use current selections or defaults
   const handleSkip = useCallback(async () => {
@@ -426,6 +431,41 @@ export default function App() {
               </Button>
               <PageDots current={2} total={2} />
               <div className="w-[60px]" /> {/* Spacer for centering */}
+            </div>
+
+            {/* Telemetry disclosure */}
+            <div className="flex items-center justify-between p-3 rounded-lg bg-muted/50 border border-border/50">
+              <div className="space-y-0.5 pr-4">
+                <p className="text-sm font-medium">Anonymous usage data</p>
+                <p className="text-xs text-muted-foreground">
+                  One daily ping with version, platform, and architecture. No personal data.{" "}
+                  <a
+                    href="https://nteract.io/docs/telemetry"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="underline hover:text-foreground"
+                  >
+                    Learn more
+                  </a>
+                </p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={telemetryEnabled}
+                onClick={() => setTelemetryEnabled(!telemetryEnabled)}
+                className={cn(
+                  "relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors",
+                  telemetryEnabled ? "bg-primary" : "bg-muted-foreground/30",
+                )}
+              >
+                <span
+                  className={cn(
+                    "pointer-events-none inline-block h-5 w-5 rounded-full bg-background shadow-lg ring-0 transition-transform",
+                    telemetryEnabled ? "translate-x-5" : "translate-x-0",
+                  )}
+                />
+              </button>
             </div>
 
             {/* Get Started button */}

@@ -106,6 +106,24 @@ pub fn load_settings() -> SyncedSettings {
             .get("bootstrap_dx")
             .and_then(|v| v.as_bool())
             .unwrap_or(defaults.bootstrap_dx),
+        install_id: json
+            .get("install_id")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .unwrap_or_default(),
+        telemetry_enabled: json
+            .get("telemetry_enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true),
+        telemetry_last_daemon_ping_at: json
+            .get("telemetry_last_daemon_ping_at")
+            .and_then(|v| v.as_u64()),
+        telemetry_last_app_ping_at: json
+            .get("telemetry_last_app_ping_at")
+            .and_then(|v| v.as_u64()),
+        telemetry_last_mcp_ping_at: json
+            .get("telemetry_last_mcp_ping_at")
+            .and_then(|v| v.as_u64()),
     }
 }
 
@@ -141,6 +159,7 @@ mod tests {
             conda_pool_size: 3,
             pixi_pool_size: 2,
             bootstrap_dx: false,
+            ..SyncedSettings::default()
         };
 
         let json = serde_json::to_string(&settings).unwrap();
@@ -296,6 +315,7 @@ mod tests {
             conda_pool_size: defaults.conda_pool_size,
             pixi_pool_size: defaults.pixi_pool_size,
             bootstrap_dx: defaults.bootstrap_dx,
+            ..defaults
         };
         // Valid fields are preserved
         assert_eq!(settings.theme, ThemeMode::Dark);

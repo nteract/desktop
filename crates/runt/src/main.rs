@@ -438,6 +438,19 @@ enum ConfigCommands {
         /// New value. For list keys (e.g. uv.default_packages): JSON array '["pandas","numpy"]' or comma-separated 'pandas,numpy'
         value: String,
     },
+    /// Manage anonymous usage telemetry
+    #[command(subcommand)]
+    Telemetry(TelemetryCommands),
+}
+
+#[derive(Subcommand)]
+enum TelemetryCommands {
+    /// Show telemetry status, install ID, last ping times, and blocking gates
+    Status,
+    /// Enable anonymous usage telemetry
+    Enable,
+    /// Disable anonymous usage telemetry
+    Disable,
 }
 
 /// Valid top-level and dotted settings keys. Used to reject typos.
@@ -824,6 +837,10 @@ async fn run_mcp_server(no_show: bool) -> Result<()> {
     let watch_socket = socket_path;
     let watch_handle = tokio::spawn(async move {
         runt_mcp::daemon_watch::watch(daemon_conn, watch_socket, session, peer_label).await
+    });
+
+    tokio::spawn(async {
+        runtimed_client::telemetry::heartbeat_loop("mcp", "telemetry_last_mcp_ping_at").await;
     });
 
     tokio::select! {
@@ -4367,7 +4384,111 @@ async fn config_command(command: Option<ConfigCommands>) -> Result<()> {
             std::fs::write(&settings_path, &json_str)?;
             println!("Updated {key} in {}", settings_path.display());
         }
+        Some(ConfigCommands::Telemetry(cmd)) => {
+            telemetry_command(cmd, &settings_path).await?;
+        }
     }
+    Ok(())
+}
+
+async fn telemetry_command(command: TelemetryCommands, settings_path: &Path) -> Result<()> {
+    match command {
+        TelemetryCommands::Status => {
+            let settings = read_settings_from_file(settings_path)?;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+
+            println!(
+                "Telemetry: {}",
+                if settings.telemetry_enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
+            );
+
+            if settings.install_id.is_empty() {
+                println!("Install ID: (not yet generated)");
+            } else {
+                println!("Install ID: {}", settings.install_id);
+            }
+
+            fn format_ping(ts: Option<u64>, now: u64) -> String {
+                match ts {
+                    None => "never".to_string(),
+                    Some(t) => {
+                        let ago = now.saturating_sub(t);
+                        if ago < 60 {
+                            format!("{ago}s ago")
+                        } else if ago < 3600 {
+                            format!("{}m ago", ago / 60)
+                        } else {
+                            format!("{}h ago", ago / 3600)
+                        }
+                    }
+                }
+            }
+
+            println!(
+                "Last daemon ping: {}",
+                format_ping(settings.telemetry_last_daemon_ping_at, now)
+            );
+            println!(
+                "Last app ping: {}",
+                format_ping(settings.telemetry_last_app_ping_at, now)
+            );
+            println!(
+                "Last MCP ping: {}",
+                format_ping(settings.telemetry_last_mcp_ping_at, now)
+            );
+
+            let gates = runtimed_client::telemetry::blocking_gates(
+                settings.telemetry_enabled,
+                settings.onboarding_completed,
+                None, // show env-level gates, not per-source throttle
+                now,
+            );
+            if gates.is_empty() {
+                println!("\nNo blocking gates - telemetry will send on next check.");
+            } else {
+                println!("\nBlocking gates (telemetry suppressed):");
+                for gate in &gates {
+                    println!("  - {gate}");
+                }
+            }
+        }
+        TelemetryCommands::Enable => {
+            write_telemetry_enabled(settings_path, true)?;
+            println!("Telemetry enabled.");
+        }
+        TelemetryCommands::Disable => {
+            write_telemetry_enabled(settings_path, false)?;
+            println!("Telemetry disabled. Existing data ages out after 400 days.");
+            println!("See docs/telemetry.md for retention details.");
+        }
+    }
+    Ok(())
+}
+
+fn write_telemetry_enabled(settings_path: &Path, enabled: bool) -> Result<()> {
+    let mut json_value = if settings_path.exists() {
+        let content = std::fs::read_to_string(settings_path)?;
+        serde_json::from_str::<serde_json::Value>(&content)?
+    } else {
+        serde_json::to_value(runtimed::settings_doc::SyncedSettings::default())?
+    };
+    if let Some(obj) = json_value.as_object_mut() {
+        obj.insert(
+            "telemetry_enabled".to_string(),
+            serde_json::Value::Bool(enabled),
+        );
+    }
+    if let Some(parent) = settings_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(settings_path, serde_json::to_string_pretty(&json_value)?)?;
     Ok(())
 }
 

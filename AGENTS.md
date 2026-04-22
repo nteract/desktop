@@ -266,6 +266,10 @@ uv run nteract   # Alternative: finds and launches runt mcp
 - Use the default nightly flow for normal repo development. Opt into stable only when you are specifically validating stable branding, stable socket/cache paths, or stable app-launch behavior.
 - `cargo xtask dev-daemon`, `cargo xtask notebook`, `cargo xtask run`, `cargo xtask run-mcp`, and `cargo xtask dev-mcp` all follow `RUNT_BUILD_CHANNEL`.
 
+### Telemetry
+
+Anonymous daily heartbeat pings are sent to `telemetry.runtimed.com`. See `docs/telemetry.md` for the full schema, retention policy, and opt-out paths. Dev and CI builds never send telemetry: `RUNTIMED_DEV=1`, `CI=1`, and `NTERACT_TELEMETRY_DISABLE=1` all suppress pings. The shared telemetry module lives in `crates/runtimed-client/src/telemetry.rs`.
+
 ### Python API Notes
 
 - **`Output.data` is typed by MIME kind**: `str` for text MIME types, `bytes` for binary (raw bytes, no base64), `dict` for JSON MIME types. Image outputs include a synthesized `text/llm+plain` key with blob URLs.

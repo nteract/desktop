@@ -611,7 +611,7 @@ pub struct Daemon {
     /// Singleton lock - kept alive while daemon is running.
     _lock: DaemonLock,
     /// Shared Automerge settings document.
-    settings: Arc<RwLock<SettingsDoc>>,
+    pub(crate) settings: Arc<RwLock<SettingsDoc>>,
     /// Broadcast channel to notify sync connections of settings changes.
     settings_changed: tokio::sync::broadcast::Sender<()>,
     /// Global Automerge pool state document (daemon-authoritative, ephemeral).

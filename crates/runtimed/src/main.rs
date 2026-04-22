@@ -430,6 +430,8 @@ async fn run_daemon(
         }
     };
 
+    runtimed::daemon_telemetry::spawn_daemon_heartbeat(daemon.clone());
+
     // Set up signal handlers for graceful shutdown with logging
     #[cfg(unix)]
     {
