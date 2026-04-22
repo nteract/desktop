@@ -12,6 +12,7 @@ use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsValue;
 
 mod store;
+mod writer;
 
 /// Initialize the WASM module. Call once before using other functions.
 /// Sets up panic hook so Rust panics show readable messages in the browser console.
