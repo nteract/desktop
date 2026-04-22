@@ -1010,10 +1010,9 @@ jobs:
         run: |
           mkdir -p plugin-binaries
           # Each artifact is a directory named plugin-nteract-mcp-<target>
-          # containing one file (the raw binary). Flatten.
+          # containing one file (the raw binary, with .exe suffix on Windows).
+          # Flatten by copying the inner files out by basename.
           for d in plugin-binaries-staged/plugin-nteract-mcp-*; do
-            target="${d#plugin-binaries-staged/plugin-nteract-mcp-}"
-            # Windows upload-artifact preserves the .exe suffix on the inner file
             for f in "$d"/*; do
               cp "$f" "plugin-binaries/$(basename "$f")"
             done
