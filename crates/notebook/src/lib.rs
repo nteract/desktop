@@ -1643,19 +1643,31 @@ where
 
 /// Get git information for the debug banner.
 /// Returns None in release builds.
+///
+/// In debug builds the branch and commit are resolved at runtime via
+/// `git rev-parse` so the banner reflects the working tree without
+/// requiring a binary rebuild after a checkout. The build-time embedded
+/// values (`git_branch.txt` / `git_hash.txt`) are used only as a
+/// fallback when `git` isn't available.
 #[tauri::command]
 async fn get_git_info() -> Option<GitInfo> {
     #[cfg(debug_assertions)]
     {
-        // Try to read workspace description from .context/workspace-description
         let description = std::fs::read_to_string(".context/workspace-description")
             .ok()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
+        let (branch, commit) = git_info_runtime().unwrap_or_else(|| {
+            (
+                include_str!(concat!(env!("OUT_DIR"), "/git_branch.txt")).to_string(),
+                include_str!(concat!(env!("OUT_DIR"), "/git_hash.txt")).to_string(),
+            )
+        });
+
         Some(GitInfo {
-            branch: include_str!(concat!(env!("OUT_DIR"), "/git_branch.txt")).to_string(),
-            commit: include_str!(concat!(env!("OUT_DIR"), "/git_hash.txt")).to_string(),
+            branch,
+            commit,
             description,
         })
     }
@@ -1663,6 +1675,34 @@ async fn get_git_info() -> Option<GitInfo> {
     {
         None
     }
+}
+
+/// Resolve `(branch, short-hash)` from the working tree.
+///
+/// Appends `+dirty` to the hash when the working tree has uncommitted
+/// changes (matching `git describe --dirty`). Returns `None` if a
+/// required git invocation fails (no git binary, not a repo, etc.) so
+/// callers can fall back to embedded values.
+#[cfg(debug_assertions)]
+fn git_info_runtime() -> Option<(String, String)> {
+    let branch = run_git(&["rev-parse", "--abbrev-ref", "HEAD"])?;
+    let mut commit = run_git(&["rev-parse", "--short=7", "HEAD"])?;
+    if run_git(&["status", "--porcelain"]).is_some_and(|s| !s.is_empty()) {
+        commit.push_str("+dirty");
+    }
+    Some((branch, commit))
+}
+
+#[cfg(debug_assertions)]
+fn run_git(args: &[&str]) -> Option<String> {
+    std::process::Command::new("git")
+        .args(args)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// Daemon info for debug banner display.
