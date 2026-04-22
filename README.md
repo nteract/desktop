@@ -45,6 +45,14 @@ For pre-release builds (updated daily):
 /plugin install nightly@nteract
 ```
 
+### Install in Claude Desktop
+
+If you use the nteract desktop app with Claude Desktop, there's a one-click install path. In the menu bar, choose **nteract → Install Extension for Claude...**
+
+![nteract menu showing 'Install Extension for Claude...'](https://img.runt.run/install-claude-extension.png)
+
+The desktop app builds a `.mcpb` bundle at runtime (manifest, icons, `nteract-mcp` binary) and hands it to Claude Desktop, which prompts you to confirm the install. Requires the nteract desktop app; Claude Desktop picks up the bundle from there.
+
 ## Usage
 
 ```bash
