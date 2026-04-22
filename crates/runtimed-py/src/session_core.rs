@@ -181,6 +181,11 @@ pub(crate) async fn connect_with_socket(
         notebook_sync::connect::connect(socket_path.clone(), notebook_id.to_string(), &actor_label)
             .await
             .map_err(to_py_err)?;
+    result
+        .handle
+        .await_session_ready()
+        .await
+        .map_err(to_py_err)?;
 
     // Resolve blob paths from daemon info
     let (blob_base_url, blob_store_path) = resolve_blob_paths(&socket_path).await;
@@ -255,6 +260,73 @@ fn hydrate_kernel_state(state: &mut SessionState) {
     }
 }
 
+/// Wait for an auto-launched kernel to become usable after notebook creation.
+///
+/// This is currently used only for runtimes whose create contract expects a
+/// ready-to-execute kernel on return. Python notebook creation is looser:
+/// project-file auto-launch can legitimately fail or defer while the session
+/// itself is still usable for later explicit kernel start.
+async fn ensure_create_runtime_ready(
+    state: &Arc<Mutex<SessionState>>,
+    timeout: std::time::Duration,
+) -> PyResult<()> {
+    let start = tokio::time::Instant::now();
+    let mut forced_launch = false;
+
+    loop {
+        let (status, runtime) = {
+            let st = state.lock().await;
+            let handle = st
+                .handle
+                .as_ref()
+                .ok_or_else(|| to_py_err("Not connected"))?;
+            let status = handle
+                .get_runtime_state()
+                .ok()
+                .map(|rs| rs.kernel.status)
+                .unwrap_or_else(|| "not_started".to_string());
+            (status, st.runtime.clone())
+        };
+
+        match status.as_str() {
+            "idle" | "busy" => {
+                let mut st = state.lock().await;
+                hydrate_kernel_state(&mut st);
+                return Ok(());
+            }
+            "starting" => {
+                if start.elapsed() >= timeout {
+                    return Err(to_py_err(format!(
+                        "Kernel did not become ready within {} seconds",
+                        timeout.as_secs()
+                    )));
+                }
+            }
+            "error" => {
+                return Err(to_py_err(
+                    "Kernel auto-launch failed during notebook creation",
+                ));
+            }
+            _ => {
+                if !forced_launch {
+                    start_kernel(state, &runtime, "auto", None).await?;
+                    forced_launch = true;
+                    continue;
+                }
+
+                if start.elapsed() >= timeout {
+                    return Err(to_py_err(format!(
+                        "Kernel did not become ready within {} seconds",
+                        timeout.as_secs()
+                    )));
+                }
+            }
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
 /// Connect and open an existing notebook file.
 ///
 /// Returns (notebook_id, populated SessionState, NotebookConnectionInfo).
@@ -275,6 +347,11 @@ pub(crate) async fn connect_open(
         notebook_sync::connect::connect_open(socket_path.clone(), PathBuf::from(path), label)
             .await
             .map_err(to_py_err)?;
+    result
+        .handle
+        .await_session_ready()
+        .await
+        .map_err(to_py_err)?;
 
     let notebook_id = result.info.notebook_id.clone();
     let (blob_base_url, blob_store_path) = resolve_blob_paths(&socket_path).await;
@@ -344,6 +421,11 @@ pub(crate) async fn connect_create(
     )
     .await
     .map_err(to_py_err)?;
+    result
+        .handle
+        .await_session_ready()
+        .await
+        .map_err(to_py_err)?;
 
     let notebook_id = result.info.notebook_id.clone();
     let (blob_base_url, blob_store_path) = resolve_blob_paths(&socket_path).await;
@@ -369,6 +451,14 @@ pub(crate) async fn connect_create(
     };
 
     hydrate_kernel_state(&mut state);
+
+    let state_arc = Arc::new(Mutex::new(state));
+    if runtime == "deno" {
+        ensure_create_runtime_ready(&state_arc, std::time::Duration::from_secs(180)).await?;
+    }
+    let state = Arc::try_unwrap(state_arc)
+        .map_err(|_| to_py_err("Failed to unwrap session state"))?
+        .into_inner();
 
     Ok((notebook_id, state, connection_info))
 }

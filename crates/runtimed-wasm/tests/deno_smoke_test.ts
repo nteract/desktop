@@ -80,6 +80,34 @@ Deno.test("NotebookHandle: add cell and read back", () => {
   handle.free();
 });
 
+Deno.test("NotebookHandle: receive_frame decodes session_control", () => {
+  const handle = new NotebookHandle("test-status");
+  const payload = new TextEncoder().encode(
+    JSON.stringify({
+      type: "sync_status",
+      notebook_doc: "pending",
+      runtime_state: "syncing",
+      initial_load: { phase: "streaming" },
+    }),
+  );
+  const frame = new Uint8Array(1 + payload.length);
+  frame[0] = 0x07;
+  frame.set(payload, 1);
+
+  const events = handle.receive_frame(frame);
+  assertExists(events);
+  assertEquals(events.length, 1);
+  assertEquals(events[0], {
+    type: "session_control",
+    status: {
+      notebook_doc: "pending",
+      runtime_state: "syncing",
+      initial_load: { phase: "streaming" },
+    },
+  });
+  handle.free();
+});
+
 Deno.test("NotebookHandle: update source with Text CRDT", () => {
   const handle = new NotebookHandle("test-nb");
   handle.add_cell(0, "cell-1", "code");

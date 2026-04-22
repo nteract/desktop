@@ -24,4 +24,6 @@ export const frame_types = {
   RUNTIME_STATE_SYNC: 0x05,
   /** PoolStateSync message (binary Automerge sync for PoolDoc, global). */
   POOL_STATE_SYNC: 0x06,
+  /** SessionControl message (JSON, server-originated connection status). */
+  SESSION_CONTROL: 0x07,
 } as const;

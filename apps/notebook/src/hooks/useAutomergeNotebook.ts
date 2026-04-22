@@ -1,6 +1,6 @@
 import { useNotebookHost } from "@nteract/notebook-host";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { NotebookTransport, SyncableHandle } from "runtimed";
+import type { NotebookTransport, SessionStatus, SyncableHandle } from "runtimed";
 import { DEFAULT_MIME_PRIORITY, SyncEngine } from "runtimed";
 import { concatMap, from, switchMap } from "rxjs";
 import { needsPlugin, preWarmForMimes } from "@/components/isolated/iframe-libraries";
@@ -90,10 +90,13 @@ export function useAutomergeNotebook() {
   const [focusedCellId, setFocusedCellId] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const handleRef = useRef<NotebookHandle | null>(null);
   const sessionIdRef = useRef(crypto.randomUUID().slice(0, 8));
   const outputCacheRef = useRef<Map<string, JupyterOutput>>(new Map());
+  const interactiveReadyRef = useRef(false);
+  const latestSessionStatusRef = useRef<SessionStatus | null>(null);
 
   // SyncEngine and transport refs — stable across re-renders.
   const engineRef = useRef<SyncEngine | null>(null);
@@ -212,6 +215,9 @@ export function useAutomergeNotebook() {
     }
     setNotebookHandle(handle);
 
+    interactiveReadyRef.current = false;
+    latestSessionStatusRef.current = null;
+    setLoadError(null);
     setIsLoading(true);
 
     // Flush initial sync message through the engine.
@@ -254,42 +260,55 @@ export function useAutomergeNotebook() {
 
     // ── Subscribe to SyncEngine observables ───────────────────────
 
+    const sessionStatusSub = engine.sessionStatus$.subscribe((status) => {
+      latestSessionStatusRef.current = status;
+
+      if (status.initial_load.phase === "failed") {
+        logger.warn("[automerge-notebook] Initial load failed:", status.initial_load.reason);
+        setLoadError(status.initial_load.reason);
+        setIsLoading(false);
+        return;
+      }
+
+      setLoadError(null);
+      if (interactiveReadyRef.current) {
+        setIsLoading(status.initial_load.phase === "streaming");
+      }
+    });
+
     // Initial sync completion → full materialization.
     const initialSyncSub = engine.initialSyncComplete$.subscribe(() => {
-      logger.info("[automerge-notebook] Initial sync complete, materializing");
+      logger.info("[automerge-notebook] Notebook interactive, materializing");
       const handle = handleRef.current;
       if (handle) {
         materializeCells(handle)
           .then(() => {
+            interactiveReadyRef.current = true;
             // Seed the cell -> execution_id pointer store from the doc.
-            // `cellChanges$` doesn't emit during `awaitingInitialSync`,
-            // so without this every `useCellOutputs(cellId)` would see
-            // `execution_id === null` until some later incremental
-            // changeset arrived - existing notebooks would render empty
-            // outputs on open.
+            // Seed pointers for the current snapshot once the daemon says
+            // the notebook replica is interactive.
             const cellIdList = [...handle.get_cell_ids()];
             updateCellExecutionPointersFromHandle(handle, cellIdList);
             // Seed the outputs / executions stores straight from the
-            // notebook doc. `initialSyncComplete$` fires on notebook-doc
-            // sync completion but does not wait for the RuntimeStateDoc
-            // sync, so without this a notebook reopened with existing
-            // outputs would render empty under `useCellOutputs` until
-            // the runtime-state frame arrives. The runtime-state
-            // projection below overwrites these defaults with
-            // authoritative status/success/execution_count values as
-            // soon as the doc lands.
+            // notebook doc. `initialSyncComplete$` fires when the
+            // notebook doc is interactive, not when RuntimeStateDoc is
+            // necessarily finished bootstrapping, so this preserves
+            // existing eager output visibility until the authoritative
+            // runtime-state projection lands.
             seedOutputStoresFromHandle(handle, cellIdList);
             // Project whatever RuntimeState snapshot has landed so far
             // on top. If the runtime-state frame arrived first this is
             // the authoritative pass; otherwise it's a no-op that the
             // runtimeState$ subscription will redo on the next tick.
             projectRuntimeStateToExecutions(getRuntimeState());
-            setIsLoading(false);
+            const status = latestSessionStatusRef.current;
+            setIsLoading(status ? status.initial_load.phase === "streaming" : false);
             notifyMetadataChanged();
-            logger.info("[automerge-notebook] Initial materialization done");
+            logger.info("[automerge-notebook] Interactive materialization done");
           })
           .catch((err: unknown) => {
             logger.warn("[automerge-notebook] initial materialize failed:", err);
+            setLoadError(err instanceof Error ? err.message : String(err));
             setIsLoading(false);
           });
       } else {
@@ -368,6 +387,7 @@ export function useAutomergeNotebook() {
     void bootstrap().catch((error) => {
       logger.error("[automerge-notebook] Bootstrap failed", error);
       if (!cancelled) {
+        setLoadError(error instanceof Error ? error.message : String(error));
         setIsLoading(false);
       }
     });
@@ -385,6 +405,7 @@ export function useAutomergeNotebook() {
           resetPoolState();
           outputCacheRef.current.clear();
           setIsLoading(true);
+          setLoadError(null);
           return from(
             bootstrap().catch((err: unknown) => {
               logger.error("[automerge-notebook] lifecycle bootstrap failed:", err);
@@ -430,6 +451,7 @@ export function useAutomergeNotebook() {
       // unsubscribes the frame listener this hook installed.
 
       initialSyncSub.unsubscribe();
+      sessionStatusSub.unsubscribe();
       cellChangesSub.unsubscribe();
       broadcastsSub.unsubscribe();
       presenceSub.unsubscribe();
@@ -664,6 +686,7 @@ export function useAutomergeNotebook() {
     cloneNotebook,
     dirty,
     setDirty,
+    loadError,
     updateOutputByDisplayId,
     applyExecutionCountFromDaemon,
     setCellSourceHidden,

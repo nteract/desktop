@@ -232,7 +232,7 @@ pub enum SaveErrorKind {
 /// used but kept as a free escape hatch.
 ///
 /// Wire shape is flattened: `{"id":"...","action":"execute_cell","cell_id":"..."}`.
-/// Introduced at `PROTOCOL_VERSION = 3`.
+/// Formalized in protocol v3.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NotebookRequestEnvelope {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -252,6 +252,52 @@ pub struct NotebookResponseEnvelope {
     pub id: Option<String>,
     #[serde(flatten)]
     pub response: NotebookResponse,
+}
+
+/// Session-control messages sent by the daemon on the notebook sync socket.
+///
+/// These frames are connection-local and ordered relative to Automerge sync
+/// frames. They are not room broadcasts.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SessionControlMessage {
+    SyncStatus(SessionSyncStatusWire),
+}
+
+/// Full connection bootstrap/readiness snapshot.
+///
+/// The daemon emits the full current state on each transition rather than
+/// sending partial deltas.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionSyncStatusWire {
+    pub notebook_doc: NotebookDocPhaseWire,
+    pub runtime_state: RuntimeStatePhaseWire,
+    pub initial_load: InitialLoadPhaseWire,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum NotebookDocPhaseWire {
+    Pending,
+    Syncing,
+    Interactive,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeStatePhaseWire {
+    Pending,
+    Syncing,
+    Ready,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "phase", rename_all = "snake_case")]
+pub enum InitialLoadPhaseWire {
+    NotNeeded,
+    Streaming,
+    Ready,
+    Failed { reason: String },
 }
 
 /// Requests sent from notebook app to daemon for notebook operations.
@@ -622,14 +668,6 @@ pub enum NotebookBroadcast {
 
     /// Notebook was autosaved to disk by the daemon.
     NotebookAutosaved { path: String },
-
-    /// Eager RuntimeState snapshot sent during connection setup.
-    ///
-    /// Bypasses the Automerge sync handshake so the client has kernel
-    /// status immediately (prevents "not_started" → "idle" jump).
-    RuntimeStateSnapshot {
-        state: notebook_doc::runtime_state::RuntimeState,
-    },
 }
 
 // ── Runtime agent protocol types ──────────────────────────────────────────

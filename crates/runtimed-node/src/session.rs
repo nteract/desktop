@@ -280,6 +280,12 @@ pub async fn create_notebook(options: Option<CreateNotebookOptions>) -> Result<S
     .await
     .map_err(to_napi_err)?;
 
+    result
+        .handle
+        .await_session_ready()
+        .await
+        .map_err(to_napi_err)?;
+
     let notebook_id = result.info.notebook_id.clone();
     let (blob_base_url, blob_store_path) = resolve_blob_paths(&socket_path).await;
 
@@ -317,6 +323,12 @@ pub async fn open_notebook(
         notebook_sync::connect::connect(socket_path.clone(), notebook_id.clone(), &actor_label)
             .await
             .map_err(to_napi_err)?;
+
+    result
+        .handle
+        .await_session_ready()
+        .await
+        .map_err(to_napi_err)?;
 
     let (blob_base_url, blob_store_path) = resolve_blob_paths(&socket_path).await;
 

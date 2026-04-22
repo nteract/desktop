@@ -16,7 +16,6 @@ import {
   isKernelErrorBroadcast,
   isOutputBroadcast,
   isOutputsClearedBroadcast,
-  isRuntimeStateSnapshotBroadcast,
 } from "../src/broadcast-types";
 
 // All guards share `hasBroadcastEvent` — exercise the invalid-payload
@@ -40,7 +39,6 @@ const GUARDS = [
   ["isOutputsClearedBroadcast", isOutputsClearedBroadcast, "outputs_cleared"],
   ["isCommBroadcast", isCommBroadcast, "comm"],
   ["isKernelErrorBroadcast", isKernelErrorBroadcast, "kernel_error"],
-  ["isRuntimeStateSnapshotBroadcast", isRuntimeStateSnapshotBroadcast, "runtime_state_snapshot"],
 ] as const;
 
 describe("broadcast type guards", () => {

@@ -151,8 +151,19 @@ async function setupFixtureSync(scenario: string) {
       });
     });
 
+    transport.pushSessionStatus({
+      notebook_doc: "pending",
+      runtime_state: "pending",
+      initial_load: { phase: "not_needed" },
+    });
+
     // Kick off the handshake
     engine.flush();
+    transport.pushSessionStatus({
+      notebook_doc: "syncing",
+      runtime_state: "syncing",
+      initial_load: { phase: "not_needed" },
+    });
 
     // Run sync rounds until convergence
     for (let i = 0; i < 20; i++) {
@@ -160,6 +171,12 @@ async function setupFixtureSync(scenario: string) {
       if (!pushed) break;
       await Promise.resolve();
     }
+
+    transport.pushSessionStatus({
+      notebook_doc: "interactive",
+      runtime_state: "ready",
+      initial_load: { phase: "not_needed" },
+    });
 
     await syncComplete;
   }
@@ -401,11 +418,26 @@ describe("fixture-based integration: daemon-authored docs through WASM sync", ()
           resolve();
         });
       });
+      transport.pushSessionStatus({
+        notebook_doc: "pending",
+        runtime_state: "pending",
+        initial_load: { phase: "not_needed" },
+      });
       engine.flush();
+      transport.pushSessionStatus({
+        notebook_doc: "syncing",
+        runtime_state: "syncing",
+        initial_load: { phase: "not_needed" },
+      });
       for (let i = 0; i < 20; i++) {
         if (!transport.pushServerChanges()) break;
         await Promise.resolve();
       }
+      transport.pushSessionStatus({
+        notebook_doc: "interactive",
+        runtime_state: "ready",
+        initial_load: { phase: "not_needed" },
+      });
       await syncComplete;
 
       // Subscribe to changesets and make an incremental server change

@@ -14,7 +14,15 @@ export type { NotebookTransport, FrameListener } from "./transport";
 export { FrameType, type FrameTypeValue } from "./transport";
 
 // Handle
-export type { SyncableHandle, FrameEvent, TextAttribution } from "./handle";
+export type {
+  SyncableHandle,
+  FrameEvent,
+  InitialLoadPhase,
+  NotebookDocPhase,
+  RuntimeStatePhase,
+  SessionStatus,
+  TextAttribution,
+} from "./handle";
 
 // Cell changeset
 export {
@@ -52,12 +60,10 @@ export {
   isKernelErrorBroadcast,
   isOutputBroadcast,
   isOutputsClearedBroadcast,
-  isRuntimeStateSnapshotBroadcast,
   type KernelErrorBroadcast,
   type KnownBroadcast,
   type OutputBroadcast,
   type OutputsClearedBroadcast,
-  type RuntimeStateSnapshotBroadcast,
 } from "./broadcast-types";
 
 // Comm diffing

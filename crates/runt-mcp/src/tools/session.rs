@@ -292,8 +292,9 @@ pub async fn open_notebook(
             Ok(result) => {
                 let handle = &result.handle;
                 let notebook_id = handle.notebook_id().to_string();
-
-                let _ = handle.confirm_sync().await;
+                if let Err(e) = handle.await_session_ready().await {
+                    return tool_error(&format!("Notebook opened but did not become ready: {}", e));
+                }
 
                 let runtime_info = collect_runtime_info(handle).await;
                 let deps = get_dependencies(handle);
@@ -358,8 +359,12 @@ pub async fn open_notebook(
         {
             Ok(result) => {
                 let handle = &result.handle;
-
-                let _ = handle.confirm_sync().await;
+                if let Err(e) = handle.await_session_ready().await {
+                    return tool_error(&format!(
+                        "Notebook connected but did not become ready: {}",
+                        e
+                    ));
+                }
 
                 let runtime_info = collect_runtime_info(handle).await;
                 let deps = get_dependencies(handle);
@@ -427,6 +432,10 @@ pub async fn create_notebook(
     .await
     {
         Ok(result) => {
+            if let Err(e) = result.handle.await_session_ready().await {
+                return tool_error(&format!("Notebook created but did not become ready: {}", e));
+            }
+
             let notebook_id = result.handle.notebook_id().to_string();
 
             // Announce presence so the peer is visible immediately

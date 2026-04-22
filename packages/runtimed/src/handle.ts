@@ -12,6 +12,24 @@
 
 import type { CellChangeset } from "./cell-changeset";
 
+// ── Session status ───────────────────────────────────────────────────
+
+export type NotebookDocPhase = "pending" | "syncing" | "interactive";
+
+export type RuntimeStatePhase = "pending" | "syncing" | "ready";
+
+export type InitialLoadPhase =
+  | { phase: "not_needed" }
+  | { phase: "streaming" }
+  | { phase: "ready" }
+  | { phase: "failed"; reason: string };
+
+export interface SessionStatus {
+  notebook_doc: NotebookDocPhase;
+  runtime_state: RuntimeStatePhase;
+  initial_load: InitialLoadPhase;
+}
+
 // ── FrameEvent ───────────────────────────────────────────────────────
 
 /** Attribution for text changes, produced by WASM sync. */
@@ -30,6 +48,7 @@ export interface TextAttribution {
  * - `sync_applied` — Automerge sync message applied successfully
  * - `broadcast` — Daemon broadcast (kernel status, output, etc.)
  * - `presence` — Remote peer presence update
+ * - `session_control` — Connection-local readiness / bootstrap status
  * - `runtime_state_sync_applied` — RuntimeStateDoc sync applied
  * - `sync_error` — Sync failed, doc rebuilt + sync state normalized, reply restarts negotiation
  * - `runtime_state_sync_error` — RuntimeState sync failed, same recovery pattern
@@ -46,6 +65,8 @@ export interface FrameEvent {
   payload?: unknown;
   /** RuntimeState from RuntimeStateSyncApplied. */
   state?: unknown;
+  /** Connection-local session status from SESSION_CONTROL frames. */
+  status?: SessionStatus;
   /** Cell IDs whose outputs changed in RuntimeStateDoc (from WASM-side diff). */
   output_changed_cells?: string[];
   /**
@@ -67,7 +88,7 @@ export interface SyncableHandle {
    * Process an inbound frame from the daemon.
    *
    * Returns an array of typed events (sync_applied, broadcast, presence,
-   * runtime_state_sync_applied, unknown).
+   * session_control, runtime_state_sync_applied, unknown).
    */
   receive_frame(bytes: Uint8Array): FrameEvent[] | null;
 

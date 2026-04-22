@@ -139,6 +139,9 @@ where
                 } => {
                     let ft = NotebookFrameType::try_from(frame_type);
                     let result = match ft {
+                        Ok(NotebookFrameType::SessionControl) => Err(SyncError::Protocol(
+                            "SessionControl is daemon-originated only".into(),
+                        )),
                         Ok(ft) => connection::send_typed_frame(&mut writer, ft, &payload)
                             .await
                             .map_err(SyncError::Io),
@@ -273,7 +276,8 @@ fn route_incoming_frame(
 
 /// Pipe a daemon frame to the frontend.
 ///
-/// Forwards sync, broadcast, presence, runtime-state, pool-state, AND
+/// Forwards sync, broadcast, presence, runtime-state, pool-state,
+/// session-control, AND
 /// response (`0x02`) frames. Frontend requests rely on `0x02` reaching the
 /// JS side so the frontend's pending map can correlate the response.
 ///
@@ -286,6 +290,7 @@ fn pipe_frame(frame_tx: &mpsc::UnboundedSender<Vec<u8>>, frame: &connection::Typ
         | NotebookFrameType::Presence
         | NotebookFrameType::RuntimeStateSync
         | NotebookFrameType::PoolStateSync
+        | NotebookFrameType::SessionControl
         | NotebookFrameType::Response => {
             let mut bytes = vec![frame.frame_type as u8];
             bytes.extend_from_slice(&frame.payload);

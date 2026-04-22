@@ -4,7 +4,7 @@
  * Owns all sync state between a local WASM NotebookHandle and the daemon:
  *   - Inbound frame processing (WASM demux → typed events)
  *   - Inline sync reply with rollback on transport failure
- *   - Initial sync handshake with retry
+ *   - Explicit session-status tracking for notebook/runtime/load readiness
  *   - Coalescing buffer (32ms) for cell changesets
  *   - RuntimeStateDoc sync + execution lifecycle diffing
  *   - Debounced outbound flush of local CRDT mutations
@@ -29,8 +29,6 @@ import {
   share,
   Subject,
   Subscription,
-  switchMap,
-  timer,
 } from "rxjs";
 
 import {
@@ -44,7 +42,6 @@ import {
   isKernelErrorBroadcast,
   isOutputBroadcast,
   isOutputsClearedBroadcast,
-  isRuntimeStateSnapshotBroadcast,
 } from "./broadcast-types";
 import { type CellChangeset, mergeChangesets } from "./cell-changeset";
 import {
@@ -55,7 +52,7 @@ import {
   diffComms,
 } from "./comm-diff";
 import { type KernelStatus, kernelStatus$ as deriveKernelStatus$ } from "./derived-state";
-import type { FrameEvent, SyncableHandle } from "./handle";
+import type { FrameEvent, InitialLoadPhase, SessionStatus, SyncableHandle } from "./handle";
 import type { PoolState } from "./pool-state";
 import {
   type ExecutionTransition,
@@ -70,9 +67,6 @@ import type { NotebookTransport } from "./transport";
 
 /** Coalescing window for incoming sync frames (ms). */
 const COALESCE_MS = 32;
-
-/** Timeout before retrying sync if initial sync hasn't produced cells (ms). */
-const SYNC_RETRY_MS = 3000;
 
 /** Debounce interval for outbound source sync (ms). */
 const FLUSH_DEBOUNCE_MS = 20;
@@ -92,6 +86,14 @@ const nullLogger: SyncEngineLogger = {
   warn() {},
   error() {},
 };
+
+function initialLoadPhaseName(phase: InitialLoadPhase): InitialLoadPhase["phase"] {
+  return phase.phase;
+}
+
+function formatSessionStatus(status: SessionStatus): string {
+  return `notebook=${status.notebook_doc} runtime=${status.runtime_state} load=${initialLoadPhaseName(status.initial_load)}`;
+}
 
 // ── Comm state helpers ───────────────────────────────────────────────
 
@@ -232,7 +234,7 @@ export class SyncEngine {
   private readonly opts: Required<Pick<SyncEngineOptions, "getHandle" | "transport" | "logger">> &
     Pick<SyncEngineOptions, "scheduler">;
   private subscription: Subscription | null = null;
-  private awaitingInitialSync = true;
+  private latestSessionStatus: SessionStatus | null = null;
   private prevExecutions: Record<string, ExecutionState> = {};
   private commDiffState: CommDiffState = { comms: {}, json: {} };
   private lastRuntimeState: RuntimeState | null = null;
@@ -334,12 +336,15 @@ export class SyncEngine {
    */
   readonly commChanges$: Observable<CommChanges>;
 
+  /** Ordered bootstrap/readiness status emitted by the daemon. */
+  readonly sessionStatus$: Observable<SessionStatus>;
+
   /**
-   * Fires each time the initial sync handshake completes (daemon has
-   * sent document content). Emits once per bootstrap cycle — after
-   * `resetForBootstrap()`, the next `changed:true` frame triggers
-   * another emission. Consumers should do a full materialization in
-   * response.
+   * Fires each time the notebook document becomes interactive.
+   *
+   * Emits once per bootstrap cycle when `SessionStatus.notebook_doc`
+   * first reaches `interactive`. Consumers should do a full
+   * materialization in response.
    */
   readonly initialSyncComplete$: Observable<void>;
 
@@ -350,6 +355,7 @@ export class SyncEngine {
   private readonly _runtimeState$ = new Subject<RuntimeState>();
   private readonly _poolState$ = new Subject<PoolState>();
   private readonly _executionTransitions$ = new Subject<ExecutionTransition[]>();
+  private readonly _sessionStatus$ = new ReplaySubject<SessionStatus>(1);
   private readonly _initialSyncComplete$ = new Subject<void>();
   private readonly _commChanges$ = new Subject<CommChanges>();
   private readonly _outputIdChanges$ = new Subject<{
@@ -371,6 +377,7 @@ export class SyncEngine {
     this.runtimeState$ = this._runtimeState$.asObservable();
     this.poolState$ = this._poolState$.asObservable();
     this.executionTransitions$ = this._executionTransitions$.asObservable();
+    this.sessionStatus$ = this._sessionStatus$.asObservable();
     this.initialSyncComplete$ = this._initialSyncComplete$.asObservable();
     this.commChanges$ = this._commChanges$.asObservable();
     this.outputIdChanges$ = this._outputIdChanges$.asObservable();
@@ -404,16 +411,6 @@ export class SyncEngine {
       this.frameIn$.next(payload);
     });
     sub.add(() => unlisten());
-
-    // ReplaySubject(1) so the initial .next() replays to late subscribers.
-    // A plain Subject would lose the emission since the retry subscriber
-    // is wired up after this point — leaving the retry timer permanently
-    // unarmed when no sync frames arrive (see #1417).
-    const retrySync$ = new ReplaySubject<void>(1);
-    sub.add(() => retrySync$.complete());
-
-    // Arm the retry timer immediately
-    retrySync$.next();
 
     // Subject bridging sync_applied events into the coalescing buffer
     const materialize$ = new Subject<CellChangeset | null>();
@@ -456,7 +453,27 @@ export class SyncEngine {
       share(),
     );
 
-    // ── Sub-pipeline: sync_applied → initial sync / coalesce ──────
+    // ── Sub-pipeline: session_control ──────────────────────────────
+
+    sub.add(
+      frameEvents$
+        .pipe(filter((e) => e.type === "session_control" && e.status != null))
+        .subscribe((e) => {
+          const next = e.status as SessionStatus;
+          const previous = this.latestSessionStatus;
+          this.latestSessionStatus = next;
+          this._sessionStatus$.next(next);
+
+          if (previous?.notebook_doc !== "interactive" && next.notebook_doc === "interactive") {
+            log.info(`[sync-engine] notebook interactive (${formatSessionStatus(next)})`);
+            this._initialSyncComplete$.next();
+          } else {
+            log.debug(`[sync-engine] session status: ${formatSessionStatus(next)}`);
+          }
+        }),
+    );
+
+    // ── Sub-pipeline: sync_applied → coalesce ─────────────────────
 
     sub.add(
       frameEvents$
@@ -487,21 +504,6 @@ export class SyncEngine {
                 });
             }
 
-            // Initial sync
-            if (this.awaitingInitialSync) {
-              if (e.changed) {
-                this.awaitingInitialSync = false;
-                log.info("[sync-engine] Initial sync complete");
-                this._initialSyncComplete$.next();
-              } else {
-                log.debug("[sync-engine] Initial sync round (awaiting content)");
-              }
-              // Restart retry timer on handshake rounds
-              retrySync$.next();
-              return EMPTY;
-            }
-
-            // Steady-state: push changeset into coalescing buffer
             if (e.changed) {
               const cs = e.changeset;
               if (cs) {
@@ -519,20 +521,6 @@ export class SyncEngine {
           }),
         )
         .subscribe(),
-    );
-
-    // ── Sync retry timer ──────────────────────────────────────────
-
-    sub.add(
-      retrySync$
-        .pipe(
-          switchMap(() => timer(SYNC_RETRY_MS, this.opts.scheduler)),
-          filter(() => this.awaitingInitialSync),
-        )
-        .subscribe(() => {
-          log.info("[sync-engine] Retrying sync after timeout");
-          this.resetAndResync();
-        }),
     );
 
     // ── Coalescing buffer → cellChanges$ ──────────────────────────
@@ -590,18 +578,6 @@ export class SyncEngine {
         .subscribe((e) => this._presence$.next(e.payload)),
     );
 
-    // ── Sub-pipeline: runtime_state_snapshot broadcast ─────────────
-    //
-    // Eager snapshot from connection setup — apply immediately so the
-    // client has kernel status before the Automerge sync handshake completes.
-
-    sub.add(
-      this.broadcasts$.pipe(filter(isRuntimeStateSnapshotBroadcast)).subscribe((snapshot) => {
-        this._runtimeState$.next(snapshot.state);
-        this.projectComms(snapshot.state);
-      }),
-    );
-
     // ── Sub-pipeline: sync error recovery ──────────────────────────
 
     // Notebook doc sync error: send recovery reply + trigger materialization
@@ -619,14 +595,8 @@ export class SyncEngine {
         }
         // If the doc advanced before the error (partial apply),
         // trigger a full materialization so the UI reflects the
-        // recovered state. Also complete initial sync if pending.
+        // recovered state.
         if (e.changed) {
-          if (this.awaitingInitialSync) {
-            this.awaitingInitialSync = false;
-            log.info("[sync-engine] Initial sync completed via error recovery");
-            this._initialSyncComplete$.next();
-          }
-          // null changeset = full materialization needed
           materialize$.next(null);
         }
       }),
@@ -1137,8 +1107,9 @@ export class SyncEngine {
   /**
    * Reset sync state and resend the initial sync message.
    *
-   * Used when the initial handshake stalls — resets the WASM handle's
-   * sync state so `flush_local_changes()` produces a fresh request.
+   * Manual recovery helper for tests and explicit resync flows. Resets
+   * the WASM handle's sync state so `flush_local_changes()` produces a
+   * fresh request.
    */
   resetAndResync(): void {
     const handle = this.opts.getHandle();
@@ -1150,12 +1121,12 @@ export class SyncEngine {
   /**
    * Reset the engine for a new bootstrap cycle (e.g. daemon:ready).
    *
-   * Clears the initial sync gate and execution tracking state so the
-   * next round of frames is treated as a fresh connection.
+   * Clears status / execution tracking so the next round of frames is
+   * treated as a fresh connection.
    */
   resetForBootstrap(): void {
     this.opts.logger.info("[sync-engine] Resetting for bootstrap");
-    this.awaitingInitialSync = true;
+    this.latestSessionStatus = null;
     this.prevExecutions = {};
     this.commDiffState = { comms: {}, json: {} };
     this.lastRuntimeState = null;

@@ -226,43 +226,6 @@ export type DaemonBroadcast =
       };
     }
   | {
-      event: "runtime_state_snapshot";
-      state: {
-        kernel: {
-          status: string;
-          starting_phase: string;
-          name: string;
-          language: string;
-          env_source: string;
-        };
-        queue: {
-          executing: { cell_id: string; execution_id: string } | null;
-          queued: { cell_id: string; execution_id: string }[];
-        };
-        env: {
-          in_sync: boolean;
-          added: string[];
-          removed: string[];
-          channels_changed: boolean;
-          deno_changed: boolean;
-        };
-        trust: {
-          status: string;
-          needs_approval: boolean;
-        };
-        last_saved: string | null;
-        executions: Record<
-          string,
-          {
-            cell_id: string;
-            status: string;
-            execution_count: number | null;
-            success: boolean | null;
-          }
-        >;
-      };
-    }
-  | {
       event: "notebook_autosaved";
       path: string;
     }

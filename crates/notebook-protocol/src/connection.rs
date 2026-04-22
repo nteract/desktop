@@ -25,6 +25,7 @@
 //! - `0x01`: NotebookRequest (JSON)
 //! - `0x02`: NotebookResponse (JSON)
 //! - `0x03`: NotebookBroadcast (JSON)
+//! - `0x07`: SessionControl (JSON, server-originated)
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -149,18 +150,16 @@ pub enum Handshake {
     },
 }
 
-/// Protocol version constant (string for backwards compatibility).
+/// Protocol version constants (strings for handshake compatibility).
 pub const PROTOCOL_V2: &str = "v2";
+pub const PROTOCOL_V3: &str = "v3";
 
 /// Numeric protocol version for version negotiation.
 /// Increment this when making breaking protocol changes.
 ///
-/// The request/response envelope change (`NotebookRequestEnvelope` /
-/// `NotebookResponseEnvelope` with an optional `id` correlation field)
-/// is JSON-wire-compatible — the id is `Option<String>` and serde
-/// ignores unknown fields by default — so mixed v2/new deployments
-/// interoperate. No version bump is needed for that change.
-pub const PROTOCOL_VERSION: u32 = 2;
+/// Protocol v3 adds explicit session-control status frames for notebook
+/// bootstrap/readiness and is not wire-compatible with v2 clients.
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Magic bytes identifying the runtimed protocol.
 /// Sent as the first 4 bytes of every connection, before the handshake frame.
@@ -239,7 +238,7 @@ pub async fn recv_preamble<R: AsyncRead + Unpin>(reader: &mut R) -> std::io::Res
 /// Used by the `NotebookSync` handshake variant.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProtocolCapabilities {
-    /// Protocol version string (currently always "v2").
+    /// Protocol version string (currently always "v3").
     pub protocol: String,
     /// Numeric protocol version for explicit version checking.
     /// Clients can compare this against their expected version.
@@ -257,7 +256,7 @@ pub struct ProtocolCapabilities {
 /// Contains notebook_id derived by the daemon (from path or generated env_id).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NotebookConnectionInfo {
-    /// Protocol version string (currently always "v2").
+    /// Protocol version string (currently always "v3").
     pub protocol: String,
     /// Numeric protocol version for explicit version checking.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -303,6 +302,8 @@ pub enum NotebookFrameType {
     RuntimeStateSync = notebook_doc::frame_types::RUNTIME_STATE_SYNC,
     /// PoolDoc sync message (binary Automerge sync, global).
     PoolStateSync = notebook_doc::frame_types::POOL_STATE_SYNC,
+    /// Session-control message (JSON, server-originated connection status).
+    SessionControl = notebook_doc::frame_types::SESSION_CONTROL,
 }
 
 impl TryFrom<u8> for NotebookFrameType {
@@ -318,6 +319,7 @@ impl TryFrom<u8> for NotebookFrameType {
             frame_types::PRESENCE => Ok(Self::Presence),
             frame_types::RUNTIME_STATE_SYNC => Ok(Self::RuntimeStateSync),
             frame_types::POOL_STATE_SYNC => Ok(Self::PoolStateSync),
+            frame_types::SESSION_CONTROL => Ok(Self::SessionControl),
             _ => Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("unknown notebook frame type: 0x{:02x}", value),
@@ -758,7 +760,7 @@ mod tests {
 
         // With version info
         let info = NotebookConnectionInfo {
-            protocol: PROTOCOL_V2.into(),
+            protocol: PROTOCOL_V3.into(),
             protocol_version: Some(PROTOCOL_VERSION),
             daemon_version: Some("0.1.0+abc123".into()),
             notebook_id: "/home/user/notebook.ipynb".into(),

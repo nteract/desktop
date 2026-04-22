@@ -192,17 +192,45 @@ async fn rejoin(
             .filter(|p| std::path::Path::new(p.as_str()).exists());
 
         let result = if let Some(path) = use_path {
-            notebook_sync::connect::connect_open(
+            match notebook_sync::connect::connect_open(
                 socket_path.to_path_buf(),
                 PathBuf::from(path),
                 &label,
             )
             .await
-            .map(|r| (r.handle, r.broadcast_rx, r.cells.len(), r.info.notebook_id))
+            {
+                Ok(r) => {
+                    let handle = r.handle;
+                    let broadcast_rx = r.broadcast_rx;
+                    if let Err(e) = handle.await_initial_load_ready().await {
+                        Err(e)
+                    } else {
+                        let cell_count = handle.get_cells().len();
+                        Ok((handle, broadcast_rx, cell_count, r.info.notebook_id))
+                    }
+                }
+                Err(e) => Err(e),
+            }
         } else {
-            notebook_sync::connect::connect(socket_path.to_path_buf(), notebook_id.clone(), &label)
-                .await
-                .map(|r| (r.handle, r.broadcast_rx, r.cells.len(), notebook_id.clone()))
+            match notebook_sync::connect::connect(
+                socket_path.to_path_buf(),
+                notebook_id.clone(),
+                &label,
+            )
+            .await
+            {
+                Ok(r) => {
+                    let handle = r.handle;
+                    let broadcast_rx = r.broadcast_rx;
+                    if let Err(e) = handle.await_initial_load_ready().await {
+                        Err(e)
+                    } else {
+                        let cell_count = handle.get_cells().len();
+                        Ok((handle, broadcast_rx, cell_count, notebook_id.clone()))
+                    }
+                }
+                Err(e) => Err(e),
+            }
         };
 
         match result {

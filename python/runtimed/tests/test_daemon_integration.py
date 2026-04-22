@@ -2423,9 +2423,11 @@ class TestCreateNotebook:
         assert info.needs_trust_approval is False
 
     async def test_create_deno_notebook(self, client):
-        """Creating Deno notebook sets correct runtime."""
+        """Creating Deno notebook returns after the auto-launched kernel is usable."""
         session = await client.create_notebook(runtime="deno")
         assert await session.is_connected()
+        assert await session.kernel_started()
+        assert await session.kernel_type() == "deno"
 
         # Has zero cells (frontend creates the first cell locally)
         cells = await session.get_cells()

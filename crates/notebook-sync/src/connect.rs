@@ -1,4 +1,4 @@
-//! Connection handshake and initial Automerge sync.
+//! Connection handshake and sync-task bootstrap.
 //!
 //! All connect variants use [`NotebookDoc::bootstrap()`] to create the
 //! initial local document.  This seeds the doc with the standard notebook
@@ -9,26 +9,23 @@
 //! encoding or actor settings.
 //!
 //! Establishes a connection to the runtimed daemon, performs the protocol
-//! handshake, and runs the initial Automerge sync exchange to populate
-//! the local document replica.
+//! handshake, bootstraps empty local docs, and then hands post-handshake
+//! socket ownership to the background sync task.
 //!
 //! Platform-specific stream creation (Unix socket or Windows named pipe)
 //! is handled internally. The handshake and sync logic is generic over
 //! `AsyncRead + AsyncWrite`.
 
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-
-use automerge::sync::{self, SyncDoc};
+use automerge::sync;
 use automerge::AutoCommit;
 use log::{debug, info};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{mpsc, watch};
 
 use notebook_protocol::connection::{
-    self, Handshake, NotebookConnectionInfo, NotebookFrameType, ProtocolCapabilities,
-    TypedNotebookFrame, PROTOCOL_V2,
+    self, Handshake, NotebookConnectionInfo, ProtocolCapabilities, PROTOCOL_V3,
 };
 use notebook_protocol::protocol::NotebookBroadcast;
 
@@ -38,6 +35,7 @@ use crate::relay::RelayHandle;
 use crate::relay_task;
 use crate::shared::SharedDocState;
 use crate::snapshot::NotebookSnapshot;
+use crate::status::SyncStatus;
 use crate::sync_task;
 
 /// Result of connecting to a notebook room.
@@ -47,9 +45,6 @@ pub struct ConnectResult {
 
     /// Receiver for kernel/execution broadcasts from the daemon.
     pub broadcast_rx: crate::BroadcastReceiver,
-
-    /// Initial cells in the document after sync.
-    pub cells: Vec<notebook_doc::CellSnapshot>,
 
     /// Initial metadata string (legacy format, for handshake compat).
     pub initial_metadata: Option<String>,
@@ -65,9 +60,6 @@ pub struct OpenResult {
 
     /// Connection info from the daemon (notebook_id, trust status, etc).
     pub info: NotebookConnectionInfo,
-
-    /// Initial cells in the document after sync.
-    pub cells: Vec<notebook_doc::CellSnapshot>,
 }
 
 /// Result of creating a new notebook.
@@ -80,9 +72,6 @@ pub struct CreateResult {
 
     /// Connection info from the daemon (notebook_id, trust status, etc).
     pub info: NotebookConnectionInfo,
-
-    /// Initial cells in the document after sync.
-    pub cells: Vec<notebook_doc::CellSnapshot>,
 }
 
 /// Result of opening a notebook as a relay (no local document).
@@ -158,9 +147,8 @@ macro_rules! connect_stream {
 
 /// Connect to a notebook room by ID.
 ///
-/// Performs the protocol handshake and initial Automerge sync. Returns a
-/// `DocHandle` for direct document access and a broadcast receiver for
-/// kernel events.
+/// Performs the protocol handshake, spawns the background sync task, and
+/// returns a `DocHandle` plus a broadcast receiver for kernel events.
 ///
 /// `actor_label` sets the Automerge actor identity **before** initial sync
 /// so that even the bootstrap operations are attributed to the caller
@@ -192,7 +180,7 @@ pub async fn connect_with_options(
     // Send handshake
     let handshake = Handshake::NotebookSync {
         notebook_id: notebook_id.clone(),
-        protocol: Some(PROTOCOL_V2.to_string()),
+        protocol: Some(PROTOCOL_V3.to_string()),
         working_dir: working_dir.map(|p| p.to_string_lossy().to_string()),
         initial_metadata: initial_metadata.clone(),
     };
@@ -207,57 +195,23 @@ pub async fn connect_with_options(
     let caps: ProtocolCapabilities = serde_json::from_slice(&caps_data)?;
     check_daemon_protocol_version(&caps);
 
-    // Initial Automerge sync exchange — start from the standard notebook
-    // skeleton so load_incremental takes the incremental path.
-    // Set the actor before sync so all ops (including bootstrap) are
-    // attributed to the caller, not a random UUID.
+    // Start from the standard notebook skeleton so the background sync task
+    // owns the entire bootstrap from the first post-handshake frame onward.
     let bootstrap = notebook_doc::NotebookDoc::bootstrap(
         notebook_doc::TextEncoding::UnicodeCodePoint,
         actor_label,
     );
-    let mut doc = bootstrap.into_inner();
-    let mut peer_state = sync::State::new();
-    let mut pending_broadcasts = Vec::new();
-    let mut pending_state_sync_frames = Vec::new();
-
-    do_initial_sync(
-        &mut reader,
-        &mut writer,
-        &mut doc,
-        &mut peer_state,
-        &mut pending_broadcasts,
-        &mut pending_state_sync_frames,
-    )
-    .await?;
-
-    info!(
-        "[notebook-sync] Connected to room {} ({} cells)",
-        notebook_id,
-        notebook_doc::get_cells_from_doc(&doc).len()
-    );
-
-    // Read initial state before splitting
-    let cells = notebook_doc::get_cells_from_doc(&doc);
-    let initial_metadata_snapshot = notebook_doc::get_metadata_snapshot_from_doc(&doc)
-        .and_then(|s| serde_json::to_string(&s).ok());
+    let doc = bootstrap.into_inner();
+    let peer_state = sync::State::new();
 
     // Build the shared state and channels
-    build_and_spawn(
-        doc,
-        peer_state,
-        notebook_id,
-        pending_broadcasts,
-        pending_state_sync_frames,
-        reader,
-        writer,
-    )
-    .await
-    .map(|(handle, broadcast_rx)| ConnectResult {
-        handle,
-        broadcast_rx,
-        cells,
-        initial_metadata: initial_metadata_snapshot,
-    })
+    build_and_spawn(doc, peer_state, notebook_id, reader, writer)
+        .await
+        .map(|(handle, broadcast_rx)| ConnectResult {
+            handle,
+            broadcast_rx,
+            initial_metadata,
+        })
 }
 
 /// Connect and open an existing notebook file.
@@ -294,51 +248,20 @@ pub async fn connect_open(
 
     let notebook_id = info.notebook_id.clone();
 
-    // Initial Automerge sync exchange — start from the standard notebook
-    // skeleton so load_incremental takes the incremental path.
     let bootstrap = notebook_doc::NotebookDoc::bootstrap(
         notebook_doc::TextEncoding::UnicodeCodePoint,
         actor_label,
     );
-    let mut doc = bootstrap.into_inner();
-    let mut peer_state = sync::State::new();
-    let mut pending_broadcasts = Vec::new();
-    let mut pending_state_sync_frames = Vec::new();
+    let doc = bootstrap.into_inner();
+    let peer_state = sync::State::new();
 
-    do_initial_sync(
-        &mut reader,
-        &mut writer,
-        &mut doc,
-        &mut peer_state,
-        &mut pending_broadcasts,
-        &mut pending_state_sync_frames,
-    )
-    .await?;
-
-    info!(
-        "[notebook-sync] Opened notebook {} ({} cells)",
-        notebook_id,
-        notebook_doc::get_cells_from_doc(&doc).len()
-    );
-
-    let cells = notebook_doc::get_cells_from_doc(&doc);
-
-    build_and_spawn(
-        doc,
-        peer_state,
-        notebook_id,
-        pending_broadcasts,
-        pending_state_sync_frames,
-        reader,
-        writer,
-    )
-    .await
-    .map(|(handle, broadcast_rx)| OpenResult {
-        handle,
-        broadcast_rx,
-        info,
-        cells,
-    })
+    build_and_spawn(doc, peer_state, notebook_id, reader, writer)
+        .await
+        .map(|(handle, broadcast_rx)| OpenResult {
+            handle,
+            broadcast_rx,
+            info,
+        })
 }
 
 /// Connect and create a new notebook.
@@ -404,51 +327,20 @@ async fn connect_create_inner(
 
     let notebook_id = info.notebook_id.clone();
 
-    // Initial Automerge sync exchange — start from the standard notebook
-    // skeleton so load_incremental takes the incremental path.
     let bootstrap = notebook_doc::NotebookDoc::bootstrap(
         notebook_doc::TextEncoding::UnicodeCodePoint,
         actor_label,
     );
-    let mut doc = bootstrap.into_inner();
-    let mut peer_state = sync::State::new();
-    let mut pending_broadcasts = Vec::new();
-    let mut pending_state_sync_frames = Vec::new();
+    let doc = bootstrap.into_inner();
+    let peer_state = sync::State::new();
 
-    do_initial_sync(
-        &mut reader,
-        &mut writer,
-        &mut doc,
-        &mut peer_state,
-        &mut pending_broadcasts,
-        &mut pending_state_sync_frames,
-    )
-    .await?;
-
-    info!(
-        "[notebook-sync] Created notebook {} ({} cells)",
-        notebook_id,
-        notebook_doc::get_cells_from_doc(&doc).len()
-    );
-
-    let cells = notebook_doc::get_cells_from_doc(&doc);
-
-    build_and_spawn(
-        doc,
-        peer_state,
-        notebook_id,
-        pending_broadcasts,
-        pending_state_sync_frames,
-        reader,
-        writer,
-    )
-    .await
-    .map(|(handle, broadcast_rx)| CreateResult {
-        handle,
-        broadcast_rx,
-        info,
-        cells,
-    })
+    build_and_spawn(doc, peer_state, notebook_id, reader, writer)
+        .await
+        .map(|(handle, broadcast_rx)| CreateResult {
+            handle,
+            broadcast_rx,
+            info,
+        })
 }
 
 // =========================================================================
@@ -463,10 +355,8 @@ async fn build_and_spawn<R, W>(
     doc: AutoCommit,
     peer_state: sync::State,
     notebook_id: String,
-    pending_broadcasts: Vec<NotebookBroadcast>,
-    pending_state_sync_frames: Vec<Vec<u8>>,
-    mut reader: R,
-    mut writer: W,
+    reader: R,
+    writer: W,
 ) -> Result<(DocHandle, crate::BroadcastReceiver), SyncError>
 where
     R: AsyncRead + Unpin + Send + 'static,
@@ -474,84 +364,6 @@ where
 {
     let mut shared_state = SharedDocState::new(doc, notebook_id.clone());
     shared_state.peer_state = peer_state;
-    let mut pending_frames = Vec::<TypedNotebookFrame>::new();
-
-    // Complete the RuntimeStateDoc sync handshake inline so the doc is
-    // fully populated before we return the handle. The Automerge sync
-    // protocol is multi-round: the daemon's initial message contains only
-    // heads/bloom; the actual document data arrives after we reply.
-    //
-    // 1. Apply buffered frames from do_initial_sync
-    // 2. Send reply messages to the daemon
-    // 3. Receive follow-up frames until convergence (100ms timeout)
-    //
-    // Mixed frame types can legitimately arrive here under load. In
-    // particular, a late notebook AutomergeSync frame may show up after
-    // do_initial_sync's timeout but before this inline RuntimeStateDoc sync
-    // finishes. We must hand those frames off to the steady-state sync task
-    // instead of consuming and dropping them here.
-    {
-        // Step 1: Apply buffered frames
-        for frame_payload in &pending_state_sync_frames {
-            if let Ok(msg) = sync::Message::decode(frame_payload) {
-                let _ = shared_state.receive_state_sync_message(msg);
-            }
-        }
-
-        // Step 2: Send replies
-        while let Some(reply) = shared_state.generate_state_sync_message() {
-            connection::send_typed_frame(
-                &mut writer,
-                NotebookFrameType::RuntimeStateSync,
-                &reply.encode(),
-            )
-            .await?;
-        }
-
-        // Step 3: Receive follow-up frames until convergence
-        loop {
-            match tokio::time::timeout(
-                Duration::from_millis(100),
-                connection::recv_typed_frame(&mut reader),
-            )
-            .await
-            {
-                Ok(Ok(Some(frame))) if frame.frame_type == NotebookFrameType::RuntimeStateSync => {
-                    if let Ok(msg) = sync::Message::decode(&frame.payload) {
-                        let _ = shared_state.receive_state_sync_message(msg);
-                    }
-                    // Reply to each round
-                    while let Some(reply) = shared_state.generate_state_sync_message() {
-                        connection::send_typed_frame(
-                            &mut writer,
-                            NotebookFrameType::RuntimeStateSync,
-                            &reply.encode(),
-                        )
-                        .await?;
-                    }
-                }
-                Ok(Ok(Some(frame))) => {
-                    // Non-RuntimeStateSync frame — buffer it in arrival order
-                    // and let the steady-state sync task process it before
-                    // reading new frames from the socket.
-                    pending_frames.push(frame);
-                    break;
-                }
-                Ok(Ok(None)) => {
-                    return Err(SyncError::Protocol(
-                        "Connection closed during RuntimeStateDoc sync".into(),
-                    ));
-                }
-                Ok(Err(e)) => {
-                    return Err(SyncError::Io(e));
-                }
-                Err(_) => {
-                    // Timeout — RuntimeStateDoc sync converged
-                    break;
-                }
-            }
-        }
-    }
 
     let shared = Arc::new(Mutex::new(shared_state));
 
@@ -562,14 +374,10 @@ where
 
     let (snapshot_tx, snapshot_rx) = watch::channel(initial_snapshot);
     let snapshot_tx = Arc::new(snapshot_tx);
+    let (status_tx, status_rx) = watch::channel(SyncStatus::connected_pending());
     let (changed_tx, changed_rx) = mpsc::unbounded_channel();
     let (cmd_tx, cmd_rx) = mpsc::channel::<sync_task::SyncCommand>(32);
     let (broadcast_tx, broadcast_rx) = tokio::sync::broadcast::channel::<NotebookBroadcast>(64);
-
-    // Send any broadcasts received during initial sync
-    for bc in pending_broadcasts {
-        let _ = broadcast_tx.send(bc);
-    }
 
     let handle = DocHandle::new(
         Arc::clone(&shared),
@@ -577,6 +385,7 @@ where
         cmd_tx,
         Arc::clone(&snapshot_tx),
         snapshot_rx,
+        status_rx,
         notebook_id.clone(),
     );
 
@@ -585,8 +394,8 @@ where
         changed_rx,
         cmd_rx,
         snapshot_tx: Arc::clone(&snapshot_tx),
+        status_tx,
         broadcast_tx,
-        pending_frames,
     };
 
     let notebook_id_for_task = notebook_id;
@@ -612,9 +421,10 @@ where
 /// Open a notebook as a relay — transparent byte pipe, no local document.
 ///
 /// Performs the handshake only (preamble + OpenNotebook + receive info).
-/// Does NOT call `do_initial_sync` — the daemon's initial sync message
-/// stays in the socket buffer and gets piped to the frontend by the relay
-/// task. The frontend (WASM) owns the sync protocol.
+/// Does not perform any bootstrap sync on the client side — the daemon's
+/// initial sync and session-status frames stay in the socket buffer and get
+/// piped to the frontend by the relay task. The frontend (WASM) owns the
+/// sync protocol.
 ///
 /// This eliminates the 100ms convergence floor and wasted doc allocation
 /// that the full-peer `connect_open` incurs.
@@ -734,7 +544,7 @@ pub async fn connect_relay(
     // Send notebook sync handshake
     let handshake = Handshake::NotebookSync {
         notebook_id: notebook_id.clone(),
-        protocol: Some(PROTOCOL_V2.to_string()),
+        protocol: Some(PROTOCOL_V3.to_string()),
         initial_metadata: None,
         working_dir: None,
     };
@@ -742,18 +552,13 @@ pub async fn connect_relay(
         .await
         .map_err(|e| SyncError::Protocol(format!("Send handshake: {}", e)))?;
 
-    // Receive protocol capabilities (v2 handshake)
+    // Receive protocol capabilities (v3 handshake)
     let caps_data = connection::recv_frame(&mut reader)
         .await?
         .ok_or_else(|| SyncError::Protocol("Connection closed during handshake".into()))?;
     let caps: ProtocolCapabilities = serde_json::from_slice(&caps_data)
         .map_err(|e| SyncError::Protocol(format!("Parse capabilities: {}", e)))?;
     check_daemon_protocol_version(&caps);
-
-    // Receive initial metadata frame (may be empty)
-    let _initial_data = connection::recv_frame(&mut reader)
-        .await?
-        .ok_or_else(|| SyncError::Protocol("Connection closed during handshake".into()))?;
 
     info!(
         "[relay] Connected to {} (relay mode, no initial sync)",
@@ -799,115 +604,6 @@ where
     });
 
     handle
-}
-
-/// Perform the initial Automerge sync exchange after handshake.
-///
-/// Exchanges sync messages with the daemon until the local document is
-/// caught up. Also buffers any broadcasts received during sync.
-async fn do_initial_sync<R, W>(
-    reader: &mut R,
-    writer: &mut W,
-    doc: &mut AutoCommit,
-    peer_state: &mut sync::State,
-    pending_broadcasts: &mut Vec<NotebookBroadcast>,
-    pending_state_sync_frames: &mut Vec<Vec<u8>>,
-) -> Result<(), SyncError>
-where
-    R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
-{
-    // Receive the daemon's first sync message
-    let first_frame = connection::recv_typed_frame(reader)
-        .await?
-        .ok_or_else(|| SyncError::Protocol("Connection closed during initial sync".into()))?;
-
-    if first_frame.frame_type != NotebookFrameType::AutomergeSync {
-        return Err(SyncError::Protocol(format!(
-            "Expected AutomergeSync frame, got {:?}",
-            first_frame.frame_type
-        )));
-    }
-
-    // Apply and respond
-    let msg = sync::Message::decode(&first_frame.payload)
-        .map_err(|e| SyncError::Protocol(format!("Decode sync message: {}", e)))?;
-    doc.sync()
-        .receive_sync_message(peer_state, msg)
-        .map_err(|e| SyncError::Protocol(format!("Apply sync message: {}", e)))?;
-
-    // Generate reply
-    if let Some(reply) = doc.sync().generate_sync_message(peer_state) {
-        connection::send_typed_frame(writer, NotebookFrameType::AutomergeSync, &reply.encode())
-            .await?;
-    }
-
-    // Continue receiving until we hit a timeout (convergence)
-    let mut rounds = 0;
-    loop {
-        match tokio::time::timeout(
-            Duration::from_millis(100),
-            connection::recv_typed_frame(reader),
-        )
-        .await
-        {
-            Ok(Ok(Some(frame))) => match frame.frame_type {
-                NotebookFrameType::AutomergeSync => {
-                    let msg = sync::Message::decode(&frame.payload)
-                        .map_err(|e| SyncError::Protocol(format!("Decode sync: {}", e)))?;
-                    doc.sync()
-                        .receive_sync_message(peer_state, msg)
-                        .map_err(|e| SyncError::Protocol(format!("Apply sync: {}", e)))?;
-
-                    if let Some(reply) = doc.sync().generate_sync_message(peer_state) {
-                        connection::send_typed_frame(
-                            writer,
-                            NotebookFrameType::AutomergeSync,
-                            &reply.encode(),
-                        )
-                        .await?;
-                    }
-                    rounds += 1;
-                }
-                NotebookFrameType::Broadcast => {
-                    // Buffer broadcasts received during initial sync
-                    if let Ok(bc) = serde_json::from_slice::<NotebookBroadcast>(&frame.payload) {
-                        pending_broadcasts.push(bc);
-                    }
-                }
-                NotebookFrameType::RuntimeStateSync => {
-                    // Buffer RuntimeStateSync frames — they'll be applied to
-                    // SharedDocState after it's created (do_initial_sync only
-                    // has the notebook doc, not the RuntimeStateDoc).
-                    pending_state_sync_frames.push(frame.payload);
-                }
-                _ => {
-                    debug!(
-                        "[notebook-sync] Ignoring {:?} frame during initial sync",
-                        frame.frame_type
-                    );
-                }
-            },
-            Ok(Ok(None)) => {
-                return Err(SyncError::Protocol(
-                    "Connection closed during initial sync".into(),
-                ));
-            }
-            Ok(Err(e)) => {
-                return Err(SyncError::Io(e));
-            }
-            Err(_) => {
-                // Timeout — sync converged
-                debug!(
-                    "[notebook-sync] Initial sync converged after {} rounds",
-                    rounds
-                );
-                break;
-            }
-        }
-    }
-
-    Ok(())
 }
 
 /// Log version info from a daemon's `ProtocolCapabilities` response.

@@ -157,6 +157,7 @@ function AppContent() {
   const {
     cellIds,
     isLoading,
+    loadError,
     focusedCellId,
     setFocusedCellId,
     addCell,
@@ -1322,6 +1323,7 @@ function AppContent() {
           <NotebookView
             cellIds={cellIds}
             isLoading={isLoading}
+            loadError={loadError}
             runtime={runtime}
             onFocusCell={setFocusedCellId}
             onExecuteCell={handleExecuteCell}
