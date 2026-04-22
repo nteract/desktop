@@ -18,7 +18,7 @@ macro_rules! require_handle {
             Some(s) => s.handle.clone(),
             None => {
                 return $crate::tools::tool_error(
-                    "No active notebook session. Call open_notebook or create_notebook first.",
+                    "No active notebook session. Call connect_notebook or create_notebook first.",
                 )
             }
         }
@@ -89,11 +89,10 @@ pub fn all_tools() -> Vec<Tool> {
         .annotate(ToolAnnotations::new().read_only(true).open_world(false))
         .with_meta(always_load_meta()),
         Tool::new(
-            "open_notebook",
-            "Open a notebook. Provide exactly one of: \
-             path (file path, e.g. \"~/analysis.ipynb\") or \
-             notebook_id (UUID from list_active_notebooks). \
-             Paths open the file from disk; notebook_id connects to a running session.",
+            "connect_notebook",
+            "Attach to a notebook as the active session. Pass path (loads .ipynb from disk) \
+             OR notebook_id (UUID from list_active_notebooks) — not both. \
+             Does not open the app; use show_notebook for that.",
             schema_for::<session::OpenNotebookParams>(),
         )
         .annotate(
@@ -121,8 +120,8 @@ pub fn all_tools() -> Vec<Tool> {
                 .open_world(true),
         ),
         Tool::new(
-            "launch_app",
-            "Show the current notebook to the user.",
+            "show_notebook",
+            "Open the notebook in the nteract app for the user. Headless: returns a structured no-display reason.",
             schema_for::<session::ShowNotebookParams>(),
         )
         .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
@@ -326,10 +325,10 @@ pub async fn dispatch(
     match request.name.as_ref() {
         // Session
         "list_active_notebooks" => session::list_active_notebooks(server).await,
-        "open_notebook" => session::open_notebook(server, request).await,
+        "connect_notebook" => session::open_notebook(server, request).await,
         "create_notebook" => session::create_notebook(server, request).await,
         "save_notebook" => session::save_notebook(server, request).await,
-        "launch_app" => session::show_notebook(server, request).await,
+        "show_notebook" => session::show_notebook(server, request).await,
         // Cell read
         "get_cell" => cell_read::get_cell(server, request).await,
         "get_all_cells" => cell_read::get_all_cells(server, request).await,

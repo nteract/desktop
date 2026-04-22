@@ -8,10 +8,10 @@ use serde_json::Value;
 
 /// Track notebook_id from session-establishing tool calls.
 ///
-/// When `open_notebook` or `create_notebook` succeeds, returns the notebook_id
+/// When `connect_notebook` or `create_notebook` succeeds, returns the notebook_id
 /// to persist for seeding the next child restart.
 ///
-/// Checks request arguments first (open_notebook passes path/notebook_id),
+/// Checks request arguments first (connect_notebook passes path/notebook_id),
 /// then falls back to parsing the response content (create_notebook returns
 /// notebook_id in its JSON response, not in request args).
 pub fn extract_session_id(
@@ -25,8 +25,8 @@ pub fn extract_session_id(
 
     let name: &str = &params.name;
     match name {
-        "open_notebook" | "create_notebook" => {
-            // Try request arguments first (open_notebook)
+        "connect_notebook" | "create_notebook" => {
+            // Try request arguments first (connect_notebook)
             let from_args = params
                 .arguments
                 .as_ref()
@@ -86,12 +86,12 @@ mod tests {
         result
     }
 
-    // ── open_notebook tracking ────────────────────────────────────────
+    // ── connect_notebook tracking ────────────────────────────────────────
 
     #[test]
-    fn tracks_open_notebook_with_path() {
+    fn tracks_connect_notebook_with_path() {
         let params = make_params(
-            "open_notebook",
+            "connect_notebook",
             serde_json::json!({"path": "/tmp/test.ipynb"}),
         );
         assert_eq!(
@@ -101,9 +101,9 @@ mod tests {
     }
 
     #[test]
-    fn tracks_open_notebook_with_notebook_id() {
+    fn tracks_connect_notebook_with_notebook_id() {
         let params = make_params(
-            "open_notebook",
+            "connect_notebook",
             serde_json::json!({"notebook_id": "abc-123-def"}),
         );
         assert_eq!(
@@ -115,7 +115,7 @@ mod tests {
     #[test]
     fn prefers_notebook_id_over_path() {
         let params = make_params(
-            "open_notebook",
+            "connect_notebook",
             serde_json::json!({"notebook_id": "abc-123", "path": "/tmp/test.ipynb"}),
         );
         assert_eq!(
@@ -203,9 +203,9 @@ mod tests {
     // ── Error handling ────────────────────────────────────────────────
 
     #[test]
-    fn ignores_open_notebook_error() {
+    fn ignores_connect_notebook_error() {
         let params = make_params(
-            "open_notebook",
+            "connect_notebook",
             serde_json::json!({"path": "/tmp/test.ipynb"}),
         );
         assert_eq!(extract_session_id(&params, &error_result()), None);
@@ -214,7 +214,7 @@ mod tests {
     #[test]
     fn treats_is_error_none_as_success() {
         let params = make_params(
-            "open_notebook",
+            "connect_notebook",
             serde_json::json!({"path": "/tmp/test.ipynb"}),
         );
         let mut result = CallToolResult::success(vec![Content::text("ok")]);
@@ -229,13 +229,13 @@ mod tests {
 
     #[test]
     fn returns_none_when_arguments_empty_and_no_response_id() {
-        let params = make_params("open_notebook", serde_json::json!({}));
+        let params = make_params("connect_notebook", serde_json::json!({}));
         assert_eq!(extract_session_id(&params, &success_result()), None);
     }
 
     #[test]
     fn returns_none_when_path_is_not_string() {
-        let params = make_params("open_notebook", serde_json::json!({"path": 42}));
+        let params = make_params("connect_notebook", serde_json::json!({"path": 42}));
         assert_eq!(extract_session_id(&params, &success_result()), None);
     }
 }

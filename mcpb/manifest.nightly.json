@@ -65,8 +65,8 @@
       "name": "list_active_notebooks"
     },
     {
-      "description": "Open a notebook. Provide exactly one of: path (file path, e.g. \"~/analysis.ipynb\") or notebook_id (UUID from list_active_notebooks). Paths open the file from disk; notebook_id connects to a running session.",
-      "name": "open_notebook"
+      "description": "Attach to a notebook as the active session. Pass path (loads .ipynb from disk) OR notebook_id (UUID from list_active_notebooks) — not both. Does not open the app; use show_notebook for that.",
+      "name": "connect_notebook"
     },
     {
       "description": "Create a new notebook. Ephemeral by default; use save_notebook(path) to persist.",
@@ -77,8 +77,8 @@
       "name": "save_notebook"
     },
     {
-      "description": "Show the current notebook to the user.",
-      "name": "launch_app"
+      "description": "Open the notebook in the nteract app for the user. Headless: returns a structured no-display reason.",
+      "name": "show_notebook"
     },
     {
       "description": "Get a cell by ID.",

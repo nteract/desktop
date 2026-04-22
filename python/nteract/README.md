@@ -71,10 +71,10 @@ You can open the same notebook in the [nteract desktop app](https://nteract.io) 
 | Tool | Description |
 |------|-------------|
 | `list_active_notebooks` | List all open notebook sessions |
-| `join_notebook` | Join an existing notebook session by ID |
-| `open_notebook` | Open an existing .ipynb file |
+| `connect_notebook` | Attach to a notebook — pass a file path to load from disk, or a notebook_id to join a running session |
 | `create_notebook` | Create a new notebook |
 | `save_notebook` | Save notebook to disk as .ipynb file |
+| `show_notebook` | Open the notebook in the nteract desktop app (no-op on headless hosts) |
 | `create_cell` | Add a cell to the notebook (use `and_run=True` to execute) |
 | `execute_cell` | Run a specific cell (returns partial results after timeout) |
 | `run_all_cells` | Queue all code cells for execution |

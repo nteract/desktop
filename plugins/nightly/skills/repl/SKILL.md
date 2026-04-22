@@ -42,7 +42,7 @@ create_cell(source="import pandas as pd\ndf = pd.read_csv('data.csv')\ndf.head()
    `save_notebook()` — writes the `.ipynb` to disk.
 
 5b. **Open the App for the User:**
-   `launch_app()` — opens the notebook app for the user. Use if they ask to show it to them. Can be disruptive if the user doesn't expect it.
+   `show_notebook()` — opens the notebook app for the user. Use if they ask to show it to them. Can be disruptive if the user doesn't expect it.
 
 
 ## When to Use This

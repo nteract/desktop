@@ -33,7 +33,7 @@ If multiple crates changed, run tests for each: `cargo test -p runtimed -p noteb
 
 ## Step 3: MCP Live Verification (when nteract-dev tools are available)
 
-If narrow tests pass and you have `nteract-dev` (`up`/`down`/`status`) and `open_notebook`/`execute_cell` tools, do a live check:
+If narrow tests pass and you have `nteract-dev` (`up`/`down`/`status`) and `connect_notebook`/`execute_cell` tools, do a live check:
 
 ### For daemon/kernel changes (`crates/runtimed/`, `crates/runtimed-py/`):
 
@@ -70,7 +70,7 @@ If narrow tests pass and you have `nteract-dev` (`up`/`down`/`status`) and `open
 For changes to daemon, kernel, sync, or execution paths, open the harness dashboard notebook to measure impact:
 
 ```
-open_notebook("scripts/metrics/harness-dashboard.ipynb")
+connect_notebook("scripts/metrics/harness-dashboard.ipynb")
 ```
 
 Run the setup cell first, then run any metric cell. Each metric cell is self-contained — it creates a fresh notebook, measures, disconnects, and plots results against the committed baseline.

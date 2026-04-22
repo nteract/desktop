@@ -338,7 +338,7 @@ When `nteract-dev` is active, agents also get the full nteract tool suite. **Use
 
 | Category | Tools |
 |----------|-------|
-| Session | `list_active_notebooks`, `open_notebook`, `create_notebook`, `save_notebook`, `launch_app` |
+| Session | `list_active_notebooks`, `connect_notebook`, `create_notebook`, `save_notebook`, `show_notebook` |
 | Kernel | `interrupt_kernel`, `restart_kernel` |
 | Dependencies | `add_dependency`, `remove_dependency`, `get_dependencies`, `sync_environment` |
 | Cell CRUD | `create_cell`, `get_cell`, `get_all_cells`, `set_cell`, `delete_cell`, `move_cell`, `clear_outputs` |
@@ -346,7 +346,7 @@ When `nteract-dev` is active, agents also get the full nteract tool suite. **Use
 | Editing | `replace_match`, `replace_regex` |
 | Execution | `execute_cell`, `run_all_cells` |
 
-**Audit workflow example:** After modifying daemon or kernel code, use `open_notebook` on a test fixture, `execute_cell` to run it, then `get_cell` to inspect outputs — confirming the change works end-to-end without leaving the agent session.
+**Audit workflow example:** After modifying daemon or kernel code, use `connect_notebook` on a test fixture, `execute_cell` to run it, then `get_cell` to inspect outputs — confirming the change works end-to-end without leaving the agent session.
 
 ### Hot reload
 
