@@ -276,6 +276,8 @@ pub async fn create_notebook(options: Option<CreateNotebookOptions>) -> Result<S
         working_dir.clone(),
         &actor_label,
         /* ephemeral */ false,
+        None,
+        vec![],
     )
     .await
     .map_err(to_napi_err)?;

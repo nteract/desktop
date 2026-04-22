@@ -186,15 +186,18 @@ impl AsyncClient {
     ///     runtime: Kernel runtime type (default: "python").
     ///     working_dir: Optional working directory for environment detection.
     ///     peer_label: Optional label override (defaults to client's peer_label).
-    #[pyo3(signature = (runtime="python", working_dir=None, peer_label=None))]
+    ///     package_manager: Package manager ("uv", "conda", "pixi"). When None, daemon uses default_python_env.
+    ///     dependencies: Dependencies to seed before kernel auto-launch.
+    #[pyo3(signature = (runtime="python", working_dir=None, peer_label=None, package_manager=None, dependencies=None))]
     fn create_notebook<'py>(
         &self,
         py: Python<'py>,
         runtime: &str,
         working_dir: Option<&str>,
         peer_label: Option<String>,
+        package_manager: Option<String>,
+        dependencies: Option<Vec<String>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        // Validate working_dir if provided
         if let Some(wd) = working_dir {
             let path = std::path::Path::new(wd);
             if !path.exists() {
@@ -215,8 +218,17 @@ impl AsyncClient {
         let socket_path = self.socket_path.clone();
         let runtime = runtime.to_string();
         let working_dir_buf = working_dir.map(PathBuf::from);
+        let deps = dependencies.unwrap_or_default();
         future_into_py(py, async move {
-            AsyncSession::create_notebook_async(socket_path, runtime, working_dir_buf, label).await
+            AsyncSession::create_notebook_async(
+                socket_path,
+                runtime,
+                working_dir_buf,
+                label,
+                package_manager,
+                deps,
+            )
+            .await
         })
     }
 

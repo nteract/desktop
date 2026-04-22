@@ -45,19 +45,17 @@ class Client:
         working_dir: str | None = None,
         peer_label: str | None = None,
         dependencies: list[str] | None = None,
+        package_manager: str | None = None,
     ) -> Notebook:
         """Create a new notebook and return a connected Notebook.
 
-        If *dependencies* are provided they are written to the notebook
-        metadata in a single bulk operation.  The environment is **not**
-        synced automatically — call ``sync_environment()`` or ``restart()``
-        on the returned notebook to apply them.
+        Dependencies are passed in the creation handshake so the kernel
+        launches with the correct environment on first try.
         """
-        session = await self._native.create_notebook(runtime, working_dir, peer_label)
-        notebook = Notebook(session)
-        if dependencies:
-            await notebook.add_dependencies(dependencies)
-        return notebook
+        session = await self._native.create_notebook(
+            runtime, working_dir, peer_label, package_manager, dependencies,
+        )
+        return Notebook(session)
 
     async def join_notebook(self, notebook_id: str, peer_label: str | None = None) -> Notebook:
         """Join an existing notebook room by ID.
