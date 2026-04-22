@@ -415,6 +415,8 @@ class NativeAsyncClient:
         runtime: str = "python",
         working_dir: str | None = None,
         peer_label: str | None = None,
+        package_manager: str | None = None,
+        dependencies: list[str] | None = None,
     ) -> Coroutine[Any, Any, AsyncSession]: ...
     def join_notebook(
         self,
