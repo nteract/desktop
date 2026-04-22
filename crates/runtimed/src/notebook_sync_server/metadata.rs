@@ -43,6 +43,21 @@ pub(crate) fn check_inline_deps(snapshot: &NotebookMetadataSnapshot) -> Option<S
     None
 }
 
+/// Detect which package manager section exists in the metadata, regardless of
+/// whether it has deps. Used to pick the correct prewarmed pool type when
+/// check_inline_deps returns None (empty deps, explicit manager).
+fn detect_manager_from_metadata(snapshot: &NotebookMetadataSnapshot) -> Option<&'static str> {
+    if snapshot.runt.conda.is_some() {
+        Some("conda")
+    } else if snapshot.runt.pixi.is_some() {
+        Some("pixi")
+    } else if snapshot.runt.uv.is_some() {
+        Some("uv")
+    } else {
+        None
+    }
+}
+
 /// Extract inline conda dependencies from a metadata snapshot.
 /// Returns the list of dependency strings if conda deps are present.
 pub(crate) fn get_inline_conda_deps(snapshot: &NotebookMetadataSnapshot) -> Option<Vec<String>> {
@@ -2216,10 +2231,21 @@ pub(crate) async fn auto_launch_kernel(
                     prewarmed.to_string()
                 }
             } else {
-                let prewarmed = match default_python_env {
-                    crate::settings_doc::PythonEnvType::Conda => "conda:prewarmed",
-                    crate::settings_doc::PythonEnvType::Pixi => "pixi:prewarmed",
-                    _ => "uv:prewarmed",
+                // Check if the metadata has an explicit manager section
+                // (e.g. create_notebook(package_manager="conda") with empty deps).
+                // Use that to pick the pool type instead of default_python_env.
+                let manager = metadata_snapshot
+                    .as_ref()
+                    .and_then(detect_manager_from_metadata);
+                let prewarmed = match manager {
+                    Some("conda") => "conda:prewarmed",
+                    Some("pixi") => "pixi:prewarmed",
+                    Some("uv") => "uv:prewarmed",
+                    _ => match default_python_env {
+                        crate::settings_doc::PythonEnvType::Conda => "conda:prewarmed",
+                        crate::settings_doc::PythonEnvType::Pixi => "pixi:prewarmed",
+                        _ => "uv:prewarmed",
+                    },
                 };
                 info!(
                     "[notebook-sync] Auto-launch: using prewarmed ({})",

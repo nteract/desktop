@@ -78,6 +78,8 @@ impl AsyncSession {
         runtime: String,
         working_dir: Option<PathBuf>,
         peer_label: Option<String>,
+        package_manager: Option<String>,
+        dependencies: Vec<String>,
     ) -> PyResult<Self> {
         let peer_label = Some(peer_label.unwrap_or_else(session_core::default_peer_label));
         let actor_label = peer_label.as_deref().map(session_core::make_actor_label);
@@ -86,6 +88,8 @@ impl AsyncSession {
             &runtime,
             working_dir,
             actor_label.as_deref(),
+            package_manager.as_deref(),
+            dependencies,
         )
         .await?;
         state.peer_label = peer_label.clone();

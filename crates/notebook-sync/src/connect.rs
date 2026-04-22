@@ -268,12 +268,15 @@ pub async fn connect_open(
 ///
 /// The daemon creates an empty notebook room with one code cell and
 /// returns connection info with a generated UUID as the notebook_id.
+#[allow(clippy::too_many_arguments)]
 pub async fn connect_create(
     socket_path: PathBuf,
     runtime: &str,
     working_dir: Option<PathBuf>,
     actor_label: &str,
     ephemeral: bool,
+    package_manager: Option<&str>,
+    dependencies: Vec<String>,
 ) -> Result<CreateResult, SyncError> {
     connect_create_inner(
         socket_path,
@@ -282,10 +285,13 @@ pub async fn connect_create(
         None,
         actor_label,
         ephemeral,
+        package_manager,
+        dependencies,
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn connect_create_inner(
     socket_path: PathBuf,
     runtime: &str,
@@ -293,6 +299,8 @@ async fn connect_create_inner(
     notebook_id: Option<String>,
     actor_label: &str,
     ephemeral: bool,
+    package_manager: Option<&str>,
+    dependencies: Vec<String>,
 ) -> Result<CreateResult, SyncError> {
     let stream = connect_stream!(&socket_path);
     let (reader, writer) = tokio::io::split(stream);
@@ -310,6 +318,8 @@ async fn connect_create_inner(
             .map(|p| p.to_string_lossy().to_string()),
         notebook_id,
         ephemeral: if ephemeral { Some(true) } else { None },
+        package_manager: package_manager.map(String::from),
+        dependencies,
     };
     connection::send_json_frame(&mut writer, &handshake)
         .await
@@ -474,6 +484,7 @@ pub async fn connect_open_relay(
 ///
 /// Same as `connect_open_relay` but for new notebooks. Performs the
 /// CreateNotebook handshake, then immediately starts piping.
+#[allow(clippy::too_many_arguments)]
 pub async fn connect_create_relay(
     socket_path: PathBuf,
     runtime: &str,
@@ -481,6 +492,8 @@ pub async fn connect_create_relay(
     notebook_id: Option<String>,
     frame_tx: mpsc::UnboundedSender<Vec<u8>>,
     ephemeral: bool,
+    package_manager: Option<&str>,
+    dependencies: Vec<String>,
 ) -> Result<RelayCreateResult, SyncError> {
     let stream = connect_stream!(&socket_path);
     let (reader, writer) = tokio::io::split(stream);
@@ -498,6 +511,8 @@ pub async fn connect_create_relay(
             .map(|p| p.to_string_lossy().to_string()),
         notebook_id,
         ephemeral: if ephemeral { Some(true) } else { None },
+        package_manager: package_manager.map(String::from),
+        dependencies,
     };
     connection::send_json_frame(&mut writer, &handshake)
         .await

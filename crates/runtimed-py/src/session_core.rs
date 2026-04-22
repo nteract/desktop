@@ -403,6 +403,8 @@ pub(crate) async fn connect_create(
     runtime: &str,
     working_dir: Option<PathBuf>,
     actor_label: Option<&str>,
+    package_manager: Option<&str>,
+    dependencies: Vec<String>,
 ) -> PyResult<(String, SessionState, NotebookConnectionInfo)> {
     let default_label;
     let label = match actor_label {
@@ -418,6 +420,8 @@ pub(crate) async fn connect_create(
         working_dir.clone(),
         label,
         false,
+        package_manager,
+        dependencies,
     )
     .await
     .map_err(to_py_err)?;

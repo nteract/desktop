@@ -2002,6 +2002,8 @@ fn test_build_new_notebook_metadata_deno() {
         "deno",
         "test-env-id",
         crate::settings_doc::PythonEnvType::Uv,
+        None,
+        &[],
     );
 
     assert_eq!(metadata.kernelspec.as_ref().unwrap().name, "deno");
@@ -2022,6 +2024,8 @@ fn test_build_new_notebook_metadata_python_uv() {
         "python",
         "test-env-id",
         crate::settings_doc::PythonEnvType::Uv,
+        None,
+        &[],
     );
 
     assert_eq!(metadata.kernelspec.as_ref().unwrap().name, "python3");
@@ -2046,6 +2050,8 @@ fn test_build_new_notebook_metadata_python_conda() {
         "python",
         "test-env-id",
         crate::settings_doc::PythonEnvType::Conda,
+        None,
+        &[],
     );
 
     assert_eq!(metadata.kernelspec.as_ref().unwrap().name, "python3");
@@ -2075,6 +2081,8 @@ fn test_create_empty_notebook_python() {
         "python",
         crate::settings_doc::PythonEnvType::Uv,
         None,
+        None,
+        &[],
     );
 
     assert!(result.is_ok());
@@ -2093,6 +2101,8 @@ fn test_create_empty_notebook_deno() {
         "deno",
         crate::settings_doc::PythonEnvType::Uv, // Ignored for deno
         None,
+        None,
+        &[],
     );
 
     assert!(result.is_ok());
@@ -2114,6 +2124,8 @@ fn test_create_empty_notebook_with_provided_env_id() {
         "python",
         crate::settings_doc::PythonEnvType::Uv,
         Some(provided_id),
+        None,
+        &[],
     );
 
     assert!(result.is_ok());
@@ -4054,6 +4066,8 @@ async fn test_room_for_capture() -> (NotebookRoom, tempfile::TempDir) {
             "python",
             crate::settings_doc::PythonEnvType::Uv,
             Some("test-env-id"),
+            None,
+            &[],
         );
     }
     (room, tmp)
@@ -4168,6 +4182,8 @@ async fn capture_handles_conda_section_independently() {
             "python",
             crate::settings_doc::PythonEnvType::Conda,
             Some("conda-env-id"),
+            None,
+            &[],
         );
     }
 

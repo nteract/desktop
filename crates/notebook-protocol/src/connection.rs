@@ -147,6 +147,14 @@ pub enum Handshake {
         /// Defaults to false (backward compat). MCP agents use true for scratch compute.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ephemeral: Option<bool>,
+        /// Package manager preference: "uv", "conda", or "pixi".
+        /// When set, the daemon creates only this manager's metadata section.
+        /// When None, the daemon uses its default_python_env setting.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        package_manager: Option<String>,
+        /// Dependencies to seed into notebook metadata before auto-launch.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        dependencies: Vec<String>,
     },
 }
 
@@ -712,6 +720,8 @@ mod tests {
             working_dir: None,
             notebook_id: None,
             ephemeral: None,
+            package_manager: None,
+            dependencies: vec![],
         })
         .unwrap();
         assert_eq!(json, r#"{"channel":"create_notebook","runtime":"python"}"#);
@@ -722,6 +732,8 @@ mod tests {
             working_dir: Some("/home/user/project".into()),
             notebook_id: None,
             ephemeral: None,
+            package_manager: None,
+            dependencies: vec![],
         })
         .unwrap();
         assert_eq!(
@@ -735,6 +747,8 @@ mod tests {
             working_dir: None,
             notebook_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
             ephemeral: None,
+            package_manager: None,
+            dependencies: vec![],
         })
         .unwrap();
         assert_eq!(
