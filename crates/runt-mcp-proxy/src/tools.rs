@@ -43,7 +43,7 @@ pub fn load_cached_tools(cache_dir: &Path) -> Option<Vec<Tool>> {
 }
 
 /// Load the built-in tool cache (compiled into the binary).
-/// Used when no cache_dir is configured (e.g., runt-proxy).
+/// Used when no cache_dir is configured (e.g., nteract-mcp).
 pub fn load_builtin_tools() -> Option<Vec<Tool>> {
     match serde_json::from_str::<Vec<Tool>>(BUILTIN_TOOL_CACHE) {
         Ok(tools) => {

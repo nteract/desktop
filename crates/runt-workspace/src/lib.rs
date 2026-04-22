@@ -103,8 +103,8 @@ pub fn cli_command_name_for(channel: BuildChannel) -> &'static str {
 
 pub fn proxy_binary_basename_for(channel: BuildChannel) -> &'static str {
     match channel {
-        BuildChannel::Stable => "runt-proxy",
-        BuildChannel::Nightly => "runt-proxy-nightly",
+        BuildChannel::Stable => "nteract-mcp",
+        BuildChannel::Nightly => "nteract-mcp-nightly",
     }
 }
 
@@ -155,7 +155,7 @@ pub fn cli_command_name() -> &'static str {
     cli_command_name_for(build_channel())
 }
 
-/// Channel-specific runt-proxy binary base name (without extension).
+/// Channel-specific nteract-mcp binary base name (without extension).
 pub fn proxy_binary_basename() -> &'static str {
     proxy_binary_basename_for(build_channel())
 }

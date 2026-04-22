@@ -1,14 +1,14 @@
 [package]
-name = "runt-proxy"
+name = "nteract-mcp"
 version = "0.1.1"
 edition.workspace = true
-description = "Resilient MCP proxy for runt mcp. Ships as a sidecar in the nteract desktop app and inside the .mcpb Claude Desktop extension."
+description = "nteract MCP server — resilient proxy in front of `runt mcp`. Ships as a sidecar in the nteract desktop app, inside the .mcpb Claude Desktop extension, and in the Claude Code plugin."
 repository.workspace = true
 license.workspace = true
 publish = false
 
 [[bin]]
-name = "runt-proxy"
+name = "nteract-mcp"
 path = "src/main.rs"
 
 [dependencies]

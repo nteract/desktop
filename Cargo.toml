@@ -18,7 +18,7 @@ members = [
     "crates/mcp-supervisor",
     "crates/runt-mcp",
     "crates/runt-mcp-proxy",
-    "crates/runt-proxy",
+    "crates/nteract-mcp",
     "crates/repr-llm",
     "crates/nteract-predicate",
     "crates/sift-wasm",

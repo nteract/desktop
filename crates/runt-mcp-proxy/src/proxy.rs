@@ -1,7 +1,7 @@
 //! Core MCP proxy — spawns a child, forwards tools/resources, handles restarts.
 //!
 //! The `McpProxy` struct manages the child process lifecycle and provides the
-//! core forwarding logic. It can be used standalone (by `runt-proxy`) or wrapped
+//! core forwarding logic. It can be used standalone (by `nteract-mcp`) or wrapped
 //! by `mcp-supervisor` which adds dev-specific tools and file watching.
 
 use std::collections::HashMap;
@@ -354,7 +354,7 @@ impl McpProxy {
                                  Exiting so the MCP client can restart with the new tool set."
                             );
                             state.should_exit = true;
-                            // Signal the exit so runt-proxy can shut down
+                            // Signal the exit so nteract-mcp can shut down
                             self.exit_signal.notify_waiters();
                         }
                     }
@@ -744,10 +744,10 @@ impl McpProxy {
 }
 
 // ---------------------------------------------------------------------------
-// ServerHandler — used when McpProxy is the top-level MCP server (runt-proxy)
+// ServerHandler — used when McpProxy is the top-level MCP server (nteract-mcp)
 // ---------------------------------------------------------------------------
 
-/// Standalone ServerHandler for `McpProxy`. Used by `runt-proxy` where the proxy
+/// Standalone ServerHandler for `McpProxy`. Used by `nteract-mcp` where the proxy
 /// IS the MCP server. The supervisor wraps this with its own ServerHandler that
 /// adds supervisor_* tools.
 impl ServerHandler for McpProxy {

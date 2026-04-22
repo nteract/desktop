@@ -781,7 +781,7 @@ fn cmd_build(rust_only: bool) {
     // anyway. By excluding notebook here, we still pre-warm the entire
     // dependency tree (all shared crates are built via the other targets),
     // and Phase 3 only needs to compile notebook + link.
-    println!("Building Rust targets (runtimed, runt, runt-proxy, mcp-supervisor)...");
+    println!("Building Rust targets (runtimed, runt, nteract-mcp, mcp-supervisor)...");
     run_cmd(
         "cargo",
         &[
@@ -791,7 +791,7 @@ fn cmd_build(rust_only: bool) {
             "-p",
             "runt-cli",
             "-p",
-            "runt-proxy",
+            "nteract-mcp",
             "-p",
             "mcp-supervisor",
         ],
@@ -800,7 +800,7 @@ fn cmd_build(rust_only: bool) {
     // Copy sidecar binaries for Tauri bundling
     copy_sidecar_binary("runtimed", false);
     copy_sidecar_binary("runt", false);
-    copy_sidecar_binary("runt-proxy", false);
+    copy_sidecar_binary("nteract-mcp", false);
 
     // Wait for pnpm install before starting frontend build
     if let Some(handle) = pnpm_handle {
@@ -2172,7 +2172,7 @@ fn run_cmd_ok(cmd: &str, args: &[&str]) -> bool {
 fn build_runtimed_daemon(release: bool) {
     build_external_binary("runtimed", "runtimed", release);
     build_external_binary("runt-cli", "runt", release);
-    build_external_binary("runt-proxy", "runt-proxy", release);
+    build_external_binary("nteract-mcp", "nteract-mcp", release);
 }
 
 /// Build a binary and copy to binaries/ with target triple suffix for Tauri bundling.
@@ -2571,30 +2571,30 @@ fn cmd_mcpb(output: Option<&str>, variant: &str) {
     let dark_dest = staging_dir.join("icon-dark.png");
     resize_icon(dark_actual, &dark_dest.to_string_lossy());
 
-    // ── 4. Build and copy runt-proxy binary ─────────────────────────────────
+    // ── 4. Build and copy nteract-mcp binary ────────────────────────────────
     // Set RUNT_BUILD_CHANNEL so the binary knows its channel at compile time.
     let build_channel = match variant {
         "stable" => "stable",
         _ => "nightly",
     };
-    println!("Building runt-proxy (release, channel={build_channel})...");
+    println!("Building nteract-mcp (release, channel={build_channel})...");
     let mut build_cmd = Command::new("cargo");
-    build_cmd.args(["build", "-p", "runt-proxy", "--release"]);
+    build_cmd.args(["build", "-p", "nteract-mcp", "--release"]);
     build_cmd.env("RUNT_BUILD_CHANNEL", build_channel);
     let build_status = build_cmd.status().unwrap_or_else(|e| {
-        eprintln!("Failed to run cargo build -p runt-proxy: {e}");
+        eprintln!("Failed to run cargo build -p nteract-mcp: {e}");
         exit(1);
     });
     if !build_status.success() {
-        eprintln!("cargo build -p runt-proxy --release failed");
+        eprintln!("cargo build -p nteract-mcp --release failed");
         let _ = fs::remove_dir_all(&staging_dir);
         exit(1);
     }
 
     let binary_name = if cfg!(target_os = "windows") {
-        "runt-proxy.exe"
+        "nteract-mcp.exe"
     } else {
-        "runt-proxy"
+        "nteract-mcp"
     };
     let built_binary = Path::new("target/release").join(binary_name);
     if !built_binary.exists() {
@@ -2609,7 +2609,7 @@ fn cmd_mcpb(output: Option<&str>, variant: &str) {
         exit(1);
     });
     fs::copy(&built_binary, server_dir.join(binary_name)).unwrap_or_else(|e| {
-        eprintln!("Failed to copy runt-proxy binary: {e}");
+        eprintln!("Failed to copy nteract-mcp binary: {e}");
         exit(1);
     });
 

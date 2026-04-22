@@ -8,7 +8,7 @@
 //! ground truth that the cached info is still valid.
 //!
 //! This supersedes per-lookup [`query_daemon_info`](crate::singleton::query_daemon_info)
-//! for long-running consumers (Tauri app, runt-proxy, runt-mcp-proxy). One-
+//! for long-running consumers (Tauri app, nteract-mcp, runt-mcp-proxy). One-
 //! shot CLI callers (e.g. `runt daemon status`) continue to use the
 //! existing helper.
 //!
