@@ -126,10 +126,15 @@ for t in "${TARGETS[@]}"; do
   chmod 0755 "$dest"
 done
 
-# Copy the dispatch wrapper (Node script). Executable bit preserved.
-cp "$REPO_ROOT/scripts/plugin-dispatch-wrapper.js" \
+# Copy the two dispatch wrappers. Unix (POSIX sh) + Windows (batch).
+# Both .exec the right sibling binary — no long-lived parent process,
+# signals and exit codes are transparent.
+cp "$REPO_ROOT/scripts/plugin-dispatch-wrapper.sh" \
    "$out_dir/plugins/$plugin_name/bin/nteract-mcp"
 chmod 0755 "$out_dir/plugins/$plugin_name/bin/nteract-mcp"
+
+cp "$REPO_ROOT/scripts/plugin-dispatch-wrapper.cmd" \
+   "$out_dir/plugins/$plugin_name/bin/nteract-mcp.cmd"
 
 # Generate marketplace.json. "name" is the install-time identifier —
 # users type /plugin install <plugin_name>@${marketplace_name}.
