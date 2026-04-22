@@ -2109,6 +2109,7 @@ impl Daemon {
     ///
     /// Daemon creates empty room with zero cells, generates env_id as notebook_id.
     /// Returns NotebookConnectionInfo, then continues as normal notebook sync.
+    #[allow(clippy::too_many_arguments)]
     async fn handle_create_notebook<S>(
         self: Arc<Self>,
         stream: S,

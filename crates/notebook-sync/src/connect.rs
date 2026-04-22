@@ -268,6 +268,7 @@ pub async fn connect_open(
 ///
 /// The daemon creates an empty notebook room with one code cell and
 /// returns connection info with a generated UUID as the notebook_id.
+#[allow(clippy::too_many_arguments)]
 pub async fn connect_create(
     socket_path: PathBuf,
     runtime: &str,
@@ -290,6 +291,7 @@ pub async fn connect_create(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn connect_create_inner(
     socket_path: PathBuf,
     runtime: &str,
@@ -482,6 +484,7 @@ pub async fn connect_open_relay(
 ///
 /// Same as `connect_open_relay` but for new notebooks. Performs the
 /// CreateNotebook handshake, then immediately starts piping.
+#[allow(clippy::too_many_arguments)]
 pub async fn connect_create_relay(
     socket_path: PathBuf,
     runtime: &str,
