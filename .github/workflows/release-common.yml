@@ -39,6 +39,16 @@ on:
         description: Whether the updater channel release is prerelease
         required: true
         type: boolean
+      publish_plugin_repo:
+        description: owner/repo of the distribution repo for the Claude Code plugin (e.g. nteract/claude-plugin). Leave empty to skip plugin publish.
+        required: false
+        type: string
+        default: ""
+      publish_plugin_channel:
+        description: stable or nightly — selects which plugin source tree (plugins/nteract or plugins/nteract-nightly) is assembled.
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: write
@@ -361,6 +371,13 @@ jobs:
           name: nteract-macos-arm64
           path: artifacts/
 
+      - name: Upload raw nteract-mcp binary for plugin distribution
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-nteract-mcp-aarch64-apple-darwin
+          path: crates/notebook/binaries/nteract-mcp-aarch64-apple-darwin
+          if-no-files-found: error
+
   build-notebook-macos-x64:
     name: Build macOS x64 Notebook
     runs-on: macos-latest
@@ -527,6 +544,13 @@ jobs:
           name: nteract-macos-x64
           path: artifacts/
 
+      - name: Upload raw nteract-mcp binary for plugin distribution
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-nteract-mcp-x86_64-apple-darwin
+          path: crates/notebook/binaries/nteract-mcp-x86_64-apple-darwin
+          if-no-files-found: error
+
   build-notebook-windows-x64:
     name: Build Windows x64 Notebook
     runs-on: blacksmith-4vcpu-windows-2025
@@ -657,6 +681,13 @@ jobs:
           name: nteract-windows-x64
           path: artifacts/
 
+      - name: Upload raw nteract-mcp binary for plugin distribution
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-nteract-mcp-x86_64-pc-windows-msvc
+          path: crates/notebook/binaries/nteract-mcp-x86_64-pc-windows-msvc.exe
+          if-no-files-found: error
+
   build-notebook-linux-x64:
     name: Build Linux x64 Notebook
     runs-on: blacksmith-4vcpu-ubuntu-2204
@@ -767,6 +798,13 @@ jobs:
         with:
           name: nteract-linux-x64
           path: artifacts/
+
+      - name: Upload raw nteract-mcp binary for plugin distribution
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-nteract-mcp-x86_64-unknown-linux-gnu
+          path: crates/notebook/binaries/nteract-mcp-x86_64-unknown-linux-gnu
+          if-no-files-found: error
 
   build-nteract-package:
     name: Build nteract Package
@@ -939,6 +977,102 @@ jobs:
         with:
           name: wheels-${{ matrix.platform.target }}
           path: python/runtimed/dist
+
+  publish-plugin:
+    # Assemble and push the Claude Code plugin distribution repo.
+    # Skipped when publish_plugin_repo is empty — the plain stable/nightly
+    # callers both set it, but local-testing workflow_dispatches can opt out.
+    name: Publish Claude Code plugin
+    if: inputs.publish_plugin_repo != ''
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    needs:
+      [
+        compute-version,
+        build-notebook-macos-arm64,
+        build-notebook-macos-x64,
+        build-notebook-windows-x64,
+        build-notebook-linux-x64,
+      ]
+    steps:
+      - name: Checkout source repo
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Download nteract-mcp binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: plugin-nteract-mcp-*
+          path: plugin-binaries-staged
+          merge-multiple: false
+
+      - name: Flatten binary artifacts into a single directory
+        run: |
+          mkdir -p plugin-binaries
+          # Each artifact is a directory named plugin-nteract-mcp-<target>
+          # containing one file (the raw binary). Flatten.
+          for d in plugin-binaries-staged/plugin-nteract-mcp-*; do
+            target="${d#plugin-binaries-staged/plugin-nteract-mcp-}"
+            # Windows upload-artifact preserves the .exe suffix on the inner file
+            for f in "$d"/*; do
+              cp "$f" "plugin-binaries/$(basename "$f")"
+            done
+          done
+          echo "staged binaries:"
+          ls -la plugin-binaries
+
+      - name: Assemble plugin distribution tree
+        run: |
+          ./scripts/assemble-plugin-dist.sh \
+            --channel "${{ inputs.publish_plugin_channel }}" \
+            --binaries-dir plugin-binaries \
+            --out-dir plugin-dist
+
+      - name: Checkout distribution repo
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ inputs.publish_plugin_repo }}
+          token: ${{ secrets.CLAUDE_PLUGIN_DEPLOY_TOKEN }}
+          path: plugin-dist-repo
+          fetch-depth: 1
+
+      - name: Sync assembled tree into distribution repo (skip if identical)
+        id: sync
+        working-directory: plugin-dist-repo
+        run: |
+          # Rsync from assembled tree, deleting anything not in the source
+          # (except the .git dir). Exit 0 = nothing to do, 1 = changes.
+          # We don't use git clean -fdx because we want .git preserved.
+
+          shopt -s dotglob
+          # Remove everything except .git
+          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          cp -R ../plugin-dist/. .
+          shopt -u dotglob
+
+          git add -A
+          if git diff --cached --quiet; then
+            echo "no changes; skipping push and tag"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changes detected"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit, tag, and push
+        if: steps.sync.outputs.changed == 'true'
+        working-directory: plugin-dist-repo
+        env:
+          VERSION: ${{ needs.compute-version.outputs.version }}
+        run: |
+          git config user.name "nteract-release-bot"
+          git config user.email "release-bot@nteract.io"
+          git commit -m "Release v${VERSION}" \
+            -m "Generated from nteract/desktop@${GITHUB_SHA}" \
+            -m "Do not hand-edit — regenerated on every release."
+          git tag -f "v${VERSION}"
+          git push origin HEAD:main
+          git push origin "v${VERSION}"
 
   prerelease:
     name: ${{ inputs.release_title }}
