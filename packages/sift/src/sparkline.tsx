@@ -753,7 +753,7 @@ function CategoryPopoverContent({
             if (!cat) return null;
             const checked =
               allSelected ||
-              (exclusionSet ? !exclusionSet.has(cat.label) : activeSet?.has(cat.label) ?? false);
+              (exclusionSet ? !exclusionSet.has(cat.label) : (activeSet?.has(cat.label) ?? false));
             return (
               <label
                 key={cat.label}
@@ -840,7 +840,6 @@ function CategoricalBars({
       <PopoverAnchor asChild>
         <div className="sift-cat-summary">
           {items.map((item) => {
-            const isActive = activeSet ? activeSet.has(item.label) : true;
             const row = (
               <div
                 key={item.label}
