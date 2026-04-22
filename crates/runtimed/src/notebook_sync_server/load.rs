@@ -727,13 +727,19 @@ pub fn create_empty_notebook(
     runtime: &str,
     default_python_env: crate::settings_doc::PythonEnvType,
     env_id: Option<&str>,
+    package_manager: Option<&str>,
+    dependencies: &[String],
 ) -> Result<String, String> {
     let env_id = env_id
         .map(|s| s.to_string())
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    // Build metadata based on runtime (no cells — the frontend creates the
-    // first cell locally via the CRDT so the user gets instant autofocus)
-    let metadata_snapshot = build_new_notebook_metadata(runtime, &env_id, default_python_env);
+    let metadata_snapshot = build_new_notebook_metadata(
+        runtime,
+        &env_id,
+        default_python_env,
+        package_manager,
+        dependencies,
+    );
 
     doc.set_metadata_snapshot(&metadata_snapshot)
         .map_err(|e| format!("Failed to set metadata: {}", e))?;
@@ -742,10 +748,17 @@ pub fn create_empty_notebook(
 }
 
 /// Build default metadata for a new notebook based on runtime.
+///
+/// Package manager resolution priority:
+/// 1. Explicit `package_manager` - use it, even with empty deps.
+/// 2. No `package_manager`, non-empty `dependencies` - use `default_python_env`.
+/// 3. Neither - preserve current behavior (empty section based on `default_python_env`).
 pub(crate) fn build_new_notebook_metadata(
     runtime: &str,
     env_id: &str,
     default_python_env: crate::settings_doc::PythonEnvType,
+    package_manager: Option<&str>,
+    dependencies: &[String],
 ) -> NotebookMetadataSnapshot {
     use crate::notebook_metadata::{
         CondaInlineMetadata, KernelspecSnapshot, LanguageInfoSnapshot, RuntMetadata,
@@ -776,33 +789,43 @@ pub(crate) fn build_new_notebook_metadata(
             },
         ),
         _ => {
-            // Python (default)
-            let (uv, conda, pixi) = match default_python_env {
-                crate::settings_doc::PythonEnvType::Conda => (
+            // Resolve which package manager section to create:
+            //   1. Explicit package_manager from the request
+            //   2. No explicit manager - use default_python_env
+            let effective_manager: &str = match package_manager {
+                Some(pm) => pm,
+                None => match default_python_env {
+                    crate::settings_doc::PythonEnvType::Conda => "conda",
+                    crate::settings_doc::PythonEnvType::Pixi => "pixi",
+                    _ => "uv",
+                },
+            };
+
+            let deps = dependencies.to_vec();
+
+            let (uv, conda, pixi) = match effective_manager {
+                "conda" => (
                     None,
                     Some(CondaInlineMetadata {
-                        dependencies: vec![],
-                        // Default to conda-forge to match launch logic normalization
-                        // (avoids false channel-drift detection)
+                        dependencies: deps,
                         channels: vec!["conda-forge".to_string()],
                         python: None,
                     }),
                     None,
                 ),
-                crate::settings_doc::PythonEnvType::Pixi => (
+                "pixi" => (
                     None,
                     None,
                     Some(notebook_doc::metadata::PixiInlineMetadata {
-                        dependencies: vec![],
+                        dependencies: deps,
                         pypi_dependencies: vec![],
                         channels: vec!["conda-forge".to_string()],
                         python: None,
                     }),
                 ),
-                crate::settings_doc::PythonEnvType::Uv
-                | crate::settings_doc::PythonEnvType::Other(_) => (
+                _ => (
                     Some(UvInlineMetadata {
-                        dependencies: vec![],
+                        dependencies: deps,
                         requires_python: None,
                         prerelease: None,
                     }),

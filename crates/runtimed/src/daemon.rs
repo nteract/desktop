@@ -1703,6 +1703,8 @@ impl Daemon {
                 working_dir,
                 notebook_id,
                 ephemeral,
+                package_manager,
+                dependencies,
             } => {
                 self.handle_create_notebook(
                     stream,
@@ -1710,6 +1712,8 @@ impl Daemon {
                     working_dir,
                     notebook_id,
                     ephemeral,
+                    package_manager,
+                    dependencies,
                     client_protocol_version,
                 )
                 .await
@@ -1874,6 +1878,8 @@ impl Daemon {
                         Some(dir_path),
                         None,
                         None,
+                        None,
+                        vec![],
                         client_protocol_version,
                     )
                     .await;
@@ -1987,6 +1993,8 @@ impl Daemon {
                         &default_runtime.to_string(),
                         default_python_env.clone(),
                         Some(&notebook_id),
+                        None,
+                        &[],
                     ) {
                         Ok(_cell_id) => {
                             info!("[runtimed] Created new notebook at {}", path);
@@ -2108,6 +2116,8 @@ impl Daemon {
         working_dir: Option<String>,
         notebook_id_hint: Option<String>,
         ephemeral: Option<bool>,
+        package_manager: Option<String>,
+        dependencies: Vec<String>,
         client_protocol_version: u8,
     ) -> anyhow::Result<()>
     where
@@ -2166,6 +2176,8 @@ impl Daemon {
                     &runtime,
                     default_python_env.clone(),
                     Some(&notebook_id),
+                    package_manager.as_deref(),
+                    &dependencies,
                 ) {
                     Ok(_) => {}
                     Err(e) => {
@@ -2208,8 +2220,8 @@ impl Daemon {
             return Ok(());
         }
 
-        // Send NotebookConnectionInfo response
-        // New notebooks have no deps, so no trust approval needed.
+        // Send NotebookConnectionInfo response.
+        // Trust approval is handled later via CRDT trust state, not at creation time.
         // Always send the room's UUID on the wire, even when the caller
         // provided a notebook_id_hint — room.id is the canonical source.
         let (reader, mut writer) = tokio::io::split(stream);
