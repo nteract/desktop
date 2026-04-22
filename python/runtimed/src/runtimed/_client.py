@@ -53,7 +53,11 @@ class Client:
         launches with the correct environment on first try.
         """
         session = await self._native.create_notebook(
-            runtime, working_dir, peer_label, package_manager, dependencies,
+            runtime,
+            working_dir,
+            peer_label,
+            package_manager,
+            dependencies,
         )
         return Notebook(session)
 
