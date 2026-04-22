@@ -246,6 +246,9 @@ export function columnFiltersToPredicates(
       case "set":
         predicates.push({ column: col, op: "in", value: [...f.values] });
         break;
+      case "not-in":
+        predicates.push({ column: col, op: "not_in", value: [...f.values] });
+        break;
       case "boolean":
         predicates.push({ column: col, op: "eq", value: f.value });
         break;
@@ -272,6 +275,9 @@ export function engineStateToExplorerState(state: TableEngineState): ExplorerSta
         break;
       case "set":
         filters.push({ column, op: "in", value: [...filter.values] });
+        break;
+      case "not-in":
+        filters.push({ column, op: "not_in", value: [...filter.values] });
         break;
       case "boolean":
         filters.push({ column, op: "eq", value: filter.value });

@@ -302,6 +302,12 @@ export function createTable(
           if (!f.values.has(s)) return false;
           break;
         }
+        case "not-in": {
+          const s = data.getCell(dataRow, c);
+          // Inverted: exclude row if value IS in the exclusion set
+          if (f.values.has(s)) return false;
+          break;
+        }
         case "boolean": {
           if (Boolean(raw) !== f.value) return false;
           break;
@@ -1775,6 +1781,11 @@ export function createTable(
         const vals = [...f.values];
         if (vals.length === 1) return vals[0];
         return `${vals.length} values`;
+      }
+      case "not-in": {
+        const vals = [...f.values];
+        if (vals.length === 1) return `not ${vals[0]}`;
+        return `not ${vals.length} values`;
       }
       case "boolean":
         return f.value ? "Yes" : "No";
