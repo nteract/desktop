@@ -720,6 +720,8 @@ mod tests {
             working_dir: None,
             notebook_id: None,
             ephemeral: None,
+            package_manager: None,
+            dependencies: vec![],
         })
         .unwrap();
         assert_eq!(json, r#"{"channel":"create_notebook","runtime":"python"}"#);
@@ -730,6 +732,8 @@ mod tests {
             working_dir: Some("/home/user/project".into()),
             notebook_id: None,
             ephemeral: None,
+            package_manager: None,
+            dependencies: vec![],
         })
         .unwrap();
         assert_eq!(
@@ -743,6 +747,8 @@ mod tests {
             working_dir: None,
             notebook_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
             ephemeral: None,
+            package_manager: None,
+            dependencies: vec![],
         })
         .unwrap();
         assert_eq!(
