@@ -70,7 +70,10 @@ function PluginRenderer({
 
     // Load plugin via <script> tag and fetch/parse data in parallel
     const pluginPromise = loadPluginForMime(mime, blobBaseUrl) ?? Promise.resolve();
-    // Parse data: try JSON (for plotly/vega specs), fall back to raw string (for markdown/latex)
+
+    // Binary plugins (parquet/sift) expect a URL and fetch data themselves.
+    // Text/JSON plugins (plotly, vega, markdown) need fetched + parsed content.
+    const isBinaryPlugin = mime === "application/vnd.apache.parquet";
     const parseData = (text: string) => {
       try {
         return JSON.parse(text);
@@ -78,9 +81,11 @@ function PluginRenderer({
         return text;
       }
     };
-    const dataPromise = isBlobUrl(raw)
-      ? fetchBlobText(raw).then(parseData)
-      : Promise.resolve(parseData(raw));
+    const dataPromise = isBinaryPlugin
+      ? Promise.resolve(raw)
+      : isBlobUrl(raw)
+        ? fetchBlobText(raw).then(parseData)
+        : Promise.resolve(parseData(raw));
 
     Promise.all([pluginPromise, dataPromise])
       .then(([, parsedData]) => {
