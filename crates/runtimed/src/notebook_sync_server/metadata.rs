@@ -13,13 +13,16 @@ pub struct TrustState {
 /// Returns the appropriate env_source if found ("uv:inline", "conda:inline", or "deno").
 ///
 /// Priority: Deno is checked first, then UV deps, then conda deps.
+/// Check order: deno > uv > pixi > conda. Unlike detect_manager_from_metadata
+/// (which checks section presence with pixi > conda > uv), this function checks
+/// for non-empty deps. UV is checked first because it's the most common case
+/// and only one section will have deps in practice (build_new_notebook_metadata
+/// creates exactly one section).
 pub(crate) fn check_inline_deps(snapshot: &NotebookMetadataSnapshot) -> Option<String> {
-    // Check for Deno config first (runt.deno)
     if snapshot.runt.deno.is_some() {
         return Some("deno".to_string());
     }
 
-    // Check UV dependencies
     if let Some(ref uv) = snapshot.runt.uv {
         if !uv.dependencies.is_empty() {
             return Some("uv:inline".to_string());
@@ -46,11 +49,15 @@ pub(crate) fn check_inline_deps(snapshot: &NotebookMetadataSnapshot) -> Option<S
 /// Detect which package manager section exists in the metadata, regardless of
 /// whether it has deps. Used to pick the correct prewarmed pool type when
 /// check_inline_deps returns None (empty deps, explicit manager).
+///
+/// Priority: pixi > conda > uv. Pixi is most specific (manages both conda
+/// and pypi deps). Matches detect_package_manager in runt-mcp and
+/// get_metadata_env_type in runtimed-py.
 fn detect_manager_from_metadata(snapshot: &NotebookMetadataSnapshot) -> Option<&'static str> {
-    if snapshot.runt.conda.is_some() {
-        Some("conda")
-    } else if snapshot.runt.pixi.is_some() {
+    if snapshot.runt.pixi.is_some() {
         Some("pixi")
+    } else if snapshot.runt.conda.is_some() {
+        Some("conda")
     } else if snapshot.runt.uv.is_some() {
         Some("uv")
     } else {
