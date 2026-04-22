@@ -1799,10 +1799,16 @@ impl Daemon {
         async fn send_error_response<W: AsyncWrite + Unpin>(
             writer: &mut W,
             error: String,
+            client_protocol_version: u8,
         ) -> anyhow::Result<()> {
+            let (proto_str, proto_ver) = if client_protocol_version >= 3 {
+                (PROTOCOL_V3, PROTOCOL_VERSION)
+            } else {
+                (connection::PROTOCOL_V2, 2)
+            };
             let response = NotebookConnectionInfo {
-                protocol: PROTOCOL_V3.to_string(),
-                protocol_version: Some(PROTOCOL_VERSION),
+                protocol: proto_str.to_string(),
+                protocol_version: Some(proto_ver),
                 daemon_version: Some(crate::daemon_version().to_string()),
                 notebook_id: String::new(),
                 cell_count: 0,
@@ -1823,6 +1829,7 @@ impl Daemon {
                      Untitled notebooks must reconnect via notebook_id, not OpenNotebook path.",
                     path
                 ),
+                client_protocol_version,
             )
             .await?;
             return Ok(());
@@ -1853,6 +1860,7 @@ impl Daemon {
                         send_error_response(
                             &mut writer,
                             format!("Directory '{}' is not writable: {}", path, e),
+                            client_protocol_version,
                         )
                         .await?;
                         return Ok(());
@@ -1896,6 +1904,7 @@ impl Daemon {
                 send_error_response(
                     &mut writer,
                     format!("Cannot access notebook '{}': {}", path, e),
+                    client_protocol_version,
                 )
                 .await?;
                 return Ok(());
@@ -1914,6 +1923,7 @@ impl Daemon {
                     send_error_response(
                         &mut writer,
                         format!("Cannot resolve notebook path '{}': {}", path, e),
+                        client_protocol_version,
                     )
                     .await?;
                     return Ok(());
@@ -1998,6 +2008,7 @@ impl Daemon {
                 send_error_response(
                     &mut writer,
                     format!("Failed to create notebook '{}': {}", path, e),
+                    client_protocol_version,
                 )
                 .await?;
                 return Ok(());
@@ -2044,9 +2055,14 @@ impl Daemon {
         // `notebook_id` variable in this handler is the canonical path string
         // used for logging and file-watcher wiring below.
         let (reader, mut writer) = tokio::io::split(stream);
+        let (proto_str, proto_ver) = if client_protocol_version >= 3 {
+            (PROTOCOL_V3, PROTOCOL_VERSION)
+        } else {
+            (connection::PROTOCOL_V2, 2)
+        };
         let response = NotebookConnectionInfo {
-            protocol: PROTOCOL_V3.to_string(),
-            protocol_version: Some(PROTOCOL_VERSION),
+            protocol: proto_str.to_string(),
+            protocol_version: Some(proto_ver),
             daemon_version: Some(crate::daemon_version().to_string()),
             notebook_id: room.id.to_string(),
             cell_count,
@@ -2172,9 +2188,14 @@ impl Daemon {
                 );
             }
             let (mut reader, mut writer) = tokio::io::split(stream);
+            let (proto_str, proto_ver) = if client_protocol_version >= 3 {
+                (PROTOCOL_V3, PROTOCOL_VERSION)
+            } else {
+                (connection::PROTOCOL_V2, 2)
+            };
             let response = NotebookConnectionInfo {
-                protocol: PROTOCOL_V3.to_string(),
-                protocol_version: Some(PROTOCOL_VERSION),
+                protocol: proto_str.to_string(),
+                protocol_version: Some(proto_ver),
                 daemon_version: Some(crate::daemon_version().to_string()),
                 notebook_id: String::new(),
                 cell_count: 0,
@@ -2192,9 +2213,14 @@ impl Daemon {
         // Always send the room's UUID on the wire, even when the caller
         // provided a notebook_id_hint — room.id is the canonical source.
         let (reader, mut writer) = tokio::io::split(stream);
+        let (proto_str, proto_ver) = if client_protocol_version >= 3 {
+            (PROTOCOL_V3, PROTOCOL_VERSION)
+        } else {
+            (connection::PROTOCOL_V2, 2)
+        };
         let response = NotebookConnectionInfo {
-            protocol: PROTOCOL_V3.to_string(),
-            protocol_version: Some(PROTOCOL_VERSION),
+            protocol: proto_str.to_string(),
+            protocol_version: Some(proto_ver),
             daemon_version: Some(crate::daemon_version().to_string()),
             notebook_id: room.id.to_string(),
             cell_count,
