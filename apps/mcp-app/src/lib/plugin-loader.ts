@@ -24,6 +24,7 @@ const MIME_TO_PLUGIN: Record<string, PluginInfo> = {
   "text/latex": { name: "markdown", hasCss: true },
   "application/vnd.plotly.v1+json": { name: "plotly", hasCss: false },
   "application/geo+json": { name: "leaflet", hasCss: true },
+  "application/vnd.apache.parquet": { name: "sift", hasCss: true },
 };
 
 const VEGA_PLUGIN: PluginInfo = { name: "vega", hasCss: false };

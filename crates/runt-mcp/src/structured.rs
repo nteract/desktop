@@ -9,6 +9,7 @@
 //! ContentRef entries and emit blob URLs for blob-stored content. Zero blob
 //! fetches — structured content is always compact.
 
+use notebook_doc::mime::MimeKind;
 use runtimed_client::output_resolver;
 use serde_json::{json, Value};
 
@@ -176,14 +177,26 @@ fn manifest_output_to_structured(manifest: &Value, blob_base_url: &Option<String
 
                     let meta = output_resolver::content_ref_meta(content_ref);
 
-                    let json_value = if meta.is_inline {
-                        // Inline content — extract the value directly
-                        content_ref.get("inline").cloned()
-                    } else if let Some(hash) = meta.blob_hash {
-                        // Blob-stored content — emit blob URL
+                    // Images are binary but their inline form is base64,
+                    // which renderers handle as data: URIs. Non-image binary
+                    // MIMEs (parquet, audio, video, application/octet-stream)
+                    // produce garbled text when inlined as JSON strings.
+                    let is_non_renderable_binary = notebook_doc::mime::mime_kind(mime)
+                        == MimeKind::Binary
+                        && !mime.starts_with("image/");
+
+                    let json_value = if let Some(hash) = meta.blob_hash {
+                        // Blob-stored content — always emit blob URL regardless
+                        // of MIME kind. The renderer or client fetches as needed.
                         blob_base_url
                             .as_ref()
                             .map(|base| Value::String(format!("{}/blob/{}", base, hash)))
+                    } else if meta.is_inline && !is_non_renderable_binary {
+                        // Inline text/JSON/image content — extract directly.
+                        // Non-renderable binary (parquet, audio, etc.) is
+                        // silently dropped; the client falls back to
+                        // text/plain or text/llm+plain.
+                        content_ref.get("inline").cloned()
                     } else {
                         None
                     };
@@ -417,6 +430,95 @@ mod tests {
         });
         let result = manifest_output_to_structured(&manifest, &None);
         assert!(result.get("output_id").is_none());
+    }
+
+    #[test]
+    fn structured_binary_mime_never_inlined() {
+        // Binary MIMEs like parquet must never leak as inline text in
+        // structured content — they render as garbled bytes in Cowork
+        // and any other client that displays the JSON.
+        let manifest = json!({
+            "output_type": "display_data",
+            "data": {
+                "application/vnd.apache.parquet": inline_ref("PAR1\x00\x00binary garbage"),
+                "text/plain": inline_ref("DataFrame(5 rows)"),
+            },
+        });
+        let blob_base = Some("http://localhost:9999".to_string());
+        let result = manifest_output_to_structured(&manifest, &blob_base);
+        let data = result["data"]
+            .as_object()
+            .expect("data should be an object");
+        // Parquet should be excluded (binary, inline — no blob URL to emit)
+        assert!(
+            !data.contains_key("application/vnd.apache.parquet"),
+            "binary MIME should not be inlined in structured content"
+        );
+        // Text fallback still present
+        assert_eq!(data["text/plain"], "DataFrame(5 rows)");
+    }
+
+    #[test]
+    fn structured_binary_mime_blob_url_still_works() {
+        // Binary MIMEs stored as blobs should still emit blob URLs
+        let manifest = json!({
+            "output_type": "display_data",
+            "data": {
+                "application/vnd.apache.parquet": blob_ref("pq_hash", 100_000),
+                "text/plain": inline_ref("DataFrame(5 rows)"),
+            },
+        });
+        let blob_base = Some("http://localhost:9999".to_string());
+        let result = manifest_output_to_structured(&manifest, &blob_base);
+        let data = result["data"]
+            .as_object()
+            .expect("data should be an object");
+        assert_eq!(
+            data["application/vnd.apache.parquet"],
+            "http://localhost:9999/blob/pq_hash"
+        );
+    }
+
+    #[test]
+    fn structured_image_inline_passes_through() {
+        // Images are binary but inline as base64 which renderers handle
+        // as data: URIs. They must NOT be suppressed.
+        let manifest = json!({
+            "output_type": "display_data",
+            "data": {
+                "image/png": inline_ref("iVBORw0KGgoAAAA...base64..."),
+                "text/plain": inline_ref("<Figure>"),
+            },
+        });
+        let result = manifest_output_to_structured(&manifest, &None);
+        let data = result["data"]
+            .as_object()
+            .expect("data should be an object");
+        assert_eq!(
+            data["image/png"], "iVBORw0KGgoAAAA...base64...",
+            "inline base64 images should pass through for data: URI rendering"
+        );
+        assert_eq!(data["text/plain"], "<Figure>");
+    }
+
+    #[test]
+    fn structured_audio_inline_suppressed() {
+        // Audio is binary and NOT renderable as a data: URI in this context
+        let manifest = json!({
+            "output_type": "display_data",
+            "data": {
+                "audio/wav": inline_ref("RIFF....binary"),
+                "text/plain": inline_ref("<Audio>"),
+            },
+        });
+        let result = manifest_output_to_structured(&manifest, &None);
+        let data = result["data"]
+            .as_object()
+            .expect("data should be an object");
+        assert!(
+            !data.contains_key("audio/wav"),
+            "non-image binary should not be inlined"
+        );
     }
 
     #[test]
