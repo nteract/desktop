@@ -807,7 +807,12 @@ pub(crate) fn build_new_notebook_metadata(
             //   1. Explicit package_manager from the request
             //   2. No explicit manager - use default_python_env
             let effective_manager: &str = match package_manager {
-                Some(pm) => pm,
+                Some(pm) => {
+                    // Normalize aliases (e.g. "pip" -> "uv", "mamba" -> "conda").
+                    // If the value is unrecognized, fall through to "uv" as a
+                    // safe default - callers should validate before reaching here.
+                    notebook_protocol::connection::normalize_package_manager(pm).unwrap_or("uv")
+                }
                 None => match default_python_env {
                     crate::settings_doc::PythonEnvType::Conda => "conda",
                     crate::settings_doc::PythonEnvType::Pixi => "pixi",
