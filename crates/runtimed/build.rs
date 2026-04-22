@@ -51,11 +51,37 @@ fn write_git_hash() {
 }
 
 fn git_commit_short() -> String {
-    Command::new("git")
+    let hash = Command::new("git")
         .args(["rev-parse", "--short=7", "HEAD"])
         .output()
         .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "unknown".to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    if hash == "unknown" {
+        return hash;
+    }
+
+    if git_worktree_is_dirty() {
+        format!("{hash}+dirty")
+    } else {
+        hash
+    }
+}
+
+/// Returns true if `git status --porcelain` reports any uncommitted changes.
+/// A binary built from a dirty worktree gets its embedded hash marked
+/// `<sha>+dirty` so the running version honestly identifies what was
+/// compiled in. Returns false on any git failure (no repo, no git
+/// binary) so the absence of git doesn't lie about cleanliness.
+fn git_worktree_is_dirty() -> bool {
+    Command::new("git")
+        .args(["status", "--porcelain"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| !o.stdout.is_empty())
+        .unwrap_or(false)
 }

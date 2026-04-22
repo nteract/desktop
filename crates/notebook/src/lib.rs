@@ -929,8 +929,19 @@ async fn setup_sync_receivers(
 
 #[cfg(test)]
 mod tests {
-    use super::{next_available_sample_path, reopen_action, ReopenAction};
+    use super::{extract_commit_hash, next_available_sample_path, reopen_action, ReopenAction};
     use tempfile::TempDir;
+
+    #[test]
+    fn extract_commit_hash_returns_full_remainder_after_first_plus() {
+        assert_eq!(extract_commit_hash("1.4.1+abc1234"), Some("abc1234"));
+        assert_eq!(
+            extract_commit_hash("1.4.1+abc1234+dirty"),
+            Some("abc1234+dirty"),
+            "dirty suffix must stay attached so equality treats dirty != clean"
+        );
+        assert_eq!(extract_commit_hash("1.4.1"), None);
+    }
 
     #[test]
     fn next_available_sample_path_reuses_original_name_when_available() {
@@ -976,10 +987,14 @@ fn bundled_daemon_version() -> String {
     )
 }
 
-/// Extract the commit hash from a version string.
-/// Version format: "X.Y.Z+COMMIT" -> returns "COMMIT"
+/// Extract the commit portion from a version string.
+/// Version format: "X.Y.Z+COMMIT" -> returns "COMMIT".
+/// When the build was dirty the commit may itself contain a `+dirty`
+/// suffix, e.g. "1.4.1+abc1234+dirty" -> "abc1234+dirty". Returning the
+/// full remainder keeps that suffix part of the equality check, so a
+/// dirty rebuild and a clean rebuild at the same SHA compare unequal.
 fn extract_commit_hash(version: &str) -> Option<&str> {
-    version.split('+').nth(1)
+    version.split_once('+').map(|(_, rest)| rest)
 }
 
 /// Upgrade the daemon via sidecar when version mismatch detected.
