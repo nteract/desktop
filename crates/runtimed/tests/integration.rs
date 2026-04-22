@@ -1337,6 +1337,49 @@ async fn test_pipe_mode_forwards_sync_frames() {
 }
 
 #[tokio::test]
+async fn test_pipe_mode_preserves_initial_session_status_frame() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+
+    let daemon = Daemon::new(config).unwrap();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
+
+    let (frame_tx, mut frame_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+
+    let _result = connect::connect_relay(
+        socket_path.clone(),
+        "00000000-0000-0000-0000-000000000011".to_string(),
+        frame_tx,
+    )
+    .await
+    .unwrap();
+
+    let first_frame = tokio::time::timeout(Duration::from_secs(2), frame_rx.recv())
+        .await
+        .expect("relay should receive an initial daemon frame")
+        .expect("relay channel should stay open");
+
+    assert!(
+        !first_frame.is_empty(),
+        "initial relayed frame should include a type byte"
+    );
+    assert_eq!(
+        first_frame[0],
+        frame_types::SESSION_CONTROL,
+        "relay should preserve the daemon's initial SessionControl frame"
+    );
+
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
+#[tokio::test]
 async fn test_pipe_mode_only_pipes_allowed_frame_types() {
     let temp_dir = TempDir::new().unwrap();
     let config = test_config(&temp_dir);

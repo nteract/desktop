@@ -652,7 +652,8 @@ impl DocHandle {
             .await
     }
 
-    /// Wait until initial notebook load has either completed or was not needed.
+    /// Wait until the daemon explicitly reports that initial notebook load
+    /// either completed or was not needed.
     pub async fn await_initial_load_ready(&self) -> Result<(), SyncError> {
         self.wait_for_status(|status| {
             matches!(

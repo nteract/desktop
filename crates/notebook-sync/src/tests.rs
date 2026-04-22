@@ -14,7 +14,9 @@ mod tests {
     use crate::handle::DocHandle;
     use crate::shared::SharedDocState;
     use crate::snapshot::NotebookSnapshot;
-    use crate::status::SyncStatus;
+    use crate::status::{
+        ConnectionState, InitialLoadPhase, NotebookDocPhase, RuntimeStatePhase, SyncStatus,
+    };
 
     /// Create a DocHandle wired up with channels but no sync task.
     /// Good for testing the handle's local behavior in isolation.
@@ -46,6 +48,37 @@ mod tests {
         );
 
         (handle, changed_rx, cmd_rx)
+    }
+
+    fn test_handle_with_status() -> (
+        DocHandle,
+        watch::Sender<SyncStatus>,
+        mpsc::UnboundedReceiver<()>,
+        mpsc::Receiver<crate::sync_task::SyncCommand>,
+    ) {
+        // Use NotebookDoc::new() to get a properly initialized doc with schema
+        let nd = notebook_doc::NotebookDoc::new("test-notebook");
+        let doc = nd.into_inner();
+        let shared = Arc::new(Mutex::new(SharedDocState::new(doc, "test-notebook".into())));
+
+        let initial_snapshot = NotebookSnapshot::empty();
+        let (snapshot_tx, snapshot_rx) = watch::channel(initial_snapshot);
+        let snapshot_tx = Arc::new(snapshot_tx);
+        let (status_tx, status_rx) = watch::channel(SyncStatus::connected_pending());
+        let (changed_tx, changed_rx) = mpsc::unbounded_channel();
+        let (cmd_tx, cmd_rx) = mpsc::channel(32);
+
+        let handle = DocHandle::new(
+            shared,
+            changed_tx,
+            cmd_tx,
+            snapshot_tx,
+            snapshot_rx,
+            status_rx,
+            "test-notebook".into(),
+        );
+
+        (handle, status_tx, changed_rx, cmd_rx)
     }
 
     #[test]
@@ -216,6 +249,38 @@ mod tests {
         assert_eq!(cells.len(), 2);
         assert_eq!(cells[0].id, "cell-a");
         assert_eq!(cells[1].id, "cell-b");
+    }
+
+    #[tokio::test]
+    async fn await_initial_load_ready_waits_for_explicit_session_status() {
+        let (handle, status_tx, _changed_rx, _cmd_rx) = test_handle_with_status();
+
+        let ready = tokio::time::timeout(
+            std::time::Duration::from_millis(20),
+            handle.await_initial_load_ready(),
+        )
+        .await;
+        assert!(
+            ready.is_err(),
+            "await_initial_load_ready should not succeed before the daemon sends SessionControl"
+        );
+
+        status_tx
+            .send(SyncStatus {
+                connection: ConnectionState::Connected,
+                notebook_doc: NotebookDocPhase::Pending,
+                runtime_state: RuntimeStatePhase::Pending,
+                initial_load: InitialLoadPhase::NotNeeded,
+            })
+            .unwrap();
+
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            handle.await_initial_load_ready(),
+        )
+        .await
+        .expect("await_initial_load_ready should finish after explicit NotNeeded status")
+        .expect("explicit NotNeeded status should be treated as ready");
     }
 
     #[test]

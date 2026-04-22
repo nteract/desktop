@@ -560,11 +560,6 @@ pub async fn connect_relay(
         .map_err(|e| SyncError::Protocol(format!("Parse capabilities: {}", e)))?;
     check_daemon_protocol_version(&caps);
 
-    // Receive initial metadata frame (may be empty)
-    let _initial_data = connection::recv_frame(&mut reader)
-        .await?
-        .ok_or_else(|| SyncError::Protocol("Connection closed during handshake".into()))?;
-
     info!(
         "[relay] Connected to {} (relay mode, no initial sync)",
         notebook_id

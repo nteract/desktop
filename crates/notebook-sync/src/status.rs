@@ -46,7 +46,11 @@ impl SyncStatus {
             connection: ConnectionState::Connected,
             notebook_doc: NotebookDocPhase::Pending,
             runtime_state: RuntimeStatePhase::Pending,
-            initial_load: InitialLoadPhase::NotNeeded,
+            // No SessionControl frame has arrived yet, so treat initial load as
+            // non-terminal until the daemon explicitly says `NotNeeded` or
+            // `Ready`. This prevents readiness waiters from succeeding before
+            // bootstrap state is actually known.
+            initial_load: InitialLoadPhase::Streaming,
         }
     }
 
