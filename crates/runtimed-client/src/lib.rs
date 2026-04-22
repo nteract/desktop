@@ -59,6 +59,52 @@ pub fn default_log_path() -> PathBuf {
     daemon_base_dir().join("runtimed.log")
 }
 
+/// Compare two binary version strings ignoring the optional `+dirty`
+/// build-time marker on the SHA. Use this for upgrade/match decisions
+/// so a dirty rebuild and a clean rebuild at the same SHA aren't
+/// treated as different binaries (which would cause perpetual
+/// reinstall loops in dev). Dirty status is informational and surfaced
+/// elsewhere; equality should look only at the committed code.
+pub fn versions_match_ignoring_dirty(a: &str, b: &str) -> bool {
+    strip_dirty_suffix(a) == strip_dirty_suffix(b)
+}
+
+fn strip_dirty_suffix(version: &str) -> &str {
+    version.strip_suffix("+dirty").unwrap_or(version)
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::{strip_dirty_suffix, versions_match_ignoring_dirty};
+
+    #[test]
+    fn strip_dirty_removes_trailing_marker() {
+        assert_eq!(strip_dirty_suffix("2.2.1+abc1234+dirty"), "2.2.1+abc1234");
+        assert_eq!(strip_dirty_suffix("2.2.1+abc1234"), "2.2.1+abc1234");
+        assert_eq!(strip_dirty_suffix("2.2.1"), "2.2.1");
+    }
+
+    #[test]
+    fn versions_match_treats_dirty_and_clean_as_same_commit() {
+        assert!(versions_match_ignoring_dirty(
+            "2.2.1+abc1234",
+            "2.2.1+abc1234+dirty"
+        ));
+        assert!(versions_match_ignoring_dirty(
+            "2.2.1+abc1234+dirty",
+            "2.2.1+abc1234+dirty"
+        ));
+        assert!(!versions_match_ignoring_dirty(
+            "2.2.1+abc1234",
+            "2.2.1+def5678"
+        ));
+        assert!(!versions_match_ignoring_dirty(
+            "2.2.1+abc1234",
+            "2.3.0+abc1234"
+        ));
+    }
+}
+
 // ============================================================================
 // Types
 // ============================================================================

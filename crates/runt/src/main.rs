@@ -2782,14 +2782,19 @@ async fn doctor_command(
 
             match (&installed_ver, &running_ver) {
                 (Some(inst), Some(run)) => {
-                    // Full version+commit comparison catches same-crate-version, different-commit
-                    let installed_match = inst == run;
+                    // Full version+commit comparison catches same-crate-version, different-commit.
+                    // The +dirty marker is ignored — same SHA built dirty vs clean is the same
+                    // committed code; the detail string still shows full versions for diagnosis.
+                    let installed_match = runtimed_client::versions_match_ignoring_dirty(inst, run);
                     let bundled_match = bundled_ver
                         .as_ref()
-                        .map(|b| b == run && b == inst)
+                        .map(|b| {
+                            runtimed_client::versions_match_ignoring_dirty(b, run)
+                                && runtimed_client::versions_match_ignoring_dirty(b, inst)
+                        })
                         .unwrap_or(true);
                     // CLI must also match the running daemon
-                    let cli_match = cli_ver == *run;
+                    let cli_match = runtimed_client::versions_match_ignoring_dirty(cli_ver, run);
 
                     if installed_match && bundled_match && cli_match {
                         CheckResult {
@@ -3159,12 +3164,14 @@ async fn doctor_command(
         let bundled_ver = bundled.as_ref().and_then(|p| get_binary_version(p));
 
         // Fix version mismatch: installed binary differs from bundled app binary
-        // Common when a dev binary is accidentally left in the nightly install path
+        // Common when a dev binary is accidentally left in the nightly install path.
+        // The +dirty marker is ignored — a dirty/clean rebuild at the same SHA
+        // shares committed source and shouldn't trigger an upgrade.
         if binary_exists && config_exists {
             if let (Some(inst), Some(bund), Some(bundled_path)) =
                 (&installed_ver, &bundled_ver, &bundled)
             {
-                if inst != bund {
+                if !runtimed_client::versions_match_ignoring_dirty(inst, bund) {
                     match manager.upgrade(bundled_path) {
                         Ok(()) => {
                             actions_taken.push(format!(
