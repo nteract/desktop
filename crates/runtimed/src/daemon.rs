@@ -1510,74 +1510,85 @@ impl Daemon {
         // 0x00 = old protocol (4-byte big-endian length prefix for any
         // reasonable handshake size). This allows the daemon upgrade to succeed
         // even when the old app is still verifying daemon health.
-        let handshake_bytes = tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            // Peek at first byte to detect protocol version
-            let mut first_byte = [0u8; 1];
-            tokio::io::AsyncReadExt::read_exact(&mut stream, &mut first_byte)
-                .await
-                .map_err(|e| {
-                    if e.kind() == std::io::ErrorKind::UnexpectedEof {
-                        anyhow::anyhow!("connection closed before preamble")
-                    } else {
-                        anyhow::anyhow!("preamble read: {}", e)
-                    }
-                })?;
-
-            if first_byte[0] == connection::MAGIC[0] {
-                // New protocol: read remaining 4 bytes of preamble (3 more magic + 1 version)
-                let mut rest = [0u8; 4];
-                tokio::io::AsyncReadExt::read_exact(&mut stream, &mut rest)
+        let (handshake_bytes, client_protocol_version) =
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                // Peek at first byte to detect protocol version
+                let mut first_byte = [0u8; 1];
+                tokio::io::AsyncReadExt::read_exact(&mut stream, &mut first_byte)
                     .await
-                    .map_err(|e| anyhow::anyhow!("preamble: {}", e))?;
+                    .map_err(|e| {
+                        if e.kind() == std::io::ErrorKind::UnexpectedEof {
+                            anyhow::anyhow!("connection closed before preamble")
+                        } else {
+                            anyhow::anyhow!("preamble read: {}", e)
+                        }
+                    })?;
 
-                if rest[..3] != connection::MAGIC[1..] {
-                    anyhow::bail!(
-                        "invalid magic bytes: expected {:02X?}, got {:02X?}",
-                        connection::MAGIC,
-                        [&first_byte[..], &rest[..3]].concat()
-                    );
-                }
+                if first_byte[0] == connection::MAGIC[0] {
+                    // New protocol: read remaining 4 bytes of preamble (3 more magic + 1 version)
+                    let mut rest = [0u8; 4];
+                    tokio::io::AsyncReadExt::read_exact(&mut stream, &mut rest)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("preamble: {}", e))?;
 
-                let version = rest[3];
-                if version != connection::PROTOCOL_VERSION as u8 {
-                    anyhow::bail!(
-                        "protocol version mismatch: expected {}, got {}",
-                        connection::PROTOCOL_VERSION,
+                    if rest[..3] != connection::MAGIC[1..] {
+                        anyhow::bail!(
+                            "invalid magic bytes: expected {:02X?}, got {:02X?}",
+                            connection::MAGIC,
+                            [&first_byte[..], &rest[..3]].concat()
+                        );
+                    }
+
+                    let version = rest[3];
+                    if version < connection::MIN_PROTOCOL_VERSION as u8
+                        || version > connection::PROTOCOL_VERSION as u8
+                    {
+                        anyhow::bail!(
+                            "unsupported protocol version: got {}, supported range [{}, {}]",
+                            version,
+                            connection::MIN_PROTOCOL_VERSION,
+                            connection::PROTOCOL_VERSION
+                        );
+                    }
+                    if version < connection::PROTOCOL_VERSION as u8 {
+                        tracing::info!(
+                        "[runtimed] v{} client connected, serving without session-control frames",
                         version
                     );
+                    }
+
+                    // Read the JSON handshake frame
+                    let bytes = connection::recv_control_frame(&mut stream)
+                        .await
+                        .context("handshake read error")?
+                        .ok_or_else(|| anyhow::anyhow!("connection closed before handshake"))?;
+                    Ok((bytes, version))
+                } else {
+                    // Legacy protocol (pre-2.0.0): first byte is part of a 4-byte
+                    // big-endian length prefix. Read remaining 3 length bytes.
+                    tracing::debug!("[runtimed] Legacy client detected (no magic preamble)");
+                    let mut len_rest = [0u8; 3];
+                    tokio::io::AsyncReadExt::read_exact(&mut stream, &mut len_rest)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("legacy length read: {}", e))?;
+
+                    let len_bytes = [first_byte[0], len_rest[0], len_rest[1], len_rest[2]];
+                    let len = u32::from_be_bytes(len_bytes) as usize;
+
+                    if len > 64 * 1024 {
+                        anyhow::bail!("legacy handshake frame too large: {} bytes", len);
+                    }
+
+                    let mut buf = vec![0u8; len];
+                    tokio::io::AsyncReadExt::read_exact(&mut stream, &mut buf)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("legacy handshake read: {}", e))?;
+
+                    Ok((buf, connection::MIN_PROTOCOL_VERSION as u8))
                 }
-
-                // Read the JSON handshake frame
-                connection::recv_control_frame(&mut stream)
-                    .await
-                    .context("handshake read error")?
-                    .ok_or_else(|| anyhow::anyhow!("connection closed before handshake"))
-            } else {
-                // Legacy protocol (pre-2.0.0): first byte is part of a 4-byte
-                // big-endian length prefix. Read remaining 3 length bytes.
-                tracing::debug!("[runtimed] Legacy client detected (no magic preamble)");
-                let mut len_rest = [0u8; 3];
-                tokio::io::AsyncReadExt::read_exact(&mut stream, &mut len_rest)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("legacy length read: {}", e))?;
-
-                let len_bytes = [first_byte[0], len_rest[0], len_rest[1], len_rest[2]];
-                let len = u32::from_be_bytes(len_bytes) as usize;
-
-                if len > 64 * 1024 {
-                    anyhow::bail!("legacy handshake frame too large: {} bytes", len);
-                }
-
-                let mut buf = vec![0u8; len];
-                tokio::io::AsyncReadExt::read_exact(&mut stream, &mut buf)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("legacy handshake read: {}", e))?;
-
-                Ok(buf)
-            }
-        })
-        .await
-        .map_err(|_| anyhow::anyhow!("handshake timeout (10s)"))??;
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("handshake timeout (10s)"))??;
         let handshake: Handshake = serde_json::from_slice(&handshake_bytes)?;
 
         match handshake {
@@ -1678,19 +1689,30 @@ impl Daemon {
                     false, // Send ProtocolCapabilities for legacy NotebookSync handshake
                     None,  // No streaming load for legacy handshake
                     false, // Not a newly-created notebook at path
+                    client_protocol_version,
                 )
                 .await
             }
             Handshake::Blob => self.handle_blob_connection(stream).await,
-            Handshake::OpenNotebook { path } => self.handle_open_notebook(stream, path).await,
+            Handshake::OpenNotebook { path } => {
+                self.handle_open_notebook(stream, path, client_protocol_version)
+                    .await
+            }
             Handshake::CreateNotebook {
                 runtime,
                 working_dir,
                 notebook_id,
                 ephemeral,
             } => {
-                self.handle_create_notebook(stream, runtime, working_dir, notebook_id, ephemeral)
-                    .await
+                self.handle_create_notebook(
+                    stream,
+                    runtime,
+                    working_dir,
+                    notebook_id,
+                    ephemeral,
+                    client_protocol_version,
+                )
+                .await
             }
             Handshake::RuntimeAgent {
                 notebook_id,
@@ -1738,7 +1760,12 @@ impl Daemon {
     /// Daemon loads the .ipynb file, derives notebook_id, creates room, populates doc.
     /// If the file doesn't exist, creates a new empty notebook at that path.
     /// Returns NotebookConnectionInfo, then continues as normal notebook sync.
-    async fn handle_open_notebook<S>(self: Arc<Self>, stream: S, path: String) -> anyhow::Result<()>
+    async fn handle_open_notebook<S>(
+        self: Arc<Self>,
+        stream: S,
+        path: String,
+        client_protocol_version: u8,
+    ) -> anyhow::Result<()>
     where
         S: AsyncRead + AsyncWrite + Unpin,
     {
@@ -1839,6 +1866,7 @@ impl Daemon {
                         Some(dir_path),
                         None,
                         None,
+                        client_protocol_version,
                     )
                     .await;
             }
@@ -2048,6 +2076,7 @@ impl Daemon {
             true, // Skip ProtocolCapabilities - already sent in NotebookConnectionInfo
             needs_load,
             created_new_at_path, // Enable auto-launch for notebooks created at non-existent paths
+            client_protocol_version,
         )
         .await
     }
@@ -2063,6 +2092,7 @@ impl Daemon {
         working_dir: Option<String>,
         notebook_id_hint: Option<String>,
         ephemeral: Option<bool>,
+        client_protocol_version: u8,
     ) -> anyhow::Result<()>
     where
         S: AsyncRead + AsyncWrite + Unpin,
@@ -2196,6 +2226,7 @@ impl Daemon {
             true,  // Skip ProtocolCapabilities - already sent in NotebookConnectionInfo
             None,  // No streaming load - doc was just created with empty cell
             false, // UUID-based new notebook, handled by is_new_notebook check
+            client_protocol_version,
         )
         .await
     }
