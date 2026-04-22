@@ -189,3 +189,119 @@ fn sqlite_nulls_round_trip() {
     assert_eq!(labels.value(0), "alpha");
     assert!(labels.is_null(1));
 }
+
+/// P1: text-encoded SQLite timestamps (the common case — SQLite stores
+/// TIMESTAMP/DATETIME as ISO-8601 text in practice) round-trip instead of
+/// rejecting the export.
+#[wasm_bindgen_test]
+fn sqlite_text_timestamps_round_trip() {
+    let pragma = to_js(&serde_json::json!([
+        {"name": "ts_s",  "type": "TIMESTAMP"},
+        {"name": "ts_ms", "type": "DATETIME"},
+    ]));
+    let rows = to_js(&serde_json::json!([
+        {"ts_s": "2026-04-21 12:34:56",     "ts_ms": "2026-04-21T12:34:56.789"},
+        {"ts_s": "2026-04-21T12:34:56Z",    "ts_ms": "2026-04-21 12:34:56"},
+    ]));
+
+    let parquet = write_parquet_from_sqlite(pragma, rows).expect("write_parquet_from_sqlite");
+
+    let reader = ParquetRecordBatchReaderBuilder::try_new(Bytes::from(parquet))
+        .expect("parquet reader")
+        .build()
+        .expect("build reader");
+    let batch = reader
+        .into_iter()
+        .next()
+        .expect("one batch")
+        .expect("batch ok");
+
+    assert_eq!(batch.num_rows(), 2);
+
+    let ts_s = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<TimestampSecondArray>()
+        .expect("timestamp(s)");
+    // 2026-04-21 12:34:56 UTC → 1,776,774,896
+    assert_eq!(ts_s.value(0), 1_776_774_896);
+    assert_eq!(ts_s.value(1), 1_776_774_896);
+
+    let ts_ms = batch
+        .column(1)
+        .as_any()
+        .downcast_ref::<arrow::array::TimestampMillisecondArray>()
+        .expect("timestamp(ms)");
+    assert_eq!(ts_ms.value(0), 1_776_774_896_789);
+    assert_eq!(ts_ms.value(1), 1_776_774_896_000);
+}
+
+/// P2: SQLite rows whose runtime storage class doesn't match the declared
+/// affinity produce null for that cell, not a whole-export failure.
+/// Codex flagged this: `INTEGER` columns with legacy/permissive data can
+/// return text; we null-on-mismatch rather than abort.
+#[wasm_bindgen_test]
+fn sqlite_mismatch_nulls_the_cell_not_the_export() {
+    let pragma = to_js(&serde_json::json!([
+        {"name": "id",    "type": "INTEGER"},
+        {"name": "ratio", "type": "REAL"},
+        {"name": "day",   "type": "DATE"},
+        {"name": "ts",    "type": "TIMESTAMP"},
+    ]));
+    let rows = to_js(&serde_json::json!([
+        {"id": 1,     "ratio": 0.5,  "day": "2026-04-20",  "ts": 1_777_000_000_i64},
+        {"id": "abc", "ratio": "x",  "day": "not-a-date",  "ts": "also not a timestamp"},
+        {"id": 3,     "ratio": 1.25, "day": "2026-04-22",  "ts": "2026-04-22 00:00:00"},
+    ]));
+
+    let parquet = write_parquet_from_sqlite(pragma, rows).expect("write_parquet_from_sqlite");
+    let reader = ParquetRecordBatchReaderBuilder::try_new(Bytes::from(parquet))
+        .expect("parquet reader")
+        .build()
+        .expect("build reader");
+    let batch = reader
+        .into_iter()
+        .next()
+        .expect("one batch")
+        .expect("batch ok");
+
+    assert_eq!(batch.num_rows(), 3);
+
+    let ids = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .expect("int64");
+    assert!(!ids.is_null(0));
+    assert_eq!(ids.value(0), 1);
+    assert!(ids.is_null(1), "text 'abc' in INTEGER column should null");
+    assert!(!ids.is_null(2));
+    assert_eq!(ids.value(2), 3);
+
+    let ratio = batch
+        .column(1)
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .expect("float64");
+    assert!(!ratio.is_null(0));
+    assert!(ratio.is_null(1), "text 'x' in REAL column should null");
+    assert!(!ratio.is_null(2));
+
+    let day = batch
+        .column(2)
+        .as_any()
+        .downcast_ref::<Date32Array>()
+        .expect("date32");
+    assert!(!day.is_null(0));
+    assert!(day.is_null(1), "unparseable date string should null");
+    assert!(!day.is_null(2));
+
+    let ts = batch
+        .column(3)
+        .as_any()
+        .downcast_ref::<TimestampSecondArray>()
+        .expect("timestamp(s)");
+    assert!(!ts.is_null(0));
+    assert!(ts.is_null(1), "unparseable timestamp string should null");
+    assert!(!ts.is_null(2));
+}
