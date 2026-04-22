@@ -429,7 +429,7 @@ CI rejects PRs that fail formatting. Run this before every commit:
 cargo xtask lint --fix
 ```
 
-This formats Rust, lints/formats TypeScript/JavaScript with Biome, and lints/formats Python with ruff.
+This formats Rust, lints/formats TypeScript/JavaScript with vp (Vite+ unified toolchain), and lints/formats Python with ruff.
 
 Use [conventional commits](https://www.conventionalcommits.org/) for commit messages and PR titles:
 
