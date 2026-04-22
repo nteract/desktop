@@ -35,7 +35,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 channel=""
 binaries_dir=""
 out_dir=""
-marketplace_name="notebook"
+marketplace_name=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -58,6 +58,11 @@ done
 [[ -n "$binaries_dir" ]] || { echo "--binaries-dir required" >&2; exit 2; }
 [[ -n "$out_dir" ]] || { echo "--out-dir required" >&2; exit 2; }
 
+# Marketplace name defaults to the plugin name for the channel. It's what
+# users see when they run `/plugin marketplace add <repo>` and what they
+# type after `@` in `/plugin install <plugin>@<marketplace>`. Calling it
+# "notebook" overloaded the label with the MCP server's name (which IS
+# "notebook" — that one's correct) and made the install confusing.
 case "$channel" in
   stable)
     plugin_name="nteract"
@@ -70,6 +75,8 @@ case "$channel" in
     exit 2
     ;;
 esac
+
+[[ -n "$marketplace_name" ]] || marketplace_name="$plugin_name"
 
 source_plugin="$REPO_ROOT/plugins/$plugin_name"
 [[ -d "$source_plugin" ]] || { echo "source plugin not found: $source_plugin" >&2; exit 1; }
