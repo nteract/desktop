@@ -760,9 +760,10 @@ impl KernelConnection for JupyterKernel {
 
                                         if !is_transient {
                                             let mut sd = state_doc_for_iopub.write().await;
-                                            if sd.set_kernel_status(status_str) {
-                                                let _ = state_changed_for_iopub.send(());
+                                            if let Err(e) = sd.set_kernel_status(status_str) {
+                                                warn!("[runtime-state] {}", e);
                                             }
+                                            let _ = state_changed_for_iopub.send(());
                                         }
                                     }
 
@@ -786,9 +787,12 @@ impl KernelConnection for JupyterKernel {
 
                                         if let Some(ref eid) = execution_id {
                                             let mut sd = state_doc_for_iopub.write().await;
-                                            if sd.set_execution_count(eid, execution_count) {
-                                                let _ = state_changed_for_iopub.send(());
+                                            if let Err(e) =
+                                                sd.set_execution_count(eid, execution_count)
+                                            {
+                                                warn!("[runtime-state] {}", e);
                                             }
+                                            let _ = state_changed_for_iopub.send(());
                                         }
 
                                         let _ = broadcast_tx.send(
@@ -834,24 +838,31 @@ impl KernelConnection for JupyterKernel {
                                             let output_manifests = {
                                                 let mut sd = state_doc_for_iopub.write().await;
                                                 if pending_clear_widgets.remove(&widget_comm_id) {
-                                                    sd.clear_comm_outputs(&widget_comm_id);
+                                                    if let Err(e) =
+                                                        sd.clear_comm_outputs(&widget_comm_id)
+                                                    {
+                                                        warn!("[runtime-state] {}", e);
+                                                    }
                                                 }
-                                                if sd.append_comm_output(
+                                                if let Err(e) = sd.append_comm_output(
                                                     &widget_comm_id,
                                                     &manifest_json,
                                                 ) {
-                                                    let _ = state_changed_for_iopub.send(());
+                                                    warn!("[runtime-state] {}", e);
                                                 }
+                                                let _ = state_changed_for_iopub.send(());
 
                                                 if let Some(entry) = sd.get_comm(&widget_comm_id) {
                                                     let manifests = entry.outputs.clone();
                                                     let manifests_json =
                                                         serde_json::Value::Array(manifests.clone());
-                                                    sd.set_comm_state_property(
+                                                    if let Err(e) = sd.set_comm_state_property(
                                                         &widget_comm_id,
                                                         "outputs",
                                                         &manifests_json,
-                                                    );
+                                                    ) {
+                                                        warn!("[runtime-state] {}", e);
+                                                    }
                                                     Some(manifests)
                                                 } else {
                                                     None
@@ -1051,14 +1062,19 @@ impl KernelConnection for JupyterKernel {
                                                     let mut sd = state_doc_for_iopub.write().await;
                                                     if pending_clear_widgets.remove(&widget_comm_id)
                                                     {
-                                                        sd.clear_comm_outputs(&widget_comm_id);
+                                                        if let Err(e) =
+                                                            sd.clear_comm_outputs(&widget_comm_id)
+                                                        {
+                                                            warn!("[runtime-state] {}", e);
+                                                        }
                                                     }
-                                                    if sd.append_comm_output(
+                                                    if let Err(e) = sd.append_comm_output(
                                                         &widget_comm_id,
                                                         &manifest_json,
                                                     ) {
-                                                        let _ = state_changed_for_iopub.send(());
+                                                        warn!("[runtime-state] {}", e);
                                                     }
+                                                    let _ = state_changed_for_iopub.send(());
 
                                                     if let Some(entry) =
                                                         sd.get_comm(&widget_comm_id)
@@ -1068,11 +1084,13 @@ impl KernelConnection for JupyterKernel {
                                                             serde_json::Value::Array(
                                                                 manifests.clone(),
                                                             );
-                                                        sd.set_comm_state_property(
+                                                        if let Err(e) = sd.set_comm_state_property(
                                                             &widget_comm_id,
                                                             "outputs",
                                                             &manifests_json,
-                                                        );
+                                                        ) {
+                                                            warn!("[runtime-state] {}", e);
+                                                        }
                                                         Some(manifests)
                                                     } else {
                                                         None
@@ -1287,14 +1305,19 @@ impl KernelConnection for JupyterKernel {
                                                     let mut sd = state_doc_for_iopub.write().await;
                                                     if pending_clear_widgets.remove(&widget_comm_id)
                                                     {
-                                                        sd.clear_comm_outputs(&widget_comm_id);
+                                                        if let Err(e) =
+                                                            sd.clear_comm_outputs(&widget_comm_id)
+                                                        {
+                                                            warn!("[runtime-state] {}", e);
+                                                        }
                                                     }
-                                                    if sd.append_comm_output(
+                                                    if let Err(e) = sd.append_comm_output(
                                                         &widget_comm_id,
                                                         &manifest_json,
                                                     ) {
-                                                        let _ = state_changed_for_iopub.send(());
+                                                        warn!("[runtime-state] {}", e);
                                                     }
+                                                    let _ = state_changed_for_iopub.send(());
 
                                                     if let Some(entry) =
                                                         sd.get_comm(&widget_comm_id)
@@ -1304,11 +1327,13 @@ impl KernelConnection for JupyterKernel {
                                                             serde_json::Value::Array(
                                                                 manifests.clone(),
                                                             );
-                                                        sd.set_comm_state_property(
+                                                        if let Err(e) = sd.set_comm_state_property(
                                                             &widget_comm_id,
                                                             "outputs",
                                                             &manifests_json,
-                                                        );
+                                                        ) {
+                                                            warn!("[runtime-state] {}", e);
+                                                        }
                                                         Some(manifests)
                                                     } else {
                                                         None
@@ -1439,14 +1464,19 @@ impl KernelConnection for JupyterKernel {
                                             pending_clear_widgets.remove(&widget_comm_id);
                                             {
                                                 let mut sd = state_doc_for_iopub.write().await;
-                                                if sd.clear_comm_outputs(&widget_comm_id) {
-                                                    let _ = state_changed_for_iopub.send(());
+                                                if let Err(e) =
+                                                    sd.clear_comm_outputs(&widget_comm_id)
+                                                {
+                                                    warn!("[runtime-state] {}", e);
                                                 }
-                                                sd.set_comm_state_property(
+                                                let _ = state_changed_for_iopub.send(());
+                                                if let Err(e) = sd.set_comm_state_property(
                                                     &widget_comm_id,
                                                     "outputs",
                                                     &serde_json::json!([]),
-                                                );
+                                                ) {
+                                                    warn!("[runtime-state] {}", e);
+                                                }
                                             }
                                             let _ = iopub_cmd_tx
                                                 .send(QueueCommand::SendCommUpdate {
@@ -1536,14 +1566,16 @@ impl KernelConnection for JupyterKernel {
                                         );
                                         }
                                         let crdt_start = std::time::Instant::now();
-                                        sd.put_comm(
+                                        if let Err(e) = sd.put_comm(
                                             &open.comm_id.0,
                                             &open.target_name,
                                             model_module,
                                             model_name,
                                             &state_with_blobs,
                                             seq,
-                                        );
+                                        ) {
+                                            warn!("[runtime-state] {}", e);
+                                        }
                                         let crdt_elapsed = crdt_start.elapsed();
                                         if crdt_elapsed > std::time::Duration::from_millis(10) {
                                             warn!(
@@ -1558,7 +1590,12 @@ impl KernelConnection for JupyterKernel {
                                                 .and_then(|v| v.as_str())
                                                 .filter(|s| !s.is_empty())
                                             {
-                                                sd.set_comm_capture_msg_id(&open.comm_id.0, msg_id);
+                                                if let Err(e) = sd.set_comm_capture_msg_id(
+                                                    &open.comm_id.0,
+                                                    msg_id,
+                                                ) {
+                                                    warn!("[runtime-state] {}", e);
+                                                }
                                                 capture_cache.insert(
                                                     msg_id.to_string(),
                                                     open.comm_id.0.clone(),
@@ -1633,10 +1670,12 @@ impl KernelConnection for JupyterKernel {
                                                 }
 
                                                 let mut sd = state_doc_for_iopub.write().await;
-                                                sd.set_comm_capture_msg_id(
+                                                if let Err(e) = sd.set_comm_capture_msg_id(
                                                     &msg.comm_id.0,
                                                     new_msg_id,
-                                                );
+                                                ) {
+                                                    warn!("[runtime-state] {}", e);
+                                                }
                                                 let _ = state_changed_for_iopub.send(());
                                             }
 
@@ -1705,9 +1744,10 @@ impl KernelConnection for JupyterKernel {
 
                                     {
                                         let mut sd = state_doc_for_iopub.write().await;
-                                        if sd.remove_comm(&close.comm_id.0) {
-                                            let _ = state_changed_for_iopub.send(());
+                                        if let Err(e) = sd.remove_comm(&close.comm_id.0) {
+                                            warn!("[runtime-state] {}", e);
                                         }
+                                        let _ = state_changed_for_iopub.send(());
                                     }
                                 }
 
@@ -2077,18 +2117,15 @@ impl KernelConnection for JupyterKernel {
                                 *delta = blob_store_large_state_values(delta, &coalesce_blob_store).await;
                             }
                             let mut sd = coalesce_state_doc.write().await;
-                            let mut any_changed = false;
                             sd.fork_and_merge(|f| {
                                 f.set_actor(&coalesce_actor_id);
                                 for (comm_id, delta) in &batch {
-                                    if f.merge_comm_state_delta(comm_id, delta) {
-                                        any_changed = true;
+                                    if let Err(e) = f.merge_comm_state_delta(comm_id, delta) {
+                                        warn!("[runtime-state] {}", e);
                                     }
                                 }
                             });
-                            if any_changed {
-                                let _ = coalesce_state_changed.send(());
-                            }
+                            let _ = coalesce_state_changed.send(());
                         }
                     }
                 }

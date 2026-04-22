@@ -514,9 +514,9 @@ where
             for (_idx, cell, output_refs, _resolved_assets) in &batch {
                 if !output_refs.is_empty() {
                     let synthetic_eid = uuid::Uuid::new_v4().to_string();
-                    sd.create_execution(&synthetic_eid, &cell.id);
+                    let _ = sd.create_execution(&synthetic_eid, &cell.id);
                     let _ = sd.set_outputs(&synthetic_eid, output_refs);
-                    sd.set_execution_done(&synthetic_eid, true);
+                    let _ = sd.set_execution_done(&synthetic_eid, true);
                     cell_eids.insert(cell.id.clone(), synthetic_eid);
                 }
             }
@@ -680,15 +680,15 @@ pub(crate) async fn load_notebook_from_disk_with_state_doc(
             };
             let synthetic_eid = uuid::Uuid::new_v4().to_string();
             if let Some(ref mut sd) = state_doc {
-                sd.create_execution(&synthetic_eid, &cell.id);
+                let _ = sd.create_execution(&synthetic_eid, &cell.id);
                 if has_outputs {
                     sd.set_outputs(&synthetic_eid, &output_refs)
                         .map_err(|e| format!("Failed to set outputs in state doc: {}", e))?;
                 }
                 if let Some(ec) = parsed_ec {
-                    sd.set_execution_count(&synthetic_eid, ec);
+                    let _ = sd.set_execution_count(&synthetic_eid, ec);
                 }
-                sd.set_execution_done(&synthetic_eid, true);
+                let _ = sd.set_execution_done(&synthetic_eid, true);
             }
             doc.set_execution_id(&cell.id, Some(&synthetic_eid))
                 .map_err(|e| format!("Failed to set execution_id: {}", e))?;
@@ -1097,14 +1097,14 @@ pub(crate) async fn apply_ipynb_changes(
         if !deferred_executions.is_empty() {
             let mut sd = room.state_doc.write().await;
             for de in &deferred_executions {
-                sd.create_execution(&de.synthetic_eid, &de.cell_id);
+                let _ = sd.create_execution(&de.synthetic_eid, &de.cell_id);
                 if !de.outputs.is_empty() {
                     let _ = sd.set_outputs(&de.synthetic_eid, de.outputs);
                 }
                 if let Some(ec) = de.execution_count {
-                    sd.set_execution_count(&de.synthetic_eid, ec);
+                    let _ = sd.set_execution_count(&de.synthetic_eid, ec);
                 }
-                sd.set_execution_done(&de.synthetic_eid, true);
+                let _ = sd.set_execution_done(&de.synthetic_eid, true);
             }
             let _ = room.state_changed_tx.send(());
         }
@@ -1362,14 +1362,14 @@ pub(crate) async fn apply_ipynb_changes(
     if !deferred_execs.is_empty() {
         let mut sd = room.state_doc.write().await;
         for de in &deferred_execs {
-            sd.create_execution(&de.synthetic_eid, &de.cell_id);
+            let _ = sd.create_execution(&de.synthetic_eid, &de.cell_id);
             if !de.outputs.is_empty() {
                 let _ = sd.set_outputs(&de.synthetic_eid, de.outputs);
             }
             if let Some(ec) = de.execution_count {
-                sd.set_execution_count(&de.synthetic_eid, ec);
+                let _ = sd.set_execution_count(&de.synthetic_eid, ec);
             }
-            sd.set_execution_done(&de.synthetic_eid, true);
+            let _ = sd.set_execution_done(&de.synthetic_eid, true);
         }
         let _ = room.state_changed_tx.send(());
     }

@@ -143,7 +143,9 @@ pub async fn run_runtime_agent(
                                             {
                                                 let mut sd = state_doc.write().await;
                                                 for entry in &cleared {
-                                                    sd.set_execution_done(&entry.execution_id, false);
+                                                    if let Err(e) = sd.set_execution_done(&entry.execution_id, false) {
+                                                        warn!("[runtime-state] {}", e);
+                                                    }
                                                 }
                                             }
                                             kernel_state.write_queue_to_state_doc().await;
@@ -651,21 +653,32 @@ async fn handle_runtime_agent_request(
             {
                 let mut sd = ctx.state_doc.write().await;
                 if let Some(ref eid) = interrupted_eid {
-                    sd.set_execution_done(eid, false);
+                    if let Err(e) = sd.set_execution_done(eid, false) {
+                        warn!("[runtime-state] {}", e);
+                    }
                 }
                 for eid in &stale_queue {
-                    sd.set_execution_done(eid, false);
+                    if let Err(e) = sd.set_execution_done(eid, false) {
+                        warn!("[runtime-state] {}", e);
+                    }
                 }
                 // Defensive sweep: mark any execution entries stuck in
                 // "running" or "queued" that the local KernelState missed
                 // (e.g., entries from CRDT sync not yet processed locally).
-                let orphans = sd.mark_inflight_executions_failed();
-                if orphans > 0 {
-                    info!(
-                        "[runtime-agent] Marked {orphans} orphaned execution(s) as failed on restart"
-                    );
+                match sd.mark_inflight_executions_failed() {
+                    Ok(orphans) if orphans > 0 => {
+                        info!(
+                            "[runtime-agent] Marked {orphans} orphaned execution(s) as failed on restart"
+                        );
+                    }
+                    Err(e) => {
+                        warn!("[runtime-state] {}", e);
+                    }
+                    _ => {}
                 }
-                sd.set_queue(None, &[]);
+                if let Err(e) = sd.set_queue(None, &[]) {
+                    warn!("[runtime-state] {}", e);
+                }
                 let _ = ctx.state_changed_tx.send(());
             }
 
@@ -698,7 +711,9 @@ async fn handle_runtime_agent_request(
                         {
                             let mut sd = ctx.state_doc.write().await;
                             for entry in &cleared {
-                                sd.set_execution_done(&entry.execution_id, false);
+                                if let Err(e) = sd.set_execution_done(&entry.execution_id, false) {
+                                    warn!("[runtime-state] {}", e);
+                                }
                             }
                         }
                         state.write_queue_to_state_doc().await;
@@ -960,9 +975,13 @@ async fn handle_queue_command(
             let cleared = state.clear_queue();
             let mut sd = ctx.state_doc.write().await;
             for entry in &cleared {
-                sd.set_execution_done(&entry.execution_id, false);
+                if let Err(e) = sd.set_execution_done(&entry.execution_id, false) {
+                    warn!("[runtime-state] {}", e);
+                }
             }
-            sd.set_queue(None, &[]);
+            if let Err(e) = sd.set_queue(None, &[]) {
+                warn!("[runtime-state] {}", e);
+            }
             let _ = ctx.state_changed_tx.send(());
         }
 
@@ -975,13 +994,21 @@ async fn handle_queue_command(
             let (interrupted, cleared) = state.kernel_died();
             let mut sd = ctx.state_doc.write().await;
             if let Some((_, ref eid)) = interrupted {
-                sd.set_execution_done(eid, false);
+                if let Err(e) = sd.set_execution_done(eid, false) {
+                    warn!("[runtime-state] {}", e);
+                }
             }
             for entry in &cleared {
-                sd.set_execution_done(&entry.execution_id, false);
+                if let Err(e) = sd.set_execution_done(&entry.execution_id, false) {
+                    warn!("[runtime-state] {}", e);
+                }
             }
-            sd.set_kernel_status("error");
-            sd.set_queue(None, &[]);
+            if let Err(e) = sd.set_kernel_status("error") {
+                warn!("[runtime-state] {}", e);
+            }
+            if let Err(e) = sd.set_queue(None, &[]) {
+                warn!("[runtime-state] {}", e);
+            }
             let _ = ctx.state_changed_tx.send(());
         }
 

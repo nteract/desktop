@@ -558,8 +558,8 @@ mod tests {
         let mut state_doc = RuntimeStateDoc::new();
 
         // Two executions, both with the same display_id (simulates re-running a cell)
-        state_doc.create_execution("exec-1", "cell-a");
-        state_doc.create_execution("exec-2", "cell-a");
+        state_doc.create_execution("exec-1", "cell-a").unwrap();
+        state_doc.create_execution("exec-2", "cell-a").unwrap();
         insert_display_output(&mut state_doc, "exec-1", "progress", "old", &store).await;
         insert_display_output(&mut state_doc, "exec-2", "progress", "old", &store).await;
 
@@ -592,7 +592,7 @@ mod tests {
         let store = test_blob_store(&dir);
         let mut state_doc = RuntimeStateDoc::new();
 
-        state_doc.create_execution("exec-1", "cell-a");
+        state_doc.create_execution("exec-1", "cell-a").unwrap();
         insert_display_output(&mut state_doc, "exec-1", "progress", "hello", &store).await;
 
         let new_data = serde_json::json!({ "text/plain": "updated" });
@@ -620,8 +620,8 @@ mod tests {
         let store = test_blob_store(&dir);
         let mut state_doc = RuntimeStateDoc::new();
 
-        state_doc.create_execution("exec-1", "cell-a");
-        state_doc.create_execution("exec-2", "cell-b");
+        state_doc.create_execution("exec-1", "cell-a").unwrap();
+        state_doc.create_execution("exec-2", "cell-b").unwrap();
         insert_display_output(&mut state_doc, "exec-1", "progress", "match-me", &store).await;
         insert_display_output(&mut state_doc, "exec-2", "other-id", "leave-me", &store).await;
 

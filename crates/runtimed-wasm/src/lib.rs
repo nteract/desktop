@@ -1407,7 +1407,9 @@ impl NotebookHandle {
             Ok(v) => v,
             Err(_) => return false,
         };
-        self.state_doc.set_comm_state_property(comm_id, key, &value)
+        self.state_doc
+            .set_comm_state_property(comm_id, key, &value)
+            .is_ok()
     }
 
     /// Set multiple properties in a comm's state map at once.
@@ -1425,7 +1427,11 @@ impl NotebookHandle {
         };
         let mut any_written = false;
         for (key, value) in obj {
-            if self.state_doc.set_comm_state_property(comm_id, key, value) {
+            if self
+                .state_doc
+                .set_comm_state_property(comm_id, key, value)
+                .is_ok()
+            {
                 any_written = true;
             }
         }

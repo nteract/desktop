@@ -1,13 +1,13 @@
 {
+  "scenario": "execution_with_error",
   "description": "Daemon executes cell that raises ZeroDivisionError",
   "expected": {
     "cell_id": "cell-1",
+    "source": "1 / 0",
     "execution_count": "1",
     "output_count": 1,
     "output_ids": [
       "40f20c3c-ae42-53f0-ab79-b3b909fa7893"
-    ],
-    "source": "1 / 0"
-  },
-  "scenario": "execution_with_error"
+    ]
+  }
 }

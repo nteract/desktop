@@ -1,7 +1,9 @@
 {
+  "scenario": "output_streaming",
   "description": "Daemon creates cell, executes, streams 3 stdout lines as inline manifests",
   "expected": {
     "cell_id": "cell-1",
+    "source": "for i in range(3):\n    print(i)",
     "execution_count": "1",
     "output_count": 3,
     "output_ids": [
@@ -13,8 +15,6 @@
       "0\n",
       "1\n",
       "2\n"
-    ],
-    "source": "for i in range(3):\n    print(i)"
-  },
-  "scenario": "output_streaming"
+    ]
+  }
 }

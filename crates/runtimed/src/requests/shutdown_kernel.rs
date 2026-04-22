@@ -22,12 +22,13 @@ pub(crate) async fn handle(room: &NotebookRoom) -> NotebookResponse {
         // Update RuntimeStateDoc to reflect shutdown
         {
             let mut sd = room.state_doc.write().await;
-            let mut changed = false;
-            changed |= sd.set_kernel_status("shutdown");
-            changed |= sd.set_queue(None, &[]);
-            if changed {
-                let _ = room.state_changed_tx.send(());
+            if let Err(e) = sd.set_kernel_status("shutdown") {
+                tracing::warn!("[runtime-state] {}", e);
             }
+            if let Err(e) = sd.set_queue(None, &[]) {
+                tracing::warn!("[runtime-state] {}", e);
+            }
+            let _ = room.state_changed_tx.send(());
         }
         NotebookResponse::KernelShuttingDown {}
     } else {

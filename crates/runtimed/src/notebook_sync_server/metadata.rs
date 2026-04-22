@@ -666,7 +666,7 @@ pub(crate) async fn check_and_broadcast_sync_state(room: &NotebookRoom) {
         // Write to RuntimeStateDoc
         {
             let mut sd = room.state_doc.write().await;
-            let changed = match &diff {
+            let result = match &diff {
                 Some(d) => sd.set_env_sync(
                     false,
                     &d.added,
@@ -676,9 +676,10 @@ pub(crate) async fn check_and_broadcast_sync_state(room: &NotebookRoom) {
                 ),
                 None => sd.set_env_sync(true, &[], &[], false, false),
             };
-            if changed {
-                let _ = room.state_changed_tx.send(());
+            if let Err(e) = result {
+                warn!("[runtime-state] {}", e);
             }
+            let _ = room.state_changed_tx.send(());
         }
 
         let _ = room
@@ -698,9 +699,10 @@ pub(crate) async fn check_and_broadcast_sync_state(room: &NotebookRoom) {
             if !added.is_empty() {
                 {
                     let mut sd = room.state_doc.write().await;
-                    if sd.set_env_sync(false, &added, &[], false, false) {
-                        let _ = room.state_changed_tx.send(());
+                    if let Err(e) = sd.set_env_sync(false, &added, &[], false, false) {
+                        warn!("[runtime-state] {}", e);
                     }
+                    let _ = room.state_changed_tx.send(());
                 }
                 let _ = room
                     .kernel_broadcast_tx
@@ -781,9 +783,10 @@ pub(crate) async fn check_and_update_trust_state(room: &NotebookRoom) {
 
         // Update RuntimeStateDoc so the frontend banner reacts immediately
         let mut sd = room.state_doc.write().await;
-        if sd.set_trust(status_str, needs_approval) {
-            let _ = room.state_changed_tx.send(());
+        if let Err(e) = sd.set_trust(status_str, needs_approval) {
+            warn!("[runtime-state] {}", e);
         }
+        let _ = room.state_changed_tx.send(());
     }
 }
 
@@ -1727,12 +1730,13 @@ pub(crate) async fn reset_starting_state(
     // runtime_agent_handle lock (deadlock prevention).
     {
         let mut sd = room.state_doc.write().await;
-        let mut changed = false;
-        changed |= sd.set_kernel_status("not_started");
-        changed |= sd.set_prewarmed_packages(&[]);
-        if changed {
-            let _ = room.state_changed_tx.send(());
+        if let Err(e) = sd.set_kernel_status("not_started") {
+            warn!("[runtime-state] {}", e);
         }
+        if let Err(e) = sd.set_prewarmed_packages(&[]) {
+            warn!("[runtime-state] {}", e);
+        }
+        let _ = room.state_changed_tx.send(());
     }
 
     // Clear stale runtime agent handle so auto-launch can retry.
@@ -2061,9 +2065,10 @@ pub(crate) async fn auto_launch_kernel(
 
     {
         let mut sd = room.state_doc.write().await;
-        if sd.clear_comms() {
-            let _ = room.state_changed_tx.send(());
+        if let Err(e) = sd.clear_comms() {
+            warn!("[runtime-state] {}", e);
         }
+        let _ = room.state_changed_tx.send(());
     }
 
     // Detection priority:
@@ -2410,9 +2415,15 @@ pub(crate) async fn auto_launch_kernel(
                 );
                 {
                     let mut sd = room.state_doc.write().await;
-                    sd.set_kernel_status("error");
-                    sd.set_kernel_info("python", "python", &env_source);
-                    sd.set_starting_phase("missing_ipykernel");
+                    if let Err(e) = sd.set_kernel_status("error") {
+                        warn!("[runtime-state] {}", e);
+                    }
+                    if let Err(e) = sd.set_kernel_info("python", "python", &env_source) {
+                        warn!("[runtime-state] {}", e);
+                    }
+                    if let Err(e) = sd.set_starting_phase("missing_ipykernel") {
+                        warn!("[runtime-state] {}", e);
+                    }
                     let _ = room.state_changed_tx.send(());
                 }
                 return;
@@ -2423,9 +2434,10 @@ pub(crate) async fn auto_launch_kernel(
     // Transition to "preparing_env" phase now that runtime/env has been resolved
     {
         let mut sd = room.state_doc.write().await;
-        if sd.set_starting_phase("preparing_env") {
-            let _ = room.state_changed_tx.send(());
+        if let Err(e) = sd.set_starting_phase("preparing_env") {
+            warn!("[runtime-state] {}", e);
         }
+        let _ = room.state_changed_tx.send(());
     }
 
     // For inline deps, prepare a cached environment with rich progress
@@ -2755,9 +2767,10 @@ pub(crate) async fn auto_launch_kernel(
     // Transition to "launching" phase before starting the kernel process
     {
         let mut sd = room.state_doc.write().await;
-        if sd.set_starting_phase("launching") {
-            let _ = room.state_changed_tx.send(());
+        if let Err(e) = sd.set_starting_phase("launching") {
+            warn!("[runtime-state] {}", e);
         }
+        let _ = room.state_changed_tx.send(());
     }
 
     // (prewarmed_packages no longer needed — runtime agent handles its own launch config)
@@ -2810,9 +2823,10 @@ pub(crate) async fn auto_launch_kernel(
                 // Write "connecting" phase — fills the gap between spawn and connect
                 {
                     let mut sd = room.state_doc.write().await;
-                    if sd.set_starting_phase("connecting") {
-                        let _ = room.state_changed_tx.send(());
+                    if let Err(e) = sd.set_starting_phase("connecting") {
+                        warn!("[runtime-state] {}", e);
                     }
+                    let _ = room.state_changed_tx.send(());
                 }
 
                 // Wait for THIS runtime agent to establish its sync connection
@@ -2872,21 +2886,25 @@ pub(crate) async fn auto_launch_kernel(
                         // frontends see "idle" via CRDT sync.
                         {
                             let mut sd = room.state_doc.write().await;
-                            let mut changed = false;
-                            changed |= sd.set_kernel_status("idle");
-                            changed |= sd.set_kernel_info(kernel_type, kernel_type, &es);
-                            changed |= sd.set_runtime_agent_id(&runtime_agent_id);
-                            if changed {
-                                let _ = room.state_changed_tx.send(());
+                            if let Err(e) = sd.set_kernel_status("idle") {
+                                warn!("[runtime-state] {}", e);
                             }
+                            if let Err(e) = sd.set_kernel_info(kernel_type, kernel_type, &es) {
+                                warn!("[runtime-state] {}", e);
+                            }
+                            if let Err(e) = sd.set_runtime_agent_id(&runtime_agent_id) {
+                                warn!("[runtime-state] {}", e);
+                            }
+                            let _ = room.state_changed_tx.send(());
                         }
 
                         // Fresh kernel is in sync with its launched config
                         {
                             let mut sd = room.state_doc.write().await;
-                            if sd.set_env_sync(true, &[], &[], false, false) {
-                                let _ = room.state_changed_tx.send(());
+                            if let Err(e) = sd.set_env_sync(true, &[], &[], false, false) {
+                                warn!("[runtime-state] {}", e);
                             }
+                            let _ = room.state_changed_tx.send(());
                         }
 
                         info!(
@@ -3586,9 +3604,10 @@ pub(crate) async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResp
             // Mark as in sync in RuntimeStateDoc
             {
                 let mut sd = room.state_doc.write().await;
-                if sd.set_env_sync(true, &[], &[], false, false) {
-                    let _ = room.state_changed_tx.send(());
+                if let Err(e) = sd.set_env_sync(true, &[], &[], false, false) {
+                    warn!("[runtime-state] {}", e);
                 }
+                let _ = room.state_changed_tx.send(());
             }
 
             let _ = room

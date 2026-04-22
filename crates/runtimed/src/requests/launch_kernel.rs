@@ -60,14 +60,19 @@ pub(crate) async fn handle(
             // not_started, error, shutdown — atomically claim the
             // launch by writing "starting" while we hold the write lock.
             // This prevents a concurrent LaunchKernel from also proceeding.
-            let mut changed = false;
-            changed |= sd.clear_comms();
-            changed |= sd.set_trust("trusted", false);
-            changed |= sd.set_kernel_status("starting");
-            changed |= sd.set_starting_phase("resolving");
-            if changed {
-                let _ = room.state_changed_tx.send(());
+            if let Err(e) = sd.clear_comms() {
+                warn!("[runtime-state] {}", e);
             }
+            if let Err(e) = sd.set_trust("trusted", false) {
+                warn!("[runtime-state] {}", e);
+            }
+            if let Err(e) = sd.set_kernel_status("starting") {
+                warn!("[runtime-state] {}", e);
+            }
+            if let Err(e) = sd.set_starting_phase("resolving") {
+                warn!("[runtime-state] {}", e);
+            }
+            let _ = room.state_changed_tx.send(());
         }
         status
     };
@@ -455,9 +460,10 @@ pub(crate) async fn handle(
     // Transition to "preparing_env" phase
     {
         let mut sd = room.state_doc.write().await;
-        if sd.set_starting_phase("preparing_env") {
-            let _ = room.state_changed_tx.send(());
+        if let Err(e) = sd.set_starting_phase("preparing_env") {
+            warn!("[runtime-state] {}", e);
         }
+        let _ = room.state_changed_tx.send(());
     }
 
     // Deno kernels don't need pooled environments
@@ -1066,9 +1072,10 @@ pub(crate) async fn handle(
     // Transition to "launching" phase before starting the kernel process
     {
         let mut sd = room.state_doc.write().await;
-        if sd.set_starting_phase("launching") {
-            let _ = room.state_changed_tx.send(());
+        if let Err(e) = sd.set_starting_phase("launching") {
+            warn!("[runtime-state] {}", e);
         }
+        let _ = room.state_changed_tx.send(());
     }
 
     // If runtime agent is already connected, restart kernel in-place
@@ -1099,15 +1106,21 @@ pub(crate) async fn handle(
                     publish_kernel_state_presence(room, presence::KernelStatus::Idle, &es).await;
                     {
                         let mut sd = room.state_doc.write().await;
-                        let mut changed = false;
-                        changed |= sd.set_kernel_status("idle");
-                        changed |=
-                            sd.set_kernel_info(&resolved_kernel_type, &resolved_kernel_type, &es);
-                        changed |= sd.set_prewarmed_packages(&launched_config.prewarmed_packages);
-                        // runtime_agent_id doesn't change on restart — same runtime agent
-                        if changed {
-                            let _ = room.state_changed_tx.send(());
+                        if let Err(e) = sd.set_kernel_status("idle") {
+                            warn!("[runtime-state] {}", e);
                         }
+                        if let Err(e) =
+                            sd.set_kernel_info(&resolved_kernel_type, &resolved_kernel_type, &es)
+                        {
+                            warn!("[runtime-state] {}", e);
+                        }
+                        if let Err(e) =
+                            sd.set_prewarmed_packages(&launched_config.prewarmed_packages)
+                        {
+                            warn!("[runtime-state] {}", e);
+                        }
+                        // runtime_agent_id doesn't change on restart — same runtime agent
+                        let _ = room.state_changed_tx.send(());
                     }
 
                     // Compute env sync state against the freshly
@@ -1187,9 +1200,10 @@ pub(crate) async fn handle(
                 // Write "connecting" phase — fills the gap between spawn and connect
                 {
                     let mut sd = room.state_doc.write().await;
-                    if sd.set_starting_phase("connecting") {
-                        let _ = room.state_changed_tx.send(());
+                    if let Err(e) = sd.set_starting_phase("connecting") {
+                        warn!("[runtime-state] {}", e);
                     }
+                    let _ = room.state_changed_tx.send(());
                 }
 
                 // Wait for THIS runtime agent to connect back via socket
@@ -1247,21 +1261,27 @@ pub(crate) async fn handle(
                             // avoid holding state_doc across an .await.
                             let agent_id = room.current_runtime_agent_id.read().await.clone();
                             let mut sd = room.state_doc.write().await;
-                            let mut changed = false;
-                            changed |= sd.set_kernel_status("idle");
-                            changed |= sd.set_kernel_info(
+                            if let Err(e) = sd.set_kernel_status("idle") {
+                                warn!("[runtime-state] {}", e);
+                            }
+                            if let Err(e) = sd.set_kernel_info(
                                 &resolved_kernel_type,
                                 &resolved_kernel_type,
                                 &es,
-                            );
-                            changed |=
-                                sd.set_prewarmed_packages(&launched_config.prewarmed_packages);
+                            ) {
+                                warn!("[runtime-state] {}", e);
+                            }
+                            if let Err(e) =
+                                sd.set_prewarmed_packages(&launched_config.prewarmed_packages)
+                            {
+                                warn!("[runtime-state] {}", e);
+                            }
                             if let Some(ref aid) = agent_id {
-                                changed |= sd.set_runtime_agent_id(aid);
+                                if let Err(e) = sd.set_runtime_agent_id(aid) {
+                                    warn!("[runtime-state] {}", e);
+                                }
                             }
-                            if changed {
-                                let _ = room.state_changed_tx.send(());
-                            }
+                            let _ = room.state_changed_tx.send(());
                         }
 
                         // Compute env sync state against the freshly

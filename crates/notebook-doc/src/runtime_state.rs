@@ -234,6 +234,37 @@ pub struct RuntimeState {
     pub comms: HashMap<String, CommDocEntry>,
 }
 
+// ── Error type ──────────────────────────────────────────────────────
+
+/// Errors from RuntimeStateDoc mutations.
+#[derive(Debug)]
+pub enum RuntimeStateError {
+    /// A top-level scaffold map (kernel, queue, executions, etc.) is missing.
+    /// Indicates doc corruption or use of an unscaffolded doc.
+    MissingScaffold(&'static str),
+    /// An Automerge operation failed (put, delete, insert, etc.).
+    Automerge(AutomergeError),
+}
+
+impl std::fmt::Display for RuntimeStateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingScaffold(name) => {
+                write!(f, "scaffold map '{name}' missing — doc may be corrupt")
+            }
+            Self::Automerge(e) => write!(f, "automerge: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for RuntimeStateError {}
+
+impl From<AutomergeError> for RuntimeStateError {
+    fn from(e: AutomergeError) -> Self {
+        Self::Automerge(e)
+    }
+}
+
 // ── RuntimeStateDoc ─────────────────────────────────────────────────
 
 /// Per-notebook ephemeral Automerge document for runtime state.
@@ -569,6 +600,29 @@ impl RuntimeStateDoc {
             })
     }
 
+    /// Get a scaffold map, returning `RuntimeStateError::MissingScaffold` if absent.
+    fn scaffold_map(&self, key: &'static str) -> Result<automerge::ObjId, RuntimeStateError> {
+        self.get_map(key)
+            .ok_or(RuntimeStateError::MissingScaffold(key))
+    }
+
+    /// Get a scaffold list nested under a map, returning error if absent.
+    fn scaffold_list(
+        &self,
+        parent: &automerge::ObjId,
+        key: &'static str,
+    ) -> Result<automerge::ObjId, RuntimeStateError> {
+        self.doc
+            .get(parent, key)
+            .ok()
+            .flatten()
+            .and_then(|(value, id)| match value {
+                Value::Object(ObjType::List) => Some(id),
+                _ => None,
+            })
+            .ok_or(RuntimeStateError::MissingScaffold(key))
+    }
+
     /// Read a string scalar from a map object.
     fn read_str(&self, obj: &automerge::ObjId, key: &str) -> String {
         self.doc
@@ -696,111 +750,102 @@ impl RuntimeStateDoc {
 
     // ── Granular setters (daemon calls these individually) ──────────
 
-    /// Update trust state. Returns `true` if the doc was mutated.
-    #[allow(clippy::expect_used)]
-    pub fn set_trust(&mut self, status: &str, needs_approval: bool) -> bool {
-        let trust = self.get_map("trust").expect("trust map must exist");
+    /// Update trust state.
+    pub fn set_trust(
+        &mut self,
+        status: &str,
+        needs_approval: bool,
+    ) -> Result<(), RuntimeStateError> {
+        let trust = self.scaffold_map("trust")?;
         let cur_status = self.read_str(&trust, "status");
         let cur_needs = self.read_bool(&trust, "needs_approval");
 
         if cur_status == status && cur_needs == needs_approval {
-            return false;
+            return Ok(());
         }
 
-        self.doc
-            .put(&trust, "status", status)
-            .expect("put trust.status");
-        self.doc
-            .put(&trust, "needs_approval", needs_approval)
-            .expect("put trust.needs_approval");
-        true
+        self.doc.put(&trust, "status", status)?;
+        self.doc.put(&trust, "needs_approval", needs_approval)?;
+        Ok(())
     }
 
-    /// Update kernel status. Returns `true` if the doc was mutated.
+    /// Update kernel status.
     ///
     /// Automatically clears `starting_phase` when transitioning away from `"starting"`.
-    #[allow(clippy::expect_used)]
-    pub fn set_kernel_status(&mut self, status: &str) -> bool {
-        let kernel = self.get_map("kernel").expect("kernel map must exist");
+    pub fn set_kernel_status(&mut self, status: &str) -> Result<(), RuntimeStateError> {
+        let kernel = self.scaffold_map("kernel")?;
         let current = self.read_str(&kernel, "status");
         if current == status {
-            return false;
+            return Ok(());
         }
-        self.doc
-            .put(&kernel, "status", status)
-            .expect("put kernel.status");
-        // Clear starting_phase when leaving "starting"
+        self.doc.put(&kernel, "status", status)?;
         if status != "starting" {
             let phase = self.read_str(&kernel, "starting_phase");
             if !phase.is_empty() {
-                self.doc
-                    .put(&kernel, "starting_phase", "")
-                    .expect("clear kernel.starting_phase");
+                self.doc.put(&kernel, "starting_phase", "")?;
             }
         }
-        true
+        Ok(())
     }
 
-    /// Update the starting phase sub-status. Returns `true` if the doc was mutated.
-    #[allow(clippy::expect_used)]
-    pub fn set_starting_phase(&mut self, phase: &str) -> bool {
-        let kernel = self.get_map("kernel").expect("kernel map must exist");
+    /// Update the starting phase sub-status.
+    pub fn set_starting_phase(&mut self, phase: &str) -> Result<(), RuntimeStateError> {
+        let kernel = self.scaffold_map("kernel")?;
         let current = self.read_str(&kernel, "starting_phase");
         if current == phase {
-            return false;
+            return Ok(());
         }
-        self.doc
-            .put(&kernel, "starting_phase", phase)
-            .expect("put kernel.starting_phase");
-        true
+        self.doc.put(&kernel, "starting_phase", phase)?;
+        Ok(())
     }
 
-    /// Update kernel info (name, language, env_source). Returns `true` if mutated.
-    #[allow(clippy::expect_used)]
-    pub fn set_kernel_info(&mut self, name: &str, language: &str, env_source: &str) -> bool {
-        let kernel = self.get_map("kernel").expect("kernel map must exist");
+    /// Update kernel info (name, language, env_source).
+    pub fn set_kernel_info(
+        &mut self,
+        name: &str,
+        language: &str,
+        env_source: &str,
+    ) -> Result<(), RuntimeStateError> {
+        let kernel = self.scaffold_map("kernel")?;
         let cur_name = self.read_str(&kernel, "name");
         let cur_lang = self.read_str(&kernel, "language");
         let cur_src = self.read_str(&kernel, "env_source");
         if cur_name == name && cur_lang == language && cur_src == env_source {
-            return false;
+            return Ok(());
         }
-        self.doc
-            .put(&kernel, "name", name)
-            .expect("put kernel.name");
-        self.doc
-            .put(&kernel, "language", language)
-            .expect("put kernel.language");
-        self.doc
-            .put(&kernel, "env_source", env_source)
-            .expect("put kernel.env_source");
-        true
+        self.doc.put(&kernel, "name", name)?;
+        self.doc.put(&kernel, "language", language)?;
+        self.doc.put(&kernel, "env_source", env_source)?;
+        Ok(())
     }
 
-    /// Set the runtime agent ID that owns this kernel. Returns `true` if mutated.
-    #[allow(clippy::expect_used)]
-    pub fn set_runtime_agent_id(&mut self, runtime_agent_id: &str) -> bool {
-        let kernel = self.get_map("kernel").expect("kernel map must exist");
+    /// Set the runtime agent ID that owns this kernel.
+    pub fn set_runtime_agent_id(
+        &mut self,
+        runtime_agent_id: &str,
+    ) -> Result<(), RuntimeStateError> {
+        let kernel = self.scaffold_map("kernel")?;
         let current = self.read_str(&kernel, "runtime_agent_id");
         if current == runtime_agent_id {
-            return false;
+            return Ok(());
         }
         self.doc
-            .put(&kernel, "runtime_agent_id", runtime_agent_id)
-            .expect("put kernel.runtime_agent_id");
-        true
+            .put(&kernel, "runtime_agent_id", runtime_agent_id)?;
+        Ok(())
     }
 
-    /// Update queue state. Returns `true` if mutated.
-    #[allow(clippy::expect_used)]
-    pub fn set_queue(&mut self, executing: Option<&QueueEntry>, queued: &[QueueEntry]) -> bool {
-        let queue = self.get_map("queue").expect("queue map must exist");
+    /// Update queue state.
+    pub fn set_queue(
+        &mut self,
+        executing: Option<&QueueEntry>,
+        queued: &[QueueEntry],
+    ) -> Result<(), RuntimeStateError> {
+        let queue = self.scaffold_map("queue")?;
         let cur_exec_cid = self.read_opt_str(&queue, "executing");
         let cur_exec_eid = self.read_opt_str(&queue, "executing_execution_id");
         let cur_queued_cids = self.read_str_list(&queue, "queued");
         let cur_queued_eids = self.read_str_list(&queue, "queued_execution_ids");
 
-        // Compare executing by both cell_id and execution_id
         let exec_match = match (&cur_exec_cid, executing) {
             (None, None) => true,
             (Some(cid), Some(entry)) => {
@@ -815,72 +860,41 @@ impl RuntimeStateDoc {
         let cur_eid_refs: Vec<&str> = cur_queued_eids.iter().map(|s| s.as_str()).collect();
 
         if exec_match && cur_cid_refs == queued_cids && cur_eid_refs == queued_eids {
-            return false;
+            return Ok(());
         }
 
-        // Write executing cell_id and execution_id
         match executing {
             Some(entry) => {
-                self.doc
-                    .put(&queue, "executing", entry.cell_id.as_str())
-                    .expect("put queue.executing");
-                self.doc
-                    .put(
-                        &queue,
-                        "executing_execution_id",
-                        entry.execution_id.as_str(),
-                    )
-                    .expect("put queue.executing_execution_id");
+                self.doc.put(&queue, "executing", entry.cell_id.as_str())?;
+                self.doc.put(
+                    &queue,
+                    "executing_execution_id",
+                    entry.execution_id.as_str(),
+                )?;
             }
             None => {
+                self.doc.put(&queue, "executing", ScalarValue::Null)?;
                 self.doc
-                    .put(&queue, "executing", ScalarValue::Null)
-                    .expect("put queue.executing null");
-                self.doc
-                    .put(&queue, "executing_execution_id", ScalarValue::Null)
-                    .expect("put queue.executing_execution_id null");
+                    .put(&queue, "executing_execution_id", ScalarValue::Null)?;
             }
         }
 
-        // Reuse existing list objects to avoid Automerge object churn.
-        let cid_list = self
-            .doc
-            .get(&queue, "queued")
-            .expect("get queue.queued")
-            .map(|(_, id)| id)
-            .expect("queued list must exist");
-        let eid_list = self
-            .doc
-            .get(&queue, "queued_execution_ids")
-            .expect("get queue.queued_execution_ids")
-            .map(|(_, id)| id)
-            .expect("queued_execution_ids list must exist");
+        let cid_list = self.scaffold_list(&queue, "queued")?;
+        let eid_list = self.scaffold_list(&queue, "queued_execution_ids")?;
 
-        // Clear existing entries (reverse order for stable indices)
-        let cid_len = self.doc.length(&cid_list);
-        for i in (0..cid_len).rev() {
-            self.doc
-                .delete(&cid_list, i)
-                .expect("delete queued cell_id");
+        for i in (0..self.doc.length(&cid_list)).rev() {
+            self.doc.delete(&cid_list, i)?;
         }
-        let eid_len = self.doc.length(&eid_list);
-        for i in (0..eid_len).rev() {
-            self.doc
-                .delete(&eid_list, i)
-                .expect("delete queued execution_id");
+        for i in (0..self.doc.length(&eid_list)).rev() {
+            self.doc.delete(&eid_list, i)?;
         }
 
-        // Insert new entries in both parallel lists
         for (i, entry) in queued.iter().enumerate() {
-            self.doc
-                .insert(&cid_list, i, entry.cell_id.as_str())
-                .expect("insert queued cell_id");
-            self.doc
-                .insert(&eid_list, i, entry.execution_id.as_str())
-                .expect("insert queued execution_id");
+            self.doc.insert(&cid_list, i, entry.cell_id.as_str())?;
+            self.doc.insert(&eid_list, i, entry.execution_id.as_str())?;
         }
 
-        true
+        Ok(())
     }
 
     // ── Execution lifecycle ─────────────────────────────────────────
@@ -888,13 +902,13 @@ impl RuntimeStateDoc {
     /// Create a new execution entry with status "queued".
     ///
     /// Called by the daemon when `queue_cell()` generates an execution_id.
-    #[allow(clippy::expect_used)]
-    pub fn create_execution(&mut self, execution_id: &str, cell_id: &str) -> bool {
-        let executions = self
-            .get_map("executions")
-            .expect("executions map must exist");
+    pub fn create_execution(
+        &mut self,
+        execution_id: &str,
+        cell_id: &str,
+    ) -> Result<(), RuntimeStateError> {
+        let executions = self.scaffold_map("executions")?;
 
-        // Don't overwrite if it already exists (idempotent queue)
         if self
             .doc
             .get(&executions, execution_id)
@@ -902,29 +916,18 @@ impl RuntimeStateDoc {
             .flatten()
             .is_some()
         {
-            return false;
+            return Ok(());
         }
 
         let entry = self
             .doc
-            .put_object(&executions, execution_id, ObjType::Map)
-            .expect("put execution entry");
-        self.doc
-            .put(&entry, "cell_id", cell_id)
-            .expect("put execution.cell_id");
-        self.doc
-            .put(&entry, "status", "queued")
-            .expect("put execution.status");
-        self.doc
-            .put(&entry, "execution_count", ScalarValue::Null)
-            .expect("put execution.execution_count");
-        self.doc
-            .put(&entry, "success", ScalarValue::Null)
-            .expect("put execution.success");
-        self.doc
-            .put_object(&entry, "outputs", ObjType::List)
-            .expect("put execution.outputs");
-        true
+            .put_object(&executions, execution_id, ObjType::Map)?;
+        self.doc.put(&entry, "cell_id", cell_id)?;
+        self.doc.put(&entry, "status", "queued")?;
+        self.doc.put(&entry, "execution_count", ScalarValue::Null)?;
+        self.doc.put(&entry, "success", ScalarValue::Null)?;
+        self.doc.put_object(&entry, "outputs", ObjType::List)?;
+        Ok(())
     }
 
     /// Create a new execution entry with source code and queue sequence number.
@@ -939,10 +942,8 @@ impl RuntimeStateDoc {
         cell_id: &str,
         source: &str,
         seq: u64,
-    ) -> Result<bool, AutomergeError> {
-        let executions = self
-            .get_map("executions")
-            .ok_or_else(|| AutomergeError::InvalidObjId("executions map must exist".to_string()))?;
+    ) -> Result<bool, RuntimeStateError> {
+        let executions = self.scaffold_map("executions")?;
 
         // Don't overwrite if it already exists (idempotent)
         if self
@@ -973,73 +974,63 @@ impl RuntimeStateDoc {
     /// The execution_count is not known yet at this point — it arrives later
     /// from the kernel's `execute_input` message. Use [`set_execution_count`]
     /// to record it when it arrives.
-    #[allow(clippy::expect_used)]
-    pub fn set_execution_running(&mut self, execution_id: &str) -> bool {
-        let executions = self
-            .get_map("executions")
-            .expect("executions map must exist");
+    pub fn set_execution_running(&mut self, execution_id: &str) -> Result<(), RuntimeStateError> {
+        let executions = self.scaffold_map("executions")?;
 
         let Some((_, entry)) = self.doc.get(&executions, execution_id).ok().flatten() else {
-            return false;
+            return Ok(());
         };
 
         let cur_status = self.read_str(&entry, "status");
         if cur_status == "running" {
-            return false;
+            return Ok(());
         }
 
-        self.doc
-            .put(&entry, "status", "running")
-            .expect("put execution.status");
-        true
+        self.doc.put(&entry, "status", "running")?;
+        Ok(())
     }
 
     /// Set the execution_count for an execution (from kernel's execute_input).
-    #[allow(clippy::expect_used)]
-    pub fn set_execution_count(&mut self, execution_id: &str, execution_count: i64) -> bool {
-        let executions = self
-            .get_map("executions")
-            .expect("executions map must exist");
+    pub fn set_execution_count(
+        &mut self,
+        execution_id: &str,
+        execution_count: i64,
+    ) -> Result<(), RuntimeStateError> {
+        let executions = self.scaffold_map("executions")?;
 
         let Some((_, entry)) = self.doc.get(&executions, execution_id).ok().flatten() else {
-            return false;
+            return Ok(());
         };
 
-        self.doc
-            .put(&entry, "execution_count", execution_count)
-            .expect("put execution.execution_count");
-        true
+        self.doc.put(&entry, "execution_count", execution_count)?;
+        Ok(())
     }
 
     /// Mark an execution as done or error.
-    #[allow(clippy::expect_used)]
-    pub fn set_execution_done(&mut self, execution_id: &str, success: bool) -> bool {
-        let executions = self
-            .get_map("executions")
-            .expect("executions map must exist");
+    pub fn set_execution_done(
+        &mut self,
+        execution_id: &str,
+        success: bool,
+    ) -> Result<(), RuntimeStateError> {
+        let executions = self.scaffold_map("executions")?;
 
         let Some((_, entry)) = self.doc.get(&executions, execution_id).ok().flatten() else {
-            return false;
+            return Ok(());
         };
 
         let status = if success { "done" } else { "error" };
-        self.doc
-            .put(&entry, "status", status)
-            .expect("put execution.status");
-        self.doc
-            .put(&entry, "success", success)
-            .expect("put execution.success");
-        true
+        self.doc.put(&entry, "status", status)?;
+        self.doc.put(&entry, "success", success)?;
+        Ok(())
     }
 
     /// Mark all in-flight executions (status "running" or "queued") as failed.
     /// Returns the number of executions marked. Used during kernel restart to
     /// catch any entries that the local KernelState doesn't know about (e.g.,
     /// entries created by CRDT sync that haven't been processed locally yet).
-    #[allow(clippy::expect_used)]
-    pub fn mark_inflight_executions_failed(&mut self) -> usize {
+    pub fn mark_inflight_executions_failed(&mut self) -> Result<usize, RuntimeStateError> {
         let Some(executions) = self.get_map("executions") else {
-            return 0;
+            return Ok(0);
         };
 
         let inflight: Vec<automerge::ObjId> =
@@ -1064,14 +1055,10 @@ impl RuntimeStateDoc {
 
         let count = inflight.len();
         for entry_id in inflight {
-            self.doc
-                .put(&entry_id, "status", "error")
-                .expect("put execution.status");
-            self.doc
-                .put(&entry_id, "success", false)
-                .expect("put execution.success");
+            self.doc.put(&entry_id, "status", "error")?;
+            self.doc.put(&entry_id, "success", false)?;
         }
-        count
+        Ok(count)
     }
 
     /// Read a single execution's state.
@@ -1507,13 +1494,11 @@ impl RuntimeStateDoc {
     ///
     /// Entries are removed in insertion order (oldest first). Always keeps
     /// the most recent execution for each cell_id regardless of `max`.
-    #[allow(clippy::expect_used)]
-    pub fn trim_executions(&mut self, max: usize) -> usize {
+    pub fn trim_executions(&mut self, max: usize) -> Result<usize, RuntimeStateError> {
         let Some(executions) = self.get_map("executions") else {
-            return 0;
+            return Ok(0);
         };
 
-        // Collect all execution_ids and their cell_ids
         let keys: Vec<(String, String)> = self
             .doc
             .keys(&executions)
@@ -1526,38 +1511,32 @@ impl RuntimeStateDoc {
 
         let total = keys.len();
         if total <= max {
-            return 0;
+            return Ok(0);
         }
 
-        // Find the last occurrence index for each cell_id (those we must keep)
         let mut last_per_cell: HashMap<&str, usize> = HashMap::new();
         for (i, (_, cell_id)) in keys.iter().enumerate() {
             last_per_cell.insert(cell_id.as_str(), i);
         }
 
-        // Remove oldest entries that aren't the last-per-cell, until we're at max
         let mut removed = 0;
         let to_remove = total - max;
         for (i, (exec_id, _)) in keys.iter().enumerate() {
             if removed >= to_remove {
                 break;
             }
-            // Skip if this is the most recent execution for its cell
             let cell_id = &keys[i].1;
             if last_per_cell.get(cell_id.as_str()) == Some(&i) {
                 continue;
             }
             self.remove_display_index_entries_for_execution(exec_id);
-            self.doc
-                .delete(&executions, exec_id.as_str())
-                .expect("delete execution entry");
+            self.doc.delete(&executions, exec_id.as_str())?;
             removed += 1;
         }
-        removed
+        Ok(removed)
     }
 
-    /// Update environment sync state. Returns `true` if mutated.
-    #[allow(clippy::expect_used)]
+    /// Update environment sync state.
     pub fn set_env_sync(
         &mut self,
         in_sync: bool,
@@ -1565,8 +1544,8 @@ impl RuntimeStateDoc {
         removed: &[String],
         channels_changed: bool,
         deno_changed: bool,
-    ) -> bool {
-        let env = self.get_map("env").expect("env map must exist");
+    ) -> Result<(), RuntimeStateError> {
+        let env = self.scaffold_map("env")?;
         let cur_in_sync = self.read_bool(&env, "in_sync");
         let cur_added = self.read_str_list(&env, "added");
         let cur_removed = self.read_str_list(&env, "removed");
@@ -1579,90 +1558,53 @@ impl RuntimeStateDoc {
             && cur_channels == channels_changed
             && cur_deno == deno_changed
         {
-            return false;
+            return Ok(());
         }
 
-        self.doc
-            .put(&env, "in_sync", in_sync)
-            .expect("put env.in_sync");
-        self.doc
-            .put(&env, "channels_changed", channels_changed)
-            .expect("put env.channels_changed");
-        self.doc
-            .put(&env, "deno_changed", deno_changed)
-            .expect("put env.deno_changed");
+        self.doc.put(&env, "in_sync", in_sync)?;
+        self.doc.put(&env, "channels_changed", channels_changed)?;
+        self.doc.put(&env, "deno_changed", deno_changed)?;
 
-        // Reuse existing list objects to avoid Automerge object churn.
-        let added_list = self
-            .doc
-            .get(&env, "added")
-            .expect("get env.added")
-            .map(|(_, id)| id)
-            .expect("added list must exist");
-        let len = self.doc.length(&added_list);
-        for i in (0..len).rev() {
-            self.doc.delete(&added_list, i).expect("delete added entry");
+        let added_list = self.scaffold_list(&env, "added")?;
+        for i in (0..self.doc.length(&added_list)).rev() {
+            self.doc.delete(&added_list, i)?;
         }
         for (i, pkg) in added.iter().enumerate() {
-            self.doc
-                .insert(&added_list, i, pkg.as_str())
-                .expect("insert added pkg");
+            self.doc.insert(&added_list, i, pkg.as_str())?;
         }
 
-        let removed_list = self
-            .doc
-            .get(&env, "removed")
-            .expect("get env.removed")
-            .map(|(_, id)| id)
-            .expect("removed list must exist");
-        let len = self.doc.length(&removed_list);
-        for i in (0..len).rev() {
-            self.doc
-                .delete(&removed_list, i)
-                .expect("delete removed entry");
+        let removed_list = self.scaffold_list(&env, "removed")?;
+        for i in (0..self.doc.length(&removed_list)).rev() {
+            self.doc.delete(&removed_list, i)?;
         }
         for (i, pkg) in removed.iter().enumerate() {
-            self.doc
-                .insert(&removed_list, i, pkg.as_str())
-                .expect("insert removed pkg");
+            self.doc.insert(&removed_list, i, pkg.as_str())?;
         }
 
-        true
+        Ok(())
     }
 
-    /// Update prewarmed packages list. Returns `true` if mutated.
-    #[allow(clippy::expect_used)]
-    pub fn set_prewarmed_packages(&mut self, packages: &[String]) -> bool {
-        let env = self.get_map("env").expect("env map must exist");
+    /// Update prewarmed packages list.
+    pub fn set_prewarmed_packages(&mut self, packages: &[String]) -> Result<(), RuntimeStateError> {
+        let env = self.scaffold_map("env")?;
         let current = self.read_str_list(&env, "prewarmed_packages");
         if current == packages {
-            return false;
+            return Ok(());
         }
 
-        let list = self
-            .doc
-            .get(&env, "prewarmed_packages")
-            .expect("get env.prewarmed_packages")
-            .map(|(_, id)| id)
-            .expect("prewarmed_packages list must exist");
-        let len = self.doc.length(&list);
-        for i in (0..len).rev() {
-            self.doc
-                .delete(&list, i)
-                .expect("delete prewarmed_packages entry");
+        let list = self.scaffold_list(&env, "prewarmed_packages")?;
+        for i in (0..self.doc.length(&list)).rev() {
+            self.doc.delete(&list, i)?;
         }
         for (i, pkg) in packages.iter().enumerate() {
-            self.doc
-                .insert(&list, i, pkg.as_str())
-                .expect("insert prewarmed_packages pkg");
+            self.doc.insert(&list, i, pkg.as_str())?;
         }
 
-        true
+        Ok(())
     }
 
-    /// Set the `last_saved` timestamp. Returns `true` if mutated.
-    #[allow(clippy::expect_used)]
-    pub fn set_last_saved(&mut self, timestamp: Option<&str>) -> bool {
+    /// Set the `last_saved` timestamp.
+    pub fn set_last_saved(&mut self, timestamp: Option<&str>) -> Result<(), RuntimeStateError> {
         let current = self
             .doc
             .get(&ROOT, "last_saved")
@@ -1684,27 +1626,20 @@ impl RuntimeStateDoc {
         };
 
         if matches {
-            return false;
+            return Ok(());
         }
 
         match timestamp {
-            Some(ts) => self
-                .doc
-                .put(&ROOT, "last_saved", ts)
-                .expect("put last_saved"),
-            None => self
-                .doc
-                .put(&ROOT, "last_saved", ScalarValue::Null)
-                .expect("put last_saved null"),
+            Some(ts) => self.doc.put(&ROOT, "last_saved", ts)?,
+            None => self.doc.put(&ROOT, "last_saved", ScalarValue::Null)?,
         }
 
-        true
+        Ok(())
     }
 
     // ── Comm lifecycle ────────────────────────────────────────────────
 
     /// Insert or replace a full comm entry (used on `comm_open`).
-    #[allow(clippy::expect_used)]
     pub fn put_comm(
         &mut self,
         comm_id: &str,
@@ -1713,34 +1648,18 @@ impl RuntimeStateDoc {
         model_name: &str,
         state: &serde_json::Value,
         seq: u64,
-    ) {
-        let comms = self.get_map("comms").expect("comms map must exist");
-        let entry = self
-            .doc
-            .put_object(&comms, comm_id, ObjType::Map)
-            .expect("put comm entry");
-        self.doc
-            .put(&entry, "target_name", target_name)
-            .expect("put comm.target_name");
-        self.doc
-            .put(&entry, "model_module", model_module)
-            .expect("put comm.model_module");
-        self.doc
-            .put(&entry, "model_name", model_name)
-            .expect("put comm.model_name");
-        // Store state as a native Automerge map for per-property merge.
-        // Safe: `entry` was just created by `put_object` above — no competing peers.
+    ) -> Result<(), RuntimeStateError> {
+        let comms = self.scaffold_map("comms")?;
+        let entry = self.doc.put_object(&comms, comm_id, ObjType::Map)?;
+        self.doc.put(&entry, "target_name", target_name)?;
+        self.doc.put(&entry, "model_module", model_module)?;
+        self.doc.put(&entry, "model_name", model_name)?;
         #[allow(deprecated)]
-        crate::put_json_at_key(&mut self.doc, &entry, "state", state).expect("put comm.state");
-        self.doc
-            .put(&entry, "seq", seq as i64)
-            .expect("put comm.seq");
-        self.doc
-            .put_object(&entry, "outputs", ObjType::List)
-            .expect("put comm.outputs");
-        self.doc
-            .put(&entry, "capture_msg_id", "")
-            .expect("put comm.capture_msg_id");
+        crate::put_json_at_key(&mut self.doc, &entry, "state", state)?;
+        self.doc.put(&entry, "seq", seq as i64)?;
+        self.doc.put_object(&entry, "outputs", ObjType::List)?;
+        self.doc.put(&entry, "capture_msg_id", "")?;
+        Ok(())
     }
 
     /// Replace the full state for an existing comm.
@@ -1750,27 +1669,25 @@ impl RuntimeStateDoc {
     /// Writes directly to `comms/{comm_id}/state/{key}` as a native
     /// Automerge value. This is the per-property write path used by
     /// the frontend for CRDT-based widget updates.
-    #[allow(clippy::expect_used)]
     pub fn set_comm_state_property(
         &mut self,
         comm_id: &str,
         key: &str,
         value: &serde_json::Value,
-    ) -> bool {
+    ) -> Result<(), RuntimeStateError> {
         let Some(comms) = self.get_map("comms") else {
-            return false;
+            return Ok(());
         };
         let Some((_, entry)) = self.doc.get(&comms, comm_id).ok().flatten() else {
-            return false;
+            return Ok(());
         };
         let Some((Value::Object(ObjType::Map), state_id)) =
             self.doc.get(&entry, "state").ok().flatten()
         else {
-            return false;
+            return Ok(());
         };
-        crate::update_json_at_key(&mut self.doc, &state_id, key, value)
-            .expect("update comm.state.key");
-        true
+        crate::update_json_at_key(&mut self.doc, &state_id, key, value)?;
+        Ok(())
     }
 
     /// Merge a state delta into a comm's state map, skipping no-op writes.
@@ -1781,27 +1698,27 @@ impl RuntimeStateDoc {
     /// frontend writes a value → kernel echoes the same value back.
     ///
     /// Returns `true` if any property was actually changed.
-    #[allow(clippy::expect_used)]
-    pub fn merge_comm_state_delta(&mut self, comm_id: &str, delta: &serde_json::Value) -> bool {
+    pub fn merge_comm_state_delta(
+        &mut self,
+        comm_id: &str,
+        delta: &serde_json::Value,
+    ) -> Result<(), RuntimeStateError> {
         let Some(obj) = delta.as_object() else {
-            return false;
+            return Ok(());
         };
         let Some(comms) = self.get_map("comms") else {
-            return false;
+            return Ok(());
         };
         let Some((_, entry)) = self.doc.get(&comms, comm_id).ok().flatten() else {
-            return false;
+            return Ok(());
         };
         let Some((Value::Object(ObjType::Map), state_id)) =
             self.doc.get(&entry, "state").ok().flatten()
         else {
-            return false;
+            return Ok(());
         };
 
-        let mut any_changed = false;
         for (key, new_value) in obj {
-            // For scalars, compare before writing to avoid no-op CRDT ops.
-            // Objects/arrays are written unconditionally (rare in widget deltas).
             let should_write = match new_value {
                 serde_json::Value::Null
                 | serde_json::Value::Bool(_)
@@ -1813,12 +1730,10 @@ impl RuntimeStateDoc {
                 _ => true,
             };
             if should_write {
-                crate::update_json_at_key(&mut self.doc, &state_id, key, new_value)
-                    .expect("update comm.state.key");
-                any_changed = true;
+                crate::update_json_at_key(&mut self.doc, &state_id, key, new_value)?;
             }
         }
-        any_changed
+        Ok(())
     }
 
     /// Set or clear the capture_msg_id for an Output widget.
@@ -1826,18 +1741,19 @@ impl RuntimeStateDoc {
     /// When `msg_id` is non-empty, kernel outputs with matching
     /// `parent_header.msg_id` will be routed to this widget.
     /// Returns `false` if the comm doesn't exist.
-    #[allow(clippy::expect_used)]
-    pub fn set_comm_capture_msg_id(&mut self, comm_id: &str, msg_id: &str) -> bool {
+    pub fn set_comm_capture_msg_id(
+        &mut self,
+        comm_id: &str,
+        msg_id: &str,
+    ) -> Result<(), RuntimeStateError> {
         let Some(comms) = self.get_map("comms") else {
-            return false;
+            return Ok(());
         };
         let Some((_, entry)) = self.doc.get(&comms, comm_id).ok().flatten() else {
-            return false;
+            return Ok(());
         };
-        self.doc
-            .put(&entry, "capture_msg_id", msg_id)
-            .expect("put comm.capture_msg_id");
-        true
+        self.doc.put(&entry, "capture_msg_id", msg_id)?;
+        Ok(())
     }
 
     /// Find the comm_id that is capturing outputs for a given msg_id.
@@ -1863,34 +1779,29 @@ impl RuntimeStateDoc {
     /// Remove a comm entry (used on `comm_close`).
     ///
     /// Returns `false` if the comm doesn't exist.
-    #[allow(clippy::expect_used)]
-    pub fn remove_comm(&mut self, comm_id: &str) -> bool {
+    pub fn remove_comm(&mut self, comm_id: &str) -> Result<(), RuntimeStateError> {
         let Some(comms) = self.get_map("comms") else {
-            return false;
+            return Ok(());
         };
         if self.doc.get(&comms, comm_id).ok().flatten().is_none() {
-            return false;
+            return Ok(());
         }
-        self.doc.delete(&comms, comm_id).expect("delete comm");
-        true
+        self.doc.delete(&comms, comm_id)?;
+        Ok(())
     }
 
     /// Remove all comm entries (used on kernel shutdown/restart).
     ///
     /// Returns `false` if there were no comms to remove.
-    #[allow(clippy::expect_used)]
-    pub fn clear_comms(&mut self) -> bool {
+    pub fn clear_comms(&mut self) -> Result<(), RuntimeStateError> {
         let Some(comms) = self.get_map("comms") else {
-            return false;
+            return Ok(());
         };
         let keys: Vec<String> = self.doc.keys(&comms).collect();
-        if keys.is_empty() {
-            return false;
-        }
         for key in keys {
-            self.doc.delete(&comms, &key).expect("delete comm entry");
+            self.doc.delete(&comms, &key)?;
         }
-        true
+        Ok(())
     }
 
     /// Read a single comm entry.
@@ -1914,49 +1825,46 @@ impl RuntimeStateDoc {
     /// Append an output manifest to a comm's outputs list (OutputModel widgets).
     ///
     /// Returns `false` if the comm doesn't exist.
-    #[allow(clippy::expect_used)]
-    pub fn append_comm_output(&mut self, comm_id: &str, manifest: &serde_json::Value) -> bool {
+    pub fn append_comm_output(
+        &mut self,
+        comm_id: &str,
+        manifest: &serde_json::Value,
+    ) -> Result<(), RuntimeStateError> {
         let Some(comms) = self.get_map("comms") else {
-            return false;
+            return Ok(());
         };
         let Some((_, entry)) = self.doc.get(&comms, comm_id).ok().flatten() else {
-            return false;
+            return Ok(());
         };
         let Some((Value::Object(ObjType::List), list_id)) =
             self.doc.get(&entry, "outputs").ok().flatten()
         else {
-            return false;
+            return Ok(());
         };
         let len = self.doc.length(&list_id);
-        crate::insert_json_at_index(&mut self.doc, &list_id, len, manifest)
-            .expect("append comm output");
-        true
+        crate::insert_json_at_index(&mut self.doc, &list_id, len, manifest)?;
+        Ok(())
     }
 
     /// Clear a comm's outputs list (OutputModel widgets).
     ///
     /// Returns `false` if the comm doesn't exist or outputs is already empty.
-    #[allow(clippy::expect_used)]
-    pub fn clear_comm_outputs(&mut self, comm_id: &str) -> bool {
+    pub fn clear_comm_outputs(&mut self, comm_id: &str) -> Result<(), RuntimeStateError> {
         let Some(comms) = self.get_map("comms") else {
-            return false;
+            return Ok(());
         };
         let Some((_, entry)) = self.doc.get(&comms, comm_id).ok().flatten() else {
-            return false;
+            return Ok(());
         };
         let Some((Value::Object(ObjType::List), list_id)) =
             self.doc.get(&entry, "outputs").ok().flatten()
         else {
-            return false;
+            return Ok(());
         };
-        let len = self.doc.length(&list_id);
-        if len == 0 {
-            return false;
+        for i in (0..self.doc.length(&list_id)).rev() {
+            self.doc.delete(&list_id, i)?;
         }
-        for i in (0..len).rev() {
-            self.doc.delete(&list_id, i).expect("clear comm output");
-        }
-        true
+        Ok(())
     }
 
     // ── Full state read ─────────────────────────────────────────────
@@ -2480,17 +2388,18 @@ mod tests {
     #[test]
     fn test_set_kernel_status() {
         let mut doc = RuntimeStateDoc::new();
-        assert!(doc.set_kernel_status("busy"));
+        doc.set_kernel_status("busy").unwrap();
         assert_eq!(doc.read_state().kernel.status, "busy");
 
-        assert!(doc.set_kernel_status("idle"));
+        doc.set_kernel_status("idle").unwrap();
         assert_eq!(doc.read_state().kernel.status, "idle");
     }
 
     #[test]
     fn test_set_kernel_info() {
         let mut doc = RuntimeStateDoc::new();
-        assert!(doc.set_kernel_info("charming-toucan", "python", "uv:prewarmed"));
+        doc.set_kernel_info("charming-toucan", "python", "uv:prewarmed")
+            .unwrap();
         let state = doc.read_state();
         assert_eq!(state.kernel.name, "charming-toucan");
         assert_eq!(state.kernel.language, "python");
@@ -2514,7 +2423,7 @@ mod tests {
                 execution_id: "exec-3".to_string(),
             },
         ];
-        assert!(doc.set_queue(Some(&exec), &queued));
+        doc.set_queue(Some(&exec), &queued).unwrap();
 
         let state = doc.read_state();
         assert_eq!(state.queue.executing.as_ref().unwrap().cell_id, "cell-1");
@@ -2534,7 +2443,8 @@ mod tests {
         let mut doc = RuntimeStateDoc::new();
         let added = vec!["numpy".to_string(), "pandas".to_string()];
         let removed = vec!["scipy".to_string()];
-        assert!(doc.set_env_sync(false, &added, &removed, true, false));
+        doc.set_env_sync(false, &added, &removed, true, false)
+            .unwrap();
 
         let state = doc.read_state();
         assert!(!state.env.in_sync);
@@ -2547,26 +2457,25 @@ mod tests {
     #[test]
     fn test_set_last_saved() {
         let mut doc = RuntimeStateDoc::new();
-        assert!(doc.set_last_saved(Some("2025-01-15T12:00:00Z")));
+        doc.set_last_saved(Some("2025-01-15T12:00:00Z")).unwrap();
         assert_eq!(
             doc.read_state().last_saved,
             Some("2025-01-15T12:00:00Z".to_string())
         );
 
-        // Set to None
-        assert!(doc.set_last_saved(None));
+        doc.set_last_saved(None).unwrap();
         assert_eq!(doc.read_state().last_saved, None);
     }
 
     #[test]
     fn test_set_trust() {
         let mut doc = RuntimeStateDoc::new();
-        assert!(doc.set_trust("untrusted", true));
+        doc.set_trust("untrusted", true).unwrap();
         let state = doc.read_state();
         assert_eq!(state.trust.status, "untrusted");
         assert!(state.trust.needs_approval);
 
-        assert!(doc.set_trust("trusted", false));
+        doc.set_trust("trusted", false).unwrap();
         let state = doc.read_state();
         assert_eq!(state.trust.status, "trusted");
         assert!(!state.trust.needs_approval);
@@ -2575,32 +2484,32 @@ mod tests {
     #[test]
     fn test_set_starting_phase() {
         let mut doc = RuntimeStateDoc::new();
-        assert!(doc.set_kernel_status("starting"));
-        assert!(doc.set_starting_phase("resolving"));
+        doc.set_kernel_status("starting").unwrap();
+        doc.set_starting_phase("resolving").unwrap();
         assert_eq!(doc.read_state().kernel.starting_phase, "resolving");
 
-        assert!(doc.set_starting_phase("launching"));
+        doc.set_starting_phase("launching").unwrap();
         assert_eq!(doc.read_state().kernel.starting_phase, "launching");
 
         // Dedup: same phase is no-op
-        assert!(!doc.set_starting_phase("launching"));
+        doc.set_starting_phase("launching").unwrap();
     }
 
     #[test]
     fn test_kernel_status_clears_starting_phase() {
         let mut doc = RuntimeStateDoc::new();
-        doc.set_kernel_status("starting");
-        doc.set_starting_phase("connecting");
+        doc.set_kernel_status("starting").unwrap();
+        doc.set_starting_phase("connecting").unwrap();
         assert_eq!(doc.read_state().kernel.starting_phase, "connecting");
 
         // Transitioning to "idle" should clear starting_phase
-        doc.set_kernel_status("idle");
+        doc.set_kernel_status("idle").unwrap();
         assert_eq!(doc.read_state().kernel.starting_phase, "");
 
         // Same for error
-        doc.set_kernel_status("starting");
-        doc.set_starting_phase("launching");
-        doc.set_kernel_status("error");
+        doc.set_kernel_status("starting").unwrap();
+        doc.set_starting_phase("launching").unwrap();
+        doc.set_kernel_status("error").unwrap();
         assert_eq!(doc.read_state().kernel.starting_phase, "");
     }
 
@@ -2609,13 +2518,13 @@ mod tests {
         let mut doc = RuntimeStateDoc::new();
 
         // First write mutates
-        assert!(doc.set_kernel_status("busy"));
+        doc.set_kernel_status("busy").unwrap();
         // Same value — no mutation
-        assert!(!doc.set_kernel_status("busy"));
+        doc.set_kernel_status("busy").unwrap();
 
         // Same for kernel info
-        assert!(doc.set_kernel_info("k", "python", "uv:prewarmed"));
-        assert!(!doc.set_kernel_info("k", "python", "uv:prewarmed"));
+        doc.set_kernel_info("k", "python", "uv:prewarmed").unwrap();
+        doc.set_kernel_info("k", "python", "uv:prewarmed").unwrap();
 
         // Same for queue
         let exec = QueueEntry {
@@ -2626,53 +2535,57 @@ mod tests {
             cell_id: "a".to_string(),
             execution_id: "e2".to_string(),
         }];
-        assert!(doc.set_queue(Some(&exec), &q));
-        assert!(!doc.set_queue(Some(&exec), &q));
+        doc.set_queue(Some(&exec), &q).unwrap();
+        doc.set_queue(Some(&exec), &q).unwrap();
 
-        // Same for env — defaults are (true, [], [], false, false),
-        // so use non-default values to get an initial mutation.
-        assert!(doc.set_env_sync(false, &[], &[], false, false));
-        assert!(!doc.set_env_sync(false, &[], &[], false, false));
+        doc.set_env_sync(false, &[], &[], false, false).unwrap();
+        doc.set_env_sync(false, &[], &[], false, false).unwrap();
 
-        // Same for trust — default is ("no_dependencies", false)
-        assert!(doc.set_trust("trusted", false));
-        assert!(!doc.set_trust("trusted", false));
+        doc.set_trust("trusted", false).unwrap();
+        doc.set_trust("trusted", false).unwrap();
 
-        // Same for last_saved
-        assert!(doc.set_last_saved(Some("2025-01-15T12:00:00Z")));
-        assert!(!doc.set_last_saved(Some("2025-01-15T12:00:00Z")));
+        doc.set_last_saved(Some("2025-01-15T12:00:00Z")).unwrap();
+        doc.set_last_saved(Some("2025-01-15T12:00:00Z")).unwrap();
     }
 
     #[test]
     fn test_sync_between_two_docs() {
         let mut daemon_doc = RuntimeStateDoc::new();
-        daemon_doc.set_kernel_status("busy");
-        daemon_doc.set_kernel_info("charming-toucan", "python", "uv:prewarmed");
-        daemon_doc.set_queue(
-            Some(&QueueEntry {
-                cell_id: "cell-1".to_string(),
-                execution_id: "exec-1".to_string(),
-            }),
-            &[
-                QueueEntry {
-                    cell_id: "cell-2".to_string(),
-                    execution_id: "exec-2".to_string(),
-                },
-                QueueEntry {
-                    cell_id: "cell-3".to_string(),
-                    execution_id: "exec-3".to_string(),
-                },
-            ],
-        );
-        daemon_doc.set_env_sync(
-            false,
-            &["numpy".to_string()],
-            &["scipy".to_string()],
-            true,
-            false,
-        );
-        daemon_doc.set_trust("untrusted", true);
-        daemon_doc.set_last_saved(Some("2025-01-15T12:00:00Z"));
+        daemon_doc.set_kernel_status("busy").unwrap();
+        daemon_doc
+            .set_kernel_info("charming-toucan", "python", "uv:prewarmed")
+            .unwrap();
+        daemon_doc
+            .set_queue(
+                Some(&QueueEntry {
+                    cell_id: "cell-1".to_string(),
+                    execution_id: "exec-1".to_string(),
+                }),
+                &[
+                    QueueEntry {
+                        cell_id: "cell-2".to_string(),
+                        execution_id: "exec-2".to_string(),
+                    },
+                    QueueEntry {
+                        cell_id: "cell-3".to_string(),
+                        execution_id: "exec-3".to_string(),
+                    },
+                ],
+            )
+            .unwrap();
+        daemon_doc
+            .set_env_sync(
+                false,
+                &["numpy".to_string()],
+                &["scipy".to_string()],
+                true,
+                false,
+            )
+            .unwrap();
+        daemon_doc.set_trust("untrusted", true).unwrap();
+        daemon_doc
+            .set_last_saved(Some("2025-01-15T12:00:00Z"))
+            .unwrap();
 
         // Client uses new_empty() — random actor, no scaffolding.
         let mut client_doc = RuntimeStateDoc::new_empty();
@@ -2725,7 +2638,7 @@ mod tests {
     #[test]
     fn test_generate_sync_message_bounded_encoded_compacts_on_oversized() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1");
+        doc.create_execution("exec-1", "cell-1").unwrap();
         for i in 0..50 {
             let manifest = serde_json::json!({
                 "output_type": "stream",
@@ -2777,7 +2690,7 @@ mod tests {
     #[test]
     fn test_generate_sync_message_bounded_encoded_no_compact_under_limit() {
         let mut doc = RuntimeStateDoc::new();
-        doc.set_kernel_status("idle");
+        doc.set_kernel_status("idle").unwrap();
 
         let mut peer_state = sync::State::new();
         let encoded = doc.generate_sync_message_bounded_encoded(&mut peer_state, 100 * 1024 * 1024);
@@ -2789,7 +2702,7 @@ mod tests {
     #[test]
     fn test_create_execution() {
         let mut doc = RuntimeStateDoc::new();
-        assert!(doc.create_execution("exec-1", "cell-1"));
+        doc.create_execution("exec-1", "cell-1").unwrap();
 
         let es = doc.get_execution("exec-1").unwrap();
         assert_eq!(es.cell_id, "cell-1");
@@ -2829,7 +2742,7 @@ mod tests {
         assert_eq!(queued[2].0, "exec-3");
 
         // Transition one to running — should no longer appear
-        doc.set_execution_running("exec-1");
+        doc.set_execution_running("exec-1").unwrap();
         let queued = doc.get_queued_executions();
         assert_eq!(queued.len(), 2);
         assert_eq!(queued[0].0, "exec-2");
@@ -2838,29 +2751,29 @@ mod tests {
     #[test]
     fn test_create_execution_idempotent() {
         let mut doc = RuntimeStateDoc::new();
-        assert!(doc.create_execution("exec-1", "cell-1"));
+        doc.create_execution("exec-1", "cell-1").unwrap();
         // Second create for same execution_id is a no-op
-        assert!(!doc.create_execution("exec-1", "cell-1"));
+        doc.create_execution("exec-1", "cell-1").unwrap();
     }
 
     #[test]
     fn test_execution_lifecycle_success() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1");
+        doc.create_execution("exec-1", "cell-1").unwrap();
 
         // queued → running
-        assert!(doc.set_execution_running("exec-1"));
+        doc.set_execution_running("exec-1").unwrap();
         let es = doc.get_execution("exec-1").unwrap();
         assert_eq!(es.status, "running");
         assert_eq!(es.execution_count, None);
 
         // Set execution_count separately (from kernel execute_input)
-        assert!(doc.set_execution_count("exec-1", 5));
+        doc.set_execution_count("exec-1", 5).unwrap();
         let es = doc.get_execution("exec-1").unwrap();
         assert_eq!(es.execution_count, Some(5));
 
         // running → done
-        assert!(doc.set_execution_done("exec-1", true));
+        doc.set_execution_done("exec-1", true).unwrap();
         let es = doc.get_execution("exec-1").unwrap();
         assert_eq!(es.status, "done");
         assert_eq!(es.success, Some(true));
@@ -2869,12 +2782,12 @@ mod tests {
     #[test]
     fn test_execution_lifecycle_error() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1");
-        doc.set_execution_running("exec-1");
-        doc.set_execution_count("exec-1", 3);
+        doc.create_execution("exec-1", "cell-1").unwrap();
+        doc.set_execution_running("exec-1").unwrap();
+        doc.set_execution_count("exec-1", 3).unwrap();
 
         // running → error
-        assert!(doc.set_execution_done("exec-1", false));
+        doc.set_execution_done("exec-1", false).unwrap();
         let es = doc.get_execution("exec-1").unwrap();
         assert_eq!(es.status, "error");
         assert_eq!(es.success, Some(false));
@@ -2890,20 +2803,20 @@ mod tests {
     fn test_mark_inflight_executions_failed() {
         let mut doc = RuntimeStateDoc::new();
         // One running, one queued, one already done
-        doc.create_execution("exec-running", "cell-1");
-        doc.set_execution_running("exec-running");
+        doc.create_execution("exec-running", "cell-1").unwrap();
+        doc.set_execution_running("exec-running").unwrap();
 
-        doc.create_execution("exec-queued", "cell-2");
+        doc.create_execution("exec-queued", "cell-2").unwrap();
 
-        doc.create_execution("exec-done", "cell-3");
-        doc.set_execution_running("exec-done");
-        doc.set_execution_done("exec-done", true);
+        doc.create_execution("exec-done", "cell-3").unwrap();
+        doc.set_execution_running("exec-done").unwrap();
+        doc.set_execution_done("exec-done", true).unwrap();
 
         assert_eq!(doc.get_execution("exec-running").unwrap().status, "running");
         assert_eq!(doc.get_execution("exec-queued").unwrap().status, "queued");
         assert_eq!(doc.get_execution("exec-done").unwrap().status, "done");
 
-        let marked = doc.mark_inflight_executions_failed();
+        let marked = doc.mark_inflight_executions_failed().unwrap();
         assert_eq!(marked, 2);
 
         assert_eq!(doc.get_execution("exec-running").unwrap().status, "error");
@@ -2924,29 +2837,29 @@ mod tests {
     #[test]
     fn test_mark_inflight_noop_when_all_done() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1");
-        doc.set_execution_running("exec-1");
-        doc.set_execution_done("exec-1", true);
+        doc.create_execution("exec-1", "cell-1").unwrap();
+        doc.set_execution_running("exec-1").unwrap();
+        doc.set_execution_done("exec-1", true).unwrap();
 
-        assert_eq!(doc.mark_inflight_executions_failed(), 0);
+        assert_eq!(doc.mark_inflight_executions_failed().unwrap(), 0);
     }
 
     #[test]
     fn test_set_execution_running_idempotent() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1");
-        assert!(doc.set_execution_running("exec-1"));
+        doc.create_execution("exec-1", "cell-1").unwrap();
+        doc.set_execution_running("exec-1").unwrap();
         // Already running — no-op
-        assert!(!doc.set_execution_running("exec-1"));
+        doc.set_execution_running("exec-1").unwrap();
     }
 
     #[test]
     fn test_executions_in_read_state() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1");
-        doc.set_execution_running("exec-1");
-        doc.set_execution_count("exec-1", 7);
-        doc.create_execution("exec-2", "cell-2");
+        doc.create_execution("exec-1", "cell-1").unwrap();
+        doc.set_execution_running("exec-1").unwrap();
+        doc.set_execution_count("exec-1", 7).unwrap();
+        doc.create_execution("exec-2", "cell-2").unwrap();
 
         let state = doc.read_state();
         assert_eq!(state.executions.len(), 2);
@@ -2965,15 +2878,15 @@ mod tests {
     fn test_trim_executions() {
         let mut doc = RuntimeStateDoc::new();
         // Create 5 executions for 2 cells
-        doc.create_execution("e1", "cell-a");
-        doc.create_execution("e2", "cell-a");
-        doc.create_execution("e3", "cell-b");
-        doc.create_execution("e4", "cell-a");
-        doc.create_execution("e5", "cell-b");
+        doc.create_execution("e1", "cell-a").unwrap();
+        doc.create_execution("e2", "cell-a").unwrap();
+        doc.create_execution("e3", "cell-b").unwrap();
+        doc.create_execution("e4", "cell-a").unwrap();
+        doc.create_execution("e5", "cell-b").unwrap();
 
         // Trim to 3 — should keep e4 (latest cell-a), e5 (latest cell-b),
         // and one more. Oldest non-latest-per-cell are removed first.
-        let removed = doc.trim_executions(3);
+        let removed = doc.trim_executions(3).unwrap();
         assert!(removed > 0);
 
         let state = doc.read_state();
@@ -2986,19 +2899,19 @@ mod tests {
     #[test]
     fn test_trim_executions_noop_when_under_max() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("e1", "cell-1");
-        doc.create_execution("e2", "cell-2");
-        assert_eq!(doc.trim_executions(10), 0);
+        doc.create_execution("e1", "cell-1").unwrap();
+        doc.create_execution("e2", "cell-2").unwrap();
+        assert_eq!(doc.trim_executions(10).unwrap(), 0);
         assert_eq!(doc.read_state().executions.len(), 2);
     }
 
     #[test]
     fn test_execution_lifecycle_syncs_between_docs() {
         let mut daemon_doc = RuntimeStateDoc::new();
-        daemon_doc.create_execution("exec-1", "cell-1");
-        daemon_doc.set_execution_running("exec-1");
-        daemon_doc.set_execution_count("exec-1", 3);
-        daemon_doc.set_execution_done("exec-1", true);
+        daemon_doc.create_execution("exec-1", "cell-1").unwrap();
+        daemon_doc.set_execution_running("exec-1").unwrap();
+        daemon_doc.set_execution_count("exec-1", 3).unwrap();
+        daemon_doc.set_execution_done("exec-1", true).unwrap();
 
         // Sync to client (use raw automerge sync for client receive,
         // change-stripping receive for daemon — matches real topology).
@@ -3047,7 +2960,7 @@ mod tests {
             cell_id: "cell-1".to_string(),
             execution_id: "exec-1".to_string(),
         };
-        fork.set_queue(Some(&entry), &[]);
+        fork.set_queue(Some(&entry), &[]).unwrap();
 
         doc.merge(&mut fork).unwrap();
 
@@ -3072,10 +2985,10 @@ mod tests {
             cell_id: "cell-1".to_string(),
             execution_id: "exec-1".to_string(),
         };
-        fork.set_queue(Some(&entry), &[]);
+        fork.set_queue(Some(&entry), &[]).unwrap();
 
         // Write kernel status on original (concurrent)
-        doc.set_kernel_status("busy");
+        doc.set_kernel_status("busy").unwrap();
 
         // Merge — both changes should compose
         doc.merge(&mut fork).unwrap();
@@ -3108,9 +3021,9 @@ mod tests {
 
         doc.fork_and_merge(|fork| {
             fork.set_actor("runtimed:state:test");
-            fork.set_kernel_status("error");
-            fork.set_queue(None, &[]);
-            fork.set_execution_done("exec-1", false);
+            fork.set_kernel_status("error").unwrap();
+            fork.set_queue(None, &[]).unwrap();
+            fork.set_execution_done("exec-1", false).unwrap();
         });
 
         let state = doc.read_state();
@@ -3123,7 +3036,7 @@ mod tests {
     #[test]
     fn test_append_output() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1");
+        doc.create_execution("exec-1", "cell-1").unwrap();
         let m_a = test_stream("hash-a");
         let m_b = test_stream("hash-b");
         let idx0 = doc.append_output("exec-1", &m_a).unwrap();
@@ -3149,7 +3062,7 @@ mod tests {
         // The production call sites now assign a unique actor per
         // fork so this error is impossible to hit in practice.
         let mut main = RuntimeStateDoc::new();
-        main.create_execution("exec-1", "cell-1");
+        main.create_execution("exec-1", "cell-1").unwrap();
 
         let shared_actor = "rt:kernel:shared";
 
@@ -3176,7 +3089,7 @@ mod tests {
         // Same setup as the previous test but each fork gets its own
         // actor suffix. Both inserts must survive the merge.
         let mut main = RuntimeStateDoc::new();
-        main.create_execution("exec-1", "cell-1");
+        main.create_execution("exec-1", "cell-1").unwrap();
 
         let mut fa = main.fork();
         fa.set_actor("rt:kernel:shared:fork-a");
@@ -3201,7 +3114,7 @@ mod tests {
     #[test]
     fn test_set_outputs() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1");
+        doc.create_execution("exec-1", "cell-1").unwrap();
         doc.append_output("exec-1", &test_stream("old-hash"))
             .unwrap();
 
@@ -3214,7 +3127,7 @@ mod tests {
     #[test]
     fn test_clear_execution_outputs() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1");
+        doc.create_execution("exec-1", "cell-1").unwrap();
         doc.append_output("exec-1", &test_stream("hash-a")).unwrap();
         doc.append_output("exec-1", &test_stream("hash-b")).unwrap();
 
@@ -3231,9 +3144,9 @@ mod tests {
         // success, or the cell keeps showing its stale [N]: counter
         // (matches JupyterLab's clearExecution()).
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1");
-        doc.set_execution_count("exec-1", 7);
-        doc.set_execution_done("exec-1", true);
+        doc.create_execution("exec-1", "cell-1").unwrap();
+        doc.set_execution_count("exec-1", 7).unwrap();
+        doc.set_execution_done("exec-1", true).unwrap();
         doc.append_output("exec-1", &test_stream("hash-a")).unwrap();
 
         let before = doc.get_execution("exec-1").unwrap();
@@ -3253,7 +3166,7 @@ mod tests {
     #[test]
     fn test_replace_output() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1");
+        doc.create_execution("exec-1", "cell-1").unwrap();
         let m_a = test_display("hash-a");
         let m_b = test_display("hash-b");
         let m_c = test_display("hash-c");
@@ -3273,7 +3186,7 @@ mod tests {
     #[test]
     fn test_replace_output_removes_stale_keys() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1");
+        doc.create_execution("exec-1", "cell-1").unwrap();
 
         // Original manifest has an extra key (display_id)
         let original = serde_json::json!({
@@ -3299,7 +3212,7 @@ mod tests {
     #[test]
     fn test_upsert_stream_output_append() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1");
+        doc.create_execution("exec-1", "cell-1").unwrap();
 
         let manifest = test_stream("hash-a");
         // No known state → append
@@ -3314,7 +3227,7 @@ mod tests {
     #[test]
     fn test_upsert_stream_output_update_in_place() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1");
+        doc.create_execution("exec-1", "cell-1").unwrap();
         let m_a = test_stream("hash-a");
         doc.append_output("exec-1", &m_a).unwrap();
 
@@ -3334,7 +3247,7 @@ mod tests {
     #[test]
     fn test_upsert_stream_output_inline_update_in_place() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1");
+        doc.create_execution("exec-1", "cell-1").unwrap();
         let m_a = test_stream_inline("***");
         doc.append_output("exec-1", &m_a).unwrap();
 
@@ -3355,7 +3268,7 @@ mod tests {
     #[test]
     fn test_upsert_stream_output_inline_to_blob_transition() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1");
+        doc.create_execution("exec-1", "cell-1").unwrap();
         // Start with inline content
         let m_a = test_stream_inline("small");
         doc.append_output("exec-1", &m_a).unwrap();
@@ -3377,7 +3290,7 @@ mod tests {
     #[test]
     fn test_upsert_stream_output_hash_mismatch_appends() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1");
+        doc.create_execution("exec-1", "cell-1").unwrap();
         let m_a = test_stream("hash-a");
         doc.append_output("exec-1", &m_a).unwrap();
 
@@ -3411,7 +3324,7 @@ mod tests {
     #[test]
     fn test_upsert_stream_preserves_output_id() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1");
+        doc.create_execution("exec-1", "cell-1").unwrap();
         let m_a = serde_json::json!({
             "output_type": "stream",
             "output_id": "original-id-abc",
@@ -3455,7 +3368,7 @@ mod tests {
         // because only the text ContentRef scalars change — no tombstones
         // from deleted Maps accumulate.
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1");
+        doc.create_execution("exec-1", "cell-1").unwrap();
 
         let initial = serde_json::json!({
             "output_type": "stream",
@@ -3508,8 +3421,8 @@ mod tests {
     #[test]
     fn test_get_all_outputs() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1");
-        doc.create_execution("exec-2", "cell-2");
+        doc.create_execution("exec-1", "cell-1").unwrap();
+        doc.create_execution("exec-2", "cell-2").unwrap();
         let m1 = test_stream("h1");
         let m2 = test_stream("h2");
         let m3 = test_stream("h3");
@@ -3530,8 +3443,8 @@ mod tests {
     #[test]
     fn test_inline_outputs_in_execution_state() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1");
-        doc.create_execution("exec-2", "cell-2");
+        doc.create_execution("exec-1", "cell-1").unwrap();
+        doc.create_execution("exec-2", "cell-2").unwrap();
         let m1 = test_stream("h1");
         let m2 = test_stream("h2");
         let m3 = test_stream("h3");
@@ -3551,13 +3464,13 @@ mod tests {
         for i in 1..=5 {
             let eid = format!("e{i}");
             let cid = if i % 2 == 0 { "cell-a" } else { "cell-b" };
-            doc.create_execution(&eid, cid);
+            doc.create_execution(&eid, cid).unwrap();
             doc.append_output(&eid, &test_stream(&format!("hash-{i}")))
                 .unwrap();
         }
 
         // Trim to 3
-        let removed = doc.trim_executions(3);
+        let removed = doc.trim_executions(3).unwrap();
         assert!(removed > 0);
 
         let state = doc.read_state();
@@ -3582,8 +3495,8 @@ mod tests {
     #[test]
     fn test_outputs_sync_between_docs() {
         let mut daemon_doc = RuntimeStateDoc::new();
-        daemon_doc.create_execution("exec-1", "cell-1");
-        daemon_doc.create_execution("exec-2", "cell-2");
+        daemon_doc.create_execution("exec-1", "cell-1").unwrap();
+        daemon_doc.create_execution("exec-2", "cell-2").unwrap();
         let m1 = test_stream("h1");
         let m2 = test_stream("h2");
         let m3 = test_stream("h3");
@@ -3623,7 +3536,7 @@ mod tests {
     #[test]
     fn test_fork_and_merge_outputs() {
         let mut doc = RuntimeStateDoc::new();
-        doc.create_execution("exec-1", "cell-1");
+        doc.create_execution("exec-1", "cell-1").unwrap();
         let m1 = test_stream("h1");
         let m2 = test_stream("h2");
         doc.append_output("exec-1", &m1).unwrap();
@@ -3656,7 +3569,8 @@ mod tests {
             "IntSliderModel",
             &state,
             0,
-        );
+        )
+        .unwrap();
 
         let entry = doc.get_comm("comm-1").unwrap();
         assert_eq!(entry.target_name, "jupyter.widget");
@@ -3671,8 +3585,10 @@ mod tests {
     fn test_put_comm_overwrites() {
         let empty = serde_json::json!({});
         let mut doc = RuntimeStateDoc::new();
-        doc.put_comm("comm-1", "jupyter.widget", "mod-a", "ModelA", &empty, 0);
-        doc.put_comm("comm-1", "jupyter.widget", "mod-b", "ModelB", &empty, 1);
+        doc.put_comm("comm-1", "jupyter.widget", "mod-a", "ModelA", &empty, 0)
+            .unwrap();
+        doc.put_comm("comm-1", "jupyter.widget", "mod-b", "ModelB", &empty, 1)
+            .unwrap();
 
         let entry = doc.get_comm("comm-1").unwrap();
         assert_eq!(entry.model_module, "mod-b");
@@ -3684,24 +3600,27 @@ mod tests {
     fn test_remove_comm() {
         let empty = serde_json::json!({});
         let mut doc = RuntimeStateDoc::new();
-        doc.put_comm("comm-1", "jupyter.widget", "", "", &empty, 0);
-        assert!(doc.remove_comm("comm-1"));
+        doc.put_comm("comm-1", "jupyter.widget", "", "", &empty, 0)
+            .unwrap();
+        doc.remove_comm("comm-1").unwrap();
         assert!(doc.get_comm("comm-1").is_none());
     }
 
     #[test]
     fn test_remove_comm_nonexistent() {
         let mut doc = RuntimeStateDoc::new();
-        assert!(!doc.remove_comm("nope"));
+        doc.remove_comm("nope").unwrap();
     }
 
     #[test]
     fn test_clear_comms() {
         let empty = serde_json::json!({});
         let mut doc = RuntimeStateDoc::new();
-        doc.put_comm("comm-1", "jupyter.widget", "", "", &empty, 0);
-        doc.put_comm("comm-2", "jupyter.widget", "", "", &empty, 1);
-        assert!(doc.clear_comms());
+        doc.put_comm("comm-1", "jupyter.widget", "", "", &empty, 0)
+            .unwrap();
+        doc.put_comm("comm-2", "jupyter.widget", "", "", &empty, 1)
+            .unwrap();
+        doc.clear_comms().unwrap();
         assert!(doc.get_comm("comm-1").is_none());
         assert!(doc.get_comm("comm-2").is_none());
     }
@@ -3709,7 +3628,7 @@ mod tests {
     #[test]
     fn test_clear_comms_empty() {
         let mut doc = RuntimeStateDoc::new();
-        assert!(!doc.clear_comms());
+        doc.clear_comms().unwrap();
     }
 
     #[test]
@@ -3722,7 +3641,8 @@ mod tests {
             "Slider",
             &serde_json::json!({"v": 1}),
             0,
-        );
+        )
+        .unwrap();
         doc.put_comm(
             "comm-2",
             "jupyter.widget",
@@ -3730,7 +3650,8 @@ mod tests {
             "Button",
             &serde_json::json!({"v": 2}),
             1,
-        );
+        )
+        .unwrap();
 
         let state = doc.read_state();
         assert_eq!(state.comms.len(), 2);
@@ -3742,11 +3663,13 @@ mod tests {
     fn test_fork_and_merge_comms() {
         let empty = serde_json::json!({});
         let mut doc = RuntimeStateDoc::new();
-        doc.put_comm("comm-1", "jupyter.widget", "", "", &empty, 0);
+        doc.put_comm("comm-1", "jupyter.widget", "", "", &empty, 0)
+            .unwrap();
 
         let mut fork = doc.fork();
         fork.set_actor("runtimed:state:comms");
-        fork.put_comm("comm-2", "jupyter.widget", "", "New", &empty, 1);
+        fork.put_comm("comm-2", "jupyter.widget", "", "New", &empty, 1)
+            .unwrap();
 
         doc.merge(&mut fork).unwrap();
         assert!(doc.get_comm("comm-1").is_some());
@@ -3757,26 +3680,28 @@ mod tests {
     fn test_comm_output_append_and_clear() {
         let empty = serde_json::json!({});
         let mut doc = RuntimeStateDoc::new();
-        doc.put_comm("comm-1", "jupyter.widget", "", "OutputModel", &empty, 0);
+        doc.put_comm("comm-1", "jupyter.widget", "", "OutputModel", &empty, 0)
+            .unwrap();
 
         let m_a = test_display("hash-a");
         let m_b = test_display("hash-b");
-        assert!(doc.append_comm_output("comm-1", &m_a));
-        assert!(doc.append_comm_output("comm-1", &m_b));
+        doc.append_comm_output("comm-1", &m_a).unwrap();
+        doc.append_comm_output("comm-1", &m_b).unwrap();
         assert_eq!(doc.get_comm("comm-1").unwrap().outputs, vec![m_a, m_b]);
 
-        assert!(doc.clear_comm_outputs("comm-1"));
+        doc.clear_comm_outputs("comm-1").unwrap();
         assert!(doc.get_comm("comm-1").unwrap().outputs.is_empty());
 
         // Clearing already-empty returns false
-        assert!(!doc.clear_comm_outputs("comm-1"));
+        doc.clear_comm_outputs("comm-1").unwrap();
     }
 
     #[test]
     fn test_comm_output_nonexistent() {
         let mut doc = RuntimeStateDoc::new();
-        assert!(!doc.append_comm_output("nope", &test_stream("hash")));
-        assert!(!doc.clear_comm_outputs("nope"));
+        doc.append_comm_output("nope", &test_stream("hash"))
+            .unwrap();
+        doc.clear_comm_outputs("nope").unwrap();
     }
 
     #[test]
@@ -3795,10 +3720,12 @@ mod tests {
             "IntSliderModel",
             &serde_json::json!({"value": 50, "min": 0, "max": 100}),
             0,
-        );
+        )
+        .unwrap();
 
         // Set a single property
-        assert!(doc.set_comm_state_property("comm-1", "value", &serde_json::json!(75)));
+        doc.set_comm_state_property("comm-1", "value", &serde_json::json!(75))
+            .unwrap();
 
         let entry = doc.get_comm("comm-1").unwrap();
         assert_eq!(entry.state["value"], 75);
@@ -3810,7 +3737,8 @@ mod tests {
     #[test]
     fn test_set_comm_state_property_nonexistent() {
         let mut doc = RuntimeStateDoc::new();
-        assert!(!doc.set_comm_state_property("nope", "value", &serde_json::json!(42)));
+        doc.set_comm_state_property("nope", "value", &serde_json::json!(42))
+            .unwrap();
     }
 
     #[test]
@@ -3823,7 +3751,8 @@ mod tests {
             "layout": "IPY_MODEL_abc123",
             "nested": {"a": [1, 2, 3]}
         });
-        doc.put_comm("comm-1", "jupyter.widget", "", "", &state, 0);
+        doc.put_comm("comm-1", "jupyter.widget", "", "", &state, 0)
+            .unwrap();
 
         let entry = doc.get_comm("comm-1").unwrap();
         assert_eq!(entry.state, state);
@@ -3979,22 +3908,24 @@ mod tests {
     fn test_merge_comm_state_delta_skips_same_value() {
         let mut doc = RuntimeStateDoc::new();
         let state = serde_json::json!({"value": 42, "label": "hello"});
-        doc.put_comm("w1", "jupyter.widget", "", "", &state, 0);
+        doc.put_comm("w1", "jupyter.widget", "", "", &state, 0)
+            .unwrap();
 
         // Same values → no change
         let delta = serde_json::json!({"value": 42, "label": "hello"});
-        assert!(!doc.merge_comm_state_delta("w1", &delta));
+        doc.merge_comm_state_delta("w1", &delta).unwrap();
     }
 
     #[test]
     fn test_merge_comm_state_delta_writes_changed_value() {
         let mut doc = RuntimeStateDoc::new();
         let state = serde_json::json!({"value": 42, "label": "hello"});
-        doc.put_comm("w1", "jupyter.widget", "", "", &state, 0);
+        doc.put_comm("w1", "jupyter.widget", "", "", &state, 0)
+            .unwrap();
 
         // Different value → change
         let delta = serde_json::json!({"value": 99});
-        assert!(doc.merge_comm_state_delta("w1", &delta));
+        doc.merge_comm_state_delta("w1", &delta).unwrap();
         let updated = doc.read_state();
         let w1 = &updated.comms["w1"];
         assert_eq!(w1.state["value"], 99);
@@ -4006,18 +3937,19 @@ mod tests {
     fn test_merge_comm_state_delta_nonexistent_comm() {
         let mut doc = RuntimeStateDoc::new();
         let delta = serde_json::json!({"value": 1});
-        assert!(!doc.merge_comm_state_delta("nonexistent", &delta));
+        doc.merge_comm_state_delta("nonexistent", &delta).unwrap();
     }
 
     #[test]
     fn test_merge_comm_state_delta_writes_objects_unconditionally() {
         let mut doc = RuntimeStateDoc::new();
         let state = serde_json::json!({"nested": {"a": 1}});
-        doc.put_comm("w1", "jupyter.widget", "", "", &state, 0);
+        doc.put_comm("w1", "jupyter.widget", "", "", &state, 0)
+            .unwrap();
 
         // Object values are always written (no deep comparison)
         let delta = serde_json::json!({"nested": {"a": 1}});
-        assert!(doc.merge_comm_state_delta("w1", &delta));
+        doc.merge_comm_state_delta("w1", &delta).unwrap();
     }
 
     #[test]
@@ -4047,7 +3979,8 @@ mod tests {
                 "",
                 &serde_json::json!({"value": 1}),
                 0,
-            );
+            )
+            .unwrap();
         });
         // Frontend-authored comm: legitimate write.
         donor.fork_and_merge(|f| {
@@ -4059,7 +3992,8 @@ mod tests {
                 "",
                 &serde_json::json!({"value": 2}),
                 0,
-            );
+            )
+            .unwrap();
         });
 
         let mut donor_sync = sync::State::new();
@@ -4118,14 +4052,16 @@ mod tests {
                 "",
                 &serde_json::json!({"value": 15}),
                 0,
-            );
+            )
+            .unwrap();
         });
         // Kernel echoes a different value on the same key AFTER the
         // frontend's write — causally later, so LWW winner is the
         // kernel's 10.
         donor.fork_and_merge(|f| {
             f.set_actor("rt:kernel:deadbeef");
-            f.merge_comm_state_delta("slider", &serde_json::json!({"value": 10}));
+            f.merge_comm_state_delta("slider", &serde_json::json!({"value": 10}))
+                .unwrap();
         });
 
         let mut donor_sync = sync::State::new();
@@ -4200,7 +4136,9 @@ mod tests {
 
         let mut donor = receiver.fork();
         donor.set_actor("rt:kernel:deadbeef");
-        donor.put_comm("w", "j.w", "", "", &serde_json::json!({}), 0);
+        donor
+            .put_comm("w", "j.w", "", "", &serde_json::json!({}), 0)
+            .unwrap();
 
         let mut donor_sync = sync::State::new();
         for _ in 0..4 {
@@ -4267,7 +4205,7 @@ mod tests {
     #[test]
     fn append_output_populates_display_index() {
         let mut sd = RuntimeStateDoc::new();
-        sd.create_execution("exec-1", "cell-1");
+        sd.create_execution("exec-1", "cell-1").unwrap();
 
         let manifest = serde_json::json!({
             "output_type": "display_data",
@@ -4285,7 +4223,7 @@ mod tests {
     #[test]
     fn clear_execution_outputs_cleans_display_index() {
         let mut sd = RuntimeStateDoc::new();
-        sd.create_execution("exec-1", "cell-1");
+        sd.create_execution("exec-1", "cell-1").unwrap();
 
         let manifest = serde_json::json!({
             "output_type": "display_data",
@@ -4303,7 +4241,7 @@ mod tests {
     #[test]
     fn output_id_in_append_round_trips_through_crdt() {
         let mut sd = RuntimeStateDoc::new();
-        sd.create_execution("exec-1", "cell-1");
+        sd.create_execution("exec-1", "cell-1").unwrap();
 
         let manifest = serde_json::json!({
             "output_type": "stream",
@@ -4321,7 +4259,7 @@ mod tests {
     #[test]
     fn stream_coalescence_preserves_distinct_output_ids() {
         let mut sd = RuntimeStateDoc::new();
-        sd.create_execution("exec-1", "cell-1");
+        sd.create_execution("exec-1", "cell-1").unwrap();
 
         let m1 = serde_json::json!({
             "output_type": "stream",
@@ -4357,7 +4295,7 @@ mod tests {
     #[test]
     fn test_compact_if_oversized_below_threshold() {
         let mut doc = RuntimeStateDoc::new();
-        doc.set_kernel_status("idle");
+        doc.set_kernel_status("idle").unwrap();
         // Doc is tiny — should not compact
         assert!(!doc.compact_if_oversized(1024 * 1024));
     }
@@ -4365,7 +4303,7 @@ mod tests {
     #[test]
     fn test_compact_if_oversized_above_threshold() {
         let mut doc = RuntimeStateDoc::new();
-        doc.set_kernel_status("idle");
+        doc.set_kernel_status("idle").unwrap();
         // Threshold of 0 forces compaction
         assert!(doc.compact_if_oversized(0));
         // State is preserved after compaction

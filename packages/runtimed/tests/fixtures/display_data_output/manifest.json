@@ -1,4 +1,5 @@
 {
+  "scenario": "display_data_output",
   "description": "Cell produces display_data with inline text and a blob-ref image",
   "expected": {
     "cell_id": "cell-1",
@@ -7,6 +8,5 @@
     "output_ids": [
       "fa1e36e9-38dd-5162-80cc-030a554bbd5c"
     ]
-  },
-  "scenario": "display_data_output"
+  }
 }
