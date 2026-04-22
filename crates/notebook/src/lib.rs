@@ -4308,11 +4308,6 @@ pub fn run(
             )?;
             app.set_menu(menu)?;
 
-            // Fire-and-forget app telemetry heartbeat
-            tokio::spawn(async {
-                runtimed::telemetry::heartbeat_once("app", "telemetry_last_app_ping_at").await;
-            });
-
             let has_session_to_clear = restored_session.is_some();
 
             // Ensure runtimed is running (required for daemon-only mode)
@@ -4359,6 +4354,16 @@ pub fn run(
                 // Check if CLI symlinks are current and silently update if stale.
                 // This handles app reinstalls, bundle path changes, and channel switches.
                 cli_install::ensure_cli_current(&app_for_daemon);
+
+                if daemon_available {
+                    tokio::spawn(async {
+                        runtimed::telemetry::heartbeat_once(
+                            "app",
+                            "telemetry_last_app_ping_at",
+                        )
+                        .await;
+                    });
+                }
 
                 // Start settings sync subscription (reconnects automatically)
                 // Spawn as separate task since it runs forever
