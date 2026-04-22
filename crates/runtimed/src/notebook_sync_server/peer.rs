@@ -400,9 +400,10 @@ where
     };
     {
         let mut sd = room.state_doc.write().await;
-        if sd.set_trust(status_str, needs_approval) {
-            let _ = room.state_changed_tx.send(());
+        if let Err(e) = sd.set_trust(status_str, needs_approval) {
+            warn!("[runtime-state] {}", e);
         }
+        let _ = room.state_changed_tx.send(());
     }
     // Re-verify trust from doc metadata — picks up trust signatures that were
     // written to the Automerge doc (e.g., from a previous approval or from
@@ -456,12 +457,13 @@ where
             // Write "starting" immediately so clients never see stale "not_started"
             {
                 let mut sd = room.state_doc.write().await;
-                let mut changed = false;
-                changed |= sd.set_kernel_status("starting");
-                changed |= sd.set_starting_phase("resolving");
-                if changed {
-                    let _ = room.state_changed_tx.send(());
+                if let Err(e) = sd.set_kernel_status("starting") {
+                    warn!("[runtime-state] {}", e);
                 }
+                if let Err(e) = sd.set_starting_phase("resolving") {
+                    warn!("[runtime-state] {}", e);
+                }
+                let _ = room.state_changed_tx.send(());
             }
             // Spawn auto-launch in background so we don't block sync
             let room_clone = room.clone();
@@ -484,8 +486,12 @@ where
                     let r = panic_room;
                     tokio::spawn(async move {
                         let mut sd = r.state_doc.write().await;
-                        sd.set_kernel_status("error");
-                        sd.set_starting_phase("");
+                        if let Err(e) = sd.set_kernel_status("error") {
+                            tracing::warn!("[runtime-state] {}", e);
+                        }
+                        if let Err(e) = sd.set_starting_phase("") {
+                            tracing::warn!("[runtime-state] {}", e);
+                        }
                         let _ = r.state_changed_tx.send(());
                     });
                 },
@@ -503,12 +509,13 @@ where
                 notebook_id, trust_status
             );
             let mut sd = room.state_doc.write().await;
-            let mut changed = false;
-            changed |= sd.set_kernel_status("awaiting_trust");
-            changed |= sd.set_starting_phase("");
-            if changed {
-                let _ = room.state_changed_tx.send(());
+            if let Err(e) = sd.set_kernel_status("awaiting_trust") {
+                warn!("[runtime-state] {}", e);
             }
+            if let Err(e) = sd.set_starting_phase("") {
+                warn!("[runtime-state] {}", e);
+            }
+            let _ = room.state_changed_tx.send(());
         } else {
             info!(
                 "[notebook-sync] Auto-launch skipped for {} (trust: {:?}, has_kernel: {}, path_exists: {}, is_new: {}, created_at_path: {})",

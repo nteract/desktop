@@ -833,10 +833,10 @@ async fn test_save_notebook_to_disk_with_outputs() {
         let mut sd = room.state_doc.write().await;
         let output: serde_json::Value =
             serde_json::json!({"output_type": "stream", "name": "stdout", "text": ["hello\n"]});
-        sd.create_execution(eid, "cell1");
-        sd.set_execution_count(eid, 1);
+        sd.create_execution(eid, "cell1").unwrap();
+        sd.set_execution_count(eid, 1).unwrap();
         sd.set_outputs(eid, &[output]).unwrap();
-        sd.set_execution_done(eid, true);
+        sd.set_execution_done(eid, true).unwrap();
     }
 
     save_notebook_to_disk(&room, None).await.unwrap();
@@ -1201,9 +1201,9 @@ async fn test_apply_ipynb_changes_preserves_execution_count_when_kernel_running(
     }
     {
         let mut sd = room.state_doc.write().await;
-        sd.create_execution(eid, "cell-1");
-        sd.set_execution_count(eid, 10);
-        sd.set_execution_done(eid, true);
+        sd.create_execution(eid, "cell-1").unwrap();
+        sd.set_execution_count(eid, 10).unwrap();
+        sd.set_execution_done(eid, true).unwrap();
     }
 
     // Apply external changes while kernel is "running"
@@ -2984,7 +2984,8 @@ async fn test_check_and_broadcast_sync_state_no_kernel() {
     // Pre-set RuntimeStateDoc env to dirty so we can verify it's NOT changed
     {
         let mut sd = room.state_doc.write().await;
-        sd.set_env_sync(false, &["numpy".to_string()], &[], false, false);
+        sd.set_env_sync(false, &["numpy".to_string()], &[], false, false)
+            .unwrap();
     }
 
     // No kernel in the room — should be a no-op
@@ -3034,9 +3035,10 @@ async fn test_check_and_broadcast_sync_state_captured_uv_prewarmed_in_sync() {
     // Kernel is idle (otherwise the function returns early).
     {
         let mut sd = room.state_doc.write().await;
-        sd.set_kernel_status("idle");
+        sd.set_kernel_status("idle").unwrap();
         // Pre-set to dirty so we can verify it flips to in_sync.
-        sd.set_env_sync(false, &["pandas".to_string()], &[], false, false);
+        sd.set_env_sync(false, &["pandas".to_string()], &[], false, false)
+            .unwrap();
     }
 
     check_and_broadcast_sync_state(&room).await;
@@ -3084,7 +3086,7 @@ async fn test_check_and_broadcast_sync_state_captured_uv_prewarmed_reports_addit
 
     {
         let mut sd = room.state_doc.write().await;
-        sd.set_kernel_status("idle");
+        sd.set_kernel_status("idle").unwrap();
     }
 
     check_and_broadcast_sync_state(&room).await;
@@ -3108,7 +3110,8 @@ async fn test_check_and_broadcast_sync_state_no_metadata() {
     // Pre-set RuntimeStateDoc env to dirty
     {
         let mut sd = room.state_doc.write().await;
-        sd.set_env_sync(false, &["pandas".to_string()], &[], false, false);
+        sd.set_env_sync(false, &["pandas".to_string()], &[], false, false)
+            .unwrap();
     }
 
     // No metadata in doc — should return early
@@ -3236,7 +3239,7 @@ async fn test_check_and_update_trust_state_no_deps() {
     // can verify the function actually writes the new value.
     {
         let mut sd = room.state_doc.write().await;
-        sd.set_trust("untrusted", true);
+        sd.set_trust("untrusted", true).unwrap();
     }
 
     // Write an empty metadata snapshot (no dependencies).
@@ -3273,7 +3276,7 @@ async fn test_check_and_update_trust_state_approval_updates_room() {
     // Align RuntimeStateDoc with the room's initial Untrusted state.
     {
         let mut sd = room.state_doc.write().await;
-        sd.set_trust("untrusted", true);
+        sd.set_trust("untrusted", true).unwrap();
     }
 
     // Build a snapshot with UV deps and a valid trust signature.
@@ -3316,7 +3319,7 @@ async fn test_check_and_update_trust_state_idempotent() {
     // a notification.
     {
         let mut sd = room.state_doc.write().await;
-        sd.set_trust("untrusted", true);
+        sd.set_trust("untrusted", true).unwrap();
     }
 
     // Write an empty metadata snapshot to trigger Untrusted → NoDependencies.
@@ -3386,7 +3389,7 @@ async fn test_check_and_update_trust_state_external_dep_add_invalidates() {
     }
     {
         let mut sd = room.state_doc.write().await;
-        sd.set_trust("trusted", false);
+        sd.set_trust("trusted", false).unwrap();
     }
 
     // Sanity check: starting state is Trusted.
@@ -3514,7 +3517,7 @@ async fn test_reset_starting_state_guard() {
     // Set kernel status to "starting" (simulates in-progress launch)
     {
         let mut sd = room.state_doc.write().await;
-        sd.set_kernel_status("starting");
+        sd.set_kernel_status("starting").unwrap();
     }
 
     // Call reset with expected="agent-A" (stale handler) — should skip
@@ -3561,7 +3564,7 @@ async fn test_reset_starting_state_guard() {
     // Call with None (pre-spawn) — should always reset
     {
         let mut sd = room.state_doc.write().await;
-        sd.set_kernel_status("starting");
+        sd.set_kernel_status("starting").unwrap();
     }
     reset_starting_state(&room, None).await;
     {

@@ -1,1 +1,1 @@
-{"cell_id":"cell-1","event":"output","execution_id":"exec-001","output_index":1,"output_json":"{\"output_type\":\"stream\",\"output_id\":\"58af4526-9a90-5bca-98de-d8d0e36718b2\",\"name\":\"stdout\",\"text\":{\"inline\":\"1\\n\"}}","output_type":"stream"}
+{"event":"output","cell_id":"cell-1","execution_id":"exec-001","output_type":"stream","output_json":"{\"output_type\":\"stream\",\"output_id\":\"58af4526-9a90-5bca-98de-d8d0e36718b2\",\"name\":\"stdout\",\"text\":{\"inline\":\"1\\n\"}}","output_index":1}

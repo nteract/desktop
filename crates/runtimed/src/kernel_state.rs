@@ -159,11 +159,13 @@ impl KernelState {
             let doc_exec = self.executing_entry().as_ref().map(to_doc_entry);
             let doc_queued = to_doc_entries(&self.queued_entries());
             let mut sd = self.state_doc.write().await;
-            let mut changed = sd.create_execution(&execution_id, &cell_id_ref);
-            changed |= sd.set_queue(doc_exec.as_ref(), &doc_queued);
-            if changed {
-                let _ = self.state_changed_tx.send(());
+            if let Err(e) = sd.create_execution(&execution_id, &cell_id_ref) {
+                warn!("[runtime-state] {}", e);
             }
+            if let Err(e) = sd.set_queue(doc_exec.as_ref(), &doc_queued) {
+                warn!("[runtime-state] {}", e);
+            }
+            let _ = self.state_changed_tx.send(());
         }
 
         // Try to process if nothing executing
@@ -206,20 +208,26 @@ impl KernelState {
             {
                 let doc_queued = to_doc_entries(&self.queued_entries());
                 let mut sd = self.state_doc.write().await;
-                let mut changed = sd.set_execution_done(execution_id, success);
-                changed |= sd.set_queue(None, &doc_queued);
-                let trimmed = sd.trim_executions(MAX_EXECUTION_ENTRIES);
-                changed |= trimmed > 0;
-                if trimmed > 0 {
-                    sd.rebuild_from_save();
-                    debug!(
-                        "[kernel-state] Compacted RuntimeStateDoc after trimming {} executions",
-                        trimmed
-                    );
+                if let Err(e) = sd.set_execution_done(execution_id, success) {
+                    warn!("[runtime-state] {}", e);
                 }
-                if changed {
-                    let _ = self.state_changed_tx.send(());
+                if let Err(e) = sd.set_queue(None, &doc_queued) {
+                    warn!("[runtime-state] {}", e);
                 }
+                match sd.trim_executions(MAX_EXECUTION_ENTRIES) {
+                    Ok(trimmed) if trimmed > 0 => {
+                        sd.rebuild_from_save();
+                        debug!(
+                            "[kernel-state] Compacted RuntimeStateDoc after trimming {} executions",
+                            trimmed
+                        );
+                    }
+                    Err(e) => {
+                        warn!("[runtime-state] {}", e);
+                    }
+                    _ => {}
+                }
+                let _ = self.state_changed_tx.send(());
             }
 
             // Process next
@@ -343,11 +351,13 @@ impl KernelState {
             let doc_exec = self.executing_entry().as_ref().map(to_doc_entry);
             let doc_queued = to_doc_entries(&self.queued_entries());
             let mut sd = self.state_doc.write().await;
-            let mut changed = sd.set_execution_running(&cell.execution_id);
-            changed |= sd.set_queue(doc_exec.as_ref(), &doc_queued);
-            if changed {
-                let _ = self.state_changed_tx.send(());
+            if let Err(e) = sd.set_execution_running(&cell.execution_id) {
+                warn!("[runtime-state] {}", e);
             }
+            if let Err(e) = sd.set_queue(doc_exec.as_ref(), &doc_queued) {
+                warn!("[runtime-state] {}", e);
+            }
+            let _ = self.state_changed_tx.send(());
         }
 
         // Send execute request via the connection
@@ -406,9 +416,10 @@ impl KernelState {
         let doc_exec = self.executing_entry().as_ref().map(to_doc_entry);
         let doc_queued = to_doc_entries(&self.queued_entries());
         let mut sd = self.state_doc.write().await;
-        if sd.set_queue(doc_exec.as_ref(), &doc_queued) {
-            let _ = self.state_changed_tx.send(());
+        if let Err(e) = sd.set_queue(doc_exec.as_ref(), &doc_queued) {
+            warn!("[runtime-state] {}", e);
         }
+        let _ = self.state_changed_tx.send(());
     }
 }
 

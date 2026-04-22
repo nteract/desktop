@@ -1,4 +1,5 @@
 {
+  "scenario": "re_execution",
   "description": "Cell executed twice — only second execution's outputs remain",
   "expected": {
     "cell_id": "cell-1",
@@ -7,6 +8,5 @@
     "output_ids": [
       "499b9de7-830f-5733-8c0e-7088f9ad030f"
     ]
-  },
-  "scenario": "re_execution"
+  }
 }

@@ -703,17 +703,21 @@ mod tests {
         st.state_doc
             .create_execution_with_source(execution_id, cell_id, "x = 1", 0)
             .unwrap();
-        st.state_doc.set_execution_running(execution_id);
+        st.state_doc.set_execution_running(execution_id).unwrap();
         if let Some(count) = execution_count {
-            st.state_doc.set_execution_count(execution_id, count);
+            st.state_doc
+                .set_execution_count(execution_id, count)
+                .unwrap();
         }
         for output in outputs {
             st.state_doc.append_output(execution_id, output).unwrap();
         }
         if status == "done" {
-            st.state_doc.set_execution_done(execution_id, true);
+            st.state_doc.set_execution_done(execution_id, true).unwrap();
         } else if status == "error" {
-            st.state_doc.set_execution_done(execution_id, false);
+            st.state_doc
+                .set_execution_done(execution_id, false)
+                .unwrap();
         }
     }
 
@@ -809,7 +813,7 @@ mod tests {
         set_execution(&shared, "exec-1", "cell-1", "running", &[], None);
         {
             let mut st = shared.lock().unwrap();
-            st.state_doc.set_kernel_status("error");
+            st.state_doc.set_kernel_status("error").unwrap();
         }
 
         let err =
@@ -839,7 +843,7 @@ mod tests {
         // Kernel is now flagged as error AFTER the execution completed.
         {
             let mut st = shared.lock().unwrap();
-            st.state_doc.set_kernel_status("error");
+            st.state_doc.set_kernel_status("error").unwrap();
         }
 
         let state =
