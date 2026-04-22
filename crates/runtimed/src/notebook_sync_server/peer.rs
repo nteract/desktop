@@ -335,6 +335,9 @@ pub async fn handle_notebook_sync_connection<R, W>(
     // True if this is a newly-created notebook at a non-existent path.
     // Used to enable auto-launch for notebooks created via `runt notebook newfile.ipynb`.
     created_new_at_path: bool,
+    // Protocol version from the client preamble. v2 clients don't understand
+    // SessionControl frames, so we skip them when this is < 3.
+    client_protocol_version: u8,
 ) -> anyhow::Result<()>
 where
     R: AsyncRead + Unpin,
@@ -515,11 +518,17 @@ where
         }
     }
 
-    // Send capabilities response (v3 protocol) unless already sent via NotebookConnectionInfo
+    // Send capabilities response unless already sent via NotebookConnectionInfo.
+    // v2 clients expect PROTOCOL_V2 and don't understand session-control frames.
     if !skip_capabilities {
+        let (proto_str, proto_ver) = if client_protocol_version >= 3 {
+            (connection::PROTOCOL_V3, connection::PROTOCOL_VERSION)
+        } else {
+            (connection::PROTOCOL_V2, 2)
+        };
         let caps = connection::ProtocolCapabilities {
-            protocol: connection::PROTOCOL_V3.to_string(),
-            protocol_version: Some(connection::PROTOCOL_VERSION),
+            protocol: proto_str.to_string(),
+            protocol_version: Some(proto_ver),
             daemon_version: Some(crate::daemon_version().to_string()),
         };
         connection::send_json_frame(&mut writer, &caps).await?;
@@ -538,6 +547,7 @@ where
         daemon.clone(),
         needs_load.as_deref(),
         &peer_id,
+        client_protocol_version,
     )
     .await;
 
@@ -1080,6 +1090,7 @@ async fn run_sync_loop_v2<R, W>(
     daemon: std::sync::Arc<crate::daemon::Daemon>,
     needs_load: Option<&Path>,
     peer_id: &str,
+    client_protocol_version: u8,
 ) -> anyhow::Result<()>
 where
     R: AsyncRead + Unpin,
@@ -1103,23 +1114,27 @@ where
         notebook_protocol::protocol::InitialLoadPhaseWire::NotNeeded
     };
 
-    send_session_status(
-        writer,
-        notebook_doc_phase,
-        runtime_state_phase,
-        initial_load_phase.clone(),
-    )
-    .await?;
+    if client_protocol_version >= 3 {
+        send_session_status(
+            writer,
+            notebook_doc_phase,
+            runtime_state_phase,
+            initial_load_phase.clone(),
+        )
+        .await?;
+    }
 
     let InitialSyncState { mut peer_state } = send_initial_notebook_doc_sync(writer, room).await?;
     notebook_doc_phase = notebook_protocol::protocol::NotebookDocPhaseWire::Syncing;
-    send_session_status(
-        writer,
-        notebook_doc_phase,
-        runtime_state_phase,
-        initial_load_phase.clone(),
-    )
-    .await?;
+    if client_protocol_version >= 3 {
+        send_session_status(
+            writer,
+            notebook_doc_phase,
+            runtime_state_phase,
+            initial_load_phase.clone(),
+        )
+        .await?;
+    }
 
     let mut state_peer_state = sync::State::new();
     let mut pool_peer_state = sync::State::new();
@@ -1156,13 +1171,15 @@ where
         connection::send_typed_frame(writer, NotebookFrameType::RuntimeStateSync, &encoded).await?;
     }
     runtime_state_phase = notebook_protocol::protocol::RuntimeStatePhaseWire::Syncing;
-    send_session_status(
-        writer,
-        notebook_doc_phase,
-        runtime_state_phase,
-        initial_load_phase.clone(),
-    )
-    .await?;
+    if client_protocol_version >= 3 {
+        send_session_status(
+            writer,
+            notebook_doc_phase,
+            runtime_state_phase,
+            initial_load_phase.clone(),
+        )
+        .await?;
+    }
 
     // Streaming load: add cells in batches and sync after each batch so the
     // frontend can observe progressive notebook-doc updates.
@@ -1177,13 +1194,15 @@ where
                         load_path.display()
                     );
                     initial_load_phase = notebook_protocol::protocol::InitialLoadPhaseWire::Ready;
-                    send_session_status(
-                        writer,
-                        notebook_doc_phase,
-                        runtime_state_phase,
-                        initial_load_phase.clone(),
-                    )
-                    .await?;
+                    if client_protocol_version >= 3 {
+                        send_session_status(
+                            writer,
+                            notebook_doc_phase,
+                            runtime_state_phase,
+                            initial_load_phase.clone(),
+                        )
+                        .await?;
+                    }
                 }
                 Err(e) => {
                     room.finish_loading();
@@ -1197,15 +1216,17 @@ where
                         load_path.display(),
                         e
                     );
-                    send_session_status(
-                        writer,
-                        notebook_doc_phase,
-                        runtime_state_phase,
-                        notebook_protocol::protocol::InitialLoadPhaseWire::Failed {
-                            reason: e.clone(),
-                        },
-                    )
-                    .await?;
+                    if client_protocol_version >= 3 {
+                        send_session_status(
+                            writer,
+                            notebook_doc_phase,
+                            runtime_state_phase,
+                            notebook_protocol::protocol::InitialLoadPhaseWire::Failed {
+                                reason: e.clone(),
+                            },
+                        )
+                        .await?;
+                    }
                     return Err(anyhow::anyhow!("Streaming load failed: {}", e));
                 }
             }
@@ -1372,13 +1393,15 @@ where
                                 {
                                     notebook_doc_phase =
                                         notebook_protocol::protocol::NotebookDocPhaseWire::Interactive;
-                                    send_session_status(
-                                        writer,
-                                        notebook_doc_phase,
-                                        runtime_state_phase,
-                                        initial_load_phase.clone(),
-                                    )
-                                    .await?;
+                                    if client_protocol_version >= 3 {
+                                        send_session_status(
+                                            writer,
+                                            notebook_doc_phase,
+                                            runtime_state_phase,
+                                            initial_load_phase.clone(),
+                                        )
+                                        .await?;
+                                    }
                                 }
 
                                 // Send to debounced persistence task
@@ -1612,13 +1635,15 @@ where
                                 {
                                     runtime_state_phase =
                                         notebook_protocol::protocol::RuntimeStatePhaseWire::Ready;
-                                    send_session_status(
-                                        writer,
-                                        notebook_doc_phase,
-                                        runtime_state_phase,
-                                        initial_load_phase.clone(),
-                                    )
-                                    .await?;
+                                    if client_protocol_version >= 3 {
+                                        send_session_status(
+                                            writer,
+                                            notebook_doc_phase,
+                                            runtime_state_phase,
+                                            initial_load_phase.clone(),
+                                        )
+                                        .await?;
+                                    }
                                 }
                             }
 
@@ -1734,13 +1759,15 @@ where
                 {
                     initial_load_phase =
                         notebook_protocol::protocol::InitialLoadPhaseWire::Ready;
-                    send_session_status(
-                        writer,
-                        notebook_doc_phase,
-                        runtime_state_phase,
-                        initial_load_phase.clone(),
-                    )
-                    .await?;
+                    if client_protocol_version >= 3 {
+                        send_session_status(
+                            writer,
+                            notebook_doc_phase,
+                            runtime_state_phase,
+                            initial_load_phase.clone(),
+                        )
+                        .await?;
+                    }
                 }
             }
 

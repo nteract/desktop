@@ -161,6 +161,10 @@ pub const PROTOCOL_V3: &str = "v3";
 /// bootstrap/readiness and is not wire-compatible with v2 clients.
 pub const PROTOCOL_VERSION: u32 = 3;
 
+/// Minimum protocol version accepted by v3 daemons for backward compatibility.
+/// v2 clients are served without SESSION_CONTROL frames.
+pub const MIN_PROTOCOL_VERSION: u32 = 2;
+
 /// Magic bytes identifying the runtimed protocol.
 /// Sent as the first 4 bytes of every connection, before the handshake frame.
 pub const MAGIC: [u8; 4] = [0xC0, 0xDE, 0x01, 0xAC];
