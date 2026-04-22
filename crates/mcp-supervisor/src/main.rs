@@ -2468,16 +2468,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         };
 
-        // 2b: Build runt-cli
-        info!("Building runt-cli...");
-        let pr = project_root.clone();
-        let build_ok = tokio::task::spawn_blocking(move || build_runt_cli(&pr))
-            .await
-            .unwrap_or(false);
-        if !build_ok {
-            error!("Failed to build runt-cli — MCP server will not work");
+        // 2b: Fast-path check — only build if binary doesn't exist.
+        // If it exists, skip to child spawn immediately (file watcher will
+        // rebuild on source changes). This matches runt-proxy's pattern.
+        let runt_binary = cargo_binary(&project_root, "runt");
+        if !runt_binary.exists() {
+            info!("runt binary not found, building...");
+            let pr = project_root.clone();
+            let build_ok = tokio::task::spawn_blocking(move || build_runt_cli(&pr))
+                .await
+                .unwrap_or(false);
+            if !build_ok {
+                error!("Failed to build runt-cli — MCP server will not work");
+                child_ready.notify_waiters();
+                return;
+            }
+        } else {
+            info!(
+                "runt binary exists at {}, skipping build (file watcher will rebuild on changes)",
+                runt_binary.display()
+            );
         }
-        // Also ensure maturin develop in background (dev workflow)
+
+        // Ensure maturin develop in background (non-blocking, dev workflow only).
+        // File watcher will re-run this when Rust bindings change.
         let pr = project_root.clone();
         tokio::task::spawn_blocking(move || {
             if !ensure_maturin_develop(&pr) {
