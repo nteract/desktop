@@ -2,17 +2,14 @@
 
 ## 2.0.0 (unreleased)
 
-First release from `nteract/desktop`. The `nteract` Python package is now an MCP server for AI agents to interact with Jupyter notebooks through runt/runtimed.
+First release from `nteract/desktop`. The `nteract` package is now a thin wrapper that locates and launches the `runt mcp` server that ships with the [nteract desktop app](https://nteract.io).
 
 ### Highlights
 
-- **MCP server** — `nteract` runs as a stdio MCP server, compatible with Claude, ChatGPT, Gemini, OpenCode, and any MCP-capable agent
-- **Notebook lifecycle** — `list_active_notebooks`, `connect_notebook`, `create_notebook`, `save_notebook`, `show_notebook`
-- **Cell operations** — `create_cell`, `get_cell`, `get_all_cells`, `set_cell`, `delete_cell`, `move_cell`, `clear_outputs`
-- **Targeted editing** — `replace_match` (literal find-and-replace) and `replace_regex` (regex-based) for surgical cell edits without rewriting entire sources
-- **Execution** — `execute_cell`, `run_all_cells`, `interrupt_kernel`, `restart_kernel`
-- **Dependencies** — `get_dependencies`, `add_dependency`, `remove_dependency`, `sync_environment` with UV and Conda support
-- **Resources** — `notebook://cells`, `notebook://cell/{cell_id}`, `notebook://cells/by-index/{index}`, `notebook://cell/{cell_id}/outputs`, `notebook://status`, `notebook://rooms` for read-only state access
+- AI-collaborative Jupyter notebooks over MCP. Works with Claude, ChatGPT, Gemini, and any MCP-capable agent.
+- Agents can create, open, and save notebooks; read, write, and execute cells with live output; and manage Python dependencies with UV or Conda.
+- Real-time collaboration with a human in the nteract desktop app — both sides see the same notebook update as it changes.
+- Recommended install is the Claude Code plugin at [`nteract/claude-plugin`](https://github.com/nteract/claude-plugin). This PyPI package exists as an alternative for `uvx`-based workflows.
 
 ### Breaking changes from 1.x
 
