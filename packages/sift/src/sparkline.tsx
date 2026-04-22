@@ -605,10 +605,12 @@ const POPOVER_MAX_VISIBLE = 8;
 function CategoryPopoverContent({
   allCategories,
   activeSet,
+  exclusionSet,
   onFilter,
 }: {
   allCategories: CategoryEntry[];
   activeSet: Set<string> | null;
+  exclusionSet: Set<string> | null;
   onFilter: FilterCallback;
 }) {
   const [searchInput, setSearchInput] = useState("");
@@ -649,45 +651,60 @@ function CategoryPopoverContent({
   const first = Math.floor(scrollTop / POPOVER_ROW_HEIGHT);
   const last = Math.min(filtered.length - 1, first + visibleCount + 1);
 
-  const allSelected = activeSet === null;
-  const selectedCount = activeSet ? activeSet.size : allCategories.length;
+  const allSelected = activeSet === null && exclusionSet === null;
+  const selectedCount = exclusionSet
+    ? allCategories.length - exclusionSet.size
+    : activeSet
+      ? activeSet.size
+      : allCategories.length;
 
   function toggleItem(label: string) {
-    if (activeSet === null) {
-      // No filter active = every value is implicitly selected. A click
-      // here means "uncheck this one" — subtract it from the full set.
-      // Without this, the handler below would treat the click as
-      // "there's no set yet, add just this" and invert the user's
-      // intent to a 1-selected filter.
-      const next = new Set(allCategories.map((c) => c.label));
-      next.delete(label);
-      onFilter({ kind: "set", values: next });
+    // Case 1: No filter active (null) — start exclusion filter
+    if (activeSet === null && exclusionSet === null) {
+      onFilter({ kind: "not-in", values: new Set([label]) });
       return;
     }
-    if (activeSet.has(label)) {
-      const next = new Set(activeSet);
-      next.delete(label);
-      // Empty out to a real empty-set filter ("None"), not to `null`
-      // (which means "no filter = show everything"). In the popover
-      // checkbox UI, unchecking the last checked row is semantically
-      // "select nothing", and should match what the "None" button
-      // produces - row count drops to 0 rather than jumping back to
-      // the full dataset.
-      onFilter({ kind: "set", values: next });
-    } else {
-      const next = new Set(activeSet);
-      next.add(label);
-      // Re-checking the last unchecked row refills the set to the full
-      // universe. Collapse that back to `null` ("no filter = show
-      // everything") rather than holding an explicit all-selected
-      // filter. Otherwise the filter pill sticks around on a no-op
-      // filter, the header reports "Filtered to N of N", and any
-      // category added to the data later would be silently excluded
-      // by the frozen set.
-      if (next.size >= allCategories.length) {
-        onFilter(null);
+
+    // Case 2: Exclusion filter active — add/remove from exclusion set
+    if (exclusionSet !== null) {
+      if (exclusionSet.has(label)) {
+        // Re-checking an excluded item: remove from exclusion set
+        const next = new Set(exclusionSet);
+        next.delete(label);
+        if (next.size === 0) {
+          // All items re-checked: collapse to "no filter"
+          onFilter(null);
+        } else {
+          onFilter({ kind: "not-in", values: next });
+        }
       } else {
+        // Unchecking a non-excluded item: add to exclusion set
+        const next = new Set(exclusionSet);
+        next.add(label);
+        // If everything is excluded, collapse to empty-set filter
+        if (next.size >= allCategories.length) {
+          onFilter({ kind: "set", values: new Set<string>() });
+        } else {
+          onFilter({ kind: "not-in", values: next });
+        }
+      }
+      return;
+    }
+
+    // Case 3: Inclusion filter active — add/remove from inclusion set
+    if (activeSet !== null) {
+      if (activeSet.has(label)) {
+        const next = new Set(activeSet);
+        next.delete(label);
         onFilter({ kind: "set", values: next });
+      } else {
+        const next = new Set(activeSet);
+        next.add(label);
+        if (next.size >= allCategories.length) {
+          onFilter(null);
+        } else {
+          onFilter({ kind: "set", values: next });
+        }
       }
     }
   }
@@ -734,7 +751,9 @@ function CategoryPopoverContent({
             const idx = first + i;
             const cat = filtered[idx];
             if (!cat) return null;
-            const checked = allSelected || (activeSet?.has(cat.label) ?? false);
+            const checked =
+              allSelected ||
+              (exclusionSet ? !exclusionSet.has(cat.label) : activeSet?.has(cat.label) ?? false);
             return (
               <label
                 key={cat.label}
@@ -806,6 +825,7 @@ function CategoricalBars({
   }
 
   const activeSet = activeFilter?.kind === "set" ? activeFilter.values : null;
+  const exclusionSet = activeFilter?.kind === "not-in" ? activeFilter.values : null;
 
   return (
     <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
@@ -826,7 +846,12 @@ function CategoricalBars({
                 key={item.label}
                 className={`sift-cat-row sift-cat-clickable`}
                 style={{
-                  opacity: activeSet && !isActive && !item.isOthers ? 0.3 : 1,
+                  opacity: (() => {
+                    if (item.isOthers) return 1;
+                    if (exclusionSet) return exclusionSet.has(item.label) ? 0.3 : 1;
+                    if (activeSet) return activeSet.has(item.label) ? 1 : 0.3;
+                    return 1;
+                  })(),
                 }}
                 onClick={
                   item.isOthers
@@ -838,9 +863,18 @@ function CategoricalBars({
                         // inside CategoryPopoverContent — those are checkboxes
                         // and need the implicit-full-set subtract behavior —
                         // clicking a bar while nothing is filtered should
-                        // filter to that single category. That's the existing
-                        // incremental-add path working as intended.
-                        if (activeSet?.has(item.label)) {
+                        // filter to that single category.
+                        if (exclusionSet) {
+                          if (exclusionSet.has(item.label)) {
+                            const next = new Set(exclusionSet);
+                            next.delete(item.label);
+                            onFilter(next.size > 0 ? { kind: "not-in", values: next } : null);
+                          } else {
+                            const next = new Set(exclusionSet);
+                            next.add(item.label);
+                            onFilter({ kind: "not-in", values: next });
+                          }
+                        } else if (activeSet?.has(item.label)) {
                           const next = new Set(activeSet);
                           next.delete(item.label);
                           onFilter(next.size > 0 ? { kind: "set", values: next } : null);
@@ -876,6 +910,7 @@ function CategoricalBars({
         <CategoryPopoverContent
           allCategories={unfilteredAllCategories ?? summary.allCategories}
           activeSet={activeSet}
+          exclusionSet={exclusionSet}
           onFilter={onFilter}
         />
       </PopoverContent>

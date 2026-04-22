@@ -9,6 +9,7 @@
 export type FilterSpecJson =
   | { kind: "range"; col: number; min: number; max: number }
   | { kind: "set"; col: number; values: string[] }
+  | { kind: "not_in"; col: number; values: string[] }
   | { kind: "boolean"; col: number; value: boolean };
 
 type PredicateModule = {

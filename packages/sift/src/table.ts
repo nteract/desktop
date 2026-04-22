@@ -102,8 +102,9 @@ export type TableData = {
 
 export type RangeFilter = { kind: "range"; min: number; max: number };
 export type SetFilter = { kind: "set"; values: Set<string> };
+export type NotInFilter = { kind: "not-in"; values: Set<string> };
 export type BooleanFilter = { kind: "boolean"; value: boolean };
-export type ColumnFilter = RangeFilter | SetFilter | BooleanFilter | null;
+export type ColumnFilter = RangeFilter | SetFilter | NotInFilter | BooleanFilter | null;
 
 export type TableEngineState = {
   sort: { column: string; direction: "asc" | "desc" } | null;

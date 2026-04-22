@@ -1463,6 +1463,8 @@ enum FilterSpec {
     Range { col: usize, min: f64, max: f64 },
     #[serde(rename = "set")]
     Set { col: usize, values: Vec<String> },
+    #[serde(rename = "not_in")]
+    NotIn { col: usize, values: Vec<String> },
     #[serde(rename = "boolean")]
     Boolean { col: usize, value: bool },
 }
@@ -1484,11 +1486,13 @@ pub fn store_filter_rows(handle: u32, filters_js: JsValue) -> Result<Vec<u32>, J
             .map_err(|e| JsValue::from_str(&e));
     }
 
-    // Pre-build HashSets for set filters
+    // Pre-build HashSets for set and not_in filters
     let set_lookups: Vec<Option<HashSet<&str>>> = filters
         .iter()
         .map(|f| match f {
-            FilterSpec::Set { values, .. } => Some(values.iter().map(|s| s.as_str()).collect()),
+            FilterSpec::Set { values, .. } | FilterSpec::NotIn { values, .. } => {
+                Some(values.iter().map(|s| s.as_str()).collect())
+            }
             _ => None,
         })
         .collect();
@@ -1500,6 +1504,7 @@ pub fn store_filter_rows(handle: u32, filters_js: JsValue) -> Result<Vec<u32>, J
             let col_idx = match filter {
                 FilterSpec::Range { col, .. } => *col,
                 FilterSpec::Set { col, .. } => *col,
+                FilterSpec::NotIn { col, .. } => *col,
                 FilterSpec::Boolean { col, .. } => *col,
             };
             if concat_cols[col_idx].is_none() {
@@ -1538,6 +1543,17 @@ pub fn store_filter_rows(handle: u32, filters_js: JsValue) -> Result<Vec<u32>, J
                             let s = get_string_value(arr.as_ref(), row);
                             if let Some(ref lookup) = set_lookups[fi] {
                                 if !lookup.contains(s.as_str()) {
+                                    continue 'row;
+                                }
+                            }
+                        }
+                    }
+                    FilterSpec::NotIn { col, .. } => {
+                        if let Some(ref arr) = concat_cols[*col] {
+                            let s = get_string_value(arr.as_ref(), row);
+                            if let Some(ref lookup) = set_lookups[fi] {
+                                // Inverted logic: skip row if value IS in the exclusion set
+                                if lookup.contains(s.as_str()) {
                                     continue 'row;
                                 }
                             }
