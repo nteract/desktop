@@ -10,11 +10,12 @@ use std::sync::Arc;
 
 use arrow::array::{
     Array, BooleanArray, Date32Array, Float64Array, Int64Array, RecordBatch, StringArray,
-    TimestampSecondArray,
+    TimestampMillisecondArray,
 };
 use arrow::datatypes::{DataType, TimeUnit};
 use bytes::Bytes;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::basic::LogicalType;
 use serde::Serialize;
 use sift_wasm::write_parquet_from_sqlite;
 use wasm_bindgen::JsValue;
@@ -43,6 +44,9 @@ fn sqlite_round_trip_preserves_richer_types() {
 
     let rows = to_js(&serde_json::json!([
         {
+            // received_at is Unix seconds (SQLite TIMESTAMP convention).
+            // We scale ×1000 so Parquet can carry it as a TIMESTAMP_MILLIS
+            // logical type (Parquet has no TIMESTAMP_SECONDS).
             "id": 1, "label": "alpha", "ratio": 0.5,
             "active": 1, "received_at": 1_776_831_852_i64,
             "day": "2026-04-20"
@@ -63,6 +67,23 @@ fn sqlite_round_trip_preserves_richer_types() {
         .expect("parquet reader builder");
     let schema = Arc::clone(builder.schema());
 
+    // Assert the Parquet *physical* schema carries a TIMESTAMP logical type
+    // annotation. The Arrow schema we read above could otherwise report a
+    // timestamp even when the physical schema has no annotation (arrow-rs
+    // embeds an `ARROW:schema` metadata blob), so downstream consumers like
+    // DuckDB / Polars / pyarrow's non-Arrow-aware paths wouldn't recognize
+    // it. This is the invariant that catches the seconds→int64 regression.
+    let parquet_meta = builder.metadata();
+    let received_descr = parquet_meta.file_metadata().schema_descr().column(4);
+    assert!(
+        matches!(
+            received_descr.logical_type(),
+            Some(LogicalType::Timestamp { .. })
+        ),
+        "received_at must carry a Parquet TIMESTAMP logical type, got {:?}",
+        received_descr.logical_type()
+    );
+
     // Schema must carry the richer types — not VARCHAR-for-everything.
     assert_eq!(schema.field(0).name(), "id");
     assert_eq!(schema.field(0).data_type(), &DataType::Int64);
@@ -75,7 +96,7 @@ fn sqlite_round_trip_preserves_richer_types() {
     assert_eq!(schema.field(4).name(), "received_at");
     assert_eq!(
         schema.field(4).data_type(),
-        &DataType::Timestamp(TimeUnit::Second, None)
+        &DataType::Timestamp(TimeUnit::Millisecond, None)
     );
     assert_eq!(schema.field(5).name(), "day");
     assert_eq!(schema.field(5).data_type(), &DataType::Date32);
@@ -119,13 +140,14 @@ fn sqlite_round_trip_preserves_richer_types() {
     assert!(active.value(0));
     assert!(!active.value(1));
 
+    // Seconds input (1_776_831_852) scales ×1000 into Millisecond builder.
     let received = batch
         .column(4)
         .as_any()
-        .downcast_ref::<TimestampSecondArray>()
-        .expect("timestamp(s)");
-    assert_eq!(received.value(0), 1_776_831_852);
-    assert_eq!(received.value(1), 1_776_918_252);
+        .downcast_ref::<TimestampMillisecondArray>()
+        .expect("timestamp(ms)");
+    assert_eq!(received.value(0), 1_776_831_852_000);
+    assert_eq!(received.value(1), 1_776_918_252_000);
 
     let day = batch
         .column(5)
@@ -230,33 +252,35 @@ fn sqlite_text_timestamps_round_trip() {
 
     assert_eq!(batch.num_rows(), 2);
 
+    // TIMESTAMP promotes to Millisecond in Parquet; string-parsed seconds
+    // are scaled to ms. 2026-04-21 12:34:56 UTC → 1_776_774_896_000.
     let ts_s = batch
         .column(0)
         .as_any()
-        .downcast_ref::<TimestampSecondArray>()
-        .expect("timestamp(s)");
-    // 2026-04-21 12:34:56 UTC → 1,776,774,896
-    assert_eq!(ts_s.value(0), 1_776_774_896);
-    assert_eq!(ts_s.value(1), 1_776_774_896);
+        .downcast_ref::<TimestampMillisecondArray>()
+        .expect("timestamp(ms)");
+    assert_eq!(ts_s.value(0), 1_776_774_896_000);
+    assert_eq!(ts_s.value(1), 1_776_774_896_000);
 
     let ts_ms = batch
         .column(1)
         .as_any()
-        .downcast_ref::<arrow::array::TimestampMillisecondArray>()
+        .downcast_ref::<TimestampMillisecondArray>()
         .expect("timestamp(ms)");
     assert_eq!(ts_ms.value(0), 1_776_774_896_789);
     assert_eq!(ts_ms.value(1), 1_776_774_896_000);
 
+    // TIMESTAMPTZ also promotes to Millisecond; both offset-qualified values
+    // normalize to the same UTC instant.
     let ts_tz = batch
         .column(2)
         .as_any()
-        .downcast_ref::<TimestampSecondArray>()
-        .expect("timestamptz (second)");
-    // Both offset-qualified values normalize to the same UTC instant.
+        .downcast_ref::<TimestampMillisecondArray>()
+        .expect("timestamptz (ms)");
     assert!(!ts_tz.is_null(0), "positive offset must parse, not null");
     assert!(!ts_tz.is_null(1), "negative offset must parse, not null");
-    assert_eq!(ts_tz.value(0), 1_776_774_896);
-    assert_eq!(ts_tz.value(1), 1_776_774_896);
+    assert_eq!(ts_tz.value(0), 1_776_774_896_000);
+    assert_eq!(ts_tz.value(1), 1_776_774_896_000);
 }
 
 /// P2: SQLite rows whose runtime storage class doesn't match the declared
@@ -322,8 +346,8 @@ fn sqlite_mismatch_nulls_the_cell_not_the_export() {
     let ts = batch
         .column(3)
         .as_any()
-        .downcast_ref::<TimestampSecondArray>()
-        .expect("timestamp(s)");
+        .downcast_ref::<TimestampMillisecondArray>()
+        .expect("timestamp(ms)");
     assert!(!ts.is_null(0));
     assert!(ts.is_null(1), "unparseable timestamp string should null");
     assert!(!ts.is_null(2));

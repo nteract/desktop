@@ -15,7 +15,6 @@ use std::sync::Arc;
 use arrow::array::builder::{
     BinaryBuilder, BooleanBuilder, Date32Builder, Float64Builder, Int64Builder, StringBuilder,
     TimestampMicrosecondBuilder, TimestampMillisecondBuilder, TimestampNanosecondBuilder,
-    TimestampSecondBuilder,
 };
 use arrow::array::{ArrayRef, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
@@ -119,11 +118,21 @@ impl SqliteDeclared {
     }
 
     /// Arrow type to use in the output Parquet schema.
+    ///
+    /// Note on seconds: Parquet's `TIMESTAMP` logical type only supports
+    /// MILLIS / MICROS / NANOS — there is no TIMESTAMP_SECONDS. If we emit
+    /// `Timestamp(Second, None)` arrow-rs writes a bare `INT64` with no
+    /// logical annotation, so consumers like DuckDB see a plain bigint
+    /// instead of a timestamp. We therefore promote `TimestampSecond` to
+    /// `Timestamp(Millisecond, None)` and scale numeric seconds-domain
+    /// inputs ×1000 in `build_column`. The `TimestampSecond` variant name
+    /// still accurately describes the SQLite-side input scale.
     pub fn to_arrow(self) -> DataType {
         match self {
             Self::Boolean => DataType::Boolean,
-            Self::TimestampSecond => DataType::Timestamp(TimeUnit::Second, None),
-            Self::TimestampMilli => DataType::Timestamp(TimeUnit::Millisecond, None),
+            Self::TimestampSecond | Self::TimestampMilli => {
+                DataType::Timestamp(TimeUnit::Millisecond, None)
+            }
             Self::TimestampMicro => DataType::Timestamp(TimeUnit::Microsecond, None),
             Self::TimestampNano => DataType::Timestamp(TimeUnit::Nanosecond, None),
             Self::Date => DataType::Date32,
@@ -137,10 +146,22 @@ impl SqliteDeclared {
             Self::RealAffinity | Self::NumericAffinity => DataType::Float64,
         }
     }
-}
 
-fn sqlite_type_to_arrow(declared: &str) -> DataType {
-    SqliteDeclared::parse(declared).to_arrow()
+    /// How many of this variant's input units equal one second. Used to
+    /// rescale numeric SQLite values (e.g. Unix seconds vs. Unix ms) to
+    /// whatever unit `to_arrow()` chose for the Parquet column.
+    ///
+    /// Returns 0 for non-temporal variants (they never hit the timestamp
+    /// builder, but 0 keeps the `i64` type uniform).
+    fn input_units_per_second(self) -> i64 {
+        match self {
+            Self::TimestampSecond => 1,
+            Self::TimestampMilli => 1_000,
+            Self::TimestampMicro => 1_000_000,
+            Self::TimestampNano => 1_000_000_000,
+            _ => 0,
+        }
+    }
 }
 
 /// Build a Parquet file directly from SQLite query results. The caller
@@ -171,9 +192,10 @@ pub fn write_parquet_from_sqlite(
     let mut arrays: Vec<ArrayRef> = Vec::with_capacity(columns.len());
 
     for col in &columns {
-        let dt = sqlite_type_to_arrow(&col.ty);
+        let declared = SqliteDeclared::parse(&col.ty);
+        let dt = declared.to_arrow();
         fields.push(Field::new(&col.name, dt.clone(), true));
-        let array = build_column(&col.name, &dt, &rows, n)?;
+        let array = build_column(&col.name, declared, &dt, &rows, n)?;
         arrays.push(array);
     }
 
@@ -305,6 +327,7 @@ fn web_sys_console_warn(_msg: &str) {
 /// errors — those are programmer bugs, not data.
 fn build_column(
     name: &str,
+    declared: SqliteDeclared,
     dt: &DataType,
     rows: &js_sys::Array,
     n: usize,
@@ -393,31 +416,27 @@ fn build_column(
             }
             Arc::new(b.finish())
         }
-        DataType::Timestamp(TimeUnit::Second, _) => {
-            let mut b = TimestampSecondBuilder::with_capacity(n);
-            for i in 0..n {
-                append_timestamp_cell(&mut b, &key, rows, i, name, 1, &mut stats)?;
-            }
-            Arc::new(b.finish())
-        }
         DataType::Timestamp(TimeUnit::Millisecond, _) => {
             let mut b = TimestampMillisecondBuilder::with_capacity(n);
+            let col = TimestampColumn::new(name, declared.input_units_per_second(), 1_000);
             for i in 0..n {
-                append_timestamp_cell(&mut b, &key, rows, i, name, 1_000, &mut stats)?;
+                append_timestamp_cell(&mut b, &col, rows, i, &mut stats)?;
             }
             Arc::new(b.finish())
         }
         DataType::Timestamp(TimeUnit::Microsecond, _) => {
             let mut b = TimestampMicrosecondBuilder::with_capacity(n);
+            let col = TimestampColumn::new(name, declared.input_units_per_second(), 1_000_000);
             for i in 0..n {
-                append_timestamp_cell(&mut b, &key, rows, i, name, 1_000_000, &mut stats)?;
+                append_timestamp_cell(&mut b, &col, rows, i, &mut stats)?;
             }
             Arc::new(b.finish())
         }
         DataType::Timestamp(TimeUnit::Nanosecond, _) => {
             let mut b = TimestampNanosecondBuilder::with_capacity(n);
+            let col = TimestampColumn::new(name, declared.input_units_per_second(), 1_000_000_000);
             for i in 0..n {
-                append_timestamp_cell(&mut b, &key, rows, i, name, 1_000_000_000, &mut stats)?;
+                append_timestamp_cell(&mut b, &col, rows, i, &mut stats)?;
             }
             Arc::new(b.finish())
         }
@@ -477,54 +496,89 @@ fn build_column(
     Ok(array)
 }
 
-/// Convert a cell value to an Arrow timestamp at the given unit, using the
-/// caller-supplied multiplier to scale seconds → the target unit when the
-/// source is an ISO-8601 string. Numbers/bigints pass through as-is (the
-/// caller is already quoting the unit in the Arrow schema).
+/// Per-column state for building a timestamp column. Bundled so the
+/// per-cell function stays within clippy's argument count.
+struct TimestampColumn<'a> {
+    /// Column name (used for error messages + mismatch logs).
+    name: &'a str,
+    /// JS string key used to pluck the value out of each row object.
+    key: JsValue,
+    /// How many SQLite-side numeric input units equal one second.
+    /// 1 for `TIMESTAMP`, 1000 for `DATETIME`/`TIMESTAMP_MS`, etc. Comes
+    /// from `SqliteDeclared::input_units_per_second`.
+    input_per_second: i64,
+    /// How many of the Arrow builder's units equal one second. 1_000 for
+    /// Millisecond, 1_000_000 for Microsecond, 1_000_000_000 for Nanosecond.
+    output_per_second: i64,
+}
+
+impl<'a> TimestampColumn<'a> {
+    fn new(name: &'a str, input_per_second: i64, output_per_second: i64) -> Self {
+        Self {
+            name,
+            key: JsValue::from_str(name),
+            input_per_second,
+            output_per_second,
+        }
+    }
+
+    /// Scale numeric input → output. `output_per_second ≥ input_per_second`
+    /// in every combination we produce, so this is an integer multiply.
+    fn numeric_scale(&self) -> i64 {
+        if self.input_per_second == 0 {
+            1
+        } else {
+            self.output_per_second / self.input_per_second
+        }
+    }
+}
+
+/// Convert a cell value to an Arrow timestamp at the output unit.
 ///
-/// `per_second`: 1 for seconds, 1_000 for millis, 1_000_000 for micros,
-/// 1_000_000_000 for nanos.
+/// Numeric inputs are scaled by `output_per_second / input_per_second`
+/// (integer division is safe — the builder unit is always ≥ the input
+/// unit). String inputs go through `naive_datetime_from_str` to get
+/// (seconds, subsec_nanos) and scale into output units.
 fn append_timestamp_cell<B>(
     builder: &mut B,
-    key: &JsValue,
+    col: &TimestampColumn<'_>,
     rows: &js_sys::Array,
     i: usize,
-    name: &str,
-    per_second: i64,
     stats: &mut MismatchStats,
 ) -> Result<(), JsError>
 where
     B: TimestampAppender,
 {
-    let v = get_cell(rows, i, key, name)?;
+    let scale_num = col.numeric_scale();
+    let v = get_cell(rows, i, &col.key, col.name)?;
     if v.is_null() || v.is_undefined() {
         builder.append_null();
     } else if let Some(f) = v.as_f64() {
-        builder.append_value(f as i64);
+        builder.append_value((f as i64) * scale_num);
     } else if let Ok(big) = v.clone().try_into() {
-        builder.append_value(big);
+        let big: i64 = big;
+        builder.append_value(big * scale_num);
     } else if let Some(s) = v.as_string() {
         match naive_datetime_from_str(&s) {
             Some(dt) => {
                 let seconds = dt.and_utc().timestamp();
                 let nanos = i64::from(dt.and_utc().timestamp_subsec_nanos());
-                let value = match per_second {
-                    1 => seconds,
+                let value = match col.output_per_second {
                     1_000 => seconds * 1_000 + nanos / 1_000_000,
                     1_000_000 => seconds * 1_000_000 + nanos / 1_000,
                     1_000_000_000 => seconds * 1_000_000_000 + nanos,
-                    _ => seconds * per_second,
+                    _ => seconds * col.output_per_second,
                 };
                 builder.append_value(value);
             }
             None => {
-                stats.record(name, i, &format!("unparseable timestamp string {s:?}"));
+                stats.record(col.name, i, &format!("unparseable timestamp string {s:?}"));
                 builder.append_null();
             }
         }
     } else {
         stats.record(
-            name,
+            col.name,
             i,
             &format!(
                 "expected number/bigint/ISO-8601 string, got {:?}",
@@ -536,20 +590,14 @@ where
     Ok(())
 }
 
-/// Uniform interface for the four timestamp builders so
-/// `append_timestamp_cell` doesn't have to be duplicated per unit.
+/// Uniform interface for the three timestamp builders so
+/// `append_timestamp_cell` doesn't have to be duplicated per unit. There is
+/// intentionally no impl for `TimestampSecondBuilder` — Parquet has no
+/// TIMESTAMP_SECONDS logical type, so we promote seconds inputs to
+/// milliseconds in `SqliteDeclared::to_arrow`.
 trait TimestampAppender {
     fn append_value(&mut self, v: i64);
     fn append_null(&mut self);
-}
-
-impl TimestampAppender for TimestampSecondBuilder {
-    fn append_value(&mut self, v: i64) {
-        self.append_value(v);
-    }
-    fn append_null(&mut self) {
-        self.append_null();
-    }
 }
 
 impl TimestampAppender for TimestampMillisecondBuilder {
@@ -656,9 +704,11 @@ mod tests {
     #[test]
     fn maps_to_expected_arrow_types() {
         assert_eq!(SqliteDeclared::Boolean.to_arrow(), DataType::Boolean);
+        // TimestampSecond promotes to Millisecond in Parquet (no
+        // TIMESTAMP_SECONDS logical type exists).
         assert_eq!(
             SqliteDeclared::TimestampSecond.to_arrow(),
-            DataType::Timestamp(TimeUnit::Second, None)
+            DataType::Timestamp(TimeUnit::Millisecond, None)
         );
         assert_eq!(
             SqliteDeclared::TimestampMilli.to_arrow(),
