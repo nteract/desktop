@@ -14,6 +14,8 @@ use wasm_bindgen::JsValue;
 mod store;
 mod writer;
 
+pub use writer::{write_parquet_from_sqlite, write_parquet_ipc, SqliteDeclared};
+
 /// Initialize the WASM module. Call once before using other functions.
 /// Sets up panic hook so Rust panics show readable messages in the browser console.
 #[wasm_bindgen(start)]
