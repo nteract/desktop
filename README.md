@@ -22,36 +22,28 @@ The `runt` CLI and `runtimed` Python bindings ship with the app and stay up to d
 | `runtimed` (Python) | Python bindings for the daemon (ships with the app) |
 ## MCP Server
 
-The nteract MCP server connects AI assistants to Jupyter notebooks through the daemon. Agents get 27 tools for working with notebooks — executing code, reading and writing cells, managing dependencies, and collaborating in real-time alongside humans in the desktop app.
+The nteract MCP server connects AI assistants to Jupyter notebooks through the daemon. Agents can run code, read and write cells, manage dependencies, and collaborate with humans in real-time — watching the notebook update live in the desktop app while the agent works.
 
-The MCP server ships with the desktop app as `runt mcp`.
+### Install the Claude Code plugin
 
-### Quick Start
-
-#### Claude Code
-
-```bash
-# Stable
-claude mcp add nteract -- runt mcp
-
-# Nightly
-claude mcp add nteract-nightly -- runt-nightly mcp
+```
+/plugin marketplace add nteract/claude-plugin
+/plugin install nteract@nteract
 ```
 
-#### Manual JSON config
+Pin a specific version:
 
-```json
-{
-  "mcpServers": {
-    "nteract": {
-      "command": "runt",
-      "args": ["mcp"]
-    }
-  }
-}
+```
+/plugin install nteract@nteract --ref v2.3.0
 ```
 
-The `runt` CLI ships with the desktop app. Use `runt` (stable) or `runt-nightly` directly — no PyPI install needed.
+The plugin ships the right `nteract-mcp` binary for your platform (macOS arm64/x64, Linux x64, Windows x64) — no separate install needed. `main` of `nteract/claude-plugin` always points at the latest stable release.
+
+For pre-release builds (updated daily):
+
+```
+/plugin install nightly@nteract
+```
 
 ## Usage
 
@@ -118,7 +110,7 @@ nteract/desktop
 │   └── mcp-supervisor/    # nteract-dev MCP server (proxies runt mcp + adds dev tools)
 ├── python/                 # Python packages
 │   ├── runtimed/          # PyPI: runtimed (Python bindings for daemon)
-│   ├── nteract/           # PyPI: nteract (MCP server)
+│   ├── nteract/           # PyPI: nteract (thin wrapper that launches `runt mcp`)
 │   └── gremlin/           # Stress-testing agent for nteract notebooks (not published)
 ├── docs/                   # User-facing documentation
 └── contributing/           # Developer guides
