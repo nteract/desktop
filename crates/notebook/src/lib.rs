@@ -929,8 +929,19 @@ async fn setup_sync_receivers(
 
 #[cfg(test)]
 mod tests {
-    use super::{next_available_sample_path, reopen_action, ReopenAction};
+    use super::{extract_commit_hash, next_available_sample_path, reopen_action, ReopenAction};
     use tempfile::TempDir;
+
+    #[test]
+    fn extract_commit_hash_returns_sha_without_dirty_suffix() {
+        assert_eq!(extract_commit_hash("1.4.1+abc1234"), Some("abc1234"));
+        assert_eq!(
+            extract_commit_hash("1.4.1+abc1234+dirty"),
+            Some("abc1234"),
+            "dirty suffix is informational; SHA equality is what drives upgrade decisions"
+        );
+        assert_eq!(extract_commit_hash("1.4.1"), None);
+    }
 
     #[test]
     fn next_available_sample_path_reuses_original_name_when_available() {
@@ -976,8 +987,16 @@ fn bundled_daemon_version() -> String {
     )
 }
 
-/// Extract the commit hash from a version string.
-/// Version format: "X.Y.Z+COMMIT" -> returns "COMMIT"
+/// Extract the SHA portion from a version string.
+/// Version format: "X.Y.Z+SHA[+dirty]" -> returns "SHA".
+///
+/// The `+dirty` suffix (when present) is intentionally stripped: this
+/// helper is used to decide whether two binaries identify the same
+/// commit for upgrade and version-match purposes. Treating dirty and
+/// clean rebuilds at the same SHA as a mismatch would cause perpetual
+/// reinstalls when one side of the comparison was rebuilt off a dirty
+/// tree and the other wasn't. Dirty status is surfaced separately via
+/// the dev banner.
 fn extract_commit_hash(version: &str) -> Option<&str> {
     version.split('+').nth(1)
 }
@@ -1643,19 +1662,31 @@ where
 
 /// Get git information for the debug banner.
 /// Returns None in release builds.
+///
+/// In debug builds the branch and commit are resolved at runtime via
+/// `git rev-parse` so the banner reflects the working tree without
+/// requiring a binary rebuild after a checkout. The build-time embedded
+/// values (`git_branch.txt` / `git_hash.txt`) are used only as a
+/// fallback when `git` isn't available.
 #[tauri::command]
 async fn get_git_info() -> Option<GitInfo> {
     #[cfg(debug_assertions)]
     {
-        // Try to read workspace description from .context/workspace-description
         let description = std::fs::read_to_string(".context/workspace-description")
             .ok()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
+        let (branch, commit) = git_info_runtime().unwrap_or_else(|| {
+            (
+                include_str!(concat!(env!("OUT_DIR"), "/git_branch.txt")).to_string(),
+                include_str!(concat!(env!("OUT_DIR"), "/git_hash.txt")).to_string(),
+            )
+        });
+
         Some(GitInfo {
-            branch: include_str!(concat!(env!("OUT_DIR"), "/git_branch.txt")).to_string(),
-            commit: include_str!(concat!(env!("OUT_DIR"), "/git_hash.txt")).to_string(),
+            branch,
+            commit,
             description,
         })
     }
@@ -1663,6 +1694,34 @@ async fn get_git_info() -> Option<GitInfo> {
     {
         None
     }
+}
+
+/// Resolve `(branch, short-hash)` from the working tree.
+///
+/// Appends `+dirty` to the hash when the working tree has uncommitted
+/// changes (matching `git describe --dirty`). Returns `None` if a
+/// required git invocation fails (no git binary, not a repo, etc.) so
+/// callers can fall back to embedded values.
+#[cfg(debug_assertions)]
+fn git_info_runtime() -> Option<(String, String)> {
+    let branch = run_git(&["rev-parse", "--abbrev-ref", "HEAD"])?;
+    let mut commit = run_git(&["rev-parse", "--short=7", "HEAD"])?;
+    if run_git(&["status", "--porcelain"]).is_some_and(|s| !s.is_empty()) {
+        commit.push_str("+dirty");
+    }
+    Some((branch, commit))
+}
+
+#[cfg(debug_assertions)]
+fn run_git(args: &[&str]) -> Option<String> {
+    std::process::Command::new("git")
+        .args(args)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// Daemon info for debug banner display.

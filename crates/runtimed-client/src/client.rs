@@ -582,8 +582,11 @@ where
     // First, try to ping the daemon
     if client.ping().await.is_ok() {
         if let Some(info) = query_daemon_info(crate::default_socket_path()).await {
-            // Check if we need to upgrade
-            if info.version != bundled_version {
+            // Check if we need to upgrade. The dirty marker is ignored:
+            // a dirty-built and clean-built binary at the same SHA share
+            // committed source, so triggering an upgrade for that delta
+            // would just reinstall the same SHA on every dev launch.
+            if !crate::versions_match_ignoring_dirty(&info.version, &bundled_version) {
                 info!(
                     "[pool-client] Version mismatch: running={}, bundled={}",
                     info.version, bundled_version
