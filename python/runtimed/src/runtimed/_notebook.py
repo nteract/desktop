@@ -133,10 +133,14 @@ class Notebook:
     # ── Dependency management ────────────────────────────────────────
 
     async def _package_manager(self) -> str:
-        """Auto-detect the package manager (uv or conda)."""
+        """Auto-detect the package manager (uv, conda, or pixi)."""
         env = await self._session.env_source()
         if env:
-            return "conda" if env.startswith("conda:") else "uv"
+            if env.startswith("pixi:"):
+                return "pixi"
+            if env.startswith("conda:"):
+                return "conda"
+            return "uv"
         env_type = await self._session.get_metadata_env_type()
         if env_type:
             return env_type
@@ -148,7 +152,10 @@ class Notebook:
     async def add_dependency(self, package: str) -> list[str]:
         """Add a package dependency and return the updated list."""
         pm = await self._package_manager()
-        if pm == "conda":
+        if pm == "pixi":
+            await self._session.add_pixi_dependency(package)
+            return await self._session.get_pixi_dependencies()
+        elif pm == "conda":
             await self._session.add_conda_dependency(package)
             return await self._session.get_conda_dependencies()
         else:
@@ -158,7 +165,10 @@ class Notebook:
     async def add_dependencies(self, packages: list[str]) -> list[str]:
         """Add multiple dependencies at once and return the updated list."""
         pm = await self._package_manager()
-        if pm == "conda":
+        if pm == "pixi":
+            await self._session.add_pixi_dependencies(packages)
+            return await self._session.get_pixi_dependencies()
+        elif pm == "conda":
             await self._session.add_conda_dependencies(packages)
             return await self._session.get_conda_dependencies()
         else:
@@ -168,7 +178,10 @@ class Notebook:
     async def remove_dependency(self, package: str) -> list[str]:
         """Remove a package dependency and return the updated list."""
         pm = await self._package_manager()
-        if pm == "conda":
+        if pm == "pixi":
+            await self._session.remove_pixi_dependency(package)
+            return await self._session.get_pixi_dependencies()
+        elif pm == "conda":
             await self._session.remove_conda_dependency(package)
             return await self._session.get_conda_dependencies()
         else:
@@ -178,7 +191,9 @@ class Notebook:
     async def get_dependencies(self) -> list[str]:
         """Get current package dependencies."""
         pm = await self._package_manager()
-        if pm == "conda":
+        if pm == "pixi":
+            return await self._session.get_pixi_dependencies()
+        elif pm == "conda":
             return await self._session.get_conda_dependencies()
         else:
             return await self._session.get_uv_dependencies()

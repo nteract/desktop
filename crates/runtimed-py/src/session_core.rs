@@ -135,9 +135,15 @@ pub(crate) fn get_settings(state: &SessionState) -> Option<runtimed::settings_do
 
 /// Get the notebook's environment type from metadata structure.
 ///
-/// Returns "conda" if conda metadata exists, "uv" if uv metadata exists, None otherwise.
+/// Returns "pixi" if pixi metadata exists, "conda" if conda metadata exists,
+/// "uv" if uv metadata exists, None otherwise.
 /// This checks if the metadata structure exists, not whether deps are non-empty.
+/// Pixi is checked first because a notebook with a pixi section should use
+/// pixi for dependency management even if uv/conda sections also exist.
 pub(crate) fn get_metadata_env_type(snapshot: &NotebookMetadataSnapshot) -> Option<String> {
+    if snapshot.runt.pixi.is_some() {
+        return Some("pixi".to_string());
+    }
     if snapshot.runt.conda.is_some() {
         return Some("conda".to_string());
     }
