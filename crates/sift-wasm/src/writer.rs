@@ -396,8 +396,8 @@ fn write_batches_to_parquet(
     schema: Arc<Schema>,
     batches: Vec<RecordBatch>,
 ) -> Result<Vec<u8>, JsError> {
-    let zstd_level = ZstdLevel::try_new(3)
-        .map_err(|e| JsError::new(&format!("zstd level: {e}")))?;
+    let zstd_level =
+        ZstdLevel::try_new(3).map_err(|e| JsError::new(&format!("zstd level: {e}")))?;
     let props = WriterProperties::builder()
         .set_compression(Compression::ZSTD(zstd_level))
         .build();
