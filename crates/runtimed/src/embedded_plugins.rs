@@ -56,6 +56,14 @@ pub fn get(name: &str) -> Option<(&'static [u8], &'static str)> {
             include_bytes!("../../runt-mcp/assets/plugins/leaflet.css"),
             "text/css; charset=utf-8",
         )),
+        "sift.js" => Some((
+            include_bytes!("../../runt-mcp/assets/plugins/sift.js"),
+            "application/javascript; charset=utf-8",
+        )),
+        "sift.css" => Some((
+            include_bytes!("../../runt-mcp/assets/plugins/sift.css"),
+            "text/css; charset=utf-8",
+        )),
         "sift_wasm.wasm" => Some((
             include_bytes!("../../runt-mcp/assets/plugins/sift_wasm.wasm"),
             "application/wasm",
