@@ -49,7 +49,7 @@ When you change daemon code and want the system service to pick it up on a cloud
 cargo xtask install-nightly
 ```
 
-Builds runtimed + runt + runt-proxy (release), installs them to `~/.local/share/runt-nightly/bin/` with channel-suffixed names, writes + starts the systemd user unit on first install, upgrades in place on subsequent runs. On macOS it refuses by default — use the nteract Nightly app (it auto-updates). Pass `--on-macos` to override, `--replace-installed-app` if an app bundle is already present.
+Builds runtimed + runt + nteract-mcp (release), installs them to `~/.local/share/runt-nightly/bin/` with channel-suffixed names, writes + starts the systemd user unit on first install, upgrades in place on subsequent runs. On macOS it refuses by default — use the nteract Nightly app (it auto-updates). Pass `--on-macos` to override, `--replace-installed-app` if an app bundle is already present.
 
 Verify: `runt-nightly daemon status` or `cat ~/.cache/runt-nightly/daemon.json`.
 

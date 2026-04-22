@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build and install runtimed, runt, and runt-proxy as the local nightly install.
+# Build and install runtimed, runt, and nteract-mcp as the local nightly install.
 #
 # Linux-only. macOS devs use the nteract Nightly app bundle or `cargo xtask
 # dev-daemon`. Windows users install the app. This script is the path headless
@@ -31,9 +31,9 @@ SERVICE_UNIT="$SERVICE_NAME.service"
 
 echo "=== install-nightly ==="
 
-echo "Building runtimed, runt-cli, runt-proxy (release, channel=nightly)..."
+echo "Building runtimed, runt-cli, nteract-mcp (release, channel=nightly)..."
 RUNT_BUILD_CHANNEL=nightly cargo build --release \
-  -p runtimed -p runt-cli -p runt-proxy
+  -p runtimed -p runt-cli -p nteract-mcp
 
 mkdir -p "$INSTALL_DIR" "$SERVICE_DIR"
 
@@ -50,16 +50,16 @@ atomic_install() {
 
 atomic_install target/release/runtimed   "$INSTALL_DIR/runtimed-nightly"
 atomic_install target/release/runt       "$INSTALL_DIR/runt-nightly"
-atomic_install target/release/runt-proxy "$INSTALL_DIR/runt-proxy-nightly"
+atomic_install target/release/nteract-mcp "$INSTALL_DIR/nteract-mcp-nightly"
 
-# Link the nightly plugin's expected runt-proxy path to the just-installed
-# binary. The plugin's .mcp.json points at ${CLAUDE_PLUGIN_ROOT}/bin/runt-proxy
+# Link the nightly plugin's expected nteract-mcp path to the just-installed
+# binary. The plugin's .mcp.json points at ${CLAUDE_PLUGIN_ROOT}/bin/nteract-mcp
 # and Claude Code spawns it from the plugin-cache copy, so the link must
 # resolve from the cache location. `readlink -f` is Linux-specific.
 PLUGIN_BIN="$REPO_ROOT/plugins/nteract-nightly/bin"
 mkdir -p "$PLUGIN_BIN"
-ln -sfn "$INSTALL_DIR/runt-proxy-nightly" "$PLUGIN_BIN/runt-proxy"
-echo "Linked $PLUGIN_BIN/runt-proxy -> $INSTALL_DIR/runt-proxy-nightly"
+ln -sfn "$INSTALL_DIR/nteract-mcp-nightly" "$PLUGIN_BIN/nteract-mcp"
+echo "Linked $PLUGIN_BIN/nteract-mcp -> $INSTALL_DIR/nteract-mcp-nightly"
 
 # Write the systemd user unit. Matches the template in
 # crates/runtimed-client/src/service.rs::create_linux_systemd so future tweaks

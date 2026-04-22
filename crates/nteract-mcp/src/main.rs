@@ -1,9 +1,10 @@
-//! runt-proxy — resilient MCP proxy for `runt mcp`.
+//! nteract-mcp — resilient MCP server for nteract.
 //!
-//! Ships as a sidecar in the nteract desktop app and inside the `.mcpb`
-//! Claude Desktop extension. Finds `runt` via `runt-workspace`, spawns
-//! `runt mcp` as a child, and proxies MCP over stdio with transparent
-//! restart on child death (daemon upgrade, crash, etc.).
+//! Ships as a sidecar in the nteract desktop app, inside the `.mcpb`
+//! Claude Desktop extension, and in the Claude Code plugin. Finds
+//! `runt` via `runt-workspace`, spawns `runt mcp` as a child, and
+//! proxies MCP over stdio with transparent restart on child death
+//! (daemon upgrade, crash, etc.).
 
 // Allow `expect()` and `unwrap()` in tests
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
@@ -143,7 +144,7 @@ async fn main() -> ExitCode {
     let binary_name = runt_workspace::cli_command_name();
 
     info!(
-        "runt-proxy starting (channel={channel}, compiled={})",
+        "nteract-mcp starting (channel={channel}, compiled={})",
         runt_workspace::channel_display_name()
     );
     if channel != runt_workspace::channel_display_name() {

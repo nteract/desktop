@@ -4,7 +4,7 @@
 //! forwards MCP tools/resources, and handles transparent restart on child death.
 //!
 //! Used by:
-//! - `runt-proxy` — shipped as a sidecar in the nteract app and inside the `.mcpb` Claude Desktop extension
+//! - `nteract-mcp` — shipped as a sidecar in the nteract app, inside the `.mcpb` Claude Desktop extension, and in the Claude Code plugin
 //! - `mcp-supervisor` — dev environment MCP proxy with file watching and build management
 
 // Allow `expect()` and `unwrap()` in tests

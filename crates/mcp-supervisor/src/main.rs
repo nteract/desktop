@@ -2470,7 +2470,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // 2b: Fast-path check — only build if binary doesn't exist.
         // If it exists, skip to child spawn immediately (file watcher will
-        // rebuild on source changes). This matches runt-proxy's pattern.
+        // rebuild on source changes). This matches nteract-mcp's pattern.
         let runt_binary = cargo_binary(&project_root, "runt");
         if !runt_binary.exists() {
             info!("runt binary not found, building...");

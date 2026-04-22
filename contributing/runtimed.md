@@ -100,7 +100,7 @@ On Linux cloud boxes and headless dev environments:
 cargo xtask install-nightly
 ```
 
-This builds `runtimed`, `runt`, and `runt-proxy` in release mode and installs all three into `~/.local/share/runt-nightly/bin/` with channel-suffixed names (`runtimed-nightly`, `runt-nightly`, `runt-proxy-nightly`). On first run it writes the systemd user unit and starts it; on subsequent runs it upgrades in place. After the initial install the command prints the follow-up `sudo ln -sf` symlink commands for `/usr/local/bin/` and the `sudo loginctl enable-linger` step that keeps the user service alive across logout.
+This builds `runtimed`, `runt`, and `nteract-mcp` in release mode and installs all three into `~/.local/share/runt-nightly/bin/` with channel-suffixed names (`runtimed-nightly`, `runt-nightly`, `nteract-mcp-nightly`). On first run it writes the systemd user unit and starts it; on subsequent runs it upgrades in place. After the initial install the command prints the follow-up `sudo ln -sf` symlink commands for `/usr/local/bin/` and the `sudo loginctl enable-linger` step that keeps the user service alive across logout.
 
 It refuses by default on macOS (the desktop app manages its own daemon via SMAppService — reinstalling from source out of the app bundle is a footgun) and when an nteract app bundle is already installed on any platform. Override respectively with `--on-macos` and `--replace-installed-app` if you really mean it.
 

@@ -72,8 +72,8 @@ which runt                      # Should be repo/bin/runt (not /usr/local/bin/ru
 **Critical:** The `env -i` wrapper on nteract-nightly and nteract is required to prevent direnv's env vars from leaking into these MCP servers. Without it, they will incorrectly connect to the dev daemon instead of the system daemon.
 
 **This system's nightly installation:**
-- Binaries: `~/.local/share/runt-nightly/bin/{runtimed-nightly,runt-nightly,runt-proxy-nightly}`
-- Symlinks: `/usr/local/bin/{runtimed-nightly,runt-nightly,runt-proxy-nightly}` → the install dir
+- Binaries: `~/.local/share/runt-nightly/bin/{runtimed-nightly,runt-nightly,nteract-mcp-nightly}`
+- Symlinks: `/usr/local/bin/{runtimed-nightly,runt-nightly,nteract-mcp-nightly}` → the install dir
 - Daemon socket: `~/.cache/runt-nightly/runtimed.sock`
 - Install command: `cargo xtask install-nightly` (refuses on macOS and when an app bundle is installed — see § `install-nightly` below)
 - Version: Built from source, updated after each PR merge
@@ -383,7 +383,7 @@ When `nteract-dev` is active, agents also get the full nteract tool suite. **Use
 | `nteract-predicate` | Pure-Rust compute kernels for dataframe/Arrow analysis (summary, filter, histogram) — backs Sift (the `@nteract/sift` viewer; `nteract/dx` is the Python sender) |
 | `sift-wasm` | WASM bindings for `nteract-predicate` — used by `@nteract/sift` |
 | `mcp-supervisor` | `nteract-dev` MCP server — proxies `runt mcp` and adds dev tools (`up`, `down`, `status`, `logs`, `vite_logs`) |
-| `runt-proxy` | Resilient MCP proxy for `runt mcp` — shipped as a sidecar in the nteract desktop app and inside the `.mcpb` Claude Desktop extension |
+| `nteract-mcp` | Resilient MCP proxy for `runt mcp` — shipped as a sidecar in the nteract desktop app and inside the `.mcpb` Claude Desktop extension |
 | `xtask` | Build system orchestration |
 
 ## Build System (`cargo xtask`)
@@ -407,7 +407,7 @@ All build, lint, and dev commands go through `cargo xtask`. **Run `cargo xtask h
 | | `cargo xtask build-dmg` | Build a DMG bundle (CI/release packaging) |
 | Daemon | `cargo xtask dev-daemon` | Per-worktree dev daemon |
 | | `cargo xtask dev-daemon --release` | Run the per-worktree daemon in release mode |
-| | `cargo xtask install-nightly` | Install runtimed + runt + runt-proxy as the local nightly (cloud-box / headless-Linux first-install). Refuses on macOS unless `--on-macos`; refuses when an app bundle is installed unless `--replace-installed-app`. |
+| | `cargo xtask install-nightly` | Install runtimed + runt + nteract-mcp as the local nightly (cloud-box / headless-Linux first-install). Refuses on macOS unless `--on-macos`; refuses when an app bundle is installed unless `--replace-installed-app`. |
 | MCP | `cargo xtask run-mcp` | nteract-dev (daemon + MCP + auto-restart) |
 | | `cargo xtask run-mcp --print-config` | Print MCP client config JSON |
 | | `cargo xtask dev-mcp` | Direct `runt mcp` (no proxy, no auto-restart) |

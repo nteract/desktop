@@ -43,16 +43,16 @@
     "url": "https://github.com/nteract/desktop"
   },
   "server": {
-    "entry_point": "server/runt-proxy",
+    "entry_point": "server/nteract-mcp",
     "mcp_config": {
       "args": [],
-      "command": "${__dirname}/server/runt-proxy",
+      "command": "${__dirname}/server/nteract-mcp",
       "env": {
         "NTERACT_CHANNEL": "nightly"
       },
       "platform_overrides": {
         "win32": {
-          "command": "${__dirname}/server/runt-proxy.exe"
+          "command": "${__dirname}/server/nteract-mcp.exe"
         }
       }
     },

@@ -4554,6 +4554,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "nteract-mcp"
+version = "0.1.1"
+dependencies = [
+ "dirs",
+ "rmcp",
+ "runt-mcp-proxy",
+ "runt-workspace",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "nteract-predicate"
 version = "0.1.1"
 dependencies = [
@@ -6950,19 +6963,6 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
-]
-
-[[package]]
-name = "runt-proxy"
-version = "0.1.1"
-dependencies = [
- "dirs",
- "rmcp",
- "runt-mcp-proxy",
- "runt-workspace",
- "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

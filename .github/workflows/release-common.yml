@@ -297,12 +297,12 @@ jobs:
 
       - name: Build external binaries
         run: |
-          cargo build --release -p runtimed -p runt-cli -p runt-proxy
+          cargo build --release -p runtimed -p runt-cli -p nteract-mcp
           TARGET=$(rustc --print host-tuple)
           mkdir -p crates/notebook/binaries
           cp target/release/runtimed "crates/notebook/binaries/runtimed-$TARGET"
           cp target/release/runt "crates/notebook/binaries/runt-$TARGET"
-          cp target/release/runt-proxy "crates/notebook/binaries/runt-proxy-$TARGET"
+          cp target/release/nteract-mcp "crates/notebook/binaries/nteract-mcp-$TARGET"
 
       - name: Build with tauri-action
         uses: tauri-apps/tauri-action@v0
@@ -463,12 +463,12 @@ jobs:
 
       - name: Build external binaries
         run: |
-          cargo build --release --target x86_64-apple-darwin -p runtimed -p runt-cli -p runt-proxy
+          cargo build --release --target x86_64-apple-darwin -p runtimed -p runt-cli -p nteract-mcp
           TARGET="x86_64-apple-darwin"
           mkdir -p crates/notebook/binaries
           cp target/x86_64-apple-darwin/release/runtimed "crates/notebook/binaries/runtimed-$TARGET"
           cp target/x86_64-apple-darwin/release/runt "crates/notebook/binaries/runt-$TARGET"
-          cp target/x86_64-apple-darwin/release/runt-proxy "crates/notebook/binaries/runt-proxy-$TARGET"
+          cp target/x86_64-apple-darwin/release/nteract-mcp "crates/notebook/binaries/nteract-mcp-$TARGET"
 
       - name: Build with tauri-action
         uses: tauri-apps/tauri-action@v0
@@ -610,12 +610,12 @@ jobs:
       - name: Build external binaries
         shell: bash
         run: |
-          cargo build --release -p runtimed -p runt-cli -p runt-proxy
+          cargo build --release -p runtimed -p runt-cli -p nteract-mcp
           TARGET=$(rustc --print host-tuple)
           mkdir -p crates/notebook/binaries
           cp target/release/runtimed.exe "crates/notebook/binaries/runtimed-$TARGET.exe"
           cp target/release/runt.exe "crates/notebook/binaries/runt-$TARGET.exe"
-          cp target/release/runt-proxy.exe "crates/notebook/binaries/runt-proxy-$TARGET.exe"
+          cp target/release/nteract-mcp.exe "crates/notebook/binaries/nteract-mcp-$TARGET.exe"
 
       - name: Build with tauri-action
         uses: tauri-apps/tauri-action@v0
@@ -734,12 +734,12 @@ jobs:
 
       - name: Build external binaries
         run: |
-          cargo build --release -p runtimed -p runt-cli -p runt-proxy
+          cargo build --release -p runtimed -p runt-cli -p nteract-mcp
           TARGET=$(rustc --print host-tuple)
           mkdir -p crates/notebook/binaries
           cp target/release/runtimed "crates/notebook/binaries/runtimed-$TARGET"
           cp target/release/runt "crates/notebook/binaries/runt-$TARGET"
-          cp target/release/runt-proxy "crates/notebook/binaries/runt-proxy-$TARGET"
+          cp target/release/nteract-mcp "crates/notebook/binaries/nteract-mcp-$TARGET"
 
       - name: Build with tauri-action
         uses: tauri-apps/tauri-action@v0

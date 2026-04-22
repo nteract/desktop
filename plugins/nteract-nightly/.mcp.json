@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "notebook": {
-      "command": "${CLAUDE_PLUGIN_ROOT}/bin/runt-proxy",
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/nteract-mcp",
       "args": [],
       "env": {
         "NTERACT_CHANNEL": "nightly"
