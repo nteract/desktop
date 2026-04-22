@@ -823,7 +823,7 @@ impl AsyncSession {
     }
 
     // =========================================================================
-    // Dependencies (uv / conda)
+    // Dependencies (uv / conda / pixi)
     // =========================================================================
 
     /// Get current UV dependencies.
@@ -950,9 +950,71 @@ impl AsyncSession {
         })
     }
 
+    /// Get current Pixi dependencies (conda matchspecs).
+    fn get_pixi_dependencies<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        future_into_py(py, async move {
+            let snapshot = session_core::get_notebook_metadata(&state).await?;
+            Ok(snapshot
+                .runt
+                .pixi
+                .map(|p| p.dependencies)
+                .unwrap_or_default())
+        })
+    }
+
+    /// Add a Pixi dependency (deduplicates by package name).
+    fn add_pixi_dependency<'py>(
+        &self,
+        py: Python<'py>,
+        package: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        let package = package.to_string();
+        future_into_py(py, async move {
+            let mut snapshot = session_core::get_notebook_metadata(&state).await?;
+            snapshot.add_pixi_dependency(&package);
+            session_core::set_notebook_metadata(&state, &snapshot).await
+        })
+    }
+
+    /// Add multiple Pixi dependencies in a single operation (one metadata roundtrip).
+    fn add_pixi_dependencies<'py>(
+        &self,
+        py: Python<'py>,
+        packages: Vec<String>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        future_into_py(py, async move {
+            let mut snapshot = session_core::get_notebook_metadata(&state).await?;
+            for package in &packages {
+                snapshot.add_pixi_dependency(package);
+            }
+            session_core::set_notebook_metadata(&state, &snapshot).await
+        })
+    }
+
+    /// Remove a Pixi dependency by package name. Returns True if removed.
+    fn remove_pixi_dependency<'py>(
+        &self,
+        py: Python<'py>,
+        package: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        let package = package.to_string();
+        future_into_py(py, async move {
+            let mut snapshot = session_core::get_notebook_metadata(&state).await?;
+            let removed = snapshot.remove_pixi_dependency(&package);
+            if removed {
+                session_core::set_notebook_metadata(&state, &snapshot).await?;
+            }
+            Ok(removed)
+        })
+    }
+
     /// Get the notebook's environment type from metadata structure.
     ///
-    /// Returns "uv", "conda", or None if no env metadata exists.
+    /// Returns "uv", "conda", "pixi", or None if no env metadata exists.
     /// This checks if the metadata structure exists, not whether deps are non-empty.
     fn get_metadata_env_type<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let state = Arc::clone(&self.state);
