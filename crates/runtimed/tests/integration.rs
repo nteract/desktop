@@ -1913,3 +1913,214 @@ async fn error_blob_spill_is_renderable_by_llm_resolver() {
     assert!(tb[1].contains("500"));
     assert!(tb[1].contains("traceback frames"));
 }
+
+/// Test that creating a notebook with an explicit package manager and dependencies
+/// seeds the CRDT metadata correctly. When deps are non-empty, the daemon should
+/// also generate a trust signature so auto-launch can proceed.
+#[tokio::test]
+async fn test_create_notebook_with_deps() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+
+    let daemon = Daemon::new(config).unwrap();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
+
+    // Create notebook with conda + two deps
+    let result = connect::connect_create(
+        socket_path.clone(),
+        "python",
+        None,
+        "test",
+        false,
+        Some("conda"),
+        vec!["pandas".to_string(), "numpy".to_string()],
+    )
+    .await
+    .expect("should create notebook with deps");
+    let handle = result.handle;
+
+    assert!(
+        wait_for_session_ready(&handle, Duration::from_secs(2)).await,
+        "client should reach session-ready state within 2s"
+    );
+
+    // Poll for metadata to arrive via Automerge sync
+    let mut meta = handle.get_notebook_metadata();
+    let start = std::time::Instant::now();
+    while meta.is_none() && start.elapsed() < Duration::from_secs(5) {
+        sleep(Duration::from_millis(50)).await;
+        meta = handle.get_notebook_metadata();
+    }
+    let meta = meta.expect("metadata should be present after sync");
+
+    // Conda section should have the two deps
+    let conda = meta
+        .runt
+        .conda
+        .as_ref()
+        .expect("conda section should be present");
+    assert_eq!(
+        conda.dependencies,
+        vec!["pandas".to_string(), "numpy".to_string()],
+        "conda deps should match what was passed at creation"
+    );
+
+    // UV section should NOT be present (conda was the explicit manager)
+    assert!(
+        meta.runt.uv.is_none(),
+        "uv section should not be present when conda is the explicit manager"
+    );
+
+    // Trust signature should be present because deps are non-empty
+    assert!(
+        meta.runt.trust_signature.is_some(),
+        "trust signature should be present when deps are non-empty"
+    );
+
+    // Shutdown
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
+/// Test that creating a notebook with an explicit package manager but no deps
+/// still seeds the correct manager section in the CRDT.
+#[tokio::test]
+async fn test_create_notebook_with_explicit_manager_no_deps() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+
+    let daemon = Daemon::new(config).unwrap();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
+
+    // Create notebook with pixi manager, no deps
+    let result = connect::connect_create(
+        socket_path.clone(),
+        "python",
+        None,
+        "test",
+        false,
+        Some("pixi"),
+        vec![],
+    )
+    .await
+    .expect("should create notebook with pixi manager");
+    let handle = result.handle;
+
+    assert!(
+        wait_for_session_ready(&handle, Duration::from_secs(2)).await,
+        "client should reach session-ready state within 2s"
+    );
+
+    // Poll for metadata to arrive via Automerge sync
+    let mut meta = handle.get_notebook_metadata();
+    let start = std::time::Instant::now();
+    while meta.is_none() && start.elapsed() < Duration::from_secs(5) {
+        sleep(Duration::from_millis(50)).await;
+        meta = handle.get_notebook_metadata();
+    }
+    let meta = meta.expect("metadata should be present after sync");
+
+    // Pixi section should be present with empty deps
+    let pixi = meta
+        .runt
+        .pixi
+        .as_ref()
+        .expect("pixi section should be present");
+    assert!(
+        pixi.dependencies.is_empty(),
+        "pixi deps should be empty when none were provided"
+    );
+
+    // Neither uv nor conda should be present
+    assert!(
+        meta.runt.uv.is_none(),
+        "uv section should not be present when pixi is the explicit manager"
+    );
+    assert!(
+        meta.runt.conda.is_none(),
+        "conda section should not be present when pixi is the explicit manager"
+    );
+
+    // Shutdown
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
+/// Test that creating a notebook with deps but no explicit package manager
+/// uses the daemon default (uv in test config).
+#[tokio::test]
+async fn test_create_notebook_default_manager_with_deps() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+
+    let daemon = Daemon::new(config).unwrap();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
+
+    // Create notebook with deps but no explicit package manager
+    let result = connect::connect_create(
+        socket_path.clone(),
+        "python",
+        None,
+        "test",
+        false,
+        None,
+        vec!["requests".to_string()],
+    )
+    .await
+    .expect("should create notebook with default manager + deps");
+    let handle = result.handle;
+
+    assert!(
+        wait_for_session_ready(&handle, Duration::from_secs(2)).await,
+        "client should reach session-ready state within 2s"
+    );
+
+    // Poll for metadata to arrive via Automerge sync
+    let mut meta = handle.get_notebook_metadata();
+    let start = std::time::Instant::now();
+    while meta.is_none() && start.elapsed() < Duration::from_secs(5) {
+        sleep(Duration::from_millis(50)).await;
+        meta = handle.get_notebook_metadata();
+    }
+    let meta = meta.expect("metadata should be present after sync");
+
+    // UV section should be present (daemon default for python is uv)
+    let uv = meta
+        .runt
+        .uv
+        .as_ref()
+        .expect("uv section should be present as the daemon default");
+    assert_eq!(
+        uv.dependencies,
+        vec!["requests".to_string()],
+        "uv deps should contain the provided dependency"
+    );
+
+    // Conda should not be present since we defaulted to uv
+    assert!(
+        meta.runt.conda.is_none(),
+        "conda section should not be present when defaulting to uv"
+    );
+
+    // Shutdown
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
