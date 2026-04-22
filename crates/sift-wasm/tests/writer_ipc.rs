@@ -3,6 +3,7 @@
 //! Lives on the native target because it doesn't touch `JsValue`.
 
 #![cfg(not(target_arch = "wasm32"))]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::io::Cursor;
 use std::sync::Arc;

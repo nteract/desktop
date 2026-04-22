@@ -4,6 +4,7 @@
 //! it runs in the wasm32 target via `wasm-pack test --node crates/sift-wasm`.
 
 #![cfg(target_arch = "wasm32")]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::Arc;
 

@@ -184,21 +184,16 @@ pub fn write_parquet_from_sqlite(
     write_batches_to_parquet(schema, vec![batch])
 }
 
-fn get_cell(
-    rows: &js_sys::Array,
-    i: usize,
-    key: &JsValue,
-    name: &str,
-) -> Result<JsValue, JsError> {
+fn get_cell(rows: &js_sys::Array, i: usize, key: &JsValue, name: &str) -> Result<JsValue, JsError> {
     let row = rows.get(i as u32);
-    js_sys::Reflect::get(&row, key)
-        .map_err(|_| JsError::new(&format!("missing {name} at row {i}")))
+    js_sys::Reflect::get(&row, key).map_err(|_| JsError::new(&format!("missing {name} at row {i}")))
 }
 
 fn date32_from_str(s: &str) -> Result<i32, JsError> {
     let d = NaiveDate::parse_from_str(s, "%Y-%m-%d")
         .map_err(|e| JsError::new(&format!("date parse '{s}': {e}")))?;
-    let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
+    let epoch = NaiveDate::from_ymd_opt(1970, 1, 1)
+        .ok_or_else(|| JsError::new("epoch date unavailable"))?;
     Ok((d - epoch).num_days() as i32)
 }
 
@@ -401,8 +396,10 @@ fn write_batches_to_parquet(
     schema: Arc<Schema>,
     batches: Vec<RecordBatch>,
 ) -> Result<Vec<u8>, JsError> {
+    let zstd_level = ZstdLevel::try_new(3)
+        .map_err(|e| JsError::new(&format!("zstd level: {e}")))?;
     let props = WriterProperties::builder()
-        .set_compression(Compression::ZSTD(ZstdLevel::try_new(3).unwrap()))
+        .set_compression(Compression::ZSTD(zstd_level))
         .build();
 
     let mut buf: Vec<u8> = Vec::new();
@@ -495,6 +492,9 @@ mod tests {
         assert_eq!(SqliteDeclared::TextAffinity.to_arrow(), DataType::Utf8);
         assert_eq!(SqliteDeclared::BlobAffinity.to_arrow(), DataType::Binary);
         assert_eq!(SqliteDeclared::RealAffinity.to_arrow(), DataType::Float64);
-        assert_eq!(SqliteDeclared::NumericAffinity.to_arrow(), DataType::Float64);
+        assert_eq!(
+            SqliteDeclared::NumericAffinity.to_arrow(),
+            DataType::Float64
+        );
     }
 }
