@@ -262,11 +262,10 @@ fn hydrate_kernel_state(state: &mut SessionState) {
 
 /// Wait for an auto-launched kernel to become usable after notebook creation.
 ///
-/// `create_notebook(runtime=...)` is expected to return a session that can
-/// execute immediately. The protocol-v3 session-ready barrier only covers
-/// document/bootstrap sync, so a newly created notebook can still be in the
-/// daemon's kernel `starting` phase. For cold Deno starts this can outlive the
-/// first `execute_cell()` timeout even though the kernel eventually comes up.
+/// This is currently used only for runtimes whose create contract expects a
+/// ready-to-execute kernel on return. Python notebook creation is looser:
+/// project-file auto-launch can legitimately fail or defer while the session
+/// itself is still usable for later explicit kernel start.
 async fn ensure_create_runtime_ready(
     state: &Arc<Mutex<SessionState>>,
     timeout: std::time::Duration,
@@ -454,7 +453,9 @@ pub(crate) async fn connect_create(
     hydrate_kernel_state(&mut state);
 
     let state_arc = Arc::new(Mutex::new(state));
-    ensure_create_runtime_ready(&state_arc, std::time::Duration::from_secs(180)).await?;
+    if runtime == "deno" {
+        ensure_create_runtime_ready(&state_arc, std::time::Duration::from_secs(180)).await?;
+    }
     let state = Arc::try_unwrap(state_arc)
         .map_err(|_| to_py_err("Failed to unwrap session state"))?
         .into_inner();
