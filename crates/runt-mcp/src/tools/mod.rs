@@ -323,12 +323,16 @@ pub async fn dispatch(
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
     match request.name.as_ref() {
-        // Session
+        // Session. `open_notebook` and `launch_app` are legacy aliases kept
+        // for clients whose tool caches from the previous plugin/MCPB
+        // release still advertise the old names; the canonical names
+        // (advertised in the tool list) are `connect_notebook` and
+        // `show_notebook`. Safe to remove after one release cycle.
         "list_active_notebooks" => session::list_active_notebooks(server).await,
-        "connect_notebook" => session::open_notebook(server, request).await,
+        "connect_notebook" | "open_notebook" => session::open_notebook(server, request).await,
         "create_notebook" => session::create_notebook(server, request).await,
         "save_notebook" => session::save_notebook(server, request).await,
-        "show_notebook" => session::show_notebook(server, request).await,
+        "show_notebook" | "launch_app" => session::show_notebook(server, request).await,
         // Cell read
         "get_cell" => cell_read::get_cell(server, request).await,
         "get_all_cells" => cell_read::get_all_cells(server, request).await,

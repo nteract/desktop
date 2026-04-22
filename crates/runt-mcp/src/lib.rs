@@ -112,7 +112,7 @@ impl ServerHandler for NteractMcp {
             "nteract MCP server for Jupyter notebooks. \
              Each connection has one active notebook session. \
              Use list_active_notebooks to discover open notebooks, \
-             then open_notebook or create_notebook to set your active session. \
+             then connect_notebook or create_notebook to set your active session. \
              Calling these again switches your active session.",
         )
     }

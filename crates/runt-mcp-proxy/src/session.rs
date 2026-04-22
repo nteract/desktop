@@ -25,7 +25,9 @@ pub fn extract_session_id(
 
     let name: &str = &params.name;
     match name {
-        "connect_notebook" | "create_notebook" => {
+        // `open_notebook` kept for one release as a legacy alias — clients
+        // may still be invoking it from stale tool caches.
+        "connect_notebook" | "open_notebook" | "create_notebook" => {
             // Try request arguments first (connect_notebook)
             let from_args = params
                 .arguments
@@ -198,6 +200,22 @@ mod tests {
     fn ignores_list_active_notebooks() {
         let params = make_params("list_active_notebooks", serde_json::json!({}));
         assert_eq!(extract_session_id(&params, &success_result()), None);
+    }
+
+    // ── Legacy alias (one-release compat) ─────────────────────────────
+
+    #[test]
+    fn legacy_open_notebook_alias_still_tracked() {
+        // Clients with stale tool caches may invoke `open_notebook`; the
+        // session tracker must still record the notebook_id.
+        let params = make_params(
+            "open_notebook",
+            serde_json::json!({"path": "/tmp/test.ipynb"}),
+        );
+        assert_eq!(
+            extract_session_id(&params, &success_result()),
+            Some("/tmp/test.ipynb".to_string())
+        );
     }
 
     // ── Error handling ────────────────────────────────────────────────
