@@ -204,17 +204,16 @@ pub async fn add_dependency(
         .ok_or_else(|| McpError::invalid_params("Missing required parameter: package", None))?;
     let after = arg_str(request, "after").unwrap_or("none");
 
-    let (handle, notebook_id) = {
-        let guard = server.session.read().await;
-        match guard.as_ref() {
-            Some(s) => (s.handle.clone(), s.notebook_id.clone()),
-            None => {
-                return tool_error(
-                    "No active notebook session. Call open_notebook or create_notebook first.",
-                )
+    let (handle, notebook_id) =
+        {
+            let guard = server.session.read().await;
+            match guard.as_ref() {
+                Some(s) => (s.handle.clone(), s.notebook_id.clone()),
+                None => return tool_error(
+                    "No active notebook session. Call connect_notebook or create_notebook first.",
+                ),
             }
-        }
-    };
+        };
 
     let manager = detect_package_manager(&handle);
 

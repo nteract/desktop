@@ -193,7 +193,7 @@ cargo xtask run-mcp
 
 | Category | Tools |
 |----------|-------|
-| Session | `list_active_notebooks`, `open_notebook`, `create_notebook`, `save_notebook`, `launch_app` |
+| Session | `list_active_notebooks`, `connect_notebook`, `create_notebook`, `save_notebook`, `show_notebook` |
 | Kernel | `interrupt_kernel`, `restart_kernel` |
 | Dependencies | `add_dependency`, `remove_dependency`, `get_dependencies`, `sync_environment` |
 | Cell CRUD | `create_cell`, `get_cell`, `get_all_cells`, `set_cell`, `delete_cell`, `move_cell`, `clear_outputs` |

@@ -237,11 +237,11 @@ mod tests {
     #[test]
     fn rename_is_incompatible() {
         // A renamed tool shows up as removal + addition
-        let old = vec![tool("open_notebook"), tool("execute_cell")];
+        let old = vec![tool("connect_notebook"), tool("execute_cell")];
         let new = vec![tool("open_file"), tool("execute_cell")];
         match detect_divergence(&old, &new) {
             ToolDivergence::Incompatible { removed, added } => {
-                assert!(removed.contains(&"open_notebook".to_string()));
+                assert!(removed.contains(&"connect_notebook".to_string()));
                 assert!(added.contains(&"open_file".to_string()));
             }
             other => panic!("Expected Incompatible, got {other:?}"),
@@ -273,7 +273,7 @@ mod tests {
     fn save_and_load_tool_cache() {
         let dir = tempfile::tempdir().unwrap();
         let tools = vec![
-            tool("open_notebook"),
+            tool("connect_notebook"),
             tool("execute_cell"),
             tool("get_cell"),
         ];
@@ -283,7 +283,7 @@ mod tests {
 
         assert_eq!(loaded.len(), 3);
         let names: Vec<&str> = loaded.iter().map(|t| t.name.as_ref()).collect();
-        assert!(names.contains(&"open_notebook"));
+        assert!(names.contains(&"connect_notebook"));
         assert!(names.contains(&"execute_cell"));
         assert!(names.contains(&"get_cell"));
     }

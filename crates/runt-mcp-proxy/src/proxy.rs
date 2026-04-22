@@ -309,7 +309,7 @@ impl McpProxy {
 
         // Seed the respawned child with the previous notebook target so
         // its `daemon_watch` loop rejoins on the first `Connected` event
-        // without us having to call `open_notebook` over the child MCP
+        // without us having to call `connect_notebook` over the child MCP
         // channel.
         let mut child_env = self.config.child_env.clone();
         if let Some(ref target) = rejoin_target {
@@ -774,7 +774,7 @@ impl ServerHandler for McpProxy {
             "nteract MCP server for Jupyter notebooks. \
              Each connection has one active notebook session. \
              Use list_active_notebooks to discover open notebooks, \
-             then open_notebook or create_notebook to set your active session. \
+             then connect_notebook or create_notebook to set your active session. \
              Calling these again switches your active session.",
         )
     }
@@ -1170,11 +1170,11 @@ mod tests {
     // ── Session tracking via track_session ────────────────────────────
 
     #[tokio::test]
-    async fn track_session_captures_open_notebook() {
+    async fn track_session_captures_connect_notebook() {
         let proxy = McpProxy::new(test_config(), None);
 
         let params: CallToolRequestParams = serde_json::from_value(serde_json::json!({
-            "name": "open_notebook",
+            "name": "connect_notebook",
             "arguments": { "path": "/tmp/test.ipynb" }
         }))
         .unwrap();
@@ -1192,7 +1192,7 @@ mod tests {
 
         // Open first notebook
         let params1: CallToolRequestParams = serde_json::from_value(serde_json::json!({
-            "name": "open_notebook",
+            "name": "connect_notebook",
             "arguments": { "path": "/tmp/first.ipynb" }
         }))
         .unwrap();
@@ -1205,7 +1205,7 @@ mod tests {
 
         // Open second notebook — should replace
         let params2: CallToolRequestParams = serde_json::from_value(serde_json::json!({
-            "name": "open_notebook",
+            "name": "connect_notebook",
             "arguments": { "path": "/tmp/second.ipynb" }
         }))
         .unwrap();
@@ -1246,7 +1246,7 @@ mod tests {
         let proxy = McpProxy::new(test_config(), None);
 
         let params: CallToolRequestParams = serde_json::from_value(serde_json::json!({
-            "name": "open_notebook",
+            "name": "connect_notebook",
             "arguments": { "path": "/tmp/test.ipynb" }
         }))
         .unwrap();

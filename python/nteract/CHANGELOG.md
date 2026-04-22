@@ -7,7 +7,7 @@ First release from `nteract/desktop`. The `nteract` Python package is now an MCP
 ### Highlights
 
 - **MCP server** — `nteract` runs as a stdio MCP server, compatible with Claude, ChatGPT, Gemini, OpenCode, and any MCP-capable agent
-- **Notebook lifecycle** — `list_active_notebooks`, `join_notebook`, `open_notebook`, `create_notebook`, `save_notebook`
+- **Notebook lifecycle** — `list_active_notebooks`, `connect_notebook`, `create_notebook`, `save_notebook`, `show_notebook`
 - **Cell operations** — `create_cell`, `get_cell`, `get_all_cells`, `set_cell`, `delete_cell`, `move_cell`, `clear_outputs`
 - **Targeted editing** — `replace_match` (literal find-and-replace) and `replace_regex` (regex-based) for surgical cell edits without rewriting entire sources
 - **Execution** — `execute_cell`, `run_all_cells`, `interrupt_kernel`, `restart_kernel`

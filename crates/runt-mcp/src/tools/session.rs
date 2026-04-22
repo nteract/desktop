@@ -605,17 +605,16 @@ pub async fn save_notebook(
     let path = arg_str(request, "path").map(resolve_path);
 
     // Need both handle and the notebook_id from the session.
-    let (handle, notebook_id) = {
-        let guard = server.session.read().await;
-        match guard.as_ref() {
-            Some(s) => (s.handle.clone(), s.notebook_id.clone()),
-            None => {
-                return tool_error(
-                    "No active notebook session. Call open_notebook or create_notebook first.",
-                )
+    let (handle, notebook_id) =
+        {
+            let guard = server.session.read().await;
+            match guard.as_ref() {
+                Some(s) => (s.handle.clone(), s.notebook_id.clone()),
+                None => return tool_error(
+                    "No active notebook session. Call connect_notebook or create_notebook first.",
+                ),
             }
-        }
-    };
+        };
 
     // The daemon decides whether a path is required (untitled rooms with
     // no existing path field return SaveError with a clear message). We no
