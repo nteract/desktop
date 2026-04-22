@@ -212,8 +212,21 @@ export async function createWasmHarness(notebookId = "test-notebook"): Promise<W
         });
       });
 
+      // Test transport only simulates Automerge frames, so bootstrap status
+      // needs to be synthesized to mirror the daemon's session-control FSM.
+      transport.pushSessionStatus({
+        notebook_doc: "pending",
+        runtime_state: "pending",
+        initial_load: { phase: "not_needed" },
+      });
+
       // Kick off the handshake: client → server → client
       engine.flush();
+      transport.pushSessionStatus({
+        notebook_doc: "syncing",
+        runtime_state: "syncing",
+        initial_load: { phase: "not_needed" },
+      });
 
       // Run sync rounds until the handshake completes.
       // Each round: push server response → engine processes → may generate reply
@@ -223,6 +236,12 @@ export async function createWasmHarness(notebookId = "test-notebook"): Promise<W
         // Give the engine a tick to process
         await Promise.resolve();
       }
+
+      transport.pushSessionStatus({
+        notebook_doc: "interactive",
+        runtime_state: "ready",
+        initial_load: { phase: "not_needed" },
+      });
 
       await syncComplete;
     },

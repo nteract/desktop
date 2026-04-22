@@ -135,6 +135,15 @@ pub struct SyncTaskConfig {
     pub broadcast_tx: broadcast::Sender<NotebookBroadcast>,
 }
 
+struct SyncFrameContext<'a> {
+    doc: &'a Arc<Mutex<SharedDocState>>,
+    snapshot_tx: &'a Arc<tokio::sync::watch::Sender<NotebookSnapshot>>,
+    status_tx: &'a watch::Sender<SyncStatus>,
+    broadcast_tx: &'a broadcast::Sender<NotebookBroadcast>,
+    notebook_id: &'a str,
+    saw_session_status: &'a mut bool,
+}
+
 /// Run the sync task.
 ///
 /// This is spawned as a background tokio task. It runs until the socket
@@ -231,16 +240,15 @@ where
                 .await
                 {
                     Ok(Ok(Some(frame))) => {
-                        handle_incoming_frame(
-                            &frame,
-                            &config.doc,
-                            &mut writer,
-                            &config.snapshot_tx,
-                            &config.status_tx,
-                            &config.broadcast_tx,
-                            &notebook_id,
-                            &mut saw_session_status,
-                        )
+                        SyncFrameContext {
+                            doc: &config.doc,
+                            snapshot_tx: &config.snapshot_tx,
+                            status_tx: &config.status_tx,
+                            broadcast_tx: &config.broadcast_tx,
+                            notebook_id: &notebook_id,
+                            saw_session_status: &mut saw_session_status,
+                        }
+                        .handle_incoming_frame(&frame, &mut writer)
                         .await;
                     }
                     Ok(Ok(None)) => {
@@ -275,16 +283,18 @@ where
                         broadcast_tx: req_broadcast_tx,
                     } => {
                         let result = send_request_impl(
-                            &config.doc,
                             &mut reader,
                             &mut writer,
-                            &config.snapshot_tx,
-                            &config.status_tx,
-                            &config.broadcast_tx,
                             req_broadcast_tx.as_ref(),
                             &request,
-                            &notebook_id,
-                            &mut saw_session_status,
+                            &mut SyncFrameContext {
+                                doc: &config.doc,
+                                snapshot_tx: &config.snapshot_tx,
+                                status_tx: &config.status_tx,
+                                broadcast_tx: &config.broadcast_tx,
+                                notebook_id: &notebook_id,
+                                saw_session_status: &mut saw_session_status,
+                            },
                         )
                         .await;
                         let _ = reply.send(result);
@@ -292,14 +302,16 @@ where
 
                     SyncCommand::ConfirmSync { reply } => {
                         let result = confirm_sync_impl(
-                            &config.doc,
                             &mut reader,
                             &mut writer,
-                            &config.snapshot_tx,
-                            &config.status_tx,
-                            &config.broadcast_tx,
-                            &notebook_id,
-                            &mut saw_session_status,
+                            &mut SyncFrameContext {
+                                doc: &config.doc,
+                                snapshot_tx: &config.snapshot_tx,
+                                status_tx: &config.status_tx,
+                                broadcast_tx: &config.broadcast_tx,
+                                notebook_id: &notebook_id,
+                                saw_session_status: &mut saw_session_status,
+                            },
                         )
                         .await;
                         let _ = reply.send(result);
@@ -307,14 +319,16 @@ where
 
                     SyncCommand::ConfirmStateSync { reply } => {
                         let result = confirm_state_sync_impl(
-                            &config.doc,
                             &mut reader,
                             &mut writer,
-                            &config.snapshot_tx,
-                            &config.status_tx,
-                            &config.broadcast_tx,
-                            &notebook_id,
-                            &mut saw_session_status,
+                            &mut SyncFrameContext {
+                                doc: &config.doc,
+                                snapshot_tx: &config.snapshot_tx,
+                                status_tx: &config.status_tx,
+                                broadcast_tx: &config.broadcast_tx,
+                                notebook_id: &notebook_id,
+                                saw_session_status: &mut saw_session_status,
+                            },
                         )
                         .await;
                         let _ = reply.send(result);
@@ -336,16 +350,15 @@ where
             // ─── Incoming frame from daemon ────────────────────────────────
             SelectResult::Frame(frame_result) => match frame_result {
                 Ok(Some(frame)) => {
-                    handle_incoming_frame(
-                        &frame,
-                        &config.doc,
-                        &mut writer,
-                        &config.snapshot_tx,
-                        &config.status_tx,
-                        &config.broadcast_tx,
-                        &notebook_id,
-                        &mut saw_session_status,
-                    )
+                    SyncFrameContext {
+                        doc: &config.doc,
+                        snapshot_tx: &config.snapshot_tx,
+                        status_tx: &config.status_tx,
+                        broadcast_tx: &config.broadcast_tx,
+                        notebook_id: &notebook_id,
+                        saw_session_status: &mut saw_session_status,
+                    }
+                    .handle_incoming_frame(&frame, &mut writer)
                     .await;
                 }
                 Ok(None) => {
@@ -379,256 +392,265 @@ where
 // =========================================================================
 
 /// Handle an incoming typed frame from the daemon.
-async fn handle_incoming_frame<W: AsyncWrite + Unpin>(
-    frame: &connection::TypedNotebookFrame,
-    doc: &Arc<Mutex<SharedDocState>>,
-    writer: &mut W,
-    snapshot_tx: &Arc<tokio::sync::watch::Sender<NotebookSnapshot>>,
-    status_tx: &watch::Sender<SyncStatus>,
-    broadcast_tx: &broadcast::Sender<NotebookBroadcast>,
-    notebook_id: &str,
-    saw_session_status: &mut bool,
-) {
-    match frame.frame_type {
-        NotebookFrameType::AutomergeSync => {
-            let msg = match sync::Message::decode(&frame.payload) {
-                Ok(msg) => msg,
-                Err(e) => {
-                    warn!(
-                        "[notebook-sync] Failed to decode sync message for {}: {}",
-                        notebook_id, e
-                    );
-                    return;
-                }
-            };
+impl SyncFrameContext<'_> {
+    async fn handle_incoming_frame<W: AsyncWrite + Unpin>(
+        &mut self,
+        frame: &connection::TypedNotebookFrame,
+        writer: &mut W,
+    ) {
+        match frame.frame_type {
+            NotebookFrameType::AutomergeSync => {
+                let msg = match sync::Message::decode(&frame.payload) {
+                    Ok(msg) => msg,
+                    Err(e) => {
+                        warn!(
+                            "[notebook-sync] Failed to decode sync message for {}: {}",
+                            self.notebook_id, e
+                        );
+                        return;
+                    }
+                };
 
-            // Apply and generate ack — lock held only for Automerge operations.
-            //
-            // The receive_sync_message call is wrapped in catch_unwind because
-            // automerge 0.7 has a known panic in BatchApply::apply when the
-            // internal patch log actor table gets out of order during concurrent
-            // sync (automerge/automerge#1187). Without catch_unwind, the panic
-            // poisons the Mutex and renders the session permanently unusable.
-            // By catching it, the MutexGuard drops normally and subsequent
-            // operations can still succeed.
-            let ack_bytes = {
-                let mut state = doc.lock().unwrap_or_else(|e| e.into_inner());
-                let recv_result =
-                    std::panic::catch_unwind(AssertUnwindSafe(|| state.receive_sync_message(msg)));
-                match recv_result {
-                    Ok(Ok(())) => {}
-                    Ok(Err(e)) => {
-                        warn!(
-                            "[notebook-sync] Failed to apply sync message for {}: {}",
-                            notebook_id, e
-                        );
-                        return;
-                    }
-                    Err(panic_payload) => {
-                        let msg = if let Some(s) = panic_payload.downcast_ref::<String>() {
-                            s.as_str()
-                        } else if let Some(s) = panic_payload.downcast_ref::<&str>() {
-                            s
-                        } else {
-                            "unknown panic"
-                        };
-                        warn!(
-                            "[notebook-sync] Automerge panicked during sync for {} \
+                // Apply and generate ack — lock held only for Automerge operations.
+                //
+                // The receive_sync_message call is wrapped in catch_unwind because
+                // automerge 0.7 has a known panic in BatchApply::apply when the
+                // internal patch log actor table gets out of order during concurrent
+                // sync (automerge/automerge#1187). Without catch_unwind, the panic
+                // poisons the Mutex and renders the session permanently unusable.
+                // By catching it, the MutexGuard drops normally and subsequent
+                // operations can still succeed.
+                let ack_bytes = {
+                    let mut state = self.doc.lock().unwrap_or_else(|e| e.into_inner());
+                    let recv_result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                        state.receive_sync_message(msg)
+                    }));
+                    match recv_result {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => {
+                            warn!(
+                                "[notebook-sync] Failed to apply sync message for {}: {}",
+                                self.notebook_id, e
+                            );
+                            return;
+                        }
+                        Err(panic_payload) => {
+                            let msg = if let Some(s) = panic_payload.downcast_ref::<String>() {
+                                s.as_str()
+                            } else if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                                s
+                            } else {
+                                "unknown panic"
+                            };
+                            warn!(
+                                "[notebook-sync] Automerge panicked during sync for {} \
                              (upstream bug automerge/automerge#1187): {}",
-                            notebook_id, msg
-                        );
-                        // Rebuild doc via save→load to clear corrupted indices,
-                        // then reset peer state to force a fresh sync handshake.
-                        rebuild_shared_doc_state(&mut state);
-                        return;
+                                self.notebook_id, msg
+                            );
+                            // Rebuild doc via save→load to clear corrupted indices,
+                            // then reset peer state to force a fresh sync handshake.
+                            rebuild_shared_doc_state(&mut state);
+                            return;
+                        }
                     }
-                }
-                // Guard generate_sync_message — the collector can also panic
-                // with MissingOps even after a successful receive.
-                match std::panic::catch_unwind(AssertUnwindSafe(|| {
-                    state.generate_sync_message().map(|msg| msg.encode())
-                })) {
-                    Ok(bytes) => bytes,
-                    Err(_) => {
-                        warn!(
+                    // Guard generate_sync_message — the collector can also panic
+                    // with MissingOps even after a successful receive.
+                    match std::panic::catch_unwind(AssertUnwindSafe(|| {
+                        state.generate_sync_message().map(|msg| msg.encode())
+                    })) {
+                        Ok(bytes) => bytes,
+                        Err(_) => {
+                            warn!(
                             "[notebook-sync] Automerge panicked in generate_sync_message for {} \
                              (upstream MissingOps bug)",
-                            notebook_id
+                            self.notebook_id
                         );
-                        rebuild_shared_doc_state(&mut state);
-                        None
-                    }
-                }
-            };
-
-            // Publish snapshot immediately (before sending ack — readers see changes fast)
-            publish_snapshot(doc, snapshot_tx);
-
-            // Send ack if needed (outside the lock — never hold across I/O)
-            if let Some(bytes) = ack_bytes {
-                if let Err(e) =
-                    connection::send_typed_frame(writer, NotebookFrameType::AutomergeSync, &bytes)
-                        .await
-                {
-                    warn!(
-                        "[notebook-sync] Failed to send sync ack for {}: {}",
-                        notebook_id, e
-                    );
-                }
-            }
-        }
-
-        NotebookFrameType::Broadcast => {
-            match serde_json::from_slice::<NotebookBroadcast>(&frame.payload) {
-                Ok(bc) => {
-                    let _ = broadcast_tx.send(bc);
-                }
-                Err(e) => {
-                    warn!(
-                        "[notebook-sync] Failed to parse broadcast for {}: {}",
-                        notebook_id, e
-                    );
-                }
-            }
-        }
-
-        NotebookFrameType::Presence => {
-            use notebook_doc::presence::{decode_message, validate_frame_size, PresenceMessage};
-
-            if let Err(e) = validate_frame_size(&frame.payload) {
-                debug!(
-                    "[notebook-sync] Dropping oversized presence frame for {}: {}",
-                    notebook_id, e
-                );
-                return;
-            }
-
-            match decode_message(&frame.payload) {
-                Ok(msg) => {
-                    let now_ms = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_millis() as u64;
-                    let mut state = doc.lock().unwrap_or_else(|e| e.into_inner());
-                    match msg {
-                        PresenceMessage::Update {
-                            peer_id,
-                            peer_label,
-                            actor_label,
-                            data,
-                        } => {
-                            let label = peer_label.as_deref().unwrap_or(&peer_id);
-                            state.presence.update_peer(
-                                &peer_id,
-                                label,
-                                actor_label.as_deref(),
-                                data,
-                                now_ms,
-                            );
-                        }
-                        PresenceMessage::Snapshot { peers, .. } => {
-                            state.presence.apply_snapshot(&peers, now_ms);
-                        }
-                        PresenceMessage::Left { peer_id } => {
-                            state.presence.remove_peer(&peer_id);
-                        }
-                        PresenceMessage::Heartbeat { peer_id } => {
-                            state.presence.mark_seen(&peer_id, now_ms);
-                        }
-                        PresenceMessage::ClearChannel { peer_id, channel } => {
-                            state.presence.clear_channel(&peer_id, channel);
+                            rebuild_shared_doc_state(&mut state);
+                            None
                         }
                     }
+                };
+
+                // Publish snapshot immediately (before sending ack — readers see changes fast)
+                publish_snapshot(self.doc, self.snapshot_tx);
+
+                // Send ack if needed (outside the lock — never hold across I/O)
+                if let Some(bytes) = ack_bytes {
+                    if let Err(e) = connection::send_typed_frame(
+                        writer,
+                        NotebookFrameType::AutomergeSync,
+                        &bytes,
+                    )
+                    .await
+                    {
+                        warn!(
+                            "[notebook-sync] Failed to send sync ack for {}: {}",
+                            self.notebook_id, e
+                        );
+                    }
                 }
-                Err(e) => {
+            }
+
+            NotebookFrameType::Broadcast => {
+                match serde_json::from_slice::<NotebookBroadcast>(&frame.payload) {
+                    Ok(bc) => {
+                        let _ = self.broadcast_tx.send(bc);
+                    }
+                    Err(e) => {
+                        warn!(
+                            "[notebook-sync] Failed to parse broadcast for {}: {}",
+                            self.notebook_id, e
+                        );
+                    }
+                }
+            }
+
+            NotebookFrameType::Presence => {
+                use notebook_doc::presence::{
+                    decode_message, validate_frame_size, PresenceMessage,
+                };
+
+                if let Err(e) = validate_frame_size(&frame.payload) {
                     debug!(
-                        "[notebook-sync] Failed to decode presence for {}: {}",
-                        notebook_id, e
+                        "[notebook-sync] Dropping oversized presence frame for {}: {}",
+                        self.notebook_id, e
                     );
+                    return;
+                }
+
+                match decode_message(&frame.payload) {
+                    Ok(msg) => {
+                        let now_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64;
+                        let mut state = self.doc.lock().unwrap_or_else(|e| e.into_inner());
+                        match msg {
+                            PresenceMessage::Update {
+                                peer_id,
+                                peer_label,
+                                actor_label,
+                                data,
+                            } => {
+                                let label = peer_label.as_deref().unwrap_or(&peer_id);
+                                state.presence.update_peer(
+                                    &peer_id,
+                                    label,
+                                    actor_label.as_deref(),
+                                    data,
+                                    now_ms,
+                                );
+                            }
+                            PresenceMessage::Snapshot { peers, .. } => {
+                                state.presence.apply_snapshot(&peers, now_ms);
+                            }
+                            PresenceMessage::Left { peer_id } => {
+                                state.presence.remove_peer(&peer_id);
+                            }
+                            PresenceMessage::Heartbeat { peer_id } => {
+                                state.presence.mark_seen(&peer_id, now_ms);
+                            }
+                            PresenceMessage::ClearChannel { peer_id, channel } => {
+                                state.presence.clear_channel(&peer_id, channel);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        debug!(
+                            "[notebook-sync] Failed to decode presence for {}: {}",
+                            self.notebook_id, e
+                        );
+                    }
                 }
             }
-        }
 
-        NotebookFrameType::Response => {
-            // Unexpected outside of a request/response cycle
-            warn!(
-                "[notebook-sync] Unexpected Response frame for {} in background loop",
-                notebook_id
-            );
-        }
+            NotebookFrameType::Response => {
+                // Unexpected outside of a request/response cycle
+                warn!(
+                    "[notebook-sync] Unexpected Response frame for {} in background loop",
+                    self.notebook_id
+                );
+            }
 
-        NotebookFrameType::Request => {
-            warn!(
-                "[notebook-sync] Unexpected Request frame from daemon for {}",
-                notebook_id
-            );
-        }
+            NotebookFrameType::Request => {
+                warn!(
+                    "[notebook-sync] Unexpected Request frame from daemon for {}",
+                    self.notebook_id
+                );
+            }
 
-        NotebookFrameType::RuntimeStateSync => {
-            let msg = match sync::Message::decode(&frame.payload) {
-                Ok(msg) => msg,
-                Err(e) => {
-                    warn!(
-                        "[notebook-sync] Failed to decode RuntimeStateSync for {}: {}",
-                        notebook_id, e
-                    );
-                    return;
+            NotebookFrameType::RuntimeStateSync => {
+                let msg = match sync::Message::decode(&frame.payload) {
+                    Ok(msg) => msg,
+                    Err(e) => {
+                        warn!(
+                            "[notebook-sync] Failed to decode RuntimeStateSync for {}: {}",
+                            self.notebook_id, e
+                        );
+                        return;
+                    }
+                };
+
+                // Apply and generate reply — same pattern as AutomergeSync
+                let reply_bytes = {
+                    let mut state = self.doc.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Err(e) = state.receive_state_sync_message(msg) {
+                        warn!(
+                            "[notebook-sync] Failed to apply RuntimeStateSync for {}: {}",
+                            self.notebook_id, e
+                        );
+                        return;
+                    }
+                    state.generate_state_sync_message().map(|msg| msg.encode())
+                };
+
+                if let Some(bytes) = reply_bytes {
+                    if let Err(e) = connection::send_typed_frame(
+                        writer,
+                        NotebookFrameType::RuntimeStateSync,
+                        &bytes,
+                    )
+                    .await
+                    {
+                        warn!(
+                            "[notebook-sync] Failed to send RuntimeStateSync reply for {}: {}",
+                            self.notebook_id, e
+                        );
+                    }
                 }
-            };
+            }
 
-            // Apply and generate reply — same pattern as AutomergeSync
-            let reply_bytes = {
-                let mut state = doc.lock().unwrap_or_else(|e| e.into_inner());
-                if let Err(e) = state.receive_state_sync_message(msg) {
-                    warn!(
-                        "[notebook-sync] Failed to apply RuntimeStateSync for {}: {}",
-                        notebook_id, e
-                    );
-                    return;
-                }
-                state.generate_state_sync_message().map(|msg| msg.encode())
-            };
+            NotebookFrameType::PoolStateSync => {
+                // PoolDoc sync is handled by the frontend WASM layer, not the Python client.
+                // Ignore in the Python sync task.
+                debug!(
+                    "[notebook-sync] Ignoring PoolStateSync frame for {} (handled by frontend)",
+                    self.notebook_id
+                );
+            }
 
-            if let Some(bytes) = reply_bytes {
-                if let Err(e) = connection::send_typed_frame(
-                    writer,
-                    NotebookFrameType::RuntimeStateSync,
-                    &bytes,
-                )
-                .await
+            NotebookFrameType::SessionControl => {
+                let message = match serde_json::from_slice::<SessionControlMessage>(&frame.payload)
                 {
-                    warn!(
-                        "[notebook-sync] Failed to send RuntimeStateSync reply for {}: {}",
-                        notebook_id, e
-                    );
-                }
-            }
-        }
+                    Ok(message) => message,
+                    Err(e) => {
+                        warn!(
+                            "[notebook-sync] Failed to parse SessionControl for {}: {}",
+                            self.notebook_id, e
+                        );
+                        return;
+                    }
+                };
 
-        NotebookFrameType::PoolStateSync => {
-            // PoolDoc sync is handled by the frontend WASM layer, not the Python client.
-            // Ignore in the Python sync task.
-            debug!(
-                "[notebook-sync] Ignoring PoolStateSync frame for {} (handled by frontend)",
-                notebook_id
-            );
-        }
-
-        NotebookFrameType::SessionControl => {
-            let message = match serde_json::from_slice::<SessionControlMessage>(&frame.payload) {
-                Ok(message) => message,
-                Err(e) => {
-                    warn!(
-                        "[notebook-sync] Failed to parse SessionControl for {}: {}",
-                        notebook_id, e
-                    );
-                    return;
-                }
-            };
-
-            match message {
-                SessionControlMessage::SyncStatus(status) => {
-                    apply_sync_status(status_tx, notebook_id, saw_session_status, status);
+                match message {
+                    SessionControlMessage::SyncStatus(status) => {
+                        apply_sync_status(
+                            self.status_tx,
+                            self.notebook_id,
+                            self.saw_session_status,
+                            status,
+                        );
+                    }
                 }
             }
         }
@@ -639,18 +661,12 @@ async fn handle_incoming_frame<W: AsyncWrite + Unpin>(
 ///
 /// While waiting, also processes AutomergeSync and Broadcast frames that arrive
 /// interleaved with the response.
-#[allow(clippy::too_many_arguments)]
 async fn send_request_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
-    doc: &Arc<Mutex<SharedDocState>>,
     reader: &mut R,
     writer: &mut W,
-    snapshot_tx: &Arc<tokio::sync::watch::Sender<NotebookSnapshot>>,
-    status_tx: &watch::Sender<SyncStatus>,
-    broadcast_tx: &broadcast::Sender<NotebookBroadcast>,
     req_broadcast_tx: Option<&broadcast::Sender<NotebookBroadcast>>,
     request: &NotebookRequest,
-    notebook_id: &str,
-    saw_session_status: &mut bool,
+    ctx: &mut SyncFrameContext<'_>,
 ) -> Result<NotebookResponse, SyncError> {
     // Serialize and send the request
     let payload =
@@ -669,17 +685,7 @@ async fn send_request_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     // Wait for a Response frame, processing other frames that arrive meanwhile
     let result = tokio::time::timeout(
         Duration::from_secs(timeout_secs),
-        wait_for_response(
-            doc,
-            reader,
-            writer,
-            snapshot_tx,
-            status_tx,
-            broadcast_tx,
-            req_broadcast_tx,
-            notebook_id,
-            saw_session_status,
-        ),
+        wait_for_response(reader, writer, req_broadcast_tx, ctx),
     )
     .await;
 
@@ -692,15 +698,10 @@ async fn send_request_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 
 /// Wait for a Response frame from the daemon, processing other frames.
 async fn wait_for_response<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
-    doc: &Arc<Mutex<SharedDocState>>,
     reader: &mut R,
     writer: &mut W,
-    snapshot_tx: &Arc<tokio::sync::watch::Sender<NotebookSnapshot>>,
-    status_tx: &watch::Sender<SyncStatus>,
-    broadcast_tx: &broadcast::Sender<NotebookBroadcast>,
     req_broadcast_tx: Option<&broadcast::Sender<NotebookBroadcast>>,
-    notebook_id: &str,
-    saw_session_status: &mut bool,
+    ctx: &mut SyncFrameContext<'_>,
 ) -> Result<NotebookResponse, SyncError> {
     loop {
         let frame = connection::recv_typed_frame(reader)
@@ -721,7 +722,7 @@ async fn wait_for_response<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
                     .map_err(|e| SyncError::Protocol(format!("Decode sync: {}", e)))?;
 
                 let ack_bytes = {
-                    let mut state = doc.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut state = ctx.doc.lock().unwrap_or_else(|e| e.into_inner());
 
                     // Guard both receive and generate against automerge panics
                     let recv_result = std::panic::catch_unwind(AssertUnwindSafe(|| {
@@ -732,7 +733,7 @@ async fn wait_for_response<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
                         Ok(Err(e)) => {
                             warn!(
                                 "[notebook-sync] receive_sync_message error in wait_for_response for {}: {}",
-                                notebook_id, e
+                                ctx.notebook_id, e
                             );
                             continue;
                         }
@@ -747,7 +748,7 @@ async fn wait_for_response<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
                             warn!(
                                 "[notebook-sync] Automerge panicked in wait_for_response for {} \
                                  (upstream bug): {}",
-                                notebook_id, msg
+                                ctx.notebook_id, msg
                             );
                             rebuild_shared_doc_state(&mut state);
                             continue;
@@ -761,7 +762,7 @@ async fn wait_for_response<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
                         Err(_) => {
                             warn!(
                                 "[notebook-sync] generate_sync_message panicked in wait_for_response for {}",
-                                notebook_id
+                                ctx.notebook_id
                             );
                             rebuild_shared_doc_state(&mut state);
                             None
@@ -769,7 +770,7 @@ async fn wait_for_response<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
                     }
                 };
 
-                publish_snapshot(doc, snapshot_tx);
+                publish_snapshot(ctx.doc, ctx.snapshot_tx);
 
                 if let Some(bytes) = ack_bytes {
                     connection::send_typed_frame(writer, NotebookFrameType::AutomergeSync, &bytes)
@@ -786,7 +787,7 @@ async fn wait_for_response<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
                         let _ = tx.send(bc.clone());
                     }
                     // Also send to the main broadcast channel
-                    let _ = broadcast_tx.send(bc);
+                    let _ = ctx.broadcast_tx.send(bc);
                 }
             }
 
@@ -797,17 +798,7 @@ async fn wait_for_response<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
             // acknowledges. A dropped RuntimeStateSync causes permanent sync
             // stall for RuntimeStateDoc (no execution results, no status updates).
             _ => {
-                handle_incoming_frame(
-                    &frame,
-                    doc,
-                    writer,
-                    snapshot_tx,
-                    status_tx,
-                    broadcast_tx,
-                    notebook_id,
-                    saw_session_status,
-                )
-                .await;
+                ctx.handle_incoming_frame(&frame, writer).await;
             }
         }
     }
@@ -818,19 +809,14 @@ async fn wait_for_response<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 /// Performs sync rounds until our local heads are in the peer's shared_heads,
 /// or until we've done 5 rounds (best-effort).
 async fn confirm_sync_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
-    doc: &Arc<Mutex<SharedDocState>>,
     reader: &mut R,
     writer: &mut W,
-    snapshot_tx: &Arc<tokio::sync::watch::Sender<NotebookSnapshot>>,
-    status_tx: &watch::Sender<SyncStatus>,
-    broadcast_tx: &broadcast::Sender<NotebookBroadcast>,
-    notebook_id: &str,
-    saw_session_status: &mut bool,
+    ctx: &mut SyncFrameContext<'_>,
 ) -> Result<(), SyncError> {
     for round in 0..5 {
         // Generate and send sync message
         let (msg_bytes, our_heads, shared_heads) = {
-            let mut state = doc.lock().unwrap_or_else(|e| e.into_inner());
+            let mut state = ctx.doc.lock().unwrap_or_else(|e| e.into_inner());
             let our_heads = state.doc.get_heads();
             let shared = state.peer_state.shared_heads.clone();
             let msg = state.generate_sync_message().map(|m| m.encode());
@@ -841,7 +827,7 @@ async fn confirm_sync_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
         if our_heads.is_empty() || our_heads.iter().all(|h| shared_heads.contains(h)) {
             debug!(
                 "[notebook-sync] Sync confirmed for {} after {} rounds",
-                notebook_id, round
+                ctx.notebook_id, round
             );
             return Ok(());
         }
@@ -861,17 +847,7 @@ async fn confirm_sync_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
         .await
         {
             Ok(Ok(Some(frame))) => {
-                handle_incoming_frame(
-                    &frame,
-                    doc,
-                    writer,
-                    snapshot_tx,
-                    status_tx,
-                    broadcast_tx,
-                    notebook_id,
-                    saw_session_status,
-                )
-                .await;
+                ctx.handle_incoming_frame(&frame, writer).await;
             }
             Ok(Ok(None)) => {
                 return Err(SyncError::Protocol(
@@ -885,7 +861,7 @@ async fn confirm_sync_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
                 // Timeout — try next round
                 debug!(
                     "[notebook-sync] confirm_sync round {} timed out for {}",
-                    round, notebook_id
+                    round, ctx.notebook_id
                 );
             }
         }
@@ -894,7 +870,7 @@ async fn confirm_sync_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     // Best-effort: likely confirmed even if heads don't fully match
     debug!(
         "[notebook-sync] confirm_sync: heads not fully confirmed after 5 rounds for {}",
-        notebook_id
+        ctx.notebook_id
     );
     Ok(())
 }
@@ -905,18 +881,13 @@ async fn confirm_sync_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 /// to negotiate. We send our current heads (so the daemon can reply with
 /// anything we're missing) and then drain frames with a short timeout.
 async fn confirm_state_sync_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
-    doc: &Arc<Mutex<SharedDocState>>,
     reader: &mut R,
     writer: &mut W,
-    snapshot_tx: &Arc<tokio::sync::watch::Sender<NotebookSnapshot>>,
-    status_tx: &watch::Sender<SyncStatus>,
-    broadcast_tx: &broadcast::Sender<NotebookBroadcast>,
-    notebook_id: &str,
-    saw_session_status: &mut bool,
+    ctx: &mut SyncFrameContext<'_>,
 ) -> Result<(), SyncError> {
     // Send our state doc heads so the daemon knows what we have.
     let msg_bytes = {
-        let mut state = doc.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = ctx.doc.lock().unwrap_or_else(|e| e.into_inner());
         state.generate_state_sync_message().map(|m| m.encode())
     };
     if let Some(bytes) = msg_bytes {
@@ -934,17 +905,7 @@ async fn confirm_state_sync_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
         .await
         {
             Ok(Ok(Some(frame))) => {
-                handle_incoming_frame(
-                    &frame,
-                    doc,
-                    writer,
-                    snapshot_tx,
-                    status_tx,
-                    broadcast_tx,
-                    notebook_id,
-                    saw_session_status,
-                )
-                .await;
+                ctx.handle_incoming_frame(&frame, writer).await;
             }
             Ok(Ok(None)) => {
                 return Err(SyncError::Protocol(

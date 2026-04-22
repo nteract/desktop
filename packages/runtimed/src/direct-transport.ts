@@ -23,6 +23,7 @@
 
 import { FrameType } from "./transport";
 import type { NotebookTransport, FrameListener } from "./transport";
+import type { SessionStatus } from "./handle";
 
 // ── Server handle interface ──────────────────────────────────────────
 
@@ -171,6 +172,23 @@ export class DirectTransport implements NotebookTransport {
     const frame = new Uint8Array(1 + payload.length);
     frame[0] = FrameType.PRESENCE;
     frame.set(payload, 1);
+    this.deliver(Array.from(frame));
+  }
+
+  /**
+   * Push a server-originated session status frame to all client subscribers.
+   */
+  pushSessionStatus(status: SessionStatus): void {
+    const json = JSON.stringify({
+      type: "sync_status",
+      notebook_doc: status.notebook_doc,
+      runtime_state: status.runtime_state,
+      initial_load: status.initial_load,
+    });
+    const bytes = new TextEncoder().encode(json);
+    const frame = new Uint8Array(1 + bytes.length);
+    frame[0] = FrameType.SESSION_CONTROL;
+    frame.set(bytes, 1);
     this.deliver(Array.from(frame));
   }
 
