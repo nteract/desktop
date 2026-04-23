@@ -455,22 +455,6 @@ async fn get_raw_metadata_additional(
     Some(additional)
 }
 
-/// Write trust fields into the daemon's metadata.
-async fn set_raw_trust_in_metadata(
-    handle: &RelayHandle,
-    signature: &str,
-    timestamp: &str,
-) -> Result<(), String> {
-    let mut snapshot = get_metadata_snapshot(handle)
-        .await
-        .ok_or("No metadata in Automerge doc")?;
-
-    snapshot.runt.trust_signature = Some(signature.to_string());
-    snapshot.runt.trust_timestamp = Some(timestamp.to_string());
-
-    set_metadata_snapshot(handle, &snapshot).await
-}
-
 /// Reconstruct an nbformat Metadata from a NotebookMetadataSnapshot.
 /// Used to bridge sync-handle metadata to extraction functions that expect nbformat types.
 fn metadata_from_snapshot(
@@ -3066,16 +3050,23 @@ async fn approve_notebook_trust(
     let guard = notebook_sync.lock().await;
     let handle = guard.as_ref().ok_or("Not connected to daemon")?;
 
-    // Use raw metadata to read trust-relevant fields without stripping unknown runt keys
-    let additional = get_raw_metadata_additional(handle)
+    // Single snapshot fetch: sign and set trust fields on the same snapshot to
+    // avoid a TOCTOU race where deps change between signing and writing.
+    let mut snapshot = get_metadata_snapshot(handle)
         .await
-        .unwrap_or_default();
-    let signature = trust::sign_notebook_dependencies(&additional)?;
-    let timestamp = chrono::Utc::now().to_rfc3339();
+        .ok_or("No metadata in Automerge doc")?;
 
-    // Write trust fields directly into the raw Automerge JSON — avoids the typed
-    // NotebookMetadataSnapshot round-trip which would strip trust_signature/trust_timestamp
-    set_raw_trust_in_metadata(handle, &signature, &timestamp).await
+    let runt_value = serde_json::to_value(&snapshot.runt)
+        .map_err(|e| format!("serialize runt metadata: {e}"))?;
+    let mut additional = HashMap::new();
+    additional.insert("runt".to_string(), runt_value);
+
+    let signature = trust::sign_notebook_dependencies(&additional)?;
+
+    snapshot.runt.trust_signature = Some(signature);
+    snapshot.runt.trust_timestamp = Some(chrono::Utc::now().to_rfc3339());
+
+    set_metadata_snapshot(handle, &snapshot).await
 }
 
 /// Check packages for typosquatting (similar names to popular packages).
