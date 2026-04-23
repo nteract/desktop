@@ -385,10 +385,14 @@ pub(crate) async fn handle(
                     "[notebook-sync] pixi.toml at {:?} does not declare ipykernel",
                     path
                 );
-                // Tear down the "starting" latch first — reset_starting_state
-                // rewrites lifecycle to NotStarted, so the typed Error write
-                // must come after it to stick.
-                reset_starting_state(room, None).await;
+                // Publish the typed reason atomically. Don't call
+                // reset_starting_state here — no runtime agent has spawned
+                // yet on this path, and the auto-launch version in
+                // notebook_sync_server/metadata.rs deliberately skips it
+                // for the same reason. reset_starting_state writes
+                // NotStarted first and releases the doc lock before our
+                // Error write lands, giving a concurrent retry a window to
+                // claim Resolving that we'd then clobber back to Error.
                 let env_source_label = parsed_resolved.as_str().to_string();
                 if let Err(e) = room.state.with_doc(|sd| {
                     sd.set_lifecycle_with_error(
