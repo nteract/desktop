@@ -836,8 +836,25 @@ impl ExecutionResult {
 #[pyclass(name = "KernelState", get_all, skip_from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyKernelState {
-    /// Kernel status: "not_started", "starting", "idle", "busy", "error", "shutdown"
+    /// Flat status string: "not_started", "starting", "idle", "busy",
+    /// "error", "shutdown", "awaiting_trust". Projected from
+    /// [`RuntimeLifecycle::to_legacy`] for callers that want a simple
+    /// string bucket; use `lifecycle` for the full typed variant.
     pub status: String,
+    /// Starting sub-phase: "", "resolving", "preparing_env", "launching",
+    /// "connecting". Only non-empty when `status == "starting"`.
+    pub starting_phase: String,
+    /// Typed lifecycle variant name: "NotStarted", "AwaitingTrust",
+    /// "Resolving", "PreparingEnv", "Launching", "Connecting", "Running",
+    /// "Error", "Shutdown". Paired with `activity` when "Running".
+    pub lifecycle: String,
+    /// Activity sub-state when `lifecycle == "Running"`: "Unknown",
+    /// "Idle", "Busy". Empty string otherwise.
+    pub activity: String,
+    /// Typed error reason when `lifecycle == "Error"`. `None` when the
+    /// CRDT key is absent (pre-migration doc); `Some("")` when the key is
+    /// scaffolded but no reason has been recorded.
+    pub error_reason: Option<String>,
     /// Kernel display name (e.g. "charming-toucan")
     pub name: String,
     /// Kernel language (e.g. "python", "typescript")
@@ -850,8 +867,14 @@ pub struct PyKernelState {
 impl PyKernelState {
     fn __repr__(&self) -> String {
         format!(
-            "KernelState(status={}, env_source={})",
-            self.status, self.env_source
+            "KernelState(lifecycle={}{}, env_source={})",
+            self.lifecycle,
+            if self.activity.is_empty() {
+                String::new()
+            } else {
+                format!("({})", self.activity)
+            },
+            self.env_source
         )
     }
 
@@ -1029,9 +1052,19 @@ impl PyRuntimeState {
 
 impl From<runtime_doc::RuntimeState> for PyRuntimeState {
     fn from(rs: runtime_doc::RuntimeState) -> Self {
+        let (legacy_status, legacy_phase) = rs.kernel.lifecycle.to_legacy();
+        let lifecycle_variant = rs.kernel.lifecycle.variant_str().to_string();
+        let activity = match &rs.kernel.lifecycle {
+            runtime_doc::RuntimeLifecycle::Running(a) => a.as_str().to_string(),
+            _ => String::new(),
+        };
         Self {
             kernel: PyKernelState {
-                status: rs.kernel.status,
+                status: legacy_status.to_string(),
+                starting_phase: legacy_phase.to_string(),
+                lifecycle: lifecycle_variant,
+                activity,
+                error_reason: rs.kernel.error_reason,
                 name: rs.kernel.name,
                 language: rs.kernel.language,
                 env_source: rs.kernel.env_source,

@@ -5,20 +5,21 @@
  * No React, no Tauri, no browser APIs.
  */
 
-import {
-  type Observable,
-  type OperatorFunction,
-  distinctUntilChanged,
-  map,
-  of,
-  switchMap,
-  timer,
-} from "rxjs";
-
 import type { QueueEntry, RuntimeState } from "./runtime-state";
 
 // ── Kernel status ───────────────────────────────────────────────────
 
+/**
+ * Compressed seven-state status vocabulary for UI-level conditionals.
+ *
+ * `KERNEL_STATUS` groups the full [`RuntimeLifecycle`] union into buckets
+ * that map cleanly onto common UI predicates: a single "starting" bucket
+ * for the four launch sub-phases, flat "idle" / "busy" for `Running`'s
+ * activity axis, and one-to-one tags for the terminal states. Project
+ * via [`lifecycleToLegacyStatus`] at the component layer; use the
+ * expanded [`RUNTIME_STATUS`] vocabulary when you need every sub-phase
+ * (label tables, CSS classes).
+ */
 export const KERNEL_STATUS = {
   NOT_STARTED: "not_started",
   STARTING: "starting",
@@ -108,49 +109,16 @@ export function deriveEnvSyncState(state: RuntimeState): EnvSyncState | null {
   };
 }
 
-// ── Busy throttle ───────────────────────────────────────────────────
-
-const DEFAULT_BUSY_THRESHOLD_MS = 60;
-
 /**
- * RxJS operator that throttles kernel "busy" status transitions.
+ * Project a typed [`RuntimeLifecycle`] into the compressed
+ * [`KERNEL_STATUS`] bucket vocabulary. Four starting sub-phases collapse
+ * to `"starting"`; `Running`'s activity axis flattens to `"idle"` /
+ * `"busy"`.
  *
- * The RuntimeStateDoc records every busy→idle transition, including
- * sub-60ms blips from tab completions. This operator delays "busy"
- * by `threshold` ms — if "idle" arrives within that window, the busy
- * is never emitted, preventing UI flicker.
- *
- * Other statuses (starting, error, shutdown, not_started) pass through
- * immediately and cancel any pending busy.
- */
-export function throttleBusyStatus(
-  threshold = DEFAULT_BUSY_THRESHOLD_MS,
-): OperatorFunction<string, KernelStatus> {
-  return (source: Observable<string>) =>
-    source.pipe(
-      distinctUntilChanged(),
-      switchMap((raw) => {
-        if (!isKernelStatus(raw)) return of<KernelStatus>(KERNEL_STATUS.NOT_STARTED);
-        if (raw === KERNEL_STATUS.BUSY) {
-          // Delay busy emission — switchMap cancels if next status arrives first
-          return timer(threshold).pipe(map(() => KERNEL_STATUS.BUSY));
-        }
-        // All other statuses emit immediately (and cancel any pending busy via switchMap)
-        return of<KernelStatus>(raw);
-      }),
-      distinctUntilChanged(),
-    );
-}
-
-/**
- * Project a typed RuntimeLifecycle back to the legacy string status
- * vocabulary (`"idle"`, `"busy"`, `"starting"`, `"error"`, `"shutdown"`,
- * `"not_started"`, `"awaiting_trust"`).
- *
- * Kept for bridging throttleBusyStatus and other legacy-shape consumers.
- * New code should match on `RuntimeLifecycle` directly, or — for a flat
- * string key with every sub-state preserved — project through
- * [`runtimeStatusKey`] instead.
+ * Used at UI boundaries that want the simpler bucket shape for
+ * predicates ("kernel is startable", "kernel is healthy enough to
+ * execute"). For exhaustive label / icon / CSS tables keyed on every
+ * sub-state, project through [`runtimeStatusKey`] instead.
  */
 export function lifecycleToLegacyStatus(lc: RuntimeState["kernel"]["lifecycle"]): KernelStatus {
   switch (lc.lifecycle) {
@@ -186,8 +154,8 @@ export function lifecycleToLegacyStatus(lc: RuntimeState["kernel"]["lifecycle"])
  *
  * Use this for CSS classes, icon tables, label tables, and any other
  * lookup keyed on "what is the runtime doing right now." Use
- * [`KERNEL_STATUS`] only when interoperating with the compressed legacy
- * wire vocabulary.
+ * [`KERNEL_STATUS`] when the simpler seven-bucket shape matches your
+ * UI predicate.
  */
 export const RUNTIME_STATUS = {
   NOT_STARTED: "not_started",
@@ -240,22 +208,4 @@ export function runtimeStatusKey(lc: RuntimeState["kernel"]["lifecycle"]): Runti
     case "Shutdown":
       return RUNTIME_STATUS.SHUTDOWN;
   }
-}
-
-/**
- * Derive a throttled kernel status observable from a RuntimeState stream.
- *
- * Convenience wrapper: projects `kernel.lifecycle` back to the legacy
- * status vocabulary and applies `throttleBusyStatus()`. Retained for
- * consumers of the pre-lifecycle API; new code should match on
- * `RuntimeLifecycle` directly.
- */
-export function kernelStatus$(
-  runtimeState$: Observable<RuntimeState>,
-  threshold?: number,
-): Observable<KernelStatus> {
-  return runtimeState$.pipe(
-    map((s) => lifecycleToLegacyStatus(s.kernel.lifecycle)),
-    throttleBusyStatus(threshold),
-  );
 }

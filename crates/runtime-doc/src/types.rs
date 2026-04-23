@@ -41,22 +41,15 @@ impl KernelActivity {
 
 /// Typed reason accompanying a [`RuntimeLifecycle::Error`] transition.
 ///
-/// Closed enum by design — every error reason the daemon surfaces gets
+/// Closed enum by design. Every error reason the daemon surfaces gets
 /// its own variant. This is deliberately more rigid than a free-form
 /// string: reasons rarely change, and the compile-time guarantee that
 /// the frontend and daemon agree on the vocabulary is worth the cost
 /// of editing the enum.
 ///
-/// The single [`as_str`](Self::as_str) method returns the string that
-/// serves BOTH as the CRDT `kernel.error_reason` value AND as the
-/// legacy `kernel.starting_phase` mirror (see
-/// `RuntimeStateDoc::set_lifecycle_with_error`). The two happen to be
-/// the same string because that's how the pre-Phase-3 channel encoded
-/// these reasons — `set_kernel_status("error") + set_starting_phase(
-/// "missing_ipykernel")`. Collapsing both into one method keeps the
-/// string-level contract in one place. If a future variant needs
-/// distinct values for the two channels, split into
-/// `as_crdt_str` / `as_legacy_phase`.
+/// [`as_str`](Self::as_str) returns the string written to
+/// `kernel.error_reason` in the CRDT; the frontend mirrors the same
+/// value via `KERNEL_ERROR_REASON` in `@runtimed`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum KernelErrorReason {
     /// Pixi-managed environment is missing the `ipykernel` package.
@@ -81,12 +74,11 @@ impl KernelErrorReason {
 
 /// Lifecycle of a runtime, from not-started through running to shutdown.
 ///
-/// Replaces the string-valued `KernelState.status` + `starting_phase` pair
-/// with a typed sum. `Running` is the only variant that carries an
-/// activity — it is impossible to represent a "busy kernel that hasn't
-/// launched yet" in the type system. Error details are carried
-/// out-of-band via `KernelState::error_reason` (not added in this phase)
-/// so the enum stays `Eq`-able.
+/// Typed sum replacing the earlier `(status, starting_phase)` string pair.
+/// `Running` is the only variant that carries an activity, so it is
+/// impossible to represent a "busy kernel that hasn't launched yet" in
+/// the type system. Error details are carried out-of-band via
+/// `KernelState::error_reason` so the enum stays `Eq`-able.
 ///
 /// Serde format is tag+content:
 /// - non-`Running` variants serialize as `{"lifecycle": "NotStarted"}`.
@@ -109,8 +101,9 @@ pub enum RuntimeLifecycle {
 impl RuntimeLifecycle {
     /// Variant name as a static string (no payload).
     ///
-    /// Used when projecting to the future CRDT `kernel/lifecycle` string key
-    /// and when bridging back to the legacy `(status, starting_phase)` pair.
+    /// Written to `kernel/lifecycle` in the CRDT and consumed by
+    /// [`to_legacy`](Self::to_legacy) for wire-protocol callers that
+    /// still surface the compressed `(status, starting_phase)` pair.
     pub fn variant_str(&self) -> &'static str {
         match self {
             Self::NotStarted => "NotStarted",
@@ -152,40 +145,14 @@ impl RuntimeLifecycle {
         }
     }
 
-    /// Derive a lifecycle from the legacy `(status, starting_phase)` string
-    /// pair used by `KernelState`. Phase 1 uses this to populate
-    /// `KernelState.lifecycle` without any CRDT schema change.
-    pub fn from_legacy(status: &str, starting_phase: &str) -> Self {
-        match status {
-            "idle" => Self::Running(KernelActivity::Idle),
-            "busy" => Self::Running(KernelActivity::Busy),
-            "starting" => match starting_phase {
-                "resolving" => Self::Resolving,
-                "preparing_env" => Self::PreparingEnv,
-                "launching" => Self::Launching,
-                "connecting" => Self::Connecting,
-                // Unknown or empty sub-phase — fall back to the first phase
-                // so consumers still see "we're starting, somewhere in the
-                // pipeline" rather than a default `NotStarted`.
-                _ => Self::Resolving,
-            },
-            "error" => Self::Error,
-            "shutdown" => Self::Shutdown,
-            "awaiting_trust" => Self::AwaitingTrust,
-            _ => Self::NotStarted,
-        }
-    }
-
     /// Project a lifecycle back to the `(status, starting_phase)` string
-    /// pair. Used by the typed-shape writers to mirror into the string
-    /// CRDT keys so readers that still consume the string shape see
-    /// consistent state.
+    /// pair for wire-protocol callers that still surface the compressed
+    /// shape (`runt mcp`, `runt` CLI, `get_kernel_info` RPC).
     ///
-    /// This is the inverse of [`from_legacy`] with one caveat:
     /// `Running(KernelActivity::Unknown)` projects to `("idle", "")`
-    /// because the string shape has no "unknown" status. Callers that
+    /// because the legacy shape had no "unknown" status. Callers that
     /// care about the distinction should match on the typed `lifecycle`
-    /// field rather than the string.
+    /// field instead.
     pub fn to_legacy(&self) -> (&'static str, &'static str) {
         match self {
             Self::NotStarted => ("not_started", ""),
@@ -202,58 +169,14 @@ impl RuntimeLifecycle {
     }
 }
 
-/// Reconcile the typed-shape and string-shape CRDT keys into a single
-/// [`RuntimeLifecycle`].
+/// Read a [`RuntimeLifecycle`] from the CRDT `kernel/lifecycle` and
+/// `kernel/activity` keys.
 ///
-/// During the transition window the same document can be mutated via two
-/// setter families:
-///
-/// - **Typed setters** (`set_lifecycle`, `set_activity`,
-///   `set_lifecycle_with_error`) write the typed keys AND mirror into the
-///   string keys.
-/// - **String setters** (`set_kernel_status`, `set_starting_phase`) write
-///   only the string keys.
-///
-/// A doc that has only seen string setters still has its typed key at the
-/// scaffold value `"NotStarted"`, so a naive "prefer typed" rule would
-/// return [`RuntimeLifecycle::NotStarted`] even though the string shape
-/// clearly says the kernel is busy. This function implements the
-/// resolution rule:
-///
-/// 1. If `lifecycle_key` is empty (unscaffolded doc, pre-transition),
-///    derive from the string pair via [`from_legacy`].
-/// 2. Parse the typed pair. If the typed lifecycle's string projection
-///    (via [`to_legacy`]) matches the actual `(status, starting_phase)`
-///    pair, the two shapes agree — return the typed value.
-/// 3. If they disagree, the string keys have been updated more recently
-///    (typed setters always mirror, so a mismatch means a string-only
-///    setter ran). Derive from the string pair.
-///
-/// The rule is "whichever shape was written most recently wins." It
-/// relies on the writer-side invariant that typed setters mirror every
-/// write into the string keys.
-pub fn resolve_lifecycle(
-    lifecycle_key: &str,
-    activity_key: &str,
-    status: &str,
-    starting_phase: &str,
-) -> RuntimeLifecycle {
-    if lifecycle_key.is_empty() {
-        return RuntimeLifecycle::from_legacy(status, starting_phase);
-    }
-    let Some(typed) = RuntimeLifecycle::parse(lifecycle_key, activity_key) else {
-        return RuntimeLifecycle::from_legacy(status, starting_phase);
-    };
-    let (typed_status, typed_phase) = typed.to_legacy();
-    if typed_status == status && typed_phase == starting_phase {
-        typed
-    } else {
-        // String keys drifted from the typed projection — a string-only
-        // setter ran after the last typed write, or this doc was
-        // scaffolded by new() but only mutated through string setters.
-        // Trust the string shape.
-        RuntimeLifecycle::from_legacy(status, starting_phase)
-    }
+/// Returns [`RuntimeLifecycle::NotStarted`] when the lifecycle key is
+/// absent (unscaffolded doc) or unparseable (future variant,
+/// corruption). Callers get a safe default rather than a broken read.
+pub fn resolve_lifecycle(lifecycle_key: &str, activity_key: &str) -> RuntimeLifecycle {
+    RuntimeLifecycle::parse(lifecycle_key, activity_key).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -394,57 +317,7 @@ mod tests {
         assert_eq!(RuntimeLifecycle::default(), RuntimeLifecycle::NotStarted);
     }
 
-    #[test]
-    fn lifecycle_from_legacy_idle_busy() {
-        assert_eq!(
-            RuntimeLifecycle::from_legacy("idle", ""),
-            RuntimeLifecycle::Running(KernelActivity::Idle),
-        );
-        assert_eq!(
-            RuntimeLifecycle::from_legacy("busy", ""),
-            RuntimeLifecycle::Running(KernelActivity::Busy),
-        );
-    }
-
-    #[test]
-    fn lifecycle_from_legacy_starting_phases() {
-        use RuntimeLifecycle::*;
-        assert_eq!(
-            RuntimeLifecycle::from_legacy("starting", "resolving"),
-            Resolving
-        );
-        assert_eq!(
-            RuntimeLifecycle::from_legacy("starting", "preparing_env"),
-            PreparingEnv
-        );
-        assert_eq!(
-            RuntimeLifecycle::from_legacy("starting", "launching"),
-            Launching
-        );
-        assert_eq!(
-            RuntimeLifecycle::from_legacy("starting", "connecting"),
-            Connecting
-        );
-        // Empty phase falls back to the first phase so the UI still reads
-        // "we're starting" rather than "not started."
-        assert_eq!(RuntimeLifecycle::from_legacy("starting", ""), Resolving);
-    }
-
-    #[test]
-    fn lifecycle_from_legacy_terminal_states() {
-        use RuntimeLifecycle::*;
-        assert_eq!(RuntimeLifecycle::from_legacy("error", ""), Error);
-        assert_eq!(RuntimeLifecycle::from_legacy("shutdown", ""), Shutdown);
-        assert_eq!(
-            RuntimeLifecycle::from_legacy("awaiting_trust", ""),
-            AwaitingTrust
-        );
-        assert_eq!(RuntimeLifecycle::from_legacy("not_started", ""), NotStarted);
-        assert_eq!(RuntimeLifecycle::from_legacy("", ""), NotStarted);
-        assert_eq!(RuntimeLifecycle::from_legacy("gibberish", ""), NotStarted);
-    }
-
-    // ── Phase 2: to_legacy projection ───────────────────────────────
+    // ── to_legacy projection (kept for wire-protocol callers) ──────
 
     #[test]
     fn to_legacy_non_running_variants() {
@@ -477,140 +350,39 @@ mod tests {
         );
     }
 
-    #[test]
-    fn from_legacy_to_legacy_round_trip_is_lossy_for_unknown() {
-        // Running(Unknown) → ("idle", "") → Running(Idle). The test pins
-        // the loss so future work that might try to preserve Unknown
-        // through the legacy channel surfaces here.
-        let lc = RuntimeLifecycle::Running(KernelActivity::Unknown);
-        let (status, phase) = lc.to_legacy();
-        assert_eq!(
-            RuntimeLifecycle::from_legacy(status, phase),
-            RuntimeLifecycle::Running(KernelActivity::Idle)
-        );
-    }
-
-    #[test]
-    fn to_legacy_from_legacy_round_trip_preserves_non_running() {
-        use RuntimeLifecycle::*;
-        for lc in [
-            NotStarted,
-            AwaitingTrust,
-            Resolving,
-            PreparingEnv,
-            Launching,
-            Connecting,
-            Running(KernelActivity::Idle),
-            Running(KernelActivity::Busy),
-            Error,
-            Shutdown,
-        ] {
-            let (status, phase) = lc.to_legacy();
-            let round_tripped = RuntimeLifecycle::from_legacy(status, phase);
-            assert_eq!(
-                round_tripped, lc,
-                "round-trip changed {lc:?} via ({status:?}, {phase:?}) → {round_tripped:?}"
-            );
-        }
-    }
-
     // ── resolve_lifecycle ───────────────────────────────────────────
 
     #[test]
-    fn resolve_prefers_typed_when_shapes_agree() {
-        // Typed shape "Running" + "Idle" projects to ("idle", "").
-        // Matches the string shape → typed wins.
+    fn resolve_parses_typed_keys() {
         assert_eq!(
-            resolve_lifecycle("Running", "Idle", "idle", ""),
+            resolve_lifecycle("Running", "Idle"),
             RuntimeLifecycle::Running(KernelActivity::Idle)
         );
+        assert_eq!(
+            resolve_lifecycle("Launching", ""),
+            RuntimeLifecycle::Launching
+        );
+        assert_eq!(resolve_lifecycle("Error", ""), RuntimeLifecycle::Error);
     }
 
     #[test]
-    fn resolve_falls_back_to_string_when_typed_is_scaffold_default() {
-        // Scaffolded doc with only a string setter run: typed key is
-        // still "NotStarted", string key says "idle". The mismatch is
-        // what we detect — string shape wins.
+    fn resolve_defaults_on_empty_or_garbage() {
+        // Unscaffolded doc (key absent) or corruption falls back to
+        // NotStarted rather than returning a broken read.
+        assert_eq!(resolve_lifecycle("", ""), RuntimeLifecycle::NotStarted);
         assert_eq!(
-            resolve_lifecycle("NotStarted", "", "idle", ""),
-            RuntimeLifecycle::Running(KernelActivity::Idle)
-        );
-    }
-
-    #[test]
-    fn resolve_empty_typed_key_means_pre_scaffold_doc() {
-        // Doc constructed via new_empty() has no kernel map at all, so
-        // read_str returns "". Fall straight through to the string
-        // derivation without parsing.
-        assert_eq!(
-            resolve_lifecycle("", "", "busy", ""),
-            RuntimeLifecycle::Running(KernelActivity::Busy)
-        );
-        assert_eq!(
-            resolve_lifecycle("", "", "not_started", ""),
+            resolve_lifecycle("BogusFutureVariant", "Idle"),
             RuntimeLifecycle::NotStarted
         );
     }
 
     #[test]
-    fn resolve_falls_back_when_typed_disagrees_with_string() {
-        // Typed says "Running"/"Idle" but string says "busy". A string
-        // setter ran after the last typed mirror — trust the string.
+    fn resolve_running_unknown_preserved() {
+        // Running with an unknown activity key parses as
+        // Running(KernelActivity::Unknown) rather than falling back.
         assert_eq!(
-            resolve_lifecycle("Running", "Idle", "busy", ""),
-            RuntimeLifecycle::Running(KernelActivity::Busy)
-        );
-    }
-
-    #[test]
-    fn resolve_falls_back_on_unparseable_typed_key() {
-        // Garbage in the typed lifecycle key (future variant? corruption?)
-        // falls through to the string derivation rather than returning
-        // Default and hiding the real state.
-        assert_eq!(
-            resolve_lifecycle("BogusFutureVariant", "Idle", "busy", ""),
-            RuntimeLifecycle::Running(KernelActivity::Busy)
-        );
-    }
-
-    #[test]
-    fn resolve_treats_running_unknown_as_agreeing_with_idle_string() {
-        // Running(Unknown) projects to ("idle", "") because the string
-        // shape has no "unknown" equivalent. A string status of "idle"
-        // agrees with that projection, so the typed Running(Unknown)
-        // wins and the Unknown activity is preserved.
-        assert_eq!(
-            resolve_lifecycle("Running", "Unknown", "idle", ""),
+            resolve_lifecycle("Running", "Unknown"),
             RuntimeLifecycle::Running(KernelActivity::Unknown)
-        );
-    }
-
-    #[test]
-    fn resolve_typed_starting_matches_string_starting() {
-        // Typed "Launching" projects to ("starting", "launching"). If the
-        // string pair matches, typed wins.
-        assert_eq!(
-            resolve_lifecycle("Launching", "", "starting", "launching"),
-            RuntimeLifecycle::Launching
-        );
-    }
-
-    #[test]
-    fn resolve_typed_starting_disagrees_on_phase() {
-        // Typed "Launching" projects to ("starting", "launching") but
-        // string phase says "connecting". String shape wins.
-        assert_eq!(
-            resolve_lifecycle("Launching", "", "starting", "connecting"),
-            RuntimeLifecycle::Connecting
-        );
-    }
-
-    #[test]
-    fn resolve_error_with_empty_reason_agrees() {
-        // Error has no string phase component; both shapes agree.
-        assert_eq!(
-            resolve_lifecycle("Error", "", "error", ""),
-            RuntimeLifecycle::Error
         );
     }
 }

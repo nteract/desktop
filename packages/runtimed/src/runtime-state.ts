@@ -56,11 +56,7 @@ export type RuntimeLifecycle =
   | { lifecycle: "Shutdown" };
 
 export interface KernelState {
-  /** @deprecated Legacy string-form status. Read `lifecycle` instead. */
-  status: string;
-  /** @deprecated Legacy string-form starting sub-phase. Read `lifecycle` instead. */
-  starting_phase: string;
-  /** Typed lifecycle — the authoritative view for new code. */
+  /** Typed lifecycle. The authoritative view of kernel state. */
   lifecycle: RuntimeLifecycle;
   /**
    * Human-readable reason populated when `lifecycle.lifecycle === "Error"`.
@@ -146,8 +142,6 @@ export interface RuntimeState {
 
 export const DEFAULT_RUNTIME_STATE: RuntimeState = {
   kernel: {
-    status: "not_started",
-    starting_phase: "",
     lifecycle: { lifecycle: "NotStarted" },
     error_reason: null,
     name: "",

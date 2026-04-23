@@ -27,9 +27,9 @@ import {
 /**
  * User-facing label for each compressed [`KernelStatus`].
  *
- * Covers the legacy 7-string vocabulary. For the expanded 11-key
- * runtime vocabulary (which preserves every starting sub-phase and the
- * Running(Unknown) case), use [`RUNTIME_STATUS_LABELS`] via
+ * Covers the seven-bucket UI vocabulary. For the expanded 11-key runtime
+ * vocabulary (which preserves every starting sub-phase and the
+ * `Running(Unknown)` case), use [`RUNTIME_STATUS_LABELS`] via
  * [`getLifecycleLabel`] instead.
  */
 export const KERNEL_STATUS_LABELS: Record<KernelStatus, string> = {
@@ -45,7 +45,7 @@ export const KERNEL_STATUS_LABELS: Record<KernelStatus, string> = {
 /**
  * User-facing label for each expanded [`RuntimeStatusKey`].
  *
- * Keyed by the flat runtime vocabulary so that every lifecycle variant
+ * Keyed by the flat runtime vocabulary so every lifecycle variant
  * (including each starting sub-phase and all three `Running(_)` cases)
  * gets a dedicated label. Exhaustive `Record` — adding a variant to
  * `RuntimeLifecycle` will fail to typecheck here until a label is added.
@@ -63,27 +63,6 @@ export const RUNTIME_STATUS_LABELS: Record<RuntimeStatusKey, string> = {
   [RUNTIME_STATUS.ERROR]: "error",
   [RUNTIME_STATUS.SHUTDOWN]: "shutdown",
 };
-
-const STARTING_PHASE_LABELS: Record<string, string> = {
-  resolving: "resolving environment",
-  preparing_env: "preparing environment",
-  launching: "launching kernel",
-  connecting: "connecting to kernel",
-};
-
-/**
- * @deprecated Use `getLifecycleLabel(lifecycle, errorReason)` instead.
- * Retained for any caller outside NotebookToolbar that hasn't migrated.
- */
-export function getKernelStatusLabel(
-  status: KernelStatus,
-  startingPhase?: string,
-): string {
-  if (status === KERNEL_STATUS.STARTING && startingPhase) {
-    return STARTING_PHASE_LABELS[startingPhase] ?? "starting";
-  }
-  return KERNEL_STATUS_LABELS[status];
-}
 
 /**
  * Render a user-facing label for the typed runtime lifecycle.
