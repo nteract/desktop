@@ -3,7 +3,8 @@
 **Status:** Draft
 **Date:** 2026-04-22
 **Related issues:** #1816 (this spec), #1815 (query backend — same transport), #1905 / #1911 / #1913 (per-task stable actors that make fork+merge on async paths safe), [2026-04-19 addressable execution outputs](./2026-04-19-map-keyed-outputs.md)
-**Related code:** `python/dx/src/dx/_format.py`, `python/dx/src/dx/_format_install.py`, `crates/runtimed/src/output_store.rs`, `crates/runtimed/src/output_prep.rs`, `crates/notebook-doc/src/runtime_state.rs`, `crates/sift-wasm/src/store.rs`, `packages/sift/src/wasm-table-data.ts`
+**Post-spec changes:** RuntimeStateDoc moved to `runtime-doc` crate (#2056). All CRDT writes go through `RuntimeStateHandle` (#2059) with `with_doc()` for sync and `fork()`/`merge()` for async. Dead broadcasts removed (#2065) — the pull task's manifest updates propagate via CRDT sync, not broadcasts.
+**Related code:** `python/dx/src/dx/_format.py`, `python/dx/src/dx/_format_install.py`, `crates/runtimed/src/output_store.rs`, `crates/runtimed/src/output_prep.rs`, `crates/runtime-doc/src/doc.rs`, `crates/sift-wasm/src/store.rs`, `packages/sift/src/wasm-table-data.ts`
 
 ## Context
 
@@ -96,7 +97,7 @@ The agent already runs `preflight_ref_buffers` to extract the blob-ref buffer in
 - The pull task runs outside the execution-message hot path. It loops:
   1. Call `nteract.dx.stream.<handle_id>.pull(BATCH_BYTES)` via a comm_msg. dx returns one Arrow IPC chunk (bytes) or a "done" signal.
   2. If bytes: put them in the blob store (content-addressed, same as any other blob). Get back a hash + size.
-  3. Append the new blob ref to the manifest's `STREAM_CHUNKS` entry via `replace_output(execution_id, output_idx, new_manifest)` on a fork+merge transaction.
+  3. Append the new blob ref to the manifest's `STREAM_CHUNKS` entry via `replace_output(execution_id, output_idx, new_manifest)` using `RuntimeStateHandle::fork()`/`merge()` for the async blob-store work.
   4. Loop until dx signals done, the comm closes, the execution is cleared, or the cell is re-run.
 
 The comm pull uses the same `nteract.dx.*` transport reserved in `CLAUDE.md`. Binary buffers flow directly to the blob store (the rule that lets these comms bypass `RuntimeStateDoc.comms` does the right thing by default).
@@ -192,7 +193,7 @@ Configurable via env vars or (eventually) user settings. Default values listed; 
 
 - `python/dx/src/dx/_format_install.py:420-437` — current Parquet emission (where the head-only branch goes).
 - `crates/runtimed/src/output_store.rs:646-699` — `preflight_ref_buffers` (where the stream-handle MIME gets picked up).
-- `crates/notebook-doc/src/runtime_state.rs:1460` — `replace_output` (used by the pull task to update the manifest per chunk).
+- `crates/runtime-doc/src/doc.rs` — `replace_output` (used by the pull task to update the manifest per chunk). RuntimeStateDoc now lives in the `runtime-doc` crate, accessed via `RuntimeStateHandle::with_doc()` or `fork()`/`merge()` for async paths.
 - `crates/sift-wasm/src/store.rs:1167-1205` — existing batch-append in `load_parquet_row_group` (shape to mirror for `load_ipc_append`).
 - `packages/sift/src/wasm-table-data.ts:8,41-80` — where the streaming renderer hooks in.
 - `docs/superpowers/specs/2026-04-19-map-keyed-outputs.md` — `output_id` stability guarantee that makes "update the same output" work.
