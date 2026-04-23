@@ -7124,6 +7124,7 @@ dependencies = [
  "nteract-predicate",
  "parquet",
  "runt-workspace",
+ "runtime-doc",
  "runtimed-client",
  "serde",
  "serde_json",
