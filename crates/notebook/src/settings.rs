@@ -115,6 +115,10 @@ pub fn load_settings() -> SyncedSettings {
             .get("telemetry_enabled")
             .and_then(|v| v.as_bool())
             .unwrap_or(true),
+        telemetry_consent_recorded: json
+            .get("telemetry_consent_recorded")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
         telemetry_last_daemon_ping_at: json
             .get("telemetry_last_daemon_ping_at")
             .and_then(|v| v.as_u64()),
