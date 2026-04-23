@@ -522,16 +522,21 @@ fn snapshot_empty() -> NotebookMetadataSnapshot {
 
 #[test]
 fn test_check_inline_deps_uv() {
+    use notebook_protocol::connection::{EnvSource, PackageManager};
     let snapshot = snapshot_with_uv(vec!["numpy".to_string()]);
-    assert_eq!(check_inline_deps(&snapshot), Some("uv:inline".to_string()));
+    assert_eq!(
+        check_inline_deps(&snapshot),
+        Some(EnvSource::Inline(PackageManager::Uv))
+    );
 }
 
 #[test]
 fn test_check_inline_deps_conda() {
+    use notebook_protocol::connection::{EnvSource, PackageManager};
     let snapshot = snapshot_with_conda(vec!["pandas".to_string()]);
     assert_eq!(
         check_inline_deps(&snapshot),
-        Some("conda:inline".to_string())
+        Some(EnvSource::Inline(PackageManager::Conda))
     );
 }
 
@@ -574,7 +579,11 @@ fn test_check_inline_deps_uv_priority() {
             extra: std::collections::BTreeMap::new(),
         },
     };
-    assert_eq!(check_inline_deps(&snapshot), Some("uv:inline".to_string()));
+    use notebook_protocol::connection::{EnvSource, PackageManager};
+    assert_eq!(
+        check_inline_deps(&snapshot),
+        Some(EnvSource::Inline(PackageManager::Uv))
+    );
 }
 
 #[test]
@@ -604,7 +613,8 @@ fn test_check_inline_deps_deno() {
             extra: std::collections::BTreeMap::new(),
         },
     };
-    assert_eq!(check_inline_deps(&snapshot), Some("deno".to_string()));
+    use notebook_protocol::connection::EnvSource;
+    assert_eq!(check_inline_deps(&snapshot), Some(EnvSource::Deno));
 }
 
 // Runtime detection tests now live in notebook-doc/src/metadata.rs
