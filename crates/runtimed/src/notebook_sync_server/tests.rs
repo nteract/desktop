@@ -673,7 +673,6 @@ fn test_room_with_path(
 
         is_loading: AtomicBool::new(false),
         last_self_write: Arc::new(AtomicU64::new(0)),
-        last_save_heads: Arc::new(RwLock::new(Vec::new())),
         last_save_sources: Arc::new(RwLock::new(HashMap::new())),
         watcher_shutdown_tx: Mutex::new(None),
         state,

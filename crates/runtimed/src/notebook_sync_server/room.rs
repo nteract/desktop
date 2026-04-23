@@ -57,12 +57,6 @@ pub struct NotebookRoom {
     /// Timestamp (ms since epoch) of last self-write to the .ipynb file.
     /// Used to skip file watcher events triggered by our own saves.
     pub last_self_write: Arc<AtomicU64>,
-    /// Automerge heads at the time of the last save to disk.
-    /// Previously used by the file watcher for `fork_at(last_save_heads)` —
-    /// currently unused due to automerge/automerge#1327 but retained so that external
-    /// disk changes merge cleanly with post-save CRDT changes (e.g.,
-    /// background formatting that completed after the save).
-    pub last_save_heads: Arc<RwLock<Vec<automerge::ChangeHash>>>,
     /// Cell sources as they were written to disk at last save.
     ///
     /// The file watcher compares disk content against this snapshot (not the
@@ -239,7 +233,6 @@ impl NotebookRoom {
 
             is_loading: AtomicBool::new(false),
             last_self_write: Arc::new(AtomicU64::new(0)),
-            last_save_heads: Arc::new(RwLock::new(Vec::new())),
             last_save_sources: Arc::new(RwLock::new(HashMap::new())),
             watcher_shutdown_tx: Mutex::new(None),
             state,
@@ -332,7 +325,6 @@ impl NotebookRoom {
 
             is_loading: AtomicBool::new(false),
             last_self_write: Arc::new(AtomicU64::new(0)),
-            last_save_heads: Arc::new(RwLock::new(Vec::new())),
             last_save_sources: Arc::new(RwLock::new(HashMap::new())),
             watcher_shutdown_tx: Mutex::new(None),
             state,
