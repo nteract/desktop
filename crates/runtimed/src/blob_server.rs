@@ -10,9 +10,12 @@
 //! - `GET /plugins/{name}` — embedded renderer plugin assets (JS/CSS)
 //! - `GET /health` — 200 OK
 //!
-//! The server binds `127.0.0.1:0` (OS-assigned random port) and runs on
-//! the caller's tokio runtime. It shuts down when the process exits; no
-//! explicit cancellation is implemented yet.
+//! The server tries to bind a stable per-channel preferred port first
+//! (see `runt_workspace::preferred_blob_port`), bumping to the next port on
+//! collision (up to 10 attempts) before falling back to `127.0.0.1:0`. A
+//! stable port keeps frozen MCP App CSPs pointing at a working origin across
+//! daemon restarts. The server runs on the caller's tokio runtime and shuts
+//! down when the process exits; no explicit cancellation is implemented yet.
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -24,12 +27,17 @@ use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::blob_store::BlobStore;
 use crate::daemon::Daemon;
 use crate::embedded_plugins;
 use crate::task_supervisor::{spawn_best_effort, spawn_supervised};
+
+/// How many consecutive ports past the preferred port we'll try before
+/// falling back to an OS-assigned port. Sourced from `runt_workspace` so the
+/// bump budget stays in sync with the per-channel range carve-out.
+const PREFERRED_PORT_ATTEMPTS: u16 = runt_workspace::PREFERRED_BLOB_PORT_RANGE;
 
 /// Start the blob HTTP server on a random localhost port.
 ///
@@ -42,7 +50,16 @@ pub async fn start_blob_server(
     store: Arc<BlobStore>,
     daemon: Option<Arc<Daemon>>,
 ) -> std::io::Result<u16> {
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    start_blob_server_with_listener(bind_preferred_or_random().await?, store, daemon).await
+}
+
+/// Start the blob HTTP server on an already-bound listener. Exposed for tests
+/// that want to pin the server to a random OS-assigned port.
+async fn start_blob_server_with_listener(
+    listener: TcpListener,
+    store: Arc<BlobStore>,
+    daemon: Option<Arc<Daemon>>,
+) -> std::io::Result<u16> {
     let port = listener.local_addr()?.port();
 
     info!("[blob-server] Listening on http://127.0.0.1:{}", port);
@@ -80,6 +97,29 @@ pub async fn start_blob_server(
     );
 
     Ok(port)
+}
+
+/// Bind the blob server port.
+///
+/// Tries the channel's preferred port first, bumps to the next port on
+/// `EADDRINUSE`, and falls back to an OS-assigned port after
+/// `PREFERRED_PORT_ATTEMPTS` consecutive collisions.
+async fn bind_preferred_or_random() -> std::io::Result<TcpListener> {
+    let preferred = runt_workspace::preferred_blob_port();
+    for offset in 0..PREFERRED_PORT_ATTEMPTS {
+        let port = preferred.saturating_add(offset);
+        match TcpListener::bind(("127.0.0.1", port)).await {
+            Ok(listener) => return Ok(listener),
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    warn!(
+        "[blob-server] preferred ports {}..{} all in use, falling back to OS-assigned port",
+        preferred,
+        preferred.saturating_add(PREFERRED_PORT_ATTEMPTS - 1)
+    );
+    TcpListener::bind("127.0.0.1:0").await
 }
 
 /// Handle a single HTTP request.
@@ -177,7 +217,12 @@ mod tests {
     async fn setup() -> (TempDir, Arc<BlobStore>, u16) {
         let dir = TempDir::new().unwrap();
         let store = Arc::new(BlobStore::new(dir.path().join("blobs")));
-        let port = start_blob_server(store.clone(), None).await.unwrap();
+        // Tests bind :0 explicitly to avoid fighting a locally-running dev
+        // daemon for the channel's preferred port.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = start_blob_server_with_listener(listener, store.clone(), None)
+            .await
+            .unwrap();
         // Give the server a moment to start accepting
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         (dir, store, port)
@@ -283,9 +328,40 @@ mod tests {
     async fn test_two_servers_get_different_ports() {
         let dir = TempDir::new().unwrap();
         let store = Arc::new(BlobStore::new(dir.path().join("blobs")));
-        let port1 = start_blob_server(store.clone(), None).await.unwrap();
-        let port2 = start_blob_server(store.clone(), None).await.unwrap();
+        let listener1 = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listener2 = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port1 = start_blob_server_with_listener(listener1, store.clone(), None)
+            .await
+            .unwrap();
+        let port2 = start_blob_server_with_listener(listener2, store.clone(), None)
+            .await
+            .unwrap();
         assert_ne!(port1, port2);
+    }
+
+    #[tokio::test]
+    async fn test_bind_bumps_on_collision() {
+        // Hold the preferred port so the first attempt hits AddrInUse.
+        let preferred = runt_workspace::preferred_blob_port();
+        let Ok(blocker) = TcpListener::bind(("127.0.0.1", preferred)).await else {
+            // Preferred port already in use by something else (a running
+            // daemon, parallel test). The bump path will still be exercised —
+            // just skip the explicit assertion about which port we got.
+            return;
+        };
+
+        let port = bind_preferred_or_random()
+            .await
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let bump_range = (preferred + 1)..=(preferred + PREFERRED_PORT_ATTEMPTS - 1);
+        assert!(
+            bump_range.contains(&port),
+            "port {port} should be in the bump range {bump_range:?}",
+        );
+        drop(blocker);
     }
 
     #[tokio::test]
