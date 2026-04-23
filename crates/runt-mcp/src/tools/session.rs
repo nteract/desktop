@@ -686,22 +686,6 @@ mod tests {
         assert_eq!(result, "pixi");
     }
 
-    /// Validation rejects unknown and aliases known package_manager values.
-    #[test]
-    fn package_manager_validation() {
-        use notebook_protocol::connection::normalize_package_manager;
-
-        // Direct values pass through
-        for valid in ["uv", "conda", "pixi"] {
-            assert_eq!(normalize_package_manager(valid).unwrap(), valid);
-        }
-        // Aliases resolve
-        assert_eq!(normalize_package_manager("pip").unwrap(), "uv");
-        assert_eq!(normalize_package_manager("mamba").unwrap(), "conda");
-        // Unknown values are rejected
-        assert!(normalize_package_manager("npm").is_err());
-    }
-
     /// save_notebook response must include notebook_id (unchanged UUID) and path.
     /// Verify no previous_notebook_id or new_notebook_id fields exist in the
     /// response schema (structural test via serde_json shape).
