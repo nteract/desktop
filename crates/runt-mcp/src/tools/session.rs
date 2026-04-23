@@ -453,8 +453,7 @@ pub async fn create_notebook(
             let peer_label = server.get_peer_label().await;
             crate::presence::announce(&result.handle, &peer_label).await;
 
-            let pkg_manager: String = explicit_pkg_manager
-                .map(|pm| pm.as_str().to_string())
+            let pkg_manager: notebook_protocol::connection::PackageManager = explicit_pkg_manager
                 .unwrap_or_else(|| super::deps::detect_package_manager(&result.handle));
 
             let session = NotebookSession {
@@ -477,7 +476,7 @@ pub async fn create_notebook(
             let all_deps = {
                 let guard = server.session.read().await;
                 guard.as_ref().map_or_else(Vec::new, |s| {
-                    super::deps::get_deps_for_manager_pub(&s.handle, &pkg_manager)
+                    super::deps::get_deps_for_manager_pub(&s.handle, pkg_manager)
                 })
             };
 
@@ -486,7 +485,7 @@ pub async fn create_notebook(
                 "runtime": runtime_info,
                 "dependencies": all_deps,
                 "added_dependencies": deps,
-                "package_manager": pkg_manager,
+                "package_manager": pkg_manager.as_str(),
                 "ephemeral": ephemeral,
             });
 
