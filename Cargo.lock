@@ -7059,6 +7059,7 @@ dependencies = [
  "reqwest-middleware",
  "runt-trust",
  "runt-workspace",
+ "runtime-doc",
  "runtimed-client",
  "runtimelib",
  "schemars 1.2.1",

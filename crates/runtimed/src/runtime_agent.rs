@@ -40,6 +40,7 @@ use notebook_protocol::connection::{
     NotebookFrameType,
 };
 use notebook_protocol::protocol::{RuntimeAgentRequest, RuntimeAgentResponse};
+use runtime_doc::RuntimeStateHandle;
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tracing::{debug, error, info, warn};
 
@@ -51,8 +52,7 @@ use crate::output_prep::QueueCommand;
 
 /// Shared context for the runtime agent (no kernel -- kernel is owned locally).
 struct RuntimeAgentContext {
-    state_doc: Arc<RwLock<RuntimeStateDoc>>,
-    state_changed_tx: broadcast::Sender<()>,
+    state: RuntimeStateHandle,
     blob_store: Arc<BlobStore>,
     broadcast_tx: broadcast::Sender<notebook_protocol::protocol::NotebookBroadcast>,
     presence: Arc<RwLock<PresenceState>>,
@@ -84,8 +84,11 @@ pub async fn run_runtime_agent(
 
     let state_doc = RuntimeStateDoc::new_with_actor(&runtime_agent_id);
     let mut coordinator_sync_state = automerge::sync::State::new();
-    let state_doc = Arc::new(RwLock::new(state_doc));
     let (state_changed_tx, mut state_changed_rx) = broadcast::channel::<()>(64);
+    // Keep a clone of the sender for the reconnect "kick" path that needs
+    // to force a sync round even when heads haven't changed.
+    let state_kick_tx = state_changed_tx.clone();
+    let state = RuntimeStateHandle::new(state_doc, state_changed_tx);
 
     // -- 3. Create local infrastructure -------------------------------------
 
@@ -96,8 +99,7 @@ pub async fn run_runtime_agent(
     let (presence_tx, _presence_rx) = broadcast::channel::<(String, Vec<u8>)>(16);
 
     let ctx = RuntimeAgentContext {
-        state_doc: state_doc.clone(),
-        state_changed_tx: state_changed_tx.clone(),
+        state: state.clone(),
         blob_store,
         broadcast_tx: broadcast_tx.clone(),
         presence,
@@ -108,11 +110,7 @@ pub async fn run_runtime_agent(
 
     let mut kernel: Option<JupyterKernel> = None;
     let mut interrupt_handle: Option<crate::jupyter_kernel::InterruptHandle> = None;
-    let mut kernel_state = KernelState::new(
-        state_doc.clone(),
-        state_changed_tx.clone(),
-        broadcast_tx.clone(),
-    );
+    let mut kernel_state = KernelState::new(state.clone(), broadcast_tx.clone());
     let mut seen_execution_ids = HashSet::new();
     let mut cmd_rx: Option<mpsc::Receiver<QueueCommand>> = None;
 
@@ -140,15 +138,15 @@ pub async fn run_runtime_agent(
                                             let handle = handle.clone();
                                             let cleared = kernel_state.clear_queue();
                                             // Write cleared entries to state doc
-                                            {
-                                                let mut sd = state_doc.write().await;
+                                            if let Err(e) = state.with_doc(|sd| {
                                                 for entry in &cleared {
-                                                    if let Err(e) = sd.set_execution_done(&entry.execution_id, false) {
-                                                        warn!("[runtime-state] {}", e);
-                                                    }
+                                                    sd.set_execution_done(&entry.execution_id, false)?;
                                                 }
+                                                Ok(())
+                                            }) {
+                                                warn!("[runtime-state] {}", e);
                                             }
-                                            kernel_state.write_queue_to_state_doc().await;
+                                            kernel_state.write_queue_to_state_doc();
                                             // Interrupt kernel in background — don't block the loop
                                             tokio::spawn(async move {
                                                 if let Err(e) = handle.interrupt().await {
@@ -194,101 +192,95 @@ pub async fn run_runtime_agent(
                             // and forward frontend-originated comm state changes to kernel
                             NotebookFrameType::RuntimeStateSync => {
                                 if let Ok(msg) = automerge::sync::Message::decode(&typed_frame.payload) {
-                                    let mut sd = ctx.state_doc.write().await;
+                                    // Apply sync and extract data we need for async
+                                    // work, all in one lock acquisition.
+                                    let sync_result = ctx.state.with_doc(|sd| {
+                                        // Snapshot comm state before applying sync so we can
+                                        // detect frontend-originated widget state changes.
+                                        let comms_before = sd.read_state().comms;
 
-                                    // Snapshot comm state before applying sync so we can
-                                    // detect frontend-originated widget state changes.
-                                    let comms_before = sd.read_state().comms;
+                                        // Per-change actor filter: diff comm state against a
+                                        // foreign-only view of the post-sync doc.
+                                        match sd.receive_sync_and_foreign_comms(
+                                            &mut coordinator_sync_state,
+                                            msg,
+                                            |actor| !actor.to_bytes().starts_with(b"rt:kernel:"),
+                                        ) {
+                                            Ok(view) if !view.applied_actors.is_empty() => {
+                                                let queued = sd.get_queued_executions();
+                                                let comm_updates = match view.foreign_comms {
+                                                    Some(foreign_comms) => {
+                                                        diff_comm_state(&comms_before, &foreign_comms)
+                                                    }
+                                                    None => {
+                                                        debug!(
+                                                            "[runtime-agent] Skipping comm forward: {} applied change(s) were all self-kernel echoes",
+                                                            view.applied_actors.len()
+                                                        );
+                                                        Vec::new()
+                                                    }
+                                                };
+                                                Ok(Some((queued, comm_updates)))
+                                            }
+                                            Ok(_) => Ok(None),
+                                            Err(e) => {
+                                                warn!(
+                                                    "[runtime-agent] Failed to apply RuntimeStateSync: {}",
+                                                    e
+                                                );
+                                                Ok(None)
+                                            }
+                                        }
+                                    });
 
-                                    // Per-change actor filter: diff comm state against a
-                                    // foreign-only view of the post-sync doc. If the
-                                    // coordinator coalesces a kernel-authored echo with a
-                                    // frontend widget write into one RuntimeStateSync frame,
-                                    // the foreign view omits the echo so we don't re-forward
-                                    // it back to the kernel and trigger amplification.
-                                    // Actors are opaque byte strings; the kernel-side writer
-                                    // uses a UTF-8 `rt:kernel:<session>` prefix (see
-                                    // `jupyter_kernel.rs`), so `starts_with` on the raw
-                                    // bytes is sufficient.
-                                    match sd.receive_sync_and_foreign_comms(
-                                        &mut coordinator_sync_state,
-                                        msg,
-                                        |actor| !actor.to_bytes().starts_with(b"rt:kernel:"),
-                                    ) {
-                                        Ok(view) if !view.applied_actors.is_empty() => {
-                                            let _ = state_changed_tx.send(());
-
-                                            let queued = sd.get_queued_executions();
-                                            drop(sd); // release write lock before kernel interaction
-
-                                            let comm_updates = match view.foreign_comms {
-                                                Some(foreign_comms) => {
-                                                    diff_comm_state(&comms_before, &foreign_comms)
-                                                }
-                                                None => {
-                                                    debug!(
-                                                        "[runtime-agent] Skipping comm forward: {} applied change(s) were all self-kernel echoes",
-                                                        view.applied_actors.len()
-                                                    );
-                                                    Vec::new()
-                                                }
-                                            };
-                                            if !comm_updates.is_empty() {
-                                                if let Some(ref mut k) = kernel {
-                                                    for (comm_id, delta) in &comm_updates {
-                                                        if let Err(e) = k.send_comm_update(comm_id, delta.clone()).await {
-                                                            warn!("[runtime-agent] Failed to forward comm state to kernel: {}", e);
-                                                        }
+                                    // Async work outside the lock
+                                    if let Ok(Some((queued, comm_updates))) = sync_result {
+                                        if !comm_updates.is_empty() {
+                                            if let Some(ref mut k) = kernel {
+                                                for (comm_id, delta) in &comm_updates {
+                                                    if let Err(e) = k.send_comm_update(comm_id, delta.clone()).await {
+                                                        warn!("[runtime-agent] Failed to forward comm state to kernel: {}", e);
                                                     }
                                                 }
                                             }
+                                        }
 
-                                            // Check for new queued executions
-                                            for (eid, exec) in queued {
-                                                if seen_execution_ids.insert(eid.clone()) {
-                                                    if let Some(ref source) = exec.source {
-                                                        if let Some(ref mut k) = kernel {
-                                                            match kernel_state.queue_cell(
-                                                                exec.cell_id.clone(),
-                                                                eid.clone(),
-                                                                source.clone(),
-                                                                k,
-                                                            ).await {
-                                                                Ok(_) => {
-                                                                    info!(
-                                                                        "[runtime-agent] Queued cell {} (execution {})",
-                                                                        exec.cell_id, eid
-                                                                    );
-                                                                }
-                                                                Err(e) => {
-                                                                    warn!(
-                                                                        "[runtime-agent] Failed to queue cell {}: {}",
-                                                                        exec.cell_id, e
-                                                                    );
-                                                                }
+                                        // Check for new queued executions
+                                        for (eid, exec) in queued {
+                                            if seen_execution_ids.insert(eid.clone()) {
+                                                if let Some(ref source) = exec.source {
+                                                    if let Some(ref mut k) = kernel {
+                                                        match kernel_state.queue_cell(
+                                                            exec.cell_id.clone(),
+                                                            eid.clone(),
+                                                            source.clone(),
+                                                            k,
+                                                        ).await {
+                                                            Ok(_) => {
+                                                                info!(
+                                                                    "[runtime-agent] Queued cell {} (execution {})",
+                                                                    exec.cell_id, eid
+                                                                );
+                                                            }
+                                                            Err(e) => {
+                                                                warn!(
+                                                                    "[runtime-agent] Failed to queue cell {}: {}",
+                                                                    exec.cell_id, e
+                                                                );
                                                             }
                                                         }
                                                     }
                                                 }
                                             }
                                         }
-                                        Ok(_) => {
-                                            // No changes applied (handshake/ack).
-                                            drop(sd);
-                                        }
-                                        Err(e) => {
-                                            warn!(
-                                                "[runtime-agent] Failed to apply RuntimeStateSync: {}",
-                                                e
-                                            );
-                                            drop(sd);
-                                        }
                                     }
 
                                     // Send sync reply
-                                    let mut sd = ctx.state_doc.write().await;
-                                    if let Some(reply) = sd.generate_sync_message(&mut coordinator_sync_state) {
-                                        let encoded = reply.encode();
+                                    let reply_encoded = ctx.state.with_doc(|sd| {
+                                        Ok(sd.generate_sync_message(&mut coordinator_sync_state)
+                                            .map(|reply| reply.encode()))
+                                    }).ok().flatten();
+                                    if let Some(encoded) = reply_encoded {
                                         let _ = send_typed_frame(
                                             &mut writer,
                                             NotebookFrameType::RuntimeStateSync,
@@ -351,7 +343,7 @@ pub async fn run_runtime_agent(
                                 // Kick off a full resync so the daemon gets
                                 // everything the kernel produced while we
                                 // were disconnected.
-                                let _ = state_changed_tx.send(());
+                                let _ = state_kick_tx.send(());
                                 info!("[runtime-agent] Reconnected to daemon");
                                 continue;
                             }
@@ -388,9 +380,11 @@ pub async fn run_runtime_agent(
             _ = state_changed_rx.recv() => {
                 while state_changed_rx.try_recv().is_ok() {}
 
-                let mut sd = ctx.state_doc.write().await;
-                if let Some(msg) = sd.generate_sync_message(&mut coordinator_sync_state) {
-                    let encoded = msg.encode();
+                let encoded = ctx.state.with_doc(|sd| {
+                    Ok(sd.generate_sync_message(&mut coordinator_sync_state)
+                        .map(|msg| msg.encode()))
+                }).ok().flatten();
+                if let Some(encoded) = encoded {
                     if let Err(e) = send_typed_frame(
                         &mut writer,
                         NotebookFrameType::RuntimeStateSync,
@@ -548,8 +542,7 @@ async fn handle_runtime_agent_request(
             });
 
             let shared = KernelSharedRefs {
-                state_doc: ctx.state_doc.clone(),
-                state_changed_tx: ctx.state_changed_tx.clone(),
+                state: ctx.state.clone(),
                 blob_store: ctx.blob_store.clone(),
                 broadcast_tx: ctx.broadcast_tx.clone(),
                 presence: ctx.presence.clone(),
@@ -631,8 +624,7 @@ async fn handle_runtime_agent_request(
             });
 
             let shared = KernelSharedRefs {
-                state_doc: ctx.state_doc.clone(),
-                state_changed_tx: ctx.state_changed_tx.clone(),
+                state: ctx.state.clone(),
                 blob_store: ctx.blob_store.clone(),
                 broadcast_tx: ctx.broadcast_tx.clone(),
                 presence: ctx.presence.clone(),
@@ -650,17 +642,12 @@ async fn handle_runtime_agent_request(
             // Mark stale executions as failed in RuntimeStateDoc.
             // The old kernel is gone after shutdown, so these executions
             // can never complete — do this before launching the new kernel.
-            {
-                let mut sd = ctx.state_doc.write().await;
+            if let Err(e) = ctx.state.with_doc(|sd| {
                 if let Some(ref eid) = interrupted_eid {
-                    if let Err(e) = sd.set_execution_done(eid, false) {
-                        warn!("[runtime-state] {}", e);
-                    }
+                    sd.set_execution_done(eid, false)?;
                 }
                 for eid in &stale_queue {
-                    if let Err(e) = sd.set_execution_done(eid, false) {
-                        warn!("[runtime-state] {}", e);
-                    }
+                    sd.set_execution_done(eid, false)?;
                 }
                 // Defensive sweep: mark any execution entries stuck in
                 // "running" or "queued" that the local KernelState missed
@@ -676,10 +663,10 @@ async fn handle_runtime_agent_request(
                     }
                     _ => {}
                 }
-                if let Err(e) = sd.set_queue(None, &[]) {
-                    warn!("[runtime-state] {}", e);
-                }
-                let _ = ctx.state_changed_tx.send(());
+                sd.set_queue(None, &[])?;
+                Ok(())
+            }) {
+                warn!("[runtime-state] {}", e);
             }
 
             match JupyterKernel::launch(config, shared).await {
@@ -708,15 +695,15 @@ async fn handle_runtime_agent_request(
                     Ok(()) => {
                         let cleared = state.clear_queue();
                         // Write cleared entries to state doc
-                        {
-                            let mut sd = ctx.state_doc.write().await;
+                        if let Err(e) = ctx.state.with_doc(|sd| {
                             for entry in &cleared {
-                                if let Err(e) = sd.set_execution_done(&entry.execution_id, false) {
-                                    warn!("[runtime-state] {}", e);
-                                }
+                                sd.set_execution_done(&entry.execution_id, false)?;
                             }
+                            Ok(())
+                        }) {
+                            warn!("[runtime-state] {}", e);
                         }
-                        state.write_queue_to_state_doc().await;
+                        state.write_queue_to_state_doc();
                         (
                             RuntimeAgentResponse::InterruptAcknowledged { cleared },
                             None,
@@ -973,16 +960,15 @@ async fn handle_queue_command(
             );
             state.mark_execution_error();
             let cleared = state.clear_queue();
-            let mut sd = ctx.state_doc.write().await;
-            for entry in &cleared {
-                if let Err(e) = sd.set_execution_done(&entry.execution_id, false) {
-                    warn!("[runtime-state] {}", e);
+            if let Err(e) = ctx.state.with_doc(|sd| {
+                for entry in &cleared {
+                    sd.set_execution_done(&entry.execution_id, false)?;
                 }
-            }
-            if let Err(e) = sd.set_queue(None, &[]) {
+                sd.set_queue(None, &[])?;
+                Ok(())
+            }) {
                 warn!("[runtime-state] {}", e);
             }
-            let _ = ctx.state_changed_tx.send(());
         }
 
         QueueCommand::KernelDied => {
@@ -992,24 +978,19 @@ async fn handle_queue_command(
             }
             *kernel = None;
             let (interrupted, cleared) = state.kernel_died();
-            let mut sd = ctx.state_doc.write().await;
-            if let Some((_, ref eid)) = interrupted {
-                if let Err(e) = sd.set_execution_done(eid, false) {
-                    warn!("[runtime-state] {}", e);
+            if let Err(e) = ctx.state.with_doc(|sd| {
+                if let Some((_, ref eid)) = interrupted {
+                    sd.set_execution_done(eid, false)?;
                 }
-            }
-            for entry in &cleared {
-                if let Err(e) = sd.set_execution_done(&entry.execution_id, false) {
-                    warn!("[runtime-state] {}", e);
+                for entry in &cleared {
+                    sd.set_execution_done(&entry.execution_id, false)?;
                 }
-            }
-            if let Err(e) = sd.set_kernel_status("error") {
+                sd.set_kernel_status("error")?;
+                sd.set_queue(None, &[])?;
+                Ok(())
+            }) {
                 warn!("[runtime-state] {}", e);
             }
-            if let Err(e) = sd.set_queue(None, &[]) {
-                warn!("[runtime-state] {}", e);
-            }
-            let _ = ctx.state_changed_tx.send(());
         }
 
         QueueCommand::SendCommUpdate {
@@ -1129,33 +1110,28 @@ mod tests {
     }
 
     /// Build test fixtures: RuntimeAgentContext + KernelState wired to the same doc.
-    fn test_fixtures() -> (
-        RuntimeAgentContext,
-        KernelState,
-        Arc<RwLock<RuntimeStateDoc>>,
-    ) {
-        let state_doc = Arc::new(RwLock::new(RuntimeStateDoc::new()));
+    fn test_fixtures() -> (RuntimeAgentContext, KernelState, RuntimeStateHandle) {
         let (state_changed_tx, _) = broadcast::channel(64);
+        let handle = RuntimeStateHandle::new(RuntimeStateDoc::new(), state_changed_tx);
         let (broadcast_tx, _) = broadcast::channel(64);
         let (presence_tx, _) = broadcast::channel(16);
         let blob_store = Arc::new(BlobStore::new(std::env::temp_dir().join("test-blobs")));
         let presence = Arc::new(RwLock::new(PresenceState::new()));
 
         let ctx = RuntimeAgentContext {
-            state_doc: state_doc.clone(),
-            state_changed_tx: state_changed_tx.clone(),
+            state: handle.clone(),
             blob_store,
             broadcast_tx: broadcast_tx.clone(),
             presence,
             presence_tx,
         };
-        let state = KernelState::new(state_doc.clone(), state_changed_tx, broadcast_tx);
-        (ctx, state, state_doc)
+        let state = KernelState::new(handle.clone(), broadcast_tx);
+        (ctx, state, handle)
     }
 
     #[tokio::test]
     async fn kernel_died_marks_inflight_executions_as_failed_in_state_doc() {
-        let (ctx, mut state, state_doc) = test_fixtures();
+        let (ctx, mut state, handle) = test_fixtures();
         let mut mock = MockKernel;
         state.set_idle();
 
@@ -1171,10 +1147,9 @@ mod tests {
 
         // Verify initial state in doc
         {
-            let sd = state_doc.read().await;
-            let e1 = sd.get_execution("e1").unwrap();
+            let e1 = handle.read(|sd| sd.get_execution("e1").unwrap()).unwrap();
             assert_eq!(e1.status, "running");
-            let e2 = sd.get_execution("e2").unwrap();
+            let e2 = handle.read(|sd| sd.get_execution("e2").unwrap()).unwrap();
             assert_eq!(e2.status, "queued");
         }
 
@@ -1189,17 +1164,16 @@ mod tests {
         .unwrap();
 
         // Both executions should now be marked as error in RuntimeStateDoc
-        let sd = state_doc.read().await;
-        let e1 = sd.get_execution("e1").unwrap();
+        let e1 = handle.read(|sd| sd.get_execution("e1").unwrap()).unwrap();
         assert_eq!(e1.status, "error");
         assert_eq!(e1.success, Some(false));
 
-        let e2 = sd.get_execution("e2").unwrap();
+        let e2 = handle.read(|sd| sd.get_execution("e2").unwrap()).unwrap();
         assert_eq!(e2.status, "error");
         assert_eq!(e2.success, Some(false));
 
         // Queue should be cleared
-        let queue = sd.read_state();
+        let queue = handle.read(|sd| sd.read_state()).unwrap();
         assert!(queue.queue.executing.is_none());
         assert!(queue.queue.queued.is_empty());
 
@@ -1209,7 +1183,7 @@ mod tests {
 
     #[tokio::test]
     async fn kernel_died_with_no_inflight_executions_clears_state() {
-        let (ctx, mut state, state_doc) = test_fixtures();
+        let (ctx, mut state, handle) = test_fixtures();
         state.set_idle();
 
         // No cells queued — just fire KernelDied
@@ -1222,8 +1196,7 @@ mod tests {
         .await
         .unwrap();
 
-        let sd = state_doc.read().await;
-        let rs = sd.read_state();
+        let rs = handle.read(|sd| sd.read_state()).unwrap();
         assert_eq!(rs.kernel.status, "error");
         assert!(rs.queue.executing.is_none());
         assert!(rs.queue.queued.is_empty());

@@ -29,7 +29,10 @@ impl RuntimeStateHandle {
     where
         F: FnOnce(&mut RuntimeStateDoc) -> Result<T, RuntimeStateError>,
     {
-        let mut sd = self.doc.lock().map_err(|_| RuntimeStateError::LockPoisoned)?;
+        let mut sd = self
+            .doc
+            .lock()
+            .map_err(|_| RuntimeStateError::LockPoisoned)?;
         let heads_before = sd.get_heads();
         let result = f(&mut sd)?;
         if sd.get_heads() != heads_before {
@@ -40,13 +43,19 @@ impl RuntimeStateHandle {
 
     /// Fork at current heads for async work. Never uses fork_at (automerge#1327).
     pub fn fork(&self, actor_label: &str) -> Result<RuntimeStateDoc, RuntimeStateError> {
-        let mut sd = self.doc.lock().map_err(|_| RuntimeStateError::LockPoisoned)?;
+        let mut sd = self
+            .doc
+            .lock()
+            .map_err(|_| RuntimeStateError::LockPoisoned)?;
         Ok(sd.fork_with_actor(actor_label))
     }
 
     /// Merge a fork back. Notifies if heads changed.
     pub fn merge(&self, fork: &mut RuntimeStateDoc) -> Result<(), RuntimeStateError> {
-        let mut sd = self.doc.lock().map_err(|_| RuntimeStateError::LockPoisoned)?;
+        let mut sd = self
+            .doc
+            .lock()
+            .map_err(|_| RuntimeStateError::LockPoisoned)?;
         let heads_before = sd.get_heads();
         sd.merge(fork)?;
         if sd.get_heads() != heads_before {
@@ -60,7 +69,10 @@ impl RuntimeStateHandle {
     where
         F: FnOnce(&RuntimeStateDoc) -> T,
     {
-        let sd = self.doc.lock().map_err(|_| RuntimeStateError::LockPoisoned)?;
+        let sd = self
+            .doc
+            .lock()
+            .map_err(|_| RuntimeStateError::LockPoisoned)?;
         Ok(f(&sd))
     }
 
@@ -84,22 +96,16 @@ mod tests {
     fn with_doc_notifies_on_change() {
         let handle = make_handle();
         let mut rx = handle.subscribe();
-        handle
-            .with_doc(|sd| sd.set_kernel_status("busy"))
-            .unwrap();
+        handle.with_doc(|sd| sd.set_kernel_status("busy")).unwrap();
         assert!(rx.try_recv().is_ok());
     }
 
     #[test]
     fn with_doc_skips_notification_when_unchanged() {
         let handle = make_handle();
-        handle
-            .with_doc(|sd| sd.set_kernel_status("busy"))
-            .unwrap();
+        handle.with_doc(|sd| sd.set_kernel_status("busy")).unwrap();
         let mut rx = handle.subscribe();
-        handle
-            .with_doc(|sd| sd.set_kernel_status("busy"))
-            .unwrap();
+        handle.with_doc(|sd| sd.set_kernel_status("busy")).unwrap();
         assert!(rx.try_recv().is_err());
     }
 
@@ -131,9 +137,7 @@ mod tests {
     #[test]
     fn read_does_not_notify() {
         let handle = make_handle();
-        handle
-            .with_doc(|sd| sd.set_kernel_status("busy"))
-            .unwrap();
+        handle.with_doc(|sd| sd.set_kernel_status("busy")).unwrap();
         let mut rx = handle.subscribe();
         let status = handle
             .read(|sd| sd.read_state().kernel.status.clone())

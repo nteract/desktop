@@ -5,8 +5,7 @@ use crate::protocol::{NotebookResponse, QueueEntry};
 
 pub(crate) async fn handle(room: &NotebookRoom) -> NotebookResponse {
     // Read from RuntimeStateDoc (source of truth for runtime agent)
-    let sd = room.state_doc.read().await;
-    let state = sd.read_state();
+    let state = room.state.read(|sd| sd.read_state()).unwrap_or_default();
     NotebookResponse::QueueState {
         executing: state.queue.executing.map(|e| QueueEntry {
             cell_id: e.cell_id,

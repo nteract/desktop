@@ -81,16 +81,18 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
     }
 
     // ── 2. Initial RuntimeStateDoc sync ──────────────────────────────
-    // Scope the state_doc write guard so it drops before the async send.
     // Uses bounded generation to compact if oversized (same 80 MiB threshold).
     let mut state_sync_state = automerge::sync::State::new();
-    let state_sync_msg = {
-        let mut sd = room.state_doc.write().await;
-        sd.generate_sync_message_bounded_encoded(
-            &mut state_sync_state,
-            STATE_SYNC_COMPACT_THRESHOLD,
-        )
-    };
+    let state_sync_msg = room
+        .state
+        .with_doc(|sd| {
+            Ok(sd.generate_sync_message_bounded_encoded(
+                &mut state_sync_state,
+                STATE_SYNC_COMPACT_THRESHOLD,
+            ))
+        })
+        .ok()
+        .flatten();
     if let Some(encoded) = state_sync_msg {
         if let Err(e) =
             send_typed_frame(&mut writer, NotebookFrameType::RuntimeStateSync, &encoded).await
@@ -128,7 +130,7 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
 
     // ── 5. Sync loop ─────────────────────────────────────────────────
     let mut changed_rx = room.changed_tx.subscribe();
-    let mut state_changed_rx = room.state_changed_tx.subscribe();
+    let mut state_changed_rx = room.state.subscribe();
     let mut pending_replies: std::collections::HashMap<
         String,
         tokio::sync::oneshot::Sender<RuntimeAgentResponse>,
@@ -160,17 +162,18 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                             }
                             NotebookFrameType::RuntimeStateSync => {
                                 if let Ok(msg) = automerge::sync::Message::decode(&typed_frame.payload) {
-                                    let mut sd = room.state_doc.write().await;
-                                    if let Ok(changed) = sd.receive_sync_message_with_changes(
-                                        &mut state_sync_state, msg,
-                                    ) {
-                                        if changed {
-                                            let _ = room.state_changed_tx.send(());
+                                    let reply_encoded = room.state.with_doc(|sd| {
+                                        if let Ok(changed) = sd.receive_sync_message_with_changes(
+                                            &mut state_sync_state, msg,
+                                        ) {
+                                            if changed {
+                                                // Notification handled by with_doc heads check
+                                            }
                                         }
-                                    }
-                                    // Send sync reply
-                                    if let Some(reply) = sd.generate_sync_message(&mut state_sync_state) {
-                                        let encoded = reply.encode();
+                                        Ok(sd.generate_sync_message(&mut state_sync_state)
+                                            .map(|reply| reply.encode()))
+                                    }).ok().flatten();
+                                    if let Some(encoded) = reply_encoded {
                                         let _ = send_typed_frame(
                                             &mut writer,
                                             NotebookFrameType::RuntimeStateSync,
@@ -226,9 +229,11 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
             // RuntimeStateDoc changes → sync to runtime agent
             _ = state_changed_rx.recv() => {
                 while state_changed_rx.try_recv().is_ok() {}
-                let mut sd = room.state_doc.write().await;
-                if let Some(msg) = sd.generate_sync_message(&mut state_sync_state) {
-                    let encoded = msg.encode();
+                let encoded = room.state.with_doc(|sd| {
+                    Ok(sd.generate_sync_message(&mut state_sync_state)
+                        .map(|msg| msg.encode()))
+                }).ok().flatten();
+                if let Some(encoded) = encoded {
                     if let Err(e) = send_typed_frame(
                         &mut writer,
                         NotebookFrameType::RuntimeStateSync,
@@ -398,12 +403,11 @@ where
         };
         (status_str, needs_approval)
     };
+    if let Err(e) = room
+        .state
+        .with_doc(|sd| sd.set_trust(status_str, needs_approval))
     {
-        let mut sd = room.state_doc.write().await;
-        if let Err(e) = sd.set_trust(status_str, needs_approval) {
-            warn!("[runtime-state] {}", e);
-        }
-        let _ = room.state_changed_tx.send(());
+        warn!("[runtime-state] {}", e);
     }
     // Re-verify trust from doc metadata — picks up trust signatures that were
     // written to the Automerge doc (e.g., from a previous approval or from
@@ -455,15 +459,12 @@ where
                 *auto_launch_at = Some(std::time::Instant::now());
             }
             // Write "starting" immediately so clients never see stale "not_started"
-            {
-                let mut sd = room.state_doc.write().await;
-                if let Err(e) = sd.set_kernel_status("starting") {
-                    warn!("[runtime-state] {}", e);
-                }
-                if let Err(e) = sd.set_starting_phase("resolving") {
-                    warn!("[runtime-state] {}", e);
-                }
-                let _ = room.state_changed_tx.send(());
+            if let Err(e) = room.state.with_doc(|sd| {
+                sd.set_kernel_status("starting")?;
+                sd.set_starting_phase("resolving")?;
+                Ok(())
+            }) {
+                warn!("[runtime-state] {}", e);
             }
             // Spawn auto-launch in background so we don't block sync
             let room_clone = room.clone();
@@ -484,15 +485,17 @@ where
                 },
                 move |_| {
                     let r = panic_room;
+                    // with_doc is sync (std::sync::Mutex), so no need for tokio::spawn
+                    // to acquire the lock. But spawn_supervised's panic handler runs
+                    // outside async context, so we still need spawn for the closure.
                     tokio::spawn(async move {
-                        let mut sd = r.state_doc.write().await;
-                        if let Err(e) = sd.set_kernel_status("error") {
+                        if let Err(e) = r.state.with_doc(|sd| {
+                            sd.set_kernel_status("error")?;
+                            sd.set_starting_phase("")?;
+                            Ok(())
+                        }) {
                             tracing::warn!("[runtime-state] {}", e);
                         }
-                        if let Err(e) = sd.set_starting_phase("") {
-                            tracing::warn!("[runtime-state] {}", e);
-                        }
-                        let _ = r.state_changed_tx.send(());
                     });
                 },
             );
@@ -508,14 +511,13 @@ where
                 "[notebook-sync] Kernel blocked on trust approval for {} (trust: {:?})",
                 notebook_id, trust_status
             );
-            let mut sd = room.state_doc.write().await;
-            if let Err(e) = sd.set_kernel_status("awaiting_trust") {
+            if let Err(e) = room.state.with_doc(|sd| {
+                sd.set_kernel_status("awaiting_trust")?;
+                sd.set_starting_phase("")?;
+                Ok(())
+            }) {
                 warn!("[runtime-state] {}", e);
             }
-            if let Err(e) = sd.set_starting_phase("") {
-                warn!("[runtime-state] {}", e);
-            }
-            let _ = room.state_changed_tx.send(());
         } else {
             info!(
                 "[notebook-sync] Auto-launch skipped for {} (trust: {:?}, has_kernel: {}, path_exists: {}, is_new: {}, created_at_path: {})",
@@ -1108,7 +1110,7 @@ where
     let mut changed_rx = room.changed_tx.subscribe();
     let mut kernel_broadcast_rx = room.kernel_broadcast_tx.subscribe();
     let mut presence_rx = room.presence_tx.subscribe();
-    let mut state_changed_rx = room.state_changed_tx.subscribe();
+    let mut state_changed_rx = room.state.subscribe();
 
     // PoolDoc — global daemon pool state (UV/Conda availability, errors).
     let mut pool_changed_rx = daemon.pool_doc_changed.subscribe();
@@ -1149,31 +1151,34 @@ where
     // Initial RuntimeStateDoc sync — encode inside lock, send outside.
     // Uses bounded generation to compact atomically if the message would exceed
     // the 100 MiB frame limit.
-    let initial_state_encoded = {
-        let mut state_doc = room.state_doc.write().await;
-        // Safety net: compact before initial sync if the doc grew too large.
-        // 80 MiB leaves headroom under the 100 MiB frame limit.
-        const COMPACTION_THRESHOLD: usize = 80 * 1024 * 1024;
-        if state_doc.compact_if_oversized(COMPACTION_THRESHOLD) {
-            info!("[notebook-sync] Compacted oversized RuntimeStateDoc before initial sync");
-        }
-        match catch_automerge_panic("initial-state-sync", || {
-            state_doc.generate_sync_message_bounded_encoded(
-                &mut state_peer_state,
-                STATE_SYNC_COMPACT_THRESHOLD,
-            )
-        }) {
-            Ok(encoded) => encoded,
-            Err(e) => {
-                warn!("{}", e);
-                state_doc.rebuild_from_save();
-                state_peer_state = sync::State::new();
-                state_doc
-                    .generate_sync_message(&mut state_peer_state)
-                    .map(|msg| msg.encode())
+    let initial_state_encoded = room
+        .state
+        .with_doc(|state_doc| {
+            // Safety net: compact before initial sync if the doc grew too large.
+            // 80 MiB leaves headroom under the 100 MiB frame limit.
+            const COMPACTION_THRESHOLD: usize = 80 * 1024 * 1024;
+            if state_doc.compact_if_oversized(COMPACTION_THRESHOLD) {
+                info!("[notebook-sync] Compacted oversized RuntimeStateDoc before initial sync");
             }
-        }
-    };
+            match catch_automerge_panic("initial-state-sync", || {
+                state_doc.generate_sync_message_bounded_encoded(
+                    &mut state_peer_state,
+                    STATE_SYNC_COMPACT_THRESHOLD,
+                )
+            }) {
+                Ok(encoded) => Ok(encoded),
+                Err(e) => {
+                    warn!("{}", e);
+                    state_doc.rebuild_from_save();
+                    state_peer_state = sync::State::new();
+                    Ok(state_doc
+                        .generate_sync_message(&mut state_peer_state)
+                        .map(|msg| msg.encode()))
+                }
+            }
+        })
+        .ok()
+        .flatten();
     if let Some(encoded) = initial_state_encoded {
         connection::send_typed_frame(writer, NotebookFrameType::RuntimeStateSync, &encoded).await?;
     }
@@ -1581,9 +1586,8 @@ where
                                 // to comms/*/state/* for widget state updates).
                                 let message = sync::Message::decode(&frame.payload)
                                     .map_err(|e| anyhow::anyhow!("decode state sync: {}", e))?;
-                                let reply_encoded = {
-                                    let mut state_doc = room.state_doc.write().await;
-
+                                // None signals "continue" (receive failed, skip reply)
+                                let reply_encoded: Option<Option<Vec<u8>>> = room.state.with_doc(|state_doc| {
                                     let recv_result = catch_automerge_panic("state-receive-sync", || {
                                         state_doc.receive_sync_message_with_changes(
                                             &mut state_peer_state,
@@ -1594,25 +1598,23 @@ where
                                         Ok(Ok(changed)) => changed,
                                         Ok(Err(e)) => {
                                             warn!("[notebook-sync] state receive_sync_message error: {}", e);
-                                            continue;
+                                            return Ok(None); // signal continue
                                         }
                                         Err(e) => {
                                             warn!("{}", e);
                                             state_doc.rebuild_from_save();
                                             state_peer_state = sync::State::new();
-                                            continue;
+                                            return Ok(None); // signal continue
                                         }
                                     };
 
-                                    // If client sent changes, notify all peers.
-                                    // Comm state forwarding to kernel: the runtime agent diffs
-                                    // comm state before/after each RuntimeStateSync and
-                                    // sends changed properties to the kernel via send_comm_update.
-                                    if had_changes {
-                                        let _ = room.state_changed_tx.send(());
-                                    }
+                                    // If client sent changes, notification is automatic
+                                    // via heads comparison in with_doc.
+                                    // But if had_changes is true from receive, heads
+                                    // will differ and with_doc notifies automatically.
+                                    let _ = had_changes; // heads-based notification handles this
 
-                                    match catch_automerge_panic("state-sync-reply", || {
+                                    let encoded = match catch_automerge_panic("state-sync-reply", || {
                                         state_doc
                                             .generate_sync_message(&mut state_peer_state)
                                             .map(|msg| msg.encode())
@@ -1626,7 +1628,12 @@ where
                                                 .generate_sync_message(&mut state_peer_state)
                                                 .map(|msg| msg.encode())
                                         }
-                                    }
+                                    };
+                                    Ok(Some(encoded))
+                                }).ok().flatten();
+                                let reply_encoded = match reply_encoded {
+                                    Some(encoded) => encoded,
+                                    None => continue, // receive failed
                                 };
                                 if let Some(encoded) = reply_encoded {
                                     connection::send_typed_frame(
@@ -1782,24 +1789,23 @@ where
             result = state_changed_rx.recv() => {
                 match result {
                     Ok(()) => {
-                        let encoded = {
-                            let mut state_doc = room.state_doc.write().await;
+                        let encoded = room.state.with_doc(|state_doc| {
                             match catch_automerge_panic("state-broadcast", || {
                                 state_doc
                                     .generate_sync_message(&mut state_peer_state)
                                     .map(|msg| msg.encode())
                             }) {
-                                Ok(encoded) => encoded,
+                                Ok(encoded) => Ok(encoded),
                                 Err(e) => {
                                     warn!("{}", e);
                                     state_doc.rebuild_from_save();
                                     state_peer_state = sync::State::new();
-                                    state_doc
+                                    Ok(state_doc
                                         .generate_sync_message(&mut state_peer_state)
-                                        .map(|msg| msg.encode())
+                                        .map(|msg| msg.encode()))
                                 }
                             }
-                        };
+                        }).ok().flatten();
                         if let Some(encoded) = encoded {
                             connection::send_typed_frame(
                                 writer,
@@ -1815,24 +1821,23 @@ where
                             peer_id, n
                         );
                         // Send a full sync to catch up
-                        let encoded = {
-                            let mut state_doc = room.state_doc.write().await;
+                        let encoded = room.state.with_doc(|state_doc| {
                             match catch_automerge_panic("state-broadcast-lagged", || {
                                 state_doc
                                     .generate_sync_message(&mut state_peer_state)
                                     .map(|msg| msg.encode())
                             }) {
-                                Ok(encoded) => encoded,
+                                Ok(encoded) => Ok(encoded),
                                 Err(e) => {
                                     warn!("{}", e);
                                     state_doc.rebuild_from_save();
                                     state_peer_state = sync::State::new();
-                                    state_doc
+                                    Ok(state_doc
                                         .generate_sync_message(&mut state_peer_state)
-                                        .map(|msg| msg.encode())
+                                        .map(|msg| msg.encode()))
                                 }
                             }
-                        };
+                        }).ok().flatten();
                         if let Some(encoded) = encoded {
                             connection::send_typed_frame(
                                 writer,
