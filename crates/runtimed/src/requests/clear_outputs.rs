@@ -17,7 +17,7 @@ pub(crate) async fn handle(room: &NotebookRoom, cell_id: String) -> NotebookResp
         let mut doc = room.doc.write().await;
         let _ = doc.set_execution_id(&cell_id, None);
         let bytes = doc.save();
-        let _ = room.changed_tx.send(());
+        let _ = room.broadcasts.changed_tx.send(());
         bytes
     };
 

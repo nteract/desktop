@@ -361,6 +361,7 @@ pub(crate) async fn finalize_untitled_promotion(room: &Arc<NotebookRoom>, canoni
 
     // Broadcast path change to all peers.
     let _ = room
+        .broadcasts
         .kernel_broadcast_tx
         .send(NotebookBroadcast::PathChanged {
             path: Some(canonical.to_string_lossy().into_owned()),
@@ -758,7 +759,7 @@ fn spawn_autosave_debouncer_with_config(
     room: Arc<NotebookRoom>,
     config: AutosaveDebouncerConfig,
 ) {
-    let mut changed_rx = room.changed_tx.subscribe();
+    let mut changed_rx = room.broadcasts.changed_tx.subscribe();
     spawn_supervised(
         "autosave-debouncer",
         async move {
@@ -836,7 +837,7 @@ fn spawn_autosave_debouncer_with_config(
                                     } else {
                                         last_receive = None;
                                         // Broadcast to connected clients so they can clear dirty state
-                                        let _ = room.kernel_broadcast_tx.send(
+                                        let _ = room.broadcasts.kernel_broadcast_tx.send(
                                             NotebookBroadcast::NotebookAutosaved {
                                                 path,
                                             },
@@ -1088,7 +1089,7 @@ pub(crate) fn spawn_notebook_file_watcher(
 
                                 // Notify peers of the change — actual data
                                 // arrives via Automerge sync frames
-                                let _ = room.changed_tx.send(());
+                                let _ = room.broadcasts.changed_tx.send(());
                             }
 
                             // Re-verify trust after external metadata edits.
