@@ -2280,12 +2280,13 @@ git commit -m "refactor(notebook-app): thread RuntimeLifecycle through TS surfac
 ---
 
 
-## Task 14: Migrate Python metrics scripts + README examples
+## Task 14: Migrate Python metrics scripts + README examples + notebook dashboard
 
 **Files:**
 - Modify: `scripts/metrics/kernel-reliability.py`
 - Modify: `scripts/metrics/execution-latency.py`
 - Modify: `scripts/metrics/sync-correctness.py`
+- Modify: `scripts/metrics/harness-dashboard.ipynb`
 - Modify: `python/runtimed/README.md`
 
 - [ ] **Step 1: Rewrite each script**
@@ -2329,7 +2330,29 @@ if rs.kernel.lifecycle == "Running" and rs.kernel.activity == "Idle":
 
 Grep the whole README for any other `kernel.status` references and update them consistently.
 
-- [ ] **Step 3: Syntax-check**
+- [ ] **Step 3: Update the harness-dashboard notebook**
+
+`scripts/metrics/harness-dashboard.ipynb` reads `notebook.runtime.kernel.status` inside a waiter loop. Two call sites at the time of writing.
+
+Open the notebook via the nteract MCP (`mcp__nteract-dev__connect_notebook path="scripts/metrics/harness-dashboard.ipynb"`) and use `mcp__nteract-dev__replace_match` to swap each `if notebook.runtime.kernel.status in ("idle", "busy"):` with:
+
+```python
+if _kernel_status(notebook.runtime) in ("idle", "busy"):
+```
+
+Make sure the helper is defined somewhere earlier in the notebook (add it to the first setup cell if absent — same body as Step 1). Save via `mcp__nteract-dev__save_notebook`.
+
+If the nteract MCP is not available, edit the `.ipynb` JSON directly — but the preferred path is MCP since the notebook may be actively connected. Do NOT hand-edit `.ipynb` while a live kernel is attached.
+
+Verify no `kernel.status` reads remain in the notebook:
+
+```bash
+rg -n 'kernel\.status' scripts/metrics/harness-dashboard.ipynb
+```
+
+Expected: empty.
+
+- [ ] **Step 4: Syntax-check the `.py` scripts**
 
 ```bash
 python3 -m py_compile scripts/metrics/kernel-reliability.py scripts/metrics/execution-latency.py scripts/metrics/sync-correctness.py
@@ -2337,10 +2360,12 @@ python3 -m py_compile scripts/metrics/kernel-reliability.py scripts/metrics/exec
 
 Expected: no output.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add scripts/metrics/kernel-reliability.py scripts/metrics/execution-latency.py scripts/metrics/sync-correctness.py python/runtimed/README.md
+git add scripts/metrics/kernel-reliability.py scripts/metrics/execution-latency.py \
+        scripts/metrics/sync-correctness.py scripts/metrics/harness-dashboard.ipynb \
+        python/runtimed/README.md
 git commit -m "chore(metrics): read lifecycle+activity instead of kernel.status"
 ```
 
@@ -2359,23 +2384,38 @@ Every reader has migrated by now (Rust via Tasks 4–10, Python bindings via Tas
 
 - [ ] **Step 1: Verify no remaining callers**
 
-Run these greps from the repo root. Each should return only the intentional wire/presence hits listed below. Any unexpected hit must be migrated before proceeding.
+Run these greps from the repo root. Each command has an exact expected-empty or expected-specific-hits list; any unexpected hit must be migrated before proceeding.
 
 ```bash
+# (A) Setter method call sites.
 rg -n 'set_kernel_status|set_starting_phase' crates/
+
+# (B) Legacy CRDT writes in runtime-doc — matches the `"status"` / `"starting_phase"`
+#     string literals used by the dual-shape mirror writes and the constructor scaffolds.
+rg -n '"status"|"starting_phase"' crates/runtime-doc/src/doc.rs
+
+# (C) Readers of KernelState.status / starting_phase in Rust (other than the doc/handle
+#     files we're retiring this task, and other than runtimed-py which is covered by (D)).
 rg -n 'kernel\.status|kernel\.starting_phase' crates/ \
    --glob '!runtime-doc/src/doc.rs' --glob '!runtime-doc/src/handle.rs' \
-   --glob '!runtimed-py/src/output.rs'
-rg -n 'kernel\.status|kernel\.starting_phase' python/ scripts/
-rg -n 'kernel\.status|kernel\.starting_phase' packages/ apps/ --glob '*.ts' --glob '*.tsx'
+   --glob '!runtimed-py/src/output.rs' --glob '!runtimed-py/src/session_core.rs'
+
+# (D) Readers of kernel.status / kernel.starting_phase in Python (bindings, scripts, examples).
+rg -n 'kernel\.status|kernel\.starting_phase' \
+   python/ scripts/ crates/runtimed-py/src/output.rs crates/runtimed-py/src/session_core.rs
+
+# (E) Readers in TS.
+rg -n 'kernel\.status|kernel\.starting_phase|\bstatus: string\b|\bstarting_phase: string\b' \
+   packages/ apps/ --glob '*.ts' --glob '*.tsx'
 ```
 
 Expected hits (everything else should be empty):
 
-- First command: only the `pub fn set_kernel_status` / `pub fn set_starting_phase` definitions in `crates/runtime-doc/src/doc.rs` and the legacy-mirror `doc.put(&kernel, "status", …)` / `… "starting_phase", …` calls inside `set_lifecycle` / `set_activity` / `legacy_shape_for`. All deleted in Steps 4–5 below. Plus the legacy puts in `RuntimeStateDoc::new()` / `new_with_actor()` scaffolds, deleted in Step 8.
-- Second command: only `crates/runt/src/main.rs:5182` (the wire field on `NotebookResponse::KernelInfo::status`, unchanged) and `crates/notebook-doc/src/presence.rs` (legacy wire presence status, unchanged).
-- Third command: only `python/runtimed/tests/…` test fixtures asserting on the deprecated `status` attribute. If Task 14 migrated those, empty; otherwise migrate them as part of this task.
-- Fourth command: only TS `KernelState` field definitions and `DEFAULT_RUNTIME_STATE` defaults in `packages/runtimed/src/runtime-state.ts`, plus their two uses in `sync-engine.test.ts` fixtures (lines 106, 601, 645, 1997). All deleted in Step 7.
+- **(A)** — only the `pub fn set_kernel_status` and `pub fn set_starting_phase` definitions in `crates/runtime-doc/src/doc.rs`. Deleted in Step 3 below.
+- **(B)** — only the legacy scaffold `doc.put(&kernel, "status", …)` and `doc.put(&kernel, "starting_phase", …)` lines in `new()` + `new_with_actor()`, AND the dual-shape mirror writes inside `set_lifecycle`, `set_activity`, and `legacy_shape_for`. All removed in Steps 4 + 9.
+- **(C)** — only `crates/runt/src/main.rs` (wire field on `NotebookResponse::KernelInfo::status`, unchanged) and `crates/notebook-doc/src/presence.rs` (legacy wire presence, unchanged). No other hits allowed; if any, halt and migrate them first.
+- **(D)** — only `crates/runtimed-py/src/output.rs` references to the `PyKernelState.status` field (the deprecated attribute Step 7 deletes) and `crates/runtimed-py/src/session_core.rs` uses of `lifecycle_status_string` (helper call sites that don't touch `kernel.status`). No hits in `python/` or `scripts/` — Task 14 migrated all of them, including `scripts/metrics/harness-dashboard.ipynb`.
+- **(E)** — only the `status: string;` / `starting_phase: string;` field definitions + `DEFAULT_RUNTIME_STATE.kernel.{status,starting_phase}` defaults in `packages/runtimed/src/runtime-state.ts`, plus the fixtures in `packages/runtimed/tests/sync-engine.test.ts` that carry them. All removed in Step 8.
 
 If anything outside this list shows up, migrate it first (following the Task 5 pattern for Rust, Task 13 for TS, Task 14 for Python) before continuing.
 
