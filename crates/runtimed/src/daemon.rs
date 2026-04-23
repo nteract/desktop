@@ -2775,7 +2775,10 @@ impl Daemon {
                         kernel_type,
                         env_source,
                         kernel_status,
-                        ephemeral: room.is_ephemeral.load(std::sync::atomic::Ordering::Relaxed),
+                        ephemeral: room
+                            .identity
+                            .is_ephemeral
+                            .load(std::sync::atomic::Ordering::Relaxed),
                     });
                 }
                 Response::RoomsList { rooms: room_infos }
@@ -2798,7 +2801,7 @@ impl Daemon {
                 };
                 // Clean up path_index if the room had a path.
                 if let Some(ref room) = maybe_room {
-                    let path = room.path.read().await.clone();
+                    let path = room.identity.path.read().await.clone();
                     if let Some(p) = path {
                         self.path_index.lock().await.remove(&p);
                     }

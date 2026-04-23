@@ -29,7 +29,7 @@ pub(crate) async fn handle(
     // Capture was_untitled and old_path in a single critical section to
     // avoid a TOCTOU race between the two reads.
     let (was_untitled, old_path) = {
-        let p = room.path.read().await;
+        let p = room.identity.path.read().await;
         (p.is_none(), p.clone())
     };
 
@@ -41,7 +41,7 @@ pub(crate) async fn handle(
     //
     // Compute the pre-write canonical target. For untitled rooms a path
     // is required; for file-backed rooms we only need a pre-write claim
-    // if the caller specified a path different from room.path.
+    // if the caller specified a path different from room.identity.path.
     let target_for_claim: Option<PathBuf> = match (&path, was_untitled) {
         (Some(p), _) => match crate::paths::normalize_save_target(p) {
             Ok(normalized) => Some(canonical_target_path(&normalized).await),
@@ -85,12 +85,12 @@ pub(crate) async fn handle(
             }
             // Emergency persist for ephemeral rooms: if saving to .ipynb
             // failed, at least write the Automerge doc so data isn't lost.
-            if room.is_ephemeral.load(Ordering::Relaxed) && room.persist_tx.is_none() {
+            if room.identity.is_ephemeral.load(Ordering::Relaxed) && room.persist_tx.is_none() {
                 let bytes = room.doc.write().await.save();
-                persist_notebook_bytes(&bytes, &room.persist_path);
+                persist_notebook_bytes(&bytes, &room.identity.persist_path);
                 warn!(
                     "[notebook-sync] Save failed for ephemeral room — emergency persist to {:?}",
-                    room.persist_path
+                    room.identity.persist_path
                 );
             }
             let kind = match e {
@@ -138,12 +138,12 @@ pub(crate) async fn handle(
         let path_changed = old != &canonical;
         if path_changed {
             // Save-as rename: new path already claimed above; remove
-            // the old path_index entry and update room.path.
+            // the old path_index entry and update room.identity.path.
             {
                 let mut idx = daemon.path_index.lock().await;
                 idx.remove(old);
             }
-            *room.path.write().await = Some(canonical.clone());
+            *room.identity.path.write().await = Some(canonical.clone());
             let _ = room
                 .kernel_broadcast_tx
                 .send(NotebookBroadcast::PathChanged {

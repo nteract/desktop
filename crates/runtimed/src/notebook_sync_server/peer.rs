@@ -350,7 +350,7 @@ where
 {
     // Set working_dir on the room if provided (for untitled notebook project detection)
     if let Some(wd) = working_dir {
-        let mut room_wd = room.working_dir.write().await;
+        let mut room_wd = room.identity.working_dir.write().await;
         *room_wd = Some(wd);
     }
 
@@ -427,7 +427,7 @@ where
     // Auto-launch kernel if this is the first peer and notebook is trusted
     if peers == 1 {
         // Check if notebook_id is a UUID (new unsaved notebook) vs a file path
-        let path_snapshot = room.path.read().await.clone();
+        let path_snapshot = room.identity.path.read().await.clone();
         let is_new_notebook = path_snapshot.as_ref().is_none_or(|p| !p.exists())
             && uuid::Uuid::parse_str(&notebook_id).is_ok();
 
@@ -704,8 +704,8 @@ where
             }; // rooms lock dropped here
 
             // Clean up path_index entry (separate lock, after rooms lock is dropped).
-            // Use remove_by_uuid rather than reading room.path — a concurrent writer
-            // A concurrent save-path-update could hold room.path.write() and a
+            // Use remove_by_uuid rather than reading room.identity.path — a concurrent writer
+            // A concurrent save-path-update could hold room.identity.path.write() and a
             // try_read() would silently return None, leaking the path_index entry.
             if should_teardown {
                 if let Some(uuid) = evicted_uuid {
@@ -788,7 +788,7 @@ where
                 let mut flushed_runtime: Option<CapturedEnvRuntime> = None;
                 let mut save_succeeded = false;
                 if let Some(ref launched) = launched_snapshot {
-                    let has_saved_path = room_for_eviction.path.read().await.is_some();
+                    let has_saved_path = room_for_eviction.identity.path.read().await.is_some();
                     if has_saved_path {
                         for runtime in [CapturedEnvRuntime::Uv, CapturedEnvRuntime::Conda] {
                             if flush_launched_deps_to_metadata(
@@ -880,7 +880,7 @@ where
                         .await
                         .clone();
                     if let Some(ref path) = env_path {
-                        let has_saved_path = room_for_eviction.path.read().await.is_some();
+                        let has_saved_path = room_for_eviction.identity.path.read().await.is_some();
                         let metadata = {
                             let doc = room_for_eviction.doc.read().await;
                             doc.get_metadata_snapshot()

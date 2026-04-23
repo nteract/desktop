@@ -132,7 +132,7 @@ async fn untitled_room_has_path_none() {
     let tmp = tempfile::TempDir::new().unwrap();
     let blob_store = test_blob_store(&tmp);
     let room = NotebookRoom::new_fresh(Uuid::new_v4(), None, tmp.path(), blob_store, false);
-    assert!(room.path.read().await.is_none());
+    assert!(room.identity.path.read().await.is_none());
 }
 
 #[tokio::test]
@@ -147,7 +147,7 @@ async fn file_backed_room_has_path_some() {
         blob_store,
         false,
     );
-    let guard = room.path.read().await;
+    let guard = room.identity.path.read().await;
     assert_eq!(guard.as_deref(), Some(fake_path.as_path()));
 }
 
@@ -175,7 +175,7 @@ async fn test_room_persists_and_reloads() {
         doc.add_cell(0, "c1", "code").unwrap();
         doc.update_source("c1", "hello").unwrap();
         let bytes = doc.save();
-        persist_notebook_bytes(&bytes, &room.persist_path);
+        persist_notebook_bytes(&bytes, &room.identity.persist_path);
     }
 
     // Load again — should have the cell
@@ -302,7 +302,7 @@ async fn test_new_fresh_deletes_stale_persisted_doc_for_file_path() {
         doc.add_cell(0, "c1", "code").unwrap();
         doc.update_source("c1", "old content").unwrap();
         let bytes = doc.save();
-        persist_notebook_bytes(&bytes, &room.persist_path);
+        persist_notebook_bytes(&bytes, &room.identity.persist_path);
     }
 
     // Verify persisted file exists
@@ -341,7 +341,7 @@ async fn test_new_fresh_loads_persisted_doc_for_untitled_notebook() {
         doc.add_cell(0, "c1", "code").unwrap();
         doc.update_source("c1", "restored content").unwrap();
         let bytes = doc.save();
-        persist_notebook_bytes(&bytes, &room.persist_path);
+        persist_notebook_bytes(&bytes, &room.identity.persist_path);
     }
 
     // Verify persisted file exists
@@ -399,7 +399,7 @@ async fn test_new_fresh_untitled_trust_from_doc() {
             let mut doc = room.doc.try_write().unwrap();
             doc.set_metadata_snapshot(&snapshot).unwrap();
             let bytes = doc.save();
-            persist_notebook_bytes(&bytes, &room.persist_path);
+            persist_notebook_bytes(&bytes, &room.identity.persist_path);
         }
     }
 
@@ -426,7 +426,10 @@ async fn test_ephemeral_room_skips_persistence() {
     let room = NotebookRoom::new_fresh(notebook_uuid, None, dir.path(), blob_store, true);
 
     assert!(room.persist_tx.is_none());
-    assert!(room.is_ephemeral.load(std::sync::atomic::Ordering::Relaxed));
+    assert!(room
+        .identity
+        .is_ephemeral
+        .load(std::sync::atomic::Ordering::Relaxed));
 
     // No .automerge file should exist
     let filename = notebook_doc_filename(&notebook_uuid.to_string());
@@ -441,7 +444,10 @@ async fn test_session_room_persists() {
     let room = NotebookRoom::new_fresh(notebook_uuid, None, dir.path(), blob_store, false);
 
     assert!(room.persist_tx.is_some());
-    assert!(!room.is_ephemeral.load(std::sync::atomic::Ordering::Relaxed));
+    assert!(!room
+        .identity
+        .is_ephemeral
+        .load(std::sync::atomic::Ordering::Relaxed));
 }
 
 #[tokio::test(start_paused = true)]
@@ -652,10 +658,9 @@ fn test_room_with_path(
         presence: Arc::new(RwLock::new(PresenceState::new())),
         persist_tx: Some(persist_tx),
         flush_request_tx: Some(flush_request_tx),
-        persist_path,
+        identity: RoomIdentity::new(persist_path, Some(notebook_path.clone()), false),
         active_peers: AtomicUsize::new(0),
         had_peers: AtomicBool::new(false),
-        is_ephemeral: AtomicBool::new(false),
         blob_store,
         trust_state: Arc::new(RwLock::new(TrustState {
             status: runt_trust::TrustStatus::Untrusted,
@@ -667,9 +672,7 @@ fn test_room_with_path(
             },
             pending_launch: false,
         })),
-        path: RwLock::new(Some(notebook_path.clone())),
         nbformat_attachments: Arc::new(RwLock::new(HashMap::new())),
-        working_dir: Arc::new(RwLock::new(None)),
 
         is_loading: AtomicBool::new(false),
         last_self_write: AtomicU64::new(0),
@@ -2333,7 +2336,7 @@ async fn test_update_kernel_presence_publishes_state_and_relays() {
 // ── Regression test: autosave after save_notebook path update ──────
 
 /// Verify that saving an untitled (UUID-keyed) room updates path_index and
-/// room.path, while keeping the UUID stable in the rooms map.
+/// room.identity.path, while keeping the UUID stable in the rooms map.
 #[tokio::test]
 async fn saving_untitled_notebook_updates_path_index_and_keeps_uuid() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -2368,12 +2371,15 @@ async fn saving_untitled_notebook_updates_path_index_and_keeps_uuid() {
         .await
         .insert(canonical.clone(), room.id)
         .unwrap();
-    *room.path.write().await = Some(canonical.clone());
+    *room.identity.path.write().await = Some(canonical.clone());
 
-    // UUID key unchanged, path_index populated, room.path set.
+    // UUID key unchanged, path_index populated, room.identity.path set.
     assert!(rooms.lock().await.contains_key(&uuid));
     assert_eq!(path_index.lock().await.lookup(&canonical), Some(uuid));
-    assert_eq!(room.path.read().await.as_deref(), Some(canonical.as_path()));
+    assert_eq!(
+        room.identity.path.read().await.as_deref(),
+        Some(canonical.as_path())
+    );
 }
 
 /// Verify that `promote_untitled_to_file_backed` returns
@@ -2415,10 +2421,10 @@ async fn saving_to_already_open_path_returns_path_already_open_error() {
         other => panic!("expected PathAlreadyOpen, got {:?}", other),
     }
 
-    // room.path must NOT have been mutated on error.
+    // room.identity.path must NOT have been mutated on error.
     assert!(
-        room.path.read().await.is_none(),
-        "room.path should still be None after a failed claim"
+        room.identity.path.read().await.is_none(),
+        "room.identity.path should still be None after a failed claim"
     );
 }
 
@@ -2527,9 +2533,9 @@ async fn test_promote_untitled_starts_autosave() {
         "UUID key should still be present after promotion"
     );
     assert_eq!(
-        room.path.read().await.as_deref(),
+        room.identity.path.read().await.as_deref(),
         Some(canonical.as_path()),
-        "room.path should be set after promotion"
+        "room.identity.path should be set after promotion"
     );
     assert_eq!(
         path_index.lock().await.lookup(&canonical),
@@ -2537,7 +2543,7 @@ async fn test_promote_untitled_starts_autosave() {
         "path_index should contain the room's UUID"
     );
     assert!(
-        !room.is_ephemeral.load(Ordering::Relaxed),
+        !room.identity.is_ephemeral.load(Ordering::Relaxed),
         "is_ephemeral should be cleared after promotion"
     );
 

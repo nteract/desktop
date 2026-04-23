@@ -25,10 +25,10 @@ pub(crate) async fn save_notebook_to_disk(
     // room currently has as its path. Triangulates stray-file bugs by letting
     // us correlate saves against whoever fired them.
     debug!(
-        "[save] save_notebook_to_disk entered: target_path={:?}, room.id={}, room.path={:?}",
+        "[save] save_notebook_to_disk entered: target_path={:?}, room.id={}, room.identity.path={:?}",
         target_path,
         room.id,
-        room.path.read().await.as_deref()
+        room.identity.path.read().await.as_deref()
     );
     // Determine the actual save path
     let notebook_path = match target_path {
@@ -51,7 +51,7 @@ pub(crate) async fn save_notebook_to_disk(
                 PathBuf::from(format!("{}.ipynb", p))
             }
         }
-        None => match room.path.read().await.clone() {
+        None => match room.identity.path.read().await.clone() {
             Some(p) => p,
             None => {
                 return Err(SaveError::Unrecoverable(
@@ -252,8 +252,8 @@ pub(crate) async fn save_notebook_to_disk(
     // our own writes from genuine external changes. Only update when saving
     // to the primary path — saving to an alternate path (Save As) must not
     // corrupt the baseline for the file watcher.
-    let is_primary_path =
-        target_path.is_none() || room.path.read().await.as_deref() == Some(notebook_path.as_path());
+    let is_primary_path = target_path.is_none()
+        || room.identity.path.read().await.as_deref() == Some(notebook_path.as_path());
     if is_primary_path {
         let mut saved = HashMap::with_capacity(cells.len());
         for cell in &cells {
@@ -271,7 +271,7 @@ pub(crate) async fn save_notebook_to_disk(
 }
 
 /// Transitions an untitled room to file-backed: claims path in path_index,
-/// updates room.path, cleans up the stale `.automerge` persist file, spawns
+/// updates room.identity.path, cleans up the stale `.automerge` persist file, spawns
 /// the `.ipynb` file watcher and autosave debouncer, clears ephemeral markers,
 /// and broadcasts `PathChanged`.
 ///
@@ -320,7 +320,7 @@ pub(crate) async fn try_claim_path(
 /// autosave debouncer spawn, ephemeral marker clear, and PathChanged broadcast.
 pub(crate) async fn finalize_untitled_promotion(room: &Arc<NotebookRoom>, canonical: PathBuf) {
     // Update room's path now that path_index owns it.
-    *room.path.write().await = Some(canonical.clone());
+    *room.identity.path.write().await = Some(canonical.clone());
 
     // NOTE: We don't actually stop the .automerge persist debouncer here —
     // stopping it would require taking ownership of room.persist_tx, which
@@ -334,11 +334,11 @@ pub(crate) async fn finalize_untitled_promotion(room: &Arc<NotebookRoom>, canoni
     //   - The debouncer task dies when NotebookRoom is dropped on eviction.
     // TODO(followup): make persist_tx: Mutex<Option<...>> so .take() can
     // properly drop the sender and close the channel.
-    if room.persist_path.exists() {
-        if let Err(e) = tokio::fs::remove_file(&room.persist_path).await {
+    if room.identity.persist_path.exists() {
+        if let Err(e) = tokio::fs::remove_file(&room.identity.persist_path).await {
             warn!(
                 "[notebook-sync] Failed to remove stale persist file {:?}: {}",
-                room.persist_path, e
+                room.identity.persist_path, e
             );
         }
     }
@@ -353,7 +353,7 @@ pub(crate) async fn finalize_untitled_promotion(room: &Arc<NotebookRoom>, canoni
     spawn_autosave_debouncer(canonical.to_string_lossy().into_owned(), Arc::clone(room));
 
     // Clear ephemeral markers.
-    room.is_ephemeral.store(false, Ordering::Relaxed);
+    room.identity.is_ephemeral.store(false, Ordering::Relaxed);
     {
         let mut doc = room.doc.write().await;
         let _ = doc.delete_metadata("ephemeral");
@@ -372,7 +372,7 @@ pub(crate) async fn finalize_untitled_promotion(room: &Arc<NotebookRoom>, canoni
     );
 }
 
-/// Updates path_index and room.path when a file-backed room is saved to a
+/// Updates path_index and room.identity.path when a file-backed room is saved to a
 /// Clone the notebook to a new path with a fresh env_id and cleared outputs.
 ///
 /// This is used for "Save As Copy" functionality - creates a new independent notebook
@@ -411,7 +411,7 @@ pub(crate) async fn clone_notebook_to_disk(
     let nbformat_attachments = room.nbformat_attachments.read().await.clone();
 
     // Read existing source notebook to preserve unknown top-level metadata keys.
-    let source_notebook_path = room.path.read().await.clone();
+    let source_notebook_path = room.identity.path.read().await.clone();
     let existing: Option<serde_json::Value> = match source_notebook_path {
         Some(ref p) => match tokio::fs::read_to_string(p).await {
             Ok(content) => serde_json::from_str(&content).ok(),
