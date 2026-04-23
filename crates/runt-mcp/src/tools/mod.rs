@@ -262,7 +262,7 @@ pub fn all_tools() -> Vec<Tool> {
         // -- Dependencies --
         Tool::new(
             "add_dependency",
-            "Add a package. Use after='sync' or 'restart' to apply.",
+            "Add a package dependency. after='sync' for uv/conda (hot-install), after='restart' for pixi.",
             schema_for::<deps::AddDependencyParams>(),
         )
         .annotate(

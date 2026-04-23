@@ -59,8 +59,19 @@ fn parse_package_param(raw: &str) -> Vec<String> {
 pub struct AddDependencyParams {
     /// Package to add (e.g. "pandas>=2.0").
     pub package: String,
-    /// Action after adding: "none" (just record, default), "sync" (hot-install, UV only),
-    /// or "restart" (restart kernel with new deps).
+    /// What to do after adding the dependency:
+    ///
+    /// - "sync"    — hot-install into the running kernel (uv and conda, instant).
+    ///               Falls back to needs_restart if hot-install isn't supported.
+    /// - "restart" — restart the kernel with the new dep included.
+    ///               Required for pixi notebooks (hot-install not supported).
+    ///               Also works for uv/conda as a heavier alternative.
+    /// - "none"    — just record the dependency in metadata, don't install yet.
+    ///               Useful when batching multiple add_dependency calls before
+    ///               a single restart_kernel().
+    ///
+    /// Rule of thumb: uv/conda → "sync", pixi → "restart".
+    /// Default: "none".
     #[serde(default)]
     pub after: Option<String>,
 }
