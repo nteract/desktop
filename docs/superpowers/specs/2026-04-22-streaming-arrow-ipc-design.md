@@ -57,7 +57,7 @@ One new MIME, one new comm target, one new manifest field. No changes to Content
 dx's existing `_format_install.py` already serializes the full frame to Parquet and attaches the buffer via ZMQ `send(..., buffers=...)`. Two changes:
 
 - **Head-only Parquet.** For streaming-eligible frames (> threshold rows; see [Tuning knobs](#tuning-knobs)), serialize only `df.head(N)` as Parquet. This is fast and keeps metadata/schema/dtype detection working on the frontend exactly as today.
-- **Pull handle.** Alongside the head, dx returns a handle — an id the runtime agent can use to request subsequent Arrow batches. The handle is advertised via a new top-level comm in the reserved `nteract.dx.stream` namespace (see `CLAUDE.md` § Reserved Comm Namespace). The comm's `open` message carries `{handle_id, total_rows, schema, rows_remaining_estimate}`. The comm is daemon-facing only — per the namespace rule, the runtime agent filters it out of `RuntimeStateDoc.comms` so it never surfaces as a widget.
+- **Pull handle.** Alongside the head, dx returns a handle — an id the runtime agent can use to request subsequent Arrow batches. The handle is advertised via a new top-level comm in the reserved `nteract.dx.stream` namespace (see `.claude/rules/architecture.md` § Reserved Comm Namespace: `nteract.dx.*`). The comm's `open` message carries `{handle_id, total_rows, schema, rows_remaining_estimate}`. The comm is daemon-facing only — per the namespace rule, the runtime agent filters it out of `RuntimeStateDoc.comms` so it never surfaces as a widget.
 
 dx handles `comm_msg` on the stream comm. The protocol is three messages:
 
@@ -197,4 +197,4 @@ Configurable via env vars or (eventually) user settings. Default values listed; 
 - `crates/sift-wasm/src/store.rs:1167-1205` — existing batch-append in `load_parquet_row_group` (shape to mirror for `load_ipc_append`).
 - `packages/sift/src/wasm-table-data.ts:8,41-80` — where the streaming renderer hooks in.
 - `docs/superpowers/specs/2026-04-19-map-keyed-outputs.md` — `output_id` stability guarantee that makes "update the same output" work.
-- `CLAUDE.md` § Reserved Comm Namespace — why `nteract.dx.stream.*` comms are safe to use without polluting widget state.
+- `.claude/rules/architecture.md` § Reserved Comm Namespace: `nteract.dx.*` — why `nteract.dx.stream.*` comms are safe to use without polluting widget state.
