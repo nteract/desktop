@@ -69,89 +69,67 @@ export function useDependencies() {
       }
     : null;
 
-  // Re-sign the notebook after user modifications to keep it trusted
-  const resignTrust = useCallback(async () => {
+  // Trust re-signing lives on the daemon now (issue #2118). When the WASM
+  // dep write arrives via Automerge sync, the daemon keeps a previously
+  // Trusted notebook Trusted by auto re-signing. Frontend hooks just
+  // write to the CRDT.
+
+  const addDependency = useCallback(async (pkg: string) => {
+    if (!pkg.trim()) return;
+    setLoading(true);
     try {
-      await invoke("approve_notebook_trust");
+      await addUvDependency(pkg.trim());
     } catch (e) {
-      // Signing may fail if no trust key yet - that's okay
-      logger.debug("[deps] Could not resign trust:", e);
+      logger.error("Failed to add dependency:", e);
+    } finally {
+      setLoading(false);
     }
   }, []);
 
-  const addDependency = useCallback(
-    async (pkg: string) => {
-      if (!pkg.trim()) return;
-      setLoading(true);
-      try {
-        await addUvDependency(pkg.trim());
-        await resignTrust();
-      } catch (e) {
-        logger.error("Failed to add dependency:", e);
-      } finally {
-        setLoading(false);
-      }
-    },
-    [resignTrust],
-  );
-
-  const removeDependency = useCallback(
-    async (pkg: string) => {
-      setLoading(true);
-      try {
-        await removeUvDependency(pkg);
-        await resignTrust();
-      } catch (e) {
-        logger.error("Failed to remove dependency:", e);
-      } finally {
-        setLoading(false);
-      }
-    },
-    [resignTrust],
-  );
+  const removeDependency = useCallback(async (pkg: string) => {
+    setLoading(true);
+    try {
+      await removeUvDependency(pkg);
+    } catch (e) {
+      logger.error("Failed to remove dependency:", e);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   // Remove the entire uv dependency section from notebook metadata
   const clearAllDependencies = useCallback(async () => {
     setLoading(true);
     try {
       await clearUvSection();
-      await resignTrust();
     } catch (e) {
       logger.error("Failed to clear UV dependencies:", e);
     } finally {
       setLoading(false);
     }
-  }, [resignTrust]);
+  }, []);
 
-  const setRequiresPython = useCallback(
-    async (version: string | null) => {
-      setLoading(true);
-      try {
-        await setUvRequiresPython(version);
-        await resignTrust();
-      } catch (e) {
-        logger.error("Failed to set requires-python:", e);
-      } finally {
-        setLoading(false);
-      }
-    },
-    [resignTrust],
-  );
+  const setRequiresPython = useCallback(async (version: string | null) => {
+    setLoading(true);
+    try {
+      await setUvRequiresPython(version);
+    } catch (e) {
+      logger.error("Failed to set requires-python:", e);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
-  const setPrerelease = useCallback(
-    async (prerelease: string | null) => {
-      setLoading(true);
-      try {
-        await setUvPrerelease(prerelease);
-        await resignTrust();
-      } catch (e) {
-        logger.error("Failed to set prerelease:", e);
-      } finally {
-        setLoading(false);
-      }
-    },
-    [resignTrust],
-  );
+  const setPrerelease = useCallback(async (prerelease: string | null) => {
+    setLoading(true);
+    try {
+      await setUvPrerelease(prerelease);
+    } catch (e) {
+      logger.error("Failed to set prerelease:", e);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   const hasDependencies = dependencies !== null && dependencies.dependencies.length > 0;
 
@@ -180,15 +158,13 @@ export function useDependencies() {
     setLoading(true);
     try {
       await invoke("import_pyproject_dependencies");
-      // Re-sign to keep notebook trusted after user modification
-      await resignTrust();
       logger.info("[deps] Imported dependencies from pyproject.toml");
     } catch (e) {
       logger.error("Failed to import from pyproject.toml:", e);
     } finally {
       setLoading(false);
     }
-  }, [resignTrust]);
+  }, []);
 
   // Refresh pyproject detection
   const refreshPyproject = useCallback(async () => {
