@@ -50,6 +50,21 @@ setErrorBoundarySink((error, componentStack) => {
   );
 });
 
+// Forward `console.error` into the host logger so it lands in notebook.log in
+// packaged / CI builds, not just dev devtools. Specifically: WASM panics
+// routed via `console_error_panic_hook` become visible in `e2e-logs/app.log`
+// with file:line:message — without this, they disappear in production.
+// Preserves the original console behavior so devtools stays unchanged.
+const originalConsoleError = console.error.bind(console);
+console.error = (...args: unknown[]) => {
+  originalConsoleError(...args);
+  try {
+    logger.error(...args);
+  } catch {
+    // Never let the forwarding path break the original error.
+  }
+};
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <NotebookHostProvider host={host}>
