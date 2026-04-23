@@ -110,7 +110,7 @@ pub async fn run_runtime_agent(
 
     let mut kernel: Option<JupyterKernel> = None;
     let mut interrupt_handle: Option<crate::jupyter_kernel::InterruptHandle> = None;
-    let mut kernel_state = KernelState::new(state.clone(), broadcast_tx.clone());
+    let mut kernel_state = KernelState::new(state.clone());
     let mut seen_execution_ids = HashSet::new();
     let mut cmd_rx: Option<mpsc::Receiver<QueueCommand>> = None;
 
@@ -1125,7 +1125,7 @@ mod tests {
             presence,
             presence_tx,
         };
-        let state = KernelState::new(handle.clone(), broadcast_tx);
+        let state = KernelState::new(handle.clone());
         (ctx, state, handle)
     }
 
