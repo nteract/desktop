@@ -21,7 +21,7 @@ import random
 import sys
 import time
 
-from runtimed import Client
+from runtimed import KERNEL_STATUS, Client
 
 CODE_SNIPPETS = [
     "1 + 1",
@@ -187,11 +187,11 @@ async def measure_sync(
     try:
         await notebook.start()
         deadline = time.monotonic() + 30
-        while notebook.runtime.kernel.status not in ("idle", "busy"):
+        while notebook.runtime.kernel.status not in (KERNEL_STATUS.IDLE, KERNEL_STATUS.BUSY):
             if time.monotonic() > deadline:
                 break
             await asyncio.sleep(0.2)
-        kernel_ready = notebook.runtime.kernel.status in ("idle", "busy")
+        kernel_ready = notebook.runtime.kernel.status in (KERNEL_STATUS.IDLE, KERNEL_STATUS.BUSY)
     except Exception as e:
         log(f"Kernel start failed (non-fatal): {e}")
 

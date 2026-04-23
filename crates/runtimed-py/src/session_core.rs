@@ -14,6 +14,7 @@ use notebook_protocol::protocol::{
     NotebookBroadcast, NotebookRequest, NotebookResponse, SaveErrorKind,
 };
 use notebook_sync::{BroadcastReceiver, DocHandle};
+use runtime_doc::{KernelActivity, RuntimeLifecycle};
 
 use notebook_doc::metadata::NotebookMetadataSnapshot;
 
@@ -282,7 +283,17 @@ fn hydrate_kernel_state(state: &mut SessionState) {
     let Ok(rs) = handle.get_runtime_state() else {
         return;
     };
-    let running = matches!(rs.kernel.status.as_str(), "idle" | "busy" | "starting");
+    // A kernel is "usable" once it's running or mid-launch. That covers
+    // every lifecycle variant except `NotStarted`, `AwaitingTrust`,
+    // `Error`, and `Shutdown`.
+    let running = matches!(
+        rs.kernel.lifecycle,
+        RuntimeLifecycle::Running(_)
+            | RuntimeLifecycle::Resolving
+            | RuntimeLifecycle::PreparingEnv
+            | RuntimeLifecycle::Launching
+            | RuntimeLifecycle::Connecting
+    );
     if running {
         state.kernel_started = true;
         state.kernel_type = Some(rs.kernel.language.clone());
@@ -304,27 +315,30 @@ async fn ensure_create_runtime_ready(
     let mut forced_launch = false;
 
     loop {
-        let (status, runtime) = {
+        let (lifecycle, runtime) = {
             let st = state.lock().await;
             let handle = st
                 .handle
                 .as_ref()
                 .ok_or_else(|| to_py_err("Not connected"))?;
-            let status = handle
+            let lifecycle = handle
                 .get_runtime_state()
                 .ok()
-                .map(|rs| rs.kernel.status)
-                .unwrap_or_else(|| "not_started".to_string());
-            (status, st.runtime.clone())
+                .map(|rs| rs.kernel.lifecycle)
+                .unwrap_or(RuntimeLifecycle::NotStarted);
+            (lifecycle, st.runtime.clone())
         };
 
-        match status.as_str() {
-            "idle" | "busy" => {
+        match lifecycle {
+            RuntimeLifecycle::Running(_) => {
                 let mut st = state.lock().await;
                 hydrate_kernel_state(&mut st);
                 return Ok(());
             }
-            "starting" => {
+            RuntimeLifecycle::Resolving
+            | RuntimeLifecycle::PreparingEnv
+            | RuntimeLifecycle::Launching
+            | RuntimeLifecycle::Connecting => {
                 if start.elapsed() >= timeout {
                     return Err(to_py_err(format!(
                         "Kernel did not become ready within {} seconds",
@@ -332,12 +346,14 @@ async fn ensure_create_runtime_ready(
                     )));
                 }
             }
-            "error" => {
+            RuntimeLifecycle::Error => {
                 return Err(to_py_err(
                     "Kernel auto-launch failed during notebook creation",
                 ));
             }
-            _ => {
+            RuntimeLifecycle::NotStarted
+            | RuntimeLifecycle::AwaitingTrust
+            | RuntimeLifecycle::Shutdown => {
                 if !forced_launch {
                     start_kernel(state, &runtime, "auto", None).await?;
                     forced_launch = true;
@@ -723,8 +739,8 @@ pub(crate) async fn restart_kernel(
     }
 
     // Wait for kernel ready by polling RuntimeStateDoc (the CRDT source of truth).
-    // Two phases: first wait for status to leave "idle" (restart in progress),
-    // then wait for it to return to "idle" (new kernel ready). This prevents
+    // Two phases: first wait for the lifecycle to leave `Running(Idle)` (restart
+    // in progress), then wait for it to return (new kernel ready). This prevents
     // returning immediately against the pre-restart idle snapshot.
     if wait_for_ready {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -734,7 +750,11 @@ pub(crate) async fn restart_kernel(
                 let st = state.lock().await;
                 if let Some(handle) = st.handle.as_ref() {
                     if let Ok(rs) = handle.get_runtime_state() {
-                        if rs.kernel.status != "idle" {
+                        let is_idle = matches!(
+                            rs.kernel.lifecycle,
+                            RuntimeLifecycle::Running(KernelActivity::Idle)
+                        );
+                        if !is_idle {
                             saw_non_idle = true;
                         } else if saw_non_idle {
                             return Ok(progress_messages);
@@ -1462,12 +1482,16 @@ pub(crate) async fn collect_outputs(
                     // otherwise a kernel crash leaves us spinning until
                     // the outer timeout fires.
                     if !done {
-                        if rs.kernel.status == "error" {
-                            kernel_error = Some("Kernel error".to_string());
-                            done = true;
-                        } else if rs.kernel.status == "shutdown" {
-                            kernel_error = Some("Kernel shut down".to_string());
-                            done = true;
+                        match rs.kernel.lifecycle {
+                            RuntimeLifecycle::Error => {
+                                kernel_error = Some("Kernel error".to_string());
+                                done = true;
+                            }
+                            RuntimeLifecycle::Shutdown => {
+                                kernel_error = Some("Kernel shut down".to_string());
+                                done = true;
+                            }
+                            _ => {}
                         }
                     }
 

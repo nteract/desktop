@@ -21,7 +21,7 @@ import statistics
 import sys
 import time
 
-from runtimed import Client
+from runtimed import KERNEL_STATUS, Client
 
 # Cell battery: (source, expected_success, timeout_secs)
 CELL_BATTERY = [
@@ -68,7 +68,7 @@ async def measure_reliability(
 
     # Wait for kernel idle (may take a while if prewarmed pool is empty)
     deadline = time.monotonic() + 120
-    while notebook.runtime.kernel.status not in ("idle", "busy"):
+    while notebook.runtime.kernel.status not in (KERNEL_STATUS.IDLE, KERNEL_STATUS.BUSY):
         if time.monotonic() > deadline:
             status = notebook.runtime.kernel.status
             print(
@@ -79,7 +79,7 @@ async def measure_reliability(
             sys.exit(1)
         await asyncio.sleep(0.2)
     # If busy, wait for it to become idle
-    while notebook.runtime.kernel.status == "busy":
+    while notebook.runtime.kernel.status == KERNEL_STATUS.BUSY:
         if time.monotonic() > deadline:
             break
         await asyncio.sleep(0.1)
@@ -116,10 +116,10 @@ async def measure_reliability(
             # Check for zombie: kernel stuck busy after timeout
             await asyncio.sleep(1)
             kernel_status = notebook.runtime.kernel.status
-            if kernel_status == "busy":
+            if kernel_status == KERNEL_STATUS.BUSY:
                 # Give it more time before declaring zombie
                 await asyncio.sleep(5)
-                if notebook.runtime.kernel.status == "busy":
+                if notebook.runtime.kernel.status == KERNEL_STATUS.BUSY:
                     zombie += 1
                     log(f"  ZOMBIE detected at round {round_num + 1}")
                     # Interrupt to recover
