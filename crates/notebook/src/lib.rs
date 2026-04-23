@@ -3398,8 +3398,8 @@ async fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
         "{} Settings",
         runt_workspace::desktop_display_name()
     ))
-    .inner_size(640.0, 760.0)
-    .min_inner_size(520.0, 520.0)
+    .inner_size(640.0, 880.0)
+    .min_inner_size(528.0, 826.0)
     .resizable(true)
     .center()
     .build()
@@ -4171,7 +4171,7 @@ pub fn run(
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri_plugin_window_state::Builder::default()
-                .with_denylist(&["main", "onboarding", "upgrade"])
+                .with_denylist(&["main", "onboarding", "upgrade", "settings"])
                 .build(),
         );
 
