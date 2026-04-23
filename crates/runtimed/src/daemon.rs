@@ -705,10 +705,23 @@ impl Daemon {
         // Load or create the settings document
         let automerge_path = crate::default_settings_doc_path();
         let json_path = crate::settings_json_path();
-        let settings = SettingsDoc::load_or_create(&automerge_path, Some(&json_path));
+        let mut settings = SettingsDoc::load_or_create(&automerge_path, Some(&json_path));
 
         // Pool sizes now come from settings.json (imported via apply_json_changes)
         // or from SettingsDoc defaults if not set in JSON.
+
+        // Backfill telemetry consent for existing users. Pre-refactor, every
+        // finished-onboarding installation implicitly consented to telemetry
+        // (the toggle was pre-checked). Users who've been running the app
+        // before this change shouldn't suddenly look like they never opted
+        // in — that would silently stop their heartbeats. No-op for fresh
+        // installs (onboarding_completed = false) and idempotent across
+        // restarts.
+        if crate::settings_doc::backfill_telemetry_consent_in_doc(&mut settings) {
+            tracing::info!(
+                "[settings] Backfilled telemetry_consent_recorded for an existing onboarded install"
+            );
+        }
 
         // Write the settings JSON Schema for editor autocomplete
         if let Err(e) = crate::settings_doc::write_settings_schema() {

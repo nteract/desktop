@@ -357,6 +357,27 @@ pub fn ensure_install_id(settings: &mut SettingsDoc) -> String {
     id
 }
 
+/// Doc-level variant of [`backfill_telemetry_consent`] for callers that hold
+/// a `SettingsDoc` (e.g. the daemon at startup) rather than a fully
+/// materialized `SyncedSettings`. Returns `true` if the flag was flipped so
+/// the caller can choose to persist immediately.
+///
+/// Idempotent: safe to call on every startup.
+pub fn backfill_telemetry_consent_in_doc(settings: &mut SettingsDoc) -> bool {
+    let already_recorded = settings
+        .get_bool("telemetry_consent_recorded")
+        .unwrap_or(false);
+    if already_recorded {
+        return false;
+    }
+    let onboarded = settings.get_bool("onboarding_completed").unwrap_or(false);
+    if !onboarded {
+        return false;
+    }
+    settings.put_bool("telemetry_consent_recorded", true);
+    true
+}
+
 /// Generate a JSON Schema string for the settings file.
 pub fn generate_settings_schema() -> Result<String, serde_json::Error> {
     let schema = schemars::schema_for!(SyncedSettings);
@@ -1222,6 +1243,47 @@ mod tests {
         assert_eq!(settings.default_python_env, PythonEnvType::Uv);
         assert!(settings.uv.default_packages.is_empty());
         assert!(settings.conda.default_packages.is_empty());
+    }
+
+    #[test]
+    fn test_backfill_telemetry_consent_flips_for_onboarded_users() {
+        let mut s = SyncedSettings::default();
+        s.onboarding_completed = true;
+        s.telemetry_consent_recorded = false;
+        backfill_telemetry_consent(&mut s);
+        assert!(s.telemetry_consent_recorded);
+    }
+
+    #[test]
+    fn test_backfill_telemetry_consent_noop_for_fresh_installs() {
+        let mut s = SyncedSettings::default();
+        // onboarding_completed defaults to false
+        backfill_telemetry_consent(&mut s);
+        assert!(!s.telemetry_consent_recorded);
+    }
+
+    #[test]
+    fn test_backfill_telemetry_consent_in_doc_flips_once() {
+        let mut doc = SettingsDoc::new();
+        doc.put_bool("onboarding_completed", true);
+        // Default: consent_recorded is false
+        assert!(!doc.get_bool("telemetry_consent_recorded").unwrap_or(false));
+
+        // First call flips it and returns true
+        assert!(backfill_telemetry_consent_in_doc(&mut doc));
+        assert!(doc.get_bool("telemetry_consent_recorded").unwrap_or(false));
+
+        // Second call is a no-op and returns false
+        assert!(!backfill_telemetry_consent_in_doc(&mut doc));
+    }
+
+    #[test]
+    fn test_backfill_telemetry_consent_in_doc_noop_for_fresh_installs() {
+        let mut doc = SettingsDoc::new();
+        // onboarding_completed is false in a fresh doc; backfill must not
+        // synthesize consent that was never given.
+        assert!(!backfill_telemetry_consent_in_doc(&mut doc));
+        assert!(!doc.get_bool("telemetry_consent_recorded").unwrap_or(false));
     }
 
     #[test]
