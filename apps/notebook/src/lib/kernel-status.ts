@@ -16,31 +16,11 @@ export {
 } from "runtimed";
 
 import {
-  KERNEL_STATUS,
   RUNTIME_STATUS,
   runtimeStatusKey,
-  type KernelStatus,
   type RuntimeLifecycle,
   type RuntimeStatusKey,
 } from "runtimed";
-
-/**
- * User-facing label for each compressed [`KernelStatus`].
- *
- * Covers the seven-bucket UI vocabulary. For the expanded 11-key runtime
- * vocabulary (which preserves every starting sub-phase and the
- * `Running(Unknown)` case), use [`RUNTIME_STATUS_LABELS`] via
- * [`getLifecycleLabel`] instead.
- */
-export const KERNEL_STATUS_LABELS: Record<KernelStatus, string> = {
-  [KERNEL_STATUS.NOT_STARTED]: "initializing",
-  [KERNEL_STATUS.STARTING]: "starting",
-  [KERNEL_STATUS.IDLE]: "idle",
-  [KERNEL_STATUS.BUSY]: "busy",
-  [KERNEL_STATUS.ERROR]: "error",
-  [KERNEL_STATUS.SHUTDOWN]: "shutdown",
-  [KERNEL_STATUS.AWAITING_TRUST]: "awaiting approval",
-};
 
 /**
  * User-facing label for each expanded [`RuntimeStatusKey`].

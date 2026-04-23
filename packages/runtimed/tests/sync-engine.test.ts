@@ -102,8 +102,6 @@ function makeRuntimeState(
 ): RuntimeState {
   return {
     kernel: {
-      status: "idle",
-      starting_phase: "",
       lifecycle: { lifecycle: "Running", activity: "Idle" },
       error_reason: null,
       name: "python3",
@@ -117,10 +115,12 @@ function makeRuntimeState(
       removed: [],
       channels_changed: false,
       deno_changed: false,
+      prewarmed_packages: [],
     },
     trust: { status: "trusted", needs_approval: false },
     last_saved: null,
     executions: executions as RuntimeState["executions"],
+    comms: {},
   };
 }
 
@@ -599,8 +599,6 @@ describe("SyncEngine", () => {
     it("emits runtime state on state sync", () => {
       const state: RuntimeState = {
         kernel: {
-          status: "busy",
-          starting_phase: "",
           lifecycle: { lifecycle: "Running", activity: "Busy" },
           error_reason: null,
           name: "python3",
@@ -614,10 +612,12 @@ describe("SyncEngine", () => {
           removed: [],
           channels_changed: false,
           deno_changed: false,
+          prewarmed_packages: [],
         },
         trust: { status: "trusted", needs_approval: false },
         last_saved: null,
         executions: {},
+        comms: {},
       };
 
       (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
@@ -633,7 +633,7 @@ describe("SyncEngine", () => {
       transport.deliver(Array.from([0x05, 1]));
 
       expect(received).toHaveLength(1);
-      expect(received[0].kernel.status).toBe("busy");
+      expect(received[0].kernel.lifecycle).toEqual({ lifecycle: "Running", activity: "Busy" });
       expect(received[0].kernel.name).toBe("python3");
       engine.stop();
     });
@@ -645,8 +645,6 @@ describe("SyncEngine", () => {
     it("detects started transition", () => {
       const state: RuntimeState = {
         kernel: {
-          status: "busy",
-          starting_phase: "",
           lifecycle: { lifecycle: "Running", activity: "Busy" },
           error_reason: null,
           name: "python3",
@@ -660,6 +658,7 @@ describe("SyncEngine", () => {
           removed: [],
           channels_changed: false,
           deno_changed: false,
+          prewarmed_packages: [],
         },
         trust: { status: "trusted", needs_approval: false },
         last_saved: null,
@@ -671,6 +670,7 @@ describe("SyncEngine", () => {
             success: null,
           },
         },
+        comms: {},
       };
 
       (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
@@ -2001,8 +2001,6 @@ describe("diffExecutions", () => {
 describe("getExecutionCountForCell", () => {
   const baseState = {
     kernel: {
-      status: "idle",
-      starting_phase: "",
       lifecycle: { lifecycle: "Running", activity: "Idle" } as RuntimeLifecycle,
       error_reason: null,
       name: "",
