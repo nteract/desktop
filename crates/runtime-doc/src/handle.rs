@@ -25,6 +25,10 @@ impl RuntimeStateHandle {
     }
 
     /// Synchronous mutation. Acquires mutex, runs closure, notifies if heads changed.
+    ///
+    /// Notification fires even if the closure returns `Err`, because earlier
+    /// mutations in a batched closure may have already changed the doc before
+    /// a later write failed.
     pub fn with_doc<F, T>(&self, f: F) -> Result<T, RuntimeStateError>
     where
         F: FnOnce(&mut RuntimeStateDoc) -> Result<T, RuntimeStateError>,
@@ -34,11 +38,11 @@ impl RuntimeStateHandle {
             .lock()
             .map_err(|_| RuntimeStateError::LockPoisoned)?;
         let heads_before = sd.get_heads();
-        let result = f(&mut sd)?;
+        let result = f(&mut sd);
         if sd.get_heads() != heads_before {
             let _ = self.changed_tx.send(());
         }
-        Ok(result)
+        result
     }
 
     /// Fork at current heads for async work. Never uses fork_at (automerge#1327).
@@ -51,13 +55,34 @@ impl RuntimeStateHandle {
     }
 
     /// Merge a fork back. Notifies if heads changed.
+    ///
+    /// If merge panics (Automerge's apply path is not transactional),
+    /// catches the unwind and rebuilds the doc via save/load to restore
+    /// a consistent state. The fork's writes are lost but the session
+    /// continues.
     pub fn merge(&self, fork: &mut RuntimeStateDoc) -> Result<(), RuntimeStateError> {
         let mut sd = self
             .doc
             .lock()
             .map_err(|_| RuntimeStateError::LockPoisoned)?;
         let heads_before = sd.get_heads();
-        sd.merge(fork)?;
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sd.merge(fork))) {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => {
+                // Normal error: doc is unchanged (error fires before mutation).
+                return Err(e.into());
+            }
+            Err(_panic) => {
+                // Panic during apply: doc may be half-merged. Rebuild from save.
+                tracing::warn!(
+                    "[runtime-state] merge panicked, rebuilding from save to restore consistency"
+                );
+                sd.rebuild_from_save();
+                return Err(RuntimeStateError::MissingScaffold(
+                    "merge panicked, rebuilt from save",
+                ));
+            }
+        }
         if sd.get_heads() != heads_before {
             let _ = self.changed_tx.send(());
         }
