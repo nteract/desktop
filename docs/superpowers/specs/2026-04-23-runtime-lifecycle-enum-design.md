@@ -72,17 +72,22 @@ pub struct KernelState {
 
 ### CRDT storage
 
-Automerge doesn't have native enums. Serde's `#[serde(tag = "lifecycle", content = "activity")]` produces:
+RuntimeStateDoc writes Automerge keys manually (not through serde). `lifecycle` and `activity` are two separate string keys in the `kernel` map:
 
-```json
-{ "lifecycle": "Running", "activity": "Idle", "name": "charming-toucan", ... }
-{ "lifecycle": "PreparingEnv", "name": "", ... }
-{ "lifecycle": "Error", "error_reason": "missing_ipykernel", ... }
+```
+kernel/
+  lifecycle: "Running"     (or "PreparingEnv", "Error", etc.)
+  activity: "Idle"         (or "Busy", "Unknown", "" when not Running)
+  error_reason: ""         (populated when lifecycle == "Error")
+  name: "charming-toucan"
+  ...
 ```
 
-The `activity` key is only present when `lifecycle == "Running"`. Other variants produce no `activity` field.
+`read_state()` reconstructs `RuntimeLifecycle` from these two keys:
+- If `lifecycle == "Running"`, parse `activity` into `KernelActivity` and return `Running(activity)`
+- Otherwise, parse `lifecycle` into the variant directly, ignore `activity`
 
-The setter method writes both `lifecycle` and `activity` (if applicable) in a single `with_doc` call. The old `set_kernel_status` + `set_starting_phase` two-call pattern is replaced by a single `set_lifecycle` call.
+`set_lifecycle()` writes `lifecycle` and clears `activity` to `""` when leaving `Running`. `set_activity()` writes only `activity` (hot path for IOPub idle/busy).
 
 ### RuntimeStateDoc API changes
 
@@ -126,6 +131,40 @@ pub fn set_activity(&mut self, activity: KernelActivity) -> Result<(), RuntimeSt
 ```
 
 `set_activity` only writes the `activity` field, not the full lifecycle. This is the hot path (every IOPub status message). `set_lifecycle` is for lifecycle transitions (infrequent).
+
+### IOPub status handler
+
+The IOPub handler maps Jupyter `ExecutionState` to both lifecycle transitions and activity changes. Today this is one `set_kernel_status` call. With the enum it branches:
+
+```rust
+match status.execution_state {
+    ExecutionState::Busy => set_activity(KernelActivity::Busy),
+    ExecutionState::Idle => set_activity(KernelActivity::Idle),
+    ExecutionState::Starting | ExecutionState::Restarting => set_lifecycle(RuntimeLifecycle::Connecting),
+    ExecutionState::Terminating | ExecutionState::Dead => set_lifecycle(RuntimeLifecycle::Shutdown),
+}
+```
+
+`Busy`/`Idle` are activity changes (hot path, throttled). `Starting`/`Restarting`/`Dead`/`Terminating` are lifecycle transitions (infrequent, not throttled).
+
+### Running(Unknown) in practice
+
+Current launch paths eagerly write `Running(Idle)` on successful kernel_info handshake. `Running(Unknown)` will not appear in the Jupyter backend. It exists for future non-Jupyter backends that may not report idle/busy, and as a brief transient state if a backend connects before reporting its first status.
+
+### Caller migration (complete list)
+
+All current `set_kernel_status` call sites, mapped to the new API:
+
+| File | Current | New |
+|------|---------|-----|
+| `jupyter_kernel.rs` | `set_kernel_status("busy"/"idle")` | `set_activity(Busy/Idle)` |
+| `jupyter_kernel.rs` | `set_kernel_status("starting"/"shutdown")` | `set_lifecycle(Connecting/Shutdown)` |
+| `runtime_agent.rs` | `set_kernel_status("error")` | `set_lifecycle(Error)` |
+| `peer.rs` | `set_kernel_status("starting"/"error"/"awaiting_trust")` | `set_lifecycle(Connecting/Error/AwaitingTrust)` |
+| `metadata.rs` | `set_kernel_status("not_started"/"error"/"idle")` | `set_lifecycle(NotStarted/Error/Running(Idle))` |
+| `launch_kernel.rs` | `set_kernel_status("starting")` + `set_starting_phase(...)` | `set_lifecycle(Resolving/PreparingEnv/etc.)` |
+| `launch_kernel.rs` | `set_kernel_status("idle")` | `set_lifecycle(Running(Idle))` |
+| `shutdown_kernel.rs` | `set_kernel_status("shutdown")` | `set_lifecycle(Shutdown)` |
 
 ### Frontend changes
 
@@ -192,7 +231,11 @@ The CRDT field names change from `status`/`starting_phase` to `lifecycle`/`activ
 
 ### Backward compatibility
 
-RuntimeStateDoc is ephemeral and daemon-authoritative. No on-disk migration needed. The frontend and Python bindings ship with the same release as the daemon, so there's no version skew. The only compatibility concern is the nightly MCP server, which reads RuntimeState - it updates in the same release.
+No on-disk migration needed. RuntimeStateDoc is ephemeral (in-memory, recreated per room). Clients start empty and receive state via CRDT sync.
+
+The app bundles daemon + frontend + WASM together, so there's no version skew within a release. The MCP server (`runt mcp`) reads `RuntimeState` and ships in the same release.
+
+Live consumers that read `kernel.status` directly (packages/runtimed TypeScript, runtimed-py Python, runt-mcp Rust) all need updating in the same release. This is a coordinated schema change across Rust, TypeScript, and Python - but since the app ships as one artifact, it's safe.
 
 ## Testing
 
