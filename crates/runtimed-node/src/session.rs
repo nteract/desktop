@@ -340,7 +340,10 @@ pub async fn open_notebook(
         let started = rs
             .as_ref()
             .map(|r| {
-                r.kernel.status == "ready" || r.kernel.status == "busy" || r.kernel.status == "idle"
+                matches!(
+                    r.kernel.lifecycle,
+                    runtime_doc::RuntimeLifecycle::Running(_)
+                )
             })
             .unwrap_or(false);
         let runtime = rs

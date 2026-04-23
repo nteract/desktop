@@ -146,10 +146,12 @@ fn read_runtime_info(handle: &notebook_sync::handle::DocHandle) -> serde_json::V
     let mut info = serde_json::Map::new();
     match handle.get_runtime_state() {
         Ok(state) => {
-            info.insert(
-                "kernel_status".into(),
-                serde_json::json!(state.kernel.status),
-            );
+            // Project the typed lifecycle through to_legacy() so the MCP wire
+            // shape (string `kernel_status`) stays unchanged. Group 6 of the
+            // RuntimeLifecycle refactor (#2096) decides whether to add a
+            // typed wire field; that's intentionally deferred here.
+            let (legacy_status, _legacy_phase) = state.kernel.lifecycle.to_legacy();
+            info.insert("kernel_status".into(), serde_json::json!(legacy_status));
             if !state.kernel.language.is_empty() {
                 info.insert("language".into(), serde_json::json!(state.kernel.language));
             }

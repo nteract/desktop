@@ -17,6 +17,7 @@ runtimed-client = { path = "../runtimed-client" }
 notebook-doc = { path = "../notebook-doc" }
 notebook-protocol = { path = "../notebook-protocol" }
 notebook-sync = { path = "../notebook-sync" }
+runtime-doc = { path = "../runtime-doc" }
 runt-workspace = { path = "../runt-workspace" }
 nteract-predicate = { path = "../nteract-predicate" }
 arrow = { version = "54", default-features = false, features = ["ipc"] }

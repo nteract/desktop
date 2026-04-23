@@ -5177,6 +5177,10 @@ async fn inspect_notebook(path: &PathBuf, full_outputs: bool, json_output: bool)
                 println!("Notebook: {}", result.notebook_id);
                 println!("Source: {}", result.source);
                 if let Some(kernel) = &result.kernel_info {
+                    // `NotebookKernelInfo.status` is the wire-level string shape
+                    // (NotebookResponse). Migrating this field to the typed
+                    // RuntimeLifecycle is a wire change and lives in Group 6 of
+                    // the RuntimeLifecycle refactor (#2096). Leave as-is here.
                     println!(
                         "Kernel: {} ({}) - {}",
                         kernel.kernel_type, kernel.env_source, kernel.status

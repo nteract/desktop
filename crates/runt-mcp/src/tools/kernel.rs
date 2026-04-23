@@ -177,10 +177,13 @@ pub async fn restart_kernel(
                     continue;
                 };
                 if let Ok(state) = h.get_runtime_state() {
-                    if state.kernel.status == "idle" || state.kernel.status == "busy" {
+                    if matches!(
+                        state.kernel.lifecycle,
+                        runtime_doc::RuntimeLifecycle::Running(_)
+                    ) {
                         break;
                     }
-                    if state.kernel.status == "error" {
+                    if matches!(state.kernel.lifecycle, runtime_doc::RuntimeLifecycle::Error) {
                         return tool_error("Kernel failed to start");
                     }
                 }
