@@ -16,7 +16,7 @@ import { mergeChangesets } from "../src/cell-changeset";
 import { diffExecutions, getExecutionCountForCell } from "../src/runtime-state";
 import type { SessionStatus, SyncableHandle, FrameEvent } from "../src/handle";
 import type { CellChangeset } from "../src/cell-changeset";
-import type { RuntimeState } from "../src/runtime-state";
+import type { RuntimeLifecycle, RuntimeState } from "../src/runtime-state";
 
 // ── Mock factories ──────────────────────────────────────────────────
 
@@ -104,6 +104,8 @@ function makeRuntimeState(
     kernel: {
       status: "idle",
       starting_phase: "",
+      lifecycle: { lifecycle: "Running", activity: "Idle" },
+      error_reason: null,
       name: "python3",
       language: "python",
       env_source: "",
@@ -599,6 +601,8 @@ describe("SyncEngine", () => {
         kernel: {
           status: "busy",
           starting_phase: "",
+          lifecycle: { lifecycle: "Running", activity: "Busy" },
+          error_reason: null,
           name: "python3",
           language: "python",
           env_source: "",
@@ -643,6 +647,8 @@ describe("SyncEngine", () => {
         kernel: {
           status: "busy",
           starting_phase: "",
+          lifecycle: { lifecycle: "Running", activity: "Busy" },
+          error_reason: null,
           name: "python3",
           language: "python",
           env_source: "",
@@ -1994,7 +2000,15 @@ describe("diffExecutions", () => {
 
 describe("getExecutionCountForCell", () => {
   const baseState = {
-    kernel: { status: "idle", starting_phase: "", name: "", language: "", env_source: "" },
+    kernel: {
+      status: "idle",
+      starting_phase: "",
+      lifecycle: { lifecycle: "Running", activity: "Idle" } as RuntimeLifecycle,
+      error_reason: null,
+      name: "",
+      language: "",
+      env_source: "",
+    },
     queue: { executing: null, queued: [] },
     env: {
       in_sync: true,

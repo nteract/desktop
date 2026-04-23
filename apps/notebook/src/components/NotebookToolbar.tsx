@@ -13,7 +13,12 @@ import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/h
 import { cn } from "@/lib/utils";
 import type { EnvProgressState } from "../hooks/useEnvProgress";
 import type { UpdateStatus } from "../hooks/useUpdater";
-import { getKernelStatusLabel, KERNEL_STATUS, type KernelStatus } from "../lib/kernel-status";
+import {
+  getLifecycleLabel,
+  KERNEL_STATUS,
+  type KernelStatus,
+  type RuntimeLifecycle,
+} from "../lib/kernel-status";
 import type { KernelspecInfo } from "../types";
 import { CondaIcon, DenoIcon, PixiIcon, PythonIcon, UvIcon } from "./icons";
 
@@ -22,7 +27,8 @@ type EnvBadgeVariant = "uv" | "conda" | "pixi";
 
 interface NotebookToolbarProps {
   kernelStatus: KernelStatus;
-  startingPhase?: string;
+  lifecycle: RuntimeLifecycle;
+  errorReason: string | null;
   kernelErrorMessage?: string | null;
   envSource: string | null;
   /** Pre-start hint: "uv" | "conda" | "pixi" | null, derived from notebook metadata */
@@ -48,7 +54,8 @@ interface NotebookToolbarProps {
 
 export function NotebookToolbar({
   kernelStatus,
-  startingPhase,
+  lifecycle,
+  errorReason,
   kernelErrorMessage,
   envSource,
   envTypeHint,
@@ -96,7 +103,7 @@ export function NotebookToolbar({
     kernelStatus === KERNEL_STATUS.IDLE ||
     kernelStatus === KERNEL_STATUS.BUSY ||
     kernelStatus === KERNEL_STATUS.STARTING;
-  const kernelStatusText = getKernelStatusLabel(kernelStatus, startingPhase);
+  const kernelStatusText = getLifecycleLabel(lifecycle, errorReason);
   const envErrorMessage = envProgress?.error ?? null;
   const envStatusText = envProgress?.statusText ?? kernelStatusText;
   const kernelStatusDescription = envProgress?.isActive
@@ -373,9 +380,9 @@ export function NotebookToolbar({
       )}
       {/* Pixi ipykernel install prompt — only when daemon signals missing_ipykernel */}
       {runtime === "python" &&
-        kernelStatus === KERNEL_STATUS.ERROR &&
+        lifecycle.lifecycle === "Error" &&
         envSource?.startsWith("pixi:") &&
-        startingPhase === "missing_ipykernel" && (
+        errorReason === "missing_ipykernel" && (
           <div className="border-t px-3 py-2">
             <div className="flex items-start gap-2 text-xs text-amber-700 dark:text-amber-400">
               <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />

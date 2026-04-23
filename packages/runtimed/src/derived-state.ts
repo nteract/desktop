@@ -86,11 +86,12 @@ export function deriveQueueState(state: RuntimeState): DaemonQueueState {
  * "unknown" to consumers. Returns the sync state otherwise.
  */
 export function deriveEnvSyncState(state: RuntimeState): EnvSyncState | null {
+  const lc = state.kernel.lifecycle.lifecycle;
   if (
-    (state.kernel.status === "not_started" && !state.kernel.env_source) ||
-    state.kernel.status === "shutdown" ||
-    state.kernel.status === "error" ||
-    state.kernel.status === "awaiting_trust"
+    (lc === "NotStarted" && !state.kernel.env_source) ||
+    lc === "Shutdown" ||
+    lc === "Error" ||
+    lc === "AwaitingTrust"
   ) {
     return null;
   }
@@ -142,16 +143,47 @@ export function throttleBusyStatus(
 }
 
 /**
+ * Project a typed RuntimeLifecycle back to the legacy string status
+ * vocabulary (`"idle"`, `"busy"`, `"starting"`, `"error"`, `"shutdown"`,
+ * `"not_started"`, `"awaiting_trust"`).
+ *
+ * Kept for bridging throttleBusyStatus and other legacy-shape consumers.
+ * New code should match on `RuntimeLifecycle` directly.
+ */
+export function lifecycleToLegacyStatus(lc: RuntimeState["kernel"]["lifecycle"]): KernelStatus {
+  switch (lc.lifecycle) {
+    case "NotStarted":
+      return KERNEL_STATUS.NOT_STARTED;
+    case "AwaitingTrust":
+      return KERNEL_STATUS.AWAITING_TRUST;
+    case "Resolving":
+    case "PreparingEnv":
+    case "Launching":
+    case "Connecting":
+      return KERNEL_STATUS.STARTING;
+    case "Running":
+      return lc.activity === "Busy" ? KERNEL_STATUS.BUSY : KERNEL_STATUS.IDLE;
+    case "Error":
+      return KERNEL_STATUS.ERROR;
+    case "Shutdown":
+      return KERNEL_STATUS.SHUTDOWN;
+  }
+}
+
+/**
  * Derive a throttled kernel status observable from a RuntimeState stream.
  *
- * Convenience wrapper: extracts `kernel.status` and applies `throttleBusyStatus()`.
+ * Convenience wrapper: projects `kernel.lifecycle` back to the legacy
+ * status vocabulary and applies `throttleBusyStatus()`. Retained for
+ * consumers of the pre-lifecycle API; new code should match on
+ * `RuntimeLifecycle` directly.
  */
 export function kernelStatus$(
   runtimeState$: Observable<RuntimeState>,
   threshold?: number,
 ): Observable<KernelStatus> {
   return runtimeState$.pipe(
-    map((s) => s.kernel.status),
+    map((s) => lifecycleToLegacyStatus(s.kernel.lifecycle)),
     throttleBusyStatus(threshold),
   );
 }
