@@ -140,15 +140,18 @@ pub(crate) fn get_settings(state: &SessionState) -> Option<runtimed::settings_do
 /// This checks if the metadata structure exists, not whether deps are non-empty.
 /// Pixi is checked first because a notebook with a pixi section should use
 /// pixi for dependency management even if uv/conda sections also exist.
-pub(crate) fn get_metadata_env_type(snapshot: &NotebookMetadataSnapshot) -> Option<String> {
+pub(crate) fn get_metadata_env_type(
+    snapshot: &NotebookMetadataSnapshot,
+) -> Option<notebook_protocol::connection::PackageManager> {
+    use notebook_protocol::connection::PackageManager;
     if snapshot.runt.pixi.is_some() {
-        return Some("pixi".to_string());
+        return Some(PackageManager::Pixi);
     }
     if snapshot.runt.conda.is_some() {
-        return Some("conda".to_string());
+        return Some(PackageManager::Conda);
     }
     if snapshot.runt.uv.is_some() {
-        return Some("uv".to_string());
+        return Some(PackageManager::Uv);
     }
     None
 }

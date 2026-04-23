@@ -1020,7 +1020,7 @@ impl AsyncSession {
         let state = Arc::clone(&self.state);
         future_into_py(py, async move {
             let snapshot = session_core::get_notebook_metadata(&state).await?;
-            Ok(session_core::get_metadata_env_type(&snapshot))
+            Ok(session_core::get_metadata_env_type(&snapshot).map(|pm| pm.as_str().to_string()))
         })
     }
 
