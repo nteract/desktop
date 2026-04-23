@@ -1,72 +1,62 @@
-# Telemetry
+# Telemetry (developer notes)
 
-nteract collects anonymous daily usage data to understand how many people use the app. This document describes exactly what is sent, what is not, and how to opt out.
+User-facing copy lives at https://nteract.io/telemetry. This file is for developers working on the desktop codebase.
 
-## What is sent
+## Files
 
-Every heartbeat ping carries six fields:
+| Path | Purpose |
+|------|---------|
+| `crates/runtimed-client/src/telemetry.rs` | Heartbeat emitter. `should_send_full`, `blocking_gates_full`, `try_send`, `heartbeat_loop`, `heartbeat_once`, `rotate_install_id_in`. |
+| `crates/runtimed-client/src/settings_doc.rs` | `SyncedSettings` fields: `install_id`, `telemetry_enabled`, `telemetry_consent_recorded`, three `telemetry_last_*_ping_at` fields. `backfill_telemetry_consent` / `backfill_telemetry_consent_in_doc` migrations. |
+| `crates/runt/src/main.rs` | `runt config telemetry {status,enable,disable}`. |
+| `src/components/TelemetryDisclosureCard.tsx` | Shared disclosure card, used in onboarding and Settings. |
+| `apps/notebook/onboarding/App.tsx` | "You can count on me!" / "Opt out of metrics, continue" buttons. |
+| `apps/notebook/settings/sections/Privacy.tsx` | Revisit pane with install ID rotation. |
 
-| Field | Example | Description |
-|---|---|---|
-| `install_id` | `550e8400-e29b-41d4-a716-446655440000` | Opaque UUIDv4 generated on first run. Not derived from any identifying data. |
-| `source` | `app`, `daemon`, `mcp` | Which process sent the ping. |
-| `version` | `2.2.1` | Release version. |
-| `channel` | `stable` or `nightly` | Release channel. |
-| `platform` | `macos`, `linux`, `windows` | OS family. |
-| `arch` | `arm64`, `x86_64` | CPU architecture. |
+## The consent gate
 
-The server adds `received_at` (unix timestamp) on its side.
+`telemetry_consent_recorded` is the explicit-consent gate added after the onboarding redesign. Until it is `true`, `should_send_full` returns `false` even when `telemetry_enabled = true`.
 
-## What is never sent or stored
+Daemon startup runs `backfill_telemetry_consent_in_doc` so existing users who completed onboarding before the flag existed keep sending heartbeats — they've already indicated they're okay with it. Fresh installs stay at `false` until the user presses either CTA on the onboarding screen.
 
-- Hostname, username, home directory, or any filesystem path
-- Notebook contents, cell outputs, kernel names, or environment details
-- Dependency names or versions (Python, Node, R, system packages)
-- Hardware identifiers (MAC address, serial number, disk UUID)
-- Client IP address at rest - Cloudflare observes it briefly for rate limiting; the database does not store it
-- `User-Agent` or any HTTP header beyond `Content-Type`
+## Install ID rotation
 
-## How it works
+`rotate_install_id_in` generates a fresh UUIDv4 and clears the three per-source `last_ping_at` timestamps so the 20-hour throttle doesn't silently suppress the first ping under the new ID. The Tauri command `rotate_install_id` wraps it and is invoked from Settings → Privacy.
 
-Three processes send heartbeats independently:
+## Suppression
 
-- **app** - fires once per launch of the desktop GUI
-- **daemon** - checks hourly, sends if >20 hours since last ping
-- **mcp** - checks hourly, sends if >20 hours since last ping
+Heartbeats are suppressed when any of these hold:
 
-All pings go to `https://telemetry.runtimed.com/v1/ping` as a JSON POST. The endpoint enforces a 60 req/min rate limit per IP at the Cloudflare edge.
+- `RUNTIMED_DEV=1` or `RUNTIMED_WORKSPACE_PATH` is set
+- `CI` is set
+- `NTERACT_TELEMETRY_DISABLE=1` is set
+- `telemetry_enabled = false` in settings
+- `telemetry_consent_recorded = false` in settings
+- `onboarding_completed = false`
+- Platform or arch is unsupported
+- Last ping for this source was less than 20 hours ago
 
-## Emission gates
+## Adding a heartbeat field
 
-A heartbeat is suppressed if any of these conditions hold:
+Keep in mind every field added here ships to users as part of their ping payload. Add with care, and update:
 
-| Gate | Trigger |
-|---|---|
-| Dev mode | `RUNTIMED_DEV=1` or `RUNTIMED_WORKSPACE_PATH` is set |
-| CI | `CI` environment variable is set |
-| Kill switch | `NTERACT_TELEMETRY_DISABLE` environment variable is set |
-| Disabled | `telemetry_enabled = false` in settings |
-| Not onboarded | `onboarding_completed = false` (fresh install before first-run screen) |
-| Unsupported host | Platform or architecture not in the server's enum |
-| Throttled | Last ping for this source was less than 20 hours ago |
+1. `HeartbeatPayload` in `crates/runtimed-client/src/telemetry.rs`.
+2. The public page at `https://nteract.io/telemetry` so what's documented matches what's sent.
 
-## Opting out
+The server side is separate infrastructure and versions independently — coordinate the rollout so the server accepts the new field before the client emits it.
 
-Three ways to disable telemetry, all equivalent:
+## Testing
 
-1. **Onboarding toggle** - the first-run screen includes a telemetry toggle (default: on). Flip it off before clicking "Get Started".
+```
+cargo test -p runtimed-client telemetry::tests
+cargo test -p runtimed-client settings_doc::tests
+pnpm vp test run src/components/__tests__/TelemetryDisclosureCard
+```
 
-2. **CLI** - run `runt config telemetry disable`. Check status with `runt config telemetry status`.
+## Endpoints
 
-3. **Environment variable** - set `NTERACT_TELEMETRY_DISABLE=1`. This is an emergency kill switch for locked-down deployments or CI images.
+- Ingest: `POST https://telemetry.runtimed.com/v1/ping`
 
-There is no server-side delete endpoint. When you disable telemetry the client stops sending pings. Existing data ages out under the retention policy below.
+## Visual preview
 
-## Retention
-
-- **Raw pings**: kept for 400 days, then deleted by a nightly cleanup job.
-- **Daily aggregate counts**: kept indefinitely. These contain no `install_id` - only counts of distinct installs grouped by day, source, version, channel, platform, and arch.
-
-## Schema evolution
-
-New fields may be added over time (additive only). Any field removal is a breaking change that gets a new route version (`/v2/ping`).
+Run `pnpm --dir apps/notebook dev` and open `http://localhost:5174/gallery/` to preview `TelemetryDisclosureCard`, the onboarding CTA block, and Settings → Privacy without launching the desktop app.
