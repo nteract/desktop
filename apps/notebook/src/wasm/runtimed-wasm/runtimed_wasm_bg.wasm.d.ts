@@ -1,6 +1,7 @@
 /* tslint:disable */
 /* eslint-disable */
 export const memory: WebAssembly.Memory;
+export const __wasm_start: () => void;
 export const __wbg_get_jscell_index: (a: number) => number;
 export const __wbg_jscell_free: (a: number, b: number) => void;
 export const __wbg_notebookhandle_free: (a: number, b: number) => void;
@@ -101,5 +102,6 @@ export const notebookhandle_create_empty_with_actor: (a: number, b: number) => n
 export const __wbindgen_export: (a: number, b: number) => number;
 export const __wbindgen_export2: (a: number, b: number, c: number, d: number) => number;
 export const __wbindgen_export3: (a: number) => void;
-export const __wbindgen_add_to_stack_pointer: (a: number) => number;
 export const __wbindgen_export4: (a: number, b: number, c: number) => void;
+export const __wbindgen_add_to_stack_pointer: (a: number) => number;
+export const __wbindgen_start: () => void;

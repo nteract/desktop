@@ -22,6 +22,15 @@ use runtime_doc::{
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
+/// Install the panic hook on module init so Rust panics inside WASM
+/// surface as `console.error` entries with file/line and backtrace,
+/// instead of the opaque `__wbindgen_throw` stack the frontend sees
+/// today. Runs once before any `NotebookHandle` is constructed.
+#[wasm_bindgen(start)]
+pub fn __wasm_start() {
+    console_error_panic_hook::set_once();
+}
+
 /// Serialize a Rust value to a `JsValue`, forcing maps to plain JS Objects.
 ///
 /// `serde_wasm_bindgen::to_value` defaults to serializing maps as JS `Map`,

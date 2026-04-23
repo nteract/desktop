@@ -596,6 +596,14 @@ export class NotebookHandle {
 }
 
 /**
+ * Install the panic hook on module init so Rust panics inside WASM
+ * surface as `console.error` entries with file/line and backtrace,
+ * instead of the opaque `__wbindgen_throw` stack the frontend sees
+ * today. Runs once before any `NotebookHandle` is constructed.
+ */
+export function __wasm_start(): void;
+
+/**
  * Encode a clear-channel message as a presence frame payload (CBOR).
  * Removes a single presence channel (e.g. cursor or selection) for this peer.
  */
@@ -627,6 +635,7 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
+    readonly __wasm_start: () => void;
     readonly __wbg_get_jscell_index: (a: number) => number;
     readonly __wbg_jscell_free: (a: number, b: number) => void;
     readonly __wbg_notebookhandle_free: (a: number, b: number) => void;
@@ -727,8 +736,9 @@ export interface InitOutput {
     readonly __wbindgen_export: (a: number, b: number) => number;
     readonly __wbindgen_export2: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_export3: (a: number) => void;
-    readonly __wbindgen_add_to_stack_pointer: (a: number) => number;
     readonly __wbindgen_export4: (a: number, b: number, c: number) => void;
+    readonly __wbindgen_add_to_stack_pointer: (a: number) => number;
+    readonly __wbindgen_start: () => void;
 }
 
 export type SyncInitInput = BufferSource | WebAssembly.Module;
