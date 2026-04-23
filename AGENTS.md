@@ -170,11 +170,15 @@ cargo xtask dev-daemon
 RUNTIMED_DEV=1 RUNTIMED_WORKSPACE_PATH=$(pwd) cargo xtask notebook
 ```
 
-### WASM rebuild (after changing notebook-doc or runtimed-wasm)
+### WASM rebuild (after changing notebook-doc, runtimed-wasm, or sift-wasm)
 
 ```bash
-wasm-pack build crates/runtimed-wasm --target web --out-dir ../../apps/notebook/src/wasm/runtimed-wasm
-# Commit the output — WASM artifacts are checked into the repo
+cargo xtask wasm             # rebuild both runtimed-wasm and sift-wasm;
+                             # also chains into `renderer-plugins` so the
+                             # plugin JS bundles re-embed fresh sift-wasm glue.
+cargo xtask wasm runtimed    # only runtimed-wasm (no plugin chain)
+cargo xtask wasm sift        # only sift-wasm (chains plugins)
+# Commit the output — WASM + plugin artifacts are checked into the repo via LFS.
 ```
 
 ### Subsystem guides
