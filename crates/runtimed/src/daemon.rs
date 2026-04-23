@@ -64,6 +64,29 @@ pub struct DaemonConfig {
     pub env_cache_max_age_secs: u64,
     /// Maximum number of content-addressed cached environments per cache directory.
     pub env_cache_max_count: usize,
+    /// Whether the blob HTTP server should try `runt_workspace::preferred_blob_port()`
+    /// and its bump range before falling back to an OS-assigned port.
+    ///
+    /// `true` (default) keeps the port stable across daemon restarts so
+    /// MCP Apps with baked-in CSPs (`http://127.0.0.1:<port>`) keep
+    /// working. Set to `false` for integration tests, where dozens of
+    /// daemons compete for a 10-port range and sequential `EADDRINUSE`
+    /// retries push boot past the test's `wait_for_daemon` timeout, and
+    /// for any other context where the stable-port UX isn't load-bearing.
+    pub use_preferred_blob_port: bool,
+    /// Override for the persisted Automerge settings-document path.
+    ///
+    /// `None` (default) uses the channel's global path
+    /// (`daemon_base_dir()/settings.automerge`). Integration tests
+    /// override this to a per-test temp-dir path so dozens of parallel
+    /// daemons don't contend on the same on-disk file during boot.
+    pub settings_doc_path: Option<PathBuf>,
+    /// Override for the JSON mirror of the settings doc.
+    ///
+    /// Same story as `settings_doc_path`: global by default, per-test
+    /// when overridden. Integration tests set both to avoid write
+    /// contention under parallel boot.
+    pub settings_json_path: Option<PathBuf>,
 }
 
 impl Default for DaemonConfig {
@@ -81,7 +104,28 @@ impl Default for DaemonConfig {
             room_eviction_delay_ms: None,
             env_cache_max_age_secs: 86400, // 1 day
             env_cache_max_count: 10,
+            use_preferred_blob_port: true,
+            settings_doc_path: None,
+            settings_json_path: None,
         }
+    }
+}
+
+impl DaemonConfig {
+    /// Resolve the Automerge settings-doc path: override when set,
+    /// otherwise the channel's global path.
+    pub fn resolved_settings_doc_path(&self) -> PathBuf {
+        self.settings_doc_path
+            .clone()
+            .unwrap_or_else(runtimed_client::default_settings_doc_path)
+    }
+
+    /// Resolve the JSON mirror path: override when set, otherwise the
+    /// channel's global path.
+    pub fn resolved_settings_json_path(&self) -> PathBuf {
+        self.settings_json_path
+            .clone()
+            .unwrap_or_else(runt_workspace::settings_json_path)
     }
 }
 
@@ -702,9 +746,11 @@ impl Daemon {
         let lock = DaemonLock::try_acquire(config.lock_dir.as_ref())
             .map_err(|info| DaemonAlreadyRunning { info })?;
 
-        // Load or create the settings document
-        let automerge_path = crate::default_settings_doc_path();
-        let json_path = crate::settings_json_path();
+        // Load or create the settings document. Use the config-resolved
+        // paths so integration tests can point each daemon at a per-test
+        // temp file and avoid contention on the global settings doc.
+        let automerge_path = config.resolved_settings_doc_path();
+        let json_path = config.resolved_settings_json_path();
         let mut settings = SettingsDoc::load_or_create(&automerge_path, Some(&json_path));
 
         // Pool sizes now come from settings.json (imported via apply_json_changes)
@@ -727,7 +773,6 @@ impl Daemon {
             tracing::info!(
                 "[settings] Backfilled telemetry_consent_recorded for an existing onboarded install"
             );
-            let automerge_path = crate::default_settings_doc_path();
             if let Err(e) = settings.save_to_file(&automerge_path) {
                 tracing::warn!(
                     "[settings] Failed to persist backfilled Automerge doc: {}",
@@ -871,19 +916,23 @@ impl Daemon {
         }
 
         // Start the blob HTTP server (also serves renderer plugin assets)
-        let blob_port =
-            match blob_server::start_blob_server(self.blob_store.clone(), Some(self.clone())).await
-            {
-                Ok(port) => {
-                    info!("[runtimed] Blob server started on port {}", port);
-                    *self.blob_port.lock().await = Some(port);
-                    Some(port)
-                }
-                Err(e) => {
-                    error!("[runtimed] Failed to start blob server: {}", e);
-                    None
-                }
-            };
+        let blob_port = match blob_server::start_blob_server(
+            self.blob_store.clone(),
+            Some(self.clone()),
+            self.config.use_preferred_blob_port,
+        )
+        .await
+        {
+            Ok(port) => {
+                info!("[runtimed] Blob server started on port {}", port);
+                *self.blob_port.lock().await = Some(port);
+                Some(port)
+            }
+            Err(e) => {
+                error!("[runtimed] Failed to start blob server: {}", e);
+                None
+            }
+        };
 
         // Bind the Unix socket early so clients can connect (and ping) while
         // the rest of initialisation finishes.  The accept loop runs later.
@@ -1307,7 +1356,7 @@ impl Daemon {
                                     // the JSON mirror back, as serde_json formatting
                                     // differs from editors (e.g. arrays expand to one
                                     // element per line) which causes unwanted churn.
-                                    let automerge_path = crate::default_settings_doc_path();
+                                    let automerge_path = self.config.resolved_settings_doc_path();
                                     if let Err(e) = doc.save_to_file(&automerge_path) {
                                         warn!("[settings-watch] Failed to save Automerge doc: {}", e);
                                     }

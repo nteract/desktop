@@ -39,18 +39,31 @@ use crate::task_supervisor::{spawn_best_effort, spawn_supervised};
 /// bump budget stays in sync with the per-channel range carve-out.
 const PREFERRED_PORT_ATTEMPTS: u16 = runt_workspace::PREFERRED_BLOB_PORT_RANGE;
 
-/// Start the blob HTTP server on a random localhost port.
+/// Start the blob HTTP server.
 ///
 /// Returns the port the server is listening on. The server runs as a
 /// spawned task on the current tokio runtime.
 ///
 /// When `daemon` is provided, a panic in the accept loop triggers shutdown.
 /// Pass `None` in tests where no daemon is available.
+///
+/// When `use_preferred_port` is `true`, binds against the channel's
+/// preferred port with a bounded bump range before falling back to an
+/// OS-assigned port. When `false`, skips straight to OS-assigned.
+/// Integration tests and other contexts that run dozens of daemons in
+/// close proximity should pass `false` to avoid `EADDRINUSE` retry
+/// chains pushing boot past their `wait_for_daemon` timeout.
 pub async fn start_blob_server(
     store: Arc<BlobStore>,
     daemon: Option<Arc<Daemon>>,
+    use_preferred_port: bool,
 ) -> std::io::Result<u16> {
-    start_blob_server_with_listener(bind_preferred_or_random().await?, store, daemon).await
+    let listener = if use_preferred_port {
+        bind_preferred_or_random().await?
+    } else {
+        TcpListener::bind("127.0.0.1:0").await?
+    };
+    start_blob_server_with_listener(listener, store, daemon).await
 }
 
 /// Start the blob HTTP server on an already-bound listener. Exposed for tests
