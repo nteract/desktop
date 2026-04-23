@@ -2794,18 +2794,15 @@ pub(crate) async fn auto_launch_kernel(
                     env.venv_path,
                     env_source.as_str()
                 );
-                // Delete the corrupt env dir synchronously before we
-                // return — `prepare_*_inline_env` treats the cache-hash
-                // dir as a cache hit while it exists, so a quick retry
-                // (user hits restart, automated flow) would reacquire
-                // the same broken env and we'd loop on MissingIpykernel.
-                // Await the removal so the next launch rebuilds.
-                if let Err(e) = tokio::fs::remove_dir_all(&env.venv_path).await {
-                    warn!(
-                        "[notebook-sync] failed to remove corrupt env {:?}: {}",
-                        env.venv_path, e
-                    );
-                }
+                // Don't delete the env dir here: it's a content-addressed
+                // cache shared with any other notebook using the same
+                // dep set, and there's a race where a concurrent launch
+                // could observe a partial build (python present,
+                // ipykernel not yet installed) and nuke the env out
+                // from under the in-progress installer. A proper heal
+                // (install ipykernel in place, or atomic invalidation
+                // marker) is a follow-up; for now we surface the typed
+                // error and let the user edit deps to bump the hash.
                 let env_source_label = env_source.as_str().to_string();
                 if let Err(e) = room.state.with_doc(|sd| {
                     sd.set_lifecycle_with_error(
