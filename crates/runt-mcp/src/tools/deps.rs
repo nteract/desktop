@@ -11,6 +11,49 @@ use crate::NteractMcp;
 
 use super::{arg_str, tool_error, tool_success};
 
+/// Parse a `package` parameter that may be a single package spec or a
+/// list-like string agents sometimes produce.
+///
+/// Accepted forms:
+///  - `"pandas>=2.0"` → `["pandas>=2.0"]`
+///  - `"[\"pandas\",\"numpy\"]"` (JSON array) → `["pandas", "numpy"]`
+///  - `"['pandas','numpy']"` (Python repr) → `["pandas", "numpy"]`
+///
+/// Returns a non-empty Vec; falls back to the raw string as-is if no list
+/// pattern is detected (the daemon will report the error naturally for
+/// invalid package names).
+fn parse_package_param(raw: &str) -> Vec<String> {
+    let trimmed = raw.trim();
+
+    if trimmed.starts_with('[') && trimmed.ends_with(']') {
+        // Try JSON first, then Python-repr (single quotes → double quotes).
+        if let Ok(parsed) = serde_json::from_str::<Vec<String>>(trimmed) {
+            if !parsed.is_empty() {
+                tracing::warn!(
+                    "[mcp] add_dependency `package` param contained a JSON list; \
+                     splitting into {} individual packages (#2084)",
+                    parsed.len()
+                );
+                return parsed;
+            }
+        }
+        let json_ified = trimmed.replace('\'', "\"");
+        if let Ok(parsed) = serde_json::from_str::<Vec<String>>(&json_ified) {
+            if !parsed.is_empty() {
+                tracing::warn!(
+                    "[mcp] add_dependency `package` param contained a Python-repr list; \
+                     splitting into {} individual packages (#2084)",
+                    parsed.len()
+                );
+                return parsed;
+            }
+        }
+    }
+
+    // Single package spec (normal case).
+    vec![trimmed.to_string()]
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AddDependencyParams {
@@ -122,13 +165,20 @@ fn remove_dep_for_manager(
 }
 
 /// Add a package dependency. Auto-detects the notebook's package manager (uv, conda, or pixi).
+///
+/// Tolerates agents passing a list-like string (e.g. `"['pandas','numpy']"` or
+/// `'["pandas","numpy"]'`) as the `package` parameter — splits into individual
+/// packages and adds each one.  See #2084.
 pub async fn add_dependency(
     server: &NteractMcp,
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
-    let package = arg_str(request, "package")
+    let raw_package = arg_str(request, "package")
         .ok_or_else(|| McpError::invalid_params("Missing required parameter: package", None))?;
     let after = arg_str(request, "after").unwrap_or("none");
+
+    // Detect list-like strings agents sometimes pass and split them.
+    let packages = parse_package_param(raw_package);
 
     let (handle, notebook_id) =
         {
@@ -143,8 +193,12 @@ pub async fn add_dependency(
 
     let manager = detect_package_manager(&handle);
 
-    add_dep_for_manager(&handle, package, &manager)
-        .map_err(|e| McpError::internal_error(e, None))?;
+    for package in &packages {
+        add_dep_for_manager(&handle, package, &manager)
+            .map_err(|e| McpError::internal_error(e, None))?;
+    }
+    // For the response, use the first package as `package` for backward compat
+    let package = packages.first().map(|s| s.as_str()).unwrap_or(raw_package);
 
     // Ensure daemon has the metadata change before any follow-up action
     if let Err(e) = handle.confirm_sync().await {
@@ -159,6 +213,9 @@ pub async fn add_dependency(
         "added": package,
         "package_manager": manager.as_str(),
     });
+    if packages.len() > 1 {
+        result["added_packages"] = serde_json::json!(packages);
+    }
 
     match after {
         "sync" => {
@@ -426,4 +483,49 @@ fn get_deps_for_manager(
             PackageManager::Uv | PackageManager::Unknown(_) => m.uv_dependencies().to_vec(),
         })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_single_package() {
+        assert_eq!(parse_package_param("pandas>=2.0"), vec!["pandas>=2.0"]);
+    }
+
+    #[test]
+    fn parse_json_array_string() {
+        assert_eq!(
+            parse_package_param(r#"["pandas","numpy"]"#),
+            vec!["pandas", "numpy"]
+        );
+    }
+
+    #[test]
+    fn parse_python_repr_string() {
+        assert_eq!(
+            parse_package_param("['pandas','numpy']"),
+            vec!["pandas", "numpy"]
+        );
+    }
+
+    #[test]
+    fn parse_python_repr_with_version_specs() {
+        assert_eq!(
+            parse_package_param("['pandas>=2.0', 'numpy']"),
+            vec!["pandas>=2.0", "numpy"]
+        );
+    }
+
+    #[test]
+    fn parse_empty_brackets_falls_through() {
+        // Empty list → fall back to raw string (will error naturally)
+        assert_eq!(parse_package_param("[]"), vec!["[]"]);
+    }
+
+    #[test]
+    fn parse_whitespace_trimmed() {
+        assert_eq!(parse_package_param("  ['pandas']  "), vec!["pandas"]);
+    }
 }
