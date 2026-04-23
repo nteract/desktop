@@ -1262,7 +1262,7 @@ impl Daemon {
     /// Automerge settings document. Self-writes (from `persist_settings`) are
     /// automatically skipped because the file contents match the doc state.
     async fn watch_settings_json(self: Arc<Self>) {
-        let json_path = crate::settings_json_path();
+        let json_path = self.config.resolved_settings_json_path();
 
         // Determine which path to watch: the file itself if it exists,
         // or the parent directory if it doesn't exist yet.
@@ -1681,6 +1681,8 @@ impl Daemon {
                     self.settings.clone(),
                     changed_tx,
                     changed_rx,
+                    self.config.resolved_settings_doc_path(),
+                    self.config.resolved_settings_json_path(),
                 )
                 .await
             }

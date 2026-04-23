@@ -4,6 +4,7 @@
 //! daemon's unified socket. Exchanges Automerge sync messages to keep a
 //! shared settings document in sync across all notebook windows.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use automerge::sync;
@@ -42,6 +43,8 @@ pub async fn handle_settings_sync_connection<R, W>(
     settings: Arc<RwLock<SettingsDoc>>,
     changed_tx: broadcast::Sender<()>,
     mut changed_rx: broadcast::Receiver<()>,
+    automerge_path: PathBuf,
+    json_path: PathBuf,
 ) -> anyhow::Result<()>
 where
     R: AsyncRead + Unpin,
@@ -76,7 +79,7 @@ where
                         doc.receive_sync_message(&mut peer_state, message)?;
 
                         // Persist and notify others
-                        persist_settings(&mut doc);
+                        persist_settings(&mut doc, &automerge_path, &json_path);
                         let _ = changed_tx.send(());
 
                         // Send our response
@@ -103,14 +106,11 @@ where
 }
 
 /// Persist the settings document to disk (both Automerge binary and JSON mirror).
-fn persist_settings(doc: &mut SettingsDoc) {
-    let automerge_path = crate::default_settings_doc_path();
-    let json_path = crate::settings_json_path();
-
-    if let Err(e) = doc.save_to_file(&automerge_path) {
+fn persist_settings(doc: &mut SettingsDoc, automerge_path: &Path, json_path: &Path) {
+    if let Err(e) = doc.save_to_file(automerge_path) {
         warn!("[sync] Failed to save Automerge doc: {}", e);
     }
-    if let Err(e) = doc.save_json_mirror(&json_path) {
+    if let Err(e) = doc.save_json_mirror(json_path) {
         warn!("[sync] Failed to write JSON mirror: {}", e);
     }
 }
