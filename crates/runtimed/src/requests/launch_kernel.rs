@@ -1068,6 +1068,49 @@ pub(crate) async fn handle(
         (pooled_env, None)
     };
 
+    // Verify ipykernel is present in the prepared env before we launch.
+    // Mirrors the auto-launch gate in `notebook_sync_server/metadata.rs`:
+    // the LaunchKernel RPC serves the toolbar restart button,
+    // restart-and-run-all, post-trust approval, and other retry paths,
+    // so a stale cache or hand-edited venv must surface the typed
+    // `MissingIpykernel` reason here too — otherwise retries silently
+    // regress to a generic kernel spawn failure. Skipped env sources
+    // match the auto-launch site (prewarmed pools, pixi:*, uv:pyproject,
+    // conda:env_yml, deno); pixi:toml is gated earlier in this function.
+    if matches!(
+        parsed_resolved,
+        EnvSource::Inline(PackageManager::Uv)
+            | EnvSource::Inline(PackageManager::Conda)
+            | EnvSource::Pep723(PackageManager::Uv)
+    ) {
+        if let Some(ref env) = pooled_env {
+            if !kernel_env::venv_has_ipykernel(&env.venv_path) {
+                warn!(
+                    "[launch-kernel] prepared env at {:?} ({}) is missing ipykernel — cannot launch kernel",
+                    env.venv_path,
+                    parsed_resolved.as_str()
+                );
+                let env_source_label = parsed_resolved.as_str().to_string();
+                if let Err(e) = room.state.with_doc(|sd| {
+                    sd.set_lifecycle_with_error(
+                        &RuntimeLifecycle::Error,
+                        Some(KernelErrorReason::MissingIpykernel),
+                    )?;
+                    sd.set_kernel_info("python", "python", &env_source_label)?;
+                    Ok(())
+                }) {
+                    warn!("[runtime-state] {}", e);
+                }
+                return NotebookResponse::Error {
+                    error: format!(
+                        "ipykernel not found in prepared {} environment",
+                        parsed_resolved.as_str()
+                    ),
+                };
+            }
+        }
+    }
+
     // Register the env path for GC protection immediately after pool.take(),
     // BEFORE any async work (agent spawn, connect timeout, delta install).
     if let Some(ref env) = pooled_env {
