@@ -2,7 +2,7 @@
   "name": "sift-wasm",
   "type": "module",
   "description": "WASM bindings for nteract-predicate — used by @nteract/sift",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "license": "BSD-3-Clause",
   "repository": {
     "type": "git",
