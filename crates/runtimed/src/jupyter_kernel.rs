@@ -755,7 +755,10 @@ impl KernelConnection for JupyterKernel {
                                     });
 
                                     if status_str != "unknown" {
-                                        let is_transient = execution_id.is_none()
+                                        // Non-execute messages (kernel_info, completions) have a
+                                        // parent_header.msg_id that isn't in our execute map.
+                                        // cell_id is None for those — treat their status as transient.
+                                        let is_transient = cell_id.is_none()
                                             && (status_str == "busy" || status_str == "idle");
 
                                         if !is_transient {
