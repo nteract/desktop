@@ -861,10 +861,27 @@ impl RuntimeStateDoc {
     pub fn set_activity(&mut self, activity: KernelActivity) -> Result<(), RuntimeStateError> {
         let kernel = self.scaffold_map("kernel")?;
         let current_activity = self.read_str(&kernel, "activity");
-        if current_activity == activity.as_str() {
+        // Short-circuit only when the typed activity already matches
+        // AND the legacy keys are already cleared. Otherwise a
+        // pre-typed doc hydrated via from_doc would stay stuck on
+        // stale `status="starting"` + `starting_phase="connecting"`
+        // after the first IOPub activity update.
+        let has_stale_legacy = self.doc.get(&kernel, "status").ok().flatten().is_some()
+            || self
+                .doc
+                .get(&kernel, "starting_phase")
+                .ok()
+                .flatten()
+                .is_some();
+        if current_activity == activity.as_str() && !has_stale_legacy {
             return Ok(());
         }
-        self.doc.put(&kernel, "activity", activity.as_str())?;
+        if current_activity != activity.as_str() {
+            self.doc.put(&kernel, "activity", activity.as_str())?;
+        }
+        if has_stale_legacy {
+            self.clear_legacy_kernel_status(&kernel)?;
+        }
         Ok(())
     }
 
@@ -1973,7 +1990,25 @@ impl RuntimeStateDoc {
                 // kernel map at all" (None) from "scaffolded but unset"
                 // (Some("")). automunge::read_str_if_present returns None
                 // only when the key itself is absent.
-                let error_reason = automunge::read_str_if_present(&self.doc, k, "error_reason");
+                //
+                // Fallback: pre-typed docs encoded the error reason via
+                // `starting_phase` on the Error transition
+                // (status="error" + starting_phase="missing_ipykernel").
+                // When the typed key is absent AND we resolved the
+                // lifecycle to Error AND the stored starting_phase
+                // carries a non-empty reason, surface it so the frontend
+                // remediation prompt keeps firing.
+                let error_reason = automunge::read_str_if_present(&self.doc, k, "error_reason")
+                    .or_else(|| {
+                        if matches!(lifecycle, RuntimeLifecycle::Error)
+                            && stored_status == "error"
+                            && !stored_starting_phase.is_empty()
+                        {
+                            Some(stored_starting_phase.clone())
+                        } else {
+                            None
+                        }
+                    });
                 KernelState {
                     status: status.to_string(),
                     starting_phase: starting_phase.to_string(),
@@ -4874,6 +4909,90 @@ mod tests {
         // Projected status is now "error" (from lifecycle), not "busy".
         assert_eq!(k.status, "error");
         assert_eq!(k.starting_phase, "");
+        Ok(())
+    }
+
+    #[test]
+    fn set_activity_clears_stale_legacy_keys_on_pre_typed_doc() -> Result<(), RuntimeStateError> {
+        // jupyter_kernel sends idle/busy updates via set_activity. A
+        // doc hydrated from pre-typed bytes carries status="starting"
+        // + starting_phase="connecting"; the first IOPub activity must
+        // not leave the read stuck in Connecting just because the hot
+        // path skipped clearing the legacy keys.
+        use automerge::{transaction::Transactable, AutoCommit, ObjType, ROOT};
+
+        let mut raw = AutoCommit::new();
+        let kernel = raw
+            .put_object(&ROOT, "kernel", ObjType::Map)
+            .expect("scaffold kernel");
+        raw.put(&kernel, "status", "starting").expect("status");
+        raw.put(&kernel, "starting_phase", "connecting")
+            .expect("starting_phase");
+        raw.put(&kernel, "name", "").expect("name");
+        raw.put(&kernel, "language", "").expect("language");
+        raw.put(&kernel, "env_source", "").expect("env_source");
+        raw.put(&kernel, "runtime_agent_id", "")
+            .expect("runtime_agent_id");
+
+        let mut doc = RuntimeStateDoc::from_doc(raw);
+        assert_eq!(
+            doc.read_state().kernel.lifecycle,
+            RuntimeLifecycle::Connecting,
+            "pre-typed Connecting reads via fallback"
+        );
+
+        // First IOPub idle update. Must converge the doc to the typed
+        // shape, even without a preceding set_lifecycle.
+        doc.set_activity(KernelActivity::Idle)?;
+        let k = doc.read_state().kernel;
+        // lifecycle key is still unset (typed writers only set it via
+        // set_lifecycle). resolve_lifecycle sees empty typed keys plus
+        // cleared legacy keys and falls through to NotStarted. That's
+        // a caller-contract issue: set_activity without a preceding
+        // set_lifecycle is not a supported pattern, but we still must
+        // not leave a stale "Connecting" reading from the old legacy
+        // shape.
+        assert_ne!(
+            k.lifecycle,
+            RuntimeLifecycle::Connecting,
+            "stale legacy Connecting must not survive an activity update"
+        );
+        assert_eq!(k.starting_phase, "", "legacy starting_phase cleared");
+        Ok(())
+    }
+
+    #[test]
+    fn pre_typed_doc_recovers_error_reason_from_starting_phase() -> Result<(), RuntimeStateError> {
+        // Pre-typed docs encoded the error reason via starting_phase.
+        // NotebookToolbar gates the pixi install prompt on
+        // kernel.error_reason, so the read must surface the legacy
+        // reason when the typed error_reason key is absent.
+        use automerge::{transaction::Transactable, AutoCommit, ObjType, ROOT};
+
+        let mut raw = AutoCommit::new();
+        let kernel = raw
+            .put_object(&ROOT, "kernel", ObjType::Map)
+            .expect("scaffold kernel");
+        raw.put(&kernel, "status", "error").expect("status");
+        raw.put(&kernel, "starting_phase", "missing_ipykernel")
+            .expect("starting_phase");
+        raw.put(&kernel, "name", "").expect("name");
+        raw.put(&kernel, "language", "").expect("language");
+        raw.put(&kernel, "env_source", "pixi:toml")
+            .expect("env_source");
+        raw.put(&kernel, "runtime_agent_id", "")
+            .expect("runtime_agent_id");
+        // Deliberately DO NOT write kernel/error_reason; the reason
+        // lives in starting_phase in the pre-typed shape.
+
+        let doc = RuntimeStateDoc::from_doc(raw);
+        let k = doc.read_state().kernel;
+        assert_eq!(k.lifecycle, RuntimeLifecycle::Error);
+        assert_eq!(
+            k.error_reason.as_deref(),
+            Some("missing_ipykernel"),
+            "legacy starting_phase reason must surface as error_reason"
+        );
         Ok(())
     }
 
