@@ -454,6 +454,7 @@ pub fn get_all_from_doc(doc: &AutoCommit) -> SyncedSettings {
         bootstrap_dx: get_bool("bootstrap_dx").unwrap_or(defaults.bootstrap_dx),
         install_id: get_str("install_id").unwrap_or_default(),
         telemetry_enabled: get_bool("telemetry_enabled").unwrap_or(true),
+        telemetry_consent_recorded: get_bool("telemetry_consent_recorded").unwrap_or(false),
         telemetry_last_daemon_ping_at: get_u64("telemetry_last_daemon_ping_at"),
         telemetry_last_app_ping_at: get_u64("telemetry_last_app_ping_at"),
         telemetry_last_mcp_ping_at: get_u64("telemetry_last_mcp_ping_at"),

@@ -259,6 +259,14 @@ pub struct SyncedSettings {
     #[serde(default = "default_telemetry_enabled")]
     pub telemetry_enabled: bool,
 
+    /// Whether the user has explicitly recorded a telemetry decision (pressed
+    /// either the "You can count on me!" or "Opt out of metrics, continue"
+    /// button during onboarding). Default false. Until this is true, no
+    /// heartbeat fires, even when `telemetry_enabled = true`. Satisfies the
+    /// GDPR "clear affirmative action" requirement.
+    #[serde(default)]
+    pub telemetry_consent_recorded: bool,
+
     /// Unix-seconds timestamp of the last successful daemon heartbeat.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub telemetry_last_daemon_ping_at: Option<u64>,
@@ -299,6 +307,7 @@ impl Default for SyncedSettings {
             bootstrap_dx: false,
             install_id: String::new(),
             telemetry_enabled: true,
+            telemetry_consent_recorded: false,
             telemetry_last_daemon_ping_at: None,
             telemetry_last_app_ping_at: None,
             telemetry_last_mcp_ping_at: None,
@@ -321,6 +330,18 @@ fn default_conda_pool_size() -> u64 {
 }
 fn default_pixi_pool_size() -> u64 {
     DEFAULT_PIXI_POOL_SIZE
+}
+
+/// Backfill `telemetry_consent_recorded` for installations that completed
+/// onboarding before the consent flag existed. Without this, all existing
+/// users would look like they had never consented, and their heartbeats
+/// would stop at the next app launch.
+///
+/// Called once on daemon startup. Idempotent.
+pub fn backfill_telemetry_consent(settings: &mut SyncedSettings) {
+    if !settings.telemetry_consent_recorded && settings.onboarding_completed {
+        settings.telemetry_consent_recorded = true;
+    }
 }
 
 /// Ensure an `install_id` exists in the settings doc, generating one if needed.
@@ -410,6 +431,7 @@ impl SettingsDoc {
         // Telemetry defaults (install_id left empty until first heartbeat)
         let _ = doc.put(automerge::ROOT, "install_id", "");
         let _ = doc.put(automerge::ROOT, "telemetry_enabled", true);
+        let _ = doc.put(automerge::ROOT, "telemetry_consent_recorded", false);
 
         // Nested uv map with empty package list
         if let Ok(uv_id) = doc.put_object(automerge::ROOT, "uv", ObjType::Map) {
@@ -520,6 +542,12 @@ impl SettingsDoc {
         }
         if let Some(enabled) = json.get("telemetry_enabled").and_then(|v| v.as_bool()) {
             settings.put_bool("telemetry_enabled", enabled);
+        }
+        if let Some(recorded) = json
+            .get("telemetry_consent_recorded")
+            .and_then(|v| v.as_bool())
+        {
+            settings.put_bool("telemetry_consent_recorded", recorded);
         }
         if let Some(ts) = json
             .get("telemetry_last_daemon_ping_at")
@@ -941,6 +969,9 @@ impl SettingsDoc {
                 .unwrap_or(defaults.bootstrap_dx),
             install_id: self.get("install_id").unwrap_or_default(),
             telemetry_enabled: self.get_bool("telemetry_enabled").unwrap_or(true),
+            telemetry_consent_recorded: self
+                .get_bool("telemetry_consent_recorded")
+                .unwrap_or(false),
             telemetry_last_daemon_ping_at: self.get_u64("telemetry_last_daemon_ping_at"),
             telemetry_last_app_ping_at: self.get_u64("telemetry_last_app_ping_at"),
             telemetry_last_mcp_ping_at: self.get_u64("telemetry_last_mcp_ping_at"),
@@ -1089,6 +1120,15 @@ impl SettingsDoc {
         if let Some(enabled) = json.get("telemetry_enabled").and_then(|v| v.as_bool()) {
             if self.get_bool("telemetry_enabled") != Some(enabled) {
                 self.put_bool("telemetry_enabled", enabled);
+                changed = true;
+            }
+        }
+        if let Some(recorded) = json
+            .get("telemetry_consent_recorded")
+            .and_then(|v| v.as_bool())
+        {
+            if self.get_bool("telemetry_consent_recorded") != Some(recorded) {
+                self.put_bool("telemetry_consent_recorded", recorded);
                 changed = true;
             }
         }
