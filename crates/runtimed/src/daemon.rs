@@ -2117,7 +2117,7 @@ impl Daemon {
         working_dir: Option<String>,
         notebook_id_hint: Option<String>,
         ephemeral: Option<bool>,
-        package_manager: Option<String>,
+        package_manager: Option<notebook_protocol::connection::PackageManager>,
         dependencies: Vec<String>,
         client_protocol_version: u8,
     ) -> anyhow::Result<()>
@@ -2177,7 +2177,7 @@ impl Daemon {
                     &runtime,
                     default_python_env.clone(),
                     Some(&notebook_id),
-                    package_manager.as_deref(),
+                    package_manager,
                     &dependencies,
                 ) {
                     Ok(_) => {}

@@ -423,9 +423,9 @@ pub async fn create_notebook(
     let deps: Vec<String> = arg_string_array(request, "dependencies").unwrap_or_default();
     let explicit_pkg_manager = match arg_str(request, "package_manager") {
         Some(pm) => {
-            let normalized = notebook_protocol::connection::normalize_package_manager(pm)
+            let parsed = notebook_protocol::connection::PackageManager::parse(pm)
                 .map_err(|msg| McpError::invalid_params(msg, None))?;
-            Some(normalized)
+            Some(parsed)
         }
         None => None,
     };
@@ -454,7 +454,7 @@ pub async fn create_notebook(
             crate::presence::announce(&result.handle, &peer_label).await;
 
             let pkg_manager: String = explicit_pkg_manager
-                .map(String::from)
+                .map(|pm| pm.as_str().to_string())
                 .unwrap_or_else(|| super::deps::detect_package_manager(&result.handle));
 
             let session = NotebookSession {

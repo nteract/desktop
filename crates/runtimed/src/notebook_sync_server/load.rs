@@ -727,7 +727,7 @@ pub fn create_empty_notebook(
     runtime: &str,
     default_python_env: crate::settings_doc::PythonEnvType,
     env_id: Option<&str>,
-    package_manager: Option<&str>,
+    package_manager: Option<notebook_protocol::connection::PackageManager>,
     dependencies: &[String],
 ) -> Result<String, String> {
     let env_id = env_id
@@ -771,7 +771,7 @@ pub(crate) fn build_new_notebook_metadata(
     runtime: &str,
     env_id: &str,
     default_python_env: crate::settings_doc::PythonEnvType,
-    package_manager: Option<&str>,
+    package_manager: Option<notebook_protocol::connection::PackageManager>,
     dependencies: &[String],
 ) -> NotebookMetadataSnapshot {
     use crate::notebook_metadata::{
@@ -806,24 +806,18 @@ pub(crate) fn build_new_notebook_metadata(
             // Resolve which package manager section to create:
             //   1. Explicit package_manager from the request
             //   2. No explicit manager - use default_python_env
-            let effective_manager: &str = match package_manager {
-                Some(pm) => {
-                    // Normalize aliases (e.g. "pip" -> "uv", "mamba" -> "conda").
-                    // If the value is unrecognized, fall through to "uv" as a
-                    // safe default - callers should validate before reaching here.
-                    notebook_protocol::connection::normalize_package_manager(pm).unwrap_or("uv")
-                }
-                None => match default_python_env {
-                    crate::settings_doc::PythonEnvType::Conda => "conda",
-                    crate::settings_doc::PythonEnvType::Pixi => "pixi",
-                    _ => "uv",
-                },
-            };
+            use notebook_protocol::connection::PackageManager;
+            let effective_manager: PackageManager =
+                package_manager.unwrap_or_else(|| match default_python_env {
+                    crate::settings_doc::PythonEnvType::Conda => PackageManager::Conda,
+                    crate::settings_doc::PythonEnvType::Pixi => PackageManager::Pixi,
+                    _ => PackageManager::Uv,
+                });
 
             let deps = dependencies.to_vec();
 
             let (uv, conda, pixi) = match effective_manager {
-                "conda" => (
+                PackageManager::Conda => (
                     None,
                     Some(CondaInlineMetadata {
                         dependencies: deps,
@@ -832,7 +826,7 @@ pub(crate) fn build_new_notebook_metadata(
                     }),
                     None,
                 ),
-                "pixi" => (
+                PackageManager::Pixi => (
                     None,
                     None,
                     Some(notebook_doc::metadata::PixiInlineMetadata {
@@ -842,7 +836,7 @@ pub(crate) fn build_new_notebook_metadata(
                         python: None,
                     }),
                 ),
-                _ => (
+                PackageManager::Uv => (
                     Some(UvInlineMetadata {
                         dependencies: deps,
                         requires_python: None,

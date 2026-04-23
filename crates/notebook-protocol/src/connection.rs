@@ -204,11 +204,11 @@ pub enum Handshake {
         /// Defaults to false (backward compat). MCP agents use true for scratch compute.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ephemeral: Option<bool>,
-        /// Package manager preference: "uv", "conda", or "pixi".
+        /// Package manager preference: uv, conda, or pixi.
         /// When set, the daemon creates only this manager's metadata section.
         /// When None, the daemon uses its default_python_env setting.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        package_manager: Option<String>,
+        package_manager: Option<PackageManager>,
         /// Dependencies to seed into notebook metadata before auto-launch.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         dependencies: Vec<String>,

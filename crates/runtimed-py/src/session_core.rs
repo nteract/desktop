@@ -409,7 +409,7 @@ pub(crate) async fn connect_create(
     runtime: &str,
     working_dir: Option<PathBuf>,
     actor_label: Option<&str>,
-    package_manager: Option<&str>,
+    package_manager: Option<notebook_protocol::connection::PackageManager>,
     dependencies: Vec<String>,
 ) -> PyResult<(String, SessionState, NotebookConnectionInfo)> {
     let default_label;

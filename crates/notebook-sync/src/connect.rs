@@ -275,7 +275,7 @@ pub async fn connect_create(
     working_dir: Option<PathBuf>,
     actor_label: &str,
     ephemeral: bool,
-    package_manager: Option<&str>,
+    package_manager: Option<notebook_protocol::connection::PackageManager>,
     dependencies: Vec<String>,
 ) -> Result<CreateResult, SyncError> {
     connect_create_inner(
@@ -299,7 +299,7 @@ async fn connect_create_inner(
     notebook_id: Option<String>,
     actor_label: &str,
     ephemeral: bool,
-    package_manager: Option<&str>,
+    package_manager: Option<notebook_protocol::connection::PackageManager>,
     dependencies: Vec<String>,
 ) -> Result<CreateResult, SyncError> {
     let stream = connect_stream!(&socket_path);
@@ -318,7 +318,7 @@ async fn connect_create_inner(
             .map(|p| p.to_string_lossy().to_string()),
         notebook_id,
         ephemeral: if ephemeral { Some(true) } else { None },
-        package_manager: package_manager.map(String::from),
+        package_manager,
         dependencies,
     };
     connection::send_json_frame(&mut writer, &handshake)
@@ -492,7 +492,7 @@ pub async fn connect_create_relay(
     notebook_id: Option<String>,
     frame_tx: mpsc::UnboundedSender<Vec<u8>>,
     ephemeral: bool,
-    package_manager: Option<&str>,
+    package_manager: Option<notebook_protocol::connection::PackageManager>,
     dependencies: Vec<String>,
 ) -> Result<RelayCreateResult, SyncError> {
     let stream = connect_stream!(&socket_path);
@@ -511,7 +511,7 @@ pub async fn connect_create_relay(
             .map(|p| p.to_string_lossy().to_string()),
         notebook_id,
         ephemeral: if ephemeral { Some(true) } else { None },
-        package_manager: package_manager.map(String::from),
+        package_manager,
         dependencies,
     };
     connection::send_json_frame(&mut writer, &handshake)

@@ -1954,7 +1954,7 @@ async fn test_create_notebook_with_deps() {
         None,
         "test",
         false,
-        Some("conda"),
+        Some(notebook_protocol::connection::PackageManager::Conda),
         vec!["pandas".to_string(), "numpy".to_string()],
     )
     .await
@@ -2027,7 +2027,7 @@ async fn test_create_notebook_with_explicit_manager_no_deps() {
         None,
         "test",
         false,
-        Some("pixi"),
+        Some(notebook_protocol::connection::PackageManager::Pixi),
         vec![],
     )
     .await
