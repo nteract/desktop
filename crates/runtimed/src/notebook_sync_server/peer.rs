@@ -1,4 +1,5 @@
 use super::*;
+use runtime_doc::RuntimeLifecycle;
 
 /// Handle a single notebook sync client connection.
 ///
@@ -455,12 +456,11 @@ where
                 "[notebook-sync] Auto-launching kernel for notebook {} (trust: {:?}, new: {})",
                 notebook_id, trust_status, is_new_notebook
             );
-            // Write "starting" immediately so clients never see stale "not_started"
-            if let Err(e) = room.state.with_doc(|sd| {
-                sd.set_kernel_status("starting")?;
-                sd.set_starting_phase("resolving")?;
-                Ok(())
-            }) {
+            // Write Resolving immediately so clients never see stale NotStarted
+            if let Err(e) = room
+                .state
+                .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Resolving))
+            {
                 warn!("[runtime-state] {}", e);
             }
             // Spawn auto-launch in background so we don't block sync
@@ -486,11 +486,10 @@ where
                     // to acquire the lock. But spawn_supervised's panic handler runs
                     // outside async context, so we still need spawn for the closure.
                     tokio::spawn(async move {
-                        if let Err(e) = r.state.with_doc(|sd| {
-                            sd.set_kernel_status("error")?;
-                            sd.set_starting_phase("")?;
-                            Ok(())
-                        }) {
+                        if let Err(e) = r
+                            .state
+                            .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Error))
+                        {
                             tracing::warn!("[runtime-state] {}", e);
                         }
                     });
@@ -508,11 +507,10 @@ where
                 "[notebook-sync] Kernel blocked on trust approval for {} (trust: {:?})",
                 notebook_id, trust_status
             );
-            if let Err(e) = room.state.with_doc(|sd| {
-                sd.set_kernel_status("awaiting_trust")?;
-                sd.set_starting_phase("")?;
-                Ok(())
-            }) {
+            if let Err(e) = room
+                .state
+                .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::AwaitingTrust))
+            {
                 warn!("[runtime-state] {}", e);
             }
         } else {

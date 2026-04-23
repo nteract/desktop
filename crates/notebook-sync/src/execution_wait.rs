@@ -26,6 +26,8 @@
 
 use std::time::{Duration, Instant};
 
+use runtime_doc::RuntimeLifecycle;
+
 use crate::handle::DocHandle;
 
 /// Outcome of awaiting a single execution.
@@ -113,12 +115,12 @@ pub async fn await_execution_terminal(
             // Fallback: kernel fault aborts only if *this* execution is
             // still non-terminal. Otherwise the caller would spin until
             // the outer timeout fires.
-            if state.kernel.status == "error" {
+            if matches!(state.kernel.lifecycle, RuntimeLifecycle::Error) {
                 return Err(ExecutionTerminalError::KernelFailed {
                     reason: "kernel error".to_string(),
                 });
             }
-            if state.kernel.status == "shutdown" {
+            if matches!(state.kernel.lifecycle, RuntimeLifecycle::Shutdown) {
                 return Err(ExecutionTerminalError::KernelFailed {
                     reason: "kernel shutdown".to_string(),
                 });
