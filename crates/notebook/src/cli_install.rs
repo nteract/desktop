@@ -319,7 +319,6 @@ pub fn ensure_cli_current(app: &tauri::AppHandle) {
         let _ = app;
         // On Windows, CLI install copies the binary — no symlink to check.
         // A future enhancement could compare binary hashes.
-        return;
     }
 
     #[cfg(unix)]
