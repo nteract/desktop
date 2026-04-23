@@ -229,13 +229,16 @@ No new backend logic. The Privacy pane reads the same `SyncedSettings` struct an
 
 ## Rollout plan
 
-1. **PR 1 (nteract.io):** Add Source Serif 4, scaffold `/telemetry` with placeholder content, wire up raw.md + middleware + vercel.json, deploy preview.
-2. **PR 2 (nteract.io):** Complete the page content and styling. Reviewed against the markdown source.
-3. **PR 3 (desktop):** Extract `TelemetryDisclosure` component. Update onboarding to use it in the new affirmation layout. Fix the Learn more URL to `/telemetry`.
-4. **PR 4 (desktop):** Add the Settings → Privacy pane with install-ID rotation.
-5. **PR 5 (desktop):** Slim `docs/telemetry.md` to the developer-facing residue.
+1. **PR 1 (nteract.io):** Ship `/telemetry`. Structured as separate commits for reviewability:
+   - Commit A: Add Source Serif 4 as `--font-page-serif`, add the `.cream-page` palette scope.
+   - Commit B: Scaffold `app/telemetry/page.tsx` + `app/telemetry/raw.md/route.ts`, wire middleware + vercel.json + llms.txt + sitemap.
+   - Commit C: Complete page content, typography pass, accordion interactions.
+   - Commit D: `lib/telemetry-data.ts` typed module and its unit tests.
+2. **PR 2 (desktop):** Extract `TelemetryDisclosure` component. Update onboarding to the new affirmation layout. Fix the Learn more URL to `/telemetry`.
+3. **PR 3 (desktop):** Add the Settings → Privacy pane with install-ID rotation.
+4. **PR 4 (desktop):** Slim `docs/telemetry.md` to the developer-facing residue.
 
-PRs 1–2 ship the page. PRs 3–4 ship the touchpoints. PR 5 unifies the canonical home for the user-facing text. Each PR is reviewable in isolation; the link update in PR 3 depends on PR 2 being live, otherwise the Learn more link dead-ends again.
+PR 1 ships the page. PRs 2–3 ship the touchpoints. PR 4 unifies the canonical home for the user-facing text. Each PR is reviewable in isolation; the link update in PR 2 depends on PR 1 being live, otherwise the Learn more link dead-ends again.
 
 ## Follow-ups parked
 
