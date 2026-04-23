@@ -49,7 +49,6 @@
     }
   },
   "devDependencies": {
-    "@argo-video/cli": "^0.27.3",
     "@playwright/test": "^1.59.1",
     "@tailwindcss/vite": "^4.2.2",
     "@testing-library/jest-dom": "^6.9.1",
