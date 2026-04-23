@@ -436,6 +436,11 @@ impl RuntimeStateDoc {
         &mut self.doc
     }
 
+    /// Current document heads (for change detection).
+    pub fn get_heads(&mut self) -> Vec<automerge::ChangeHash> {
+        self.doc.get_heads()
+    }
+
     // ── Fork + Merge ────────────────────────────────────────────────
 
     /// Fork the document at its current state.
