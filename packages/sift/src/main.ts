@@ -1,19 +1,7 @@
-import type { RecordBatch } from "apache-arrow";
-import { RecordBatchReader } from "apache-arrow";
 import { catchError, defer, EMPTY, Observable, Subject, switchMap } from "rxjs";
-import {
-  BooleanAccumulator,
-  CategoricalAccumulator,
-  detectColumnType,
-  formatCell,
-  NumericAccumulator,
-  type SummaryAccumulator,
-  TimestampAccumulator,
-} from "./accumulators";
-import { autoWidth } from "./auto-width";
 import { DATASETS, type DatasetEntry } from "./datasets";
 import { resolveHuggingFaceParquetUrl } from "./parquet-loader";
-import { getModuleSync, isAvailable, loadIpc } from "./predicate";
+import { getModuleSync, loadIpc } from "./predicate";
 import { type Column, createTable, type TableData, type TableEngine } from "./table";
 import { createWasmTableData } from "./wasm-table-data";
 import "./style.css";
@@ -248,19 +236,9 @@ function loadLocalArrow$(dataset: DatasetEntry, tableRoot: HTMLElement): Observa
 
           renderLoadingSkeleton(tableRoot, "Loading data…");
 
-          // Start WASM init in parallel with Arrow download
-          const [arrowBytes, wasmOk] = await Promise.all([
-            response.arrayBuffer().then((b) => new Uint8Array(b)),
-            isAvailable(),
-          ]);
+          const arrowBytes = new Uint8Array(await response.arrayBuffer());
 
           if (cancelled) return;
-
-          if (!wasmOk) {
-            // WASM unavailable — fall back to JS path
-            await loadLocalArrowJs$(dataset, tableRoot, subscriber, () => cancelled);
-            return;
-          }
 
           renderLoadingSkeleton(tableRoot, "Loading into WASM…");
           const handle = await loadIpc(arrowBytes);
@@ -273,7 +251,6 @@ function loadLocalArrow$(dataset: DatasetEntry, tableRoot: HTMLElement): Observa
           const mod = getModuleSync();
           tableData.recomputeSummaries = () => updateWasmSummaries(mod, handle, tableData, columns);
 
-          // Compute initial summaries
           updateWasmSummaries(mod, handle, tableData, columns);
 
           if (cancelled) return;
@@ -293,67 +270,6 @@ function loadLocalArrow$(dataset: DatasetEntry, tableRoot: HTMLElement): Observa
   );
 }
 
-/**
- * JS fallback for local Arrow loading (used when WASM is unavailable).
- */
-async function loadLocalArrowJs$(
-  dataset: DatasetEntry,
-  tableRoot: HTMLElement,
-  subscriber: import("rxjs").Subscriber<void>,
-  isCancelled: () => boolean,
-) {
-  const response = await fetch(`${import.meta.env.BASE_URL}${dataset.path}`);
-  const reader = await RecordBatchReader.from(response);
-  await reader.open();
-
-  const { columns, fieldNames, stringCols, rawCols, accumulators, tableData } = buildTableState(
-    reader.schema,
-    dataset,
-    generatedColumnOverrides,
-  );
-
-  let totalRows = 0;
-
-  function appendBatch(batch: RecordBatch) {
-    const batchRows = batch.numRows;
-    const startRow = totalRows;
-    for (let c = 0; c < fieldNames.length; c++) {
-      const col = batch.getChild(fieldNames[c])!;
-      for (let r = 0; r < batchRows; r++) {
-        const val = col.get(r);
-        rawCols[c].push(val);
-        stringCols[c].push(formatCell(columns[c].columnType, val));
-      }
-      accumulators[c].add(rawCols[c], startRow, batchRows);
-    }
-    totalRows += batchRows;
-    tableData.rowCount = totalRows;
-    tableData.columnSummaries = accumulators.map((a) => a.snapshot(totalRows));
-  }
-
-  const firstResult = await reader.next();
-  if (isCancelled()) return;
-  if (firstResult.done) {
-    tableRoot.innerHTML = '<div class="sift-loading">No data in Arrow file.</div>';
-    subscriber.complete();
-    return;
-  }
-  appendBatch(firstResult.value);
-
-  tableRoot.innerHTML = "";
-  currentEngine = createTable(tableRoot, tableData);
-  subscriber.next();
-
-  for await (const batch of reader) {
-    if (isCancelled()) return;
-    appendBatch(batch);
-    currentEngine!.onBatchAppended();
-    subscriber.next();
-  }
-
-  currentEngine!.setStreamingDone();
-  subscriber.complete();
-}
 
 /**
  * Load a HuggingFace Parquet dataset as an observable stream.
@@ -639,59 +555,6 @@ function renderLoadingSkeleton(tableRoot: HTMLElement, status: string) {
       </div>
     </div>
   `;
-}
-
-// Old JS/parquet-wasm HuggingFace loader removed — WASM path handles everything now.
-// See loadHuggingFaceWasm$() above.
-
-// Kept for reference: type refinement logic (string→timestamp, null sentinels)
-/** Build table columns, stores, and accumulators from an Arrow schema. */
-function buildTableState(
-  schema: import("apache-arrow").Schema,
-  dataset: DatasetEntry,
-  columnOverrides?: Record<string, Partial<Column>>,
-) {
-  const fieldNames = schema.fields.map((f) => f.name);
-  const typeOverrides = dataset.typeOverrides ?? {};
-
-  const columns: Column[] = schema.fields.map((field) => {
-    const colType = typeOverrides[field.name] ?? detectColumnType(field);
-    const overrides = columnOverrides?.[field.name];
-    return {
-      key: field.name,
-      label: overrides?.label ?? field.name,
-      width: overrides?.width ?? autoWidth(field.name, colType),
-      sortable: overrides?.sortable ?? true,
-      numeric: colType === "numeric",
-      columnType: colType,
-    };
-  });
-
-  const stringCols: string[][] = fieldNames.map(() => []);
-  const rawCols: unknown[][] = fieldNames.map(() => []);
-
-  const accumulators: SummaryAccumulator[] = columns.map((col, c) => {
-    switch (col.columnType) {
-      case "numeric":
-        return new NumericAccumulator();
-      case "timestamp":
-        return new TimestampAccumulator();
-      case "boolean":
-        return new BooleanAccumulator();
-      case "categorical":
-        return new CategoricalAccumulator(stringCols[c]);
-    }
-  });
-
-  const tableData: TableData = {
-    columns,
-    rowCount: 0,
-    getCell: (row, col) => stringCols[col][row],
-    getCellRaw: (row, col) => rawCols[col][row],
-    columnSummaries: columns.map(() => null),
-  };
-
-  return { columns, fieldNames, stringCols, rawCols, accumulators, tableData };
 }
 
 boot();
