@@ -3,6 +3,10 @@
 from runtimed._cell import CellCollection as CellCollection
 from runtimed._cell import CellHandle as CellHandle
 from runtimed._client import Client as Client
+from runtimed._constants import KERNEL_ERROR_REASON as KERNEL_ERROR_REASON
+from runtimed._constants import KERNEL_STATUS as KERNEL_STATUS
+from runtimed._constants import KernelErrorReasonKey as KernelErrorReasonKey
+from runtimed._constants import KernelStatusKey as KernelStatusKey
 from runtimed._internals import Cell as Cell
 from runtimed._internals import EnvState as EnvState
 from runtimed._internals import ExecutionEvent as ExecutionEvent

@@ -58,6 +58,11 @@ class TestModuleExports:
             "Presence",
             # Error type
             "RuntimedError",
+            # Typed string constants mirroring the Rust daemon enums
+            "KERNEL_ERROR_REASON",
+            "KERNEL_STATUS",
+            "KernelErrorReasonKey",
+            "KernelStatusKey",
             # Standalone functions
             "default_socket_path",
             "show_notebook_app",
@@ -168,6 +173,39 @@ class TestSyncGuards:
     def test_env_state_has_await_guard(self):
         """EnvState has __await__ guard method."""
         assert hasattr(runtimed.EnvState, "__await__")
+
+
+class TestKernelStatusConstants:
+    """Typed kernel-status constants mirror the Rust daemon strings."""
+
+    def test_kernel_status_values(self):
+        """Each constant matches the exact wire string the daemon writes."""
+        assert runtimed.KERNEL_STATUS.NOT_STARTED == "not_started"
+        assert runtimed.KERNEL_STATUS.AWAITING_TRUST == "awaiting_trust"
+        assert runtimed.KERNEL_STATUS.STARTING == "starting"
+        assert runtimed.KERNEL_STATUS.IDLE == "idle"
+        assert runtimed.KERNEL_STATUS.BUSY == "busy"
+        assert runtimed.KERNEL_STATUS.ERROR == "error"
+        assert runtimed.KERNEL_STATUS.SHUTDOWN == "shutdown"
+
+    def test_kernel_status_comparable_to_strings(self):
+        """Constants compare equal to the bare strings they replace."""
+        assert runtimed.KERNEL_STATUS.IDLE == "idle"
+        assert "busy" in (runtimed.KERNEL_STATUS.IDLE, runtimed.KERNEL_STATUS.BUSY)
+
+
+class TestKernelErrorReasonConstants:
+    """Typed error-reason constants mirror ``KernelErrorReason::as_str()``."""
+
+    def test_missing_ipykernel_value(self):
+        """``MISSING_IPYKERNEL`` matches the Rust enum's wire string."""
+        assert runtimed.KERNEL_ERROR_REASON.MISSING_IPYKERNEL == "missing_ipykernel"
+
+    def test_missing_ipykernel_matches_ts_mirror(self):
+        """Value matches the TypeScript ``KERNEL_ERROR_REASON.MISSING_IPYKERNEL``."""
+        # The TS mirror lives in packages/runtimed/src/runtime-state.ts;
+        # both ends must serialise to the same CRDT value.
+        assert runtimed.KERNEL_ERROR_REASON.MISSING_IPYKERNEL == "missing_ipykernel"
 
 
 class TestCreateNotebookValidation:

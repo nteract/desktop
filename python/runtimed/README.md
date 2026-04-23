@@ -94,7 +94,8 @@ async with await client.create_notebook() as notebook:
         print(f"{cell.id[:8]}: {cell.source[:40]}")
 
     # Runtime state (sync read from local doc)
-    print(notebook.runtime.kernel.status)
+    if notebook.runtime.kernel.status == runtimed.KERNEL_STATUS.IDLE:
+        print("kernel is idle")
 
     # Runtime lifecycle
     await notebook.start(runtime="python")

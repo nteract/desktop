@@ -6,6 +6,12 @@ from runtimed._cell import CellCollection, CellHandle
 
 # Primary API
 from runtimed._client import Client
+from runtimed._constants import (
+    KERNEL_ERROR_REASON,
+    KERNEL_STATUS,
+    KernelErrorReasonKey,
+    KernelStatusKey,
+)
 from runtimed._execution import Execution
 
 # Return-only data types (from native bindings)
@@ -48,6 +54,11 @@ __all__ = [
     "Presence",
     # Error type — raisable / catchable
     "RuntimedError",
+    # Typed string constants mirroring the Rust daemon enums
+    "KERNEL_ERROR_REASON",
+    "KERNEL_STATUS",
+    "KernelErrorReasonKey",
+    "KernelStatusKey",
     # Standalone functions
     "default_socket_path",
     "show_notebook_app",
