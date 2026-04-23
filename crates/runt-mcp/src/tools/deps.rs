@@ -64,17 +64,12 @@ pub(crate) fn detect_package_manager(
         }
     }
     // Priority 2: env_source from running kernel (fallback for notebooks
-    // with no runt metadata yet)
+    // with no runt metadata yet).
     if let Ok(state) = handle.get_runtime_state() {
-        let src = &state.kernel.env_source;
-        if src.starts_with("conda:") {
-            return PackageManager::Conda;
-        }
-        if src.starts_with("pixi:") {
-            return PackageManager::Pixi;
-        }
-        if src.starts_with("uv:") {
-            return PackageManager::Uv;
+        if let Some(pm) = notebook_protocol::connection::EnvSource::parse(&state.kernel.env_source)
+            .package_manager()
+        {
+            return pm;
         }
     }
     // Default
@@ -217,18 +212,22 @@ pub async fn add_dependency(
         }
         "restart" => {
             // Shutdown + relaunch with scoped auto-detect to preserve the
-            // package manager family (auto:uv, auto:conda, auto:pixi)
-            let restart_env_source = match handle
+            // package manager family (auto:uv, auto:conda, auto:pixi).
+            use notebook_protocol::connection::{EnvSource, PackageManager};
+            let prev_env = handle
                 .get_runtime_state()
                 .ok()
                 .map(|s| s.kernel.env_source.clone())
-                .as_deref()
-            {
-                Some("uv:prewarmed") => "auto:uv".to_string(),
-                Some("conda:prewarmed") => "auto:conda".to_string(),
-                Some("pixi:prewarmed") => "auto:pixi".to_string(),
-                Some("") | None => "auto".to_string(),
-                Some(s) => s.to_string(),
+                .unwrap_or_default();
+            let restart_env_source = if prev_env.is_empty() {
+                "auto".to_string()
+            } else {
+                match EnvSource::parse(&prev_env) {
+                    EnvSource::Prewarmed(PackageManager::Uv) => "auto:uv".to_string(),
+                    EnvSource::Prewarmed(PackageManager::Conda) => "auto:conda".to_string(),
+                    EnvSource::Prewarmed(PackageManager::Pixi) => "auto:pixi".to_string(),
+                    other => other.as_str().to_string(),
+                }
             };
             // Derive notebook_path for project-file-backed envs (uv:pyproject, pixi:toml, etc.)
             let notebook_path = if notebook_id.contains('/') || notebook_id.contains('\\') {
@@ -328,8 +327,9 @@ pub async fn get_dependencies(
         .get_runtime_state()
         .ok()
         .map(|s| s.kernel.env_source.clone());
-    let mode = match env_source.as_deref() {
-        Some("pixi:toml") | Some("uv:pyproject") | Some("conda:env_yml") => "project",
+    use notebook_protocol::connection::EnvSource;
+    let mode = match env_source.as_deref().map(EnvSource::parse) {
+        Some(EnvSource::PixiToml | EnvSource::Pyproject | EnvSource::EnvYml) => "project",
         _ => "inline",
     };
 

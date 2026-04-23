@@ -158,44 +158,39 @@ pub(crate) async fn handle(
         resolved_kernel_type, kernel_type
     );
 
+    // Classify the request-time input. Permissive: non-canonical values land in
+    // `LaunchSpec::Concrete(EnvSource::Unknown(_))` and pass through unchanged.
+    use notebook_protocol::connection::{EnvSource, LaunchSpec, PackageManager};
+    let launch_spec = LaunchSpec::parse(&env_source);
+
     // Deno kernels don't use Python environments - always use "deno" regardless
     // of what env_source was requested. Log a warning if caller passed a Python env.
     let resolved_env_source = if resolved_kernel_type == "deno" {
-        if !env_source.is_empty()
-            && env_source != "auto"
-            && env_source != "auto:uv"
-            && env_source != "auto:conda"
-            && env_source != "auto:pixi"
-            && env_source != "deno"
-            && env_source != "prewarmed"
-        {
-            warn!(
-                "[notebook-sync] Deno kernel requested with Python env_source '{}' - \
-                 ignoring and using 'deno' instead",
-                env_source
-            );
-        } else {
-            info!("[notebook-sync] Deno kernel detected, using 'deno' env_source");
+        match &launch_spec {
+            LaunchSpec::Auto | LaunchSpec::AutoScoped(_) => {
+                info!("[notebook-sync] Deno kernel detected, using 'deno' env_source");
+            }
+            LaunchSpec::Concrete(EnvSource::Deno) => {
+                info!("[notebook-sync] Deno kernel detected, using 'deno' env_source");
+            }
+            LaunchSpec::Concrete(other) => {
+                warn!(
+                    "[notebook-sync] Deno kernel requested with Python env_source '{}' - \
+                     ignoring and using 'deno' instead",
+                    other.as_str()
+                );
+            }
         }
-        "deno".to_string()
-    } else if env_source == "auto"
-        || env_source == "auto:uv"
-        || env_source == "auto:conda"
-        || env_source == "auto:pixi"
-        || env_source.is_empty()
-        || env_source == "prewarmed"
-    {
+        EnvSource::Deno.as_str().to_string()
+    } else if matches!(launch_spec, LaunchSpec::Auto | LaunchSpec::AutoScoped(_)) {
         // Auto-detect Python environment, optionally scoped to a package manager family.
         // "auto:uv" constrains to UV sources, "auto:conda" to conda sources,
         // "auto:pixi" to pixi sources.
-        let auto_scope = if env_source == "auto:uv" {
-            Some("uv")
-        } else if env_source == "auto:conda" {
-            Some("conda")
-        } else if env_source == "auto:pixi" {
-            Some("pixi")
-        } else {
-            None
+        let auto_scope: Option<&'static str> = match launch_spec.auto_scope() {
+            Some(PackageManager::Uv) => Some("uv"),
+            Some(PackageManager::Conda) => Some("conda"),
+            Some(PackageManager::Pixi) => Some("pixi"),
+            Some(PackageManager::Unknown(_)) | None => None,
         };
 
         // Priority 1: Detect project files near notebook path.
@@ -221,9 +216,9 @@ pub(crate) async fn handle(
             info!(
                 "[notebook-sync] Auto-detected project file: {:?} -> {}",
                 detected.path,
-                detected.to_env_source()
+                detected.to_env_source().as_str()
             );
-            detected.to_env_source().to_string()
+            detected.to_env_source().as_str().to_string()
         }
         // Priority 2: Captured prewarmed env wins over inline deps.
         // Captured deps look structurally identical to user-authored
@@ -237,43 +232,55 @@ pub(crate) async fn handle(
         // notebook (or vice versa) falls through. `auto:pixi` always
         // falls through — no pixi capture path yet.
         else if let Some(captured_src) = captured_env_source_override(metadata_snapshot.as_ref())
-            .filter(|src| match auto_scope {
-                Some("uv") => src == "uv:prewarmed",
-                Some("conda") => src == "conda:prewarmed",
-                Some("pixi") => false,
-                _ => true,
+            .filter(|src| {
+                use notebook_protocol::connection::{EnvSource, PackageManager};
+                match auto_scope {
+                    Some("uv") => matches!(src, EnvSource::Prewarmed(PackageManager::Uv)),
+                    Some("conda") => matches!(src, EnvSource::Prewarmed(PackageManager::Conda)),
+                    Some("pixi") => false,
+                    _ => true,
+                }
             })
         {
             info!(
                 "[notebook-sync] LaunchKernel: captured env on disk -> {}",
-                captured_src
+                captured_src.as_str()
             );
-            captured_src
+            captured_src.as_str().to_string()
         }
         // Priority 3: Check inline deps in notebook metadata
         else if let Some(inline_source) =
             metadata_snapshot
                 .as_ref()
-                .and_then(|snap| match auto_scope {
-                    Some("uv") => snap
-                        .runt
-                        .uv
-                        .as_ref()
-                        .filter(|uv| !uv.dependencies.is_empty())
-                        .map(|_| "uv:inline".to_string()),
-                    Some("conda") => snap
-                        .runt
-                        .conda
-                        .as_ref()
-                        .filter(|c| !c.dependencies.is_empty())
-                        .map(|_| "conda:inline".to_string()),
-                    Some("pixi") => snap
-                        .runt
-                        .pixi
-                        .as_ref()
-                        .filter(|p| !p.dependencies.is_empty())
-                        .map(|_| "pixi:inline".to_string()),
-                    _ => check_inline_deps(snap).filter(|s| s != "deno"),
+                .and_then(|snap| -> Option<String> {
+                    use notebook_protocol::connection::{EnvSource, PackageManager};
+                    match auto_scope {
+                        Some("uv") => snap
+                            .runt
+                            .uv
+                            .as_ref()
+                            .filter(|uv| !uv.dependencies.is_empty())
+                            .map(|_| EnvSource::Inline(PackageManager::Uv).as_str().to_string()),
+                        Some("conda") => snap
+                            .runt
+                            .conda
+                            .as_ref()
+                            .filter(|c| !c.dependencies.is_empty())
+                            .map(|_| {
+                                EnvSource::Inline(PackageManager::Conda)
+                                    .as_str()
+                                    .to_string()
+                            }),
+                        Some("pixi") => snap
+                            .runt
+                            .pixi
+                            .as_ref()
+                            .filter(|p| !p.dependencies.is_empty())
+                            .map(|_| EnvSource::Inline(PackageManager::Pixi).as_str().to_string()),
+                        _ => check_inline_deps(snap)
+                            .filter(|s| !matches!(s, EnvSource::Deno))
+                            .map(|s| s.as_str().to_string()),
+                    }
                 })
         {
             info!(
@@ -345,8 +352,10 @@ pub(crate) async fn handle(
         env_source.clone()
     };
 
+    let parsed_resolved = EnvSource::parse(&resolved_env_source);
+
     // For pixi:toml, verify ipykernel is declared before launching
-    if resolved_env_source == "pixi:toml" {
+    if matches!(parsed_resolved, EnvSource::PixiToml) {
         let pixi_path = notebook_path.as_ref().and_then(|nb| {
             crate::project_file::detect_project_file(nb)
                 .filter(|d| d.kind == crate::project_file::ProjectFileKind::PixiToml)
@@ -373,23 +382,23 @@ pub(crate) async fn handle(
     // For project-backed envs, promote any inline deps to the project
     // file before launching. This handles the case where add_dependency
     // wrote to CRDT metadata and then triggered a restart.
-    if resolved_env_source == "pixi:toml"
-        || resolved_env_source == "uv:pyproject"
-        || resolved_env_source == "conda:env_yml"
-    {
+    if matches!(
+        parsed_resolved,
+        EnvSource::PixiToml | EnvSource::Pyproject | EnvSource::EnvYml
+    ) {
         if let Some(ref snap) = metadata_snapshot {
-            let has_inline = match resolved_env_source.as_str() {
-                "pixi:toml" => snap
+            let has_inline = match parsed_resolved {
+                EnvSource::PixiToml => snap
                     .runt
                     .pixi
                     .as_ref()
                     .is_some_and(|p| !p.dependencies.is_empty()),
-                "uv:pyproject" => snap
+                EnvSource::Pyproject => snap
                     .runt
                     .uv
                     .as_ref()
                     .is_some_and(|u| !u.dependencies.is_empty()),
-                "conda:env_yml" => snap
+                EnvSource::EnvYml => snap
                     .runt
                     .conda
                     .as_ref()
@@ -399,7 +408,7 @@ pub(crate) async fn handle(
             if has_inline {
                 // Build a minimal launched config with project paths for promotion
                 let mut promo_config = notebook_protocol::protocol::LaunchedEnvConfig::default();
-                if resolved_env_source == "pixi:toml" {
+                if matches!(parsed_resolved, EnvSource::PixiToml) {
                     promo_config.pixi_toml_path = notebook_path.as_ref().and_then(|p| {
                         crate::project_file::detect_project_file(p)
                             .filter(|d| d.kind == crate::project_file::ProjectFileKind::PixiToml)
@@ -411,7 +420,7 @@ pub(crate) async fn handle(
                             promo_config.pixi_toml_deps = Some(extract_pixi_toml_deps(&content));
                         }
                     }
-                } else if resolved_env_source == "conda:env_yml" {
+                } else if matches!(parsed_resolved, EnvSource::EnvYml) {
                     promo_config.environment_yml_path = notebook_path.as_ref().and_then(|p| {
                         crate::project_file::find_nearest_project_file(
                             p,
@@ -509,7 +518,10 @@ pub(crate) async fn handle(
                         return NotebookResponse::Error {
                             error: format!(
                                 "{} pool empty - no environment available",
-                                if resolved_env_source == "uv:prewarmed" {
+                                if matches!(
+                                    parsed_resolved,
+                                    EnvSource::Prewarmed(PackageManager::Uv)
+                                ) {
                                     "UV"
                                 } else {
                                     "Conda"
@@ -567,7 +579,10 @@ pub(crate) async fn handle(
     let feature_flags_for_inline = daemon.feature_flags().await;
     let bootstrap_dx = feature_flags_for_inline.bootstrap_dx;
 
-    let (pooled_env, inline_deps) = if resolved_env_source == "uv:pep723" {
+    let (pooled_env, inline_deps) = if matches!(
+        parsed_resolved,
+        EnvSource::Pep723(PackageManager::Uv)
+    ) {
         // Extract PEP 723 deps from cell source
         let cells = room.doc.read().await.get_cells();
         let pep723_deps = match notebook_doc::pep723::find_pep723_in_cells(&cells) {
@@ -626,7 +641,7 @@ pub(crate) async fn handle(
                     .to_string(),
             };
         }
-    } else if resolved_env_source == "uv:inline" {
+    } else if matches!(parsed_resolved, EnvSource::Inline(PackageManager::Uv)) {
         if let Some(deps) = metadata_snapshot.as_ref().and_then(get_inline_uv_deps) {
             let prerelease = metadata_snapshot
                 .as_ref()
@@ -723,7 +738,7 @@ pub(crate) async fn handle(
         } else {
             (pooled_env, None)
         }
-    } else if resolved_env_source == "conda:inline" {
+    } else if matches!(parsed_resolved, EnvSource::Inline(PackageManager::Conda)) {
         if let Some(deps) = metadata_snapshot.as_ref().and_then(get_inline_conda_deps) {
             let channels = metadata_snapshot
                 .as_ref()
@@ -796,7 +811,7 @@ pub(crate) async fn handle(
         } else {
             (pooled_env, None)
         }
-    } else if resolved_env_source == "conda:env_yml" {
+    } else if matches!(parsed_resolved, EnvSource::EnvYml) {
         // conda:env_yml: find or create a named conda env from environment.yml.
         // Uses standard conda env discovery: name: field → search conda env dirs,
         // prefix: field → use that path directly. Falls back to creating via rattler.
@@ -989,7 +1004,7 @@ pub(crate) async fn handle(
             warn!("[notebook-sync] conda:env_yml but no environment.yml found");
             (pooled_env, None)
         }
-    } else if resolved_env_source == "pixi:inline" {
+    } else if matches!(parsed_resolved, EnvSource::Inline(PackageManager::Pixi)) {
         // pixi exec handles its own caching — just extract deps for -w flags
         let deps = metadata_snapshot
             .as_ref()
@@ -1005,7 +1020,7 @@ pub(crate) async fn handle(
         } else {
             (pooled_env, None)
         }
-    } else if resolved_env_source == "pixi:pep723" {
+    } else if matches!(parsed_resolved, EnvSource::Pep723(PackageManager::Pixi)) {
         // PEP 723 deps via pixi exec -w
         let cells = room.doc.read().await.get_cells();
         match notebook_doc::pep723::find_pep723_in_cells(&cells) {

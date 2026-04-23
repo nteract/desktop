@@ -25,12 +25,13 @@ pub struct DetectedProjectFile {
 }
 
 impl DetectedProjectFile {
-    /// Convert to env_source string for kernel launch.
-    pub fn to_env_source(&self) -> &'static str {
+    /// The resolved env_source for this project file.
+    pub fn to_env_source(&self) -> notebook_protocol::connection::EnvSource {
+        use notebook_protocol::connection::EnvSource;
         match self.kind {
-            ProjectFileKind::PyprojectToml => "uv:pyproject",
-            ProjectFileKind::PixiToml => "pixi:toml",
-            ProjectFileKind::EnvironmentYml => "conda:env_yml",
+            ProjectFileKind::PyprojectToml => EnvSource::Pyproject,
+            ProjectFileKind::PixiToml => EnvSource::PixiToml,
+            ProjectFileKind::EnvironmentYml => EnvSource::EnvYml,
         }
     }
 }
@@ -392,7 +393,10 @@ mod tests {
         assert!(found.is_some());
         let found = found.unwrap();
         assert_eq!(found.kind, ProjectFileKind::PixiToml);
-        assert_eq!(found.to_env_source(), "pixi:toml");
+        assert_eq!(
+            found.to_env_source(),
+            notebook_protocol::connection::EnvSource::PixiToml
+        );
     }
 
     #[test]
@@ -409,7 +413,10 @@ mod tests {
 
         let found = detect_project_file(temp.path());
         assert!(found.is_some());
-        assert_eq!(found.unwrap().to_env_source(), "uv:pyproject");
+        assert_eq!(
+            found.unwrap().to_env_source(),
+            notebook_protocol::connection::EnvSource::Pyproject
+        );
     }
 
     #[test]
@@ -419,7 +426,10 @@ mod tests {
 
         let found = detect_project_file(temp.path());
         assert!(found.is_some());
-        assert_eq!(found.unwrap().to_env_source(), "conda:env_yml");
+        assert_eq!(
+            found.unwrap().to_env_source(),
+            notebook_protocol::connection::EnvSource::EnvYml
+        );
     }
 
     #[test]
@@ -475,7 +485,10 @@ mod tests {
         assert!(found.is_some());
         let found = found.unwrap();
         assert_eq!(found.kind, ProjectFileKind::PixiToml);
-        assert_eq!(found.to_env_source(), "pixi:toml");
+        assert_eq!(
+            found.to_env_source(),
+            notebook_protocol::connection::EnvSource::PixiToml
+        );
     }
 
     #[test]
@@ -491,7 +504,10 @@ mod tests {
         assert!(found.is_some());
         let found = found.unwrap();
         assert_eq!(found.kind, ProjectFileKind::PyprojectToml);
-        assert_eq!(found.to_env_source(), "uv:pyproject");
+        assert_eq!(
+            found.to_env_source(),
+            notebook_protocol::connection::EnvSource::Pyproject
+        );
     }
 
     #[test]

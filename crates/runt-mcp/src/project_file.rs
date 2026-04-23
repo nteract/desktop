@@ -30,11 +30,12 @@ impl DetectedProjectFile {
         }
     }
 
-    /// The daemon env_source string for this project type.
-    pub fn env_source(&self) -> &'static str {
+    /// The daemon env_source for this project type.
+    pub fn env_source(&self) -> notebook_protocol::connection::EnvSource {
+        use notebook_protocol::connection::EnvSource;
         match self.kind {
-            ProjectFileKind::PyprojectToml => "uv:pyproject",
-            ProjectFileKind::PixiToml => "pixi:toml",
+            ProjectFileKind::PyprojectToml => EnvSource::Pyproject,
+            ProjectFileKind::PixiToml => EnvSource::PixiToml,
         }
     }
 }
