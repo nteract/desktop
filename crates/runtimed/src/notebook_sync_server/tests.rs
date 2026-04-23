@@ -425,7 +425,7 @@ async fn test_ephemeral_room_skips_persistence() {
     let notebook_uuid = uuid::Uuid::new_v4();
     let room = NotebookRoom::new_fresh(notebook_uuid, None, dir.path(), blob_store, true);
 
-    assert!(room.persist_tx.is_none());
+    assert!(room.persistence.debouncer.is_none());
     assert!(room
         .identity
         .is_ephemeral
@@ -443,7 +443,7 @@ async fn test_session_room_persists() {
     let notebook_uuid = uuid::Uuid::new_v4();
     let room = NotebookRoom::new_fresh(notebook_uuid, None, dir.path(), blob_store, false);
 
-    assert!(room.persist_tx.is_some());
+    assert!(room.persistence.debouncer.is_some());
     assert!(!room
         .identity
         .is_ephemeral
@@ -649,8 +649,7 @@ fn test_room_with_path(
         id: uuid::Uuid::new_v4(),
         doc: Arc::new(RwLock::new(doc)),
         broadcasts: RoomBroadcasts::default(),
-        persist_tx: Some(persist_tx),
-        flush_request_tx: Some(flush_request_tx),
+        persistence: RoomPersistence::with_debouncer(persist_tx, flush_request_tx),
         identity: RoomIdentity::new(persist_path, Some(notebook_path.clone()), false),
         active_peers: AtomicUsize::new(0),
         had_peers: AtomicBool::new(false),
@@ -665,12 +664,6 @@ fn test_room_with_path(
             },
             pending_launch: false,
         })),
-        nbformat_attachments: Arc::new(RwLock::new(HashMap::new())),
-
-        is_loading: AtomicBool::new(false),
-        last_self_write: AtomicU64::new(0),
-        last_save_sources: Arc::new(RwLock::new(HashMap::new())),
-        watcher_shutdown_tx: Mutex::new(None),
         state,
         runtime_agent_handle: Arc::new(Mutex::new(None)),
         runtime_agent_env_path: Arc::new(RwLock::new(None)),
@@ -1125,7 +1118,7 @@ async fn test_apply_ipynb_changes_clears_all_cells() {
 
     // Populate last_save_sources — simulates a save that included the cell
     {
-        let mut saved = room.last_save_sources.write().await;
+        let mut saved = room.persistence.last_save_sources.write().await;
         saved.insert("cell-1".to_string(), "x = 1".to_string());
     }
 
@@ -1416,7 +1409,7 @@ async fn test_apply_ipynb_changes_partial_overlap_preserves_unsaved() {
         doc.update_source("remove", "y = 2").unwrap();
     }
     {
-        let mut saved = room.last_save_sources.write().await;
+        let mut saved = room.persistence.last_save_sources.write().await;
         saved.insert("keep".to_string(), "x = 1".to_string());
         saved.insert("remove".to_string(), "y = 2".to_string());
     }
@@ -1491,7 +1484,7 @@ async fn test_apply_ipynb_changes_no_save_snapshot_preserves_crdt_cells() {
 
     // Do NOT populate last_save_sources — simulates the case where
     // the only save was with 0 cells (empty HashMap is the default).
-    assert!(room.last_save_sources.read().await.is_empty());
+    assert!(room.persistence.last_save_sources.read().await.is_empty());
 
     // External file has 0 cells (the autosave wrote an empty notebook)
     let external_cells: Vec<CellSnapshot> = vec![];
@@ -1859,7 +1852,7 @@ async fn test_save_notebook_to_disk_preserves_nbformat_attachments_from_cache() 
             .unwrap();
     }
     {
-        let mut attachments = room.nbformat_attachments.write().await;
+        let mut attachments = room.persistence.nbformat_attachments.write().await;
         attachments.insert(
             "markdown-1".to_string(),
             serde_json::json!({
@@ -1895,7 +1888,7 @@ async fn test_save_notebook_to_disk_preserves_raw_cell_attachments_from_cache() 
         doc.update_source("raw-1", "attachment ref").unwrap();
     }
     {
-        let mut attachments = room.nbformat_attachments.write().await;
+        let mut attachments = room.persistence.nbformat_attachments.write().await;
         attachments.insert(
             "raw-1".to_string(),
             serde_json::json!({

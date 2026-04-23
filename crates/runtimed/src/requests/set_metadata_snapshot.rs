@@ -18,9 +18,9 @@ pub(crate) async fn handle(room: &NotebookRoom, snapshot: String) -> NotebookRes
                         // Notify peers of the change
                         let _ = room.broadcasts.changed_tx.send(());
                         // Persist
-                        if let Some(ref tx) = room.persist_tx {
+                        if let Some(ref d) = room.persistence.debouncer {
                             let bytes = doc.save();
-                            let _ = tx.send(Some(bytes));
+                            let _ = d.persist_tx.send(Some(bytes));
                         }
                         Ok(())
                     }

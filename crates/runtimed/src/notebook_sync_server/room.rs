@@ -66,6 +66,118 @@ impl Default for RoomBroadcasts {
     }
 }
 
+/// Per-room persistence bookkeeping.
+///
+/// Always present on every room. The optional `debouncer` field nests the
+/// two debouncer channels that only exist for non-ephemeral rooms
+/// (untitled-saved or file-backed); everything else (save-baseline
+/// snapshots, file-watcher shutdown, streaming-load gate, attachment
+/// cache) is needed whether the room is ephemeral today or will be
+/// promoted to file-backed later.
+///
+/// When an ephemeral room is saved via `finalize_untitled_promotion`, the
+/// watcher shutdown sender and save baselines start getting populated
+/// without any struct-level resurrection — the fields were waiting for
+/// the file-backed state to arrive.
+pub struct RoomPersistence {
+    /// Debouncer channels — present only when the room writes to a
+    /// persisted Automerge doc (`notebook-docs/*.automerge`). Ephemeral
+    /// rooms keep this `None`, and so do rooms promoted via Save (the
+    /// `.automerge` stream isn't restarted post-promotion — see comment
+    /// in `finalize_untitled_promotion`).
+    pub debouncer: Option<PersistDebouncer>,
+    /// Cell sources as they were written to disk at last save.
+    ///
+    /// The file watcher compares disk content against this snapshot (not the
+    /// live CRDT) to distinguish our own autosave writes from genuine external
+    /// changes (git pull, external editor).
+    pub last_save_sources: RwLock<HashMap<String, String>>,
+    /// Timestamp (ms since epoch) of last self-write to the .ipynb file.
+    /// Used to skip file watcher events triggered by our own saves.
+    pub last_self_write: AtomicU64,
+    /// Shutdown signal for the file watcher task.
+    /// Sent when the room is evicted to stop the watcher.
+    pub watcher_shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
+    /// Raw nbformat attachments preserved from disk, keyed by cell ID.
+    ///
+    /// Populated only by `.ipynb` load paths. Resolved image data already
+    /// lives in the Automerge doc as blob URLs per cell; this map is the
+    /// raw base64 payload kept in memory so save can round-trip back to
+    /// `.ipynb` byte-identically without re-encoding the blob bytes.
+    ///
+    /// Transitional: this should eventually live in the doc alongside
+    /// cells (as blob references with a stable schema) so user-authored
+    /// attachments become first-class CRDT data. When that lands, this
+    /// field is deleted outright rather than relocated.
+    pub nbformat_attachments: RwLock<HashMap<String, serde_json::Value>>,
+    /// Whether a streaming load is in progress for this room.
+    /// Prevents two connections from both attempting to load from disk.
+    is_loading: AtomicBool,
+}
+
+/// The debounced `.automerge` persist channels. See `spawn_persist_debouncer`.
+pub struct PersistDebouncer {
+    /// Channel to send doc bytes to the debounced persistence task.
+    /// Uses watch for "latest value" semantics — always keeps most recent state.
+    pub persist_tx: watch::Sender<Option<Vec<u8>>>,
+    /// Channel to request a synchronous flush from the persist debouncer.
+    /// Receiver handles the request and replies on the oneshot after the write
+    /// completes. Used by room eviction to guarantee disk consistency *before*
+    /// the room is removed from the map, closing the race where a fast reconnect
+    /// would load stale bytes from the still-pending .automerge file.
+    pub flush_request_tx: mpsc::UnboundedSender<FlushRequest>,
+}
+
+impl RoomPersistence {
+    /// Build a persistence struct with no active debouncer (ephemeral rooms).
+    pub fn ephemeral() -> Self {
+        Self {
+            debouncer: None,
+            last_save_sources: RwLock::new(HashMap::new()),
+            last_self_write: AtomicU64::new(0),
+            watcher_shutdown_tx: Mutex::new(None),
+            nbformat_attachments: RwLock::new(HashMap::new()),
+            is_loading: AtomicBool::new(false),
+        }
+    }
+
+    /// Build a persistence struct with an active .automerge debouncer.
+    pub fn with_debouncer(
+        persist_tx: watch::Sender<Option<Vec<u8>>>,
+        flush_request_tx: mpsc::UnboundedSender<FlushRequest>,
+    ) -> Self {
+        Self {
+            debouncer: Some(PersistDebouncer {
+                persist_tx,
+                flush_request_tx,
+            }),
+            last_save_sources: RwLock::new(HashMap::new()),
+            last_self_write: AtomicU64::new(0),
+            watcher_shutdown_tx: Mutex::new(None),
+            nbformat_attachments: RwLock::new(HashMap::new()),
+            is_loading: AtomicBool::new(false),
+        }
+    }
+
+    /// Atomically claim the loading role. Returns `true` if this caller won
+    /// the race and should perform the streaming load.
+    pub fn try_start_loading(&self) -> bool {
+        self.is_loading
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    /// Mark loading complete (success or failure).
+    pub fn finish_loading(&self) {
+        self.is_loading.store(false, Ordering::Release);
+    }
+
+    /// True if a streaming load is currently in progress.
+    pub fn is_loading(&self) -> bool {
+        self.is_loading.load(Ordering::Acquire)
+    }
+}
+
 pub struct NotebookRoom {
     /// Permanent, immutable UUID for this room. Used as the map key once
     /// Phase 5 lands; for now coexists with the string-keyed map.
@@ -74,17 +186,10 @@ pub struct NotebookRoom {
     pub doc: Arc<RwLock<NotebookDoc>>,
     /// Broadcast channels + presence state for fan-out to peer sync loops.
     pub broadcasts: RoomBroadcasts,
-    /// Channel to send doc bytes to the debounced persistence task.
-    /// Uses watch for "latest value" semantics - always keeps most recent state.
-    pub persist_tx: Option<watch::Sender<Option<Vec<u8>>>>,
-    /// Channel to request a synchronous flush from the persist debouncer.
-    /// Receiver handles the request and replies on the oneshot after the write
-    /// completes. Used by room eviction to guarantee disk consistency *before*
-    /// the room is removed from the map, closing the race where a fast reconnect
-    /// would load stale bytes from the still-pending .automerge file.
-    ///
-    /// `None` for ephemeral rooms (persistence skipped) and matches `persist_tx`.
-    pub flush_request_tx: Option<mpsc::UnboundedSender<FlushRequest>>,
+    /// Disk persistence state. Always present; ephemeral rooms carry an
+    /// `ephemeral()` instance with no active debouncer, and gain the
+    /// file watcher + save-baseline tracking when promoted via Save.
+    pub persistence: RoomPersistence,
     /// Notebook identity: persist_path, is_ephemeral, .ipynb path, working_dir.
     pub identity: RoomIdentity,
     /// Number of active peer connections in this room.
@@ -95,33 +200,6 @@ pub struct NotebookRoom {
     pub blob_store: Arc<BlobStore>,
     /// Trust state for this notebook (for auto-launch decisions).
     pub trust_state: Arc<RwLock<TrustState>>,
-    /// Raw nbformat attachments preserved from disk, keyed by cell ID.
-    /// These are not user-editable in the current UI, so the file remains the source of truth.
-    pub nbformat_attachments: Arc<RwLock<HashMap<String, serde_json::Value>>>,
-    /// Comm channel state for widgets.
-    /// Whether a streaming load is in progress for this room.
-    /// Prevents two connections from both attempting to load from disk.
-    pub is_loading: AtomicBool,
-    /// Timestamp (ms since epoch) of last self-write to the .ipynb file.
-    /// Used to skip file watcher events triggered by our own saves.
-    pub last_self_write: AtomicU64,
-    /// Cell sources as they were written to disk at last save.
-    ///
-    /// The file watcher compares disk content against this snapshot (not the
-    /// live CRDT) to distinguish our own autosave writes from genuine external
-    /// changes (git pull, external editor). Without this, the file watcher
-    /// would see the autosave'd content as "different" from the live CRDT
-    /// (which has progressed with new user typing since the save) and
-    /// overwrite the user's recent edits.
-    ///
-    /// This is a workaround for the fact that we can't use
-    /// `fork_at(save_heads)` to read the doc at the save point due to
-    /// automerge/automerge#1327.
-    pub last_save_sources: Arc<RwLock<HashMap<String, String>>>,
-    /// Shutdown signal for the file watcher task.
-    /// Wrapped in Mutex to allow setting after Arc creation.
-    /// Sent when the room is evicted to stop the watcher.
-    pub(crate) watcher_shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
     /// Per-notebook RuntimeStateDoc handle — daemon-authoritative ephemeral state
     /// (kernel status, queue, env sync). Clients sync read-only.
     /// Uses `std::sync::Mutex` internally (no `.await` needed).
@@ -255,23 +333,21 @@ impl NotebookRoom {
         let (state_changed_tx, _) = broadcast::channel(16);
         let state = runtime_doc::RuntimeStateHandle::new(RuntimeStateDoc::new(), state_changed_tx);
 
+        let persistence = match persist_tx.zip(flush_request_tx) {
+            Some((p, f)) => RoomPersistence::with_debouncer(p, f),
+            None => RoomPersistence::ephemeral(),
+        };
+
         Self {
             id,
             doc: Arc::new(RwLock::new(doc)),
             broadcasts: RoomBroadcasts::default(),
-            persist_tx,
-            flush_request_tx,
+            persistence,
             identity: RoomIdentity::new(persist_path, path, ephemeral),
             active_peers: AtomicUsize::new(0),
             had_peers: AtomicBool::new(false),
             blob_store,
             trust_state: Arc::new(RwLock::new(trust_state)),
-            nbformat_attachments: Arc::new(RwLock::new(HashMap::new())),
-
-            is_loading: AtomicBool::new(false),
-            last_self_write: AtomicU64::new(0),
-            last_save_sources: Arc::new(RwLock::new(HashMap::new())),
-            watcher_shutdown_tx: Mutex::new(None),
             state,
             runtime_agent_handle: Arc::new(Mutex::new(None)),
             runtime_agent_env_path: Arc::new(RwLock::new(None)),
@@ -282,21 +358,6 @@ impl NotebookRoom {
             next_queue_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             current_runtime_agent_id: Arc::new(RwLock::new(None)),
         }
-    }
-
-    /// Atomically claim the loading role for this room.
-    ///
-    /// Returns `true` if the caller won the race and should perform the load.
-    /// Returns `false` if another connection is already loading.
-    pub fn try_start_loading(&self) -> bool {
-        self.is_loading
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-    }
-
-    /// Mark loading as complete (success or failure).
-    pub fn finish_loading(&self) {
-        self.is_loading.store(false, Ordering::Release);
     }
 
     /// Create a new room by loading a persisted document or creating a fresh one.
@@ -342,19 +403,12 @@ impl NotebookRoom {
             id,
             doc: Arc::new(RwLock::new(doc)),
             broadcasts: RoomBroadcasts::default(),
-            persist_tx: Some(persist_tx),
-            flush_request_tx: Some(flush_request_tx),
+            persistence: RoomPersistence::with_debouncer(persist_tx, flush_request_tx),
             identity: RoomIdentity::new(persist_path, path, false),
             active_peers: AtomicUsize::new(0),
             had_peers: AtomicBool::new(false),
             blob_store,
             trust_state: Arc::new(RwLock::new(trust_state)),
-            nbformat_attachments: Arc::new(RwLock::new(HashMap::new())),
-
-            is_loading: AtomicBool::new(false),
-            last_self_write: AtomicU64::new(0),
-            last_save_sources: Arc::new(RwLock::new(HashMap::new())),
-            watcher_shutdown_tx: Mutex::new(None),
             state,
             runtime_agent_handle: Arc::new(Mutex::new(None)),
             runtime_agent_env_path: Arc::new(RwLock::new(None)),
@@ -372,6 +426,35 @@ impl NotebookRoom {
         // Check runtime agent handle
         let ra = self.runtime_agent_handle.lock().await;
         ra.as_ref().is_some_and(|a| a.is_alive())
+    }
+
+    /// Snapshot of nbformat attachments. Empty before the first `.ipynb`
+    /// load populates the cache.
+    pub async fn nbformat_attachments_snapshot(&self) -> HashMap<String, serde_json::Value> {
+        self.persistence.nbformat_attachments.read().await.clone()
+    }
+
+    /// Snapshot of cell sources as they were at last save. Empty before
+    /// the first save, which is the correct baseline for "no disk write
+    /// has happened yet."
+    pub async fn last_save_sources_snapshot(&self) -> HashMap<String, String> {
+        self.persistence.last_save_sources.read().await.clone()
+    }
+
+    /// True if a streaming load is currently in progress.
+    pub fn is_loading(&self) -> bool {
+        self.persistence.is_loading()
+    }
+
+    /// Atomically claim the streaming-load role. Returns `true` if the
+    /// caller won the race and should perform the load.
+    pub fn try_start_loading(&self) -> bool {
+        self.persistence.try_start_loading()
+    }
+
+    /// Mark the streaming load complete.
+    pub fn finish_loading(&self) {
+        self.persistence.finish_loading();
     }
 
     /// Get kernel info if a kernel is running (runtime-agent-backed).

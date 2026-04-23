@@ -463,7 +463,7 @@ where
 
     let (cells, metadata, nbformat_attachments) = parse_notebook_jiter(&bytes)?;
     {
-        let mut cache = room.nbformat_attachments.write().await;
+        let mut cache = room.persistence.nbformat_attachments.write().await;
         *cache = nbformat_attachments.clone();
     }
 
@@ -955,7 +955,7 @@ pub(crate) async fn apply_ipynb_changes(
     };
 
     {
-        let mut cache = room.nbformat_attachments.write().await;
+        let mut cache = room.persistence.nbformat_attachments.write().await;
         *cache = external_attachments.clone();
     }
 
@@ -1126,10 +1126,12 @@ pub(crate) async fn apply_ipynb_changes(
 
         // Update saved_sources baseline so subsequent external edits are
         // detected correctly (same as the non-order-change path).
-        let mut saved = room.last_save_sources.write().await;
-        saved.clear();
-        for ext_cell in external_cells {
-            saved.insert(ext_cell.id.clone(), ext_cell.source.clone());
+        {
+            let mut saved = room.persistence.last_save_sources.write().await;
+            saved.clear();
+            for ext_cell in external_cells {
+                saved.insert(ext_cell.id.clone(), ext_cell.source.clone());
+            }
         }
 
         return true;
@@ -1137,10 +1139,7 @@ pub(crate) async fn apply_ipynb_changes(
 
     // Snapshot saved_sources before the doc write lock to avoid holding
     // doc across saved_sources `.await` (deadlock prevention).
-    let saved_sources_snapshot: HashMap<String, String> = {
-        let saved_sources = room.last_save_sources.read().await;
-        saved_sources.clone()
-    };
+    let saved_sources_snapshot = room.last_save_sources_snapshot().await;
     let have_save_snapshot = !saved_sources_snapshot.is_empty();
 
     // Find cells to delete — only cells that existed in our last save
@@ -1397,7 +1396,7 @@ pub(crate) async fn apply_ipynb_changes(
     // that subsequent external edits are detected correctly (P2-a) and
     // externally-added cells become deletable if later removed (P2-b).
     if changed {
-        let mut saved = room.last_save_sources.write().await;
+        let mut saved = room.persistence.last_save_sources.write().await;
         for ext_cell in external_cells {
             saved.insert(ext_cell.id.clone(), ext_cell.source.clone());
         }

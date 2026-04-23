@@ -632,9 +632,9 @@ where
                 const FLUSH_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(30);
                 let mut flush_ok = true;
                 let mut flush_failure_kind: Option<&'static str> = None;
-                if let Some(ref flush_tx) = room_for_eviction.flush_request_tx {
+                if let Some(ref d) = room_for_eviction.persistence.debouncer {
                     let (ack_tx, ack_rx) = oneshot::channel::<bool>();
-                    if flush_tx.send(ack_tx).is_ok() {
+                    if d.flush_request_tx.send(ack_tx).is_ok() {
                         match tokio::time::timeout(FLUSH_TIMEOUT, ack_rx).await {
                             Ok(Ok(true)) => {}
                             Ok(Ok(false)) => {
@@ -758,8 +758,15 @@ where
                     }
                 }
 
-                // Stop file watcher if running
-                if let Some(shutdown_tx) = room_for_eviction.watcher_shutdown_tx.lock().await.take()
+                // Stop file watcher if running. `watcher_shutdown_tx` is
+                // always present on `RoomPersistence`, but the Option inside
+                // is None until a watcher is actually spawned.
+                if let Some(shutdown_tx) = room_for_eviction
+                    .persistence
+                    .watcher_shutdown_tx
+                    .lock()
+                    .await
+                    .take()
                 {
                     let _ = shutdown_tx.send(());
                     debug!(
@@ -1412,8 +1419,8 @@ where
                                 }
 
                                 // Send to debounced persistence task
-                                if let Some(ref tx) = room.persist_tx {
-                                    let _ = tx.send(Some(persist_bytes));
+                                if let Some(ref d) = room.persistence.debouncer {
+                                    let _ = d.persist_tx.send(Some(persist_bytes));
                                 }
 
                                 // Check if metadata changed and kernel is running - broadcast sync state
@@ -1763,9 +1770,7 @@ where
                 if matches!(
                     initial_load_phase,
                     notebook_protocol::protocol::InitialLoadPhaseWire::Streaming
-                ) && !room
-                    .is_loading
-                    .load(std::sync::atomic::Ordering::Acquire)
+                ) && !room.is_loading()
                 {
                     initial_load_phase =
                         notebook_protocol::protocol::InitialLoadPhaseWire::Ready;

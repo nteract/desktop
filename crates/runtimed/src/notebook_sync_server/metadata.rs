@@ -583,7 +583,7 @@ pub(crate) async fn process_markdown_assets(room: &NotebookRoom) {
         .await
         .clone()
         .filter(|p| p.exists());
-    let nbformat_attachments = room.nbformat_attachments.read().await.clone();
+    let nbformat_attachments = room.nbformat_attachments_snapshot().await;
 
     // Fork BEFORE async resolution so the fork's baseline predates
     // any concurrent edits. Asset updates on the fork are treated as
@@ -635,8 +635,8 @@ pub(crate) async fn process_markdown_assets(room: &NotebookRoom) {
     };
 
     let _ = room.broadcasts.changed_tx.send(());
-    if let Some(ref tx) = room.persist_tx {
-        let _ = tx.send(Some(persist_bytes));
+    if let Some(ref d) = room.persistence.debouncer {
+        let _ = d.persist_tx.send(Some(persist_bytes));
     }
 }
 

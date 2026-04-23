@@ -83,7 +83,7 @@ pub async fn get_or_create_room(
         if notebook_path.extension().is_some_and(|ext| ext == "ipynb") {
             let shutdown_tx = spawn_notebook_file_watcher(notebook_path.clone(), room.clone());
             // Blocking lock is OK here — room is brand new, no contention.
-            if let Ok(mut guard) = room.watcher_shutdown_tx.try_lock() {
+            if let Ok(mut guard) = room.persistence.watcher_shutdown_tx.try_lock() {
                 *guard = Some(shutdown_tx);
             }
         }
