@@ -1090,18 +1090,24 @@ pub(crate) async fn handle(
                     env.venv_path,
                     parsed_resolved.as_str()
                 );
-                // Delete the corrupt env dir synchronously before we
-                // return — `prepare_*_inline_env` treats the cache-hash
-                // dir as a cache hit while it exists, so a quick retry
-                // (toolbar restart, automated flow) would reacquire
-                // the same broken env and we'd loop on MissingIpykernel.
-                // Await the removal so the next launch rebuilds.
-                if let Err(e) = tokio::fs::remove_dir_all(&env.venv_path).await {
-                    warn!(
-                        "[launch-kernel] failed to remove corrupt env {:?}: {}",
-                        env.venv_path, e
-                    );
-                }
+                // Don't delete the env dir: for inline/pep723 it's a
+                // content-addressed cache shared across notebooks and
+                // vulnerable to a racy nuke of a concurrent install.
+                //
+                // Tear down the existing runtime agent (if any) BEFORE
+                // we write the Error lifecycle. This path can be
+                // reached from a restart (prior_lifecycle == Running),
+                // in which case an agent is still holding request/
+                // response channels. Leaving them up while the UI
+                // flips to Error leaves the notebook split-brained
+                // (old kernel still executes; UI thinks start failed).
+                // `reset_starting_state` first writes NotStarted and
+                // clears agent handles; we then overwrite lifecycle
+                // with Error + MissingIpykernel so the UI sees the
+                // correct reason. Minor TOCTOU against a concurrent
+                // retry is accepted — a second retry observing Error
+                // will simply start a fresh launch.
+                reset_starting_state(room, None).await;
                 let env_source_label = parsed_resolved.as_str().to_string();
                 if let Err(e) = room.state.with_doc(|sd| {
                     sd.set_lifecycle_with_error(

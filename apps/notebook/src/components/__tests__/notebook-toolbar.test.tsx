@@ -417,13 +417,12 @@ describe("NotebookToolbar", () => {
     const errorLifecycle: RuntimeLifecycle = { lifecycle: "Error" };
 
     // Inline / PEP 723 / inline conda all share the same "just restart"
-    // remediation — the daemon has already deleted the corrupt env dir
-    // and `prepare_*_inline_env` auto-includes ipykernel in its install
-    // set, so the next launch rebuilds successfully. The banner must
-    // NOT ask users to edit deps (a no-op) or run install commands
-    // against the env (which no longer exists).
+    // remediation — the env is a shared content-addressed cache and
+    // the daemon no longer deletes it from the launch path (that would
+    // race with concurrent installs + corrupt caches of other notebooks
+    // with the same dep hash). Users bump the dep hash to rebuild.
     for (const envSource of ["uv:inline", "uv:pep723", "conda:inline"] as const) {
-      it(`shows "restart to rebuild" prompt for envSource=${envSource}`, () => {
+      it(`shows "edit a dep" prompt for envSource=${envSource}`, () => {
         render(
           <NotebookToolbar
             {...baseProps}
@@ -434,13 +433,10 @@ describe("NotebookToolbar", () => {
             envSource={envSource}
           />,
         );
-        expect(screen.getByText(/Environment cache was corrupt/)).toBeInTheDocument();
-        expect(screen.getByText(/Click Restart to rebuild/)).toBeInTheDocument();
-        // Backends already rebuild these envs — no user dep edits needed.
-        expect(screen.queryByText(/notebook's dependencies/)).not.toBeInTheDocument();
-        expect(screen.queryByText(/uv pip install/)).not.toBeInTheDocument();
-        expect(screen.queryByText(/conda install/)).not.toBeInTheDocument();
-        expect(screen.queryByText(/# \/\/\/ script/)).not.toBeInTheDocument();
+        expect(screen.getByText(/Dependency cache is missing ipykernel/)).toBeInTheDocument();
+        expect(screen.getByText(/Edit any notebook dependency/)).toBeInTheDocument();
+        // Restart alone no longer self-heals — banner must not promise it.
+        expect(screen.queryByText(/Click Restart to rebuild/)).not.toBeInTheDocument();
       });
     }
 

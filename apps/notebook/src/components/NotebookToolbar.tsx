@@ -406,14 +406,12 @@ export function NotebookToolbar({
  * (prewarmed pools, uv:pyproject, conda:env_yml, deno) — those either
  * self-heal at launch or should never reach this state.
  *
- * For inline/PEP 723 envs the daemon has already deleted the corrupt
- * cache dir; `prepare_*_inline_env` always includes `ipykernel` in its
- * install set, so the next launch rebuilds correctly. The banner tells
- * users exactly that instead of sending them to edit deps that already
- * had nothing wrong with them.
- *
- * For pixi:toml the daemon does NOT delete anything — pixi manages its
- * own env and the user's `pixi.toml` genuinely needs editing. */
+ * For inline/PEP 723 envs the daemon previously deleted the corrupt
+ * cache dir so a plain restart would rebuild. That delete was reverted
+ * (shared content-addressed cache + concurrent-install race), so a
+ * restart alone now re-hits the same broken cache. Until we add an
+ * in-place repair, the way out is to bump the dep hash — add, pin, or
+ * remove anything in the notebook's deps — or clear the daemon cache. */
 function renderMissingIpykernelPrompt(envSource: string): ReactElement | null {
   // Pixi project: the .toml is the source of truth; user must add
   // ipykernel explicitly.
@@ -430,13 +428,19 @@ function renderMissingIpykernelPrompt(envSource: string): ReactElement | null {
       />
     );
   }
-  // Inline / PEP 723 / inline conda: daemon deleted the stale env;
-  // the next launch rebuilds with ipykernel. No user deps edit needed.
+  // Inline / PEP 723 / inline conda: env is a shared content-addressed
+  // cache — we can't safely delete it from the launch path. Bump the
+  // hash instead.
   if (envSource === "uv:inline" || envSource === "uv:pep723" || envSource === "conda:inline") {
     return (
       <MissingIpykernelBanner
-        headline="Environment cache was corrupt."
-        instruction={<>Click Restart to rebuild the environment.</>}
+        headline="Dependency cache is missing ipykernel."
+        instruction={
+          <>
+            Edit any notebook dependency (add, remove, or pin a version) to rebuild the environment,
+            or clear the daemon cache.
+          </>
+        }
       />
     );
   }
