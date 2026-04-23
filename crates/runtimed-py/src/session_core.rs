@@ -723,14 +723,20 @@ pub(crate) async fn restart_kernel(
     }
 
     // Wait for kernel ready by polling RuntimeStateDoc (the CRDT source of truth).
+    // Two phases: first wait for status to leave "idle" (restart in progress),
+    // then wait for it to return to "idle" (new kernel ready). This prevents
+    // returning immediately against the pre-restart idle snapshot.
     if wait_for_ready {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let mut saw_non_idle = false;
         while std::time::Instant::now() < deadline {
             {
                 let st = state.lock().await;
                 if let Some(handle) = st.handle.as_ref() {
                     if let Ok(rs) = handle.get_runtime_state() {
-                        if rs.kernel.status == "idle" {
+                        if rs.kernel.status != "idle" {
+                            saw_non_idle = true;
+                        } else if saw_non_idle {
                             return Ok(progress_messages);
                         }
                     }
