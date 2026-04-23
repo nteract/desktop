@@ -43,15 +43,12 @@ export function TelemetryDisclosureCard({
   };
 
   return (
-    <div
-      className={cn("rounded-lg border p-4 bg-muted/40 space-y-2", className)}
-    >
+    <div className={cn("rounded-lg border p-4 bg-muted/40 space-y-2", className)}>
       <div className="text-[10px] uppercase tracking-[0.14em] text-primary/80 font-semibold">
         One anonymous daily ping
       </div>
       <p className="text-sm text-foreground leading-6">
-        Version, platform, architecture. No names, no paths, nothing about your
-        notebooks.
+        Version, platform, architecture. No names, no paths, nothing about your notebooks.
       </p>
       <a
         href={LEARN_MORE_URL}

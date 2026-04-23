@@ -2,10 +2,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { AlertTriangle, ArrowLeft, Check, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { TelemetryDisclosureCard } from "@/components/TelemetryDisclosureCard";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
 import { CondaIcon, DenoIcon, PixiIcon, PythonIcon, UvIcon } from "../src/components/icons";
+import { openUrl } from "../src/lib/open-url";
 import type { DaemonStatus } from "./types";
 
 type Runtime = "python" | "deno";
@@ -160,7 +162,6 @@ export default function App() {
   const [page, setPage] = useState<1 | 2>(1);
   const [runtime, setRuntime] = useState<Runtime | null>(null);
   const [pythonEnv, setPythonEnv] = useState<PythonEnv | null>(null);
-  const [telemetryEnabled, setTelemetryEnabled] = useState(true);
   const [steps, setSteps] = useState<SetupStep[]>([
     { id: "daemon", label: "Installing runtime daemon", status: "in_progress" },
     { id: "tools", label: "Preparing environments", status: "pending" },
@@ -169,6 +170,7 @@ export default function App() {
   const [daemonFailed, setDaemonFailed] = useState(false);
   const [poolReady, setPoolReady] = useState(false);
   const [setupComplete, setSetupComplete] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Listen for daemon progress events
@@ -276,55 +278,80 @@ export default function App() {
     setPage(1);
   }, []);
 
-  // Save settings and complete onboarding
-  const handleGetStarted = useCallback(async () => {
-    if (!runtime || !pythonEnv) return;
-    if (!daemonReady || !poolReady) return;
+  // Record the user's telemetry decision and complete onboarding. Called from
+  // either CTA on page 2 — the `telemetryEnabled` argument captures which
+  // button was pressed ("You can count on me!" → true, "Opt out of metrics" →
+  // false). Both paths flip `telemetry_consent_recorded` to true so
+  // heartbeats can fire (when enabled).
+  const handleChoice = useCallback(
+    async (telemetryEnabled: boolean) => {
+      if (!runtime || !pythonEnv) return;
+      if (!daemonReady || !poolReady) return;
+      if (isSubmitting) return;
+      setIsSubmitting(true);
 
+      try {
+        await invoke("set_synced_setting", {
+          key: "default_runtime",
+          value: runtime,
+        });
+        await invoke("set_synced_setting", {
+          key: "default_python_env",
+          value: pythonEnv,
+        });
+        await invoke("set_synced_setting", {
+          key: "telemetry_enabled",
+          value: telemetryEnabled,
+        });
+        await invoke("set_synced_setting", {
+          key: "telemetry_consent_recorded",
+          value: true,
+        });
+        await invoke("set_synced_setting", {
+          key: "onboarding_completed",
+          value: true,
+        });
+
+        setSetupComplete(true);
+
+        try {
+          await invoke("complete_onboarding", {
+            defaultRuntime: runtime,
+            defaultPythonEnv: pythonEnv,
+          });
+          // Window closes itself on success.
+        } catch (completeError) {
+          console.error("Failed to complete onboarding:", completeError);
+          setSetupComplete(false);
+          setIsSubmitting(false);
+          setErrorMessage("Failed to create notebook window. Please try again.");
+        }
+      } catch (e) {
+        console.error("Failed to save onboarding settings:", e);
+        setIsSubmitting(false);
+        setErrorMessage("Failed to save settings. Please try again.");
+      }
+    },
+    [daemonReady, poolReady, runtime, pythonEnv, isSubmitting],
+  );
+
+  // Fallback path when the daemon failed to install. Still records the
+  // consent decision (as "opted out") so we never ping a user who didn't
+  // even get past the daemon install.
+  const handleSkip = useCallback(async () => {
     try {
-      // Save settings to daemon
-      await invoke("set_synced_setting", {
-        key: "default_runtime",
-        value: runtime,
-      });
-      await invoke("set_synced_setting", {
-        key: "default_python_env",
-        value: pythonEnv,
-      });
       await invoke("set_synced_setting", {
         key: "telemetry_enabled",
-        value: telemetryEnabled,
+        value: false,
       });
       await invoke("set_synced_setting", {
-        key: "onboarding_completed",
+        key: "telemetry_consent_recorded",
         value: true,
       });
-
-      // Show completing state while we create the notebook window
-      setSetupComplete(true);
-
-      // Pass selected values directly to avoid settings race condition
-      // Await onComplete so we can handle failures properly
-      try {
-        await invoke("complete_onboarding", {
-          defaultRuntime: runtime,
-          defaultPythonEnv: pythonEnv,
-        });
-        // Window closes itself on success - no further action needed
-      } catch (completeError) {
-        // onComplete failed - reset state so user can retry
-        console.error("Failed to complete onboarding:", completeError);
-        setSetupComplete(false);
-        setErrorMessage("Failed to create notebook window. Please try again.");
-      }
     } catch (e) {
-      console.error("Failed to save onboarding settings:", e);
-      setErrorMessage("Failed to save settings. Please try again.");
+      // Daemon failed — can't persist, but still let the user continue.
+      console.warn("[onboarding] daemon write failed on skip:", e);
     }
-  }, [daemonReady, poolReady, runtime, pythonEnv, telemetryEnabled]);
-
-  // Skip onboarding when daemon failed - use current selections or defaults
-  const handleSkip = useCallback(async () => {
     await invoke("complete_onboarding", {
       defaultRuntime: runtime ?? "python",
       defaultPythonEnv: pythonEnv ?? "uv",
@@ -433,51 +460,37 @@ export default function App() {
               <div className="w-[60px]" /> {/* Spacer for centering */}
             </div>
 
-            {/* Telemetry disclosure */}
-            <div className="flex items-center justify-between p-3 rounded-lg bg-muted/50 border border-border/50">
-              <div className="space-y-0.5 pr-4">
-                <p className="text-sm font-medium">Anonymous usage data</p>
-                <p className="text-xs text-muted-foreground">
-                  One daily ping with version, platform, and architecture. No personal data.{" "}
-                  <a
-                    href="https://nteract.io/docs/telemetry"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="underline hover:text-foreground"
-                  >
-                    Learn more
-                  </a>
-                </p>
-              </div>
+            {/* Telemetry decision: replaces the pre-checked toggle with an
+                explicit two-button CTA. The primary is a warm "you're in"
+                framing; the secondary is always visible so opting out stays
+                a one-click action. Both record consent. */}
+            <div className="space-y-3">
+              <TelemetryDisclosureCard onOpenLearnMore={openUrl} />
+
+              <Button
+                onClick={() => handleChoice(true)}
+                disabled={!canProceed || isSubmitting}
+                className="w-full"
+                size="lg"
+              >
+                {setupComplete
+                  ? "All set!"
+                  : canProceed
+                    ? "You can count on me!"
+                    : pythonEnv === null
+                      ? "Select a package manager"
+                      : "Setting up..."}
+              </Button>
+
               <button
                 type="button"
-                role="switch"
-                aria-checked={telemetryEnabled}
-                onClick={() => setTelemetryEnabled(!telemetryEnabled)}
-                className={cn(
-                  "relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors",
-                  telemetryEnabled ? "bg-primary" : "bg-muted-foreground/30",
-                )}
+                onClick={() => handleChoice(false)}
+                disabled={!canProceed || isSubmitting}
+                className="w-full text-xs text-muted-foreground underline hover:text-foreground disabled:opacity-50 py-1"
               >
-                <span
-                  className={cn(
-                    "pointer-events-none inline-block h-5 w-5 rounded-full bg-background shadow-lg ring-0 transition-transform",
-                    telemetryEnabled ? "translate-x-5" : "translate-x-0",
-                  )}
-                />
+                Opt out of metrics, continue
               </button>
             </div>
-
-            {/* Get Started button */}
-            <Button onClick={handleGetStarted} disabled={!canProceed} className="w-full" size="lg">
-              {setupComplete
-                ? "All set!"
-                : canProceed
-                  ? "Get Started"
-                  : pythonEnv === null
-                    ? "Select a package manager"
-                    : "Setting up..."}
-            </Button>
 
             {/* Continue anyway button when daemon fails */}
             {daemonFailed && !setupComplete && (

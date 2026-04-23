@@ -6,9 +6,7 @@ describe("TelemetryDisclosureCard", () => {
   it("renders the eyebrow, body, and a Learn more link", () => {
     render(<TelemetryDisclosureCard />);
     expect(screen.getByText(/One anonymous daily ping/i)).toBeInTheDocument();
-    expect(
-      screen.getByText(/Version, platform, architecture/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/Version, platform, architecture/i)).toBeInTheDocument();
     const link = screen.getByRole("link", { name: /read the full details/i });
     expect(link).toHaveAttribute("href", "https://nteract.io/telemetry");
   });
