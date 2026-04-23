@@ -780,3 +780,58 @@ jobs:
           name: runtimed-py-integration-logs
           path: python/runtimed/integration-logs/
           retention-days: 7
+
+  python-unit-tests:
+    # Unit-level pytest coverage for the Python packages: runtimed (bindings),
+    # dx (formatter + refs), prewarm (pool), nteract (MCP smoke). These do not
+    # need a live daemon; the integration half is handled by
+    # `runtimed-py-integration` above. Lint/format/type-check is already
+    # covered by the Lint & Format job (`cargo xtask lint`), so this job
+    # runs pytest only.
+    name: Python Unit Tests
+    needs: [changes]
+    if: needs.changes.outputs.source_changed == 'true'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          lfs: true
+
+      - name: Install rust
+        uses: dsherret/rust-toolchain-file@v1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: python-x86_64-unknown-linux-gnu
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Build and stage runtimed binary
+        run: |
+          cargo build -p runtimed
+          cp target/debug/runtimed python/runtimed/src/runtimed/_bin/
+
+      - name: Sync workspace
+        run: uv sync
+
+      - name: Run runtimed-py unit tests
+        working-directory: python/runtimed
+        run: uv run pytest tests/test_session_unit.py tests/test_binary.py tests/test_ipython_bridge.py -v --tb=short
+
+      - name: Run dx unit tests
+        run: uv run pytest python/dx/tests/ -v --tb=short
+
+      - name: Install and run prewarm unit tests
+        run: |
+          uv pip install -e python/prewarm
+          uv run pytest python/prewarm/tests/ -v --tb=short
+
+      - name: Run nteract smoke tests
+        working-directory: python/nteract
+        run: |
+          uv sync --dev --no-sources
+          uv run pytest -v
