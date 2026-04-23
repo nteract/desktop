@@ -2408,7 +2408,12 @@ pub(crate) async fn auto_launch_kernel(
             }
         };
 
-    // For pixi:toml, verify ipykernel is in pixi.toml before launching
+    // For pixi:toml, verify ipykernel is in pixi.toml before launching.
+    // Unlike uv (`uv run --with ipykernel`) and conda:env_yml (daemon
+    // appends ipykernel into the dep set pre-sync), pixi does not
+    // auto-inject — the project file is the sole source of truth, so
+    // launching without ipykernel would spawn a Python process that
+    // fails on `ipykernel_launcher` import.
     if matches!(env_source, EnvSource::PixiToml) {
         if let Some(ref detected) = detected_project_file {
             let has_ipykernel = match kernel_launch::tools::pixi_info(&detected.path).await {

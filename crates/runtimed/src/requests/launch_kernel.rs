@@ -11,7 +11,7 @@ use tokio::sync::oneshot;
 use tracing::{error, info, warn};
 
 use notebook_doc::presence;
-use runtime_doc::{KernelActivity, RuntimeLifecycle};
+use runtime_doc::{KernelActivity, KernelErrorReason, RuntimeLifecycle};
 
 use crate::daemon::Daemon;
 use crate::notebook_sync_server::{
@@ -360,7 +360,15 @@ pub(crate) async fn handle(
 
     let parsed_resolved = EnvSource::parse(&resolved_env_source);
 
-    // For pixi:toml, verify ipykernel is declared before launching
+    // For pixi:toml, verify ipykernel is declared before launching.
+    // Unlike uv (`uv run --with ipykernel`) and conda:env_yml (daemon
+    // injects ipykernel into deps pre-sync), pixi does not auto-inject.
+    //
+    // Publish the typed `KernelErrorReason::MissingIpykernel` AFTER
+    // `reset_starting_state` so the Error lifecycle survives. The prior
+    // code only returned an `Error` response — the toolbar could
+    // classify the spawn error generically but never rendered the
+    // targeted remediation on the RPC path.
     if matches!(parsed_resolved, EnvSource::PixiToml) {
         let pixi_path = notebook_path.as_ref().and_then(|nb| {
             crate::project_file::detect_project_file(nb)
@@ -377,7 +385,25 @@ pub(crate) async fn handle(
                     "[notebook-sync] pixi.toml at {:?} does not declare ipykernel",
                     path
                 );
-                reset_starting_state(room, None).await;
+                // Publish the typed reason atomically. Don't call
+                // reset_starting_state here — no runtime agent has spawned
+                // yet on this path, and the auto-launch version in
+                // notebook_sync_server/metadata.rs deliberately skips it
+                // for the same reason. reset_starting_state writes
+                // NotStarted first and releases the doc lock before our
+                // Error write lands, giving a concurrent retry a window to
+                // claim Resolving that we'd then clobber back to Error.
+                let env_source_label = parsed_resolved.as_str().to_string();
+                if let Err(e) = room.state.with_doc(|sd| {
+                    sd.set_lifecycle_with_error(
+                        &RuntimeLifecycle::Error,
+                        Some(KernelErrorReason::MissingIpykernel),
+                    )?;
+                    sd.set_kernel_info("python", "python", &env_source_label)?;
+                    Ok(())
+                }) {
+                    warn!("[runtime-state] {}", e);
+                }
                 return NotebookResponse::Error {
                     error: "ipykernel not found in pixi.toml — run `pixi add ipykernel` in your project directory".to_string(),
                 };
