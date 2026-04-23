@@ -637,7 +637,7 @@ export class SyncEngine {
               this.prevExecutions = state.executions;
 
               log.debug(
-                `[sync-engine] runtime state: kernel=${state.kernel?.status ?? "?"}, transitions=${transitions.length}`,
+                `[sync-engine] runtime state: kernel=${state.kernel?.lifecycle?.lifecycle ?? "?"}, transitions=${transitions.length}`,
               );
 
               this._runtimeState$.next(state);

@@ -3,7 +3,6 @@ import {
   getLifecycleLabel,
   isKernelStatus,
   KERNEL_STATUS,
-  KERNEL_STATUS_LABELS,
   RUNTIME_STATUS,
   RUNTIME_STATUS_LABELS,
   type RuntimeLifecycle,
@@ -38,15 +37,6 @@ describe("KERNEL_STATUS", () => {
     expect(KERNEL_STATUS.ERROR).toBe("error");
     expect(KERNEL_STATUS.SHUTDOWN).toBe("shutdown");
     expect(KERNEL_STATUS.AWAITING_TRUST).toBe("awaiting_trust");
-  });
-});
-
-describe("KERNEL_STATUS_LABELS", () => {
-  it("has a label for every status", () => {
-    for (const status of Object.values(KERNEL_STATUS)) {
-      expect(KERNEL_STATUS_LABELS[status]).toBeDefined();
-      expect(typeof KERNEL_STATUS_LABELS[status]).toBe("string");
-    }
   });
 });
 

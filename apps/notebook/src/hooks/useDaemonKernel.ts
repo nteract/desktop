@@ -93,12 +93,10 @@ export function useDaemonKernel({
   const envSyncState = useMemo(() => deriveEnvSyncState(runtimeState), [runtimeState]);
 
   // ── Busy throttle ────────────────────────────────────────────────
-  // Project the typed lifecycle back to the legacy status vocabulary
+  // Project the typed lifecycle back to the compressed status vocabulary
   // (`"idle"`, `"busy"`, `"starting"`, `"error"`, …) so the existing
   // busy-throttle machinery — which treats IDLE/BUSY as the high-frequency
-  // pair — keeps working unchanged. Reading `lifecycle` (rather than
-  // `kernel.status`) means the throttle tracks the authoritative typed
-  // shape; legacy string drift in the CRDT can no longer confuse it.
+  // pair — keeps working unchanged.
   const rawStatus = lifecycleToLegacyStatus(runtimeState.kernel.lifecycle);
   const [throttledStatus, setThrottledStatus] = useState<KernelStatus>(rawStatus);
   const busyTimerRef = useRef<number | null>(null);
