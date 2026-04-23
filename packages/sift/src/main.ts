@@ -270,7 +270,6 @@ function loadLocalArrow$(dataset: DatasetEntry, tableRoot: HTMLElement): Observa
   );
 }
 
-
 /**
  * Load a HuggingFace Parquet dataset as an observable stream.
  * Emits once per row group. First emission mounts the table, the rest append.

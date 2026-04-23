@@ -56,6 +56,7 @@
     "@types/react-dom": "^19.2.3",
     "jsdom": "^29.0.1",
     "tailwindcss": "^4.2.2",
+    "apache-arrow": "^21.1.0",
     "tsx": "^4.21.0",
     "typescript": "~5.9.3",
     "vite": "catalog:",
