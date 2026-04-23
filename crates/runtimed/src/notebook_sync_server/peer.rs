@@ -414,9 +414,11 @@ where
     // initial_metadata seeded above).
     check_and_update_trust_state(&room).await;
 
-    room.active_peers.fetch_add(1, Ordering::Relaxed);
-    room.had_peers.store(true, Ordering::Relaxed);
-    let peers = room.active_peers.load(Ordering::Relaxed);
+    room.connections
+        .active_peers
+        .fetch_add(1, Ordering::Relaxed);
+    room.connections.had_peers.store(true, Ordering::Relaxed);
+    let peers = room.connections.active_peers.load(Ordering::Relaxed);
     info!(
         "[notebook-sync] Client connected to room {} ({} peer{})",
         notebook_id,
@@ -569,7 +571,11 @@ where
     }
 
     // Peer disconnected — decrement and possibly evict the room
-    let remaining = room.active_peers.fetch_sub(1, Ordering::Relaxed) - 1;
+    let remaining = room
+        .connections
+        .active_peers
+        .fetch_sub(1, Ordering::Relaxed)
+        - 1;
     if remaining == 0 {
         // Schedule delayed eviction check. This handles:
         // 1. Grace period during auto-launch (client may reconnect)
@@ -598,7 +604,12 @@ where
                 tokio::time::sleep(delay).await;
 
                 // Check if peers reconnected during the delay
-                if room_for_eviction.active_peers.load(Ordering::Relaxed) > 0 {
+                if room_for_eviction
+                    .connections
+                    .active_peers
+                    .load(Ordering::Relaxed)
+                    > 0
+                {
                     info!(
                         "[notebook-sync] Eviction cancelled for {} (peers reconnected)",
                         notebook_id_for_eviction
@@ -682,7 +693,12 @@ where
             // guards against double-eviction races.
             let (should_teardown, evicted_uuid) = {
                 let mut rooms_guard = rooms_for_eviction.lock().await;
-                if room_for_eviction.active_peers.load(Ordering::Relaxed) == 0 {
+                if room_for_eviction
+                    .connections
+                    .active_peers
+                    .load(Ordering::Relaxed)
+                    == 0
+                {
                     // Find the room's UUID key by Arc pointer identity
                     let current_key = rooms_guard
                         .iter()

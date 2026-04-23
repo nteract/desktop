@@ -178,6 +178,27 @@ impl RoomPersistence {
     }
 }
 
+/// Per-connection accounting for room eviction + `is_draining` reporting.
+///
+/// - `active_peers`: live counter, drives room eviction when it hits zero.
+/// - `had_peers`: one-way latch flipped on first connect. Kept because the
+///   Python SDK's `is_draining = (active_peers == 0 && had_peers)` check
+///   needs to distinguish "brand-new, no one has connected yet" from
+///   "drained, awaiting eviction." Exposed on the `RoomInfo` wire type.
+pub struct RoomConnections {
+    pub active_peers: AtomicUsize,
+    pub had_peers: AtomicBool,
+}
+
+impl Default for RoomConnections {
+    fn default() -> Self {
+        Self {
+            active_peers: AtomicUsize::new(0),
+            had_peers: AtomicBool::new(false),
+        }
+    }
+}
+
 pub struct NotebookRoom {
     /// Permanent, immutable UUID for this room. Used as the map key once
     /// Phase 5 lands; for now coexists with the string-keyed map.
@@ -192,10 +213,8 @@ pub struct NotebookRoom {
     pub persistence: RoomPersistence,
     /// Notebook identity: persist_path, is_ephemeral, .ipynb path, working_dir.
     pub identity: RoomIdentity,
-    /// Number of active peer connections in this room.
-    pub active_peers: AtomicUsize,
-    /// Whether at least one peer has ever connected to this room.
-    pub had_peers: AtomicBool,
+    /// Per-connection accounting: active_peers + had_peers.
+    pub connections: RoomConnections,
     /// Blob store for output manifests.
     pub blob_store: Arc<BlobStore>,
     /// Trust state for this notebook (for auto-launch decisions).
@@ -344,8 +363,7 @@ impl NotebookRoom {
             broadcasts: RoomBroadcasts::default(),
             persistence,
             identity: RoomIdentity::new(persist_path, path, ephemeral),
-            active_peers: AtomicUsize::new(0),
-            had_peers: AtomicBool::new(false),
+            connections: RoomConnections::default(),
             blob_store,
             trust_state: Arc::new(RwLock::new(trust_state)),
             state,
@@ -405,8 +423,7 @@ impl NotebookRoom {
             broadcasts: RoomBroadcasts::default(),
             persistence: RoomPersistence::with_debouncer(persist_tx, flush_request_tx),
             identity: RoomIdentity::new(persist_path, path, false),
-            active_peers: AtomicUsize::new(0),
-            had_peers: AtomicBool::new(false),
+            connections: RoomConnections::default(),
             blob_store,
             trust_state: Arc::new(RwLock::new(trust_state)),
             state,
