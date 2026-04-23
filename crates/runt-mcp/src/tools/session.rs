@@ -116,12 +116,11 @@ fn read_runtime_info(handle: &notebook_sync::handle::DocHandle) -> serde_json::V
                     "env_source".into(),
                     serde_json::json!(state.kernel.env_source),
                 );
-                let env_source = &state.kernel.env_source;
-                if env_source.starts_with("conda:") {
-                    info.insert("package_manager".into(), serde_json::json!("conda"));
-                } else if env_source.starts_with("uv:") {
-                    info.insert("package_manager".into(), serde_json::json!("uv"));
-                } else if env_source == "deno" {
+                use notebook_protocol::connection::EnvSource;
+                let parsed = EnvSource::parse(&state.kernel.env_source);
+                if let Some(pm) = parsed.package_manager() {
+                    info.insert("package_manager".into(), serde_json::json!(pm.as_str()));
+                } else if matches!(parsed, EnvSource::Deno) {
                     info.insert("package_manager".into(), serde_json::json!("deno"));
                 }
             }
