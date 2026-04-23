@@ -122,8 +122,13 @@ fn main() {
             cmd_integration(filter);
         }
         "wasm" => {
-            let target = args.get(1).map(|s| s.as_str());
-            cmd_wasm(target);
+            let skip_renderer_plugins = args.iter().any(|a| a == "--skip-renderer-plugins");
+            let target = args
+                .iter()
+                .skip(1)
+                .find(|a| !a.starts_with('-'))
+                .map(|s| s.as_str());
+            cmd_wasm(target, skip_renderer_plugins);
         }
         "renderer-plugins" => cmd_renderer_plugins(),
         "verify-plugins" => cmd_verify_plugins(),
@@ -196,10 +201,16 @@ Testing:
                              E2E testing (build, run, manage fixtures)
 
 Other:
-  wasm                       Rebuild all WASM targets (runtimed-wasm + sift-wasm)
+  wasm                       Rebuild all WASM targets (runtimed-wasm + sift-wasm).
+                             If sift-wasm was (re)built, also runs renderer-plugins
+                             so the sift.js bundles re-embed the fresh wasm-bindgen glue.
   wasm runtimed              Rebuild only runtimed-wasm
   wasm sift                  Rebuild only sift-wasm (bindings for @nteract/sift);
                              also copies the binary to crates/runt-mcp/assets/plugins/
+                             and rebuilds renderer plugins.
+  wasm --skip-renderer-plugins
+                             Skip the chained renderer-plugins rebuild (escape hatch
+                             for intentionally testing drift between the two).
   renderer-plugins           Rebuild pre-built renderer plugins (notebook + MCP)
   verify-plugins             Check renderer plugin bundles match their wasm artifacts
                              (every wasm-bindgen import in the plugin JS must be
@@ -1187,7 +1198,7 @@ fn cmd_e2e_test_all() {
     println!("\nAll E2E tests passed!");
 }
 
-fn cmd_wasm(target: Option<&str>) {
+fn cmd_wasm(target: Option<&str>, skip_renderer_plugins: bool) {
     // `wasm-pack build crates/<name>` and the subsequent `fs::copy`/
     // `fs::read_dir` calls here all use repo-relative paths. cd to the
     // workspace root so this works whether the user invoked xtask from
@@ -1279,6 +1290,20 @@ fn cmd_wasm(target: Option<&str>) {
         println!(
             "WASM build complete. Output: crates/sift-wasm/pkg/ (mirrored to packages/sift/public/wasm/)"
         );
+    }
+
+    // Renderer plugin bundles embed wasm-bindgen glue from sift-wasm (the
+    // `__wbg_*_<hash>` import names). Rebuilding sift-wasm without rebuilding
+    // the plugins leaves them pointing at stale names — see #2048 (the
+    // `__wbg_call_<hash> must be callable` runtime error). Chain the plugin
+    // build by default so that class of drift can't happen via this command.
+    //
+    // `--skip-renderer-plugins` is the escape hatch for cases where you
+    // explicitly want the drift (e.g. reproducing a bug against an older
+    // bundle, or CI steps that intentionally test one half of the chain).
+    if build_sift && !skip_renderer_plugins {
+        println!();
+        cmd_renderer_plugins();
     }
 }
 
