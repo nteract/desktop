@@ -141,6 +141,10 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v6
+        with:
+          # Plugin drift check reads committed .wasm artifacts; without LFS
+          # they'd be 132-byte pointer stubs and fail with "missing \\0asm magic".
+          lfs: true
 
       - name: Install rust
         uses: dsherret/rust-toolchain-file@v1
