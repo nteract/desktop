@@ -328,6 +328,19 @@ fn pixi_prewarmed_packages(extra: &[String]) -> Vec<String> {
     packages
 }
 
+/// Settings changes that arrive close together (e.g. a user adding several
+/// default packages in the Settings panel, each dispatching its own sync
+/// round trip) would otherwise trigger a separate pool eviction + rewarm
+/// per signal. Absorb additional wake-ups within `quiet` of the last one
+/// before returning so the warming loop collapses them into a single cycle.
+/// See #2120.
+async fn absorb_rapid_settings_signals(
+    rx: &mut tokio::sync::broadcast::Receiver<()>,
+    quiet: std::time::Duration,
+) {
+    while let Ok(Ok(())) = tokio::time::timeout(quiet, rx.recv()).await {}
+}
+
 impl Pool {
     fn new(target: usize, max_age_secs: u64) -> Self {
         Self {
@@ -3694,7 +3707,12 @@ impl Daemon {
 
             tokio::select! {
                 _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
-                _ = settings_rx.recv() => {}
+                _ = settings_rx.recv() => {
+                    absorb_rapid_settings_signals(
+                        &mut settings_rx,
+                        std::time::Duration::from_millis(500),
+                    ).await;
+                }
             }
         }
     }
@@ -3811,7 +3829,12 @@ impl Daemon {
 
             tokio::select! {
                 _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
-                _ = settings_rx.recv() => {}
+                _ = settings_rx.recv() => {
+                    absorb_rapid_settings_signals(
+                        &mut settings_rx,
+                        std::time::Duration::from_millis(500),
+                    ).await;
+                }
             }
         }
     }
@@ -3925,7 +3948,12 @@ impl Daemon {
 
             tokio::select! {
                 _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
-                _ = settings_rx.recv() => {}
+                _ = settings_rx.recv() => {
+                    absorb_rapid_settings_signals(
+                        &mut settings_rx,
+                        std::time::Duration::from_millis(500),
+                    ).await;
+                }
             }
         }
     }

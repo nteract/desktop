@@ -1013,6 +1013,17 @@ impl SettingsDoc {
         self.doc.sync().receive_sync_message(peer_state, message)
     }
 
+    /// Current document heads. Used to detect whether a sync exchange
+    /// actually applied changes — identical heads before and after
+    /// `receive_sync_message` means the peer's message was an ack or a
+    /// duplicate and no broadcast is warranted.
+    ///
+    /// Takes `&mut` because `AutoCommit` commits any pending transaction
+    /// before reporting heads.
+    pub fn heads(&mut self) -> Vec<automerge::ChangeHash> {
+        self.doc.get_heads()
+    }
+
     /// Selectively apply external JSON changes to the Automerge doc.
     ///
     /// Only updates fields that are **present** in the JSON and **differ** from

@@ -76,11 +76,20 @@ where
                             .map_err(|e| anyhow::anyhow!("decode error: {}", e))?;
 
                         let mut doc = settings.write().await;
+                        // Compare heads before/after so pure acks or duplicate
+                        // messages don't fire `settings_changed`. Without this
+                        // the pool warming loops wake up on every sync-protocol
+                        // round-trip, which thrashes the pools when several
+                        // per-`invoke` clients land back-to-back (#2120).
+                        let before = doc.heads();
                         doc.receive_sync_message(&mut peer_state, message)?;
+                        let after = doc.heads();
+                        let doc_changed = before != after;
 
-                        // Persist and notify others
-                        persist_settings(&mut doc, &automerge_path, &json_path);
-                        let _ = changed_tx.send(());
+                        if doc_changed {
+                            persist_settings(&mut doc, &automerge_path, &json_path);
+                            let _ = changed_tx.send(());
+                        }
 
                         // Send our response
                         if let Some(reply) = doc.generate_sync_message(&mut peer_state) {
