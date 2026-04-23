@@ -661,6 +661,21 @@ impl RuntimeStateDoc {
             })
     }
 
+    /// Read a string scalar from a map object, returning `None` only when
+    /// the key itself is absent. Unlike `read_opt_str`, an explicit `""`
+    /// value returns `Some("")` so callers can distinguish "scaffolded
+    /// but unset" from "key not present at all."
+    fn read_str_if_present(&self, obj: &automerge::ObjId, key: &str) -> Option<String> {
+        let (value, _) = self.doc.get(obj, key).ok().flatten()?;
+        match value {
+            Value::Scalar(s) => match s.as_ref() {
+                ScalarValue::Str(s) => Some(s.to_string()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// Read a bool scalar from a map object.
     fn read_bool(&self, obj: &automerge::ObjId, key: &str) -> bool {
         self.doc
@@ -2011,9 +2026,11 @@ impl RuntimeStateDoc {
                 );
                 // error_reason is Option<String> so callers can tell "no
                 // kernel map at all" (None) from "scaffolded but unset"
-                // (Some("")). The unwrap_or_default above only fires when
-                // the whole kernel map is missing.
-                let error_reason = Some(self.read_str(k, "error_reason"));
+                // (Some("")). read_str_if_present returns None only when
+                // the key itself is absent — important for docs scaffolded
+                // before Phase 2 added the key, which have the `kernel`
+                // map but no `error_reason` field yet.
+                let error_reason = self.read_str_if_present(k, "error_reason");
                 KernelState {
                     status,
                     starting_phase,
@@ -4841,5 +4858,53 @@ mod tests {
             );
         }
         Ok(())
+    }
+
+    #[test]
+    fn pre_phase_2_doc_reads_error_reason_as_none() -> Result<(), RuntimeStateError> {
+        // Simulate a runtime-state doc that existed before Phase 2 added
+        // `kernel/error_reason`: kernel map is present (so the snapshot
+        // isn't entirely default) but the error_reason key is absent.
+        // read_state must report error_reason == None so callers can
+        // distinguish this from the Phase-2 scaffolded Some("") state.
+        use automerge::{transaction::Transactable, AutoCommit, ObjType, ROOT};
+
+        let mut raw = AutoCommit::new();
+        let kernel = raw
+            .put_object(&ROOT, "kernel", ObjType::Map)
+            .expect("scaffold kernel");
+        raw.put(&kernel, "status", "idle")
+            .expect("pre-phase-2 status");
+        raw.put(&kernel, "starting_phase", "")
+            .expect("pre-phase-2 starting_phase");
+        raw.put(&kernel, "name", "").expect("pre-phase-2 name");
+        raw.put(&kernel, "language", "")
+            .expect("pre-phase-2 language");
+        raw.put(&kernel, "env_source", "")
+            .expect("pre-phase-2 env_source");
+        raw.put(&kernel, "runtime_agent_id", "")
+            .expect("pre-phase-2 runtime_agent_id");
+        // Deliberately DO NOT write kernel/lifecycle, kernel/activity, or
+        // kernel/error_reason. resolve_lifecycle sees empty lifecycle_key
+        // and falls through to from_legacy("idle", "") = Running(Idle).
+
+        let doc = RuntimeStateDoc::from_doc(raw);
+        let k = doc.read_state().kernel;
+        assert_eq!(k.status, "idle");
+        assert_eq!(k.lifecycle, RuntimeLifecycle::Running(KernelActivity::Idle));
+        assert_eq!(
+            k.error_reason, None,
+            "pre-Phase-2 doc (no error_reason key) must read as None, not Some(\"\")"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn scaffolded_doc_reads_error_reason_as_some_empty() {
+        // By contrast, a doc scaffolded by new() has the key present and
+        // set to "". read_state must report Some("") so typed callers can
+        // tell "scaffolded, no reason set" from "key absent."
+        let doc = RuntimeStateDoc::new();
+        assert_eq!(doc.read_state().kernel.error_reason.as_deref(), Some(""));
     }
 }
