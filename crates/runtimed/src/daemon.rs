@@ -2025,7 +2025,7 @@ impl Daemon {
         } else {
             let doc = room.doc.read().await;
             let existing_count = doc.cell_count();
-            if existing_count == 0 && !room.is_loading.load(std::sync::atomic::Ordering::Acquire) {
+            if existing_count == 0 && !room.is_loading() {
                 // Room is empty and nobody is loading yet — this connection
                 // will do the streaming load inside the sync loop.
                 info!(
@@ -2038,7 +2038,7 @@ impl Daemon {
                     "[runtimed] Room for {} has {} cells (joining existing{})",
                     path,
                     existing_count,
-                    if room.is_loading.load(std::sync::atomic::Ordering::Acquire) {
+                    if room.is_loading() {
                         ", load in progress"
                     } else {
                         ""

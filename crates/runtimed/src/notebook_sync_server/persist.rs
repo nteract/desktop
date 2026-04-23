@@ -126,7 +126,7 @@ pub(crate) async fn save_notebook_to_disk(
         })
         .unwrap_or_default();
 
-    let nbformat_attachments = room.nbformat_attachments.read().await.clone();
+    let nbformat_attachments = room.nbformat_attachments_snapshot().await;
 
     // Reconstruct cells as JSON
     // Cell metadata now comes from the CellSnapshot (populated during load)
@@ -241,12 +241,17 @@ pub(crate) async fn save_notebook_to_disk(
             }
         })?;
 
-    // Update last_self_write timestamp so file watcher skips this change
+    // Update last_self_write timestamp so the file watcher skips our own write.
+    // Applies to all rooms (including ephemeral that were just promoted to
+    // file-backed via this save) — a watcher may start up right after
+    // `finalize_untitled_promotion` and will consult this baseline.
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
-    room.last_self_write.store(now, Ordering::Relaxed);
+    room.persistence
+        .last_self_write
+        .store(now, Ordering::Relaxed);
 
     // Snapshot cell sources at save time so the file watcher can distinguish
     // our own writes from genuine external changes. Only update when saving
@@ -259,7 +264,7 @@ pub(crate) async fn save_notebook_to_disk(
         for cell in &cells {
             saved.insert(cell.id.clone(), cell.source.clone());
         }
-        *room.last_save_sources.write().await = saved;
+        *room.persistence.last_save_sources.write().await = saved;
     }
 
     info!(
@@ -343,10 +348,12 @@ pub(crate) async fn finalize_untitled_promotion(room: &Arc<NotebookRoom>, canoni
         }
     }
 
-    // Spawn .ipynb file watcher.
+    // Spawn .ipynb file watcher. RoomPersistence is always present, so the
+    // shutdown sender finds a home whether the room was born file-backed or
+    // promoted from ephemeral.
     if canonical.extension().is_some_and(|ext| ext == "ipynb") {
         let shutdown_tx = spawn_notebook_file_watcher(canonical.clone(), Arc::clone(room));
-        *room.watcher_shutdown_tx.lock().await = Some(shutdown_tx);
+        *room.persistence.watcher_shutdown_tx.lock().await = Some(shutdown_tx);
     }
 
     // Spawn autosave debouncer so subsequent edits persist to .ipynb.
@@ -409,7 +416,7 @@ pub(crate) async fn clone_notebook_to_disk(
         (doc.get_cells(), doc.get_metadata_snapshot())
     };
 
-    let nbformat_attachments = room.nbformat_attachments.read().await.clone();
+    let nbformat_attachments = room.nbformat_attachments_snapshot().await;
 
     // Read existing source notebook to preserve unknown top-level metadata keys.
     let source_notebook_path = room.identity.path.read().await.clone();
@@ -785,7 +792,7 @@ fn spawn_autosave_debouncer_with_config(
                             Err(broadcast::error::RecvError::Closed) => {
                                 // Room is being evicted — do a final autosave
                                 if !is_untitled_notebook(&notebook_id)
-                                    && !room.is_loading.load(Ordering::Acquire)
+                                    && !room.is_loading()
                                 {
                                     match save_notebook_to_disk(&room, None).await {
                                         Ok(path) => {
@@ -818,7 +825,7 @@ fn spawn_autosave_debouncer_with_config(
 
                         if should_flush {
                             // Skip during initial load
-                            if room.is_loading.load(Ordering::Acquire) {
+                            if room.is_loading() {
                                 continue;
                             }
 
@@ -990,12 +997,12 @@ pub(crate) fn spawn_notebook_file_watcher(
                                 continue;
                             }
 
-                            // Check if this is a self-write (within skip window of our last save)
+                            // Check if this is a self-write (within skip window of our last save).
                             let now = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .map(|d| d.as_millis() as u64)
                                 .unwrap_or(0);
-                            let last_write = room.last_self_write.load(Ordering::Relaxed);
+                            let last_write = room.persistence.last_self_write.load(Ordering::Relaxed);
                             if now.saturating_sub(last_write) < SELF_WRITE_SKIP_WINDOW_MS {
                                 debug!(
                                     "[notebook-watch] Skipping self-write event for {:?}",

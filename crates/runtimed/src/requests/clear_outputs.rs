@@ -32,8 +32,8 @@ pub(crate) async fn handle(room: &NotebookRoom, cell_id: String) -> NotebookResp
     }
 
     // Send to debounced persistence task
-    if let Some(ref tx) = room.persist_tx {
-        let _ = tx.send(Some(persist_bytes));
+    if let Some(ref d) = room.persistence.debouncer {
+        let _ = d.persist_tx.send(Some(persist_bytes));
     }
 
     NotebookResponse::OutputsCleared { cell_id }
