@@ -68,9 +68,7 @@ export function PrivacySection({
         onOpenLearnMore={openOrFallThrough}
         footer={
           <div className="flex items-center justify-between pt-1">
-            <span className="text-xs text-muted-foreground">
-              Send anonymous daily ping
-            </span>
+            <span className="text-xs text-muted-foreground">Send anonymous daily ping</span>
             <Switch checked={telemetryEnabled} onCheckedChange={onTelemetryChange} />
           </div>
         }
@@ -98,8 +96,8 @@ export function PrivacySection({
         <div className="flex items-center justify-between">
           <span className="text-xs text-muted-foreground">Last ping</span>
           <span className="text-xs text-foreground tabular-nums">
-            app {formatRelative(lastAppPingAt)} · daemon{" "}
-            {formatRelative(lastDaemonPingAt)} · mcp {formatRelative(lastMcpPingAt)}
+            app {formatRelative(lastAppPingAt)} · daemon {formatRelative(lastDaemonPingAt)} · mcp{" "}
+            {formatRelative(lastMcpPingAt)}
           </span>
         </div>
       </div>

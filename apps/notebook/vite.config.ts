@@ -40,6 +40,7 @@ export default defineConfig(() => {
           upgrade: path.resolve(__dirname, "upgrade/index.html"),
           settings: path.resolve(__dirname, "settings/index.html"),
           feedback: path.resolve(__dirname, "feedback/index.html"),
+          gallery: path.resolve(__dirname, "gallery/index.html"),
         },
         output: {
           entryFileNames: "assets/[name]-[hash].js",

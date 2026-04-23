@@ -1,0 +1,13 @@
+/*
+ * Gallery shares CSS with settings — same Tailwind config, same token
+ * definitions, same cream-theme import. Any visual drift here would be
+ * a drift from the real surface we're previewing.
+ */
+@import "../settings/index.css";
+
+/* The settings @source globs only cover settings/ and ../src/components/.
+ * Add the two additional paths the gallery pulls components from so
+ * Tailwind's JIT picks up their class names. */
+@source "../../../src/components/**/*.{ts,tsx}";
+@source "../settings/sections/**/*.{ts,tsx}";
+@source "./**/*.{ts,tsx}";
