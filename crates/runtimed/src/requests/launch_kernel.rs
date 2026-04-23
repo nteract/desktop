@@ -1090,18 +1090,18 @@ pub(crate) async fn handle(
                     env.venv_path,
                     parsed_resolved.as_str()
                 );
-                // Delete the corrupt env dir. We already `take()`d it
-                // from the pool; putting it back would just hand the
-                // same broken env to the next caller.
-                let doomed = env.venv_path.clone();
-                tokio::task::spawn_blocking(move || {
-                    if let Err(e) = std::fs::remove_dir_all(&doomed) {
-                        warn!(
-                            "[launch-kernel] failed to remove corrupt env {:?}: {}",
-                            doomed, e
-                        );
-                    }
-                });
+                // Delete the corrupt env dir synchronously before we
+                // return — `prepare_*_inline_env` treats the cache-hash
+                // dir as a cache hit while it exists, so a quick retry
+                // (toolbar restart, automated flow) would reacquire
+                // the same broken env and we'd loop on MissingIpykernel.
+                // Await the removal so the next launch rebuilds.
+                if let Err(e) = tokio::fs::remove_dir_all(&env.venv_path).await {
+                    warn!(
+                        "[launch-kernel] failed to remove corrupt env {:?}: {}",
+                        env.venv_path, e
+                    );
+                }
                 let env_source_label = parsed_resolved.as_str().to_string();
                 if let Err(e) = room.state.with_doc(|sd| {
                     sd.set_lifecycle_with_error(

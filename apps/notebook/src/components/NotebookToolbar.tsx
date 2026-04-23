@@ -425,8 +425,8 @@ function renderMissingIpykernelPrompt(envSource: string): ReactElement | null {
       />
     );
   }
-  // Inline or PEP 723 UV dependencies.
-  if (envSource === "uv:inline" || envSource === "uv:pep723") {
+  // Inline UV dependencies — edit notebook-level deps.
+  if (envSource === "uv:inline") {
     return (
       <MissingIpykernelBanner
         headline="ipykernel missing from prepared uv environment."
@@ -436,6 +436,23 @@ function renderMissingIpykernelPrompt(envSource: string): ReactElement | null {
             dependencies (or run{" "}
             <code className="rounded bg-amber-500/20 px-1">uv pip install ipykernel</code> in the
             env) and restart.
+          </>
+        }
+      />
+    );
+  }
+  // PEP 723 — deps live in the `# /// script` inline metadata block in
+  // a cell, not in notebook metadata. Editing notebook deps is ignored
+  // on the next launch.
+  if (envSource === "uv:pep723") {
+    return (
+      <MissingIpykernelBanner
+        headline="ipykernel missing from PEP 723 script metadata."
+        instruction={
+          <>
+            Add <code className="rounded bg-amber-500/20 px-1">ipykernel</code> to the inline{" "}
+            <code className="rounded bg-amber-500/20 px-1">{"# /// script"}</code> dependency block
+            in your notebook and restart.
           </>
         }
       />

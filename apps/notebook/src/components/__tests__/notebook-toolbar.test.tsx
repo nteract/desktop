@@ -408,7 +408,7 @@ describe("NotebookToolbar", () => {
       expect(screen.getByText(/uv pip install ipykernel/)).toBeInTheDocument();
     });
 
-    it("shows uv inline remediation for PEP 723 env source", () => {
+    it("shows PEP 723 script-metadata remediation for uv:pep723", () => {
       render(
         <NotebookToolbar
           {...baseProps}
@@ -420,8 +420,11 @@ describe("NotebookToolbar", () => {
         />,
       );
       expect(
-        screen.getByText(/ipykernel missing from prepared uv environment/),
+        screen.getByText(/ipykernel missing from PEP 723 script metadata/),
       ).toBeInTheDocument();
+      // PEP 723 edits live in the inline `# /// script` block — must NOT
+      // direct users to notebook-level dependency edits.
+      expect(screen.queryByText(/notebook's dependencies/)).not.toBeInTheDocument();
     });
 
     it("shows conda inline remediation when envSource=conda:inline", () => {
