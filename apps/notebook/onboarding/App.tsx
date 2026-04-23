@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { AlertTriangle, ArrowLeft, Check, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { TelemetryDisclosureCard } from "@/components/TelemetryDisclosureCard";
@@ -7,7 +8,6 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
 import { CondaIcon, DenoIcon, PixiIcon, PythonIcon, UvIcon } from "../src/components/icons";
-import { openUrl } from "../src/lib/open-url";
 import type { DaemonStatus } from "./types";
 
 type Runtime = "python" | "deno";
@@ -465,7 +465,14 @@ export default function App() {
                 framing; the secondary is always visible so opting out stays
                 a one-click action. Both record consent. */}
             <div className="space-y-3">
-              <TelemetryDisclosureCard onOpenLearnMore={openUrl} />
+              <TelemetryDisclosureCard
+                onOpenLearnMore={(url) => {
+                  openExternal(url).catch(() => {
+                    // Tauri shell unavailable — the href on the <a> is still
+                    // set, so the browser falls through to that.
+                  });
+                }}
+              />
 
               <Button
                 onClick={() => handleChoice(true)}

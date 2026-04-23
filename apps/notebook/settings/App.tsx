@@ -13,6 +13,7 @@ import {
 } from "@/hooks/useSyncedSettings";
 import { cn } from "@/lib/utils";
 import { CondaIcon, DenoIcon, PixiIcon, PythonIcon, UvIcon } from "../src/components/icons";
+import { PrivacySection } from "./sections/Privacy";
 
 /** Format seconds into human-readable duration */
 function formatDuration(secs: number): string {
@@ -216,6 +217,13 @@ export default function App() {
     setKeepAliveSecs,
     featureFlags,
     setFeatureFlag,
+    telemetryEnabled,
+    setTelemetryEnabled,
+    installId,
+    rotateInstallId,
+    lastDaemonPingAt,
+    lastAppPingAt,
+    lastMcpPingAt,
   } = useSyncedSettings();
 
   return (
@@ -277,6 +285,16 @@ export default function App() {
             </div>
           </div>
         </div>
+
+        <PrivacySection
+          telemetryEnabled={telemetryEnabled}
+          onTelemetryChange={setTelemetryEnabled}
+          installId={installId}
+          onRotate={rotateInstallId}
+          lastDaemonPingAt={lastDaemonPingAt}
+          lastAppPingAt={lastAppPingAt}
+          lastMcpPingAt={lastMcpPingAt}
+        />
 
         {/* Default Runtime */}
         <div className="space-y-2">
