@@ -2213,7 +2213,38 @@ pub(crate) async fn auto_launch_kernel(
                     }
                 }
             }
-            _ => {}
+            crate::project_file::ProjectFileKind::EnvironmentYml => {
+                if let Ok(env_config) = crate::project_file::parse_environment_yml(&detected.path) {
+                    let deps = env_config.dependencies;
+                    if !deps.is_empty() {
+                        let mut doc = room.doc.write().await;
+                        let mut changed = false;
+                        doc.fork_and_merge(|fork| {
+                            let mut snap = fork.get_metadata_snapshot().unwrap_or_default();
+                            let current_deps = snap.runt.conda.as_ref().map(|c| &c.dependencies);
+                            if current_deps.is_none_or(|d| d != &deps) {
+                                let conda = snap.runt.conda.get_or_insert_with(|| {
+                                    notebook_doc::metadata::CondaInlineMetadata {
+                                        dependencies: Vec::new(),
+                                        channels: Vec::new(),
+                                        python: None,
+                                    }
+                                });
+                                conda.dependencies = deps;
+                                let _ = fork.set_metadata_snapshot(&snap);
+                                changed = true;
+                            }
+                        });
+                        if changed {
+                            info!("[notebook-sync] Bootstrapped environment.yml deps into CRDT");
+                        } else {
+                            debug!(
+                                "[notebook-sync] Conda deps already current in CRDT, skipping write"
+                            );
+                        }
+                    }
+                }
+            }
         }
     }
 
