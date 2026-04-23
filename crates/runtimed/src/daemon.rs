@@ -705,10 +705,39 @@ impl Daemon {
         // Load or create the settings document
         let automerge_path = crate::default_settings_doc_path();
         let json_path = crate::settings_json_path();
-        let settings = SettingsDoc::load_or_create(&automerge_path, Some(&json_path));
+        let mut settings = SettingsDoc::load_or_create(&automerge_path, Some(&json_path));
 
         // Pool sizes now come from settings.json (imported via apply_json_changes)
         // or from SettingsDoc defaults if not set in JSON.
+
+        // Backfill telemetry consent for existing users. Pre-refactor, every
+        // finished-onboarding installation implicitly consented to telemetry
+        // (the toggle was pre-checked). Users who've been running the app
+        // before this change shouldn't suddenly look like they never opted
+        // in — that would silently stop their heartbeats. No-op for fresh
+        // installs (onboarding_completed = false) and idempotent across
+        // restarts.
+        //
+        // Write both the Automerge doc and the JSON mirror immediately when
+        // the flag flips. Otherwise the change only persists if a settings
+        // client happens to connect and trigger `persist_settings` in
+        // `sync_server.rs` — a daemon that boots, runs briefly with no
+        // settings-window interaction, and exits would drop the backfill.
+        if crate::settings_doc::backfill_telemetry_consent_in_doc(&mut settings) {
+            tracing::info!(
+                "[settings] Backfilled telemetry_consent_recorded for an existing onboarded install"
+            );
+            let automerge_path = crate::default_settings_doc_path();
+            if let Err(e) = settings.save_to_file(&automerge_path) {
+                tracing::warn!(
+                    "[settings] Failed to persist backfilled Automerge doc: {}",
+                    e
+                );
+            }
+            if let Err(e) = settings.save_json_mirror(&json_path) {
+                tracing::warn!("[settings] Failed to persist backfilled JSON mirror: {}", e);
+            }
+        }
 
         // Write the settings JSON Schema for editor autocomplete
         if let Err(e) = crate::settings_doc::write_settings_schema() {

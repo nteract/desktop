@@ -4408,6 +4408,14 @@ async fn telemetry_command(command: TelemetryCommands, settings_path: &Path) -> 
                     "disabled"
                 }
             );
+            println!(
+                "Consent recorded: {}",
+                if settings.telemetry_consent_recorded {
+                    "yes"
+                } else {
+                    "no (no pings until user records a decision)"
+                }
+            );
 
             if settings.install_id.is_empty() {
                 println!("Install ID: (not yet generated)");
@@ -4444,9 +4452,10 @@ async fn telemetry_command(command: TelemetryCommands, settings_path: &Path) -> 
                 format_ping(settings.telemetry_last_mcp_ping_at, now)
             );
 
-            let gates = runtimed_client::telemetry::blocking_gates(
+            let gates = runtimed_client::telemetry::blocking_gates_full(
                 settings.telemetry_enabled,
                 settings.onboarding_completed,
+                settings.telemetry_consent_recorded,
                 None, // show env-level gates, not per-source throttle
                 now,
             );

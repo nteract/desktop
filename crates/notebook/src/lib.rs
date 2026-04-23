@@ -3335,6 +3335,46 @@ async fn set_synced_setting(key: String, value: serde_json::Value) -> Result<(),
     Ok(())
 }
 
+/// Rotate the install ID to a fresh UUIDv4 and clear all three
+/// `last_ping_at` markers. Used by Settings → Privacy for user-initiated
+/// identity reset.
+///
+/// Returns the new install ID so the UI can display it without another
+/// round-trip. The four fields are written as separate put_value calls;
+/// the sync client is serial per connection so the daemon does not
+/// interleave puts within a single client session.
+#[tauri::command]
+async fn rotate_install_id() -> Result<String, String> {
+    let socket_path = runt_workspace::default_socket_path();
+    let mut client = runtimed::sync_client::SyncClient::connect_with_timeout(
+        socket_path,
+        std::time::Duration::from_millis(500),
+    )
+    .await
+    .map_err(|e| format!("Daemon unavailable: {}. Install ID not rotated.", e))?;
+
+    let new_id = uuid::Uuid::new_v4().to_string();
+
+    client
+        .put_value("install_id", &serde_json::Value::String(new_id.clone()))
+        .await
+        .map_err(|e| format!("sync error (install_id): {}", e))?;
+    client
+        .put_value("telemetry_last_daemon_ping_at", &serde_json::Value::Null)
+        .await
+        .map_err(|e| format!("sync error (daemon marker): {}", e))?;
+    client
+        .put_value("telemetry_last_app_ping_at", &serde_json::Value::Null)
+        .await
+        .map_err(|e| format!("sync error (app marker): {}", e))?;
+    client
+        .put_value("telemetry_last_mcp_ping_at", &serde_json::Value::Null)
+        .await
+        .map_err(|e| format!("sync error (mcp marker): {}", e))?;
+
+    Ok(new_id)
+}
+
 /// Open the settings window.
 ///
 /// Uses singleton pattern - focuses existing window if present, otherwise creates new one.
@@ -4194,6 +4234,8 @@ pub fn run(
             open_settings_window,
             // Onboarding
             complete_onboarding,
+            // Privacy / telemetry
+            rotate_install_id,
             // Debug info
             get_git_info,
             get_daemon_info,

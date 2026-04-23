@@ -67,6 +67,39 @@ export type SyncedSettings = {
    * When true, the daemon installs `nteract-kernel-launcher` and `dx` into
    * UV kernel environments, launches kernels via `nteract_kernel_launcher`,
    * and runs `dx.install()` before the first user cell. Default: false.
+   *
+   * Mirrors `FeatureFlags::bootstrap_dx`. Flattened on the wire so the
+   * settings JSON and Automerge document keep a flat layout even as new
+   * feature flags are added.
    */
   bootstrap_dx: boolean;
+  /**
+   * Opaque per-install UUIDv4. Generated on first heartbeat, persisted in
+   * settings. Not derived from any identifying data.
+   */
+  install_id: string;
+  /**
+   * Master telemetry switch. When false, no heartbeat pings are sent.
+   */
+  telemetry_enabled: boolean;
+  /**
+   * Whether the user has explicitly recorded a telemetry decision (pressed
+   * either the "You can count on me!" or "Opt out of metrics, continue"
+   * button during onboarding). Default false. Until this is true, no
+   * heartbeat fires, even when `telemetry_enabled = true`. Satisfies the
+   * GDPR "clear affirmative action" requirement.
+   */
+  telemetry_consent_recorded: boolean;
+  /**
+   * Unix-seconds timestamp of the last successful daemon heartbeat.
+   */
+  telemetry_last_daemon_ping_at?: bigint | null;
+  /**
+   * Unix-seconds timestamp of the last successful app heartbeat.
+   */
+  telemetry_last_app_ping_at?: bigint | null;
+  /**
+   * Unix-seconds timestamp of the last successful MCP heartbeat.
+   */
+  telemetry_last_mcp_ping_at?: bigint | null;
 };
