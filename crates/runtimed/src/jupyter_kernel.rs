@@ -749,11 +749,6 @@ impl KernelConnection for JupyterKernel {
                                         _ => "unknown",
                                     };
 
-                                    let _ = broadcast_tx.send(NotebookBroadcast::KernelStatus {
-                                        status: status_str.to_string(),
-                                        cell_id: cell_id.clone(),
-                                    });
-
                                     if status_str != "unknown" {
                                         // Non-execute messages (kernel_info, completions) have a
                                         // parent_header.msg_id that isn't in our execute map.
@@ -787,7 +782,7 @@ impl KernelConnection for JupyterKernel {
                                 }
 
                                 JupyterMessageContent::ExecuteInput(input) => {
-                                    if let Some(ref cid) = cell_id {
+                                    if let Some(_cid) = cell_id {
                                         let execution_count = input.execution_count.0 as i64;
 
                                         if let Some(ref eid) = execution_id {
@@ -797,16 +792,6 @@ impl KernelConnection for JupyterKernel {
                                                 warn!("[runtime-state] {}", e);
                                             }
                                         }
-
-                                        let _ = broadcast_tx.send(
-                                            NotebookBroadcast::ExecutionStarted {
-                                                cell_id: cid.clone(),
-                                                execution_id: execution_id
-                                                    .clone()
-                                                    .unwrap_or_default(),
-                                                execution_count,
-                                            },
-                                        );
                                     }
                                 }
 
@@ -913,7 +898,7 @@ impl KernelConnection for JupyterKernel {
                                         continue;
                                     }
 
-                                    if let Some(ref cid) = cell_id {
+                                    if let Some(_cid) = cell_id {
                                         let stream_name = match stream.name {
                                             jupyter_protocol::Stdio::Stdout => "stdout",
                                             jupyter_protocol::Stdio::Stderr => "stderr",
@@ -990,8 +975,8 @@ impl KernelConnection for JupyterKernel {
                                         };
 
                                         if merge_ok {
-                                            let broadcast_output_index = match &upsert_result {
-                                                Ok((updated, output_index)) => {
+                                            match &upsert_result {
+                                                Ok((_updated, output_index)) => {
                                                     let mut terminals =
                                                         iopub_stream_terminals.lock().await;
                                                     terminals.set_output_state(
@@ -1002,29 +987,14 @@ impl KernelConnection for JupyterKernel {
                                                             blob_hash: blob_hash.clone(),
                                                         },
                                                     );
-                                                    if *updated {
-                                                        Some(*output_index)
-                                                    } else {
-                                                        None
-                                                    }
                                                 }
                                                 Err(e) => {
                                                     warn!(
                                                     "[jupyter-kernel] Failed to upsert stream output: {}",
                                                     e
                                                 );
-                                                    None
                                                 }
-                                            };
-
-                                            // merge() already notified via heads check
-                                            let _ = broadcast_tx.send(NotebookBroadcast::Output {
-                                                cell_id: cid.clone(),
-                                                execution_id: eid,
-                                                output_type: "stream".to_string(),
-                                                output_json: manifest_json.to_string(),
-                                                output_index: broadcast_output_index,
-                                            });
+                                            }
                                         }
                                     }
                                 }
@@ -1143,8 +1113,8 @@ impl KernelConnection for JupyterKernel {
                                         continue;
                                     }
 
-                                    if let Some(ref cid) = cell_id {
-                                        let output_type = match &message.content {
+                                    if let Some(_cid) = cell_id {
+                                        let _output_type = match &message.content {
                                             JupyterMessageContent::DisplayData(_) => "display_data",
                                             JupyterMessageContent::ExecuteResult(_) => {
                                                 "execute_result"
@@ -1201,23 +1171,8 @@ impl KernelConnection for JupyterKernel {
                                             );
                                             }
 
-                                            let merge_ok = match state_for_iopub.merge(&mut fork) {
-                                                Ok(()) => true,
-                                                Err(e) => {
-                                                    warn!("[runtime-state] merge: {}", e);
-                                                    false
-                                                }
-                                            };
-
-                                            if merge_ok {
-                                                let _ =
-                                                    broadcast_tx.send(NotebookBroadcast::Output {
-                                                        cell_id: cid.clone(),
-                                                        execution_id: eid,
-                                                        output_type: output_type.to_string(),
-                                                        output_json: manifest_json.to_string(),
-                                                        output_index: None,
-                                                    });
+                                            if let Err(e) = state_for_iopub.merge(&mut fork) {
+                                                warn!("[runtime-state] merge: {}", e);
                                             }
                                         }
                                     }
@@ -1242,45 +1197,29 @@ impl KernelConnection for JupyterKernel {
                                         )
                                         .await;
 
-                                        let merge_ok = match updated {
-                                            Ok(true) => match state_for_iopub.merge(&mut fork) {
-                                                Ok(()) => {
+                                        match updated {
+                                            Ok(true) => {
+                                                if let Err(e) = state_for_iopub.merge(&mut fork) {
+                                                    warn!("[runtime-state] merge: {}", e);
+                                                } else {
                                                     debug!(
                                                         "[jupyter-kernel] Updated display_id={}",
                                                         display_id
                                                     );
-                                                    true
                                                 }
-                                                Err(e) => {
-                                                    warn!("[runtime-state] merge: {}", e);
-                                                    false
-                                                }
-                                            },
+                                            }
                                             Ok(false) => {
                                                 error!(
                                                     "[jupyter-kernel] No output found for display_id={}",
                                                     display_id
                                                 );
-                                                false
                                             }
                                             Err(e) => {
                                                 error!(
                                                     "[jupyter-kernel] Failed to update display: {}",
                                                     e
                                                 );
-                                                false
                                             }
-                                        };
-
-                                        if merge_ok {
-                                            let _ = broadcast_tx.send(
-                                                NotebookBroadcast::DisplayUpdate {
-                                                    display_id: display_id.clone(),
-                                                    data: serde_json::to_value(&update.data)
-                                                        .unwrap_or_default(),
-                                                    metadata: update.metadata.clone(),
-                                                },
-                                            );
                                         }
                                     }
                                 }
@@ -1428,23 +1367,8 @@ impl KernelConnection for JupyterKernel {
                                             );
                                             }
 
-                                            let merge_ok = match state_for_iopub.merge(&mut fork) {
-                                                Ok(()) => true,
-                                                Err(e) => {
-                                                    warn!("[runtime-state] merge: {}", e);
-                                                    false
-                                                }
-                                            };
-
-                                            if merge_ok {
-                                                let _ =
-                                                    broadcast_tx.send(NotebookBroadcast::Output {
-                                                        cell_id: cid.clone(),
-                                                        execution_id: eid.clone(),
-                                                        output_type: "error".to_string(),
-                                                        output_json: manifest_json.to_string(),
-                                                        output_index: None,
-                                                    });
+                                            if let Err(e) = state_for_iopub.merge(&mut fork) {
+                                                warn!("[runtime-state] merge: {}", e);
                                             }
                                         }
 
@@ -1821,7 +1745,7 @@ impl KernelConnection for JupyterKernel {
 
         // ── Shell reader task ────────────────────────────────────────────
 
-        let shell_broadcast_tx = shared.broadcast_tx.clone();
+        let _shell_broadcast_tx = shared.broadcast_tx.clone();
         let shell_cell_id_map = cell_id_map.clone();
         let shell_pending_history = pending_history.clone();
         let shell_pending_completions = pending_completions.clone();
@@ -1848,7 +1772,7 @@ impl KernelConnection for JupyterKernel {
                                     });
 
                                     // Process page payloads
-                                    if let Some(ref cid) = cell_id {
+                                    if let Some(_cid) = cell_id {
                                         for payload in &reply.payload {
                                             if let jupyter_protocol::Payload::Page {
                                                 data, ..
@@ -1893,41 +1817,10 @@ impl KernelConnection for JupyterKernel {
                                                 );
                                                 }
 
-                                                let merge_ok = match shell_state.merge(&mut fork) {
-                                                    Ok(()) => true,
-                                                    Err(e) => {
-                                                        warn!("[runtime-state] merge: {}", e);
-                                                        false
-                                                    }
-                                                };
-
-                                                if merge_ok {
-                                                    let _ = shell_broadcast_tx.send(
-                                                        NotebookBroadcast::Output {
-                                                            cell_id: cid.clone(),
-                                                            execution_id: execution_id
-                                                                .clone()
-                                                                .unwrap_or_default(),
-                                                            output_type: "display_data".to_string(),
-                                                            output_json: manifest_json.to_string(),
-                                                            output_index: None,
-                                                        },
-                                                    );
+                                                if let Err(e) = shell_state.merge(&mut fork) {
+                                                    warn!("[runtime-state] merge: {}", e);
                                                 }
                                             }
-                                        }
-                                    }
-
-                                    if reply.status != jupyter_protocol::ReplyStatus::Ok {
-                                        if let Some(ref cid) = cell_id {
-                                            let _ = shell_broadcast_tx.send(
-                                                NotebookBroadcast::ExecutionDone {
-                                                    cell_id: cid.clone(),
-                                                    execution_id: execution_id
-                                                        .clone()
-                                                        .unwrap_or_default(),
-                                                },
-                                            );
                                         }
                                     }
                                 }

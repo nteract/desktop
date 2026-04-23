@@ -1,7 +1,7 @@
 //! `NotebookRequest::ClearOutputs` handler.
 
 use crate::notebook_sync_server::NotebookRoom;
-use crate::protocol::{NotebookBroadcast, NotebookResponse};
+use crate::protocol::NotebookResponse;
 
 pub(crate) async fn handle(room: &NotebookRoom, cell_id: String) -> NotebookResponse {
     // Clear outputs by nulling the execution_id pointer on the cell.
@@ -35,13 +35,6 @@ pub(crate) async fn handle(room: &NotebookRoom, cell_id: String) -> NotebookResp
     if let Some(ref tx) = room.persist_tx {
         let _ = tx.send(Some(persist_bytes));
     }
-
-    // Broadcast for cross-window UI sync (fast path)
-    let _ = room
-        .kernel_broadcast_tx
-        .send(NotebookBroadcast::OutputsCleared {
-            cell_id: cell_id.clone(),
-        });
 
     NotebookResponse::OutputsCleared { cell_id }
 }

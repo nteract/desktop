@@ -683,7 +683,7 @@ pub(crate) async fn check_and_broadcast_sync_state(room: &NotebookRoom) {
     if is_tracking {
         // Kernel launched with inline deps - compute drift
         let diff = compute_env_sync_diff(&launched, &current_metadata);
-        let in_sync = diff.is_none();
+        let _in_sync = diff.is_none();
 
         // Write to RuntimeStateDoc
         if let Err(e) = room.state.with_doc(|sd| match &diff {
@@ -698,10 +698,6 @@ pub(crate) async fn check_and_broadcast_sync_state(room: &NotebookRoom) {
         }) {
             warn!("[runtime-state] {}", e);
         }
-
-        let _ = room
-            .kernel_broadcast_tx
-            .send(NotebookBroadcast::EnvSyncState { in_sync, diff });
     } else {
         // Kernel launched with prewarmed - check if metadata now has inline deps
         let current_inline = check_inline_deps(&current_metadata);
@@ -725,32 +721,7 @@ pub(crate) async fn check_and_broadcast_sync_state(room: &NotebookRoom) {
                 {
                     warn!("[runtime-state] {}", e);
                 }
-                let _ = room
-                    .kernel_broadcast_tx
-                    .send(NotebookBroadcast::EnvSyncState {
-                        in_sync: false,
-                        diff: Some(EnvSyncDiff {
-                            added,
-                            removed: vec![],
-                            channels_changed: false,
-                            deno_changed: false,
-                        }),
-                    });
-            } else {
-                let _ = room
-                    .kernel_broadcast_tx
-                    .send(NotebookBroadcast::EnvSyncState {
-                        in_sync: true,
-                        diff: None,
-                    });
             }
-        } else {
-            let _ = room
-                .kernel_broadcast_tx
-                .send(NotebookBroadcast::EnvSyncState {
-                    in_sync: true,
-                    diff: None,
-                });
         }
     }
 }
@@ -1653,7 +1624,7 @@ pub(crate) async fn acquire_prewarmed_env_with_capture(
 async fn acquire_pool_env_for_source(
     env_source: &str,
     daemon: &std::sync::Arc<crate::daemon::Daemon>,
-    room: &NotebookRoom,
+    _room: &NotebookRoom,
 ) -> Option<Option<crate::PooledEnv>> {
     use notebook_protocol::connection::{EnvSource, PackageManager};
     let parsed = EnvSource::parse(env_source);
@@ -1685,12 +1656,6 @@ async fn acquire_pool_env_for_source(
             }
             None => {
                 error!("[notebook-sync] Conda pool empty, cannot launch");
-                let _ = room
-                    .kernel_broadcast_tx
-                    .send(NotebookBroadcast::KernelStatus {
-                        status: "error: Conda pool empty".to_string(),
-                        cell_id: None,
-                    });
                 None // Signal caller to return early
             }
         }
@@ -1706,12 +1671,6 @@ async fn acquire_pool_env_for_source(
             }
             None => {
                 error!("[notebook-sync] UV pool empty, cannot launch");
-                let _ = room
-                    .kernel_broadcast_tx
-                    .send(NotebookBroadcast::KernelStatus {
-                        status: "error: UV pool empty".to_string(),
-                        cell_id: None,
-                    });
                 None // Signal caller to return early
             }
         }
@@ -2479,12 +2438,6 @@ pub(crate) async fn auto_launch_kernel(
                 }
                 Err(e) => {
                     error!("[notebook-sync] Failed to prepare PEP 723 env: {}", e);
-                    let _ = room
-                        .kernel_broadcast_tx
-                        .send(NotebookBroadcast::KernelStatus {
-                            status: format!("error: Failed to prepare environment: {}", e),
-                            cell_id: None,
-                        });
                     reset_starting_state(room, None).await;
                     return;
                 }
@@ -2550,15 +2503,6 @@ pub(crate) async fn auto_launch_kernel(
                             }
                             Err(e) => {
                                 error!("[notebook-sync] Failed to prepare inline env: {}", e);
-                                let _ = room.kernel_broadcast_tx.send(
-                                    NotebookBroadcast::KernelStatus {
-                                        status: format!(
-                                            "error: Failed to prepare environment: {}",
-                                            e
-                                        ),
-                                        cell_id: None,
-                                    },
-                                );
                                 reset_starting_state(room, None).await;
                                 return;
                             }
@@ -2594,12 +2538,6 @@ pub(crate) async fn auto_launch_kernel(
                     }
                     Err(e) => {
                         error!("[notebook-sync] Failed to prepare inline env: {}", e);
-                        let _ = room
-                            .kernel_broadcast_tx
-                            .send(NotebookBroadcast::KernelStatus {
-                                status: format!("error: Failed to prepare environment: {}", e),
-                                cell_id: None,
-                            });
                         reset_starting_state(room, None).await;
                         return;
                     }
@@ -2671,15 +2609,6 @@ pub(crate) async fn auto_launch_kernel(
                             }
                             Err(e) => {
                                 error!("[notebook-sync] Failed to prepare conda inline env: {}", e);
-                                let _ = room.kernel_broadcast_tx.send(
-                                    NotebookBroadcast::KernelStatus {
-                                        status: format!(
-                                            "error: Failed to prepare conda environment: {}",
-                                            e
-                                        ),
-                                        cell_id: None,
-                                    },
-                                );
                                 reset_starting_state(room, None).await;
                                 return;
                             }
@@ -3536,19 +3465,6 @@ pub(crate) async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResp
     let sync_request =
         notebook_protocol::protocol::RuntimeAgentRequest::SyncEnvironment(env_kind.clone());
 
-    // Notify frontend that sync is starting
-    let _ = room
-        .kernel_broadcast_tx
-        .send(NotebookBroadcast::EnvSyncState {
-            in_sync: false,
-            diff: Some(EnvSyncDiff {
-                added: packages_to_install.clone(),
-                removed: vec![],
-                channels_changed: false,
-                deno_changed: false,
-            }),
-        });
-
     match send_runtime_agent_request(room, sync_request).await {
         Ok(notebook_protocol::protocol::RuntimeAgentResponse::EnvironmentSynced {
             synced_packages,
@@ -3595,13 +3511,6 @@ pub(crate) async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResp
             {
                 warn!("[runtime-state] {}", e);
             }
-
-            let _ = room
-                .kernel_broadcast_tx
-                .send(NotebookBroadcast::EnvSyncState {
-                    in_sync: true,
-                    diff: None,
-                });
 
             NotebookResponse::SyncEnvironmentComplete { synced_packages }
         }

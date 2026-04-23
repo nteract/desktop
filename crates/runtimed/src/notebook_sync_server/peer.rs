@@ -1965,31 +1965,6 @@ where
             result = kernel_broadcast_rx.recv() => {
                 match result {
                     Ok(broadcast) => {
-                        // Drop broadcasts that are redundant with RuntimeStateDoc
-                        // (synced via frame 0x05). The daemon still emits these
-                        // internally (e.g. ExecutionDone drives the command loop),
-                        // but peers no longer need them — RuntimeStateDoc is the
-                        // single source of truth for kernel status, queue, execution
-                        // lifecycle, and env sync state.
-                        if matches!(
-                            &broadcast,
-                            NotebookBroadcast::KernelStatus { .. }
-                                | NotebookBroadcast::ExecutionStarted { .. }
-                                | NotebookBroadcast::ExecutionDone { .. }
-                                | NotebookBroadcast::QueueChanged { .. }
-                                | NotebookBroadcast::EnvSyncState { .. }
-                        ) {
-                            // ExecutionDone previously triggered a doc sync flush
-                            // to ensure outputs arrived before the signal. Now that
-                            // the broadcast is dropped, the sync still happens via
-                            // the RuntimeStateDoc update path — the daemon writes
-                            // execution status to the RuntimeStateDoc *after*
-                            // writing outputs to the notebook doc, so the
-                            // frame-0x05 sync message is the new "outputs ready"
-                            // signal for peers.
-                            continue;
-                        }
-
                         connection::send_typed_json_frame(
                             writer,
                             NotebookFrameType::Broadcast,

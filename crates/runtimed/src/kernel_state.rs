@@ -12,12 +12,11 @@ use std::collections::VecDeque;
 
 use anyhow::Result;
 use runtime_doc::RuntimeStateHandle;
-use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
 use crate::kernel_connection::KernelConnection;
 use crate::output_prep::{KernelStatus, QueuedCell};
-use crate::protocol::{NotebookBroadcast, QueueEntry};
+use crate::protocol::QueueEntry;
 use runtime_doc::QueueEntry as DocQueueEntry;
 
 /// Maximum execution entries retained in the RuntimeStateDoc.
@@ -62,23 +61,17 @@ pub struct KernelState {
     // ── Shared references (not owned, just held) ───────────────────────
     /// Per-notebook runtime state handle (daemon-authoritative).
     state: RuntimeStateHandle,
-    /// Broadcast channel for execution events to connected peers.
-    broadcast_tx: broadcast::Sender<NotebookBroadcast>,
 }
 
 impl KernelState {
     /// Create a new `KernelState` with initial status `Starting`.
-    pub fn new(
-        state: RuntimeStateHandle,
-        broadcast_tx: broadcast::Sender<NotebookBroadcast>,
-    ) -> Self {
+    pub fn new(state: RuntimeStateHandle) -> Self {
         Self {
             queue: VecDeque::new(),
             executing: None,
             execution_had_error: false,
             status: KernelStatus::Starting,
             state,
-            broadcast_tx,
         }
     }
 
@@ -144,12 +137,6 @@ impl KernelState {
             code: source,
         });
 
-        // Broadcast queue state
-        let _ = self.broadcast_tx.send(NotebookBroadcast::QueueChanged {
-            executing: self.executing_entry(),
-            queued: self.queued_entries(),
-        });
-
         // Write to state doc
         {
             let doc_exec = self.executing_entry().as_ref().map(to_doc_entry);
@@ -186,18 +173,6 @@ impl KernelState {
             self.executing = None;
             self.execution_had_error = false;
             self.status = KernelStatus::Idle;
-
-            // Broadcast done
-            let _ = self.broadcast_tx.send(NotebookBroadcast::ExecutionDone {
-                cell_id: cell_id.to_string(),
-                execution_id: execution_id.to_string(),
-            });
-
-            // Broadcast queue state
-            let _ = self.broadcast_tx.send(NotebookBroadcast::QueueChanged {
-                executing: None,
-                queued: self.queued_entries(),
-            });
 
             // Write to state doc
             {
@@ -251,12 +226,6 @@ impl KernelState {
             })
             .collect();
 
-        // Broadcast queue state
-        let _ = self.broadcast_tx.send(NotebookBroadcast::QueueChanged {
-            executing: self.executing_entry(),
-            queued: vec![],
-        });
-
         cleared
     }
 
@@ -294,18 +263,6 @@ impl KernelState {
             );
         }
 
-        // Broadcast error status to all peers
-        let _ = self.broadcast_tx.send(NotebookBroadcast::KernelStatus {
-            status: "error".to_string(),
-            cell_id: None,
-        });
-
-        // Broadcast empty queue state
-        let _ = self.broadcast_tx.send(NotebookBroadcast::QueueChanged {
-            executing: None,
-            queued: vec![],
-        });
-
         // Note: state_doc writes for kernel_died happen in the async command
         // processor (notebook_sync_server.rs QueueCommand::KernelDied handler).
         // state_doc.set_kernel_status("error") + set_queue(None, &[])
@@ -332,13 +289,6 @@ impl KernelState {
 
         self.executing = Some((cell.cell_id.clone(), cell.execution_id.clone()));
         self.status = KernelStatus::Busy;
-
-        // Broadcast queue state
-        let executing = self.executing_entry();
-        let queued = self.queued_entries();
-        let _ = self
-            .broadcast_tx
-            .send(NotebookBroadcast::QueueChanged { executing, queued });
 
         // Write to state doc
         {
@@ -506,23 +456,18 @@ mod tests {
     }
 
     /// Build a `KernelState` wired to a fresh `RuntimeStateHandle`.
-    fn test_state() -> (
-        KernelState,
-        RuntimeStateHandle,
-        broadcast::Receiver<NotebookBroadcast>,
-    ) {
-        let (state_changed_tx, _) = broadcast::channel(64);
+    fn test_state() -> (KernelState, RuntimeStateHandle) {
+        let (state_changed_tx, _) = tokio::sync::broadcast::channel(64);
         let handle = RuntimeStateHandle::new(runtime_doc::RuntimeStateDoc::new(), state_changed_tx);
-        let (broadcast_tx, broadcast_rx) = broadcast::channel(64);
-        let state = KernelState::new(handle.clone(), broadcast_tx);
-        (state, handle, broadcast_rx)
+        let state = KernelState::new(handle.clone());
+        (state, handle)
     }
 
     // ── kernel_died tests ────────────────────────────────────────────────
 
     #[tokio::test]
     async fn kernel_died_returns_interrupted_execution_and_cleared_queue() {
-        let (mut state, _handle, _rx) = test_state();
+        let (mut state, _handle) = test_state();
         let mut mock = MockKernel::new();
         state.set_idle();
 
@@ -558,7 +503,7 @@ mod tests {
 
     #[tokio::test]
     async fn kernel_died_idempotent_when_already_dead() {
-        let (mut state, _handle, _rx) = test_state();
+        let (mut state, _handle) = test_state();
         let mut mock = MockKernel::new();
         state.set_idle();
 
@@ -579,7 +524,7 @@ mod tests {
 
     #[tokio::test]
     async fn kernel_died_with_empty_queue() {
-        let (mut state, _handle, _rx) = test_state();
+        let (mut state, _handle) = test_state();
         state.set_idle();
 
         let (interrupted, cleared) = state.kernel_died();
@@ -591,7 +536,7 @@ mod tests {
 
     #[tokio::test]
     async fn reset_clears_executing_and_queue() {
-        let (mut state, _handle, _rx) = test_state();
+        let (mut state, _handle) = test_state();
         let mut mock = MockKernel::new();
         state.set_idle();
 
