@@ -10,6 +10,27 @@
 
 use automerge::{transaction::Transactable, AutoCommit, AutomergeError, ObjId, ObjType, ReadDoc};
 
+/// Read a string scalar at `prop`, distinguishing "absent" from "empty".
+///
+/// Returns `None` only when the key itself is not present on the object.
+/// An explicit empty-string value returns `Some(String::new())`, so callers
+/// can tell "scaffolded but unset" apart from "key not present at all."
+/// Non-string scalars and object values also return `None`.
+pub fn read_str_if_present<P: Into<automerge::Prop>>(
+    doc: &AutoCommit,
+    obj: &ObjId,
+    prop: P,
+) -> Option<String> {
+    let (value, _) = doc.get(obj, prop).ok().flatten()?;
+    match value {
+        automerge::Value::Scalar(s) => match s.as_ref() {
+            automerge::ScalarValue::Str(s) => Some(s.to_string()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn scalar_to_json(s: &automerge::ScalarValue) -> Option<serde_json::Value> {
     match s {
         automerge::ScalarValue::Null => Some(serde_json::Value::Null),
@@ -298,4 +319,46 @@ pub fn update_json_at_index(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use automerge::ROOT;
+
+    #[test]
+    fn read_str_if_present_returns_none_for_absent_key() {
+        let doc = AutoCommit::new();
+        assert_eq!(read_str_if_present(&doc, &ROOT, "missing"), None);
+    }
+
+    #[test]
+    fn read_str_if_present_returns_empty_string_when_scaffolded() -> Result<(), AutomergeError> {
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "scaffolded", "")?;
+        assert_eq!(
+            read_str_if_present(&doc, &ROOT, "scaffolded"),
+            Some(String::new())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn read_str_if_present_returns_value_when_set() -> Result<(), AutomergeError> {
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "name", "charming-toucan")?;
+        assert_eq!(
+            read_str_if_present(&doc, &ROOT, "name"),
+            Some("charming-toucan".to_string())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn read_str_if_present_returns_none_for_non_string_scalar() -> Result<(), AutomergeError> {
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "count", 7i64)?;
+        assert_eq!(read_str_if_present(&doc, &ROOT, "count"), None);
+        Ok(())
+    }
 }
