@@ -1,15 +1,21 @@
 //! Canonical MIME type classification for notebook outputs.
 //!
-//! This is the single source of truth for MIME classification in the Rust
-//! codebase. The three-way [`MimeKind`] enum and [`mime_kind`] classifier
-//! determine how output data is stored, transferred, and displayed.
+//! This is the single source of truth for MIME classification across the
+//! entire codebase. The three-way [`MimeKind`] enum and [`mime_kind`]
+//! classifier determine how output data is stored, transferred, and
+//! displayed.
 //!
-//! ## Keeping copies in sync
+//! ## No duplicate copies
 //!
-//! A TypeScript copy of this logic lives in
-//! `apps/notebook/src/lib/manifest-resolution.ts` (`isBinaryMime`).
-//! Any changes here **must** be mirrored there — see the `is_binary_mime`
-//! contract in `AGENTS.md` for the full list of locations.
+//! The frontend consumes classification results through WASM — `ContentRef`
+//! resolution in `runtimed-wasm` returns already-classified variants
+//! (`Inline` / `Url` / `Blob`), so TypeScript never needs to re-classify.
+//! The old `isBinaryMime()` helper in `manifest-resolution.ts` was removed
+//! when WASM took ownership of the contract end-to-end.
+//!
+//! See the `is_binary_mime` contract in `AGENTS.md` for the list of Rust
+//! call sites, and `.claude/rules/architecture.md` § "The `is_binary_mime`
+//! Contract" for the full design.
 
 use serde::{Deserialize, Serialize};
 
