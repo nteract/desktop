@@ -808,7 +808,7 @@ pub(crate) fn build_new_notebook_metadata(
             //   2. No explicit manager - use default_python_env
             use notebook_protocol::connection::PackageManager;
             let effective_manager: PackageManager =
-                package_manager.unwrap_or_else(|| match default_python_env {
+                package_manager.unwrap_or(match default_python_env {
                     crate::settings_doc::PythonEnvType::Conda => PackageManager::Conda,
                     crate::settings_doc::PythonEnvType::Pixi => PackageManager::Pixi,
                     _ => PackageManager::Uv,
