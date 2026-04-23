@@ -2401,9 +2401,9 @@ pub(crate) async fn auto_launch_kernel(
                     Some(env) => env,
                     None => {
                         reset_starting_state(room, None).await;
-                    return;
-                }
-            };
+                        return;
+                    }
+                };
                 ("python", prewarmed, pooled_env)
             }
         };

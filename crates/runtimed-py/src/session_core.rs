@@ -108,6 +108,27 @@ pub(crate) fn make_actor_label(peer_label: &str) -> String {
     format!("agent:{}:{}", peer_label.to_lowercase(), short_id)
 }
 
+/// Map a previous `env_source` to the restart request value.
+///
+/// Prewarmed envs fold into scoped-auto so the daemon re-detects deps added
+/// post-launch but keeps the same package manager family. Everything else
+/// passes through unchanged; `None` / empty becomes unscoped auto.
+pub(crate) fn restart_env_source_for(prev: Option<&str>) -> String {
+    use notebook_protocol::connection::{EnvSource, PackageManager};
+    let Some(prev) = prev else {
+        return "auto".to_string();
+    };
+    if prev.is_empty() {
+        return "auto".to_string();
+    }
+    match EnvSource::parse(prev) {
+        EnvSource::Prewarmed(PackageManager::Uv) => "auto:uv".to_string(),
+        EnvSource::Prewarmed(PackageManager::Conda) => "auto:conda".to_string(),
+        EnvSource::Prewarmed(PackageManager::Pixi) => "auto:pixi".to_string(),
+        other => other.as_str().to_string(),
+    }
+}
+
 // =========================================================================
 // Settings
 // =========================================================================
@@ -632,12 +653,7 @@ pub(crate) async fn restart_kernel(
     // metadata and picks up any deps added after launch (e.g. via add_dependency),
     // while staying within the original package manager family.
     let restart_kernel_type = prev_kernel_type.unwrap_or_else(|| "python".to_string());
-    let restart_env_source = match prev_env_source.as_deref() {
-        Some("uv:prewarmed") => "auto:uv".to_string(),
-        Some("conda:prewarmed") => "auto:conda".to_string(),
-        None => "auto".to_string(),
-        Some(s) => s.to_string(),
-    };
+    let restart_env_source = restart_env_source_for(prev_env_source.as_deref());
 
     // Send LaunchKernel with a timeout, collecting progress messages concurrently.
     let mut progress_messages: Vec<String> = Vec::new();
@@ -2458,35 +2474,43 @@ mod tests {
         assert_ne!(a, b, "each call should produce a unique session suffix");
     }
 
-    /// Helper that mirrors the restart env_source mapping logic in restart_kernel().
-    fn restart_env_source(prev: Option<&str>) -> String {
-        match prev {
-            Some("uv:prewarmed") => "auto:uv".to_string(),
-            Some("conda:prewarmed") => "auto:conda".to_string(),
-            None => "auto".to_string(),
-            Some(s) => s.to_string(),
-        }
-    }
-
     #[test]
     fn test_restart_env_source_uv_prewarmed() {
-        assert_eq!(restart_env_source(Some("uv:prewarmed")), "auto:uv");
+        assert_eq!(restart_env_source_for(Some("uv:prewarmed")), "auto:uv");
     }
 
     #[test]
     fn test_restart_env_source_conda_prewarmed() {
-        assert_eq!(restart_env_source(Some("conda:prewarmed")), "auto:conda");
+        assert_eq!(
+            restart_env_source_for(Some("conda:prewarmed")),
+            "auto:conda"
+        );
+    }
+
+    #[test]
+    fn test_restart_env_source_pixi_prewarmed() {
+        assert_eq!(restart_env_source_for(Some("pixi:prewarmed")), "auto:pixi");
     }
 
     #[test]
     fn test_restart_env_source_none_defaults_to_unscoped_auto() {
-        assert_eq!(restart_env_source(None), "auto");
+        assert_eq!(restart_env_source_for(None), "auto");
+    }
+
+    #[test]
+    fn test_restart_env_source_empty_defaults_to_unscoped_auto() {
+        assert_eq!(restart_env_source_for(Some("")), "auto");
     }
 
     #[test]
     fn test_restart_env_source_explicit_passes_through() {
-        assert_eq!(restart_env_source(Some("uv:inline")), "uv:inline");
-        assert_eq!(restart_env_source(Some("conda:inline")), "conda:inline");
-        assert_eq!(restart_env_source(Some("uv:pyproject")), "uv:pyproject");
+        assert_eq!(restart_env_source_for(Some("uv:inline")), "uv:inline");
+        assert_eq!(restart_env_source_for(Some("conda:inline")), "conda:inline");
+        assert_eq!(restart_env_source_for(Some("uv:pyproject")), "uv:pyproject");
+    }
+
+    #[test]
+    fn test_restart_env_source_unknown_passes_through_verbatim() {
+        assert_eq!(restart_env_source_for(Some("weird:future")), "weird:future");
     }
 }

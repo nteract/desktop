@@ -266,7 +266,11 @@ pub(crate) async fn handle(
                             .conda
                             .as_ref()
                             .filter(|c| !c.dependencies.is_empty())
-                            .map(|_| EnvSource::Inline(PackageManager::Conda).as_str().to_string()),
+                            .map(|_| {
+                                EnvSource::Inline(PackageManager::Conda)
+                                    .as_str()
+                                    .to_string()
+                            }),
                         Some("pixi") => snap
                             .runt
                             .pixi
@@ -514,7 +518,10 @@ pub(crate) async fn handle(
                         return NotebookResponse::Error {
                             error: format!(
                                 "{} pool empty - no environment available",
-                                if matches!(parsed_resolved, EnvSource::Prewarmed(PackageManager::Uv)) {
+                                if matches!(
+                                    parsed_resolved,
+                                    EnvSource::Prewarmed(PackageManager::Uv)
+                                ) {
                                     "UV"
                                 } else {
                                     "Conda"
@@ -572,7 +579,10 @@ pub(crate) async fn handle(
     let feature_flags_for_inline = daemon.feature_flags().await;
     let bootstrap_dx = feature_flags_for_inline.bootstrap_dx;
 
-    let (pooled_env, inline_deps) = if matches!(parsed_resolved, EnvSource::Pep723(PackageManager::Uv)) {
+    let (pooled_env, inline_deps) = if matches!(
+        parsed_resolved,
+        EnvSource::Pep723(PackageManager::Uv)
+    ) {
         // Extract PEP 723 deps from cell source
         let cells = room.doc.read().await.get_cells();
         let pep723_deps = match notebook_doc::pep723::find_pep723_in_cells(&cells) {

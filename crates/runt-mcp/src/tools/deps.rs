@@ -66,9 +66,8 @@ pub(crate) fn detect_package_manager(
     // Priority 2: env_source from running kernel (fallback for notebooks
     // with no runt metadata yet).
     if let Ok(state) = handle.get_runtime_state() {
-        if let Some(pm) =
-            notebook_protocol::connection::EnvSource::parse(&state.kernel.env_source)
-                .package_manager()
+        if let Some(pm) = notebook_protocol::connection::EnvSource::parse(&state.kernel.env_source)
+            .package_manager()
         {
             return pm;
         }

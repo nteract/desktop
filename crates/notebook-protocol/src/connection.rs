@@ -249,11 +249,7 @@ impl EnvSource {
     pub fn prepares_own_env(&self) -> bool {
         matches!(
             self,
-            Self::Inline(_)
-                | Self::Pyproject
-                | Self::PixiToml
-                | Self::EnvYml
-                | Self::Pep723(_)
+            Self::Inline(_) | Self::Pyproject | Self::PixiToml | Self::EnvYml | Self::Pep723(_)
         )
     }
 }
