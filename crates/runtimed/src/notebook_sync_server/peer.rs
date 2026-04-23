@@ -565,7 +565,10 @@ where
     room.broadcasts.presence.write().await.remove_peer(&peer_id);
     match presence::encode_left(&peer_id) {
         Ok(left_bytes) => {
-            let _ = room.broadcasts.presence_tx.send((peer_id, left_bytes));
+            let _ = room
+                .broadcasts
+                .presence_tx
+                .send((peer_id.clone(), left_bytes));
         }
         Err(e) => warn!("[notebook-sync] Failed to encode 'left' presence: {}", e),
     }
@@ -588,8 +591,10 @@ where
         let notebook_id_for_eviction = notebook_id.clone();
 
         info!(
-            "[notebook-sync] All peers disconnected from room {}, scheduling eviction check in {:?}",
+            "[notebook-sync] All peers disconnected from room {} (uuid={}, peer_id={}), scheduling eviction check in {:?}",
             notebook_id,
+            room.id,
+            peer_id,
             eviction_delay
         );
 
@@ -681,6 +686,14 @@ where
                     delay = FLUSH_RETRY_DELAY;
                     continue;
                 }
+                if flush_retries > 0 {
+                    info!(
+                        "[notebook-sync] Eviction flush succeeded for {} after {} retr{}",
+                        notebook_id_for_eviction,
+                        flush_retries,
+                        if flush_retries == 1 { "y" } else { "ies" }
+                    );
+                }
                 break;
             }
 
@@ -730,6 +743,10 @@ where
             }
 
             if should_teardown {
+                info!(
+                    "[notebook-sync] Eviction teardown starting for {} (uuid={:?})",
+                    notebook_id_for_eviction, evicted_uuid
+                );
                 // Shut down runtime agent subprocess if running. RuntimeAgentHandle::spawn
                 // moves Child into a background task, so kill_on_drop doesn't
                 // trigger on room drop — we need explicit shutdown via RPC.
@@ -945,15 +962,17 @@ where
                 }
 
                 info!(
-                    "[notebook-sync] Evicted room {} (idle timeout)",
+                    "[notebook-sync] Eviction teardown finished for {} (idle timeout)",
                     notebook_id_for_eviction
                 );
             }
         });
     } else {
         info!(
-            "[notebook-sync] Client disconnected from room {} ({} peer{} remaining)",
+            "[notebook-sync] Client disconnected from room {} (uuid={}, peer_id={}): {} peer{} remaining",
             notebook_id,
+            room.id,
+            peer_id,
             remaining,
             if remaining == 1 { "" } else { "s" }
         );
