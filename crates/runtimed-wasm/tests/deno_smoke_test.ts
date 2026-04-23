@@ -55,6 +55,33 @@ function syncHandles(a: NotebookHandle, b: NotebookHandle, maxRounds = 10) {
   }
 }
 
+// Automerge's sync protocol uses bloom filters to avoid resending changes a
+// peer already has. False positives can cause the FIRST message between two
+// peers to omit change data — the change arrives in a later round-trip. This
+// means `wasm.receive_sync_message(oneMsg) === true` is NOT a reliable signal
+// that the peer received any particular update; use this helper instead when
+// the test cares about the `changed` flag's behavior across a full exchange.
+//
+// See PR #1110 and this file's history for the same bug surfaced in earlier
+// tests. Prefer `syncHandles` + assertions on observable state (cell_count,
+// cell contents) whenever you can — that verifies convergence without pinning
+// the test to a specific protocol round.
+function syncUntilConvergedReportingChange(
+  from: NotebookHandle,
+  to: NotebookHandle,
+  maxRounds = 10,
+): boolean {
+  let sawChange = false;
+  for (let i = 0; i < maxRounds; i++) {
+    const msgFrom = from.flush_local_changes();
+    const msgTo = to.flush_local_changes();
+    if (!msgFrom && !msgTo) break;
+    if (msgFrom && to.receive_sync_message(msgFrom)) sawChange = true;
+    if (msgTo) from.receive_sync_message(msgTo);
+  }
+  return sawChange;
+}
+
 // ── Tests ────────────────────────────────────────────────────────────
 
 Deno.test("NotebookHandle: create new empty doc", () => {
@@ -1258,16 +1285,13 @@ Deno.test("Sync: load from bytes + incremental sync with changed flag", () => {
   daemon.add_cell(1, "new-cell", "markdown");
   daemon.update_source("new-cell", "# New section");
 
-  // Sync the new content. Both peers are already converged, so the
-  // daemon's change should arrive in the first sync message.
-  const syncMsg = daemon.flush_local_changes();
+  // Sync the new content. Bloom-filter false positives can split the change
+  // data across multiple rounds, so track "ever saw changed=true" rather than
+  // asserting on the first round.
   assert(
-    syncMsg !== undefined,
-    "daemon should have a sync message for the new cell",
+    syncUntilConvergedReportingChange(daemon, wasm),
+    "receive_sync_message should return true at least once when doc changes",
   );
-  const sawChange = wasm.receive_sync_message(syncMsg);
-  assert(sawChange, "receive_sync_message should return true when doc changes");
-  syncHandles(daemon, wasm); // complete any remaining handshake
 
   // WASM should now have the new cell
   assertEquals(wasm.cell_count(), 2);
@@ -1487,15 +1511,13 @@ Deno.test("create_empty: incremental sync after bootstrap works", () => {
   daemon.add_cell(1, "cell-2", "code");
   daemon.update_source("cell-2", "y = 2");
 
-  // Generate sync message and verify change detection
-  const msg = daemon.flush_local_changes();
-  assertExists(msg, "Daemon should have sync message after adding cell");
-
-  const changed = wasm.receive_sync_message(msg);
-  assertEquals(changed, true, "WASM should detect document changed");
-
-  // Complete sync
-  syncHandles(daemon, wasm);
+  // Sync and verify change detection. Bloom-filter false positives can split
+  // the change data across multiple rounds — track "ever saw changed=true"
+  // across the full exchange rather than asserting on the first message.
+  assert(
+    syncUntilConvergedReportingChange(daemon, wasm),
+    "WASM should detect document changed at least once during sync",
+  );
 
   assertEquals(wasm.cell_count(), 2);
   assertEquals(wasm.get_cell("cell-2")?.source, "y = 2");
