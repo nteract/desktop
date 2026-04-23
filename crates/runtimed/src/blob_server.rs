@@ -356,14 +356,10 @@ mod tests {
             .local_addr()
             .unwrap()
             .port();
-        assert_ne!(port, preferred, "should have bumped past held port");
+        let bump_range = (preferred + 1)..=(preferred + PREFERRED_PORT_ATTEMPTS - 1);
         assert!(
-            port == preferred + 1
-                || port >= preferred + 1 && port <= preferred + PREFERRED_PORT_ATTEMPTS,
-            "port {} should be in the bump range [{}..{}]",
-            port,
-            preferred + 1,
-            preferred + PREFERRED_PORT_ATTEMPTS - 1,
+            bump_range.contains(&port),
+            "port {port} should be in the bump range {bump_range:?}",
         );
         drop(blocker);
     }
