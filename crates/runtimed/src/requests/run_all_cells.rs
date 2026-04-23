@@ -72,7 +72,7 @@ pub(crate) async fn handle(room: &NotebookRoom) -> NotebookResponse {
                 for (execution_id, cell_id, _, _) in &entries {
                     let _ = doc.set_execution_id(cell_id, Some(execution_id));
                 }
-                let _ = room.changed_tx.send(());
+                let _ = room.broadcasts.changed_tx.send(());
             }
 
             return NotebookResponse::AllCellsQueued { queued };

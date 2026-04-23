@@ -634,7 +634,7 @@ pub(crate) async fn process_markdown_assets(room: &NotebookRoom) {
         doc.save()
     };
 
-    let _ = room.changed_tx.send(());
+    let _ = room.broadcasts.changed_tx.send(());
     if let Some(ref tx) = room.persist_tx {
         let _ = tx.send(Some(persist_bytes));
     }
@@ -982,7 +982,7 @@ pub(crate) async fn capture_env_into_metadata(
         // Without this, captured metadata lives only in the in-memory CRDT
         // and evaporates on room eviction, making the next reopen re-capture
         // from scratch.
-        let _ = room.changed_tx.send(());
+        let _ = room.broadcasts.changed_tx.send(());
     }
     changed
 }
@@ -1435,9 +1435,10 @@ pub(crate) async fn acquire_prewarmed_env_with_capture(
         "conda:prewarmed" => CapturedEnvRuntime::Conda,
         _ => return acquire_pool_env_for_source(env_source, daemon, room).await,
     };
-    let progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler> = std::sync::Arc::new(
-        crate::inline_env::BroadcastProgressHandler::new(room.kernel_broadcast_tx.clone()),
-    );
+    let progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler> =
+        std::sync::Arc::new(crate::inline_env::BroadcastProgressHandler::new(
+            room.broadcasts.kernel_broadcast_tx.clone(),
+        ));
 
     // Reopen path: if the notebook has an env_id and the unified-hash env
     // exists on disk, route through prepare_environment_unified for an
@@ -2405,9 +2406,10 @@ pub(crate) async fn auto_launch_kernel(
     }
 
     // For inline deps, prepare a cached environment with rich progress
-    let progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler> = std::sync::Arc::new(
-        crate::inline_env::BroadcastProgressHandler::new(room.kernel_broadcast_tx.clone()),
-    );
+    let progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler> =
+        std::sync::Arc::new(crate::inline_env::BroadcastProgressHandler::new(
+            room.broadcasts.kernel_broadcast_tx.clone(),
+        ));
 
     // Fetch feature flags now so inline env prep hashes match what the
     // kernel will actually receive (bootstrap_dx changes the install set).
@@ -2862,7 +2864,13 @@ pub(crate) async fn publish_kernel_state_presence(
     status: presence::KernelStatus,
     env_source: &str,
 ) {
-    update_kernel_presence(&room.presence, &room.presence_tx, status, env_source).await;
+    update_kernel_presence(
+        &room.broadcasts.presence,
+        &room.broadcasts.presence_tx,
+        status,
+        env_source,
+    )
+    .await;
 }
 
 /// Update kernel state in the shared presence state and relay to all peers.
@@ -3687,7 +3695,7 @@ pub(crate) async fn format_notebook_cells(room: &NotebookRoom) -> Result<usize, 
             warn!("{}", e);
             doc.rebuild_from_save();
         }
-        let _ = room.changed_tx.send(());
+        let _ = room.broadcasts.changed_tx.send(());
         info!(
             "[format] Formatted {} code cells (runtime: {})",
             formatted_count, runtime

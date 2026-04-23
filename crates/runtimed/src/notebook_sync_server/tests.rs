@@ -638,24 +638,17 @@ fn test_room_with_path(
     let notebook_id = notebook_path.to_string_lossy().to_string();
 
     let doc = crate::notebook_doc::NotebookDoc::new(&notebook_id);
-    let (changed_tx, _) = broadcast::channel(16);
-    let (kernel_broadcast_tx, _) = broadcast::channel(KERNEL_BROADCAST_CAPACITY);
     let persist_path = tmp.path().join("doc.automerge");
     let (persist_tx, persist_rx) = watch::channel::<Option<Vec<u8>>>(None);
     let (flush_request_tx, flush_rx) = mpsc::unbounded_channel::<FlushRequest>();
     spawn_persist_debouncer(persist_rx, flush_rx, persist_path.clone());
-
-    let (presence_tx, _) = broadcast::channel(64);
 
     let (state_changed_tx, _) = broadcast::channel(16);
     let state = runtime_doc::RuntimeStateHandle::new(RuntimeStateDoc::new(), state_changed_tx);
     let room = NotebookRoom {
         id: uuid::Uuid::new_v4(),
         doc: Arc::new(RwLock::new(doc)),
-        changed_tx,
-        kernel_broadcast_tx,
-        presence_tx,
-        presence: Arc::new(RwLock::new(PresenceState::new())),
+        broadcasts: RoomBroadcasts::default(),
         persist_tx: Some(persist_tx),
         flush_request_tx: Some(flush_request_tx),
         identity: RoomIdentity::new(persist_path, Some(notebook_path.clone()), false),
@@ -2553,7 +2546,7 @@ async fn test_promote_untitled_starts_autosave() {
         doc.add_cell(1, "cell-2", "code").unwrap();
         doc.update_source("cell-2", "y = 2").unwrap();
     }
-    let _ = room.changed_tx.send(());
+    let _ = room.broadcasts.changed_tx.send(());
 
     // 6. Poll until the autosave debouncer flushes both cells to disk.
     //    Each sleep(100ms) advances the paused clock and yields to the

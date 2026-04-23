@@ -563,7 +563,7 @@ where
         }
 
         // Notify other peers in the room
-        let _ = room.changed_tx.send(());
+        let _ = room.broadcasts.changed_tx.send(());
         // RuntimeStateDoc notification is automatic via with_doc heads check
 
         // Drain incoming sync replies to prevent deadlock
@@ -602,7 +602,7 @@ where
                 .await
                 .map_err(|e| format!("Failed to send metadata sync: {}", e))?;
         }
-        let _ = room.changed_tx.send(());
+        let _ = room.broadcasts.changed_tx.send(());
         drain_incoming_frames(reader, room, peer_state).await;
     }
 

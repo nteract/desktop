@@ -116,7 +116,7 @@ pub(crate) async fn handle(room: &Arc<NotebookRoom>, cell_id: String) -> Noteboo
             {
                 let mut doc = room.doc.write().await;
                 let _ = doc.set_execution_id(&cell_id, Some(&execution_id));
-                let _ = room.changed_tx.send(());
+                let _ = room.broadcasts.changed_tx.send(());
             }
 
             // Best-effort background formatting via fork+merge
@@ -149,7 +149,7 @@ pub(crate) async fn handle(room: &Arc<NotebookRoom>, cell_id: String) -> Noteboo
                                 warn!("{}", e);
                                 doc.rebuild_from_save();
                             }
-                            let _ = room_clone.changed_tx.send(());
+                            let _ = room_clone.broadcasts.changed_tx.send(());
                         }
                     }
                 }

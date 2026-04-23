@@ -32,22 +32,48 @@ impl RoomIdentity {
     }
 }
 
+/// Per-room broadcast fan-out.
+///
+/// Groups the four channels that distribute room-scoped events to peer sync
+/// loops: document-change notifications, kernel broadcasts (PathChanged,
+/// NotebookAutosaved, EnvProgress, Comm), and presence traffic. `presence`
+/// holds the per-peer state that `presence_tx` relays between connections.
+pub struct RoomBroadcasts {
+    /// Broadcast channel to notify all peers in this room of doc changes.
+    pub changed_tx: broadcast::Sender<()>,
+    /// Broadcast channel for kernel events: PathChanged, NotebookAutosaved,
+    /// EnvProgress, and Comm (widget messages).
+    pub kernel_broadcast_tx: broadcast::Sender<NotebookBroadcast>,
+    /// Broadcast channel for presence frames (cursor, selection, kernel state).
+    /// Carries raw presence bytes plus the peer_id to relay to other peers.
+    pub presence_tx: broadcast::Sender<(String, Vec<u8>)>,
+    /// Transient peer state (cursors, selections, kernel status).
+    /// Protected by RwLock for concurrent reads from multiple peer loops.
+    pub presence: Arc<RwLock<PresenceState>>,
+}
+
+impl Default for RoomBroadcasts {
+    fn default() -> Self {
+        let (changed_tx, _) = broadcast::channel(16);
+        let (kernel_broadcast_tx, _) = broadcast::channel(KERNEL_BROADCAST_CAPACITY);
+        let (presence_tx, _) = broadcast::channel(64);
+        Self {
+            changed_tx,
+            kernel_broadcast_tx,
+            presence_tx,
+            presence: Arc::new(RwLock::new(PresenceState::new())),
+        }
+    }
+}
+
 pub struct NotebookRoom {
     /// Permanent, immutable UUID for this room. Used as the map key once
     /// Phase 5 lands; for now coexists with the string-keyed map.
     pub id: uuid::Uuid,
     /// The canonical Automerge notebook document.
     pub doc: Arc<RwLock<NotebookDoc>>,
-    /// Broadcast channel to notify all peers in this room of changes.
-    pub changed_tx: broadcast::Sender<()>,
-    /// Broadcast channel for kernel events (outputs, status changes).
-    pub kernel_broadcast_tx: broadcast::Sender<NotebookBroadcast>,
-    /// Broadcast channel for presence frames (cursor, selection, kernel state).
-    /// Carries raw presence bytes to relay to other peers.
-    pub presence_tx: broadcast::Sender<(String, Vec<u8>)>,
-    /// Transient peer state (cursors, selections, kernel status).
-    /// Protected by RwLock for concurrent reads from multiple peer loops.
-    pub presence: Arc<RwLock<PresenceState>>,
+    /// Broadcast channels + presence state for fan-out to peer sync loops.
+    pub broadcasts: RoomBroadcasts,
     /// Channel to send doc bytes to the debounced persistence task.
     /// Uses watch for "latest value" semantics - always keeps most recent state.
     pub persist_tx: Option<watch::Sender<Option<Vec<u8>>>>,
@@ -187,9 +213,6 @@ impl NotebookRoom {
             // TODO(phase-6): tighten NotebookDoc to accept Uuid directly
             NotebookDoc::new_with_actor(&notebook_id_str, runtimed_actor)
         };
-        let (changed_tx, _) = broadcast::channel(16);
-        let (kernel_broadcast_tx, _) = broadcast::channel(KERNEL_BROADCAST_CAPACITY);
-
         // Spawn debounced persistence task (watch channel keeps latest value only)
         // Ephemeral rooms skip persistence entirely.
         // Store ephemeral flag in doc metadata so the GUI can show a banner
@@ -229,18 +252,13 @@ impl NotebookRoom {
             notebook_id_str, trust_state.status
         );
 
-        let (presence_tx, _) = broadcast::channel(64);
-
         let (state_changed_tx, _) = broadcast::channel(16);
         let state = runtime_doc::RuntimeStateHandle::new(RuntimeStateDoc::new(), state_changed_tx);
 
         Self {
             id,
             doc: Arc::new(RwLock::new(doc)),
-            changed_tx,
-            kernel_broadcast_tx,
-            presence_tx,
-            presence: Arc::new(RwLock::new(PresenceState::new())),
+            broadcasts: RoomBroadcasts::default(),
             persist_tx,
             flush_request_tx,
             identity: RoomIdentity::new(persist_path, path, ephemeral),
@@ -294,12 +312,9 @@ impl NotebookRoom {
         let filename = notebook_doc_filename(notebook_id);
         let persist_path = docs_dir.join(filename);
         let doc = NotebookDoc::load_or_create(&persist_path, notebook_id);
-        let (changed_tx, _) = broadcast::channel(16);
-        let (kernel_broadcast_tx, _) = broadcast::channel(KERNEL_BROADCAST_CAPACITY);
         let (persist_tx, persist_rx) = watch::channel::<Option<Vec<u8>>>(None);
         let (flush_request_tx, flush_rx) = mpsc::unbounded_channel::<FlushRequest>();
         spawn_persist_debouncer(persist_rx, flush_rx, persist_path.clone());
-        let (presence_tx, _) = broadcast::channel(64);
         let path = if is_untitled_notebook(notebook_id) {
             None
         } else {
@@ -326,10 +341,7 @@ impl NotebookRoom {
         Self {
             id,
             doc: Arc::new(RwLock::new(doc)),
-            changed_tx,
-            kernel_broadcast_tx,
-            presence_tx,
-            presence: Arc::new(RwLock::new(PresenceState::new())),
+            broadcasts: RoomBroadcasts::default(),
             persist_tx: Some(persist_tx),
             flush_request_tx: Some(flush_request_tx),
             identity: RoomIdentity::new(persist_path, path, false),

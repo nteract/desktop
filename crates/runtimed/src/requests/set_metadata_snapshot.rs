@@ -16,7 +16,7 @@ pub(crate) async fn handle(room: &NotebookRoom, snapshot: String) -> NotebookRes
                 match doc.set_metadata_snapshot(&snap) {
                     Ok(()) => {
                         // Notify peers of the change
-                        let _ = room.changed_tx.send(());
+                        let _ = room.broadcasts.changed_tx.send(());
                         // Persist
                         if let Some(ref tx) = room.persist_tx {
                             let bytes = doc.save();

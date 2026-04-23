@@ -129,7 +129,7 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
     );
 
     // ── 5. Sync loop ─────────────────────────────────────────────────
-    let mut changed_rx = room.changed_tx.subscribe();
+    let mut changed_rx = room.broadcasts.changed_tx.subscribe();
     let mut state_changed_rx = room.state.subscribe();
     let mut pending_replies: std::collections::HashMap<
         String,
@@ -147,7 +147,7 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                                 if let Ok(msg) = automerge::sync::Message::decode(&typed_frame.payload) {
                                     let mut doc = room.doc.write().await;
                                     if doc.receive_sync_message(&mut doc_sync_state, msg).is_ok() {
-                                        let _ = room.changed_tx.send(());
+                                        let _ = room.broadcasts.changed_tx.send(());
                                     }
                                     // Send sync reply
                                     if let Some(reply) = doc.generate_sync_message(&mut doc_sync_state) {
@@ -560,10 +560,10 @@ where
     // generated before starting the sync loop, so it is always
     // available here. remove_peer is a no-op for unknown peers
     // (e.g. error before any presence was registered).
-    room.presence.write().await.remove_peer(&peer_id);
+    room.broadcasts.presence.write().await.remove_peer(&peer_id);
     match presence::encode_left(&peer_id) {
         Ok(left_bytes) => {
-            let _ = room.presence_tx.send((peer_id, left_bytes));
+            let _ = room.broadcasts.presence_tx.send((peer_id, left_bytes));
         }
         Err(e) => warn!("[notebook-sync] Failed to encode 'left' presence: {}", e),
     }
@@ -1102,9 +1102,9 @@ where
 {
     // Subscribe before sending bootstrap traffic so any writes that land
     // during connection setup are still observed as steady-state deltas.
-    let mut changed_rx = room.changed_tx.subscribe();
-    let mut kernel_broadcast_rx = room.kernel_broadcast_tx.subscribe();
-    let mut presence_rx = room.presence_tx.subscribe();
+    let mut changed_rx = room.broadcasts.changed_tx.subscribe();
+    let mut kernel_broadcast_rx = room.broadcasts.kernel_broadcast_tx.subscribe();
+    let mut presence_rx = room.broadcasts.presence_tx.subscribe();
     let mut state_changed_rx = room.state.subscribe();
 
     // PoolDoc — global daemon pool state (UV/Conda availability, errors).
@@ -1217,7 +1217,7 @@ where
                         let mut doc = room.doc.write().await;
                         let _ = doc.clear_all_cells();
                     }
-                    let _ = room.changed_tx.send(());
+                    let _ = room.broadcasts.changed_tx.send(());
                     warn!(
                         "[notebook-sync] Streaming load failed for {}: {}",
                         load_path.display(),
@@ -1274,7 +1274,7 @@ where
     // their own cursor as a remote peer (clients don't know their server-assigned ID).
     {
         let snapshot_bytes = {
-            let presence_state = room.presence.read().await;
+            let presence_state = room.broadcasts.presence.read().await;
             if presence_state.peer_count() > 0 {
                 // Build snapshot excluding this peer (they shouldn't see themselves)
                 let other_peers: Vec<presence::PeerSnapshot> = presence_state
@@ -1362,7 +1362,7 @@ where
                                     let bytes = doc.save();
 
                                     // Notify other peers in this room
-                                    let _ = room.changed_tx.send(());
+                                    let _ = room.broadcasts.changed_tx.send(());
 
                                     let encoded = match catch_automerge_panic("doc-sync-reply", || {
                                         doc.generate_sync_message(&mut peer_state)
@@ -1491,7 +1491,7 @@ where
                                             let sanitized_label = Some(label.clone());
                                             // Update the room's presence state (using our known peer_id,
                                             // not the one in the frame — clients don't know their peer_id).
-                                            let is_new = room.presence.write().await.update_peer(
+                                            let is_new = room.broadcasts.presence.write().await.update_peer(
                                                 peer_id,
                                                 &label,
                                                 actor_label.as_deref(),
@@ -1502,6 +1502,7 @@ where
                                             if is_new {
                                                 // New peer — send snapshot of everyone else (excluding self)
                                                 let other_peers: Vec<presence::PeerSnapshot> = room
+                                                    .broadcasts
                                                     .presence
                                                     .read()
                                                     .await
@@ -1545,18 +1546,18 @@ where
                                                     data: data_for_relay,
                                                 },
                                             ) {
-                                                let _ = room.presence_tx.send((peer_id.to_string(), bytes));
+                                                let _ = room.broadcasts.presence_tx.send((peer_id.to_string(), bytes));
                                             }
                                         }
                                     }
                                     Ok(presence::PresenceMessage::Heartbeat { .. }) => {
-                                        room.presence.write().await.mark_seen(peer_id, now_ms);
+                                        room.broadcasts.presence.write().await.mark_seen(peer_id, now_ms);
                                     }
                                     Ok(presence::PresenceMessage::ClearChannel { channel, .. }) => {
-                                        room.presence.write().await.clear_channel(peer_id, channel);
+                                        room.broadcasts.presence.write().await.clear_channel(peer_id, channel);
                                         match presence::encode_clear_channel(peer_id, channel) {
                                             Ok(bytes) => {
-                                                let _ = room.presence_tx.send((peer_id.to_string(), bytes));
+                                                let _ = room.broadcasts.presence_tx.send((peer_id.to_string(), bytes));
                                             }
                                             Err(e) => warn!(
                                                 "[notebook-sync] Failed to encode clear_channel presence: {}",
@@ -1939,7 +1940,7 @@ where
                             "[notebook-sync] Peer {} lagged {} presence updates, sending snapshot",
                             peer_id, n
                         );
-                        match room.presence.read().await.encode_snapshot(peer_id) {
+                        match room.broadcasts.presence.read().await.encode_snapshot(peer_id) {
                             Ok(snapshot_bytes) => {
                                 connection::send_typed_frame(
                                     writer,
@@ -2003,14 +2004,14 @@ where
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_millis() as u64;
-                let mut presence_state = room.presence.write().await;
+                let mut presence_state = room.broadcasts.presence.write().await;
                 presence_state.mark_seen(peer_id, now_ms);
                 let pruned = presence_state.prune_stale(now_ms, presence::DEFAULT_PEER_TTL_MS);
                 drop(presence_state);
                 for pruned_peer_id in pruned {
                     match presence::encode_left(&pruned_peer_id) {
                         Ok(left_bytes) => {
-                            let _ = room.presence_tx.send((pruned_peer_id, left_bytes));
+                            let _ = room.broadcasts.presence_tx.send((pruned_peer_id, left_bytes));
                         }
                         Err(e) => warn!(
                             "[notebook-sync] Failed to encode 'left' for pruned peer: {}",

@@ -145,6 +145,7 @@ pub(crate) async fn handle(
             }
             *room.identity.path.write().await = Some(canonical.clone());
             let _ = room
+                .broadcasts
                 .kernel_broadcast_tx
                 .send(NotebookBroadcast::PathChanged {
                     path: Some(canonical.to_string_lossy().into_owned()),

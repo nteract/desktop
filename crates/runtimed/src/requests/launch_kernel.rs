@@ -563,7 +563,7 @@ pub(crate) async fn handle(
     // For inline deps, prepare a cached environment with rich progress
     let launch_progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler> =
         std::sync::Arc::new(crate::inline_env::BroadcastProgressHandler::new(
-            room.kernel_broadcast_tx.clone(),
+            room.broadcasts.kernel_broadcast_tx.clone(),
         ));
 
     // Fetch feature flags up front so inline env hashing matches
