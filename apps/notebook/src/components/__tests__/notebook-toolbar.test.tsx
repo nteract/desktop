@@ -371,7 +371,7 @@ describe("NotebookToolbar", () => {
       expect(screen.queryByText(/ipykernel not found in pixi.toml/)).not.toBeInTheDocument();
     });
 
-    it("does not show pixi prompt when envSource is not pixi", () => {
+    it("does not show pixi prompt when envSource is prewarmed uv", () => {
       render(
         <NotebookToolbar
           {...baseProps}
@@ -382,7 +382,71 @@ describe("NotebookToolbar", () => {
           envSource="uv:prewarmed"
         />,
       );
-      expect(screen.queryByText(/ipykernel not found in pixi.toml/)).not.toBeInTheDocument();
+      // Prewarmed envs should never reach MissingIpykernel — defensive: render nothing.
+      expect(screen.queryByText(/ipykernel not found/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/ipykernel missing/)).not.toBeInTheDocument();
+    });
+  });
+
+  describe("uv/conda ipykernel prompt", () => {
+    const errorLifecycle: RuntimeLifecycle = { lifecycle: "Error" };
+
+    // Inline / PEP 723 / inline conda all share the same "just restart"
+    // remediation — the daemon has already deleted the corrupt env dir
+    // and `prepare_*_inline_env` auto-includes ipykernel in its install
+    // set, so the next launch rebuilds successfully. The banner must
+    // NOT ask users to edit deps (a no-op) or run install commands
+    // against the env (which no longer exists).
+    for (const envSource of ["uv:inline", "uv:pep723", "conda:inline"] as const) {
+      it(`shows "restart to rebuild" prompt for envSource=${envSource}`, () => {
+        render(
+          <NotebookToolbar
+            {...baseProps}
+            runtime="python"
+            kernelStatus={KERNEL_STATUS.ERROR}
+            lifecycle={errorLifecycle}
+            errorReason={KERNEL_ERROR_REASON.MISSING_IPYKERNEL}
+            envSource={envSource}
+          />,
+        );
+        expect(screen.getByText(/Environment cache was corrupt/)).toBeInTheDocument();
+        expect(screen.getByText(/Click Restart to rebuild/)).toBeInTheDocument();
+        // Backends already rebuild these envs — no user dep edits needed.
+        expect(screen.queryByText(/notebook's dependencies/)).not.toBeInTheDocument();
+        expect(screen.queryByText(/uv pip install/)).not.toBeInTheDocument();
+        expect(screen.queryByText(/conda install/)).not.toBeInTheDocument();
+        expect(screen.queryByText(/# \/\/\/ script/)).not.toBeInTheDocument();
+      });
+    }
+
+    it("does not render any prompt for uv:pyproject (self-heals via uv run --with ipykernel)", () => {
+      render(
+        <NotebookToolbar
+          {...baseProps}
+          runtime="python"
+          kernelStatus={KERNEL_STATUS.ERROR}
+          lifecycle={errorLifecycle}
+          errorReason={KERNEL_ERROR_REASON.MISSING_IPYKERNEL}
+          envSource="uv:pyproject"
+        />,
+      );
+      expect(screen.queryByText(/ipykernel missing from/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/ipykernel not found/)).not.toBeInTheDocument();
+    });
+
+    it("does not render any prompt for conda:env_yml (daemon injects ipykernel into deps)", () => {
+      render(
+        <NotebookToolbar
+          {...baseProps}
+          runtime="python"
+          kernelStatus={KERNEL_STATUS.ERROR}
+          lifecycle={errorLifecycle}
+          errorReason={KERNEL_ERROR_REASON.MISSING_IPYKERNEL}
+          envSource="conda:env_yml"
+        />,
+      );
+      expect(screen.queryByText(/ipykernel missing from/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/ipykernel not found/)).not.toBeInTheDocument();
     });
   });
 });

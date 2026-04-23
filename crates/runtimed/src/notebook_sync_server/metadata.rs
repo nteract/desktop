@@ -2764,6 +2764,64 @@ pub(crate) async fn auto_launch_kernel(
         (pooled_env, None)
     };
 
+    // Verify ipykernel is actually present in the prepared env before we
+    // spawn the kernel. For UV/Conda inline + PEP 723, `prepare_environment_in`
+    // always adds `ipykernel` to the install set, but cache hits skip the
+    // install step and re-use whatever's on disk. Stale caches (pre-base-
+    // packages daemon builds, hand-edited venvs, partial installs) can slip
+    // through and then fail at kernel spawn with a generic
+    // `ModuleNotFoundError: ipykernel_launcher`. Gating here surfaces the
+    // typed `MissingIpykernel` reason so the UI can render env-specific
+    // remediation instead of a raw stderr dump.
+    //
+    // Skipped for:
+    // - Prewarmed pool envs (daemon-managed; base packages are invariant)
+    // - `pixi:inline` / `pixi:pep723` (no pooled_env, pixi exec handles it)
+    // - `uv:pyproject` (launched via `uv run --with ipykernel` — auto-injects)
+    // - `conda:env_yml` (daemon appends ipykernel to the dep set pre-sync)
+    // - `deno` (not a Python env)
+    // - `pixi:toml` (already gated above via `pixi_info().has_ipykernel()`)
+    if matches!(
+        env_source,
+        EnvSource::Inline(PackageManager::Uv)
+            | EnvSource::Inline(PackageManager::Conda)
+            | EnvSource::Pep723(PackageManager::Uv)
+    ) {
+        if let Some(ref env) = pooled_env {
+            if !kernel_env::venv_has_ipykernel(&env.python_path) {
+                warn!(
+                    "[notebook-sync] prepared env at {:?} ({}) is missing ipykernel — cannot launch kernel",
+                    env.venv_path,
+                    env_source.as_str()
+                );
+                // Delete the corrupt env dir synchronously before we
+                // return — `prepare_*_inline_env` treats the cache-hash
+                // dir as a cache hit while it exists, so a quick retry
+                // (user hits restart, automated flow) would reacquire
+                // the same broken env and we'd loop on MissingIpykernel.
+                // Await the removal so the next launch rebuilds.
+                if let Err(e) = tokio::fs::remove_dir_all(&env.venv_path).await {
+                    warn!(
+                        "[notebook-sync] failed to remove corrupt env {:?}: {}",
+                        env.venv_path, e
+                    );
+                }
+                let env_source_label = env_source.as_str().to_string();
+                if let Err(e) = room.state.with_doc(|sd| {
+                    sd.set_lifecycle_with_error(
+                        &RuntimeLifecycle::Error,
+                        Some(KernelErrorReason::MissingIpykernel),
+                    )?;
+                    sd.set_kernel_info("python", "python", &env_source_label)?;
+                    Ok(())
+                }) {
+                    warn!("[runtime-state] {}", e);
+                }
+                return;
+            }
+        }
+    }
+
     // Register the env path for GC protection immediately after pool.take(),
     // BEFORE any async work (agent spawn, connect timeout, delta install).
     // Without this, there's a race window where GC sees the taken env as an

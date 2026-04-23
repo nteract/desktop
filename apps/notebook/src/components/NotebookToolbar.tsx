@@ -8,7 +8,7 @@ import {
   RotateCcw,
   Square,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactElement, type ReactNode } from "react";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { cn } from "@/lib/utils";
 import type { EnvProgressState } from "../hooks/useEnvProgress";
@@ -392,22 +392,77 @@ export function NotebookToolbar({
           </div>
         </div>
       )}
-      {/* Pixi ipykernel install prompt — only when daemon signals missing_ipykernel */}
+      {/* ipykernel install prompt — only when daemon signals missing_ipykernel.
+          Pixi and uv/conda inline envs reach this state through different
+          mechanisms (pixi.toml scan vs prepared-env scan), but the UX is the
+          same shape: explain where ipykernel should go for the current env,
+          then tell the user to restart. */}
       {runtime === "python" &&
         lifecycle.lifecycle === "Error" &&
-        envSource?.startsWith("pixi:") &&
-        errorReason === KERNEL_ERROR_REASON.MISSING_IPYKERNEL && (
-          <div className="border-t px-3 py-2">
-            <div className="flex items-start gap-2 text-xs text-amber-700 dark:text-amber-400">
-              <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-              <span>
-                <span className="font-medium">ipykernel not found in pixi.toml.</span> Run{" "}
-                <code className="rounded bg-amber-500/20 px-1">pixi add ipykernel</code> in your
-                project directory and restart.
-              </span>
-            </div>
-          </div>
-        )}
+        errorReason === KERNEL_ERROR_REASON.MISSING_IPYKERNEL &&
+        envSource &&
+        renderMissingIpykernelPrompt(envSource)}
     </header>
+  );
+}
+
+/** Remediation copy for `KernelErrorReason::MissingIpykernel`, branched by
+ * env source. Returns `null` for env sources the daemon does not gate on
+ * (prewarmed pools, uv:pyproject, conda:env_yml, deno) — those either
+ * self-heal at launch or should never reach this state.
+ *
+ * For inline/PEP 723 envs the daemon has already deleted the corrupt
+ * cache dir; `prepare_*_inline_env` always includes `ipykernel` in its
+ * install set, so the next launch rebuilds correctly. The banner tells
+ * users exactly that instead of sending them to edit deps that already
+ * had nothing wrong with them.
+ *
+ * For pixi:toml the daemon does NOT delete anything — pixi manages its
+ * own env and the user's `pixi.toml` genuinely needs editing. */
+function renderMissingIpykernelPrompt(envSource: string): ReactElement | null {
+  // Pixi project: the .toml is the source of truth; user must add
+  // ipykernel explicitly.
+  if (envSource.startsWith("pixi:")) {
+    return (
+      <MissingIpykernelBanner
+        headline="ipykernel not found in pixi.toml."
+        instruction={
+          <>
+            Run <code className="rounded bg-amber-500/20 px-1">pixi add ipykernel</code> in your
+            project directory and restart.
+          </>
+        }
+      />
+    );
+  }
+  // Inline / PEP 723 / inline conda: daemon deleted the stale env;
+  // the next launch rebuilds with ipykernel. No user deps edit needed.
+  if (envSource === "uv:inline" || envSource === "uv:pep723" || envSource === "conda:inline") {
+    return (
+      <MissingIpykernelBanner
+        headline="Environment cache was corrupt."
+        instruction={<>Click Restart to rebuild the environment.</>}
+      />
+    );
+  }
+  return null;
+}
+
+function MissingIpykernelBanner({
+  headline,
+  instruction,
+}: {
+  headline: string;
+  instruction: ReactNode;
+}): ReactElement {
+  return (
+    <div className="border-t px-3 py-2">
+      <div className="flex items-start gap-2 text-xs text-amber-700 dark:text-amber-400">
+        <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+        <span>
+          <span className="font-medium">{headline}</span> {instruction}
+        </span>
+      </div>
+    </div>
   );
 }
