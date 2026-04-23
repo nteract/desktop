@@ -58,6 +58,30 @@ pub fn is_telemetry_suppressed() -> bool {
     false
 }
 
+/// Superset of [`should_send`] that also requires explicit user consent.
+///
+/// Returns true only when the consent-recorded flag is set AND every other
+/// gate in `should_send` passes. This is the gate `try_send` actually uses;
+/// `should_send` is preserved as a thin API for callers that don't carry
+/// the consent flag yet.
+pub fn should_send_full(
+    telemetry_enabled: bool,
+    onboarding_completed: bool,
+    consent_recorded: bool,
+    last_ping_at: Option<u64>,
+    now_secs: u64,
+) -> bool {
+    if !consent_recorded {
+        return false;
+    }
+    should_send(
+        telemetry_enabled,
+        onboarding_completed,
+        last_ping_at,
+        now_secs,
+    )
+}
+
 pub fn should_send(
     telemetry_enabled: bool,
     onboarding_completed: bool,
@@ -79,6 +103,27 @@ pub fn should_send(
         }
     }
     true
+}
+
+/// Superset of [`blocking_gates`] that also reports a "consent not recorded"
+/// gate when the user has not yet pressed an onboarding CTA.
+pub fn blocking_gates_full(
+    telemetry_enabled: bool,
+    onboarding_completed: bool,
+    consent_recorded: bool,
+    last_ping_at: Option<u64>,
+    now_secs: u64,
+) -> Vec<&'static str> {
+    let mut gates = blocking_gates(
+        telemetry_enabled,
+        onboarding_completed,
+        last_ping_at,
+        now_secs,
+    );
+    if !consent_recorded {
+        gates.push("consent not recorded");
+    }
+    gates
 }
 
 pub fn blocking_gates(
@@ -200,9 +245,10 @@ async fn try_send(client: &reqwest::Client, source: &str, timestamp_key: &str) {
         _ => None,
     };
 
-    if !should_send(
+    if !should_send_full(
         settings.telemetry_enabled,
         settings.onboarding_completed,
+        settings.telemetry_consent_recorded,
         last_ping_at,
         now,
     ) {
@@ -367,5 +413,22 @@ mod tests {
         let recent = now - (10 * 60 * 60);
         let gates = blocking_gates(true, true, Some(recent), now);
         assert!(gates.contains(&"throttled (last ping < 20h ago)"));
+    }
+
+    #[test]
+    fn test_should_send_requires_consent_recorded() {
+        // Everything green except consent_recorded = false.
+        assert!(!should_send_full(true, true, false, None, 1000));
+    }
+
+    #[test]
+    fn test_should_send_with_all_true() {
+        assert!(should_send_full(true, true, true, None, 1000));
+    }
+
+    #[test]
+    fn test_blocking_gates_consent_not_recorded() {
+        let gates = blocking_gates_full(true, true, false, None, 1000);
+        assert!(gates.contains(&"consent not recorded"));
     }
 }
