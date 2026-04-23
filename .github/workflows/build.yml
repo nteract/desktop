@@ -162,6 +162,12 @@ jobs:
             exit 1
           }
 
+      - name: Verify renderer plugins match wasm artifacts
+        # Coherence check, not byte-reproducibility. Catches #2048-style drift
+        # where the wasm was rebuilt but the plugin JS bundle was not (or vice
+        # versa). Runs against checked-in artifacts — no rebuild.
+        run: cargo xtask verify-plugins
+
       - name: Install Deno
         uses: denoland/setup-deno@v2
         with:

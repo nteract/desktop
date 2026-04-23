@@ -126,6 +126,7 @@ fn main() {
             cmd_wasm(target);
         }
         "renderer-plugins" => cmd_renderer_plugins(),
+        "verify-plugins" => cmd_verify_plugins(),
         "mcpb" => {
             let output = args
                 .windows(2)
@@ -200,6 +201,10 @@ Other:
   wasm sift                  Rebuild only sift-wasm (bindings for @nteract/sift);
                              also copies the binary to crates/runt-mcp/assets/plugins/
   renderer-plugins           Rebuild pre-built renderer plugins (notebook + MCP)
+  verify-plugins             Check renderer plugin bundles match their wasm artifacts
+                             (every wasm-bindgen import in the plugin JS must be
+                             exported by the paired wasm binary). Catches #2048-style
+                             drift without requiring cross-platform byte reproducibility.
   icons [source.png]         Generate icon variants
   mcpb                       Package nteract as a Claude Desktop extension (.mcpb)
   mcpb --variant nightly     Build nightly variant (different name/icon)
@@ -1299,6 +1304,262 @@ fn cmd_renderer_plugins() {
     println!("  Notebook: apps/notebook/src/renderer-plugins/");
     println!("  MCP:      crates/runt-mcp/assets/plugins/");
     println!("Commit the updated artifacts (they're tracked via git LFS).");
+}
+
+/// Verify renderer plugin bundles are coherent with their paired wasm binaries.
+///
+/// The #2048 failure mode looked like this: wasm was rebuilt (new mangled
+/// `__wbg_call_<hash>` import names), but the plugin JS bundle was not.
+/// Browser loads the plugin, plugin imports names that don't exist on the
+/// current wasm, error: `import function ./sift_wasm_bg.js:__wbg_* must be
+/// callable`.
+///
+/// Strict byte-level drift checks can't enforce this because wasm-pack output
+/// is not bit-reproducible across macOS and Linux. Instead we check a weaker
+/// but sufficient invariant: every wasm-bindgen import name referenced in the
+/// plugin JS must be exported by the paired wasm binary.
+///
+/// If this ever has a false positive, the paired-file list or the symbol
+/// regex is the place to look.
+fn cmd_verify_plugins() {
+    ensure_workspace_root_cwd();
+
+    // (plugin bundle JS, paired wasm binary). Extend when a new wasm-backed
+    // renderer plugin lands.
+    let pairs: &[(&str, &str)] = &[
+        (
+            "crates/runt-mcp/assets/plugins/sift.js",
+            "crates/runt-mcp/assets/plugins/sift_wasm.wasm",
+        ),
+        (
+            "apps/notebook/src/renderer-plugins/sift.js",
+            "crates/sift-wasm/pkg/sift_wasm_bg.wasm",
+        ),
+    ];
+
+    let mut failed = false;
+    for (plugin_js, wasm_path) in pairs {
+        match verify_plugin_against_wasm(Path::new(plugin_js), Path::new(wasm_path)) {
+            Ok(count) => {
+                println!("  ok  {plugin_js} ({count} imports match {wasm_path})");
+            }
+            Err(msg) => {
+                eprintln!("::error file={plugin_js}::{msg}");
+                failed = true;
+            }
+        }
+    }
+
+    if failed {
+        eprintln!();
+        eprintln!(
+            "Plugin bundle is out of sync with its wasm artifact. Run \
+             `cargo xtask wasm && cargo xtask renderer-plugins` and commit \
+             the updated files."
+        );
+        exit(1);
+    }
+
+    println!("All renderer plugin bundles match their wasm artifacts.");
+}
+
+/// Inspect a wasm file's imports, scanning for the wasm-bindgen glue names
+/// (`__wbg_*`, `__wbindgen_*`). Hand-rolled so xtask doesn't pick up a wasm
+/// parsing dep (keeps `cargo xtask lint` fast).
+///
+/// Format we walk (Web Assembly Core Spec 1.0, binary format):
+///
+/// ```text
+/// Module := \0 a s m \x01 \0 \0 \0      magic + version
+///           (SectionId:u8  Size:ULEB128  Payload[Size])*
+/// ImportSection (id=2) payload := n:ULEB128  Import[n]
+/// Import := module:Name  name:Name  desc:ImportDesc
+/// Name   := len:ULEB128  bytes[len] (UTF-8)
+/// ```
+///
+/// We only need the names, so once we find section id=2 we walk `n` imports,
+/// read each pair of length-prefixed strings, and skip past the import
+/// descriptor (type, table, memory, or global) without fully decoding it.
+fn wasm_bindgen_imports(wasm_path: &Path) -> Result<Vec<String>, String> {
+    let bytes =
+        fs::read(wasm_path).map_err(|e| format!("failed to read {}: {e}", wasm_path.display()))?;
+    parse_wasm_bindgen_imports(&bytes).map_err(|e| format!("{}: {e}", wasm_path.display()))
+}
+
+fn parse_wasm_bindgen_imports(bytes: &[u8]) -> Result<Vec<String>, String> {
+    if bytes.len() < 8 || &bytes[..4] != b"\0asm" {
+        return Err("not a wasm file (missing \\0asm magic)".into());
+    }
+    // Skip magic (4) + version (4).
+    let mut cur = Cursor::new(&bytes[8..]);
+
+    loop {
+        let Some(section_id) = cur.read_u8() else {
+            return Ok(Vec::new()); // reached EOF with no import section
+        };
+        let section_size = cur.read_uleb128()? as usize;
+        let section_end = cur.pos + section_size;
+        if section_end > cur.buf.len() {
+            return Err(format!(
+                "section {section_id} length {section_size} overruns file"
+            ));
+        }
+
+        if section_id == 2 {
+            // Import section.
+            let mut section = Cursor::new(&cur.buf[cur.pos..section_end]);
+            let count = section.read_uleb128()? as usize;
+            let mut out = Vec::new();
+            for _ in 0..count {
+                let _module = section.read_name()?;
+                let name = section.read_name()?;
+                section.skip_import_desc()?;
+                if name.starts_with("__wbg_") || name.starts_with("__wbindgen_") {
+                    out.push(name.to_string());
+                }
+            }
+            return Ok(out);
+        }
+
+        cur.pos = section_end;
+    }
+}
+
+struct Cursor<'a> {
+    buf: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> Cursor<'a> {
+    fn new(buf: &'a [u8]) -> Self {
+        Self { buf, pos: 0 }
+    }
+
+    fn read_u8(&mut self) -> Option<u8> {
+        let b = *self.buf.get(self.pos)?;
+        self.pos += 1;
+        Some(b)
+    }
+
+    fn read_uleb128(&mut self) -> Result<u64, String> {
+        let mut result: u64 = 0;
+        let mut shift = 0;
+        loop {
+            let byte = self
+                .read_u8()
+                .ok_or_else(|| "unexpected EOF in LEB128".to_string())?;
+            result |= u64::from(byte & 0x7f) << shift;
+            if byte & 0x80 == 0 {
+                return Ok(result);
+            }
+            shift += 7;
+            if shift > 63 {
+                return Err("LEB128 value too large".into());
+            }
+        }
+    }
+
+    fn read_name(&mut self) -> Result<&'a str, String> {
+        let len = self.read_uleb128()? as usize;
+        let end = self.pos + len;
+        if end > self.buf.len() {
+            return Err(format!(
+                "name length {len} overruns buffer (pos={})",
+                self.pos
+            ));
+        }
+        let s = std::str::from_utf8(&self.buf[self.pos..end])
+            .map_err(|e| format!("invalid UTF-8 in name: {e}"))?;
+        self.pos = end;
+        Ok(s)
+    }
+
+    /// Skip past an ImportDesc entry. Four shapes:
+    ///   0x00 TypeIdx           (1 u32 index)
+    ///   0x01 TableType         (elem_type u8, limits)
+    ///   0x02 MemType           (limits)
+    ///   0x03 GlobalType        (val_type u8, mut u8)
+    /// Where limits = flags:u8, min:u32, and max:u32 if flags bit 0 is set.
+    fn skip_import_desc(&mut self) -> Result<(), String> {
+        let kind = self
+            .read_u8()
+            .ok_or_else(|| "unexpected EOF in import descriptor".to_string())?;
+        match kind {
+            0x00 => {
+                self.read_uleb128()?;
+            }
+            0x01 => {
+                // elem type (anyfunc/externref, 1 byte in MVP)
+                self.read_u8()
+                    .ok_or_else(|| "EOF in table elem type".to_string())?;
+                self.skip_limits()?;
+            }
+            0x02 => {
+                self.skip_limits()?;
+            }
+            0x03 => {
+                self.read_u8()
+                    .ok_or_else(|| "EOF in global val type".to_string())?;
+                self.read_u8()
+                    .ok_or_else(|| "EOF in global mutability".to_string())?;
+            }
+            other => return Err(format!("unknown import descriptor kind 0x{other:02x}")),
+        }
+        Ok(())
+    }
+
+    fn skip_limits(&mut self) -> Result<(), String> {
+        let flags = self
+            .read_u8()
+            .ok_or_else(|| "EOF in limits flags".to_string())?;
+        self.read_uleb128()?; // min
+        if flags & 0x01 != 0 {
+            self.read_uleb128()?; // max
+        }
+        Ok(())
+    }
+}
+
+fn verify_plugin_against_wasm(plugin_js: &Path, wasm_path: &Path) -> Result<usize, String> {
+    if !plugin_js.exists() {
+        return Err(format!("plugin bundle missing: {}", plugin_js.display()));
+    }
+    if !wasm_path.exists() {
+        return Err(format!("wasm binary missing: {}", wasm_path.display()));
+    }
+
+    let imports = wasm_bindgen_imports(wasm_path)?;
+    if imports.is_empty() {
+        // Not an error — a wasm module may legitimately have no wasm-bindgen
+        // imports. But flag it so we don't silently pass after a refactor
+        // that accidentally empties the list.
+        return Err(format!(
+            "{} has no __wbg_/__wbindgen_ imports — refusing to vacuously pass the check",
+            wasm_path.display()
+        ));
+    }
+
+    let bundle = fs::read_to_string(plugin_js)
+        .map_err(|e| format!("failed to read {}: {e}", plugin_js.display()))?;
+
+    let mut missing = Vec::new();
+    for name in &imports {
+        if !bundle.contains(name.as_str()) {
+            missing.push(name.clone());
+        }
+    }
+
+    if !missing.is_empty() {
+        let preview: Vec<&String> = missing.iter().take(5).collect();
+        return Err(format!(
+            "plugin bundle does not reference {} wasm import name(s) from {}: e.g. {:?}",
+            missing.len(),
+            wasm_path.display(),
+            preview,
+        ));
+    }
+
+    Ok(imports.len())
 }
 
 fn cmd_icons(source: Option<&str>) {
@@ -3042,5 +3303,75 @@ mod tests {
             Some(UNIX_EPOCH + Duration::from_secs(9)),
         ];
         assert_eq!(freshness_reason(Some(stamp), watched), None);
+    }
+
+    /// Build a minimal wasm module with an import section. Used to exercise
+    /// `parse_wasm_bindgen_imports` without depending on a real wasm-pack
+    /// artifact.
+    fn encode_uleb128(mut value: u64) -> Vec<u8> {
+        let mut out = Vec::new();
+        loop {
+            let mut byte = (value & 0x7f) as u8;
+            value >>= 7;
+            if value != 0 {
+                byte |= 0x80;
+                out.push(byte);
+            } else {
+                out.push(byte);
+                return out;
+            }
+        }
+    }
+
+    fn make_import_section(imports: &[(&str, &str)]) -> Vec<u8> {
+        let mut body = encode_uleb128(imports.len() as u64);
+        for (module, name) in imports {
+            body.extend(encode_uleb128(module.len() as u64));
+            body.extend_from_slice(module.as_bytes());
+            body.extend(encode_uleb128(name.len() as u64));
+            body.extend_from_slice(name.as_bytes());
+            // import kind 0x00 (func) + type index 0
+            body.push(0x00);
+            body.extend(encode_uleb128(0));
+        }
+        let mut out = vec![0x02]; // section id = 2 (Import)
+        out.extend(encode_uleb128(body.len() as u64));
+        out.extend(body);
+        out
+    }
+
+    fn make_wasm(imports: &[(&str, &str)]) -> Vec<u8> {
+        let mut out = Vec::from(b"\0asm\x01\0\0\0" as &[u8]);
+        out.extend(make_import_section(imports));
+        out
+    }
+
+    #[test]
+    fn parse_wasm_bindgen_imports_rejects_non_wasm() {
+        assert!(parse_wasm_bindgen_imports(b"not a wasm file").is_err());
+    }
+
+    #[test]
+    fn parse_wasm_bindgen_imports_returns_only_wasm_bindgen_names() {
+        let wasm = make_wasm(&[
+            ("./sift_wasm_bg.js", "__wbg_Error_abc123"),
+            ("./sift_wasm_bg.js", "__wbindgen_throw"),
+            ("env", "memory"), // non-wbg import, should be filtered
+            ("./sift_wasm_bg.js", "__wbg_new_xyz789"),
+        ]);
+        let names = parse_wasm_bindgen_imports(&wasm).unwrap();
+        assert_eq!(
+            names,
+            vec!["__wbg_Error_abc123", "__wbindgen_throw", "__wbg_new_xyz789"]
+        );
+    }
+
+    #[test]
+    fn parse_wasm_bindgen_imports_empty_when_no_imports() {
+        let wasm = Vec::from(b"\0asm\x01\0\0\0" as &[u8]);
+        assert_eq!(
+            parse_wasm_bindgen_imports(&wasm).unwrap(),
+            Vec::<String>::new()
+        );
     }
 }
