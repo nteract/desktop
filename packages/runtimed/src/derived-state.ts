@@ -86,11 +86,12 @@ export function deriveQueueState(state: RuntimeState): DaemonQueueState {
  * "unknown" to consumers. Returns the sync state otherwise.
  */
 export function deriveEnvSyncState(state: RuntimeState): EnvSyncState | null {
+  const lc = state.kernel.lifecycle.lifecycle;
   if (
-    (state.kernel.status === "not_started" && !state.kernel.env_source) ||
-    state.kernel.status === "shutdown" ||
-    state.kernel.status === "error" ||
-    state.kernel.status === "awaiting_trust"
+    (lc === "NotStarted" && !state.kernel.env_source) ||
+    lc === "Shutdown" ||
+    lc === "Error" ||
+    lc === "AwaitingTrust"
   ) {
     return null;
   }
@@ -142,16 +143,119 @@ export function throttleBusyStatus(
 }
 
 /**
+ * Project a typed RuntimeLifecycle back to the legacy string status
+ * vocabulary (`"idle"`, `"busy"`, `"starting"`, `"error"`, `"shutdown"`,
+ * `"not_started"`, `"awaiting_trust"`).
+ *
+ * Kept for bridging throttleBusyStatus and other legacy-shape consumers.
+ * New code should match on `RuntimeLifecycle` directly, or — for a flat
+ * string key with every sub-state preserved — project through
+ * [`runtimeStatusKey`] instead.
+ */
+export function lifecycleToLegacyStatus(lc: RuntimeState["kernel"]["lifecycle"]): KernelStatus {
+  switch (lc.lifecycle) {
+    case "NotStarted":
+      return KERNEL_STATUS.NOT_STARTED;
+    case "AwaitingTrust":
+      return KERNEL_STATUS.AWAITING_TRUST;
+    case "Resolving":
+    case "PreparingEnv":
+    case "Launching":
+    case "Connecting":
+      return KERNEL_STATUS.STARTING;
+    case "Running":
+      return lc.activity === "Busy" ? KERNEL_STATUS.BUSY : KERNEL_STATUS.IDLE;
+    case "Error":
+      return KERNEL_STATUS.ERROR;
+    case "Shutdown":
+      return KERNEL_STATUS.SHUTDOWN;
+  }
+}
+
+// ── Expanded runtime status vocabulary ──────────────────────────────
+
+/**
+ * One flat string key per runtime state.
+ *
+ * Unlike the compressed [`KERNEL_STATUS`] vocabulary (where the four
+ * starting sub-phases collapse to `"starting"` and `Running`'s activity
+ * is a separate axis), `RUNTIME_STATUS` preserves every variant with its
+ * own key. The `Running` cases are prefixed `"running-"` so the family
+ * relationship is grep-able and so table lookups can be exhaustive
+ * `Record<RuntimeStatusKey, X>` without a special-case `Unknown` duck.
+ *
+ * Use this for CSS classes, icon tables, label tables, and any other
+ * lookup keyed on "what is the runtime doing right now." Use
+ * [`KERNEL_STATUS`] only when interoperating with the compressed legacy
+ * wire vocabulary.
+ */
+export const RUNTIME_STATUS = {
+  NOT_STARTED: "not_started",
+  AWAITING_TRUST: "awaiting_trust",
+  RESOLVING: "resolving",
+  PREPARING_ENV: "preparing_env",
+  LAUNCHING: "launching",
+  CONNECTING: "connecting",
+  RUNNING_IDLE: "running-idle",
+  RUNNING_BUSY: "running-busy",
+  RUNNING_UNKNOWN: "running-unknown",
+  ERROR: "error",
+  SHUTDOWN: "shutdown",
+} as const;
+
+export type RuntimeStatusKey = (typeof RUNTIME_STATUS)[keyof typeof RUNTIME_STATUS];
+
+/**
+ * Project a typed RuntimeLifecycle to its flat [`RuntimeStatusKey`].
+ *
+ * Exhaustive over both the lifecycle union and the inner activity, so
+ * adding a variant will fail to typecheck here until handled.
+ */
+export function runtimeStatusKey(lc: RuntimeState["kernel"]["lifecycle"]): RuntimeStatusKey {
+  switch (lc.lifecycle) {
+    case "NotStarted":
+      return RUNTIME_STATUS.NOT_STARTED;
+    case "AwaitingTrust":
+      return RUNTIME_STATUS.AWAITING_TRUST;
+    case "Resolving":
+      return RUNTIME_STATUS.RESOLVING;
+    case "PreparingEnv":
+      return RUNTIME_STATUS.PREPARING_ENV;
+    case "Launching":
+      return RUNTIME_STATUS.LAUNCHING;
+    case "Connecting":
+      return RUNTIME_STATUS.CONNECTING;
+    case "Running":
+      switch (lc.activity) {
+        case "Idle":
+          return RUNTIME_STATUS.RUNNING_IDLE;
+        case "Busy":
+          return RUNTIME_STATUS.RUNNING_BUSY;
+        case "Unknown":
+          return RUNTIME_STATUS.RUNNING_UNKNOWN;
+      }
+    // eslint-disable-next-line no-fallthrough -- inner switch is exhaustive
+    case "Error":
+      return RUNTIME_STATUS.ERROR;
+    case "Shutdown":
+      return RUNTIME_STATUS.SHUTDOWN;
+  }
+}
+
+/**
  * Derive a throttled kernel status observable from a RuntimeState stream.
  *
- * Convenience wrapper: extracts `kernel.status` and applies `throttleBusyStatus()`.
+ * Convenience wrapper: projects `kernel.lifecycle` back to the legacy
+ * status vocabulary and applies `throttleBusyStatus()`. Retained for
+ * consumers of the pre-lifecycle API; new code should match on
+ * `RuntimeLifecycle` directly.
  */
 export function kernelStatus$(
   runtimeState$: Observable<RuntimeState>,
   threshold?: number,
 ): Observable<KernelStatus> {
   return runtimeState$.pipe(
-    map((s) => s.kernel.status),
+    map((s) => lifecycleToLegacyStatus(s.kernel.lifecycle)),
     throttleBusyStatus(threshold),
   );
 }

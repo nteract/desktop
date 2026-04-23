@@ -7,9 +7,67 @@
 
 // ── Types ────────────────────────────────────────────────────────────
 
+/**
+ * Observable activity of a running kernel.
+ *
+ * Mirror of `runtime_doc::KernelActivity`. Only meaningful when the
+ * runtime lifecycle is `Running`.
+ */
+export type KernelActivity = "Unknown" | "Idle" | "Busy";
+
+/**
+ * Typed reason accompanying a [`RuntimeLifecycle`] `Error` transition.
+ *
+ * Mirror of `runtime_doc::KernelErrorReason`. The daemon writes one of
+ * these strings to `kernel.error_reason`; readers can use the exported
+ * [`KERNEL_ERROR_REASON`] constants instead of bare string literals when
+ * gating UI on a specific cause.
+ */
+export type KernelErrorReasonKey = "missing_ipykernel";
+
+/**
+ * Typed error-reason strings. Mirrors
+ * `KernelErrorReason::MissingIpykernel.as_str()` on the Rust side —
+ * both ends use the same literal so the CRDT value is unambiguous.
+ */
+export const KERNEL_ERROR_REASON = {
+  MISSING_IPYKERNEL: "missing_ipykernel",
+} as const satisfies Record<string, KernelErrorReasonKey>;
+
+/**
+ * Lifecycle of a runtime, from not-started through running to shutdown.
+ *
+ * Discriminated union on the `lifecycle` tag, matching Rust's serde
+ * tag+content format (`#[serde(tag = "lifecycle", content = "activity")]`).
+ * Only `Running` carries an `activity` payload — everything else is a
+ * lone tag.
+ *
+ * Mirror of `runtime_doc::RuntimeLifecycle`.
+ */
+export type RuntimeLifecycle =
+  | { lifecycle: "NotStarted" }
+  | { lifecycle: "AwaitingTrust" }
+  | { lifecycle: "Resolving" }
+  | { lifecycle: "PreparingEnv" }
+  | { lifecycle: "Launching" }
+  | { lifecycle: "Connecting" }
+  | { lifecycle: "Running"; activity: KernelActivity }
+  | { lifecycle: "Error" }
+  | { lifecycle: "Shutdown" };
+
 export interface KernelState {
+  /** @deprecated Legacy string-form status. Read `lifecycle` instead. */
   status: string;
+  /** @deprecated Legacy string-form starting sub-phase. Read `lifecycle` instead. */
   starting_phase: string;
+  /** Typed lifecycle — the authoritative view for new code. */
+  lifecycle: RuntimeLifecycle;
+  /**
+   * Human-readable reason populated when `lifecycle.lifecycle === "Error"`.
+   * `null` when the kernel map is absent; empty string when scaffolded but
+   * unset. Most consumers can treat both as "no reason."
+   */
+  error_reason: string | null;
   name: string;
   language: string;
   env_source: string;
@@ -90,6 +148,8 @@ export const DEFAULT_RUNTIME_STATE: RuntimeState = {
   kernel: {
     status: "not_started",
     starting_phase: "",
+    lifecycle: { lifecycle: "NotStarted" },
+    error_reason: null,
     name: "",
     language: "",
     env_source: "",

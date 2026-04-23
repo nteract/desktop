@@ -311,7 +311,8 @@ function AppContent() {
   // Daemon-owned kernel execution
   const {
     kernelStatus,
-    startingPhase,
+    lifecycle,
+    errorReason,
     kernelInfo,
     queueState,
     envSyncState,
@@ -1166,7 +1167,8 @@ function AppContent() {
           )}
         <NotebookToolbar
           kernelStatus={kernelStatus}
-          startingPhase={startingPhase}
+          lifecycle={lifecycle}
+          errorReason={errorReason}
           envSource={envSource}
           envTypeHint={envTypeHint}
           envProgress={envProgress.isActive || envProgress.error ? envProgress : null}

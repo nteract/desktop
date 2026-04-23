@@ -12,7 +12,8 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vite-plus/test";
 import type { EnvProgressState } from "../../hooks/useEnvProgress";
-import { KERNEL_STATUS, type KernelStatus } from "../../lib/kernel-status";
+import { KERNEL_ERROR_REASON } from "runtimed";
+import { KERNEL_STATUS, type KernelStatus, type RuntimeLifecycle } from "../../lib/kernel-status";
 import { NotebookToolbar } from "../NotebookToolbar";
 
 function makeEnvProgress(overrides: Partial<EnvProgressState>): EnvProgressState {
@@ -32,6 +33,8 @@ function makeEnvProgress(overrides: Partial<EnvProgressState>): EnvProgressState
 
 const baseProps = {
   kernelStatus: KERNEL_STATUS.IDLE as KernelStatus,
+  lifecycle: { lifecycle: "Running", activity: "Idle" } as RuntimeLifecycle,
+  errorReason: null as string | null,
   envSource: null as string | null,
   envProgress: null as EnvProgressState | null,
   onStartKernel: vi.fn(),
@@ -307,25 +310,33 @@ describe("NotebookToolbar", () => {
   });
 
   describe("pixi ipykernel prompt", () => {
-    it("shows pixi prompt when runtime=python, status=error, envSource=pixi:, startingPhase=missing_ipykernel", () => {
+    const errorLifecycle: RuntimeLifecycle = { lifecycle: "Error" };
+    const idleLifecycle: RuntimeLifecycle = {
+      lifecycle: "Running",
+      activity: "Idle",
+    };
+
+    it("shows pixi prompt when runtime=python, lifecycle=Error, envSource=pixi:, errorReason=missing_ipykernel", () => {
       render(
         <NotebookToolbar
           {...baseProps}
           runtime="python"
           kernelStatus={KERNEL_STATUS.ERROR}
+          lifecycle={errorLifecycle}
+          errorReason={KERNEL_ERROR_REASON.MISSING_IPYKERNEL}
           envSource="pixi:toml"
-          startingPhase="missing_ipykernel"
         />,
       );
       expect(screen.getByText(/ipykernel not found in pixi.toml/)).toBeInTheDocument();
     });
 
-    it("does not show pixi prompt for generic pixi error (no missing_ipykernel phase)", () => {
+    it("does not show pixi prompt for generic pixi error (no missing_ipykernel reason)", () => {
       render(
         <NotebookToolbar
           {...baseProps}
           runtime="python"
           kernelStatus={KERNEL_STATUS.ERROR}
+          lifecycle={errorLifecycle}
           envSource="pixi:toml"
         />,
       );
@@ -338,8 +349,9 @@ describe("NotebookToolbar", () => {
           {...baseProps}
           runtime="deno"
           kernelStatus={KERNEL_STATUS.ERROR}
+          lifecycle={errorLifecycle}
+          errorReason={KERNEL_ERROR_REASON.MISSING_IPYKERNEL}
           envSource="pixi:toml"
-          startingPhase="missing_ipykernel"
         />,
       );
       expect(screen.queryByText(/ipykernel not found in pixi.toml/)).not.toBeInTheDocument();
@@ -351,8 +363,9 @@ describe("NotebookToolbar", () => {
           {...baseProps}
           runtime="python"
           kernelStatus={KERNEL_STATUS.IDLE}
+          lifecycle={idleLifecycle}
+          errorReason={KERNEL_ERROR_REASON.MISSING_IPYKERNEL}
           envSource="pixi:toml"
-          startingPhase="missing_ipykernel"
         />,
       );
       expect(screen.queryByText(/ipykernel not found in pixi.toml/)).not.toBeInTheDocument();
@@ -364,8 +377,9 @@ describe("NotebookToolbar", () => {
           {...baseProps}
           runtime="python"
           kernelStatus={KERNEL_STATUS.ERROR}
+          lifecycle={errorLifecycle}
+          errorReason={KERNEL_ERROR_REASON.MISSING_IPYKERNEL}
           envSource="uv:prewarmed"
-          startingPhase="missing_ipykernel"
         />,
       );
       expect(screen.queryByText(/ipykernel not found in pixi.toml/)).not.toBeInTheDocument();
