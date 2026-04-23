@@ -1,5 +1,6 @@
 //! `NotebookRequest::RunAllCells` handler.
 
+use runtime_doc::RuntimeLifecycle;
 use tracing::warn;
 
 use crate::notebook_sync_server::NotebookRoom;
@@ -10,13 +11,16 @@ pub(crate) async fn handle(room: &NotebookRoom) -> NotebookResponse {
     {
         let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
         if has_runtime_agent {
-            // Check if kernel is shut down
+            // Check if kernel is shut down.
             {
-                let status = room
+                let lifecycle = room
                     .state
-                    .read(|sd| sd.read_state().kernel.status.clone())
-                    .unwrap_or_default();
-                if status == "shutdown" || status == "error" {
+                    .read(|sd| sd.read_state().kernel.lifecycle)
+                    .unwrap_or(RuntimeLifecycle::NotStarted);
+                if matches!(
+                    lifecycle,
+                    RuntimeLifecycle::Shutdown | RuntimeLifecycle::Error
+                ) {
                     return NotebookResponse::NoKernel {};
                 }
             }

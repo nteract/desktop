@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use runtime_doc::RuntimeLifecycle;
 use tracing::warn;
 
 use crate::notebook_sync_server::{
@@ -53,13 +54,16 @@ pub(crate) async fn handle(room: &Arc<NotebookRoom>, cell_id: String) -> Noteboo
         let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
         if has_runtime_agent {
             // Check if kernel is shut down — return NoKernel instead
-            // of silently queuing into a dead kernel
+            // of silently queuing into a dead kernel.
             {
-                let status = room
+                let lifecycle = room
                     .state
-                    .read(|sd| sd.read_state().kernel.status.clone())
-                    .unwrap_or_default();
-                if status == "shutdown" || status == "error" {
+                    .read(|sd| sd.read_state().kernel.lifecycle)
+                    .unwrap_or(RuntimeLifecycle::NotStarted);
+                if matches!(
+                    lifecycle,
+                    RuntimeLifecycle::Shutdown | RuntimeLifecycle::Error
+                ) {
                     return NotebookResponse::NoKernel {};
                 }
             }

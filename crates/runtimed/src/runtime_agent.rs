@@ -40,7 +40,7 @@ use notebook_protocol::connection::{
 };
 use notebook_protocol::protocol::{RuntimeAgentRequest, RuntimeAgentResponse};
 use runtime_doc::RuntimeStateHandle;
-use runtime_doc::{CommDocEntry, RuntimeStateDoc};
+use runtime_doc::{CommDocEntry, RuntimeLifecycle, RuntimeStateDoc};
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tracing::{debug, error, info, warn};
 
@@ -985,7 +985,11 @@ async fn handle_queue_command(
                 for entry in &cleared {
                     sd.set_execution_done(&entry.execution_id, false)?;
                 }
-                sd.set_kernel_status("error")?;
+                // Generic kernel-died path — no specific typed reason. Clear
+                // any stale error_reason from a prior failure so the frontend
+                // doesn't misreport this death as (say) a repeat
+                // missing_ipykernel incident.
+                sd.set_lifecycle_with_error(&RuntimeLifecycle::Error, None)?;
                 sd.set_queue(None, &[])?;
                 Ok(())
             }) {
@@ -1177,8 +1181,8 @@ mod tests {
         assert!(queue.queue.executing.is_none());
         assert!(queue.queue.queued.is_empty());
 
-        // Kernel status should be error
-        assert_eq!(queue.kernel.status, "error");
+        // Kernel lifecycle should be Error
+        assert_eq!(queue.kernel.lifecycle, RuntimeLifecycle::Error);
     }
 
     #[tokio::test]
@@ -1197,7 +1201,7 @@ mod tests {
         .unwrap();
 
         let rs = handle.read(|sd| sd.read_state()).unwrap();
-        assert_eq!(rs.kernel.status, "error");
+        assert_eq!(rs.kernel.lifecycle, RuntimeLifecycle::Error);
         assert!(rs.queue.executing.is_none());
         assert!(rs.queue.queued.is_empty());
     }

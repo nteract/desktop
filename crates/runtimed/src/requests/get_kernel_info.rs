@@ -1,13 +1,16 @@
 //! `NotebookRequest::GetKernelInfo` handler.
 
+use runtime_doc::RuntimeLifecycle;
+
 use crate::notebook_sync_server::NotebookRoom;
 use crate::protocol::NotebookResponse;
 
 pub(crate) async fn handle(room: &NotebookRoom) -> NotebookResponse {
-    // Read from RuntimeStateDoc (source of truth for runtime agent)
+    // Read from RuntimeStateDoc (source of truth for runtime agent).
     let state = room.state.read(|sd| sd.read_state());
     match state {
-        Ok(state) if state.kernel.status != "not_started" && !state.kernel.status.is_empty() => {
+        Ok(state) if !matches!(state.kernel.lifecycle, RuntimeLifecycle::NotStarted) => {
+            let (legacy_status, _phase) = state.kernel.lifecycle.to_legacy();
             NotebookResponse::KernelInfo {
                 kernel_type: if state.kernel.name.is_empty() {
                     None
@@ -19,7 +22,7 @@ pub(crate) async fn handle(room: &NotebookRoom) -> NotebookResponse {
                 } else {
                     Some(state.kernel.env_source)
                 },
-                status: state.kernel.status,
+                status: legacy_status.to_string(),
             }
         }
         _ => NotebookResponse::KernelInfo {

@@ -1,5 +1,7 @@
 //! `NotebookRequest::ShutdownKernel` handler.
 
+use runtime_doc::RuntimeLifecycle;
+
 use crate::notebook_sync_server::{send_runtime_agent_request, NotebookRoom};
 use crate::protocol::NotebookResponse;
 
@@ -16,12 +18,12 @@ pub(crate) async fn handle(room: &NotebookRoom) -> NotebookResponse {
         .await;
         // Keep runtime agent alive (runtime_agent_handle + runtime_agent_request_tx stay set)
         // so LaunchKernel can send RestartKernel. ExecuteCell/RunAllCells
-        // check kernel.status from RuntimeStateDoc and return NoKernel
-        // when status is "shutdown".
+        // check kernel.lifecycle from RuntimeStateDoc and return NoKernel
+        // when it's Shutdown.
         //
-        // Update RuntimeStateDoc to reflect shutdown
+        // Update RuntimeStateDoc to reflect shutdown.
         if let Err(e) = room.state.with_doc(|sd| {
-            sd.set_kernel_status("shutdown")?;
+            sd.set_lifecycle(&RuntimeLifecycle::Shutdown)?;
             sd.set_queue(None, &[])?;
             Ok(())
         }) {

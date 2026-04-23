@@ -1,4 +1,5 @@
 use super::*;
+use runtime_doc::{KernelActivity, RuntimeLifecycle};
 use serial_test::serial;
 use uuid::Uuid;
 
@@ -3046,7 +3047,7 @@ async fn test_check_and_broadcast_sync_state_captured_uv_prewarmed_in_sync() {
     {
         room.state
             .with_doc(|sd| {
-                sd.set_kernel_status("idle")?;
+                sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?;
                 // Pre-set to dirty so we can verify it flips to in_sync.
                 sd.set_env_sync(false, &["pandas".to_string()], &[], false, false)?;
                 Ok(())
@@ -3098,7 +3099,7 @@ async fn test_check_and_broadcast_sync_state_captured_uv_prewarmed_reports_addit
 
     {
         room.state
-            .with_doc(|sd| sd.set_kernel_status("idle"))
+            .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle)))
             .unwrap();
     }
 
@@ -3526,22 +3527,24 @@ async fn test_reset_starting_state_guard() {
         *id = Some("agent-B".to_string());
     }
 
-    // Set kernel status to "starting" (simulates in-progress launch)
+    // Move to Resolving (simulates in-progress launch — the earliest
+    // "starting" sub-state).
     room.state
-        .with_doc(|sd| sd.set_kernel_status("starting"))
+        .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Resolving))
         .unwrap();
 
-    // Call reset with expected="agent-A" (stale handler) — should skip
+    // Call reset with expected="agent-A" (stale handler) — should skip.
     reset_starting_state(&room, Some("agent-A")).await;
 
-    // Verify: kernel_status should still be "starting" (NOT reset)
+    // Verify: lifecycle should still be Resolving (NOT reset).
     {
-        let status = room
+        let lifecycle = room
             .state
-            .read(|sd| sd.read_state().kernel.status.clone())
+            .read(|sd| sd.read_state().kernel.lifecycle)
             .unwrap();
         assert_eq!(
-            status, "starting",
+            lifecycle,
+            RuntimeLifecycle::Resolving,
             "Guard should have prevented reset (agent-A != agent-B)"
         );
     }
@@ -3552,17 +3555,18 @@ async fn test_reset_starting_state_guard() {
         assert_eq!(id.as_deref(), Some("agent-B"));
     }
 
-    // Now call with matching expected="agent-B" — should reset
+    // Now call with matching expected="agent-B" — should reset.
     reset_starting_state(&room, Some("agent-B")).await;
 
-    // Verify: kernel_status should be "not_started"
+    // Verify: lifecycle should be NotStarted.
     {
-        let status = room
+        let lifecycle = room
             .state
-            .read(|sd| sd.read_state().kernel.status.clone())
+            .read(|sd| sd.read_state().kernel.lifecycle)
             .unwrap();
         assert_eq!(
-            status, "not_started",
+            lifecycle,
+            RuntimeLifecycle::NotStarted,
             "Reset should proceed when expected matches current"
         );
     }
@@ -3576,18 +3580,19 @@ async fn test_reset_starting_state_guard() {
         );
     }
 
-    // Call with None (pre-spawn) — should always reset
+    // Call with None (pre-spawn) — should always reset.
     room.state
-        .with_doc(|sd| sd.set_kernel_status("starting"))
+        .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Resolving))
         .unwrap();
     reset_starting_state(&room, None).await;
     {
-        let status = room
+        let lifecycle = room
             .state
-            .read(|sd| sd.read_state().kernel.status.clone())
+            .read(|sd| sd.read_state().kernel.lifecycle)
             .unwrap();
         assert_eq!(
-            status, "not_started",
+            lifecycle,
+            RuntimeLifecycle::NotStarted,
             "None (pre-spawn) should always reset"
         );
     }

@@ -1,4 +1,5 @@
 use super::*;
+use runtime_doc::{KernelActivity, KernelErrorReason, RuntimeLifecycle};
 
 pub struct TrustState {
     pub status: runt_trust::TrustStatus,
@@ -670,11 +671,11 @@ pub(crate) async fn check_and_broadcast_sync_state(room: &NotebookRoom) {
 
     // Check kernel is actually running via RuntimeStateDoc
     {
-        let status = room
+        let lifecycle = room
             .state
-            .read(|sd| sd.read_state().kernel.status.clone())
-            .unwrap_or_default();
-        if status != "idle" && status != "busy" {
+            .read(|sd| sd.read_state().kernel.lifecycle)
+            .unwrap_or(RuntimeLifecycle::NotStarted);
+        if !matches!(lifecycle, RuntimeLifecycle::Running(_)) {
             return;
         }
     }
@@ -1729,7 +1730,7 @@ pub(crate) async fn reset_starting_state(
     // state handle uses std::sync::Mutex - no lock ordering concern
     // with runtime_agent_handle (tokio::sync::Mutex).
     if let Err(e) = room.state.with_doc(|sd| {
-        sd.set_kernel_status("not_started")?;
+        sd.set_lifecycle(&RuntimeLifecycle::NotStarted)?;
         sd.set_prewarmed_packages(&[])?;
         Ok(())
     }) {
@@ -2395,9 +2396,11 @@ pub(crate) async fn auto_launch_kernel(
                     detected.path
                 );
                 if let Err(e) = room.state.with_doc(|sd| {
-                    sd.set_kernel_status("error")?;
+                    sd.set_lifecycle_with_error(
+                        &RuntimeLifecycle::Error,
+                        Some(KernelErrorReason::MissingIpykernel),
+                    )?;
                     sd.set_kernel_info("python", "python", env_source.as_str())?;
-                    sd.set_starting_phase("missing_ipykernel")?;
                     Ok(())
                 }) {
                     warn!("[runtime-state] {}", e);
@@ -2407,10 +2410,10 @@ pub(crate) async fn auto_launch_kernel(
         }
     }
 
-    // Transition to "preparing_env" phase now that runtime/env has been resolved
+    // Transition to PreparingEnv now that runtime/env has been resolved.
     if let Err(e) = room
         .state
-        .with_doc(|sd| sd.set_starting_phase("preparing_env"))
+        .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::PreparingEnv))
     {
         warn!("[runtime-state] {}", e);
     }
@@ -2713,7 +2716,10 @@ pub(crate) async fn auto_launch_kernel(
     );
 
     // Transition to "launching" phase before starting the kernel process
-    if let Err(e) = room.state.with_doc(|sd| sd.set_starting_phase("launching")) {
+    if let Err(e) = room
+        .state
+        .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Launching))
+    {
         warn!("[runtime-state] {}", e);
     }
 
@@ -2764,10 +2770,10 @@ pub(crate) async fn auto_launch_kernel(
                     *ra_guard = Some(ra);
                 }
 
-                // Write "connecting" phase — fills the gap between spawn and connect
+                // Connecting lifecycle — fills the gap between spawn and connect
                 if let Err(e) = room
                     .state
-                    .with_doc(|sd| sd.set_starting_phase("connecting"))
+                    .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Connecting))
                 {
                     warn!("[runtime-state] {}", e);
                 }
@@ -2825,10 +2831,10 @@ pub(crate) async fn auto_launch_kernel(
                         publish_kernel_state_presence(room, presence::KernelStatus::Idle, &es)
                             .await;
 
-                        // Write kernel status + info to RuntimeStateDoc so
-                        // frontends see "idle" via CRDT sync.
+                        // Write Running(Idle) + kernel info to RuntimeStateDoc
+                        // so frontends see "idle" via CRDT sync.
                         if let Err(e) = room.state.with_doc(|sd| {
-                            sd.set_kernel_status("idle")?;
+                            sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?;
                             sd.set_kernel_info(kernel_type, kernel_type, &es)?;
                             sd.set_runtime_agent_id(&runtime_agent_id)?;
                             // Fresh kernel is in sync with its launched config

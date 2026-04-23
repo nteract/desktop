@@ -812,7 +812,9 @@ mod tests {
         set_execution(&shared, "exec-1", "cell-1", "running", &[], None);
         {
             let mut st = shared.lock().unwrap();
-            st.state_doc.set_kernel_status("error").unwrap();
+            st.state_doc
+                .set_lifecycle(&runtime_doc::RuntimeLifecycle::Error)
+                .unwrap();
         }
 
         let err =
@@ -842,7 +844,9 @@ mod tests {
         // Kernel is now flagged as error AFTER the execution completed.
         {
             let mut st = shared.lock().unwrap();
-            st.state_doc.set_kernel_status("error").unwrap();
+            st.state_doc
+                .set_lifecycle(&runtime_doc::RuntimeLifecycle::Error)
+                .unwrap();
         }
 
         let state =

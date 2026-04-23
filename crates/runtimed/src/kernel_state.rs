@@ -265,8 +265,8 @@ impl KernelState {
 
         // Note: state_doc writes for kernel_died happen in the async command
         // processor (notebook_sync_server.rs QueueCommand::KernelDied handler).
-        // state_doc.set_kernel_status("error") + set_queue(None, &[])
-        // + set_execution_done for interrupted + cleared entries
+        // state_doc.set_lifecycle_with_error(&RuntimeLifecycle::Error, None) +
+        // set_queue(None, &[]) + set_execution_done for interrupted + cleared entries
 
         (interrupted, cleared)
     }

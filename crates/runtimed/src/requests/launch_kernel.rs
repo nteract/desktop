@@ -11,6 +11,7 @@ use tokio::sync::oneshot;
 use tracing::{error, info, warn};
 
 use notebook_doc::presence;
+use runtime_doc::{KernelActivity, RuntimeLifecycle};
 
 use crate::daemon::Daemon;
 use crate::notebook_sync_server::{
@@ -54,44 +55,55 @@ pub(crate) async fn handle(
     //
     // Scope the write guard so it drops before any async work
     // (deadlock prevention: no lock held across `.await`).
-    let kernel_status = room
+    let prior_lifecycle = room
         .state
         .with_doc(|sd| {
-            let status = sd.read_state().kernel.status.clone();
-            if status != "idle" && status != "busy" && status != "starting" {
-                // not_started, error, shutdown — atomically claim the
-                // launch by writing "starting" while we hold the mutex.
-                // This prevents a concurrent LaunchKernel from also proceeding.
+            let prior = sd.read_state().kernel.lifecycle;
+            let already_progressing = matches!(
+                prior,
+                RuntimeLifecycle::Running(_)
+                    | RuntimeLifecycle::Resolving
+                    | RuntimeLifecycle::PreparingEnv
+                    | RuntimeLifecycle::Launching
+                    | RuntimeLifecycle::Connecting
+            );
+            if !already_progressing {
+                // Atomically claim the launch by moving into Resolving
+                // while we hold the sync mutex. Prevents a concurrent
+                // LaunchKernel from also proceeding past this gate.
                 sd.clear_comms().ok();
                 sd.set_trust("trusted", false).ok();
-                sd.set_kernel_status("starting").ok();
-                sd.set_starting_phase("resolving").ok();
+                sd.set_lifecycle(&RuntimeLifecycle::Resolving).ok();
             }
-            Ok(status)
+            Ok(prior)
         })
         .unwrap_or_else(|e| {
             warn!("[runtime-state] {}", e);
-            "not_started".to_string()
+            RuntimeLifecycle::NotStarted
         });
-    match kernel_status.as_str() {
-        "idle" | "busy" => {
-            // Agent already has a running kernel — check for restart path below
+    match prior_lifecycle {
+        RuntimeLifecycle::Running(_) => {
+            // Agent already has a running kernel — check for restart path below.
         }
-        "starting" => {
-            // Another launch in progress — wait for it to complete
+        RuntimeLifecycle::Resolving
+        | RuntimeLifecycle::PreparingEnv
+        | RuntimeLifecycle::Launching
+        | RuntimeLifecycle::Connecting => {
+            // Another launch in progress — wait for it to complete.
             let wait_result = tokio::time::timeout(std::time::Duration::from_secs(60), async {
                 loop {
-                    let s = room
+                    let lc = room
                         .state
-                        .read(|sd| sd.read_state().kernel.status.clone())
-                        .unwrap_or_default();
-                    if s == "idle"
-                        || s == "busy"
-                        || s == "error"
-                        || s == "shutdown"
-                        || s == "not_started"
-                    {
-                        return s;
+                        .read(|sd| sd.read_state().kernel.lifecycle)
+                        .unwrap_or(RuntimeLifecycle::NotStarted);
+                    if matches!(
+                        lc,
+                        RuntimeLifecycle::Running(_)
+                            | RuntimeLifecycle::Error
+                            | RuntimeLifecycle::Shutdown
+                            | RuntimeLifecycle::NotStarted
+                    ) {
+                        return lc;
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
@@ -99,8 +111,8 @@ pub(crate) async fn handle(
             .await;
 
             match wait_result {
-                Ok(ref s) if s == "idle" || s == "busy" => {
-                    // Launch completed — fall through to restart check below
+                Ok(RuntimeLifecycle::Running(_)) => {
+                    // Launch completed — fall through to restart check below.
                 }
                 Ok(_) | Err(_) => {
                     return NotebookResponse::Error {
@@ -110,7 +122,8 @@ pub(crate) async fn handle(
             }
         }
         _ => {
-            // Already handled above (set to "starting") — fall through
+            // Not_started / Error / Shutdown / AwaitingTrust — already
+            // claimed above by writing Resolving; fall through.
         }
     }
 
@@ -462,7 +475,7 @@ pub(crate) async fn handle(
     // Transition to "preparing_env" phase
     if let Err(e) = room
         .state
-        .with_doc(|sd| sd.set_starting_phase("preparing_env"))
+        .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::PreparingEnv))
     {
         warn!("[runtime-state] {}", e);
     }
@@ -1077,7 +1090,10 @@ pub(crate) async fn handle(
     );
 
     // Transition to "launching" phase before starting the kernel process
-    if let Err(e) = room.state.with_doc(|sd| sd.set_starting_phase("launching")) {
+    if let Err(e) = room
+        .state
+        .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Launching))
+    {
         warn!("[runtime-state] {}", e);
     }
 
@@ -1108,7 +1124,7 @@ pub(crate) async fn handle(
 
                     publish_kernel_state_presence(room, presence::KernelStatus::Idle, &es).await;
                     if let Err(e) = room.state.with_doc(|sd| {
-                        sd.set_kernel_status("idle")?;
+                        sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?;
                         sd.set_kernel_info(&resolved_kernel_type, &resolved_kernel_type, &es)?;
                         sd.set_prewarmed_packages(&launched_config.prewarmed_packages)?;
                         // runtime_agent_id doesn't change on restart — same runtime agent
@@ -1191,10 +1207,10 @@ pub(crate) async fn handle(
                     *ra_guard = Some(ra);
                 }
 
-                // Write "connecting" phase — fills the gap between spawn and connect
+                // Connecting lifecycle — fills the gap between spawn and connect
                 if let Err(e) = room
                     .state
-                    .with_doc(|sd| sd.set_starting_phase("connecting"))
+                    .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Connecting))
                 {
                     warn!("[runtime-state] {}", e);
                 }
@@ -1254,7 +1270,7 @@ pub(crate) async fn handle(
                             // avoid holding two locks.
                             let agent_id = room.current_runtime_agent_id.read().await.clone();
                             if let Err(e) = room.state.with_doc(|sd| {
-                                sd.set_kernel_status("idle")?;
+                                sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?;
                                 sd.set_kernel_info(
                                     &resolved_kernel_type,
                                     &resolved_kernel_type,

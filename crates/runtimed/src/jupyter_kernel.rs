@@ -21,6 +21,7 @@ use jupyter_protocol::{
     CompleteRequest, ConnectionInfo, ExecuteRequest, HistoryRequest, InterruptRequest,
     JupyterMessage, JupyterMessageContent, KernelInfoRequest, ShutdownRequest,
 };
+use runtime_doc::{KernelActivity, RuntimeLifecycle};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
@@ -46,6 +47,17 @@ type PendingCompletions =
 
 /// Handle for interrupting a kernel without exclusive access.
 ///
+/// What an IOPub status message translates to on the RuntimeStateDoc.
+///
+/// Either a lifecycle transition (Starting/Restarting/Terminating/Dead —
+/// infrequent, always written) or an activity flip (Idle/Busy — hot path,
+/// throttled by `set_activity`). Kept local to this file because it is
+/// only a dispatch helper for the IOPub handler.
+enum IoPubStateUpdate {
+    Activity(KernelActivity),
+    Lifecycle(RuntimeLifecycle),
+}
+
 /// Created at kernel launch time, captures connection_info and session_id.
 /// Can be used concurrently with other kernel operations since interrupt
 /// creates its own ZMQ control connection.
@@ -739,27 +751,52 @@ impl KernelConnection for JupyterKernel {
                             // Handle different message types
                             match &message.content {
                                 JupyterMessageContent::Status(status) => {
-                                    let status_str = match status.execution_state {
-                                        jupyter_protocol::ExecutionState::Busy => "busy",
-                                        jupyter_protocol::ExecutionState::Idle => "idle",
-                                        jupyter_protocol::ExecutionState::Starting => "starting",
-                                        jupyter_protocol::ExecutionState::Restarting => "starting",
+                                    // Map the kernel's execution_state to either a typed
+                                    // activity flip (Idle/Busy — hot path, throttled) or a
+                                    // lifecycle transition (Starting/Restarting/Terminating/Dead).
+                                    let update = match status.execution_state {
+                                        jupyter_protocol::ExecutionState::Busy => {
+                                            Some(IoPubStateUpdate::Activity(KernelActivity::Busy))
+                                        }
+                                        jupyter_protocol::ExecutionState::Idle => {
+                                            Some(IoPubStateUpdate::Activity(KernelActivity::Idle))
+                                        }
+                                        // Starting and Restarting both land in Connecting —
+                                        // the kernel process has just come up and is
+                                        // reporting its first status; we treat those as
+                                        // "connected but pre-kernel_info" transitions.
+                                        jupyter_protocol::ExecutionState::Starting
+                                        | jupyter_protocol::ExecutionState::Restarting => {
+                                            Some(IoPubStateUpdate::Lifecycle(
+                                                RuntimeLifecycle::Connecting,
+                                            ))
+                                        }
                                         jupyter_protocol::ExecutionState::Terminating
-                                        | jupyter_protocol::ExecutionState::Dead => "shutdown",
-                                        _ => "unknown",
+                                        | jupyter_protocol::ExecutionState::Dead => Some(
+                                            IoPubStateUpdate::Lifecycle(RuntimeLifecycle::Shutdown),
+                                        ),
+                                        _ => None,
                                     };
 
-                                    if status_str != "unknown" {
+                                    if let Some(update) = update {
                                         // Non-execute messages (kernel_info, completions) have a
                                         // parent_header.msg_id that isn't in our execute map.
-                                        // cell_id is None for those — treat their status as transient.
-                                        let is_transient = cell_id.is_none()
-                                            && (status_str == "busy" || status_str == "idle");
+                                        // cell_id is None for those — treat activity flips from
+                                        // those as transient (they don't reflect user code state).
+                                        let is_transient_activity = cell_id.is_none()
+                                            && matches!(update, IoPubStateUpdate::Activity(_));
 
-                                        if !is_transient {
-                                            if let Err(e) = state_for_iopub
-                                                .with_doc(|sd| sd.set_kernel_status(status_str))
-                                            {
+                                        if !is_transient_activity {
+                                            let result =
+                                                state_for_iopub.with_doc(|sd| match update {
+                                                    IoPubStateUpdate::Activity(a) => {
+                                                        sd.set_activity(a)
+                                                    }
+                                                    IoPubStateUpdate::Lifecycle(lc) => {
+                                                        sd.set_lifecycle(&lc)
+                                                    }
+                                                });
+                                            if let Err(e) = result {
                                                 warn!("[runtime-state] {}", e);
                                             }
                                         }
