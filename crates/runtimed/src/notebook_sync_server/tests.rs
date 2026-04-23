@@ -3363,18 +3363,18 @@ async fn test_check_and_update_trust_state_idempotent() {
     assert_eq!(ts.status, runt_trust::TrustStatus::NoDependencies);
 }
 
-/// Simulates the file-watcher path: a notebook starts Trusted (signed
-/// metadata on disk), then an external editor / `uv add numpy` rewrites
-/// the dependency list. The signature no longer covers the new dep set,
-/// so `check_and_update_trust_state` should flip trust_state to
-/// SignatureInvalid and emit a state_changed_tx notification.
+/// Issue #2118: a previously-approved notebook must stay Trusted when the
+/// user adds a dependency. Before the fix, any dep write — whether from
+/// the UI (WASM → daemon) or an external file edit — would arrive with the
+/// stale signature, flip trust to SignatureInvalid, and kill the running
+/// kernel before the sidecar's `approve_notebook_trust` RPC landed.
 ///
-/// This is the regression this PR fixes: before the fix the file watcher
-/// merged new deps into the CRDT but never re-verified trust, so
-/// room.trust_state stayed Trusted and auto-launch used a stale signature.
+/// The fix: when the room is already Trusted and new deps would produce a
+/// SignatureInvalid verification, re-sign in place with the daemon's trust
+/// key and keep the notebook Trusted.
 #[tokio::test]
 #[serial]
-async fn test_check_and_update_trust_state_external_dep_add_invalidates() {
+async fn test_check_and_update_trust_state_auto_resigns_trusted_notebook() {
     let temp_dir = tempfile::tempdir().unwrap();
     let key_path = temp_dir.path().join("trust-key");
     std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
@@ -3406,51 +3406,86 @@ async fn test_check_and_update_trust_state_external_dep_add_invalidates() {
             .unwrap();
     }
 
-    // Sanity check: starting state is Trusted.
     {
         let ts = room.trust_state.read().await;
         assert_eq!(ts.status, runt_trust::TrustStatus::Trusted);
     }
 
-    // Simulate external edit: user runs `uv add pandas` + saves. The
-    // file watcher merges the new deps into the CRDT but carries over
-    // the stale signature (because the external tool doesn't resign).
+    // User (or external editor) adds `pandas`. Carries over the stale
+    // signature, which is now over a different dep set.
     let mut edited = snapshot_with_uv(vec!["numpy".to_string(), "pandas".to_string()]);
-    edited.runt.trust_signature = Some(signature);
+    edited.runt.trust_signature = Some(signature.clone());
     {
         let mut doc = room.doc.write().await;
         doc.set_metadata_snapshot(&edited).unwrap();
     }
 
-    // Subscribe before the re-verification so we can observe the flip.
-    let mut rx = room.state.subscribe();
-
     check_and_update_trust_state(&room).await;
 
-    // Trust should flip to SignatureInvalid — the signature is over the
-    // numpy-only dep set, so adding pandas breaks it.
+    // Trust must stay Trusted — the daemon auto re-signed the new dep set.
     {
         let ts = room.trust_state.read().await;
         assert_eq!(
             ts.status,
-            runt_trust::TrustStatus::SignatureInvalid,
-            "external dep add must flip trust from Trusted to SignatureInvalid"
+            runt_trust::TrustStatus::Trusted,
+            "dep add on a trusted notebook must auto re-sign, not flip to SignatureInvalid"
         );
     }
 
-    // RuntimeStateDoc should reflect the flip for the frontend banner.
+    // The new signature in the doc must cover the new deps.
+    let resigned = {
+        let doc = room.doc.read().await;
+        doc.get_metadata_snapshot().unwrap()
+    };
+    let new_sig = resigned
+        .runt
+        .trust_signature
+        .as_deref()
+        .expect("signature present after auto re-sign");
+    assert_ne!(
+        new_sig, signature,
+        "signature must be refreshed to cover the new dep list"
+    );
+    let verified = verify_trust_from_snapshot(&resigned);
+    assert_eq!(verified.status, runt_trust::TrustStatus::Trusted);
+
+    // RuntimeStateDoc should not flip to signature_invalid — the user is
+    // still trusted so no banner should appear.
     {
         let state = room.state.read(|sd| sd.read_state()).unwrap();
-        assert_eq!(state.trust.status, "signature_invalid");
-        assert!(state.trust.needs_approval);
+        assert_eq!(state.trust.status, "trusted");
+        assert!(!state.trust.needs_approval);
     }
 
-    // state_changed_tx must have fired at least once so subscribers
-    // (frontend, auto-launch) pick up the new trust state.
-    assert!(
-        rx.try_recv().is_ok(),
-        "trust flip must emit state_changed_tx notification"
-    );
+    std::env::remove_var("RUNT_TRUST_KEY_PATH");
+}
+
+/// Auto re-sign must only apply when the notebook was already Trusted.
+/// A brand-new notebook with unsigned deps must still land in Untrusted —
+/// the user has not approved anything yet.
+#[tokio::test]
+#[serial]
+async fn test_check_and_update_trust_state_no_autoresign_when_not_previously_trusted() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let key_path = temp_dir.path().join("trust-key");
+    std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _path) = test_room_with_path(&tmp, "fresh_notebook.ipynb");
+
+    // Room starts Untrusted (default). Write deps with no signature —
+    // simulates the frontend WASM adding a dep to a brand-new notebook.
+    let snapshot = snapshot_with_uv(vec!["numpy".to_string()]);
+    {
+        let mut doc = room.doc.write().await;
+        doc.set_metadata_snapshot(&snapshot).unwrap();
+    }
+
+    check_and_update_trust_state(&room).await;
+
+    // Should land in Untrusted (no prior approval, no auto sign).
+    let ts = room.trust_state.read().await;
+    assert_eq!(ts.status, runt_trust::TrustStatus::Untrusted);
 
     std::env::remove_var("RUNT_TRUST_KEY_PATH");
 }

@@ -87,65 +87,52 @@ export function useCondaDependencies() {
     }
   }, [environmentYmlInfo, loadEnvironmentYmlDeps]);
 
-  // Re-sign the notebook after user modifications to keep it trusted
-  const resignTrust = useCallback(async () => {
+  // Trust re-signing lives on the daemon now (issue #2118). The daemon
+  // keeps a previously Trusted notebook Trusted by auto re-signing when
+  // the WASM dep write arrives via Automerge sync.
+  const withLoading = useCallback(async (op: () => Promise<void>, label: string) => {
+    setLoading(true);
     try {
-      await invoke("approve_notebook_trust");
+      await op();
     } catch (e) {
-      // Signing may fail if no trust key yet - that's okay
-      logger.debug("[conda] Could not resign trust:", e);
+      logger.error(`Failed to ${label}:`, e);
+    } finally {
+      setLoading(false);
     }
   }, []);
-
-  // Wrap a mutating WASM op with the shared loading + trust-resign + error log
-  // shape. `label` appears in the error message so grep still works.
-  const withTrustResign = useCallback(
-    async (op: () => Promise<void>, label: string) => {
-      setLoading(true);
-      try {
-        await op();
-        await resignTrust();
-      } catch (e) {
-        logger.error(`Failed to ${label}:`, e);
-      } finally {
-        setLoading(false);
-      }
-    },
-    [resignTrust],
-  );
 
   const addDependency = useCallback(
     async (pkg: string) => {
       if (!pkg.trim()) return;
-      await withTrustResign(() => addCondaDepWasm(pkg.trim()), "add conda dependency");
+      await withLoading(() => addCondaDepWasm(pkg.trim()), "add conda dependency");
     },
-    [withTrustResign],
+    [withLoading],
   );
 
   const removeDependency = useCallback(
     async (pkg: string) => {
-      await withTrustResign(() => removeCondaDepWasm(pkg), "remove conda dependency");
+      await withLoading(() => removeCondaDepWasm(pkg), "remove conda dependency");
     },
-    [withTrustResign],
+    [withLoading],
   );
 
   // Remove the entire conda dependency section from notebook metadata
   const clearAllDependencies = useCallback(async () => {
-    await withTrustResign(() => clearCondaSection(), "clear conda dependencies");
-  }, [withTrustResign]);
+    await withLoading(() => clearCondaSection(), "clear conda dependencies");
+  }, [withLoading]);
 
   const setChannels = useCallback(
     async (channels: string[]) => {
-      await withTrustResign(() => setCondaChannelsWasm(channels), "set channels");
+      await withLoading(() => setCondaChannelsWasm(channels), "set channels");
     },
-    [withTrustResign],
+    [withLoading],
   );
 
   const setPython = useCallback(
     async (version: string | null) => {
-      await withTrustResign(() => setCondaPythonWasm(version), "set python version");
+      await withLoading(() => setCondaPythonWasm(version), "set python version");
     },
-    [withTrustResign],
+    [withLoading],
   );
 
   const hasDependencies = dependencies !== null && dependencies.dependencies.length > 0;

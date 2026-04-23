@@ -751,11 +751,37 @@ pub(crate) async fn check_and_update_trust_state(room: &NotebookRoom) {
 
     let new_trust = verify_trust_from_snapshot(&current_metadata);
 
-    // Check if trust state actually changed
     let current_status = {
         let ts = room.trust_state.read().await;
         ts.status.clone()
     };
+
+    // Auto re-sign: if the user has already approved this notebook, deps
+    // changes shouldn't flip it back to SignatureInvalid (which would kill
+    // the kernel). Re-compute the signature in place and keep the notebook
+    // Trusted. This covers both the UI-driven dep add path (primary case)
+    // and external file edits on an already-approved notebook.
+    if matches!(current_status, runt_trust::TrustStatus::Trusted)
+        && matches!(new_trust.status, runt_trust::TrustStatus::SignatureInvalid)
+    {
+        match resign_trusted_snapshot(room).await {
+            Ok(true) => {
+                // Fresh snapshot/state now reflect Trusted — nothing else to do.
+                return;
+            }
+            Ok(false) => {
+                // Nothing to re-sign (snapshot vanished). Fall through.
+            }
+            Err(e) => {
+                warn!(
+                    "[notebook-sync] Failed to auto re-sign trusted notebook, \
+                     falling back to SignatureInvalid: {}",
+                    e
+                );
+                // Fall through to the normal transition path.
+            }
+        }
+    }
 
     if current_status != new_trust.status {
         info!(
@@ -788,6 +814,43 @@ pub(crate) async fn check_and_update_trust_state(room: &NotebookRoom) {
             warn!("[runtime-state] {}", e);
         }
     }
+}
+
+/// Re-sign the notebook's current metadata with the daemon's trust key and
+/// write the new signature back into the Automerge doc. Used when deps have
+/// changed on a previously-Trusted notebook, so the user doesn't have to
+/// re-approve through the UI for every dependency edit.
+///
+/// Returns `Ok(true)` if a re-sign was applied, `Ok(false)` if there was
+/// nothing to sign (no metadata snapshot). Errors propagate so the caller
+/// can fall back to the normal SignatureInvalid transition.
+async fn resign_trusted_snapshot(room: &NotebookRoom) -> Result<bool, String> {
+    let mut doc = room.doc.write().await;
+
+    let Some(mut snapshot) = doc.get_metadata_snapshot() else {
+        return Ok(false);
+    };
+
+    let runt_value = serde_json::to_value(&snapshot.runt)
+        .map_err(|e| format!("serialize runt metadata: {}", e))?;
+    let mut additional = std::collections::HashMap::new();
+    additional.insert("runt".to_string(), runt_value);
+    let signature = runt_trust::sign_notebook_dependencies(&additional)?;
+
+    snapshot.runt.trust_signature = Some(signature);
+    snapshot.runt.trust_timestamp = Some(chrono::Utc::now().to_rfc3339());
+
+    doc.fork_and_merge(|fork| {
+        let _ = fork.set_metadata_snapshot(&snapshot);
+    });
+    drop(doc);
+
+    // Persist the new signature to disk so reopening after a restart keeps
+    // the notebook Trusted without another sync round-trip.
+    let _ = room.broadcasts.changed_tx.send(());
+
+    info!("[notebook-sync] Auto re-signed trusted notebook after deps change");
+    Ok(true)
 }
 
 /// Resolve the metadata snapshot for a notebook, trying the Automerge doc first
