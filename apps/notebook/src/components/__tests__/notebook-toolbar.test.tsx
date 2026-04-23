@@ -391,58 +391,33 @@ describe("NotebookToolbar", () => {
   describe("uv/conda ipykernel prompt", () => {
     const errorLifecycle: RuntimeLifecycle = { lifecycle: "Error" };
 
-    it("shows uv inline remediation when envSource=uv:inline, errorReason=missing_ipykernel", () => {
-      render(
-        <NotebookToolbar
-          {...baseProps}
-          runtime="python"
-          kernelStatus={KERNEL_STATUS.ERROR}
-          lifecycle={errorLifecycle}
-          errorReason={KERNEL_ERROR_REASON.MISSING_IPYKERNEL}
-          envSource="uv:inline"
-        />,
-      );
-      expect(
-        screen.getByText(/ipykernel missing from prepared uv environment/),
-      ).toBeInTheDocument();
-      expect(screen.getByText(/uv pip install ipykernel/)).toBeInTheDocument();
-    });
-
-    it("shows PEP 723 script-metadata remediation for uv:pep723", () => {
-      render(
-        <NotebookToolbar
-          {...baseProps}
-          runtime="python"
-          kernelStatus={KERNEL_STATUS.ERROR}
-          lifecycle={errorLifecycle}
-          errorReason={KERNEL_ERROR_REASON.MISSING_IPYKERNEL}
-          envSource="uv:pep723"
-        />,
-      );
-      expect(
-        screen.getByText(/ipykernel missing from PEP 723 script metadata/),
-      ).toBeInTheDocument();
-      // PEP 723 edits live in the inline `# /// script` block — must NOT
-      // direct users to notebook-level dependency edits.
-      expect(screen.queryByText(/notebook's dependencies/)).not.toBeInTheDocument();
-    });
-
-    it("shows conda inline remediation when envSource=conda:inline", () => {
-      render(
-        <NotebookToolbar
-          {...baseProps}
-          runtime="python"
-          kernelStatus={KERNEL_STATUS.ERROR}
-          lifecycle={errorLifecycle}
-          errorReason={KERNEL_ERROR_REASON.MISSING_IPYKERNEL}
-          envSource="conda:inline"
-        />,
-      );
-      expect(
-        screen.getByText(/ipykernel missing from prepared conda environment/),
-      ).toBeInTheDocument();
-      expect(screen.getByText(/conda install ipykernel/)).toBeInTheDocument();
-    });
+    // Inline / PEP 723 / inline conda all share the same "just restart"
+    // remediation — the daemon has already deleted the corrupt env dir
+    // and `prepare_*_inline_env` auto-includes ipykernel in its install
+    // set, so the next launch rebuilds successfully. The banner must
+    // NOT ask users to edit deps (a no-op) or run install commands
+    // against the env (which no longer exists).
+    for (const envSource of ["uv:inline", "uv:pep723", "conda:inline"] as const) {
+      it(`shows "restart to rebuild" prompt for envSource=${envSource}`, () => {
+        render(
+          <NotebookToolbar
+            {...baseProps}
+            runtime="python"
+            kernelStatus={KERNEL_STATUS.ERROR}
+            lifecycle={errorLifecycle}
+            errorReason={KERNEL_ERROR_REASON.MISSING_IPYKERNEL}
+            envSource={envSource}
+          />,
+        );
+        expect(screen.getByText(/Environment cache was corrupt/)).toBeInTheDocument();
+        expect(screen.getByText(/Click Restart to rebuild/)).toBeInTheDocument();
+        // Backends already rebuild these envs — no user dep edits needed.
+        expect(screen.queryByText(/notebook's dependencies/)).not.toBeInTheDocument();
+        expect(screen.queryByText(/uv pip install/)).not.toBeInTheDocument();
+        expect(screen.queryByText(/conda install/)).not.toBeInTheDocument();
+        expect(screen.queryByText(/# \/\/\/ script/)).not.toBeInTheDocument();
+      });
+    }
 
     it("does not render any prompt for uv:pyproject (self-heals via uv run --with ipykernel)", () => {
       render(

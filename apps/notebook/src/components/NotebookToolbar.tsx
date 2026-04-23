@@ -409,9 +409,19 @@ export function NotebookToolbar({
 /** Remediation copy for `KernelErrorReason::MissingIpykernel`, branched by
  * env source. Returns `null` for env sources the daemon does not gate on
  * (prewarmed pools, uv:pyproject, conda:env_yml, deno) — those either
- * self-heal at launch or should never reach this state. */
+ * self-heal at launch or should never reach this state.
+ *
+ * For inline/PEP 723 envs the daemon has already deleted the corrupt
+ * cache dir; `prepare_*_inline_env` always includes `ipykernel` in its
+ * install set, so the next launch rebuilds correctly. The banner tells
+ * users exactly that instead of sending them to edit deps that already
+ * had nothing wrong with them.
+ *
+ * For pixi:toml the daemon does NOT delete anything — pixi manages its
+ * own env and the user's `pixi.toml` genuinely needs editing. */
 function renderMissingIpykernelPrompt(envSource: string): ReactElement | null {
-  // Pixi project: the .toml is the source of truth.
+  // Pixi project: the .toml is the source of truth; user must add
+  // ipykernel explicitly.
   if (envSource.startsWith("pixi:")) {
     return (
       <MissingIpykernelBanner
@@ -425,52 +435,13 @@ function renderMissingIpykernelPrompt(envSource: string): ReactElement | null {
       />
     );
   }
-  // Inline UV dependencies — edit notebook-level deps.
-  if (envSource === "uv:inline") {
+  // Inline / PEP 723 / inline conda: daemon deleted the stale env;
+  // the next launch rebuilds with ipykernel. No user deps edit needed.
+  if (envSource === "uv:inline" || envSource === "uv:pep723" || envSource === "conda:inline") {
     return (
       <MissingIpykernelBanner
-        headline="ipykernel missing from prepared uv environment."
-        instruction={
-          <>
-            Add <code className="rounded bg-amber-500/20 px-1">ipykernel</code> to the notebook's
-            dependencies (or run{" "}
-            <code className="rounded bg-amber-500/20 px-1">uv pip install ipykernel</code> in the
-            env) and restart.
-          </>
-        }
-      />
-    );
-  }
-  // PEP 723 — deps live in the `# /// script` inline metadata block in
-  // a cell, not in notebook metadata. Editing notebook deps is ignored
-  // on the next launch.
-  if (envSource === "uv:pep723") {
-    return (
-      <MissingIpykernelBanner
-        headline="ipykernel missing from PEP 723 script metadata."
-        instruction={
-          <>
-            Add <code className="rounded bg-amber-500/20 px-1">ipykernel</code> to the inline{" "}
-            <code className="rounded bg-amber-500/20 px-1">{"# /// script"}</code> dependency block
-            in your notebook and restart.
-          </>
-        }
-      />
-    );
-  }
-  // Inline Conda dependencies.
-  if (envSource === "conda:inline") {
-    return (
-      <MissingIpykernelBanner
-        headline="ipykernel missing from prepared conda environment."
-        instruction={
-          <>
-            Add <code className="rounded bg-amber-500/20 px-1">ipykernel</code> to the notebook's
-            dependencies (or run{" "}
-            <code className="rounded bg-amber-500/20 px-1">conda install ipykernel</code> in the
-            env) and restart.
-          </>
-        }
+        headline="Environment cache was corrupt."
+        instruction={<>Click Restart to rebuild the environment.</>}
       />
     );
   }
