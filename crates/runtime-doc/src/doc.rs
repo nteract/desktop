@@ -661,21 +661,6 @@ impl RuntimeStateDoc {
             })
     }
 
-    /// Read a string scalar from a map object, returning `None` only when
-    /// the key itself is absent. Unlike `read_opt_str`, an explicit `""`
-    /// value returns `Some("")` so callers can distinguish "scaffolded
-    /// but unset" from "key not present at all."
-    fn read_str_if_present(&self, obj: &automerge::ObjId, key: &str) -> Option<String> {
-        let (value, _) = self.doc.get(obj, key).ok().flatten()?;
-        match value {
-            Value::Scalar(s) => match s.as_ref() {
-                ScalarValue::Str(s) => Some(s.to_string()),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
     /// Read a bool scalar from a map object.
     fn read_bool(&self, obj: &automerge::ObjId, key: &str) -> bool {
         self.doc
@@ -2051,11 +2036,11 @@ impl RuntimeStateDoc {
                 );
                 // error_reason is Option<String> so callers can tell "no
                 // kernel map at all" (None) from "scaffolded but unset"
-                // (Some("")). read_str_if_present returns None only when
-                // the key itself is absent — important for docs scaffolded
-                // before Phase 2 added the key, which have the `kernel`
-                // map but no `error_reason` field yet.
-                let error_reason = self.read_str_if_present(k, "error_reason");
+                // (Some("")). automunge::read_str_if_present returns None
+                // only when the key itself is absent, important for docs
+                // scaffolded before Phase 2 added the key (they have the
+                // `kernel` map but no `error_reason` field yet).
+                let error_reason = automunge::read_str_if_present(&self.doc, k, "error_reason");
                 KernelState {
                     status,
                     starting_phase,
