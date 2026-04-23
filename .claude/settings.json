@@ -10,6 +10,21 @@
       }
     }
   },
+  "permissions": {
+    "allow": [
+      "Bash(cargo xtask *)",
+      "Bash(cargo build *)",
+      "Bash(cargo check *)",
+      "Bash(cargo clippy *)",
+      "Bash(cargo fmt *)",
+      "Bash(cargo test *)",
+      "Bash(voice *)",
+      "Bash(git fetch *)",
+      "Bash(mkdir *)",
+      "Bash(wasm-pack *)",
+      "mcp__nteract-dev"
+    ]
+  },
   "hooks": {
     "PostToolUse": [
       {
