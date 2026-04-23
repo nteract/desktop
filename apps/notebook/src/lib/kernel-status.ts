@@ -7,17 +7,31 @@
 export {
   isKernelStatus,
   KERNEL_STATUS,
-  type KernelStatus,
+  RUNTIME_STATUS,
+  runtimeStatusKey,
   type KernelActivity,
+  type KernelStatus,
   type RuntimeLifecycle,
+  type RuntimeStatusKey,
 } from "runtimed";
 
 import {
   KERNEL_STATUS,
+  RUNTIME_STATUS,
+  runtimeStatusKey,
   type KernelStatus,
   type RuntimeLifecycle,
+  type RuntimeStatusKey,
 } from "runtimed";
 
+/**
+ * User-facing label for each compressed [`KernelStatus`].
+ *
+ * Covers the legacy 7-string vocabulary. For the expanded 11-key
+ * runtime vocabulary (which preserves every starting sub-phase and the
+ * Running(Unknown) case), use [`RUNTIME_STATUS_LABELS`] via
+ * [`getLifecycleLabel`] instead.
+ */
 export const KERNEL_STATUS_LABELS: Record<KernelStatus, string> = {
   [KERNEL_STATUS.NOT_STARTED]: "initializing",
   [KERNEL_STATUS.STARTING]: "starting",
@@ -26,6 +40,28 @@ export const KERNEL_STATUS_LABELS: Record<KernelStatus, string> = {
   [KERNEL_STATUS.ERROR]: "error",
   [KERNEL_STATUS.SHUTDOWN]: "shutdown",
   [KERNEL_STATUS.AWAITING_TRUST]: "awaiting approval",
+};
+
+/**
+ * User-facing label for each expanded [`RuntimeStatusKey`].
+ *
+ * Keyed by the flat runtime vocabulary so that every lifecycle variant
+ * (including each starting sub-phase and all three `Running(_)` cases)
+ * gets a dedicated label. Exhaustive `Record` — adding a variant to
+ * `RuntimeLifecycle` will fail to typecheck here until a label is added.
+ */
+export const RUNTIME_STATUS_LABELS: Record<RuntimeStatusKey, string> = {
+  [RUNTIME_STATUS.NOT_STARTED]: "initializing",
+  [RUNTIME_STATUS.AWAITING_TRUST]: "awaiting approval",
+  [RUNTIME_STATUS.RESOLVING]: "resolving environment",
+  [RUNTIME_STATUS.PREPARING_ENV]: "preparing environment",
+  [RUNTIME_STATUS.LAUNCHING]: "launching kernel",
+  [RUNTIME_STATUS.CONNECTING]: "connecting to kernel",
+  [RUNTIME_STATUS.RUNNING_IDLE]: "idle",
+  [RUNTIME_STATUS.RUNNING_BUSY]: "busy",
+  [RUNTIME_STATUS.RUNNING_UNKNOWN]: "running",
+  [RUNTIME_STATUS.ERROR]: "error",
+  [RUNTIME_STATUS.SHUTDOWN]: "shutdown",
 };
 
 const STARTING_PHASE_LABELS: Record<string, string> = {
@@ -52,34 +88,17 @@ export function getKernelStatusLabel(
 /**
  * Render a user-facing label for the typed runtime lifecycle.
  *
- * Uses the full typed shape: each starting sub-phase and the Error-with-
- * reason case get their own label. `errorReason` is consulted only when
- * the lifecycle is `Error`; other states ignore it.
+ * Uses the expanded vocabulary — each starting sub-phase and each
+ * `Running(_)` activity get their own label. The `Error` case appends
+ * the typed reason when one is present; other states ignore `errorReason`.
  */
 export function getLifecycleLabel(
   lifecycle: RuntimeLifecycle,
   errorReason: string | null,
 ): string {
-  switch (lifecycle.lifecycle) {
-    case "NotStarted":
-      return "initializing";
-    case "AwaitingTrust":
-      return "awaiting approval";
-    case "Resolving":
-      return "resolving environment";
-    case "PreparingEnv":
-      return "preparing environment";
-    case "Launching":
-      return "launching kernel";
-    case "Connecting":
-      return "connecting to kernel";
-    case "Running":
-      return lifecycle.activity === "Busy" ? "busy" : "idle";
-    case "Error":
-      return errorReason && errorReason.length > 0
-        ? `error: ${errorReason}`
-        : "error";
-    case "Shutdown":
-      return "shutdown";
+  const key = runtimeStatusKey(lifecycle);
+  if (key === RUNTIME_STATUS.ERROR && errorReason && errorReason.length > 0) {
+    return `error: ${errorReason}`;
   }
+  return RUNTIME_STATUS_LABELS[key];
 }

@@ -148,7 +148,9 @@ export function throttleBusyStatus(
  * `"not_started"`, `"awaiting_trust"`).
  *
  * Kept for bridging throttleBusyStatus and other legacy-shape consumers.
- * New code should match on `RuntimeLifecycle` directly.
+ * New code should match on `RuntimeLifecycle` directly, or — for a flat
+ * string key with every sub-state preserved — project through
+ * [`runtimeStatusKey`] instead.
  */
 export function lifecycleToLegacyStatus(lc: RuntimeState["kernel"]["lifecycle"]): KernelStatus {
   switch (lc.lifecycle) {
@@ -167,6 +169,76 @@ export function lifecycleToLegacyStatus(lc: RuntimeState["kernel"]["lifecycle"])
       return KERNEL_STATUS.ERROR;
     case "Shutdown":
       return KERNEL_STATUS.SHUTDOWN;
+  }
+}
+
+// ── Expanded runtime status vocabulary ──────────────────────────────
+
+/**
+ * One flat string key per runtime state.
+ *
+ * Unlike the compressed [`KERNEL_STATUS`] vocabulary (where the four
+ * starting sub-phases collapse to `"starting"` and `Running`'s activity
+ * is a separate axis), `RUNTIME_STATUS` preserves every variant with its
+ * own key. The `Running` cases are prefixed `"running-"` so the family
+ * relationship is grep-able and so table lookups can be exhaustive
+ * `Record<RuntimeStatusKey, X>` without a special-case `Unknown` duck.
+ *
+ * Use this for CSS classes, icon tables, label tables, and any other
+ * lookup keyed on "what is the runtime doing right now." Use
+ * [`KERNEL_STATUS`] only when interoperating with the compressed legacy
+ * wire vocabulary.
+ */
+export const RUNTIME_STATUS = {
+  NOT_STARTED: "not_started",
+  AWAITING_TRUST: "awaiting_trust",
+  RESOLVING: "resolving",
+  PREPARING_ENV: "preparing_env",
+  LAUNCHING: "launching",
+  CONNECTING: "connecting",
+  RUNNING_IDLE: "running-idle",
+  RUNNING_BUSY: "running-busy",
+  RUNNING_UNKNOWN: "running-unknown",
+  ERROR: "error",
+  SHUTDOWN: "shutdown",
+} as const;
+
+export type RuntimeStatusKey = (typeof RUNTIME_STATUS)[keyof typeof RUNTIME_STATUS];
+
+/**
+ * Project a typed RuntimeLifecycle to its flat [`RuntimeStatusKey`].
+ *
+ * Exhaustive over both the lifecycle union and the inner activity, so
+ * adding a variant will fail to typecheck here until handled.
+ */
+export function runtimeStatusKey(lc: RuntimeState["kernel"]["lifecycle"]): RuntimeStatusKey {
+  switch (lc.lifecycle) {
+    case "NotStarted":
+      return RUNTIME_STATUS.NOT_STARTED;
+    case "AwaitingTrust":
+      return RUNTIME_STATUS.AWAITING_TRUST;
+    case "Resolving":
+      return RUNTIME_STATUS.RESOLVING;
+    case "PreparingEnv":
+      return RUNTIME_STATUS.PREPARING_ENV;
+    case "Launching":
+      return RUNTIME_STATUS.LAUNCHING;
+    case "Connecting":
+      return RUNTIME_STATUS.CONNECTING;
+    case "Running":
+      switch (lc.activity) {
+        case "Idle":
+          return RUNTIME_STATUS.RUNNING_IDLE;
+        case "Busy":
+          return RUNTIME_STATUS.RUNNING_BUSY;
+        case "Unknown":
+          return RUNTIME_STATUS.RUNNING_UNKNOWN;
+      }
+    // eslint-disable-next-line no-fallthrough -- inner switch is exhaustive
+    case "Error":
+      return RUNTIME_STATUS.ERROR;
+    case "Shutdown":
+      return RUNTIME_STATUS.SHUTDOWN;
   }
 }
 

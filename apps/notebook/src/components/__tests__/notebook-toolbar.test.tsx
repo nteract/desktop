@@ -12,6 +12,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vite-plus/test";
 import type { EnvProgressState } from "../../hooks/useEnvProgress";
+import { KERNEL_ERROR_REASON } from "runtimed";
 import { KERNEL_STATUS, type KernelStatus, type RuntimeLifecycle } from "../../lib/kernel-status";
 import { NotebookToolbar } from "../NotebookToolbar";
 
@@ -322,7 +323,7 @@ describe("NotebookToolbar", () => {
           runtime="python"
           kernelStatus={KERNEL_STATUS.ERROR}
           lifecycle={errorLifecycle}
-          errorReason="missing_ipykernel"
+          errorReason={KERNEL_ERROR_REASON.MISSING_IPYKERNEL}
           envSource="pixi:toml"
         />,
       );
@@ -349,7 +350,7 @@ describe("NotebookToolbar", () => {
           runtime="deno"
           kernelStatus={KERNEL_STATUS.ERROR}
           lifecycle={errorLifecycle}
-          errorReason="missing_ipykernel"
+          errorReason={KERNEL_ERROR_REASON.MISSING_IPYKERNEL}
           envSource="pixi:toml"
         />,
       );
@@ -363,7 +364,7 @@ describe("NotebookToolbar", () => {
           runtime="python"
           kernelStatus={KERNEL_STATUS.IDLE}
           lifecycle={idleLifecycle}
-          errorReason="missing_ipykernel"
+          errorReason={KERNEL_ERROR_REASON.MISSING_IPYKERNEL}
           envSource="pixi:toml"
         />,
       );
@@ -377,7 +378,7 @@ describe("NotebookToolbar", () => {
           runtime="python"
           kernelStatus={KERNEL_STATUS.ERROR}
           lifecycle={errorLifecycle}
-          errorReason="missing_ipykernel"
+          errorReason={KERNEL_ERROR_REASON.MISSING_IPYKERNEL}
           envSource="uv:prewarmed"
         />,
       );

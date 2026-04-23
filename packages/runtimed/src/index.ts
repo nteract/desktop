@@ -39,7 +39,9 @@ export {
   type EnvState,
   type ExecutionState,
   type ExecutionTransition,
+  KERNEL_ERROR_REASON,
   type KernelActivity,
+  type KernelErrorReasonKey,
   type KernelState,
   type QueueEntry,
   type QueueState,
@@ -96,6 +98,9 @@ export {
   type KernelInfo,
   type KernelStatus,
   lifecycleToLegacyStatus,
+  RUNTIME_STATUS,
+  runtimeStatusKey,
+  type RuntimeStatusKey,
   throttleBusyStatus,
 } from "./derived-state";
 

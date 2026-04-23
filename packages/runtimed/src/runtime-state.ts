@@ -16,6 +16,25 @@
 export type KernelActivity = "Unknown" | "Idle" | "Busy";
 
 /**
+ * Typed reason accompanying a [`RuntimeLifecycle`] `Error` transition.
+ *
+ * Mirror of `runtime_doc::KernelErrorReason`. The daemon writes one of
+ * these strings to `kernel.error_reason`; readers can use the exported
+ * [`KERNEL_ERROR_REASON`] constants instead of bare string literals when
+ * gating UI on a specific cause.
+ */
+export type KernelErrorReasonKey = "missing_ipykernel";
+
+/**
+ * Typed error-reason strings. Mirrors
+ * `KernelErrorReason::MissingIpykernel.as_str()` on the Rust side —
+ * both ends use the same literal so the CRDT value is unambiguous.
+ */
+export const KERNEL_ERROR_REASON = {
+  MISSING_IPYKERNEL: "missing_ipykernel",
+} as const satisfies Record<string, KernelErrorReasonKey>;
+
+/**
  * Lifecycle of a runtime, from not-started through running to shutdown.
  *
  * Discriminated union on the `lifecycle` tag, matching Rust's serde
