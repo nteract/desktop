@@ -73,7 +73,7 @@ use automerge::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::{KernelActivity, RuntimeLifecycle, StreamOutputState};
+use crate::{KernelActivity, KernelErrorReason, RuntimeLifecycle, StreamOutputState};
 
 // ── Snapshot types for reading/comparing state ──────────────────────
 
@@ -860,25 +860,41 @@ impl RuntimeStateDoc {
     /// Write a lifecycle transition and simultaneously set or clear
     /// `error_reason`.
     ///
-    /// - `Some("reason")` records the diagnosis.
+    /// - `Some(reason)` records the diagnosis — typed so we can't typo
+    ///   the reason string, and so the legacy-phase mirror gets the
+    ///   correct value from a single source of truth ([`KernelErrorReason::as_str`]).
     /// - `None` clears the field to `""`.
-    /// - `Some("")` explicitly writes an empty string — same CRDT value
-    ///   as `None` but signals intent. Readers should treat both as
-    ///   "no reason."
     ///
-    /// Typical use: `set_lifecycle_with_error(Error, Some("missing_ipykernel"))`
-    /// when transitioning into an Error state with a specific cause, and
-    /// `set_lifecycle_with_error(NotStarted, None)` when resetting out of
-    /// Error.
+    /// When `lifecycle == Error && reason.is_some()`, the reason is
+    /// ALSO mirrored into the legacy `starting_phase` key. Pre-typed-
+    /// writer code encoded error reasons via
+    /// `set_kernel_status("error") + set_starting_phase("missing_ipykernel")`,
+    /// and the frontend's pixi-install prompt gates on that legacy
+    /// phase. Keeping the mirror lets unmigrated readers continue to
+    /// work until Phase 5 flips them to the typed `error_reason` field.
+    ///
+    /// Typical use:
+    /// - `set_lifecycle_with_error(Error, Some(KernelErrorReason::MissingIpykernel))`
+    ///   when transitioning into Error with a specific cause.
+    /// - `set_lifecycle_with_error(NotStarted, None)` when resetting out
+    ///   of Error.
     pub fn set_lifecycle_with_error(
         &mut self,
         lifecycle: &RuntimeLifecycle,
-        error_reason: Option<&str>,
+        reason: Option<KernelErrorReason>,
     ) -> Result<(), RuntimeStateError> {
         self.set_lifecycle(lifecycle)?;
         let kernel = self.scaffold_map("kernel")?;
-        self.doc
-            .put(&kernel, "error_reason", error_reason.unwrap_or(""))?;
+        let reason_str = reason.map(|r| r.as_str()).unwrap_or("");
+        self.doc.put(&kernel, "error_reason", reason_str)?;
+        // Legacy-phase mirror for the Error transition. The pre-Phase-3
+        // channel used `starting_phase` to carry the reason. Only
+        // overwrite on Error — a non-Error lifecycle would already have
+        // a phase written by the `set_lifecycle` mirror and we don't
+        // want to step on it.
+        if matches!(lifecycle, RuntimeLifecycle::Error) && reason.is_some() {
+            self.doc.put(&kernel, "starting_phase", reason_str)?;
+        }
         Ok(())
     }
 
@@ -909,14 +925,20 @@ impl RuntimeStateDoc {
             KernelActivity::Busy => "busy",
             KernelActivity::Idle | KernelActivity::Unknown => "idle",
         };
-        // Dual-shape throttle: skip only when BOTH the typed activity AND
-        // the mirrored legacy status already match. If a legacy writer
-        // (set_kernel_status) ran in between and drifted the legacy key
-        // out of sync, we still need to re-mirror it here — otherwise
-        // unmigrated readers stay stuck on a stale status.
+        // Dual-shape throttle: skip only when the typed activity, the
+        // mirrored legacy status, AND the legacy starting_phase are all
+        // already at their target values. set_kernel_status itself clears
+        // starting_phase whenever it flips to a non-starting status; we
+        // keep that invariant so unmigrated readers don't observe
+        // status="idle"/"busy" alongside a stale phase like "connecting"
+        // left over from the launch path.
         let current_activity = self.read_str(&kernel, "activity");
         let current_status = self.read_str(&kernel, "status");
-        if current_activity == activity.as_str() && current_status == legacy_status {
+        let current_phase = self.read_str(&kernel, "starting_phase");
+        if current_activity == activity.as_str()
+            && current_status == legacy_status
+            && current_phase.is_empty()
+        {
             return Ok(());
         }
         if current_activity != activity.as_str() {
@@ -924,6 +946,9 @@ impl RuntimeStateDoc {
         }
         if current_status != legacy_status {
             self.doc.put(&kernel, "status", legacy_status)?;
+        }
+        if !current_phase.is_empty() {
+            self.doc.put(&kernel, "starting_phase", "")?;
         }
         Ok(())
     }
@@ -4588,7 +4613,10 @@ mod tests {
     #[test]
     fn set_lifecycle_preserves_error_reason() -> Result<(), RuntimeStateError> {
         let mut doc = RuntimeStateDoc::new();
-        doc.set_lifecycle_with_error(&RuntimeLifecycle::Error, Some("missing_ipykernel"))?;
+        doc.set_lifecycle_with_error(
+            &RuntimeLifecycle::Error,
+            Some(KernelErrorReason::MissingIpykernel),
+        )?;
         assert_eq!(
             doc.read_state().kernel.error_reason.as_deref(),
             Some("missing_ipykernel")
@@ -4615,38 +4643,118 @@ mod tests {
     #[test]
     fn set_lifecycle_with_error_clears_on_none() -> Result<(), RuntimeStateError> {
         let mut doc = RuntimeStateDoc::new();
-        doc.set_lifecycle_with_error(&RuntimeLifecycle::Error, Some("oops"))?;
+        doc.set_lifecycle_with_error(
+            &RuntimeLifecycle::Error,
+            Some(KernelErrorReason::MissingIpykernel),
+        )?;
         doc.set_lifecycle_with_error(&RuntimeLifecycle::NotStarted, None)?;
         assert_eq!(doc.read_state().kernel.error_reason.as_deref(), Some(""));
         Ok(())
     }
 
     #[test]
-    fn set_lifecycle_with_error_empty_and_none_write_same_value() -> Result<(), RuntimeStateError> {
-        // Semantic intent differs (explicit empty vs clear), CRDT value is
-        // identical. Pin this so a future writer that tries to distinguish
-        // them fails visibly.
-        let mut doc_a = RuntimeStateDoc::new();
-        doc_a.set_lifecycle_with_error(&RuntimeLifecycle::Error, Some(""))?;
-
-        let mut doc_b = RuntimeStateDoc::new();
-        doc_b.set_lifecycle_with_error(&RuntimeLifecycle::Error, None)?;
-
+    fn set_lifecycle_with_error_mirrors_reason_into_starting_phase() -> Result<(), RuntimeStateError>
+    {
+        // The pre-Phase-3 channel encoded reasons via `starting_phase`.
+        // NotebookToolbar's pixi-install prompt still gates on that legacy
+        // phase. set_lifecycle_with_error must mirror the reason there
+        // when lifecycle is Error so the prompt continues to fire until
+        // Phase 5 migrates the frontend.
+        let mut doc = RuntimeStateDoc::new();
+        doc.set_lifecycle_with_error(
+            &RuntimeLifecycle::Error,
+            Some(KernelErrorReason::MissingIpykernel),
+        )?;
+        let s = doc.read_state().kernel;
+        assert_eq!(s.lifecycle, RuntimeLifecycle::Error);
+        assert_eq!(s.status, "error");
         assert_eq!(
-            doc_a.read_state().kernel.error_reason,
-            doc_b.read_state().kernel.error_reason
+            s.starting_phase, "missing_ipykernel",
+            "legacy pixi-install prompt gate must continue to fire via starting_phase"
+        );
+        assert_eq!(s.error_reason.as_deref(), Some("missing_ipykernel"));
+        Ok(())
+    }
+
+    #[test]
+    fn set_lifecycle_with_error_empty_reason_leaves_phase_empty() -> Result<(), RuntimeStateError> {
+        // Error with no reason: starting_phase stays "" (set_lifecycle's
+        // default Error mirror). We only overwrite the phase when the
+        // reason is Some.
+        let mut doc = RuntimeStateDoc::new();
+        doc.set_lifecycle_with_error(&RuntimeLifecycle::Error, None)?;
+        let s = doc.read_state().kernel;
+        assert_eq!(s.status, "error");
+        assert_eq!(s.starting_phase, "");
+        assert_eq!(s.error_reason.as_deref(), Some(""));
+        Ok(())
+    }
+
+    #[test]
+    fn set_lifecycle_with_error_non_error_with_reason_does_not_touch_phase(
+    ) -> Result<(), RuntimeStateError> {
+        // A non-Error lifecycle with a Some(reason) argument is unusual
+        // but harmless. set_lifecycle's default mirror already wrote the
+        // variant's proper phase (e.g. "launching"); we must not clobber
+        // it just because a reason was supplied.
+        let mut doc = RuntimeStateDoc::new();
+        doc.set_lifecycle_with_error(
+            &RuntimeLifecycle::Launching,
+            Some(KernelErrorReason::MissingIpykernel),
+        )?;
+        let s = doc.read_state().kernel;
+        assert_eq!(s.status, "starting");
+        assert_eq!(s.starting_phase, "launching");
+        // error_reason is still recorded even for non-Error — harmless
+        // metadata, and it keeps the writer simple (no "only record
+        // reason when lifecycle is Error" special case at the
+        // error_reason key).
+        assert_eq!(s.error_reason.as_deref(), Some("missing_ipykernel"));
+        Ok(())
+    }
+
+    #[test]
+    fn set_lifecycle_with_error_second_call_updates_reason() -> Result<(), RuntimeStateError> {
+        // Only one variant today; exercise the overwrite path by toggling
+        // Some(MissingIpykernel) -> None -> Some(MissingIpykernel).
+        let mut doc = RuntimeStateDoc::new();
+        doc.set_lifecycle_with_error(
+            &RuntimeLifecycle::Error,
+            Some(KernelErrorReason::MissingIpykernel),
+        )?;
+        assert_eq!(
+            doc.read_state().kernel.error_reason.as_deref(),
+            Some("missing_ipykernel")
+        );
+        doc.set_lifecycle_with_error(&RuntimeLifecycle::Error, None)?;
+        assert_eq!(doc.read_state().kernel.error_reason.as_deref(), Some(""));
+        doc.set_lifecycle_with_error(
+            &RuntimeLifecycle::Error,
+            Some(KernelErrorReason::MissingIpykernel),
+        )?;
+        assert_eq!(
+            doc.read_state().kernel.error_reason.as_deref(),
+            Some("missing_ipykernel")
         );
         Ok(())
     }
 
     #[test]
-    fn set_lifecycle_with_error_second_call_overwrites() -> Result<(), RuntimeStateError> {
+    fn set_activity_clears_stale_starting_phase() -> Result<(), RuntimeStateError> {
+        // After the string-shape launch path ends with
+        // set_starting_phase("connecting"), the first IOPub set_activity
+        // must clear the stale phase so unmigrated readers don't see
+        // status="idle" alongside starting_phase="connecting".
         let mut doc = RuntimeStateDoc::new();
-        doc.set_lifecycle_with_error(&RuntimeLifecycle::Error, Some("first"))?;
-        doc.set_lifecycle_with_error(&RuntimeLifecycle::Error, Some("second"))?;
+        doc.set_kernel_status("starting")?;
+        doc.set_starting_phase("connecting")?;
+
+        doc.set_activity(KernelActivity::Idle)?;
+        let s = doc.read_state().kernel;
+        assert_eq!(s.status, "idle");
         assert_eq!(
-            doc.read_state().kernel.error_reason.as_deref(),
-            Some("second")
+            s.starting_phase, "",
+            "stale starting_phase must be cleared when set_activity mirrors to a non-starting status"
         );
         Ok(())
     }
@@ -4809,14 +4917,20 @@ mod tests {
     }
 
     #[test]
-    fn set_lifecycle_error_writes_error_status_no_phase() -> Result<(), RuntimeStateError> {
+    fn set_lifecycle_error_with_reason_writes_all_three_shapes() -> Result<(), RuntimeStateError> {
+        // Writing Error + reason must populate the typed `error_reason`
+        // key, the string `status = "error"`, AND mirror the reason into
+        // the legacy `starting_phase` for NotebookToolbar compat.
         let mut doc = RuntimeStateDoc::new();
-        doc.set_lifecycle_with_error(&RuntimeLifecycle::Error, Some("kernel_died"))?;
+        doc.set_lifecycle_with_error(
+            &RuntimeLifecycle::Error,
+            Some(KernelErrorReason::MissingIpykernel),
+        )?;
         let s = doc.read_state().kernel;
         assert_eq!(s.lifecycle, RuntimeLifecycle::Error);
         assert_eq!(s.status, "error");
-        assert_eq!(s.starting_phase, "");
-        assert_eq!(s.error_reason.as_deref(), Some("kernel_died"));
+        assert_eq!(s.starting_phase, "missing_ipykernel");
+        assert_eq!(s.error_reason.as_deref(), Some("missing_ipykernel"));
         Ok(())
     }
 

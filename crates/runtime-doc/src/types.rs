@@ -39,6 +39,46 @@ impl KernelActivity {
     }
 }
 
+/// Typed reason accompanying a [`RuntimeLifecycle::Error`] transition.
+///
+/// Closed enum by design — every error reason the daemon surfaces gets
+/// its own variant. This is deliberately more rigid than a free-form
+/// string: reasons rarely change, and the compile-time guarantee that
+/// the frontend and daemon agree on the vocabulary is worth the cost
+/// of editing the enum.
+///
+/// The single [`as_str`](Self::as_str) method returns the string that
+/// serves BOTH as the CRDT `kernel.error_reason` value AND as the
+/// legacy `kernel.starting_phase` mirror (see
+/// `RuntimeStateDoc::set_lifecycle_with_error`). The two happen to be
+/// the same string because that's how the pre-Phase-3 channel encoded
+/// these reasons — `set_kernel_status("error") + set_starting_phase(
+/// "missing_ipykernel")`. Collapsing both into one method keeps the
+/// string-level contract in one place. If a future variant needs
+/// distinct values for the two channels, split into
+/// `as_crdt_str` / `as_legacy_phase`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum KernelErrorReason {
+    /// Pixi-managed environment is missing the `ipykernel` package.
+    /// `NotebookToolbar` gates its "install ipykernel" prompt on this.
+    MissingIpykernel,
+}
+
+impl KernelErrorReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::MissingIpykernel => "missing_ipykernel",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "missing_ipykernel" => Some(Self::MissingIpykernel),
+            _ => None,
+        }
+    }
+}
+
 /// Lifecycle of a runtime, from not-started through running to shutdown.
 ///
 /// Replaces the string-valued `KernelState.status` + `starting_phase` pair
@@ -237,6 +277,46 @@ mod tests {
         assert_eq!(KernelActivity::parse("Busy"), Some(KernelActivity::Busy));
         assert_eq!(KernelActivity::parse("nope"), None);
         assert_eq!(KernelActivity::parse(""), None);
+    }
+
+    #[test]
+    fn error_reason_as_str() {
+        assert_eq!(
+            KernelErrorReason::MissingIpykernel.as_str(),
+            "missing_ipykernel"
+        );
+    }
+
+    #[test]
+    fn error_reason_parse() {
+        assert_eq!(
+            KernelErrorReason::parse("missing_ipykernel"),
+            Some(KernelErrorReason::MissingIpykernel)
+        );
+        assert_eq!(KernelErrorReason::parse(""), None);
+        assert_eq!(KernelErrorReason::parse("bogus"), None);
+        // Parse is case-sensitive — the CRDT and legacy phase channel
+        // both use exactly "missing_ipykernel".
+        assert_eq!(KernelErrorReason::parse("Missing_Ipykernel"), None);
+    }
+
+    #[test]
+    fn error_reason_as_str_round_trips_through_parse() {
+        let reasons = [KernelErrorReason::MissingIpykernel];
+        for r in reasons {
+            assert_eq!(KernelErrorReason::parse(r.as_str()), Some(r));
+        }
+    }
+
+    #[test]
+    fn error_reason_serde_round_trip() -> Result<(), serde_json::Error> {
+        // Variant-unit enums serialize as their variant name.
+        let r = KernelErrorReason::MissingIpykernel;
+        let json = serde_json::to_string(&r)?;
+        assert_eq!(json, r#""MissingIpykernel""#);
+        let back: KernelErrorReason = serde_json::from_str(&json)?;
+        assert_eq!(back, r);
+        Ok(())
     }
 
     #[test]
