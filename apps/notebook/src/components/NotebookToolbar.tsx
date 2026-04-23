@@ -103,7 +103,20 @@ export function NotebookToolbar({
     kernelStatus === KERNEL_STATUS.IDLE ||
     kernelStatus === KERNEL_STATUS.BUSY ||
     kernelStatus === KERNEL_STATUS.STARTING;
-  const kernelStatusText = getLifecycleLabel(lifecycle, errorReason);
+
+  // When the kernel is Running, use the throttled `kernelStatus` (which the
+  // parent hook smooths over sub-60ms busy/idle blips) instead of the raw
+  // lifecycle activity. For every other lifecycle variant the throttle
+  // doesn't apply, so we read the lifecycle directly to keep its richer
+  // sub-state labels (`"resolving environment"`, `"launching kernel"`, …).
+  const labelLifecycle: RuntimeLifecycle =
+    lifecycle.lifecycle === "Running"
+      ? {
+          lifecycle: "Running",
+          activity: kernelStatus === KERNEL_STATUS.BUSY ? "Busy" : "Idle",
+        }
+      : lifecycle;
+  const kernelStatusText = getLifecycleLabel(labelLifecycle, errorReason);
   const envErrorMessage = envProgress?.error ?? null;
   const envStatusText = envProgress?.statusText ?? kernelStatusText;
   const kernelStatusDescription = envProgress?.isActive
