@@ -451,11 +451,13 @@ mod tests {
     #[test]
     fn test_rotate_install_id_changes_id_and_clears_markers() {
         use crate::settings_doc::SyncedSettings;
-        let mut s = SyncedSettings::default();
-        s.install_id = "abc".to_string();
-        s.telemetry_last_daemon_ping_at = Some(111);
-        s.telemetry_last_app_ping_at = Some(222);
-        s.telemetry_last_mcp_ping_at = Some(333);
+        let mut s = SyncedSettings {
+            install_id: "abc".to_string(),
+            telemetry_last_daemon_ping_at: Some(111),
+            telemetry_last_app_ping_at: Some(222),
+            telemetry_last_mcp_ping_at: Some(333),
+            ..Default::default()
+        };
 
         let new_id = rotate_install_id_in(&mut s);
 

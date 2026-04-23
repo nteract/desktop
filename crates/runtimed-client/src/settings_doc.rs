@@ -1247,9 +1247,11 @@ mod tests {
 
     #[test]
     fn test_backfill_telemetry_consent_flips_for_onboarded_users() {
-        let mut s = SyncedSettings::default();
-        s.onboarding_completed = true;
-        s.telemetry_consent_recorded = false;
+        let mut s = SyncedSettings {
+            onboarding_completed: true,
+            telemetry_consent_recorded: false,
+            ..Default::default()
+        };
         backfill_telemetry_consent(&mut s);
         assert!(s.telemetry_consent_recorded);
     }
