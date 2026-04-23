@@ -13,19 +13,8 @@
  * cleaning up on unmount.
  */
 
-import type { RecordBatch, Schema } from "apache-arrow";
-import { RecordBatchReader } from "apache-arrow";
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  BooleanAccumulator,
-  CategoricalAccumulator,
-  detectColumnType,
-  formatCell,
-  NumericAccumulator,
-  type SummaryAccumulator,
-  TimestampAccumulator,
-} from "./accumulators";
-import { ensureModule, getModuleSync } from "./predicate";
+import { ensureModule, getModuleSync, loadIpc } from "./predicate";
 import {
   type Column,
   type ColumnFilter,
@@ -55,8 +44,6 @@ export type SiftTableProps = {
   /** Inline styles for the container div. */
   style?: React.CSSProperties;
 };
-
-import { autoWidth } from "./auto-width";
 
 // --- Format detection ---
 
@@ -230,55 +217,6 @@ function updateWasmSummaries(
   });
 }
 
-// --- Helpers ---
-
-function buildTableState(
-  schema: Schema,
-  typeOverrides: Record<string, ColumnType> = {},
-  columnOverrides: Record<string, Partial<Column>> = {},
-) {
-  const fieldNames = schema.fields.map((f) => f.name);
-
-  const columns: Column[] = schema.fields.map((field) => {
-    const colType = typeOverrides[field.name] ?? detectColumnType(field);
-    const overrides = columnOverrides[field.name];
-    return {
-      key: field.name,
-      label: overrides?.label ?? field.name,
-      width: overrides?.width ?? autoWidth(field.name, colType),
-      sortable: overrides?.sortable ?? true,
-      numeric: colType === "numeric",
-      columnType: colType,
-    };
-  });
-
-  const stringCols: string[][] = fieldNames.map(() => []);
-  const rawCols: unknown[][] = fieldNames.map(() => []);
-
-  const accumulators: SummaryAccumulator[] = columns.map((col, c) => {
-    switch (col.columnType) {
-      case "numeric":
-        return new NumericAccumulator();
-      case "timestamp":
-        return new TimestampAccumulator();
-      case "boolean":
-        return new BooleanAccumulator();
-      case "categorical":
-        return new CategoricalAccumulator(stringCols[c]);
-    }
-  });
-
-  const tableData: TableData = {
-    columns,
-    rowCount: 0,
-    getCell: (row, col) => stringCols[col][row],
-    getCellRaw: (row, col) => rawCols[col][row],
-    columnSummaries: columns.map(() => null),
-  };
-
-  return { columns, fieldNames, stringCols, rawCols, accumulators, tableData };
-}
-
 // --- Component ---
 
 export function SiftTable({
@@ -398,54 +336,46 @@ export function SiftTable({
     }
 
     async function loadArrowIpc(source: Response | ReadableStream<Uint8Array>) {
-      const reader = await RecordBatchReader.from(source);
-      await reader.open();
+      await ensureModule();
       if (cancelled) return;
 
-      const { columns, fieldNames, stringCols, rawCols, accumulators, tableData } = buildTableState(
-        reader.schema,
-        typeOverrides,
-        columnOverrides,
-      );
-
-      let totalRows = 0;
-
-      function appendBatch(batch: RecordBatch) {
-        const batchRows = batch.numRows;
-        const startRow = totalRows;
-        for (let c = 0; c < fieldNames.length; c++) {
-          const col = batch.getChild(fieldNames[c])!;
-          for (let r = 0; r < batchRows; r++) {
-            const val = col.get(r);
-            rawCols[c].push(val);
-            stringCols[c].push(formatCell(columns[c].columnType, val));
-          }
-          accumulators[c].add(rawCols[c], startRow, batchRows);
-        }
-        totalRows += batchRows;
-        tableData.rowCount = totalRows;
-        tableData.columnSummaries = accumulators.map((a) => a.snapshot(totalRows));
-      }
-
-      const firstResult = await reader.next();
+      const bytes =
+        source instanceof Response
+          ? new Uint8Array(await source.arrayBuffer())
+          : await streamToBytes(source);
       if (cancelled) return;
-      if (firstResult.done) {
-        setError("No data in file.");
-        setStatus("error");
-        return;
-      }
-      appendBatch(firstResult.value);
+
+      const handle = await loadIpc(bytes);
+      wasmHandle = handle;
+
+      const mod = getModuleSync();
+      const { tableData, columns, prefetchViewport } = createWasmTableData(handle, columnOverrides);
+      tableData.prefetchViewport = prefetchViewport;
+      tableData.recomputeSummaries = () => updateWasmSummaries(mod, handle, tableData, columns);
+      updateWasmSummaries(mod, handle, tableData, columns);
 
       if (cancelled) return;
       mountEngine(tableData);
       setStatus("ready");
-
-      for await (const batch of reader) {
-        if (cancelled) break;
-        appendBatch(batch);
-        engineRef.current?.onBatchAppended();
-      }
       engineRef.current?.setStreamingDone();
+    }
+
+    async function streamToBytes(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> {
+      const reader = stream.getReader();
+      const chunks: Uint8Array[] = [];
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+      }
+      const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
+      const result = new Uint8Array(totalLength);
+      let offset = 0;
+      for (const chunk of chunks) {
+        result.set(chunk, offset);
+        offset += chunk.length;
+      }
+      return result;
     }
 
     async function loadFromUrl() {
