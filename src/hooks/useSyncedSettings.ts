@@ -159,6 +159,13 @@ export function useSyncedSettings() {
   const [keepAliveSecs, setKeepAliveSecsState] = useState<number>(30);
   // Feature flags (auto-derived from FEATURE_FLAG_METADATA)
   const [featureFlags, setFeatureFlagsState] = useState<FeatureFlagValues>(FEATURE_FLAG_DEFAULTS);
+  // Telemetry state — surfaced to Settings → Privacy and the onboarding flow.
+  const [telemetryEnabled, setTelemetryEnabledState] = useState<boolean>(true);
+  const [telemetryConsentRecorded, setTelemetryConsentRecordedState] = useState<boolean>(false);
+  const [installId, setInstallIdState] = useState<string>("");
+  const [lastDaemonPingAt, setLastDaemonPingAtState] = useState<number | null>(null);
+  const [lastAppPingAt, setLastAppPingAtState] = useState<number | null>(null);
+  const [lastMcpPingAt, setLastMcpPingAtState] = useState<number | null>(null);
 
   // Load initial settings from daemon
   useEffect(() => {
@@ -194,6 +201,24 @@ export function useSyncedSettings() {
           setKeepAliveSecsState(settings.keep_alive_secs);
         }
         setFeatureFlagsState((prev) => readFeatureFlags(settings, prev));
+        if (typeof settings.telemetry_enabled === "boolean") {
+          setTelemetryEnabledState(settings.telemetry_enabled);
+        }
+        if (typeof settings.telemetry_consent_recorded === "boolean") {
+          setTelemetryConsentRecordedState(settings.telemetry_consent_recorded);
+        }
+        if (typeof settings.install_id === "string") {
+          setInstallIdState(settings.install_id);
+        }
+        // Pings are Option<u64> in Rust — bigint over the wire for large values.
+        const numOrBigint = (v: unknown): number | null => {
+          if (typeof v === "number") return v;
+          if (typeof v === "bigint") return Number(v);
+          return null;
+        };
+        setLastDaemonPingAtState(numOrBigint(settings.telemetry_last_daemon_ping_at));
+        setLastAppPingAtState(numOrBigint(settings.telemetry_last_app_ping_at));
+        setLastMcpPingAtState(numOrBigint(settings.telemetry_last_mcp_ping_at));
       })
       .catch(() => {
         // Daemon unavailable — defaults are fine
@@ -240,6 +265,16 @@ export function useSyncedSettings() {
         setKeepAliveSecsState(keep_alive_secs);
       }
       setFeatureFlagsState((prev) => readFeatureFlags(event.payload, prev));
+      if (typeof event.payload.telemetry_enabled === "boolean") {
+        setTelemetryEnabledState(event.payload.telemetry_enabled);
+      }
+      if (typeof event.payload.telemetry_consent_recorded === "boolean") {
+        setTelemetryConsentRecordedState(event.payload.telemetry_consent_recorded);
+      }
+      if (typeof event.payload.install_id === "string") {
+        setInstallIdState(event.payload.install_id);
+      }
+      // Last-ping timestamps change rarely; we only refresh them on mount.
     });
     return () => {
       unlisten.then((u) => u());
@@ -318,6 +353,36 @@ export function useSyncedSettings() {
     }).catch((e) => console.warn(`[settings] Failed to persist ${id}:`, e));
   }, []);
 
+  const setTelemetryEnabled = useCallback((value: boolean) => {
+    setTelemetryEnabledState(value);
+    invoke("set_synced_setting", {
+      key: "telemetry_enabled",
+      value,
+    }).catch((e) => console.warn("[settings] Failed to persist telemetry_enabled:", e));
+  }, []);
+
+  const setTelemetryConsentRecorded = useCallback((value: boolean) => {
+    setTelemetryConsentRecordedState(value);
+    invoke("set_synced_setting", {
+      key: "telemetry_consent_recorded",
+      value,
+    }).catch((e) => console.warn("[settings] Failed to persist telemetry_consent_recorded:", e));
+  }, []);
+
+  const rotateInstallId = useCallback(async (): Promise<string | null> => {
+    try {
+      const newId = await invoke<string>("rotate_install_id");
+      setInstallIdState(newId);
+      setLastDaemonPingAtState(null);
+      setLastAppPingAtState(null);
+      setLastMcpPingAtState(null);
+      return newId;
+    } catch (e) {
+      console.warn("[settings] Failed to rotate install_id:", e);
+      return null;
+    }
+  }, []);
+
   return {
     theme,
     setTheme,
@@ -337,6 +402,15 @@ export function useSyncedSettings() {
     setKeepAliveSecs,
     featureFlags,
     setFeatureFlag,
+    telemetryEnabled,
+    setTelemetryEnabled,
+    telemetryConsentRecorded,
+    setTelemetryConsentRecorded,
+    installId,
+    rotateInstallId,
+    lastDaemonPingAt,
+    lastAppPingAt,
+    lastMcpPingAt,
   };
 }
 
