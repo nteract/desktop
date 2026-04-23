@@ -8,7 +8,7 @@ import {
   RotateCcw,
   Square,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactElement, type ReactNode } from "react";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { cn } from "@/lib/utils";
 import type { EnvProgressState } from "../hooks/useEnvProgress";
@@ -392,22 +392,89 @@ export function NotebookToolbar({
           </div>
         </div>
       )}
-      {/* Pixi ipykernel install prompt — only when daemon signals missing_ipykernel */}
+      {/* ipykernel install prompt — only when daemon signals missing_ipykernel.
+          Pixi and uv/conda inline envs reach this state through different
+          mechanisms (pixi.toml scan vs prepared-env scan), but the UX is the
+          same shape: explain where ipykernel should go for the current env,
+          then tell the user to restart. */}
       {runtime === "python" &&
         lifecycle.lifecycle === "Error" &&
-        envSource?.startsWith("pixi:") &&
-        errorReason === KERNEL_ERROR_REASON.MISSING_IPYKERNEL && (
-          <div className="border-t px-3 py-2">
-            <div className="flex items-start gap-2 text-xs text-amber-700 dark:text-amber-400">
-              <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-              <span>
-                <span className="font-medium">ipykernel not found in pixi.toml.</span> Run{" "}
-                <code className="rounded bg-amber-500/20 px-1">pixi add ipykernel</code> in your
-                project directory and restart.
-              </span>
-            </div>
-          </div>
-        )}
+        errorReason === KERNEL_ERROR_REASON.MISSING_IPYKERNEL &&
+        envSource &&
+        renderMissingIpykernelPrompt(envSource)}
     </header>
+  );
+}
+
+/** Remediation copy for `KernelErrorReason::MissingIpykernel`, branched by
+ * env source. Returns `null` for env sources the daemon does not gate on
+ * (prewarmed pools, uv:pyproject, conda:env_yml, deno) — those either
+ * self-heal at launch or should never reach this state. */
+function renderMissingIpykernelPrompt(envSource: string): ReactElement | null {
+  // Pixi project: the .toml is the source of truth.
+  if (envSource.startsWith("pixi:")) {
+    return (
+      <MissingIpykernelBanner
+        headline="ipykernel not found in pixi.toml."
+        instruction={
+          <>
+            Run <code className="rounded bg-amber-500/20 px-1">pixi add ipykernel</code> in your
+            project directory and restart.
+          </>
+        }
+      />
+    );
+  }
+  // Inline or PEP 723 UV dependencies.
+  if (envSource === "uv:inline" || envSource === "uv:pep723") {
+    return (
+      <MissingIpykernelBanner
+        headline="ipykernel missing from prepared uv environment."
+        instruction={
+          <>
+            Add <code className="rounded bg-amber-500/20 px-1">ipykernel</code> to the notebook's
+            dependencies (or run{" "}
+            <code className="rounded bg-amber-500/20 px-1">uv pip install ipykernel</code> in the
+            env) and restart.
+          </>
+        }
+      />
+    );
+  }
+  // Inline Conda dependencies.
+  if (envSource === "conda:inline") {
+    return (
+      <MissingIpykernelBanner
+        headline="ipykernel missing from prepared conda environment."
+        instruction={
+          <>
+            Add <code className="rounded bg-amber-500/20 px-1">ipykernel</code> to the notebook's
+            dependencies (or run{" "}
+            <code className="rounded bg-amber-500/20 px-1">conda install ipykernel</code> in the
+            env) and restart.
+          </>
+        }
+      />
+    );
+  }
+  return null;
+}
+
+function MissingIpykernelBanner({
+  headline,
+  instruction,
+}: {
+  headline: string;
+  instruction: ReactNode;
+}): ReactElement {
+  return (
+    <div className="border-t px-3 py-2">
+      <div className="flex items-start gap-2 text-xs text-amber-700 dark:text-amber-400">
+        <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+        <span>
+          <span className="font-medium">{headline}</span> {instruction}
+        </span>
+      </div>
+    </div>
   );
 }
