@@ -52,7 +52,7 @@ export default function App() {
 
         <Section
           title="Onboarding page 2 — CTA block"
-          description="What replaces the pre-checked toggle + Get Started button."
+          description='Replaces the pre-checked telemetry toggle + single "Get Started" button. "Submitting" is the ~200ms window after the user picks one of the two buttons, while the daemon is persisting the choice — the primary button shows "Setting up..." and both buttons are disabled to prevent double-fire.'
         >
           <OnboardingCTAPreview />
         </Section>

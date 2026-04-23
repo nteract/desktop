@@ -11,3 +11,17 @@
 @source "../../../src/components/**/*.{ts,tsx}";
 @source "../settings/sections/**/*.{ts,tsx}";
 @source "./**/*.{ts,tsx}";
+
+/*
+ * Undo settings.css's html/body/#root { height: 100%; overflow: hidden }.
+ * Those rules exist for the Tauri window experience (fixed chrome, no
+ * outer scroll) and would lock the gallery page at viewport height. The
+ * gallery is a normal scrolling web page.
+ */
+html,
+body,
+#root {
+  height: auto;
+  min-height: 100%;
+  overflow: auto;
+}
