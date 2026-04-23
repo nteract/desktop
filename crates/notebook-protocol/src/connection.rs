@@ -28,7 +28,64 @@
 //! - `0x07`: SessionControl (JSON, server-originated)
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use std::fmt;
+use std::str::FromStr;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+
+/// Supported package managers for Python notebooks.
+///
+/// The wire format is the lowercase variant name (`"uv"`, `"conda"`, `"pixi"`),
+/// matching the historical `normalize_package_manager` output. `parse()`
+/// additionally accepts `"pip"` (→ Uv) and `"mamba"` (→ Conda) aliases.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PackageManager {
+    Uv,
+    Conda,
+    Pixi,
+}
+
+impl PackageManager {
+    /// The canonical wire string.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Uv => "uv",
+            Self::Conda => "conda",
+            Self::Pixi => "pixi",
+        }
+    }
+
+    /// Parse a package manager name with alias support.
+    ///
+    /// Accepts `"uv"`, `"conda"`, `"pixi"` (canonical), plus `"pip"` (→ Uv)
+    /// and `"mamba"` (→ Conda).
+    pub fn parse(input: &str) -> Result<Self, String> {
+        match input {
+            "uv" => Ok(Self::Uv),
+            "conda" => Ok(Self::Conda),
+            "pixi" => Ok(Self::Pixi),
+            "pip" => Ok(Self::Uv),
+            "mamba" => Ok(Self::Conda),
+            _ => Err(format!(
+                "Unsupported package manager '{}'. Supported: uv, conda, pixi.",
+                input
+            )),
+        }
+    }
+}
+
+impl fmt::Display for PackageManager {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for PackageManager {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
+    }
+}
 
 /// Maximum frame size for data frames: 100 MiB (matches blob size limit).
 const MAX_FRAME_SIZE: usize = 100 * 1024 * 1024;
@@ -1013,5 +1070,60 @@ mod tests {
         let err = normalize_package_manager("npm").unwrap_err();
         assert!(err.contains("Unsupported package manager 'npm'"));
         assert!(err.contains("Supported: uv, conda, pixi"));
+    }
+
+    #[test]
+    fn package_manager_as_str_round_trips() {
+        assert_eq!(PackageManager::Uv.as_str(), "uv");
+        assert_eq!(PackageManager::Conda.as_str(), "conda");
+        assert_eq!(PackageManager::Pixi.as_str(), "pixi");
+    }
+
+    #[test]
+    fn package_manager_parse_valid() {
+        assert_eq!(PackageManager::parse("uv").unwrap(), PackageManager::Uv);
+        assert_eq!(
+            PackageManager::parse("conda").unwrap(),
+            PackageManager::Conda
+        );
+        assert_eq!(PackageManager::parse("pixi").unwrap(), PackageManager::Pixi);
+    }
+
+    #[test]
+    fn package_manager_parse_aliases() {
+        assert_eq!(PackageManager::parse("pip").unwrap(), PackageManager::Uv);
+        assert_eq!(
+            PackageManager::parse("mamba").unwrap(),
+            PackageManager::Conda
+        );
+    }
+
+    #[test]
+    fn package_manager_parse_rejects_unknown() {
+        let err = PackageManager::parse("npm").unwrap_err();
+        assert!(err.contains("Unsupported package manager 'npm'"));
+        assert!(err.contains("Supported: uv, conda, pixi"));
+    }
+
+    #[test]
+    fn package_manager_fromstr_works() {
+        let pm: PackageManager = PackageManager::from_str("conda").unwrap();
+        assert_eq!(pm, PackageManager::Conda);
+        assert!(PackageManager::from_str("bogus").is_err());
+    }
+
+    #[test]
+    fn package_manager_display_matches_as_str() {
+        assert_eq!(format!("{}", PackageManager::Uv), "uv");
+        assert_eq!(format!("{}", PackageManager::Conda), "conda");
+        assert_eq!(format!("{}", PackageManager::Pixi), "pixi");
+    }
+
+    #[test]
+    fn package_manager_serde_is_lowercase() {
+        let json = serde_json::to_string(&PackageManager::Conda).unwrap();
+        assert_eq!(json, "\"conda\"");
+        let pm: PackageManager = serde_json::from_str("\"pixi\"").unwrap();
+        assert_eq!(pm, PackageManager::Pixi);
     }
 }
