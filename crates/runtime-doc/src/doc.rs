@@ -8,10 +8,6 @@
 //! ```text
 //! ROOT/
 //!   kernel/
-//!     status: Str          ("idle" | "busy" | "starting" | "error" | "shutdown" | "not_started")
-//!                           — legacy; mirrored by set_lifecycle/set_activity during migration.
-//!     starting_phase: Str  ("" | "resolving" | "preparing_env" | "launching" | "connecting")
-//!                           — legacy; mirrored by set_lifecycle during migration.
 //!     lifecycle: Str       ("NotStarted" | "AwaitingTrust" | "Resolving" | "PreparingEnv"
 //!                           | "Launching" | "Connecting" | "Running" | "Error" | "Shutdown")
 //!     activity: Str        ("" | "Unknown" | "Idle" | "Busy") — only meaningful when lifecycle == "Running"
@@ -80,7 +76,14 @@ use crate::{KernelActivity, KernelErrorReason, RuntimeLifecycle, StreamOutputSta
 /// Kernel state snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KernelState {
+    /// Flat status bucket string, projected from [`lifecycle`] at
+    /// read time for source-compat with pre-migration consumers. New
+    /// code should match on [`lifecycle`] directly.
+    #[serde(default)]
     pub status: String,
+    /// Starting sub-phase string, projected from [`lifecycle`] at
+    /// read time for source-compat. Only non-empty when `status ==
+    /// "starting"`. New code should match on [`lifecycle`] directly.
     #[serde(default)]
     pub starting_phase: String,
     #[serde(default)]
@@ -90,13 +93,11 @@ pub struct KernelState {
     #[serde(default)]
     pub env_source: String,
     /// ID of the runtime agent subprocess that owns this kernel (e.g., "runtime-agent:a1b2c3d4").
-    /// Used for provenance — identifying which runtime agent is running and detecting stale ones.
+    /// Used for provenance: identifying which runtime agent is running and detecting stale ones.
     #[serde(default)]
     pub runtime_agent_id: String,
-    /// Typed lifecycle. Phase 2 writes it directly from the CRDT when
-    /// `kernel/lifecycle` has been set; falls back to
-    /// [`RuntimeLifecycle::from_legacy`] when only the legacy keys exist
-    /// (e.g., pre-Phase-2 docs or after an old writer ran).
+    /// Typed lifecycle, read directly from the CRDT `kernel/lifecycle` +
+    /// `kernel/activity` keys.
     #[serde(default)]
     pub lifecycle: RuntimeLifecycle,
     /// Human-readable reason populated when `lifecycle == Error`. `None`
@@ -280,8 +281,6 @@ impl RuntimeStateDoc {
         let kernel = doc
             .put_object(&ROOT, "kernel", ObjType::Map)
             .expect("scaffold kernel");
-        doc.put(&kernel, "status", "not_started")
-            .expect("scaffold kernel.status");
         doc.put(&kernel, "name", "").expect("scaffold kernel.name");
         doc.put(&kernel, "language", "")
             .expect("scaffold kernel.language");
@@ -289,8 +288,6 @@ impl RuntimeStateDoc {
             .expect("scaffold kernel.env_source");
         doc.put(&kernel, "runtime_agent_id", "")
             .expect("scaffold kernel.runtime_agent_id");
-        doc.put(&kernel, "starting_phase", "")
-            .expect("scaffold kernel.starting_phase");
         doc.put(&kernel, "lifecycle", "NotStarted")
             .expect("scaffold kernel.lifecycle");
         doc.put(&kernel, "activity", "")
@@ -370,8 +367,6 @@ impl RuntimeStateDoc {
         let kernel = doc
             .put_object(&ROOT, "kernel", ObjType::Map)
             .expect("scaffold kernel");
-        doc.put(&kernel, "status", "not_started")
-            .expect("scaffold kernel.status");
         doc.put(&kernel, "name", "").expect("scaffold kernel.name");
         doc.put(&kernel, "language", "")
             .expect("scaffold kernel.language");
@@ -379,8 +374,6 @@ impl RuntimeStateDoc {
             .expect("scaffold kernel.env_source");
         doc.put(&kernel, "runtime_agent_id", "")
             .expect("scaffold kernel.runtime_agent_id");
-        doc.put(&kernel, "starting_phase", "")
-            .expect("scaffold kernel.starting_phase");
         doc.put(&kernel, "lifecycle", "NotStarted")
             .expect("scaffold kernel.lifecycle");
         doc.put(&kernel, "activity", "")
@@ -775,48 +768,19 @@ impl RuntimeStateDoc {
         Ok(())
     }
 
-    /// Update kernel status.
-    ///
-    /// Automatically clears `starting_phase` when transitioning away from `"starting"`.
-    pub fn set_kernel_status(&mut self, status: &str) -> Result<(), RuntimeStateError> {
-        let kernel = self.scaffold_map("kernel")?;
-        let current = self.read_str(&kernel, "status");
-        if current == status {
-            return Ok(());
-        }
-        self.doc.put(&kernel, "status", status)?;
-        if status != "starting" {
-            let phase = self.read_str(&kernel, "starting_phase");
-            if !phase.is_empty() {
-                self.doc.put(&kernel, "starting_phase", "")?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Update the starting phase sub-status.
-    pub fn set_starting_phase(&mut self, phase: &str) -> Result<(), RuntimeStateError> {
-        let kernel = self.scaffold_map("kernel")?;
-        let current = self.read_str(&kernel, "starting_phase");
-        if current == phase {
-            return Ok(());
-        }
-        self.doc.put(&kernel, "starting_phase", phase)?;
-        Ok(())
-    }
-
     /// Write a runtime lifecycle transition.
-    ///
-    /// Also mirrors into the legacy `kernel.status` + `kernel.starting_phase`
-    /// keys during the RuntimeLifecycle migration so readers still on the
-    /// old shape keep observing consistent state. A future phase retires
-    /// the legacy mirror writes along with the legacy readers.
     ///
     /// - `Running(activity)`: writes `lifecycle = "Running"` and
     ///   `activity = "<variant>"`.
     /// - Any other variant: writes `lifecycle = "<variant>"` and clears
     ///   `activity` to `""`, because activity is only meaningful while
     ///   running.
+    ///
+    /// Also clears any pre-typed `status` / `starting_phase` scalars if
+    /// they're present on the doc. This keeps typed writes
+    /// authoritative: a doc hydrated from pre-typed bytes won't leave
+    /// stale legacy keys that `resolve_lifecycle`'s fallback would
+    /// otherwise read back instead of the fresh typed state.
     ///
     /// Does NOT touch `error_reason`. Callers that want to set or clear
     /// the error reason should use [`set_lifecycle_with_error`]. This
@@ -834,29 +798,33 @@ impl RuntimeStateDoc {
                 self.doc.put(&kernel, "activity", "")?;
             }
         }
-        // Dual-shape: mirror into the legacy keys so readers that haven't
-        // migrated keep seeing correct state. Removed in a later phase.
-        let (legacy_status, legacy_phase) = lifecycle.to_legacy();
-        self.doc.put(&kernel, "status", legacy_status)?;
-        self.doc.put(&kernel, "starting_phase", legacy_phase)?;
+        self.clear_legacy_kernel_status(&kernel)?;
+        Ok(())
+    }
+
+    /// Clear the pre-typed `kernel.status` and `kernel.starting_phase`
+    /// scalars if the doc has them. A no-op for docs scaffolded by the
+    /// current `new()` / `new_with_actor()`, which don't write those
+    /// keys at all. Hits when a typed writer mutates a doc hydrated
+    /// from pre-typed bytes.
+    fn clear_legacy_kernel_status(
+        &mut self,
+        kernel: &automerge::ObjId,
+    ) -> Result<(), RuntimeStateError> {
+        for key in ["status", "starting_phase"] {
+            if let Ok(Some((_, _))) = self.doc.get(kernel, key) {
+                self.doc.delete(kernel, key)?;
+            }
+        }
         Ok(())
     }
 
     /// Write a lifecycle transition and simultaneously set or clear
     /// `error_reason`.
     ///
-    /// - `Some(reason)` records the diagnosis — typed so we can't typo
-    ///   the reason string, and so the legacy-phase mirror gets the
-    ///   correct value from a single source of truth ([`KernelErrorReason::as_str`]).
+    /// - `Some(reason)` records the diagnosis, typed so we can't typo the
+    ///   reason string.
     /// - `None` clears the field to `""`.
-    ///
-    /// When `lifecycle == Error && reason.is_some()`, the reason is
-    /// ALSO mirrored into the legacy `starting_phase` key. Pre-typed-
-    /// writer code encoded error reasons via
-    /// `set_kernel_status("error") + set_starting_phase("missing_ipykernel")`,
-    /// and the frontend's pixi-install prompt gates on that legacy
-    /// phase. Keeping the mirror lets unmigrated readers continue to
-    /// work until Phase 5 flips them to the typed `error_reason` field.
     ///
     /// Typical use:
     /// - `set_lifecycle_with_error(Error, Some(KernelErrorReason::MissingIpykernel))`
@@ -872,18 +840,10 @@ impl RuntimeStateDoc {
         let kernel = self.scaffold_map("kernel")?;
         let reason_str = reason.map(|r| r.as_str()).unwrap_or("");
         self.doc.put(&kernel, "error_reason", reason_str)?;
-        // Legacy-phase mirror for the Error transition. The pre-Phase-3
-        // channel used `starting_phase` to carry the reason. Only
-        // overwrite on Error — a non-Error lifecycle would already have
-        // a phase written by the `set_lifecycle` mirror and we don't
-        // want to step on it.
-        if matches!(lifecycle, RuntimeLifecycle::Error) && reason.is_some() {
-            self.doc.put(&kernel, "starting_phase", reason_str)?;
-        }
         Ok(())
     }
 
-    /// Update just the kernel activity. The hot path for IOPub idle/busy —
+    /// Update just the kernel activity. The hot path for IOPub idle/busy,
     /// called on every kernel status message.
     ///
     /// A no-op when the stored value already matches the requested value,
@@ -891,49 +851,36 @@ impl RuntimeStateDoc {
     /// `Busy → Busy` writes. This is the throttle that keeps sync traffic
     /// bounded during heavy execution.
     ///
-    /// Also mirrors `activity` back into the legacy `kernel.status` key
-    /// (`"busy"` or `"idle"`) during the migration window; readers still
-    /// on the old shape see the activity change. An `Unknown` activity
-    /// mirrors as `"idle"` — the legacy shape had no equivalent, and
-    /// "idle" is the closest non-busy approximation.
-    ///
     /// Callers are expected to have set `lifecycle = Running(...)` first
     /// (typically via [`set_lifecycle`]). This method does NOT verify
-    /// that invariant — writing activity while lifecycle is something
+    /// that invariant: writing activity while lifecycle is something
     /// else produces a doc that [`read_state`] will report as
     /// `Running(<activity>)` because the lifecycle CRDT key takes
     /// precedence. Use the type-safe entry point [`set_lifecycle`] for
     /// state transitions; reserve this method for the idle/busy flip.
     pub fn set_activity(&mut self, activity: KernelActivity) -> Result<(), RuntimeStateError> {
         let kernel = self.scaffold_map("kernel")?;
-        let legacy_status = match activity {
-            KernelActivity::Busy => "busy",
-            KernelActivity::Idle | KernelActivity::Unknown => "idle",
-        };
-        // Dual-shape throttle: skip only when the typed activity, the
-        // mirrored legacy status, AND the legacy starting_phase are all
-        // already at their target values. set_kernel_status itself clears
-        // starting_phase whenever it flips to a non-starting status; we
-        // keep that invariant so unmigrated readers don't observe
-        // status="idle"/"busy" alongside a stale phase like "connecting"
-        // left over from the launch path.
         let current_activity = self.read_str(&kernel, "activity");
-        let current_status = self.read_str(&kernel, "status");
-        let current_phase = self.read_str(&kernel, "starting_phase");
-        if current_activity == activity.as_str()
-            && current_status == legacy_status
-            && current_phase.is_empty()
-        {
+        // Short-circuit only when the typed activity already matches
+        // AND the legacy keys are already cleared. Otherwise a
+        // pre-typed doc hydrated via from_doc would stay stuck on
+        // stale `status="starting"` + `starting_phase="connecting"`
+        // after the first IOPub activity update.
+        let has_stale_legacy = self.doc.get(&kernel, "status").ok().flatten().is_some()
+            || self
+                .doc
+                .get(&kernel, "starting_phase")
+                .ok()
+                .flatten()
+                .is_some();
+        if current_activity == activity.as_str() && !has_stale_legacy {
             return Ok(());
         }
         if current_activity != activity.as_str() {
             self.doc.put(&kernel, "activity", activity.as_str())?;
         }
-        if current_status != legacy_status {
-            self.doc.put(&kernel, "status", legacy_status)?;
-        }
-        if !current_phase.is_empty() {
-            self.doc.put(&kernel, "starting_phase", "")?;
+        if has_stale_legacy {
+            self.clear_legacy_kernel_status(&kernel)?;
         }
         Ok(())
     }
@@ -2019,31 +1966,52 @@ impl RuntimeStateDoc {
         let kernel_state = kernel
             .as_ref()
             .map(|k| {
-                let status = self.read_str(k, "status");
-                let starting_phase = self.read_str(k, "starting_phase");
                 let lifecycle_key = self.read_str(k, "lifecycle");
                 let activity_key = self.read_str(k, "activity");
-                // Reconcile the typed and string shapes — see
-                // `resolve_lifecycle` for the rule. Keeps readers correct
-                // during the transition while callers move from
-                // `set_kernel_status` / `set_starting_phase` to
-                // `set_lifecycle` / `set_activity`.
+                // Pre-typed docs (captured fixtures, `from_doc` with
+                // external bytes) only have the string shape.
+                // resolve_lifecycle falls back to it when the typed keys
+                // are missing.
+                let stored_status = self.read_str(k, "status");
+                let stored_starting_phase = self.read_str(k, "starting_phase");
                 let lifecycle = crate::types::resolve_lifecycle(
                     &lifecycle_key,
                     &activity_key,
-                    &status,
-                    &starting_phase,
+                    &stored_status,
+                    &stored_starting_phase,
                 );
+                // Project the resolved lifecycle back to the string
+                // shape for source-compat with pre-migration consumers.
+                // Always derive from the resolved lifecycle rather than
+                // echoing raw CRDT values so the status field is never
+                // stale relative to lifecycle.
+                let (status, starting_phase) = lifecycle.to_legacy();
                 // error_reason is Option<String> so callers can tell "no
                 // kernel map at all" (None) from "scaffolded but unset"
                 // (Some("")). automunge::read_str_if_present returns None
-                // only when the key itself is absent, important for docs
-                // scaffolded before Phase 2 added the key (they have the
-                // `kernel` map but no `error_reason` field yet).
-                let error_reason = automunge::read_str_if_present(&self.doc, k, "error_reason");
+                // only when the key itself is absent.
+                //
+                // Fallback: pre-typed docs encoded the error reason via
+                // `starting_phase` on the Error transition
+                // (status="error" + starting_phase="missing_ipykernel").
+                // When the typed key is absent AND we resolved the
+                // lifecycle to Error AND the stored starting_phase
+                // carries a non-empty reason, surface it so the frontend
+                // remediation prompt keeps firing.
+                let error_reason = automunge::read_str_if_present(&self.doc, k, "error_reason")
+                    .or_else(|| {
+                        if matches!(lifecycle, RuntimeLifecycle::Error)
+                            && stored_status == "error"
+                            && !stored_starting_phase.is_empty()
+                        {
+                            Some(stored_starting_phase.clone())
+                        } else {
+                            None
+                        }
+                    });
                 KernelState {
-                    status,
-                    starting_phase,
+                    status: status.to_string(),
+                    starting_phase: starting_phase.to_string(),
                     name: self.read_str(k, "name"),
                     language: self.read_str(k, "language"),
                     env_source: self.read_str(k, "env_source"),
@@ -2532,7 +2500,7 @@ mod tests {
         let state = doc.read_state();
         // Note: new() scaffolds trust.status as "no_dependencies" which matches
         // TrustRuntimeState::default() (empty string), so we compare fields individually.
-        assert_eq!(state.kernel.status, "not_started");
+        assert_eq!(state.kernel.lifecycle, RuntimeLifecycle::NotStarted);
         assert_eq!(state.kernel.name, "");
         assert_eq!(state.kernel.language, "");
         assert_eq!(state.kernel.env_source, "");
@@ -2549,13 +2517,21 @@ mod tests {
     }
 
     #[test]
-    fn test_set_kernel_status() {
+    fn test_set_lifecycle() {
         let mut doc = RuntimeStateDoc::new();
-        doc.set_kernel_status("busy").unwrap();
-        assert_eq!(doc.read_state().kernel.status, "busy");
+        doc.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Busy))
+            .unwrap();
+        assert_eq!(
+            doc.read_state().kernel.lifecycle,
+            RuntimeLifecycle::Running(KernelActivity::Busy)
+        );
 
-        doc.set_kernel_status("idle").unwrap();
-        assert_eq!(doc.read_state().kernel.status, "idle");
+        doc.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))
+            .unwrap();
+        assert_eq!(
+            doc.read_state().kernel.lifecycle,
+            RuntimeLifecycle::Running(KernelActivity::Idle)
+        );
     }
 
     #[test]
@@ -2645,45 +2621,47 @@ mod tests {
     }
 
     #[test]
-    fn test_set_starting_phase() {
+    fn test_lifecycle_transitions_through_starting_phases() {
         let mut doc = RuntimeStateDoc::new();
-        doc.set_kernel_status("starting").unwrap();
-        doc.set_starting_phase("resolving").unwrap();
-        assert_eq!(doc.read_state().kernel.starting_phase, "resolving");
+        doc.set_lifecycle(&RuntimeLifecycle::Resolving).unwrap();
+        assert_eq!(
+            doc.read_state().kernel.lifecycle,
+            RuntimeLifecycle::Resolving
+        );
 
-        doc.set_starting_phase("launching").unwrap();
-        assert_eq!(doc.read_state().kernel.starting_phase, "launching");
+        doc.set_lifecycle(&RuntimeLifecycle::Launching).unwrap();
+        assert_eq!(
+            doc.read_state().kernel.lifecycle,
+            RuntimeLifecycle::Launching
+        );
 
-        // Dedup: same phase is no-op
-        doc.set_starting_phase("launching").unwrap();
+        // Dedup: same lifecycle is a no-op at the setter level. The
+        // doc.rs setter writes unconditionally, but set_activity skips.
+        doc.set_lifecycle(&RuntimeLifecycle::Launching).unwrap();
     }
 
     #[test]
-    fn test_kernel_status_clears_starting_phase() {
+    fn test_lifecycle_clears_activity_on_leaving_running() {
         let mut doc = RuntimeStateDoc::new();
-        doc.set_kernel_status("starting").unwrap();
-        doc.set_starting_phase("connecting").unwrap();
-        assert_eq!(doc.read_state().kernel.starting_phase, "connecting");
-
-        // Transitioning to "idle" should clear starting_phase
-        doc.set_kernel_status("idle").unwrap();
-        assert_eq!(doc.read_state().kernel.starting_phase, "");
-
-        // Same for error
-        doc.set_kernel_status("starting").unwrap();
-        doc.set_starting_phase("launching").unwrap();
-        doc.set_kernel_status("error").unwrap();
-        assert_eq!(doc.read_state().kernel.starting_phase, "");
+        doc.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Busy))
+            .unwrap();
+        doc.set_lifecycle(&RuntimeLifecycle::Shutdown).unwrap();
+        assert_eq!(
+            doc.read_state().kernel.lifecycle,
+            RuntimeLifecycle::Shutdown
+        );
+        // Underlying activity key is cleared to "".
+        let kernel = doc.get_map("kernel").unwrap();
+        assert_eq!(doc.read_str(&kernel, "activity"), "");
     }
 
     #[test]
     fn test_dedup_skips_redundant_writes() {
         let mut doc = RuntimeStateDoc::new();
 
-        // First write mutates
-        doc.set_kernel_status("busy").unwrap();
-        // Same value — no mutation
-        doc.set_kernel_status("busy").unwrap();
+        // set_activity is the documented no-op path when the value is unchanged.
+        doc.set_activity(KernelActivity::Busy).unwrap();
+        doc.set_activity(KernelActivity::Busy).unwrap();
 
         // Same for kernel info
         doc.set_kernel_info("k", "python", "uv:prewarmed").unwrap();
@@ -2714,7 +2692,9 @@ mod tests {
     #[test]
     fn test_sync_between_two_docs() {
         let mut daemon_doc = RuntimeStateDoc::new();
-        daemon_doc.set_kernel_status("busy").unwrap();
+        daemon_doc
+            .set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Busy))
+            .unwrap();
         daemon_doc
             .set_kernel_info("charming-toucan", "python", "uv:prewarmed")
             .unwrap();
@@ -2778,7 +2758,10 @@ mod tests {
         let daemon_state = daemon_doc.read_state();
         let client_state = client_doc.read_state();
         assert_eq!(daemon_state, client_state);
-        assert_eq!(client_state.kernel.status, "busy");
+        assert_eq!(
+            client_state.kernel.lifecycle,
+            RuntimeLifecycle::Running(KernelActivity::Busy)
+        );
         assert_eq!(client_state.kernel.name, "charming-toucan");
         assert_eq!(
             client_state.queue.executing.as_ref().unwrap().cell_id,
@@ -2853,7 +2836,8 @@ mod tests {
     #[test]
     fn test_generate_sync_message_bounded_encoded_no_compact_under_limit() {
         let mut doc = RuntimeStateDoc::new();
-        doc.set_kernel_status("idle").unwrap();
+        doc.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))
+            .unwrap();
 
         let mut peer_state = sync::State::new();
         let encoded = doc.generate_sync_message_bounded_encoded(&mut peer_state, 100 * 1024 * 1024);
@@ -3150,14 +3134,18 @@ mod tests {
         };
         fork.set_queue(Some(&entry), &[]).unwrap();
 
-        // Write kernel status on original (concurrent)
-        doc.set_kernel_status("busy").unwrap();
+        // Write kernel lifecycle on original (concurrent)
+        doc.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Busy))
+            .unwrap();
 
         // Merge — both changes should compose
         doc.merge(&mut fork).unwrap();
 
         let state = doc.read_state();
-        assert_eq!(state.kernel.status, "busy");
+        assert_eq!(
+            state.kernel.lifecycle,
+            RuntimeLifecycle::Running(KernelActivity::Busy)
+        );
         assert_eq!(
             state.queue.executing.as_ref().map(|e| e.cell_id.as_str()),
             Some("cell-1")
@@ -3184,13 +3172,13 @@ mod tests {
 
         doc.fork_and_merge(|fork| {
             fork.set_actor("runtimed:state:test");
-            fork.set_kernel_status("error").unwrap();
+            fork.set_lifecycle(&RuntimeLifecycle::Error).unwrap();
             fork.set_queue(None, &[]).unwrap();
             fork.set_execution_done("exec-1", false).unwrap();
         });
 
         let state = doc.read_state();
-        assert_eq!(state.kernel.status, "error");
+        assert_eq!(state.kernel.lifecycle, RuntimeLifecycle::Error);
         assert!(state.queue.executing.is_none());
     }
 
@@ -4458,7 +4446,8 @@ mod tests {
     #[test]
     fn test_compact_if_oversized_below_threshold() {
         let mut doc = RuntimeStateDoc::new();
-        doc.set_kernel_status("idle").unwrap();
+        doc.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))
+            .unwrap();
         // Doc is tiny — should not compact
         assert!(!doc.compact_if_oversized(1024 * 1024));
     }
@@ -4466,63 +4455,57 @@ mod tests {
     #[test]
     fn test_compact_if_oversized_above_threshold() {
         let mut doc = RuntimeStateDoc::new();
-        doc.set_kernel_status("idle").unwrap();
+        doc.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))
+            .unwrap();
         // Threshold of 0 forces compaction
         assert!(doc.compact_if_oversized(0));
         // State is preserved after compaction
-        assert_eq!(doc.read_state().kernel.status, "idle");
+        assert_eq!(
+            doc.read_state().kernel.lifecycle,
+            RuntimeLifecycle::Running(KernelActivity::Idle)
+        );
     }
 
-    // ── Phase 2: RuntimeLifecycle writers ───────────────────────────
-    //
-    // These tests target the dual-shape invariant: new writers must leave
-    // the legacy keys consistent, new readers must fall back to the legacy
-    // derivation when the new keys are unset, and set_lifecycle must
-    // preserve error_reason while set_lifecycle_with_error owns it.
+    // ── RuntimeLifecycle writers ────────────────────────────────────
 
     #[test]
-    fn set_lifecycle_populates_both_shapes() -> Result<(), RuntimeStateError> {
+    fn set_lifecycle_round_trip() -> Result<(), RuntimeStateError> {
         let mut doc = RuntimeStateDoc::new();
 
         doc.set_lifecycle(&RuntimeLifecycle::Resolving)?;
-        let s = doc.read_state().kernel;
-        assert_eq!(s.lifecycle, RuntimeLifecycle::Resolving);
-        assert_eq!(s.status, "starting");
-        assert_eq!(s.starting_phase, "resolving");
-
-        doc.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?;
-        let s = doc.read_state().kernel;
-        assert_eq!(s.lifecycle, RuntimeLifecycle::Running(KernelActivity::Idle));
-        assert_eq!(s.status, "idle");
-        assert_eq!(s.starting_phase, "");
-
-        doc.set_lifecycle(&RuntimeLifecycle::Shutdown)?;
-        let s = doc.read_state().kernel;
-        assert_eq!(s.lifecycle, RuntimeLifecycle::Shutdown);
-        assert_eq!(s.status, "shutdown");
-        assert_eq!(s.starting_phase, "");
-        Ok(())
-    }
-
-    #[test]
-    fn set_lifecycle_clears_activity_when_leaving_running() -> Result<(), RuntimeStateError> {
-        let mut doc = RuntimeStateDoc::new();
-        doc.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Busy))?;
-        doc.set_lifecycle(&RuntimeLifecycle::Shutdown)?;
-
-        // Internally activity should be "" — round-trip through read_state
-        // returns Shutdown, and a subsequent Running(Idle) must not see
-        // stale Busy.
         assert_eq!(
             doc.read_state().kernel.lifecycle,
-            RuntimeLifecycle::Shutdown
+            RuntimeLifecycle::Resolving
         );
 
         doc.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?;
         assert_eq!(
             doc.read_state().kernel.lifecycle,
-            RuntimeLifecycle::Running(KernelActivity::Idle),
-            "stale activity would have made this Running(Busy)"
+            RuntimeLifecycle::Running(KernelActivity::Idle)
+        );
+
+        doc.set_lifecycle(&RuntimeLifecycle::Shutdown)?;
+        assert_eq!(
+            doc.read_state().kernel.lifecycle,
+            RuntimeLifecycle::Shutdown
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn set_lifecycle_clears_stale_activity_on_leaving_running() -> Result<(), RuntimeStateError> {
+        let mut doc = RuntimeStateDoc::new();
+        doc.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Busy))?;
+        doc.set_lifecycle(&RuntimeLifecycle::Shutdown)?;
+        assert_eq!(
+            doc.read_state().kernel.lifecycle,
+            RuntimeLifecycle::Shutdown
+        );
+        // A subsequent Running(Idle) must not resurrect stale Busy.
+        doc.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?;
+        assert_eq!(
+            doc.read_state().kernel.lifecycle,
+            RuntimeLifecycle::Running(KernelActivity::Idle)
         );
         Ok(())
     }
@@ -4550,47 +4533,17 @@ mod tests {
             doc.read_state().kernel.lifecycle,
             RuntimeLifecycle::Running(KernelActivity::Busy)
         );
-        assert_eq!(doc.read_state().kernel.status, "busy");
         Ok(())
     }
 
     #[test]
-    fn set_activity_mirrors_unknown_as_idle_in_legacy() -> Result<(), RuntimeStateError> {
+    fn set_activity_preserves_unknown() -> Result<(), RuntimeStateError> {
         let mut doc = RuntimeStateDoc::new();
         doc.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Busy))?;
-
         doc.set_activity(KernelActivity::Unknown)?;
-        let s = doc.read_state().kernel;
-        // Typed view preserves Unknown.
         assert_eq!(
-            s.lifecycle,
+            doc.read_state().kernel.lifecycle,
             RuntimeLifecycle::Running(KernelActivity::Unknown)
-        );
-        // Legacy view maps Unknown → "idle" (no legacy equivalent exists).
-        assert_eq!(s.status, "idle");
-        Ok(())
-    }
-
-    #[test]
-    fn set_activity_without_running_lifecycle_resolves_via_string_shape(
-    ) -> Result<(), RuntimeStateError> {
-        // set_activity does not enforce that lifecycle is Running — callers
-        // are expected to have transitioned to Running first. If they
-        // haven't, the typed lifecycle key stays at scaffold "NotStarted"
-        // but set_activity mirrors "busy" into the string status key.
-        //
-        // resolve_lifecycle detects the mismatch (typed → "not_started",
-        // string → "busy") and returns the string-derived value. This
-        // matches the expected behavior of "whichever shape was written
-        // most recently wins."
-        let mut doc = RuntimeStateDoc::new();
-        doc.set_activity(KernelActivity::Busy)?;
-        let s = doc.read_state().kernel;
-        assert_eq!(s.status, "busy");
-        assert_eq!(
-            s.lifecycle,
-            RuntimeLifecycle::Running(KernelActivity::Busy),
-            "resolve_lifecycle prefers the freshly-written string shape"
         );
         Ok(())
     }
@@ -4638,67 +4591,6 @@ mod tests {
     }
 
     #[test]
-    fn set_lifecycle_with_error_mirrors_reason_into_starting_phase() -> Result<(), RuntimeStateError>
-    {
-        // The pre-Phase-3 channel encoded reasons via `starting_phase`.
-        // NotebookToolbar's pixi-install prompt still gates on that legacy
-        // phase. set_lifecycle_with_error must mirror the reason there
-        // when lifecycle is Error so the prompt continues to fire until
-        // Phase 5 migrates the frontend.
-        let mut doc = RuntimeStateDoc::new();
-        doc.set_lifecycle_with_error(
-            &RuntimeLifecycle::Error,
-            Some(KernelErrorReason::MissingIpykernel),
-        )?;
-        let s = doc.read_state().kernel;
-        assert_eq!(s.lifecycle, RuntimeLifecycle::Error);
-        assert_eq!(s.status, "error");
-        assert_eq!(
-            s.starting_phase, "missing_ipykernel",
-            "legacy pixi-install prompt gate must continue to fire via starting_phase"
-        );
-        assert_eq!(s.error_reason.as_deref(), Some("missing_ipykernel"));
-        Ok(())
-    }
-
-    #[test]
-    fn set_lifecycle_with_error_empty_reason_leaves_phase_empty() -> Result<(), RuntimeStateError> {
-        // Error with no reason: starting_phase stays "" (set_lifecycle's
-        // default Error mirror). We only overwrite the phase when the
-        // reason is Some.
-        let mut doc = RuntimeStateDoc::new();
-        doc.set_lifecycle_with_error(&RuntimeLifecycle::Error, None)?;
-        let s = doc.read_state().kernel;
-        assert_eq!(s.status, "error");
-        assert_eq!(s.starting_phase, "");
-        assert_eq!(s.error_reason.as_deref(), Some(""));
-        Ok(())
-    }
-
-    #[test]
-    fn set_lifecycle_with_error_non_error_with_reason_does_not_touch_phase(
-    ) -> Result<(), RuntimeStateError> {
-        // A non-Error lifecycle with a Some(reason) argument is unusual
-        // but harmless. set_lifecycle's default mirror already wrote the
-        // variant's proper phase (e.g. "launching"); we must not clobber
-        // it just because a reason was supplied.
-        let mut doc = RuntimeStateDoc::new();
-        doc.set_lifecycle_with_error(
-            &RuntimeLifecycle::Launching,
-            Some(KernelErrorReason::MissingIpykernel),
-        )?;
-        let s = doc.read_state().kernel;
-        assert_eq!(s.status, "starting");
-        assert_eq!(s.starting_phase, "launching");
-        // error_reason is still recorded even for non-Error — harmless
-        // metadata, and it keeps the writer simple (no "only record
-        // reason when lifecycle is Error" special case at the
-        // error_reason key).
-        assert_eq!(s.error_reason.as_deref(), Some("missing_ipykernel"));
-        Ok(())
-    }
-
-    #[test]
     fn set_lifecycle_with_error_second_call_updates_reason() -> Result<(), RuntimeStateError> {
         // Only one variant today; exercise the overwrite path by toggling
         // Some(MissingIpykernel) -> None -> Some(MissingIpykernel).
@@ -4725,127 +4617,6 @@ mod tests {
     }
 
     #[test]
-    fn set_activity_clears_stale_starting_phase() -> Result<(), RuntimeStateError> {
-        // After the string-shape launch path ends with
-        // set_starting_phase("connecting"), the first IOPub set_activity
-        // must clear the stale phase so unmigrated readers don't see
-        // status="idle" alongside starting_phase="connecting".
-        let mut doc = RuntimeStateDoc::new();
-        doc.set_kernel_status("starting")?;
-        doc.set_starting_phase("connecting")?;
-
-        doc.set_activity(KernelActivity::Idle)?;
-        let s = doc.read_state().kernel;
-        assert_eq!(s.status, "idle");
-        assert_eq!(
-            s.starting_phase, "",
-            "stale starting_phase must be cleared when set_activity mirrors to a non-starting status"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn string_setter_only_produces_correct_lifecycle_read() -> Result<(), RuntimeStateError> {
-        // When a string-form setter mutates a scaffolded doc, the typed
-        // key still reads "NotStarted". resolve_lifecycle detects the
-        // mismatch (typed.to_legacy() == ("not_started", "") ≠ ("idle", ""))
-        // and derives from the string shape. This is the critical invariant
-        // that lets Phase 3 migrate callers incrementally.
-        let mut doc = RuntimeStateDoc::new();
-        doc.set_kernel_status("idle")?;
-
-        let s = doc.read_state().kernel;
-        assert_eq!(s.status, "idle");
-        assert_eq!(
-            s.lifecycle,
-            RuntimeLifecycle::Running(KernelActivity::Idle),
-            "string setter + typed reader must resolve via from_legacy"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn string_setter_starting_phase_resolves_correctly() -> Result<(), RuntimeStateError> {
-        let mut doc = RuntimeStateDoc::new();
-        doc.set_kernel_status("starting")?;
-        doc.set_starting_phase("launching")?;
-
-        let s = doc.read_state().kernel;
-        assert_eq!(s.status, "starting");
-        assert_eq!(s.starting_phase, "launching");
-        assert_eq!(s.lifecycle, RuntimeLifecycle::Launching);
-        Ok(())
-    }
-
-    #[test]
-    fn typed_setter_then_string_setter_stays_consistent() -> Result<(), RuntimeStateError> {
-        // Sequence: typed → string → typed.
-        //
-        // Each read must be internally consistent. The typed setter mirrors
-        // into the string keys; a string setter afterward flips the string
-        // key without touching the typed keys, so resolve_lifecycle detects
-        // the drift and prefers the string shape.
-        let mut doc = RuntimeStateDoc::new();
-
-        doc.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?;
-        assert_eq!(doc.read_state().kernel.status, "idle");
-
-        doc.set_kernel_status("busy")?;
-        let s = doc.read_state().kernel;
-        assert_eq!(s.status, "busy");
-        assert_eq!(
-            s.lifecycle,
-            RuntimeLifecycle::Running(KernelActivity::Busy),
-            "string shape was written more recently; typed lifecycle tracks it"
-        );
-
-        doc.set_activity(KernelActivity::Idle)?;
-        let s = doc.read_state().kernel;
-        assert_eq!(s.status, "idle");
-        assert_eq!(s.lifecycle, RuntimeLifecycle::Running(KernelActivity::Idle));
-        Ok(())
-    }
-
-    #[test]
-    fn set_activity_repairs_drifted_status() -> Result<(), RuntimeStateError> {
-        // Scenario codex-review flagged: typed activity already matches the
-        // requested value, but legacy status has drifted because a string
-        // setter ran in between. set_activity must repair the string side
-        // even on a "redundant" typed call.
-        let mut doc = RuntimeStateDoc::new();
-        doc.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?;
-        assert_eq!(doc.read_state().kernel.status, "idle");
-
-        doc.set_kernel_status("busy")?;
-        assert_eq!(doc.read_state().kernel.status, "busy");
-
-        doc.set_activity(KernelActivity::Idle)?;
-        let s = doc.read_state().kernel;
-        assert_eq!(
-            s.status, "idle",
-            "set_activity must repair drifted status even on redundant typed call"
-        );
-        assert_eq!(s.lifecycle, RuntimeLifecycle::Running(KernelActivity::Idle));
-        Ok(())
-    }
-
-    #[test]
-    fn set_activity_truly_redundant_is_still_noop() -> Result<(), RuntimeStateError> {
-        // When BOTH shapes already match, set_activity must not advance
-        // heads. The IOPub throttle still holds for the common case.
-        let mut doc = RuntimeStateDoc::new();
-        doc.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Busy))?;
-        let heads_before = doc.get_heads();
-        doc.set_activity(KernelActivity::Busy)?;
-        assert_eq!(
-            heads_before,
-            doc.get_heads(),
-            "truly redundant set_activity must not advance heads"
-        );
-        Ok(())
-    }
-
-    #[test]
     fn fork_merge_concurrent_lifecycle_writes() -> Result<(), RuntimeStateError> {
         // Two forks write different lifecycles, then merge. Automerge picks
         // a winner deterministically. This test pins the behavior rather
@@ -4857,25 +4628,19 @@ mod tests {
         let mut fork = main.fork_with_actor("runtimed:state:test:fork");
         fork.set_lifecycle(&RuntimeLifecycle::Resolving)?;
 
-        main.set_kernel_status("busy")?; // legacy writer on main side
+        main.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Busy))?;
 
         main.merge(&mut fork).ok();
 
         let s = main.read_state().kernel;
         // Whichever lifecycle wins the conflict, the output must parse as
-        // a valid RuntimeLifecycle — no "bogus" variant leaking through.
+        // a valid RuntimeLifecycle — no garbage leaking through.
         match s.lifecycle {
             RuntimeLifecycle::Running(_)
             | RuntimeLifecycle::Resolving
             | RuntimeLifecycle::NotStarted => {}
             other => panic!("unexpected post-merge lifecycle: {:?}", other),
         }
-        // Legacy status remains a valid string (one of the three we wrote).
-        assert!(
-            matches!(s.status.as_str(), "idle" | "busy" | "starting"),
-            "unexpected post-merge legacy status: {}",
-            s.status
-        );
         Ok(())
     }
 
@@ -4889,23 +4654,19 @@ mod tests {
     }
 
     #[test]
-    fn scaffolded_doc_reads_lifecycle_from_new_key_not_legacy_fallback() {
-        // Fresh new() scaffolds kernel.lifecycle = "NotStarted" AND the legacy
-        // kernel.status = "not_started". read_state takes the new key path
-        // because lifecycle is non-empty. error_reason is Some("") because
-        // the field is scaffolded.
+    fn scaffolded_doc_reads_lifecycle_from_crdt() {
         let doc = RuntimeStateDoc::new();
         let s = doc.read_state().kernel;
         assert_eq!(s.lifecycle, RuntimeLifecycle::NotStarted);
-        assert_eq!(s.status, "not_started");
-        assert_eq!(s.error_reason.as_deref(), Some(""));
+        assert_eq!(
+            s.error_reason.as_deref(),
+            Some(""),
+            "scaffolded error_reason must be Some(\"\"), not None"
+        );
     }
 
     #[test]
-    fn set_lifecycle_error_with_reason_writes_all_three_shapes() -> Result<(), RuntimeStateError> {
-        // Writing Error + reason must populate the typed `error_reason`
-        // key, the string `status = "error"`, AND mirror the reason into
-        // the legacy `starting_phase` for NotebookToolbar compat.
+    fn set_lifecycle_error_with_reason() -> Result<(), RuntimeStateError> {
         let mut doc = RuntimeStateDoc::new();
         doc.set_lifecycle_with_error(
             &RuntimeLifecycle::Error,
@@ -4913,8 +4674,6 @@ mod tests {
         )?;
         let s = doc.read_state().kernel;
         assert_eq!(s.lifecycle, RuntimeLifecycle::Error);
-        assert_eq!(s.status, "error");
-        assert_eq!(s.starting_phase, "missing_ipykernel");
         assert_eq!(s.error_reason.as_deref(), Some("missing_ipykernel"));
         Ok(())
     }
@@ -4924,16 +4683,15 @@ mod tests {
         let mut doc = RuntimeStateDoc::new();
         doc.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Busy))?;
         doc.set_lifecycle(&RuntimeLifecycle::AwaitingTrust)?;
-        let s = doc.read_state().kernel;
-        assert_eq!(s.lifecycle, RuntimeLifecycle::AwaitingTrust);
-        assert_eq!(s.status, "awaiting_trust");
-        assert_eq!(s.starting_phase, "");
+        assert_eq!(
+            doc.read_state().kernel.lifecycle,
+            RuntimeLifecycle::AwaitingTrust
+        );
         Ok(())
     }
 
     #[test]
     fn all_lifecycle_variants_round_trip_through_crdt() -> Result<(), RuntimeStateError> {
-        // Every variant must survive a write + read without information loss.
         let variants = [
             RuntimeLifecycle::NotStarted,
             RuntimeLifecycle::AwaitingTrust,
@@ -4960,50 +4718,308 @@ mod tests {
     }
 
     #[test]
-    fn pre_phase_2_doc_reads_error_reason_as_none() -> Result<(), RuntimeStateError> {
-        // Simulate a runtime-state doc that existed before Phase 2 added
-        // `kernel/error_reason`: kernel map is present (so the snapshot
-        // isn't entirely default) but the error_reason key is absent.
-        // read_state must report error_reason == None so callers can
-        // distinguish this from the Phase-2 scaffolded Some("") state.
+    fn set_activity_without_preceding_lifecycle_leaves_activity_stranded(
+    ) -> Result<(), RuntimeStateError> {
+        // set_activity does not transition the lifecycle — callers must
+        // have set Running(_) first. If they haven't, the CRDT ends up
+        // with lifecycle = "NotStarted" and activity = "Busy", which
+        // resolve_lifecycle reads as NotStarted (activity is ignored for
+        // non-Running variants). This is fine: the stranded activity is
+        // harmless, and the next set_lifecycle writes the correct state.
+        let mut doc = RuntimeStateDoc::new();
+        doc.set_activity(KernelActivity::Busy)?;
+
+        let k = doc.read_state().kernel;
+        assert_eq!(
+            k.lifecycle,
+            RuntimeLifecycle::NotStarted,
+            "activity without a Running lifecycle has no effect on the typed read"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn running_with_empty_activity_reads_as_unknown() -> Result<(), RuntimeStateError> {
+        // A Running lifecycle written without a following set_activity
+        // (activity stays "" from the scaffold or from the clear on
+        // leaving Running previously) must read as Running(Unknown),
+        // because that's the fallback when the activity key is empty.
+        let mut doc = RuntimeStateDoc::new();
+        doc.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Busy))?;
+        doc.set_lifecycle(&RuntimeLifecycle::Shutdown)?;
+        // activity is now "" from the Shutdown transition. Flip lifecycle
+        // back to Running directly via the CRDT so we can observe the
+        // "Running + empty activity" read state.
+        let kernel = doc.get_map("kernel").expect("kernel map");
+        doc.doc
+            .put(&kernel, "lifecycle", "Running")
+            .expect("raw put lifecycle");
+        let k = doc.read_state().kernel;
+        assert_eq!(
+            k.lifecycle,
+            RuntimeLifecycle::Running(KernelActivity::Unknown),
+            "Running with no activity key reads as Unknown, not a crash or garbage"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn lifecycle_survives_sync_between_docs() -> Result<(), RuntimeStateError> {
+        // Beyond the single-value sync test, pin that several
+        // representative lifecycle variants all survive a sync round
+        // between daemon and client docs.
+        for lc in [
+            RuntimeLifecycle::Resolving,
+            RuntimeLifecycle::Running(KernelActivity::Busy),
+            RuntimeLifecycle::Running(KernelActivity::Unknown),
+            RuntimeLifecycle::Error,
+            RuntimeLifecycle::Shutdown,
+        ] {
+            let mut daemon_doc = RuntimeStateDoc::new();
+            daemon_doc.set_lifecycle(&lc)?;
+
+            let mut client_doc = RuntimeStateDoc::new_empty();
+            let mut daemon_sync = sync::State::new();
+            let mut client_sync = sync::State::new();
+
+            for _ in 0..10 {
+                if let Some(msg) = daemon_doc.generate_sync_message(&mut daemon_sync) {
+                    client_doc
+                        .doc_mut()
+                        .sync()
+                        .receive_sync_message(&mut client_sync, msg)
+                        .expect("client receive");
+                }
+                if let Some(msg) = client_doc
+                    .doc_mut()
+                    .sync()
+                    .generate_sync_message(&mut client_sync)
+                {
+                    daemon_doc
+                        .receive_sync_message(&mut daemon_sync, msg)
+                        .expect("daemon receive");
+                }
+            }
+
+            assert_eq!(
+                client_doc.read_state().kernel.lifecycle,
+                lc,
+                "sync lost lifecycle {lc:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn doc_without_kernel_lifecycle_key_defaults_to_not_started() -> Result<(), RuntimeStateError> {
+        // A doc whose kernel map exists but lacks the lifecycle key
+        // (corruption, external mutation) must read as NotStarted rather
+        // than crashing or returning garbage.
         use automerge::{transaction::Transactable, AutoCommit, ObjType, ROOT};
 
         let mut raw = AutoCommit::new();
         let kernel = raw
             .put_object(&ROOT, "kernel", ObjType::Map)
             .expect("scaffold kernel");
-        raw.put(&kernel, "status", "idle")
-            .expect("pre-phase-2 status");
-        raw.put(&kernel, "starting_phase", "")
-            .expect("pre-phase-2 starting_phase");
-        raw.put(&kernel, "name", "").expect("pre-phase-2 name");
-        raw.put(&kernel, "language", "")
-            .expect("pre-phase-2 language");
-        raw.put(&kernel, "env_source", "")
-            .expect("pre-phase-2 env_source");
+        raw.put(&kernel, "name", "").expect("name");
+        raw.put(&kernel, "language", "").expect("language");
+        raw.put(&kernel, "env_source", "").expect("env_source");
         raw.put(&kernel, "runtime_agent_id", "")
-            .expect("pre-phase-2 runtime_agent_id");
-        // Deliberately DO NOT write kernel/lifecycle, kernel/activity, or
-        // kernel/error_reason. resolve_lifecycle sees empty lifecycle_key
-        // and falls through to from_legacy("idle", "") = Running(Idle).
+            .expect("runtime_agent_id");
 
         let doc = RuntimeStateDoc::from_doc(raw);
         let k = doc.read_state().kernel;
-        assert_eq!(k.status, "idle");
-        assert_eq!(k.lifecycle, RuntimeLifecycle::Running(KernelActivity::Idle));
+        assert_eq!(k.lifecycle, RuntimeLifecycle::NotStarted);
+        assert_eq!(k.error_reason, None);
+        Ok(())
+    }
+
+    #[test]
+    fn pre_typed_doc_reads_lifecycle_from_string_shape() -> Result<(), RuntimeStateError> {
+        // A runtime-state doc authored before the typed keys were added
+        // carries only kernel.status + kernel.starting_phase. read_state
+        // must derive the lifecycle from that pair rather than returning
+        // the scaffold default NotStarted. This is the cross-version
+        // compat path for captured test fixtures and any in-flight sync
+        // frame from an older producer.
+        use automerge::{transaction::Transactable, AutoCommit, ObjType, ROOT};
+
+        let mut raw = AutoCommit::new();
+        let kernel = raw
+            .put_object(&ROOT, "kernel", ObjType::Map)
+            .expect("scaffold kernel");
+        raw.put(&kernel, "status", "busy")
+            .expect("pre-typed status");
+        raw.put(&kernel, "starting_phase", "")
+            .expect("pre-typed starting_phase");
+        raw.put(&kernel, "name", "").expect("name");
+        raw.put(&kernel, "language", "").expect("language");
+        raw.put(&kernel, "env_source", "").expect("env_source");
+        raw.put(&kernel, "runtime_agent_id", "")
+            .expect("runtime_agent_id");
+        // Deliberately DO NOT write kernel/lifecycle or kernel/activity.
+
+        let doc = RuntimeStateDoc::from_doc(raw);
+        let k = doc.read_state().kernel;
         assert_eq!(
-            k.error_reason, None,
-            "pre-Phase-2 doc (no error_reason key) must read as None, not Some(\"\")"
+            k.lifecycle,
+            RuntimeLifecycle::Running(KernelActivity::Busy),
+            "pre-typed doc (string shape only) must read as Running(Busy)"
         );
         Ok(())
     }
 
     #[test]
-    fn scaffolded_doc_reads_error_reason_as_some_empty() {
-        // By contrast, a doc scaffolded by new() has the key present and
-        // set to "". read_state must report Some("") so typed callers can
-        // tell "scaffolded, no reason set" from "key absent."
-        let doc = RuntimeStateDoc::new();
-        assert_eq!(doc.read_state().kernel.error_reason.as_deref(), Some(""));
+    fn typed_write_clears_stale_legacy_keys() -> Result<(), RuntimeStateError> {
+        // A doc hydrated from pre-typed bytes carries `kernel.status =
+        // "busy"` with no typed keys. The first set_lifecycle(Error)
+        // must make the read authoritative: the stale legacy keys get
+        // cleared as part of the write, and resolve_lifecycle sees only
+        // the typed state.
+        use automerge::{transaction::Transactable, AutoCommit, ObjType, ROOT};
+
+        let mut raw = AutoCommit::new();
+        let kernel = raw
+            .put_object(&ROOT, "kernel", ObjType::Map)
+            .expect("scaffold kernel");
+        raw.put(&kernel, "status", "busy").expect("status");
+        raw.put(&kernel, "starting_phase", "")
+            .expect("starting_phase");
+        raw.put(&kernel, "name", "").expect("name");
+        raw.put(&kernel, "language", "").expect("language");
+        raw.put(&kernel, "env_source", "").expect("env_source");
+        raw.put(&kernel, "runtime_agent_id", "")
+            .expect("runtime_agent_id");
+
+        let mut doc = RuntimeStateDoc::from_doc(raw);
+        // Pre-typed shape reads correctly via the fallback.
+        assert_eq!(
+            doc.read_state().kernel.lifecycle,
+            RuntimeLifecycle::Running(KernelActivity::Busy)
+        );
+
+        // Typed write transitions to Error and clears the stale legacy
+        // keys. A naive writer that only wrote the typed key would
+        // leave `status = "busy"` behind, which resolve_lifecycle's
+        // mismatch fallback would incorrectly prefer over the fresh
+        // Error state.
+        doc.set_lifecycle(&RuntimeLifecycle::Error)?;
+        let k = doc.read_state().kernel;
+        assert_eq!(k.lifecycle, RuntimeLifecycle::Error);
+        // Projected status is now "error" (from lifecycle), not "busy".
+        assert_eq!(k.status, "error");
+        assert_eq!(k.starting_phase, "");
+        Ok(())
+    }
+
+    #[test]
+    fn set_activity_clears_stale_legacy_keys_on_pre_typed_doc() -> Result<(), RuntimeStateError> {
+        // jupyter_kernel sends idle/busy updates via set_activity. A
+        // doc hydrated from pre-typed bytes carries status="starting"
+        // + starting_phase="connecting"; the first IOPub activity must
+        // not leave the read stuck in Connecting just because the hot
+        // path skipped clearing the legacy keys.
+        use automerge::{transaction::Transactable, AutoCommit, ObjType, ROOT};
+
+        let mut raw = AutoCommit::new();
+        let kernel = raw
+            .put_object(&ROOT, "kernel", ObjType::Map)
+            .expect("scaffold kernel");
+        raw.put(&kernel, "status", "starting").expect("status");
+        raw.put(&kernel, "starting_phase", "connecting")
+            .expect("starting_phase");
+        raw.put(&kernel, "name", "").expect("name");
+        raw.put(&kernel, "language", "").expect("language");
+        raw.put(&kernel, "env_source", "").expect("env_source");
+        raw.put(&kernel, "runtime_agent_id", "")
+            .expect("runtime_agent_id");
+
+        let mut doc = RuntimeStateDoc::from_doc(raw);
+        assert_eq!(
+            doc.read_state().kernel.lifecycle,
+            RuntimeLifecycle::Connecting,
+            "pre-typed Connecting reads via fallback"
+        );
+
+        // First IOPub idle update. Must converge the doc to the typed
+        // shape, even without a preceding set_lifecycle.
+        doc.set_activity(KernelActivity::Idle)?;
+        let k = doc.read_state().kernel;
+        // lifecycle key is still unset (typed writers only set it via
+        // set_lifecycle). resolve_lifecycle sees empty typed keys plus
+        // cleared legacy keys and falls through to NotStarted. That's
+        // a caller-contract issue: set_activity without a preceding
+        // set_lifecycle is not a supported pattern, but we still must
+        // not leave a stale "Connecting" reading from the old legacy
+        // shape.
+        assert_ne!(
+            k.lifecycle,
+            RuntimeLifecycle::Connecting,
+            "stale legacy Connecting must not survive an activity update"
+        );
+        assert_eq!(k.starting_phase, "", "legacy starting_phase cleared");
+        Ok(())
+    }
+
+    #[test]
+    fn pre_typed_doc_recovers_error_reason_from_starting_phase() -> Result<(), RuntimeStateError> {
+        // Pre-typed docs encoded the error reason via starting_phase.
+        // NotebookToolbar gates the pixi install prompt on
+        // kernel.error_reason, so the read must surface the legacy
+        // reason when the typed error_reason key is absent.
+        use automerge::{transaction::Transactable, AutoCommit, ObjType, ROOT};
+
+        let mut raw = AutoCommit::new();
+        let kernel = raw
+            .put_object(&ROOT, "kernel", ObjType::Map)
+            .expect("scaffold kernel");
+        raw.put(&kernel, "status", "error").expect("status");
+        raw.put(&kernel, "starting_phase", "missing_ipykernel")
+            .expect("starting_phase");
+        raw.put(&kernel, "name", "").expect("name");
+        raw.put(&kernel, "language", "").expect("language");
+        raw.put(&kernel, "env_source", "pixi:toml")
+            .expect("env_source");
+        raw.put(&kernel, "runtime_agent_id", "")
+            .expect("runtime_agent_id");
+        // Deliberately DO NOT write kernel/error_reason; the reason
+        // lives in starting_phase in the pre-typed shape.
+
+        let doc = RuntimeStateDoc::from_doc(raw);
+        let k = doc.read_state().kernel;
+        assert_eq!(k.lifecycle, RuntimeLifecycle::Error);
+        assert_eq!(
+            k.error_reason.as_deref(),
+            Some("missing_ipykernel"),
+            "legacy starting_phase reason must surface as error_reason"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pre_typed_doc_reads_starting_sub_phase() -> Result<(), RuntimeStateError> {
+        // starting_phase carries the sub-state in the pre-typed shape;
+        // the fallback must preserve it.
+        use automerge::{transaction::Transactable, AutoCommit, ObjType, ROOT};
+
+        let mut raw = AutoCommit::new();
+        let kernel = raw
+            .put_object(&ROOT, "kernel", ObjType::Map)
+            .expect("scaffold kernel");
+        raw.put(&kernel, "status", "starting").expect("status");
+        raw.put(&kernel, "starting_phase", "launching")
+            .expect("starting_phase");
+        raw.put(&kernel, "name", "").expect("name");
+        raw.put(&kernel, "language", "").expect("language");
+        raw.put(&kernel, "env_source", "").expect("env_source");
+        raw.put(&kernel, "runtime_agent_id", "")
+            .expect("runtime_agent_id");
+
+        let doc = RuntimeStateDoc::from_doc(raw);
+        assert_eq!(
+            doc.read_state().kernel.lifecycle,
+            RuntimeLifecycle::Launching
+        );
+        Ok(())
     }
 }

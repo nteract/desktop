@@ -110,6 +110,7 @@ impl RuntimeStateHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{KernelActivity, RuntimeLifecycle};
 
     fn make_handle() -> RuntimeStateHandle {
         let doc = RuntimeStateDoc::new();
@@ -117,20 +118,28 @@ mod tests {
         RuntimeStateHandle::new(doc, tx)
     }
 
+    fn busy() -> RuntimeLifecycle {
+        RuntimeLifecycle::Running(KernelActivity::Busy)
+    }
+
+    fn idle() -> RuntimeLifecycle {
+        RuntimeLifecycle::Running(KernelActivity::Idle)
+    }
+
     #[test]
     fn with_doc_notifies_on_change() {
         let handle = make_handle();
         let mut rx = handle.subscribe();
-        handle.with_doc(|sd| sd.set_kernel_status("busy")).unwrap();
+        handle.with_doc(|sd| sd.set_lifecycle(&busy())).unwrap();
         assert!(rx.try_recv().is_ok());
     }
 
     #[test]
     fn with_doc_skips_notification_when_unchanged() {
         let handle = make_handle();
-        handle.with_doc(|sd| sd.set_kernel_status("busy")).unwrap();
+        handle.with_doc(|sd| sd.set_lifecycle(&busy())).unwrap();
         let mut rx = handle.subscribe();
-        handle.with_doc(|sd| sd.set_kernel_status("busy")).unwrap();
+        handle.with_doc(|sd| sd.set_lifecycle(&busy())).unwrap();
         assert!(rx.try_recv().is_err());
     }
 
@@ -140,8 +149,8 @@ mod tests {
         let mut rx = handle.subscribe();
         handle
             .with_doc(|sd| {
-                sd.set_kernel_status("busy")?;
-                sd.set_starting_phase("resolving")?;
+                sd.set_lifecycle(&RuntimeLifecycle::Resolving)?;
+                sd.set_kernel_info("kernel", "python", "uv:prewarmed")?;
                 Ok(())
             })
             .unwrap();
@@ -154,7 +163,7 @@ mod tests {
         let handle = make_handle();
         let mut rx = handle.subscribe();
         let mut fork = handle.fork("test-fork").unwrap();
-        fork.set_kernel_status("idle").unwrap();
+        fork.set_lifecycle(&idle()).unwrap();
         handle.merge(&mut fork).unwrap();
         assert!(rx.try_recv().is_ok());
     }
@@ -162,12 +171,12 @@ mod tests {
     #[test]
     fn read_does_not_notify() {
         let handle = make_handle();
-        handle.with_doc(|sd| sd.set_kernel_status("busy")).unwrap();
+        handle.with_doc(|sd| sd.set_lifecycle(&busy())).unwrap();
         let mut rx = handle.subscribe();
-        let status = handle
-            .read(|sd| sd.read_state().kernel.status.clone())
+        let lifecycle = handle
+            .read(|sd| sd.read_state().kernel.lifecycle.clone())
             .unwrap();
-        assert_eq!(status, "busy");
+        assert_eq!(lifecycle, busy());
         assert!(rx.try_recv().is_err());
     }
 }

@@ -51,7 +51,6 @@ import {
   detectUnresolvedOutputs,
   diffComms,
 } from "./comm-diff";
-import { type KernelStatus, kernelStatus$ as deriveKernelStatus$ } from "./derived-state";
 import type { FrameEvent, InitialLoadPhase, SessionStatus, SyncableHandle } from "./handle";
 import type { PoolState } from "./pool-state";
 import {
@@ -299,14 +298,6 @@ export class SyncEngine {
     removed_ids: string[];
   }>;
 
-  /**
-   * Throttled kernel status derived from RuntimeState.
-   *
-   * Applies a 60ms busy throttle to filter sub-60ms busy→idle blips
-   * from tab completions. All other statuses pass through immediately.
-   */
-  readonly kernelStatus$: Observable<KernelStatus>;
-
   // ── Typed broadcast observables ──────────────────────────────────
 
   /** Output produced for a cell (includes manifest hash for blob resolution). */
@@ -381,7 +372,6 @@ export class SyncEngine {
     this.initialSyncComplete$ = this._initialSyncComplete$.asObservable();
     this.commChanges$ = this._commChanges$.asObservable();
     this.outputIdChanges$ = this._outputIdChanges$.asObservable();
-    this.kernelStatus$ = deriveKernelStatus$(this.runtimeState$);
 
     // Typed broadcast sub-observables (derived from broadcasts$)
     this.outputBroadcasts$ = this.broadcasts$.pipe(filter(isOutputBroadcast));

@@ -56,11 +56,23 @@ export type RuntimeLifecycle =
   | { lifecycle: "Shutdown" };
 
 export interface KernelState {
-  /** @deprecated Legacy string-form status. Read `lifecycle` instead. */
+  /**
+   * Flat status bucket string projected from [`lifecycle`]. Kept as a
+   * deprecated shim for pre-migration consumers; new code should match
+   * on `lifecycle` directly (or use `lifecycleToLegacyStatus` from
+   * `runtimed` when the bucket vocabulary is what you want).
+   * @deprecated Read `lifecycle` instead.
+   */
   status: string;
-  /** @deprecated Legacy string-form starting sub-phase. Read `lifecycle` instead. */
+  /**
+   * Starting sub-phase string projected from [`lifecycle`]. Only
+   * non-empty when `status === "starting"`. Kept as a deprecated shim
+   * for pre-migration consumers; new code should match on `lifecycle`
+   * directly.
+   * @deprecated Read `lifecycle` instead.
+   */
   starting_phase: string;
-  /** Typed lifecycle — the authoritative view for new code. */
+  /** Typed lifecycle. The authoritative view of kernel state. */
   lifecycle: RuntimeLifecycle;
   /**
    * Human-readable reason populated when `lifecycle.lifecycle === "Error"`.

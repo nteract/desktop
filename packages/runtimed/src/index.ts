@@ -94,14 +94,12 @@ export {
   type EnvSyncState,
   isKernelStatus,
   KERNEL_STATUS,
-  kernelStatus$,
   type KernelInfo,
   type KernelStatus,
   lifecycleToLegacyStatus,
   RUNTIME_STATUS,
   runtimeStatusKey,
   type RuntimeStatusKey,
-  throttleBusyStatus,
 } from "./derived-state";
 
 // Notebook client
