@@ -23,6 +23,51 @@ async fn previous_notebook_id(server: &NteractMcp) -> Option<String> {
         .map(|s| s.notebook_id.clone())
 }
 
+/// Cleanly disconnect the previous session before switching to a new one.
+///
+/// Clears the session — closing channels and triggering sync task shutdown.
+/// The daemon handles kernel lifecycle: when the MCP peer disconnects and
+/// the peer count drops, the eviction timer starts. Other peers (e.g. the
+/// desktop app) may still be connected, so we do NOT send `ShutdownKernel`.
+///
+/// This prevents "Cannot save: file already open in session X" errors when an
+/// agent switches notebooks and then tries to `save_notebook` to a path that
+/// was held by the previous session. Without this, the daemon's `path_index`
+/// retains the old mapping during the 30s eviction delay.
+///
+/// When `new_notebook_id` is `Some`, the cleanup is skipped if we're
+/// reconnecting to the same notebook (no-op switch). When `None` (e.g.
+/// `create_notebook`), the old session is always disconnected.
+async fn disconnect_previous_session(server: &NteractMcp, new_notebook_id: Option<&str>) {
+    // Take the old session under a short-lived write lock.
+    let old_session = {
+        let mut guard = server.session.write().await;
+        match guard.as_ref() {
+            Some(s) => {
+                // Skip if reconnecting to the same notebook.
+                if let Some(new_id) = new_notebook_id {
+                    if s.notebook_id == new_id {
+                        return;
+                    }
+                }
+                guard.take()
+            }
+            None => return,
+        }
+    };
+
+    if let Some(old) = old_session {
+        tracing::info!(
+            "[mcp] Disconnecting previous session {} before notebook switch",
+            old.notebook_id
+        );
+        // Drop the old session — channels close, sync task shuts down,
+        // daemon peer count decrements, eviction timer starts.
+        // Kernel lifecycle is the daemon's responsibility.
+        drop(old);
+    }
+}
+
 /// Resolve a user-provided path: expand ~ to home dir and resolve relative paths
 /// against the current working directory. The MCP server runs in the expected cwd,
 /// so relative paths are meaningful here (unlike the daemon, which may run as launchd).
@@ -277,6 +322,12 @@ pub async fn open_notebook(
 
     let prev = previous_notebook_id(server).await;
 
+    // Disconnect the previous session before opening the new one. For path-based
+    // opens we don't know the target notebook_id yet, so pass None (always clean
+    // up). For UUID-based opens we can skip if reconnecting to the same notebook.
+    let target_id = id_arg.as_deref();
+    disconnect_previous_session(server, target_id).await;
+
     if let Some(path) = path_arg {
         // File path — resolve and open from disk via the daemon's OpenNotebook handshake.
         let abs_path = PathBuf::from(resolve_path(&path));
@@ -430,6 +481,9 @@ pub async fn create_notebook(
     };
 
     let prev = previous_notebook_id(server).await;
+
+    // Every create_notebook is a new notebook, so always disconnect the old session.
+    disconnect_previous_session(server, None).await;
 
     match notebook_sync::connect::connect_create(
         server.socket_path.clone(),
