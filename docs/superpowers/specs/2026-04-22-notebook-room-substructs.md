@@ -1,13 +1,13 @@
 # Refactor: Break up `NotebookRoom` into composed substructs
 
-> **Status: blocked.** Waiting on the `RuntimeStateHandle` migration. That work replaces `state_doc: Arc<RwLock<RuntimeStateDoc>>` + `state_changed_tx: broadcast::Sender<()>` with a single `state: RuntimeStateHandle` field. Once it lands, re-do the field inventory — `RoomDocState` and `RoomBroadcasts` both shrink by one field, and `state` probably lives on a different substruct (or top-level). Do not start PR A until the handle is on `main`.
+> **Status: ready.** The `RuntimeStateHandle` migration (#2059) is on main. `state: RuntimeStateHandle` replaces the old `state_doc: Arc<RwLock<RuntimeStateDoc>>` + `state_changed_tx: broadcast::Sender<()>` pair — one self-notifying handle with its own `changed_tx` and sync Mutex. Field inventory below reflects post-merge state.
 
 ## Problem
 
-`NotebookRoom` is a 28-field god struct in `crates/runtimed/src/notebook_sync_server/room.rs`. It mixes:
+`NotebookRoom` is a 27-field god struct in `crates/runtimed/src/notebook_sync_server/room.rs`. It mixes:
 
 - Immutable notebook identity (`id`, `persist_path`, `blob_store`, `is_ephemeral`)
-- Automerge document state (`doc`, `state_doc`, `nbformat_attachments`, `state_changed_tx`)
+- Automerge document + runtime state (`doc`, `state`, `nbformat_attachments`)
 - Persistence bookkeeping (`persist_tx`, `flush_request_tx`, `last_save_heads`, `last_save_sources`, `last_self_write`, `watcher_shutdown_tx`)
 - Broadcast channels (`changed_tx`, `kernel_broadcast_tx`, `presence_tx`)
 - Per-connection accounting (`active_peers`, `had_peers`, `is_loading`)
@@ -17,9 +17,9 @@
 
 Lock shapes are inconsistent: `Arc<RwLock<T>>`, `Arc<Mutex<T>>`, naked `RwLock<T>`, `AtomicBool`, `AtomicUsize`, `AtomicU64`, and `Option<channel_tx>`. Every function that touches `room.*` has to re-derive which fields are safe to hold across which awaits.
 
-The test helper `test_room_with_path` builds a room by hand-constructing 28 fields with sensible defaults — because most production tests need only two or three of them, and there's no smaller unit to construct.
+The test helper `test_room_with_path` builds a room by hand-constructing 27 fields with sensible defaults — because most production tests need only two or three of them, and there's no smaller unit to construct.
 
-This is the single biggest readability win available in `runtimed` today. It also unblocks the env-launch extraction from the code-review proposal: you can't cleanly move the auto-launch code out of `metadata.rs` while the room is an opaque 28-field bag.
+This is the single biggest readability win available in `runtimed` today. It also unblocks the env-launch extraction from the code-review proposal: you can't cleanly move the auto-launch code out of `metadata.rs` while the room is an opaque 27-field bag.
 
 ## Fix
 
@@ -37,11 +37,12 @@ pub struct NotebookRoom {
     pub identity: RoomIdentity,
     pub doc_state: RoomDocState,
     pub broadcasts: RoomBroadcasts,
-    pub persistence: RoomPersistence,  // None for ephemeral rooms
+    pub persistence: Option<RoomPersistence>,  // None for ephemeral rooms
     pub connections: RoomConnections,
-    pub trust_state: Arc<RwLock<TrustState>>,  // stays top-level — accessed from both launch + sync paths
-    pub blob_store: Arc<BlobStore>,            // stays top-level — passed by value to many subsystems
-    pub kernel: RoomKernelState,               // stays as-is for PR 3 to refactor into an actor
+    pub state: runtime_doc::RuntimeStateHandle,  // stays top-level — self-contained handle (owns its own changed_tx and sync Mutex)
+    pub trust_state: Arc<RwLock<TrustState>>,    // stays top-level — accessed from both launch + sync paths
+    pub blob_store: Arc<BlobStore>,              // stays top-level — passed by value to many subsystems
+    pub kernel: RoomKernelState,                 // stays as-is for PR 3 to refactor into an actor
 }
 ```
 
@@ -58,29 +59,27 @@ pub struct RoomIdentity {
 ```
 Field count in source: `persist_path` (9), `is_ephemeral` (6), `path` (29), `working_dir` (4). 48 call sites total. No async locks — all std::sync because no accesses hold across awaits.
 
-**`RoomDocState`** — Automerge docs and non-persistence mutations.
+**`RoomDocState`** — Automerge doc and related per-notebook data.
 ```rust
 pub struct RoomDocState {
     pub doc: Arc<RwLock<NotebookDoc>>,
-    pub state_doc: Arc<RwLock<RuntimeStateDoc>>,
     pub nbformat_attachments: Arc<RwLock<HashMap<String, serde_json::Value>>>,
 }
 ```
-Field count: `doc` (123), `state_doc` (71), `nbformat_attachments` (7). By far the most-read substruct. The `Arc<RwLock<_>>` pattern stays — many callsites fork the lock.
+Field count: `doc` (123), `nbformat_attachments` (7). The `Arc<RwLock<_>>` pattern stays — many callsites fork the lock.
 
-*Why not move `state_doc` to `RoomKernelState`?* It's read from non-kernel paths (autosave drift detection, peer sync). Kernel state writes it; everyone else reads it. Lives with other docs.
+*Why not pull `state: RuntimeStateHandle` in here?* The handle is already self-contained — it owns its sync Mutex and its own `changed_tx` — and it's `Clone`. Putting it inside another substruct buys nothing and costs a field-path level (`room.doc_state.state.with_doc(...)` vs `room.state.with_doc(...)`). Keep it top-level; this is the exception that proves the "group what changes together" rule: the handle's internals already do that job.
 
-**`RoomBroadcasts`** — fan-out channels.
+**`RoomBroadcasts`** — fan-out channels that don't belong to a specific handle.
 ```rust
 pub struct RoomBroadcasts {
     pub changed_tx: broadcast::Sender<()>,
     pub kernel_broadcast_tx: broadcast::Sender<NotebookBroadcast>,
     pub presence_tx: broadcast::Sender<(String, Vec<u8>)>,
-    pub state_changed_tx: broadcast::Sender<()>,
     pub presence: Arc<RwLock<PresenceState>>,
 }
 ```
-Field count: `changed_tx` (18), `kernel_broadcast_tx` (7), `presence_tx` (6), `state_changed_tx` (34), `presence` (8). `presence` is the state that goes with `presence_tx`; keep them together.
+Field count: `changed_tx` (18), `kernel_broadcast_tx` (7), `presence_tx` (6), `presence` (8). `presence` is the state that goes with `presence_tx`; keep them together. `state.subscribe()` replaces the old `state_changed_tx.subscribe()` — no top-level channel needed.
 
 **`RoomPersistence`** — Option-shaped: `None` for ephemeral rooms, `Some` for file-backed.
 ```rust
@@ -129,7 +128,7 @@ Field count: `active_peers` (15), `had_peers` (2), `is_loading` (4). The existin
 
 ### Callsite impact
 
-Every callsite that reads `room.X` where `X` moved to a substruct now reads `room.<sub>.X`. The field access count table above shows ~330 rewrites total across 26 files.
+Every callsite that reads `room.X` where `X` moved to a substruct now reads `room.<sub>.X`. ~230 rewrites total across the affected files — down from the pre-migration estimate of ~330 because `state: RuntimeStateHandle` (top-level, 54 callsites) doesn't move.
 
 The common access patterns:
 - `room.doc.read().await` → `room.doc_state.doc.read().await`
@@ -137,6 +136,8 @@ The common access patterns:
 - `room.path.read().await.clone()` → `room.identity.path.read().await.clone()`
 - `room.changed_tx.send(())` → `room.broadcasts.changed_tx.send(())`
 - `room.active_peers.fetch_add(1, Ordering::SeqCst)` → `room.connections.active_peers.fetch_add(1, Ordering::SeqCst)`
+- `room.state.with_doc(|d| ...)` — unchanged (top-level)
+- `room.state.subscribe()` — unchanged (top-level)
 
 ### Tests
 
@@ -144,9 +145,10 @@ The existing `test_room_with_path` helper shrinks dramatically: most tests use 3
 
 ```rust
 // before:
-let room = NotebookRoom { /* 28 fields */ };
+let room = NotebookRoom { /* 27 fields */ };
 
 // after:
+let (state_changed_tx, _) = broadcast::channel(16);
 let room = NotebookRoom {
     id,
     identity: RoomIdentity::new(persist_path, path, /* ephemeral */ false),
@@ -154,9 +156,10 @@ let room = NotebookRoom {
     broadcasts: RoomBroadcasts::default(),
     persistence: Some(RoomPersistence::new_debounced(persist_path.clone())),
     connections: RoomConnections::default(),
+    state: RuntimeStateHandle::new(RuntimeStateDoc::new(), state_changed_tx),
     trust_state: Arc::new(RwLock::new(trust)),
     blob_store,
-    kernel: RoomKernelState::default(),  // unchanged
+    kernel: RoomKernelState::default(),  // unchanged — stays for PR 3
 };
 ```
 
@@ -175,14 +178,14 @@ Two PRs, each atomic:
 **PR B** — migrate call sites.
 - Remove the pass-through getters.
 - Update every `room.X` to `room.<sub>.X`.
-- This PR is mechanical and large (~330 lines of find/replace across 26 files).
+- This PR is mechanical and moderately large (~230 lines of find/replace across the affected files).
 
 Two PRs means PR A can land on its own and be verified with the existing test suite unchanged. PR B is the churny one and reviewers can skim it knowing the fields haven't changed.
 
 ## Out of scope
 
 - **Runtime-agent fields** (`runtime_agent_handle`, `runtime_agent_request_tx`, `pending_runtime_agent_connect_tx`, `runtime_agent_generation`, `runtime_agent_env_path`, `runtime_agent_launched_config`, `current_runtime_agent_id`, `next_queue_seq`, `auto_launch_at`). These need the actor-pattern rewrite from the code-review proposal and are being handled on the runtime-agent-work branch. This refactor preserves them exactly as-is on `NotebookRoom` so the two changes don't collide.
-- **RuntimeStateDoc refactor** — explicitly excluded by the user.
+- **RuntimeStateHandle internals** — already its own type with self-contained notification. This refactor treats it as an opaque field on `NotebookRoom`.
 - **Extracting env-launch out of `metadata.rs`** — a separate follow-on proposal. Independent of this refactor, but this refactor makes it easier.
 - **Splitting `notebook_sync_server/metadata.rs`** — separate concern.
 
@@ -209,7 +212,7 @@ Two PRs means PR A can land on its own and be verified with the existing test su
 
 ## Risk
 
-- **Blast radius.** 330 call-site edits in PR B. Mechanical, but large. Mitigation: PR A lands pass-throughs first so the field rename is a find/replace pass, not a semantic change.
+- **Blast radius.** ~230 call-site edits in PR B. Mechanical, but large. Mitigation: PR A lands pass-throughs first so the field rename is a find/replace pass, not a semantic change.
 - **Atomic constructor invariant.** `persist_tx` and `flush_request_tx` being in one `RoomPersistence` is better than two separate `Option`s — but the test `room.persist_tx.is_none()` at `tests.rs:428` needs rewriting as `room.persistence.is_none()`. That's a semantic improvement (the test gets more faithful to the invariant), not a regression.
 - **Missed callers.** Use compiler errors to find them — deleting `pub doc: Arc<RwLock<NotebookDoc>>` and re-adding under `RoomDocState` will surface every `room.doc` usage at compile time.
 
