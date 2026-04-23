@@ -55,6 +55,8 @@
 
 ## Migration order
 
+> **On line numbers:** the plan cites line numbers from the snapshot of `main` at the time of writing (2026-04-23). Small drift from subsequent unrelated commits is expected. When in doubt, grep for the string or method name — the surrounding context in every step makes the target unambiguous.
+
 The migration is **dual-shape**: both the old (`status` + `starting_phase`) and the new (`lifecycle` + `activity` + `error_reason`) CRDT keys and struct fields coexist from Task 2 through Task 14. The new writers (`set_lifecycle`, `set_activity`, `set_lifecycle_with_error`) **maintain both shapes** — they write the new keys *and* mirror the legacy `status` + `starting_phase` — so readers that haven't migrated yet still see consistent state. Each task ends with a green commit (`cargo check --workspace`, `cargo test -p <touched>`, and the relevant TS / Python test command pass). Task 15 removes the old shape atomically after a repo-wide grep confirms zero callers remain. The design intent:
 
 1. **Task 1:** Add the enums. No behavior change. Green.
@@ -1065,7 +1067,7 @@ In `crates/runtimed/src/notebook_sync_server/tests.rs`:
 
 - [ ] **Step 7: Rewrite `room.rs` read + add helper**
 
-In `crates/runtimed/src/notebook_sync_server/room.rs` around lines 388–395, replace:
+In `crates/runtimed/src/notebook_sync_server/room.rs` around lines 490–496 (grep `rg -n 'state.kernel.status' crates/runtimed/src/notebook_sync_server/room.rs` to locate), replace:
 
 ```rust
                 if state.kernel.status != "not_started" && !state.kernel.status.is_empty() {
