@@ -1,0 +1,15 @@
+[package]
+name = "runtime-doc"
+version = "0.1.0"
+edition.workspace = true
+description = "RuntimeStateDoc and RuntimeStateHandle — per-notebook Automerge document for daemon-authoritative runtime state"
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+automerge = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+automunge = { path = "../automunge" }
+tokio = { version = "1", features = ["sync"] }
+tracing = "0.1"
