@@ -47,13 +47,7 @@ export default defineConfig(() => {
       tailwindcss(),
       rawLibPlugin(path.resolve(__dirname, "../../node_modules")),
       isolatedRendererPlugin(),
-      subAppTrailingSlashRedirect([
-        "onboarding",
-        "settings",
-        "feedback",
-        "upgrade",
-        "gallery",
-      ]),
+      subAppTrailingSlashRedirect(["onboarding", "settings", "feedback", "upgrade", "gallery"]),
       visualizer({
         filename: "dist/stats.html",
         open: false,

@@ -717,10 +717,26 @@ impl Daemon {
         // in — that would silently stop their heartbeats. No-op for fresh
         // installs (onboarding_completed = false) and idempotent across
         // restarts.
+        //
+        // Write both the Automerge doc and the JSON mirror immediately when
+        // the flag flips. Otherwise the change only persists if a settings
+        // client happens to connect and trigger `persist_settings` in
+        // `sync_server.rs` — a daemon that boots, runs briefly with no
+        // settings-window interaction, and exits would drop the backfill.
         if crate::settings_doc::backfill_telemetry_consent_in_doc(&mut settings) {
             tracing::info!(
                 "[settings] Backfilled telemetry_consent_recorded for an existing onboarded install"
             );
+            let automerge_path = crate::default_settings_doc_path();
+            if let Err(e) = settings.save_to_file(&automerge_path) {
+                tracing::warn!(
+                    "[settings] Failed to persist backfilled Automerge doc: {}",
+                    e
+                );
+            }
+            if let Err(e) = settings.save_json_mirror(&json_path) {
+                tracing::warn!("[settings] Failed to persist backfilled JSON mirror: {}", e);
+            }
         }
 
         // Write the settings JSON Schema for editor autocomplete
