@@ -136,16 +136,16 @@ impl RuntimeLifecycle {
         }
     }
 
-    /// Project a lifecycle back to the legacy `(status, starting_phase)`
-    /// string pair. Used by the dual-shape writers to mirror new-API
-    /// writes into the legacy CRDT keys so readers that haven't migrated
-    /// still see consistent state.
+    /// Project a lifecycle back to the `(status, starting_phase)` string
+    /// pair. Used by the typed-shape writers to mirror into the string
+    /// CRDT keys so readers that still consume the string shape see
+    /// consistent state.
     ///
     /// This is the inverse of [`from_legacy`] with one caveat:
     /// `Running(KernelActivity::Unknown)` projects to `("idle", "")`
-    /// because the legacy shape has no "unknown" status. Callers that
+    /// because the string shape has no "unknown" status. Callers that
     /// care about the distinction should match on the typed `lifecycle`
-    /// field instead of the legacy string.
+    /// field rather than the string.
     pub fn to_legacy(&self) -> (&'static str, &'static str) {
         match self {
             Self::NotStarted => ("not_started", ""),
@@ -159,6 +159,60 @@ impl RuntimeLifecycle {
             Self::Error => ("error", ""),
             Self::Shutdown => ("shutdown", ""),
         }
+    }
+}
+
+/// Reconcile the typed-shape and string-shape CRDT keys into a single
+/// [`RuntimeLifecycle`].
+///
+/// During the transition window the same document can be mutated via two
+/// setter families:
+///
+/// - **Typed setters** (`set_lifecycle`, `set_activity`,
+///   `set_lifecycle_with_error`) write the typed keys AND mirror into the
+///   string keys.
+/// - **String setters** (`set_kernel_status`, `set_starting_phase`) write
+///   only the string keys.
+///
+/// A doc that has only seen string setters still has its typed key at the
+/// scaffold value `"NotStarted"`, so a naive "prefer typed" rule would
+/// return [`RuntimeLifecycle::NotStarted`] even though the string shape
+/// clearly says the kernel is busy. This function implements the
+/// resolution rule:
+///
+/// 1. If `lifecycle_key` is empty (unscaffolded doc, pre-transition),
+///    derive from the string pair via [`from_legacy`].
+/// 2. Parse the typed pair. If the typed lifecycle's string projection
+///    (via [`to_legacy`]) matches the actual `(status, starting_phase)`
+///    pair, the two shapes agree — return the typed value.
+/// 3. If they disagree, the string keys have been updated more recently
+///    (typed setters always mirror, so a mismatch means a string-only
+///    setter ran). Derive from the string pair.
+///
+/// The rule is "whichever shape was written most recently wins." It
+/// relies on the writer-side invariant that typed setters mirror every
+/// write into the string keys.
+pub fn resolve_lifecycle(
+    lifecycle_key: &str,
+    activity_key: &str,
+    status: &str,
+    starting_phase: &str,
+) -> RuntimeLifecycle {
+    if lifecycle_key.is_empty() {
+        return RuntimeLifecycle::from_legacy(status, starting_phase);
+    }
+    let Some(typed) = RuntimeLifecycle::parse(lifecycle_key, activity_key) else {
+        return RuntimeLifecycle::from_legacy(status, starting_phase);
+    };
+    let (typed_status, typed_phase) = typed.to_legacy();
+    if typed_status == status && typed_phase == starting_phase {
+        typed
+    } else {
+        // String keys drifted from the typed projection — a string-only
+        // setter ran after the last typed write, or this doc was
+        // scaffolded by new() but only mutated through string setters.
+        // Trust the string shape.
+        RuntimeLifecycle::from_legacy(status, starting_phase)
     }
 }
 
@@ -378,5 +432,105 @@ mod tests {
                 "round-trip changed {lc:?} via ({status:?}, {phase:?}) → {round_tripped:?}"
             );
         }
+    }
+
+    // ── resolve_lifecycle ───────────────────────────────────────────
+
+    #[test]
+    fn resolve_prefers_typed_when_shapes_agree() {
+        // Typed shape "Running" + "Idle" projects to ("idle", "").
+        // Matches the string shape → typed wins.
+        assert_eq!(
+            resolve_lifecycle("Running", "Idle", "idle", ""),
+            RuntimeLifecycle::Running(KernelActivity::Idle)
+        );
+    }
+
+    #[test]
+    fn resolve_falls_back_to_string_when_typed_is_scaffold_default() {
+        // Scaffolded doc with only a string setter run: typed key is
+        // still "NotStarted", string key says "idle". The mismatch is
+        // what we detect — string shape wins.
+        assert_eq!(
+            resolve_lifecycle("NotStarted", "", "idle", ""),
+            RuntimeLifecycle::Running(KernelActivity::Idle)
+        );
+    }
+
+    #[test]
+    fn resolve_empty_typed_key_means_pre_scaffold_doc() {
+        // Doc constructed via new_empty() has no kernel map at all, so
+        // read_str returns "". Fall straight through to the string
+        // derivation without parsing.
+        assert_eq!(
+            resolve_lifecycle("", "", "busy", ""),
+            RuntimeLifecycle::Running(KernelActivity::Busy)
+        );
+        assert_eq!(
+            resolve_lifecycle("", "", "not_started", ""),
+            RuntimeLifecycle::NotStarted
+        );
+    }
+
+    #[test]
+    fn resolve_falls_back_when_typed_disagrees_with_string() {
+        // Typed says "Running"/"Idle" but string says "busy". A string
+        // setter ran after the last typed mirror — trust the string.
+        assert_eq!(
+            resolve_lifecycle("Running", "Idle", "busy", ""),
+            RuntimeLifecycle::Running(KernelActivity::Busy)
+        );
+    }
+
+    #[test]
+    fn resolve_falls_back_on_unparseable_typed_key() {
+        // Garbage in the typed lifecycle key (future variant? corruption?)
+        // falls through to the string derivation rather than returning
+        // Default and hiding the real state.
+        assert_eq!(
+            resolve_lifecycle("BogusFutureVariant", "Idle", "busy", ""),
+            RuntimeLifecycle::Running(KernelActivity::Busy)
+        );
+    }
+
+    #[test]
+    fn resolve_treats_running_unknown_as_agreeing_with_idle_string() {
+        // Running(Unknown) projects to ("idle", "") because the string
+        // shape has no "unknown" equivalent. A string status of "idle"
+        // agrees with that projection, so the typed Running(Unknown)
+        // wins and the Unknown activity is preserved.
+        assert_eq!(
+            resolve_lifecycle("Running", "Unknown", "idle", ""),
+            RuntimeLifecycle::Running(KernelActivity::Unknown)
+        );
+    }
+
+    #[test]
+    fn resolve_typed_starting_matches_string_starting() {
+        // Typed "Launching" projects to ("starting", "launching"). If the
+        // string pair matches, typed wins.
+        assert_eq!(
+            resolve_lifecycle("Launching", "", "starting", "launching"),
+            RuntimeLifecycle::Launching
+        );
+    }
+
+    #[test]
+    fn resolve_typed_starting_disagrees_on_phase() {
+        // Typed "Launching" projects to ("starting", "launching") but
+        // string phase says "connecting". String shape wins.
+        assert_eq!(
+            resolve_lifecycle("Launching", "", "starting", "connecting"),
+            RuntimeLifecycle::Connecting
+        );
+    }
+
+    #[test]
+    fn resolve_error_with_empty_reason_agrees() {
+        // Error has no string phase component; both shapes agree.
+        assert_eq!(
+            resolve_lifecycle("Error", "", "error", ""),
+            RuntimeLifecycle::Error
+        );
     }
 }

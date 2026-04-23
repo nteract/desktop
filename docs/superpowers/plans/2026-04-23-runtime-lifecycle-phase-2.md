@@ -23,11 +23,12 @@
 
 ## Dual-shape invariants (worth testing explicitly)
 
-- A writer that takes the new API still leaves `kernel.status` + `kernel.starting_phase` matching the old contract.
-- A writer that takes the old API leaves `kernel.lifecycle` + `kernel.activity` consistent — NO, we do NOT update the new keys from the old writers. Phase 3 migrates callers. The failure mode we care about is: old writer + new reader sees a stale lifecycle. `read_state` handles this by preferring the new keys only when they have been written; if they're still at scaffold defaults after an old writer ran, fall back to `from_legacy`.
-- `set_lifecycle(Error)` alone must not clobber an existing `error_reason`; only `set_lifecycle_with_error(lc, None)` clears it.
-- `set_activity` is a no-op when activity is unchanged — hot path for IOPub idle/busy.
-- Leaving `Running` always clears `activity` to `""`.
+- **Typed setters mirror.** `set_lifecycle`, `set_lifecycle_with_error`, and `set_activity` always update both the typed keys (`lifecycle`, `activity`, `error_reason`) AND the string keys (`status`, `starting_phase`). String-shape readers never see stale data written through the typed API.
+- **String setters don't mirror.** `set_kernel_status` and `set_starting_phase` touch only the string keys. The typed keys stay at whatever value the last typed writer left them.
+- **`read_state` reconciles.** When the string pair disagrees with the typed lifecycle's `to_legacy()` projection, a string setter ran more recently — `resolve_lifecycle` falls through to `RuntimeLifecycle::from_legacy(status, starting_phase)`. When they agree, the typed value wins (preserving `Running(Unknown)` through a lossy string projection, for example).
+- **`set_activity` throttle.** A no-op only when BOTH typed `activity` AND string `status` already match the target. If a string setter drifted the string key, `set_activity` re-mirrors even when the typed value looks redundant.
+- **`error_reason` ownership.** `set_lifecycle` alone must not clobber an existing `error_reason`; only `set_lifecycle_with_error(lc, None)` clears it. Retry paths that re-enter `Error` via the plain setter keep their diagnosis.
+- **Leaving Running clears activity.** `set_lifecycle` always sets `activity = ""` on non-`Running` variants, so a later `Running(Idle)` can't be confused for a stale `Running(Busy)`.
 
 ## Acceptance
 

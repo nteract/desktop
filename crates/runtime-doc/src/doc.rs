@@ -890,17 +890,26 @@ impl RuntimeStateDoc {
     /// state transitions; reserve this method for the idle/busy flip.
     pub fn set_activity(&mut self, activity: KernelActivity) -> Result<(), RuntimeStateError> {
         let kernel = self.scaffold_map("kernel")?;
-        let current = self.read_str(&kernel, "activity");
-        if current == activity.as_str() {
-            return Ok(());
-        }
-        self.doc.put(&kernel, "activity", activity.as_str())?;
-        // Dual-shape: mirror into legacy kernel.status.
         let legacy_status = match activity {
             KernelActivity::Busy => "busy",
             KernelActivity::Idle | KernelActivity::Unknown => "idle",
         };
-        self.doc.put(&kernel, "status", legacy_status)?;
+        // Dual-shape throttle: skip only when BOTH the typed activity AND
+        // the mirrored legacy status already match. If a legacy writer
+        // (set_kernel_status) ran in between and drifted the legacy key
+        // out of sync, we still need to re-mirror it here — otherwise
+        // unmigrated readers stay stuck on a stale status.
+        let current_activity = self.read_str(&kernel, "activity");
+        let current_status = self.read_str(&kernel, "status");
+        if current_activity == activity.as_str() && current_status == legacy_status {
+            return Ok(());
+        }
+        if current_activity != activity.as_str() {
+            self.doc.put(&kernel, "activity", activity.as_str())?;
+        }
+        if current_status != legacy_status {
+            self.doc.put(&kernel, "status", legacy_status)?;
+        }
         Ok(())
     }
 
@@ -1987,19 +1996,19 @@ impl RuntimeStateDoc {
             .map(|k| {
                 let status = self.read_str(k, "status");
                 let starting_phase = self.read_str(k, "starting_phase");
-                // Prefer the typed CRDT keys when they've been written. An
-                // empty string means the key hasn't been populated (or was
-                // scaffolded at "" for activity); fall back to the legacy
-                // (status, starting_phase) projection so pre-Phase-2 docs
-                // and legacy-only writers still read correctly.
-                let lifecycle_str = self.read_str(k, "lifecycle");
-                let activity_str = self.read_str(k, "activity");
-                let lifecycle = if lifecycle_str.is_empty() {
-                    RuntimeLifecycle::from_legacy(&status, &starting_phase)
-                } else {
-                    RuntimeLifecycle::parse(&lifecycle_str, &activity_str)
-                        .unwrap_or_else(|| RuntimeLifecycle::from_legacy(&status, &starting_phase))
-                };
+                let lifecycle_key = self.read_str(k, "lifecycle");
+                let activity_key = self.read_str(k, "activity");
+                // Reconcile the typed and string shapes — see
+                // `resolve_lifecycle` for the rule. Keeps readers correct
+                // during the transition while callers move from
+                // `set_kernel_status` / `set_starting_phase` to
+                // `set_lifecycle` / `set_activity`.
+                let lifecycle = crate::types::resolve_lifecycle(
+                    &lifecycle_key,
+                    &activity_key,
+                    &status,
+                    &starting_phase,
+                );
                 // error_reason is Option<String> so callers can tell "no
                 // kernel map at all" (None) from "scaffolded but unset"
                 // (Some("")). The unwrap_or_default above only fires when
@@ -4536,19 +4545,26 @@ mod tests {
     }
 
     #[test]
-    fn set_activity_without_running_lifecycle_still_writes() -> Result<(), RuntimeStateError> {
-        // Contract: set_activity does not enforce that lifecycle is Running.
-        // Misuse produces a doc whose typed view is Running(<activity>) because
-        // read_state trusts the CRDT keys. Pin the behavior so a future change
-        // to enforce the invariant shows up here.
+    fn set_activity_without_running_lifecycle_resolves_via_string_shape(
+    ) -> Result<(), RuntimeStateError> {
+        // set_activity does not enforce that lifecycle is Running — callers
+        // are expected to have transitioned to Running first. If they
+        // haven't, the typed lifecycle key stays at scaffold "NotStarted"
+        // but set_activity mirrors "busy" into the string status key.
+        //
+        // resolve_lifecycle detects the mismatch (typed → "not_started",
+        // string → "busy") and returns the string-derived value. This
+        // matches the expected behavior of "whichever shape was written
+        // most recently wins."
         let mut doc = RuntimeStateDoc::new();
-        // Lifecycle is scaffolded to NotStarted.
         doc.set_activity(KernelActivity::Busy)?;
         let s = doc.read_state().kernel;
-        // lifecycle key is still "NotStarted" because set_activity doesn't touch it.
-        assert_eq!(s.lifecycle, RuntimeLifecycle::NotStarted);
-        // But the legacy kernel.status was mirrored to "busy".
         assert_eq!(s.status, "busy");
+        assert_eq!(
+            s.lifecycle,
+            RuntimeLifecycle::Running(KernelActivity::Busy),
+            "resolve_lifecycle prefers the freshly-written string shape"
+        );
         Ok(())
     }
 
@@ -4619,57 +4635,103 @@ mod tests {
     }
 
     #[test]
-    fn legacy_writer_falls_through_read_state() -> Result<(), RuntimeStateError> {
-        // When only the legacy writer runs, the `lifecycle` CRDT key stays
-        // at scaffold default "NotStarted". read_state prefers the new key
-        // because it's non-empty, so it reports NotStarted even though the
-        // legacy status says "idle". That's a real issue for Phase 3 — it
-        // means callers that still use set_kernel_status will be seen as
-        // NotStarted by new-API readers until Phase 3 migrates them.
-        //
-        // This test pins the behavior so the dual-shape gap is explicit.
+    fn string_setter_only_produces_correct_lifecycle_read() -> Result<(), RuntimeStateError> {
+        // When a string-form setter mutates a scaffolded doc, the typed
+        // key still reads "NotStarted". resolve_lifecycle detects the
+        // mismatch (typed.to_legacy() == ("not_started", "") ≠ ("idle", ""))
+        // and derives from the string shape. This is the critical invariant
+        // that lets Phase 3 migrate callers incrementally.
         let mut doc = RuntimeStateDoc::new();
         doc.set_kernel_status("idle")?;
 
         let s = doc.read_state().kernel;
-        // Legacy view is correct.
         assert_eq!(s.status, "idle");
-        // Typed view is stuck at scaffold default because the new-key path
-        // fires first and reads the scaffold "NotStarted".
         assert_eq!(
             s.lifecycle,
-            RuntimeLifecycle::NotStarted,
-            "known dual-shape gap: old writer + new reader sees scaffolded NotStarted. \
-             Phase 3 migration fixes this by using the new writer."
+            RuntimeLifecycle::Running(KernelActivity::Idle),
+            "string setter + typed reader must resolve via from_legacy"
         );
         Ok(())
     }
 
     #[test]
-    fn new_writer_then_old_writer_then_new_writer_stays_consistent() -> Result<(), RuntimeStateError>
-    {
+    fn string_setter_starting_phase_resolves_correctly() -> Result<(), RuntimeStateError> {
+        let mut doc = RuntimeStateDoc::new();
+        doc.set_kernel_status("starting")?;
+        doc.set_starting_phase("launching")?;
+
+        let s = doc.read_state().kernel;
+        assert_eq!(s.status, "starting");
+        assert_eq!(s.starting_phase, "launching");
+        assert_eq!(s.lifecycle, RuntimeLifecycle::Launching);
+        Ok(())
+    }
+
+    #[test]
+    fn typed_setter_then_string_setter_stays_consistent() -> Result<(), RuntimeStateError> {
+        // Sequence: typed → string → typed.
+        //
+        // Each read must be internally consistent. The typed setter mirrors
+        // into the string keys; a string setter afterward flips the string
+        // key without touching the typed keys, so resolve_lifecycle detects
+        // the drift and prefers the string shape.
         let mut doc = RuntimeStateDoc::new();
 
         doc.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?;
         assert_eq!(doc.read_state().kernel.status, "idle");
 
-        // Old writer flips status; typed view sees the lifecycle key still
-        // says "Running", and activity is still "Idle". Legacy status says
-        // "busy". Both reads are internally consistent in their own shape.
         doc.set_kernel_status("busy")?;
         let s = doc.read_state().kernel;
         assert_eq!(s.status, "busy");
         assert_eq!(
             s.lifecycle,
-            RuntimeLifecycle::Running(KernelActivity::Idle),
-            "new-key path reads lifecycle=\"Running\" activity=\"Idle\", ignoring legacy status"
+            RuntimeLifecycle::Running(KernelActivity::Busy),
+            "string shape was written more recently; typed lifecycle tracks it"
         );
 
-        // New writer flips activity; both shapes reconverge.
-        doc.set_activity(KernelActivity::Busy)?;
+        doc.set_activity(KernelActivity::Idle)?;
         let s = doc.read_state().kernel;
-        assert_eq!(s.status, "busy");
-        assert_eq!(s.lifecycle, RuntimeLifecycle::Running(KernelActivity::Busy));
+        assert_eq!(s.status, "idle");
+        assert_eq!(s.lifecycle, RuntimeLifecycle::Running(KernelActivity::Idle));
+        Ok(())
+    }
+
+    #[test]
+    fn set_activity_repairs_drifted_status() -> Result<(), RuntimeStateError> {
+        // Scenario codex-review flagged: typed activity already matches the
+        // requested value, but legacy status has drifted because a string
+        // setter ran in between. set_activity must repair the string side
+        // even on a "redundant" typed call.
+        let mut doc = RuntimeStateDoc::new();
+        doc.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?;
+        assert_eq!(doc.read_state().kernel.status, "idle");
+
+        doc.set_kernel_status("busy")?;
+        assert_eq!(doc.read_state().kernel.status, "busy");
+
+        doc.set_activity(KernelActivity::Idle)?;
+        let s = doc.read_state().kernel;
+        assert_eq!(
+            s.status, "idle",
+            "set_activity must repair drifted status even on redundant typed call"
+        );
+        assert_eq!(s.lifecycle, RuntimeLifecycle::Running(KernelActivity::Idle));
+        Ok(())
+    }
+
+    #[test]
+    fn set_activity_truly_redundant_is_still_noop() -> Result<(), RuntimeStateError> {
+        // When BOTH shapes already match, set_activity must not advance
+        // heads. The IOPub throttle still holds for the common case.
+        let mut doc = RuntimeStateDoc::new();
+        doc.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Busy))?;
+        let heads_before = doc.get_heads();
+        doc.set_activity(KernelActivity::Busy)?;
+        assert_eq!(
+            heads_before,
+            doc.get_heads(),
+            "truly redundant set_activity must not advance heads"
+        );
         Ok(())
     }
 
