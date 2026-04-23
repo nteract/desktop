@@ -255,7 +255,30 @@ class KernelState:
 
     @property
     def status(self) -> str:
-        """Kernel status: "not_started", "starting", "idle", "busy", "error", "shutdown"."""
+        """Flat status bucket: "not_started", "awaiting_trust", "starting",
+        "idle", "busy", "error", "shutdown". Projected from the typed
+        lifecycle for callers that want a simple string."""
+        ...
+    @property
+    def starting_phase(self) -> str:
+        """Starting sub-phase: "", "resolving", "preparing_env", "launching",
+        "connecting". Only non-empty when status is "starting"."""
+        ...
+    @property
+    def lifecycle(self) -> str:
+        """Typed lifecycle variant name: "NotStarted", "AwaitingTrust",
+        "Resolving", "PreparingEnv", "Launching", "Connecting", "Running",
+        "Error", "Shutdown". Paired with `activity` when "Running"."""
+        ...
+    @property
+    def activity(self) -> str:
+        """Activity sub-state when lifecycle == "Running": "Unknown",
+        "Idle", "Busy". Empty string otherwise."""
+        ...
+    @property
+    def error_reason(self) -> str | None:
+        """Typed error reason when lifecycle == "Error". None when the
+        CRDT key is absent; empty string when scaffolded but unset."""
         ...
     @property
     def name(self) -> str:

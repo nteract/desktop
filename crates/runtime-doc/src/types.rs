@@ -194,31 +194,56 @@ impl RuntimeLifecycle {
     }
 }
 
-/// Read a [`RuntimeLifecycle`] from the CRDT `kernel/lifecycle` and
-/// `kernel/activity` keys, falling back to the pre-typed `status` /
-/// `starting_phase` pair for docs produced before the typed keys
-/// existed.
+/// Read a [`RuntimeLifecycle`] from the CRDT, reconciling the typed
+/// `kernel/lifecycle` + `kernel/activity` keys against the pre-typed
+/// `kernel/status` + `kernel/starting_phase` pair.
 ///
-/// Every in-repo writer now goes through the typed setters, so the
-/// fallback path is only hit when reading a doc authored by an older
-/// producer (captured test fixture, programmatic `from_doc` with raw
-/// bytes, cross-version in-flight sync frame). Returns
-/// [`RuntimeLifecycle::NotStarted`] if both shapes are absent or
-/// unparseable.
+/// Every in-repo writer now goes through the typed setters; this
+/// fallback path matters only when reading a doc authored or mutated
+/// by an older producer (captured test fixture, `from_doc` with raw
+/// bytes, cross-version in-flight sync frame).
+///
+/// Resolution rule:
+///
+/// 1. No typed lifecycle key: derive from the string shape, or return
+///    [`RuntimeLifecycle::NotStarted`] if that's empty too.
+/// 2. Typed + string present: if the typed lifecycle's string
+///    projection matches the actual `(status, starting_phase)` pair,
+///    the two shapes agree — return the typed value. If they disagree,
+///    a legacy-only writer ran more recently, so the string shape
+///    wins.
+/// 3. Typed key is unparseable (future variant, corruption): fall
+///    through to the string shape so the real state isn't hidden.
 pub fn resolve_lifecycle(
     lifecycle_key: &str,
     activity_key: &str,
     status: &str,
     starting_phase: &str,
 ) -> RuntimeLifecycle {
-    if let Some(typed) = RuntimeLifecycle::parse(lifecycle_key, activity_key) {
-        return typed;
-    }
-    // Pre-typed doc: derive from the string shape if present.
-    if !status.is_empty() {
+    if lifecycle_key.is_empty() {
+        if status.is_empty() {
+            return RuntimeLifecycle::NotStarted;
+        }
         return RuntimeLifecycle::from_legacy(status, starting_phase);
     }
-    RuntimeLifecycle::NotStarted
+    let Some(typed) = RuntimeLifecycle::parse(lifecycle_key, activity_key) else {
+        if status.is_empty() {
+            return RuntimeLifecycle::NotStarted;
+        }
+        return RuntimeLifecycle::from_legacy(status, starting_phase);
+    };
+    // Both shapes present: whichever was written most recently wins.
+    // Typed writers always clear the string keys too, so a mismatch
+    // means a legacy-only writer ran after the last typed write.
+    if status.is_empty() {
+        return typed;
+    }
+    let (typed_status, typed_phase) = typed.to_legacy();
+    if typed_status == status && typed_phase == starting_phase {
+        typed
+    } else {
+        RuntimeLifecycle::from_legacy(status, starting_phase)
+    }
 }
 
 #[cfg(test)]
@@ -456,6 +481,32 @@ mod tests {
         assert_eq!(
             resolve_lifecycle("Running", "Unknown", "", ""),
             RuntimeLifecycle::Running(KernelActivity::Unknown)
+        );
+    }
+
+    #[test]
+    fn resolve_mixed_shape_prefers_legacy_string_when_shapes_disagree() {
+        // Both shapes present but they describe different states. A
+        // legacy-only writer (older producer, external mutation)
+        // touched the string shape after the last typed write. Trust
+        // the string shape so running/busy/error kernels aren't misread.
+        assert_eq!(
+            resolve_lifecycle("NotStarted", "", "busy", ""),
+            RuntimeLifecycle::Running(KernelActivity::Busy)
+        );
+        assert_eq!(
+            resolve_lifecycle("Running", "Idle", "starting", "launching"),
+            RuntimeLifecycle::Launching
+        );
+    }
+
+    #[test]
+    fn resolve_mixed_shape_prefers_typed_when_shapes_agree() {
+        // Typed Running(Idle) projects to ("idle", "") — matches the
+        // legacy pair, so the two shapes agree and typed wins.
+        assert_eq!(
+            resolve_lifecycle("Running", "Idle", "idle", ""),
+            RuntimeLifecycle::Running(KernelActivity::Idle)
         );
     }
 }
