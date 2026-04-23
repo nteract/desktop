@@ -392,22 +392,40 @@ export function NotebookToolbar({
           </div>
         </div>
       )}
-      {/* Pixi ipykernel install prompt — only when daemon signals missing_ipykernel */}
+      {/* ipykernel install prompt — branch by env type so uv / conda / pixi
+          get the right remediation copy. Only the three project-file env
+          sources can reach this reason; inline / prewarmed / PEP 723 bundle
+          ipykernel in the daemon-managed install set. */}
       {runtime === "python" &&
         lifecycle.lifecycle === "Error" &&
-        envSource?.startsWith("pixi:") &&
-        errorReason === KERNEL_ERROR_REASON.MISSING_IPYKERNEL && (
-          <div className="border-t px-3 py-2">
-            <div className="flex items-start gap-2 text-xs text-amber-700 dark:text-amber-400">
-              <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-              <span>
-                <span className="font-medium">ipykernel not found in pixi.toml.</span> Run{" "}
-                <code className="rounded bg-amber-500/20 px-1">pixi add ipykernel</code> in your
-                project directory and restart.
-              </span>
+        errorReason === KERNEL_ERROR_REASON.MISSING_IPYKERNEL &&
+        (() => {
+          let projectFile: string | null = null;
+          let command: string | null = null;
+          if (envSource?.startsWith("pixi:")) {
+            projectFile = "pixi.toml";
+            command = "pixi add ipykernel";
+          } else if (envSource === "uv:pyproject") {
+            projectFile = "pyproject.toml";
+            command = "uv add ipykernel";
+          } else if (envSource === "conda:env_yml") {
+            projectFile = "environment.yml";
+            command = "conda install ipykernel";
+          }
+          if (!projectFile || !command) return null;
+          return (
+            <div className="border-t px-3 py-2">
+              <div className="flex items-start gap-2 text-xs text-amber-700 dark:text-amber-400">
+                <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                <span>
+                  <span className="font-medium">ipykernel not found in {projectFile}.</span> Run{" "}
+                  <code className="rounded bg-amber-500/20 px-1">{command}</code> in your project
+                  directory and restart.
+                </span>
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
     </header>
   );
 }

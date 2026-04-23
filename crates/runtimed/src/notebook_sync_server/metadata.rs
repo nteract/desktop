@@ -2408,36 +2408,53 @@ pub(crate) async fn auto_launch_kernel(
             }
         };
 
-    // For pixi:toml, verify ipykernel is in pixi.toml before launching
-    if matches!(env_source, EnvSource::PixiToml) {
-        if let Some(ref detected) = detected_project_file {
-            let has_ipykernel = match kernel_launch::tools::pixi_info(&detected.path).await {
-                Ok(info) => info.has_ipykernel(),
-                Err(e) => {
-                    warn!(
-                        "[notebook-sync] pixi info failed, falling back to line scan: {}",
-                        e
-                    );
-                    crate::project_file::pixi_toml_has_ipykernel(&detected.path)
-                }
-            };
-            if !has_ipykernel {
-                warn!(
-                    "[notebook-sync] pixi.toml at {:?} does not declare ipykernel — cannot launch kernel",
-                    detected.path
-                );
-                if let Err(e) = room.state.with_doc(|sd| {
-                    sd.set_lifecycle_with_error(
-                        &RuntimeLifecycle::Error,
-                        Some(KernelErrorReason::MissingIpykernel),
-                    )?;
-                    sd.set_kernel_info("python", "python", env_source.as_str())?;
-                    Ok(())
-                }) {
-                    warn!("[runtime-state] {}", e);
-                }
-                return;
+    // For project-file env sources, verify ipykernel is declared before
+    // launching. Covers pixi.toml (via `pixi info` with a line-scan
+    // fallback), pyproject.toml (uv), and environment.yml (conda).
+    //
+    // Inline / prewarmed / PEP 723 paths bundle ipykernel in the
+    // daemon-managed install set, so the check is unnecessary there.
+    if let Some(ref detected) = detected_project_file {
+        let (missing, tool_label) = match env_source {
+            EnvSource::PixiToml => {
+                let has = match kernel_launch::tools::pixi_info(&detected.path).await {
+                    Ok(info) => info.has_ipykernel(),
+                    Err(e) => {
+                        warn!(
+                            "[notebook-sync] pixi info failed, falling back to line scan: {}",
+                            e
+                        );
+                        crate::project_file::pixi_toml_has_ipykernel(&detected.path)
+                    }
+                };
+                (!has, "pixi.toml")
             }
+            EnvSource::Pyproject => (
+                !crate::project_file::pyproject_toml_has_ipykernel(&detected.path),
+                "pyproject.toml",
+            ),
+            EnvSource::EnvYml => (
+                !crate::project_file::environment_yml_has_ipykernel(&detected.path),
+                "environment.yml",
+            ),
+            _ => (false, ""),
+        };
+        if missing {
+            warn!(
+                "[notebook-sync] {} at {:?} does not declare ipykernel — cannot launch kernel",
+                tool_label, detected.path,
+            );
+            if let Err(e) = room.state.with_doc(|sd| {
+                sd.set_lifecycle_with_error(
+                    &RuntimeLifecycle::Error,
+                    Some(KernelErrorReason::MissingIpykernel),
+                )?;
+                sd.set_kernel_info("python", "python", env_source.as_str())?;
+                Ok(())
+            }) {
+                warn!("[runtime-state] {}", e);
+            }
+            return;
         }
     }
 
