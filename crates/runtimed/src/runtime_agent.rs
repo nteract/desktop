@@ -985,7 +985,11 @@ async fn handle_queue_command(
                 for entry in &cleared {
                     sd.set_execution_done(&entry.execution_id, false)?;
                 }
-                sd.set_lifecycle(&RuntimeLifecycle::Error)?;
+                // Generic kernel-died path — no specific typed reason. Clear
+                // any stale error_reason from a prior failure so the frontend
+                // doesn't misreport this death as (say) a repeat
+                // missing_ipykernel incident.
+                sd.set_lifecycle_with_error(&RuntimeLifecycle::Error, None)?;
                 sd.set_queue(None, &[])?;
                 Ok(())
             }) {
