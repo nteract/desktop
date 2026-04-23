@@ -901,7 +901,7 @@ If latency becomes an issue during rapid output bursts (e.g., training loops), t
 
 ### Schema versioning: lightweight, not a framework
 
-The notebook doc root contains a `schema_version: u64` field. Current docs are v4 (cells as a `Map` with fractional indexing, outputs in `RuntimeStateDoc` keyed by `execution_id`, per-output `output_id` UUIDs on manifests). `load_or_create_inner` only accepts v4 docs; anything else drops to a fresh doc with a loud warning. v1–v3 predate the nteract 2.0 pre-release series and have no real users, so dropping them is a no-op in practice — **not** a template for future bumps. Any v5 schema MUST ship a `migrate_v4_to_v5` function that preserves user data. No formal migration framework — the schema is simple enough that version-checking `if` branches suffice, but the branch is only correct when the migration actually carries data forward.
+The notebook doc root contains a `schema_version: u64` field. Current docs are v4 (cells as a `Map` with fractional indexing, outputs in `RuntimeStateDoc` keyed by `execution_id`, per-output `output_id` UUIDs on manifests). `load_or_create_inner` migrates v3 docs to v4 in-place (version bump only — `output_id` is minted at capture time). v1–v2 predate the nteract 2.0 pre-release series and use incompatible cell schemas; those are discarded on load. Any v5 schema MUST ship a `migrate_v4_to_v5` function that preserves user data. No formal migration framework — the schema is simple enough that version-checking `if` branches suffice, but the branch is only correct when the migration actually carries data forward.
 
 For output manifests, the `output_type` field provides structural versioning. New fields can be added without breaking old readers.
 

@@ -63,8 +63,9 @@ use std::collections::HashMap;
 /// - **4** — Addressable outputs: `OutputManifest` carries a required `output_id` (UUIDv4).
 ///   Outputs live in RuntimeStateDoc keyed by `execution_id`; manifests carry `output_id`.
 ///
-/// v1–v3 predate the nteract 2.0 pre-release series and are no longer
-/// supported. `load_or_create_inner` discards pre-v4 documents on load.
+/// v1–v2 predate the nteract 2.0 pre-release series and are no longer
+/// supported. `load_or_create_inner` discards pre-v3 documents on load.
+/// v3 documents are migrated in-place (version bump only).
 pub const SCHEMA_VERSION: u64 = 4;
 
 use automerge::sync;
@@ -786,26 +787,33 @@ impl NotebookDoc {
                             }
                             return loaded;
                         }
-                        // CRITICAL: one-time cleanup for pre-release schemas
-                        // (v1–v3 predate nteract 2.0). All current users are on
-                        // v4, so dropping older docs on the floor is safe here
-                        // by historical accident, not by policy.
-                        //
-                        // DO NOT COPY THIS PATTERN FOR FUTURE SCHEMA BUMPS.
-                        // Any real migration (v4 → v5 onward) MUST implement a
-                        // `migrate_vN_to_v(N+1)` function that preserves user
-                        // data. Falling back to a fresh doc is a data-loss
-                        // operation and only acceptable when there is no
-                        // meaningful data to lose.
-                        //
-                        // Belt-and-suspenders: rename the unexpected-version doc
-                        // to `{path}.corrupt` before we replace it. That leaves
-                        // the original bytes on disk for manual recovery if a
-                        // future downgrade ever lands someone here (e.g. user
-                        // runs a newer build once, then rolls back).
+
+                        // v3 → v4: output_id was added to OutputManifest, but
+                        // it's minted at capture time (#[serde(default)]), so
+                        // the migration is a version-bump no-op.
+                        if version == 3 {
+                            info!(
+                                "[notebook-doc] Migrating schema v3 → v{} for {} at {:?}",
+                                SCHEMA_VERSION, notebook_id, path
+                            );
+                            let _ =
+                                loaded
+                                    .doc
+                                    .put(automerge::ROOT, "schema_version", SCHEMA_VERSION);
+                            if let Some(label) = actor_label {
+                                loaded.set_actor(label);
+                            }
+                            return loaded;
+                        }
+
+                        // v1–v2 predate nteract 2.0 and use incompatible cell
+                        // schemas (ordered List vs fractional-indexed Map).
+                        // Preserve the file for manual recovery, then start fresh.
                         warn!(
-                            "[notebook-doc] Rejecting schema v{} notebook at {:?} for {}; only v{} is supported. Preserving as .corrupt and starting fresh untitled notebook.",
-                            version, path, notebook_id, SCHEMA_VERSION
+                            "[notebook-doc] Rejecting schema v{} notebook at {:?} for {}; \
+                             migration is only supported from v3. \
+                             Preserving as .corrupt and starting fresh.",
+                            version, path, notebook_id
                         );
                         Self::preserve_corrupt(path);
                     }
@@ -2481,6 +2489,45 @@ mod tests {
         assert_eq!(
             std::fs::read(&corrupt_path).unwrap(),
             b"this is not a valid automerge document"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "persistence")]
+    fn test_load_v3_doc_migrates_to_v4() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("notebook.automerge");
+
+        // Create a doc with cells and deps, then downgrade to v3
+        let mut doc = NotebookDoc::new("migrate-test");
+        doc.add_cell(0, "c1", "code").unwrap();
+        doc.update_source("c1", "import numpy").unwrap();
+        doc.add_conda_dependency("numpy").unwrap();
+        let _ = doc.doc.put(automerge::ROOT, "schema_version", 3u64);
+        assert_eq!(doc.schema_version(), Some(3));
+        doc.save_to_file(&path).unwrap();
+
+        // load_or_create should migrate, not discard
+        let loaded = NotebookDoc::load_or_create(&path, "migrate-test");
+        assert_eq!(loaded.schema_version(), Some(SCHEMA_VERSION));
+        assert_eq!(loaded.cell_count(), 1);
+        let cells = loaded.get_cells();
+        assert_eq!(cells[0].source, "import numpy");
+
+        let snap = loaded.get_metadata_snapshot().unwrap();
+        let conda = snap.runt.conda.unwrap();
+        assert!(
+            conda.dependencies.contains(&"numpy".to_string()),
+            "conda deps must survive migration: {:?}",
+            conda.dependencies
+        );
+
+        // Original file should NOT be renamed to .corrupt
+        assert!(path.exists(), "migrated file should remain in place");
+        let corrupt_path = path.with_extension("automerge.corrupt");
+        assert!(
+            !corrupt_path.exists(),
+            "v3 migration should not create .corrupt"
         );
     }
 
