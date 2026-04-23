@@ -135,6 +135,31 @@ impl RuntimeLifecycle {
             _ => Self::NotStarted,
         }
     }
+
+    /// Project a lifecycle back to the legacy `(status, starting_phase)`
+    /// string pair. Used by the dual-shape writers to mirror new-API
+    /// writes into the legacy CRDT keys so readers that haven't migrated
+    /// still see consistent state.
+    ///
+    /// This is the inverse of [`from_legacy`] with one caveat:
+    /// `Running(KernelActivity::Unknown)` projects to `("idle", "")`
+    /// because the legacy shape has no "unknown" status. Callers that
+    /// care about the distinction should match on the typed `lifecycle`
+    /// field instead of the legacy string.
+    pub fn to_legacy(&self) -> (&'static str, &'static str) {
+        match self {
+            Self::NotStarted => ("not_started", ""),
+            Self::AwaitingTrust => ("awaiting_trust", ""),
+            Self::Resolving => ("starting", "resolving"),
+            Self::PreparingEnv => ("starting", "preparing_env"),
+            Self::Launching => ("starting", "launching"),
+            Self::Connecting => ("starting", "connecting"),
+            Self::Running(KernelActivity::Busy) => ("busy", ""),
+            Self::Running(_) => ("idle", ""),
+            Self::Error => ("error", ""),
+            Self::Shutdown => ("shutdown", ""),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -283,5 +308,75 @@ mod tests {
         assert_eq!(RuntimeLifecycle::from_legacy("not_started", ""), NotStarted);
         assert_eq!(RuntimeLifecycle::from_legacy("", ""), NotStarted);
         assert_eq!(RuntimeLifecycle::from_legacy("gibberish", ""), NotStarted);
+    }
+
+    // ── Phase 2: to_legacy projection ───────────────────────────────
+
+    #[test]
+    fn to_legacy_non_running_variants() {
+        use RuntimeLifecycle::*;
+        assert_eq!(NotStarted.to_legacy(), ("not_started", ""));
+        assert_eq!(AwaitingTrust.to_legacy(), ("awaiting_trust", ""));
+        assert_eq!(Resolving.to_legacy(), ("starting", "resolving"));
+        assert_eq!(PreparingEnv.to_legacy(), ("starting", "preparing_env"));
+        assert_eq!(Launching.to_legacy(), ("starting", "launching"));
+        assert_eq!(Connecting.to_legacy(), ("starting", "connecting"));
+        assert_eq!(Error.to_legacy(), ("error", ""));
+        assert_eq!(Shutdown.to_legacy(), ("shutdown", ""));
+    }
+
+    #[test]
+    fn to_legacy_running_activity() {
+        assert_eq!(
+            RuntimeLifecycle::Running(KernelActivity::Idle).to_legacy(),
+            ("idle", "")
+        );
+        assert_eq!(
+            RuntimeLifecycle::Running(KernelActivity::Busy).to_legacy(),
+            ("busy", "")
+        );
+        // Unknown has no legacy equivalent — falls back to "idle" because
+        // the legacy shape interpreted anything non-busy as idle-ish.
+        assert_eq!(
+            RuntimeLifecycle::Running(KernelActivity::Unknown).to_legacy(),
+            ("idle", "")
+        );
+    }
+
+    #[test]
+    fn from_legacy_to_legacy_round_trip_is_lossy_for_unknown() {
+        // Running(Unknown) → ("idle", "") → Running(Idle). The test pins
+        // the loss so future work that might try to preserve Unknown
+        // through the legacy channel surfaces here.
+        let lc = RuntimeLifecycle::Running(KernelActivity::Unknown);
+        let (status, phase) = lc.to_legacy();
+        assert_eq!(
+            RuntimeLifecycle::from_legacy(status, phase),
+            RuntimeLifecycle::Running(KernelActivity::Idle)
+        );
+    }
+
+    #[test]
+    fn to_legacy_from_legacy_round_trip_preserves_non_running() {
+        use RuntimeLifecycle::*;
+        for lc in [
+            NotStarted,
+            AwaitingTrust,
+            Resolving,
+            PreparingEnv,
+            Launching,
+            Connecting,
+            Running(KernelActivity::Idle),
+            Running(KernelActivity::Busy),
+            Error,
+            Shutdown,
+        ] {
+            let (status, phase) = lc.to_legacy();
+            let round_tripped = RuntimeLifecycle::from_legacy(status, phase);
+            assert_eq!(
+                round_tripped, lc,
+                "round-trip changed {lc:?} via ({status:?}, {phase:?}) → {round_tripped:?}"
+            );
+        }
     }
 }
