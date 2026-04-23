@@ -438,7 +438,7 @@ pub async fn create_notebook(
         working_dir,
         &server.get_peer_label().await,
         ephemeral,
-        explicit_pkg_manager,
+        explicit_pkg_manager.clone(),
         deps.clone(),
     )
     .await
@@ -476,7 +476,7 @@ pub async fn create_notebook(
             let all_deps = {
                 let guard = server.session.read().await;
                 guard.as_ref().map_or_else(Vec::new, |s| {
-                    super::deps::get_deps_for_manager_pub(&s.handle, pkg_manager)
+                    super::deps::get_deps_for_manager_pub(&s.handle, &pkg_manager)
                 })
             };
 

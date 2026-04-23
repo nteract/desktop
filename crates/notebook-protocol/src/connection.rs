@@ -34,30 +34,50 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 /// Supported package managers for Python notebooks.
 ///
-/// The wire format is the lowercase variant name (`"uv"`, `"conda"`, `"pixi"`).
-/// `parse()` additionally accepts `"pip"` (→ Uv) and `"mamba"` (→ Conda) aliases.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+/// The canonical wire format is the lowercase variant name (`"uv"`, `"conda"`,
+/// `"pixi"`). `parse()` additionally accepts `"pip"` (→ Uv) and `"mamba"` (→
+/// Conda) as aliases at user-input boundaries.
+///
+/// Deserialization is permissive: unrecognized wire strings land in
+/// `Unknown(s)` rather than failing, so the `CreateNotebook` handshake stays
+/// forward-compatible and legacy aliases still decode. Resolve `Unknown`
+/// values to a canonical variant at use-site via `resolve()`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum PackageManager {
     Uv,
     Conda,
     Pixi,
+    /// An unrecognized package manager string, carried verbatim from the wire.
+    ///
+    /// Produced only by `Deserialize` for non-canonical values; internal code
+    /// should call `resolve()` before matching. User-input boundaries (Python
+    /// API, MCP `create_notebook`, CLI) should call `parse()` instead, which
+    /// rejects unknowns up front.
+    Unknown(String),
 }
 
 impl PackageManager {
-    /// The canonical wire string.
-    pub fn as_str(&self) -> &'static str {
+    /// The wire string form.
+    ///
+    /// Canonical variants return their literal name; `Unknown(s)` returns the
+    /// raw string that was deserialized.
+    pub fn as_str(&self) -> &str {
         match self {
             Self::Uv => "uv",
             Self::Conda => "conda",
             Self::Pixi => "pixi",
+            Self::Unknown(s) => s.as_str(),
         }
     }
 
     /// Parse a package manager name with alias support.
     ///
     /// Accepts `"uv"`, `"conda"`, `"pixi"` (canonical), plus `"pip"` (→ Uv)
-    /// and `"mamba"` (→ Conda).
+    /// and `"mamba"` (→ Conda). Returns `Err` for anything else.
+    ///
+    /// Use this at user-input boundaries where immediate validation is
+    /// desired. Wire deserialization is permissive and never errors — see
+    /// `Unknown`.
     pub fn parse(input: &str) -> Result<Self, String> {
         match input {
             "uv" => Ok(Self::Uv),
@@ -69,6 +89,23 @@ impl PackageManager {
                 "Unsupported package manager '{}'. Supported: uv, conda, pixi.",
                 input
             )),
+        }
+    }
+
+    /// Fold to a canonical variant, resolving known aliases.
+    ///
+    /// `Uv`/`Conda`/`Pixi` pass through. `Unknown("pip")` → `Uv`,
+    /// `Unknown("mamba")` → `Conda`. Any other `Unknown(s)` returns `Err`.
+    ///
+    /// Call this at internal evaluation sites where the code needs one of the
+    /// three canonical variants. Error handling is up to the caller — the
+    /// daemon handshake path falls back to `default_python_env`, for example.
+    pub fn resolve(&self) -> Result<Self, String> {
+        match self {
+            Self::Uv => Ok(Self::Uv),
+            Self::Conda => Ok(Self::Conda),
+            Self::Pixi => Ok(Self::Pixi),
+            Self::Unknown(s) => Self::parse(s),
         }
     }
 }
@@ -83,6 +120,31 @@ impl FromStr for PackageManager {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::parse(s)
+    }
+}
+
+impl Serialize for PackageManager {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for PackageManager {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(d)?;
+        // Permissive: unknown strings are captured rather than rejected, so
+        // the handshake stays forward-compatible and legacy aliases
+        // (`"pip"`, `"mamba"`) still decode. Internal callers fold aliases
+        // and reject genuine unknowns via `resolve()`.
+        if raw == "uv" {
+            Ok(Self::Uv)
+        } else if raw == "conda" {
+            Ok(Self::Conda)
+        } else if raw == "pixi" {
+            Ok(Self::Pixi)
+        } else {
+            Ok(Self::Unknown(raw))
+        }
     }
 }
 
@@ -1081,5 +1143,46 @@ mod tests {
         assert_eq!(json, "\"conda\"");
         let pm: PackageManager = serde_json::from_str("\"pixi\"").unwrap();
         assert_eq!(pm, PackageManager::Pixi);
+    }
+
+    #[test]
+    fn package_manager_deserialize_captures_unknown() {
+        // Aliases must decode (wire compatibility for legacy clients).
+        let pm: PackageManager = serde_json::from_str("\"pip\"").unwrap();
+        assert_eq!(pm, PackageManager::Unknown("pip".to_string()));
+        let pm: PackageManager = serde_json::from_str("\"mamba\"").unwrap();
+        assert_eq!(pm, PackageManager::Unknown("mamba".to_string()));
+        // Genuinely unknown values decode to Unknown, not an error.
+        let pm: PackageManager = serde_json::from_str("\"poetry\"").unwrap();
+        assert_eq!(pm, PackageManager::Unknown("poetry".to_string()));
+    }
+
+    #[test]
+    fn package_manager_unknown_round_trips_verbatim() {
+        let pm = PackageManager::Unknown("mamba".to_string());
+        let json = serde_json::to_string(&pm).unwrap();
+        assert_eq!(json, "\"mamba\"");
+        let decoded: PackageManager = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, pm);
+    }
+
+    #[test]
+    fn package_manager_resolve_folds_aliases() {
+        assert_eq!(PackageManager::Uv.resolve().unwrap(), PackageManager::Uv);
+        assert_eq!(
+            PackageManager::Unknown("pip".to_string())
+                .resolve()
+                .unwrap(),
+            PackageManager::Uv
+        );
+        assert_eq!(
+            PackageManager::Unknown("mamba".to_string())
+                .resolve()
+                .unwrap(),
+            PackageManager::Conda
+        );
+        assert!(PackageManager::Unknown("poetry".to_string())
+            .resolve()
+            .is_err());
     }
 }

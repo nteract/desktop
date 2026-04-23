@@ -82,10 +82,13 @@ pub(crate) fn detect_package_manager(
 }
 
 /// Add a dependency using the appropriate package manager, return error string on failure.
+///
+/// `Unknown` package managers fall back to Uv (same default as
+/// `detect_package_manager`) — consistent with the historical behavior.
 pub(crate) fn add_dep_for_manager(
     handle: &notebook_sync::handle::DocHandle,
     package: &str,
-    manager: notebook_protocol::connection::PackageManager,
+    manager: &notebook_protocol::connection::PackageManager,
 ) -> Result<(), String> {
     use notebook_protocol::connection::PackageManager;
     match manager {
@@ -95,17 +98,19 @@ pub(crate) fn add_dep_for_manager(
         PackageManager::Pixi => handle
             .add_pixi_dependency(package)
             .map_err(|e| format!("Failed to add pixi dependency: {e}")),
-        PackageManager::Uv => handle
+        PackageManager::Uv | PackageManager::Unknown(_) => handle
             .add_uv_dependency(package)
             .map_err(|e| format!("Failed to add uv dependency: {e}")),
     }
 }
 
 /// Remove a dependency using the appropriate package manager.
+///
+/// `Unknown` package managers fall back to Uv (same default as `add`).
 fn remove_dep_for_manager(
     handle: &notebook_sync::handle::DocHandle,
     package: &str,
-    manager: notebook_protocol::connection::PackageManager,
+    manager: &notebook_protocol::connection::PackageManager,
 ) -> Result<bool, String> {
     use notebook_protocol::connection::PackageManager;
     match manager {
@@ -115,7 +120,7 @@ fn remove_dep_for_manager(
         PackageManager::Pixi => handle
             .remove_pixi_dependency(package)
             .map_err(|e| format!("Failed to remove pixi dependency: {e}")),
-        PackageManager::Uv => handle
+        PackageManager::Uv | PackageManager::Unknown(_) => handle
             .remove_uv_dependency(package)
             .map_err(|e| format!("Failed to remove uv dependency: {e}")),
     }
@@ -143,7 +148,7 @@ pub async fn add_dependency(
 
     let manager = detect_package_manager(&handle);
 
-    add_dep_for_manager(&handle, package, manager)
+    add_dep_for_manager(&handle, package, &manager)
         .map_err(|e| McpError::internal_error(e, None))?;
 
     // Ensure daemon has the metadata change before any follow-up action
@@ -152,7 +157,7 @@ pub async fn add_dependency(
     }
 
     // Read back current dependencies
-    let deps = get_deps_for_manager(&handle, manager);
+    let deps = get_deps_for_manager(&handle, &manager);
 
     let mut result = serde_json::json!({
         "dependencies": deps,
@@ -282,7 +287,7 @@ pub async fn remove_dependency(
 
     let manager = detect_package_manager(&handle);
 
-    let removed = remove_dep_for_manager(&handle, package, manager)
+    let removed = remove_dep_for_manager(&handle, package, &manager)
         .map_err(|e| McpError::internal_error(e, None))?;
 
     // Ensure daemon has the metadata change
@@ -290,7 +295,7 @@ pub async fn remove_dependency(
         tracing::warn!("confirm_sync failed after remove_dependency: {e}");
     }
 
-    let deps = get_deps_for_manager(&handle, manager);
+    let deps = get_deps_for_manager(&handle, &manager);
 
     let result = serde_json::json!({
         "dependencies": deps,
@@ -309,7 +314,7 @@ pub async fn get_dependencies(
     let handle = require_handle!(server);
 
     let manager = detect_package_manager(&handle);
-    let deps = get_deps_for_manager(&handle, manager);
+    let deps = get_deps_for_manager(&handle, &manager);
 
     // Include prewarmed packages from RuntimeStateDoc when available
     let prewarmed = handle
@@ -402,7 +407,7 @@ pub async fn sync_environment(
 /// Read dependencies for the detected package manager (pub for session.rs).
 pub(crate) fn get_deps_for_manager_pub(
     handle: &notebook_sync::handle::DocHandle,
-    manager: notebook_protocol::connection::PackageManager,
+    manager: &notebook_protocol::connection::PackageManager,
 ) -> Vec<String> {
     get_deps_for_manager(handle, manager)
 }
@@ -410,7 +415,7 @@ pub(crate) fn get_deps_for_manager_pub(
 /// Read dependencies for the detected package manager.
 fn get_deps_for_manager(
     handle: &notebook_sync::handle::DocHandle,
-    manager: notebook_protocol::connection::PackageManager,
+    manager: &notebook_protocol::connection::PackageManager,
 ) -> Vec<String> {
     use notebook_protocol::connection::PackageManager;
     handle
@@ -418,7 +423,7 @@ fn get_deps_for_manager(
         .map(|m| match manager {
             PackageManager::Conda => m.conda_dependencies().to_vec(),
             PackageManager::Pixi => m.pixi_dependencies().to_vec(),
-            PackageManager::Uv => m.uv_dependencies().to_vec(),
+            PackageManager::Uv | PackageManager::Unknown(_) => m.uv_dependencies().to_vec(),
         })
         .unwrap_or_default()
 }

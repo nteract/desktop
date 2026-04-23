@@ -2253,15 +2253,21 @@ pub(crate) async fn auto_launch_kernel(
                 let manager = metadata_snapshot
                     .as_ref()
                     .and_then(detect_manager_from_metadata);
+                // Fallback pool for when the metadata didn't declare a section
+                // or the declared section is non-canonical. Non-canonical
+                // shouldn't happen from `detect_manager_from_metadata` (it
+                // only inspects the three typed sections), but the compiler
+                // needs an exhaustive match against `PackageManager`.
+                let fallback = match default_python_env {
+                    crate::settings_doc::PythonEnvType::Conda => "conda:prewarmed",
+                    crate::settings_doc::PythonEnvType::Pixi => "pixi:prewarmed",
+                    _ => "uv:prewarmed",
+                };
                 let prewarmed = match manager {
                     Some(PackageManager::Conda) => "conda:prewarmed",
                     Some(PackageManager::Pixi) => "pixi:prewarmed",
                     Some(PackageManager::Uv) => "uv:prewarmed",
-                    None => match default_python_env {
-                        crate::settings_doc::PythonEnvType::Conda => "conda:prewarmed",
-                        crate::settings_doc::PythonEnvType::Pixi => "pixi:prewarmed",
-                        _ => "uv:prewarmed",
-                    },
+                    Some(PackageManager::Unknown(_)) | None => fallback,
                 };
                 info!(
                     "[notebook-sync] Auto-launch: using prewarmed ({})",
