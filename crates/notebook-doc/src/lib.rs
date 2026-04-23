@@ -85,19 +85,7 @@ use log::{info, warn};
 #[cfg(feature = "persistence")]
 use std::path::Path;
 
-/// Tracks the last-written state for a stream output in a cell.
-/// Used by `upsert_stream_output` for in-place update validation.
-#[derive(Debug, Clone)]
-pub struct StreamOutputState {
-    /// Index in the cell's outputs list
-    pub index: usize,
-    /// Identifier for the ContentRef at this position: the blob hash if the
-    /// content was stored in the blob store (`text.blob`), or the inline
-    /// string itself if it was inlined (`text.inline`). Used by
-    /// `upsert_stream_output` to validate the cached position before
-    /// performing an in-place update.
-    pub blob_hash: String,
-}
+pub use runtime_doc::StreamOutputState;
 
 /// Snapshot of a single cell's state, suitable for serialization.
 ///
@@ -1898,7 +1886,7 @@ fn scalar_to_json(s: &automerge::ScalarValue) -> Option<serde_json::Value> {
 }
 
 /// Recursively read an Automerge value (scalar, Map, List, or Text) as JSON.
-pub(crate) fn read_json_value<P: Into<automerge::Prop>>(
+pub fn read_json_value<P: Into<automerge::Prop>>(
     doc: &AutoCommit,
     parent: &ObjId,
     prop: P,
@@ -1944,7 +1932,7 @@ pub(crate) fn read_json_value<P: Into<automerge::Prop>>(
     note = "Use update_json_at_key — put_json_at_key creates new Automerge objects that can conflict with other peers. See #1594."
 )]
 #[allow(deprecated)]
-pub(crate) fn put_json_at_key(
+pub fn put_json_at_key(
     doc: &mut AutoCommit,
     parent: &ObjId,
     key: &str,
@@ -1994,7 +1982,7 @@ pub(crate) fn put_json_at_key(
 /// a competing object at the same index). However, for updating existing list
 /// elements use [`update_json_at_index`] instead.
 #[allow(deprecated)] // Internal calls to put_json_at_key are safe — parent just created
-pub(crate) fn insert_json_at_index(
+pub fn insert_json_at_index(
     doc: &mut AutoCommit,
     parent: &ObjId,
     index: usize,
@@ -2057,7 +2045,7 @@ pub(crate) fn insert_json_at_index(
 /// same list position don't occur in our document schema.
 ///
 /// See <https://github.com/nteract/desktop/issues/1594>.
-pub(crate) fn update_json_at_key(
+pub fn update_json_at_key(
     doc: &mut AutoCommit,
     parent: &ObjId,
     key: &str,
@@ -2133,7 +2121,7 @@ pub(crate) fn update_json_at_key(
 /// For Objects/Arrays, reuses existing Automerge objects if possible.
 /// If the type at the index doesn't match (e.g. was a scalar, now an object),
 /// deletes and re-inserts.
-pub(crate) fn update_json_at_index(
+pub fn update_json_at_index(
     doc: &mut AutoCommit,
     parent: &ObjId,
     index: usize,

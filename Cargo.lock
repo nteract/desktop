@@ -4476,6 +4476,7 @@ dependencies = [
  "hex",
  "log",
  "loro_fractional_index",
+ "runtime-doc",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -6991,6 +6992,17 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
+]
+
+[[package]]
+name = "runtime-doc"
+version = "0.1.0"
+dependencies = [
+ "automerge",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

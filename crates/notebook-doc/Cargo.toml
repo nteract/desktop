@@ -14,6 +14,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = { workspace = true }
 toml = "1"
+runtime-doc = { path = "../runtime-doc" }
 log = { version = "0.4", optional = true }
 sha2 = { version = "0.11", optional = true }
 hex = { version = "0.4", optional = true }
