@@ -18,7 +18,7 @@
 |------|-----------------------|
 | `crates/runtime-doc/src/types.rs` | New: `RuntimeLifecycle` and `KernelActivity` enums, `variant_str`, `as_str`, `parse` helpers, serde round-trip tests |
 | `crates/runtime-doc/src/lib.rs` | Re-export the new enums (already wildcard) |
-| `crates/runtime-doc/src/doc.rs` | Schema doc-comment, scaffold both old + new `kernel/*` keys, new `set_lifecycle` + `set_activity` writers (dual-shape — also maintain legacy `status`/`starting_phase` keys during the migration window), add `lifecycle` + `error_reason` fields on `KernelState`, update `read_state` to populate both, **Task 12** retires old keys + old setters + old struct fields + dual-shape legacy mirror writes in one atomic commit |
+| `crates/runtime-doc/src/doc.rs` | Schema doc-comment, scaffold both old + new `kernel/*` keys, new `set_lifecycle` + `set_activity` writers (dual-shape — also maintain legacy `status`/`starting_phase` keys during the migration window), add `lifecycle` + `error_reason` fields on `KernelState`, update `read_state` to populate both, **Task 15** retires old keys + old setters + old struct fields + dual-shape legacy mirror writes in one atomic commit |
 | `crates/runtime-doc/src/handle.rs` | Update handle unit tests to call the new writers |
 | `crates/notebook-sync/src/tests.rs` | Replace `set_kernel_status("error")` in sync tests |
 | `crates/notebook-sync/src/execution_wait.rs` | Replace `state.kernel.status == "error"/"shutdown"` reads with pattern matches on `state.kernel.lifecycle` |
@@ -55,20 +55,20 @@
 
 ## Migration order
 
-The migration is **dual-shape**: both the old (`status` + `starting_phase`) and the new (`lifecycle` + `activity` + `error_reason`) CRDT keys and struct fields coexist from Task 2 through Task 11. The new writers (`set_lifecycle`, `set_activity`, `set_lifecycle_with_error`) **maintain both shapes** — they write the new keys *and* mirror the legacy `status` + `starting_phase` — so readers that haven't migrated yet still see consistent state. Each task ends with a green commit (`cargo check --workspace`, `cargo test -p <touched>`, and the relevant TS / Python test command pass). Task 12 removes the old shape atomically after a repo-wide grep confirms zero callers remain. The design intent:
+The migration is **dual-shape**: both the old (`status` + `starting_phase`) and the new (`lifecycle` + `activity` + `error_reason`) CRDT keys and struct fields coexist from Task 2 through Task 14. The new writers (`set_lifecycle`, `set_activity`, `set_lifecycle_with_error`) **maintain both shapes** — they write the new keys *and* mirror the legacy `status` + `starting_phase` — so readers that haven't migrated yet still see consistent state. Each task ends with a green commit (`cargo check --workspace`, `cargo test -p <touched>`, and the relevant TS / Python test command pass). Task 15 removes the old shape atomically after a repo-wide grep confirms zero callers remain. The design intent:
 
 1. **Task 1:** Add the enums. No behavior change. Green.
 2. **Task 2:** Scaffold new CRDT keys **alongside** old ones in `new()` / `new_with_actor()`. Readers of either shape still work. Green.
-3. **Task 3:** Add `lifecycle` + `error_reason` fields to `KernelState` alongside `status` + `starting_phase`. `read_state` populates all of them. Add `set_lifecycle` / `set_activity` / `set_lifecycle_with_error` — these write both the new AND the legacy keys. Keep `set_kernel_status` / `set_starting_phase` functional (they'll be removed in Task 12). Green.
+3. **Task 3:** Add `lifecycle` + `error_reason` fields to `KernelState` alongside `status` + `starting_phase`. `read_state` populates all of them. Add `set_lifecycle` / `set_activity` / `set_lifecycle_with_error` — these write both the new AND the legacy keys. Keep `set_kernel_status` / `set_starting_phase` functional (they'll be removed in Task 15). Green.
 4. **Tasks 4–7:** Migrate Rust callers in `runtimed` (IOPub, notebook_sync_server, request handlers, runtime_agent tests). Each task is green because both shapes are still written.
 5. **Task 8:** Migrate `notebook-sync` consumers.
 6. **Task 9:** Migrate `runt-mcp`.
 7. **Task 10:** Migrate `runtimed-node`.
-8. **Task 11:** Migrate Python bindings (`runtimed-py`) — last Rust consumer of `kernel.status`. Must land before Task 12 so the retire sweep can go clean.
-9. **Task 12 (atomic retire):** Migrate the `handle.rs` tests (the final in-crate callers of the legacy setters), delete `set_kernel_status` + `set_starting_phase`, drop `status` + `starting_phase` fields from `KernelState`, drop the dual-shape legacy-mirror writes from `set_lifecycle` / `set_activity`, remove the old scaffold keys from both constructors, and simplify `read_state` + delete `legacy_status_to_lifecycle`. Verified green by a repo-wide grep that does NOT exclude `runtime-doc/**` before commit.
-10. **Task 13:** Introduce the TS `RuntimeLifecycle` type + dual-shape `KernelState` in `packages/runtimed` (and export the new types from the package root). Green.
-11. **Task 14 (consolidated TS migration):** Move every TS caller (`derived-state`, `kernel-status`, `useDaemonKernel`, `NotebookToolbar`, `App.tsx`, toolbar test, `kernel-status.test.ts`, sync-engine test fixtures) in one green commit. Ends with deletion of `getKernelStatusLabel` / `KERNEL_STATUS_LABELS`. Green.
-12. **Task 15:** Python metrics scripts.
+8. **Task 11:** Migrate Python bindings (`runtimed-py`) — add `lifecycle` / `activity` / `error_reason` attributes while keeping `status` for the metrics scripts and repo examples that still read it. Task 14 migrates those consumers; Task 15 drops the legacy attribute.
+9. **Task 12:** Introduce the TS `RuntimeLifecycle` type + dual-shape `KernelState` in `packages/runtimed` (and export the new types from the package root). Green — legacy Rust `status` still flows through, TS reads whichever field it prefers.
+10. **Task 13 (consolidated TS migration):** Move every TS caller (`derived-state`, `kernel-status`, `useDaemonKernel`, `NotebookToolbar`, `App.tsx`, toolbar test, `kernel-status.test.ts`, sync-engine test fixtures) in one green commit. Ends with deletion of `getKernelStatusLabel` / `KERNEL_STATUS_LABELS`.
+11. **Task 14:** Migrate Python metrics scripts + examples in `python/runtimed/README.md`. Green — still reads `kernel.status` because Task 11 left it populated on `PyKernelState`; this task switches them to `kernel.lifecycle` so Task 15 can drop the attribute.
+12. **Task 15 (atomic retire):** Migrate the `handle.rs` tests (the final in-crate callers of the legacy setters), delete `set_kernel_status` + `set_starting_phase`, drop `status` + `starting_phase` fields from `KernelState`, drop the dual-shape legacy-mirror writes from `set_lifecycle` / `set_activity`, drop `PyKernelState.status`, remove the old scaffold keys from both constructors, and simplify `read_state` + delete `legacy_status_to_lifecycle`. Verified green by a repo-wide grep that does NOT exclude `runtime-doc/**` before commit.
 13. **Task 16:** Verification sweep + cold-launch smoke + **explicit restart-path smoke** (the "stuck on Shutdown" regression that motivated the refactor). Open the PR.
 
 ---
@@ -325,9 +325,9 @@ In `crates/runtime-doc/src/doc.rs`, lines 10–16, add the new keys so the comme
 ```text
 //!   kernel/
 //!     status: Str          ("idle" | "busy" | "starting" | "error" | "shutdown" | "not_started")
-//!                           — DEPRECATED, retired in a follow-up commit (see Task 12)
+//!                           — DEPRECATED, retired in a follow-up commit (see Task 15)
 //!     starting_phase: Str  ("" | "resolving" | "preparing_env" | "launching" | "connecting")
-//!                           — DEPRECATED, retired in a follow-up commit (see Task 12)
+//!                           — DEPRECATED, retired in a follow-up commit (see Task 15)
 //!     lifecycle: Str       ("NotStarted" | "AwaitingTrust" | "Resolving" | "PreparingEnv"
 //!                           | "Launching" | "Connecting" | "Running" | "Error" | "Shutdown")
 //!     activity: Str        ("" | "Unknown" | "Idle" | "Busy") — only meaningful when lifecycle == "Running"
@@ -377,7 +377,7 @@ git commit -m "refactor(runtime-doc): scaffold kernel/lifecycle+activity+error_r
 **Files:**
 - Modify: `crates/runtime-doc/src/doc.rs`
 
-`KernelState` grows `lifecycle` + `error_reason` fields alongside existing `status` + `starting_phase`. `read_state` populates all four from the CRDT (both from the legacy `status`/`starting_phase` keys and from the new `lifecycle`/`activity`/`error_reason` keys). The new writers (`set_lifecycle`, `set_activity`, `set_lifecycle_with_error`) write BOTH the new CRDT keys (`lifecycle`, `activity`, `error_reason`) AND mirror into the legacy `status` + `starting_phase` keys. This dual-shape write keeps readers that haven't migrated yet observing correct state. After Task 10 migrates every Rust caller and Task 11 migrates the Python bindings, Task 12 atomically retires the legacy shape.
+`KernelState` grows `lifecycle` + `error_reason` fields alongside existing `status` + `starting_phase`. `read_state` populates all four from the CRDT (both from the legacy `status`/`starting_phase` keys and from the new `lifecycle`/`activity`/`error_reason` keys). The new writers (`set_lifecycle`, `set_activity`, `set_lifecycle_with_error`) write BOTH the new CRDT keys (`lifecycle`, `activity`, `error_reason`) AND mirror into the legacy `status` + `starting_phase` keys. This dual-shape write keeps readers that haven't migrated yet observing correct state. After Rust callers (Tasks 4–10), Python bindings (Task 11), the TS migration (Tasks 12–13), and Python metrics (Task 14) have all moved to the new API, Task 15 atomically retires the legacy shape.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -514,7 +514,7 @@ In `crates/runtime-doc/src/doc.rs`, update the `KernelState` struct (lines 74–
 /// Kernel state snapshot.
 ///
 /// Dual-shape during the RuntimeLifecycle migration. The `status` and
-/// `starting_phase` fields are deprecated and will be removed by Task 12
+/// `starting_phase` fields are deprecated and will be removed by Task 15
 /// of the RuntimeLifecycle plan once every caller has migrated to
 /// `lifecycle`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -582,7 +582,7 @@ Locate `read_state` (around line 1849). Replace the `kernel_state = kernel.as_re
                 let activity_str = self.read_str(k, "activity");
                 let lifecycle = if lifecycle_str.is_empty() {
                     // Older docs without the new scaffold — derive a best-effort
-                    // lifecycle from the legacy status string. Task 12 removes
+                    // lifecycle from the legacy status string. Task 15 removes
                     // this fallback.
                     legacy_status_to_lifecycle(
                         &self.read_str(k, "status"),
@@ -628,11 +628,11 @@ fn legacy_status_to_lifecycle(status: &str, starting_phase: &str) -> RuntimeLife
 }
 ```
 
-This helper only runs on docs that lack the new scaffold (forked-before-Task-2 docs received via sync). Task 12 deletes it.
+This helper only runs on docs that lack the new scaffold (forked-before-Task-2 docs received via sync). Task 15 deletes it.
 
 - [ ] **Step 5: Implement the new writers (dual-shape)**
 
-During the migration window (Tasks 3–11), the new writers ALSO maintain the legacy `kernel.status` + `kernel.starting_phase` keys. Every reader — whether it looks at `kernel.lifecycle` (new) or `kernel.status` (legacy) — sees consistent state. Task 12 removes the legacy writes along with the keys.
+During the migration window (Tasks 3–14), the new writers ALSO maintain the legacy `kernel.status` + `kernel.starting_phase` keys. Every reader — whether it looks at `kernel.lifecycle` (new) or `kernel.status` (legacy) — sees consistent state. Task 15 removes the legacy writes along with the keys.
 
 Insert immediately above the `// ── Execution lifecycle ──` section (around line 875):
 
@@ -651,7 +651,7 @@ Insert immediately above the `// ── Execution lifecycle ──` section (aro
     /// keys so that readers still on the old shape (during the
     /// RuntimeLifecycle migration) see consistent state. This legacy
     /// maintenance is removed together with the old keys in the atomic
-    /// retire commit (plan Task 12).
+    /// retire commit (plan Task 15).
     pub fn set_lifecycle(
         &mut self,
         lifecycle: &RuntimeLifecycle,
@@ -667,7 +667,7 @@ Insert immediately above the `// ── Execution lifecycle ──` section (aro
             }
         }
         // Dual-shape: maintain legacy kernel.status + kernel.starting_phase
-        // for readers not yet migrated. Removed in plan Task 12.
+        // for readers not yet migrated. Removed in plan Task 15.
         let (legacy_status, legacy_phase) = legacy_shape_for(lifecycle);
         self.doc.put(&kernel, "status", legacy_status)?;
         self.doc.put(&kernel, "starting_phase", legacy_phase)?;
@@ -699,7 +699,7 @@ Insert immediately above the `// ── Execution lifecycle ──` section (aro
     /// value has not changed.
     ///
     /// Also updates the legacy `kernel.status` key (to `"busy"`/`"idle"`)
-    /// during the migration window. Removed in plan Task 12.
+    /// during the migration window. Removed in plan Task 15.
     pub fn set_activity(
         &mut self,
         activity: KernelActivity,
@@ -710,7 +710,7 @@ Insert immediately above the `// ── Execution lifecycle ──` section (aro
             return Ok(());
         }
         self.doc.put(&kernel, "activity", activity.as_str())?;
-        // Dual-shape: mirror into legacy kernel.status. Removed in Task 12.
+        // Dual-shape: mirror into legacy kernel.status. Removed in Task 15.
         let legacy_status = match activity {
             KernelActivity::Busy => "busy",
             KernelActivity::Idle => "idle",
@@ -726,7 +726,7 @@ Add the helper right after the new writers (or anywhere in the `impl` block):
 ```rust
 /// Legacy (status, starting_phase) projection used during the migration
 /// window so readers still on the old shape see consistent state. Removed
-/// in plan Task 12 along with the legacy CRDT keys.
+/// in plan Task 15 along with the legacy CRDT keys.
 fn legacy_shape_for(lc: &RuntimeLifecycle) -> (&'static str, &'static str) {
     use RuntimeLifecycle::*;
     match lc {
@@ -1037,6 +1037,31 @@ In `crates/runtimed/src/notebook_sync_server/tests.rs`:
 - Line 3049 (`sd.set_kernel_status("idle")?`) → `sd.set_lifecycle(&runtime_doc::RuntimeLifecycle::Running(runtime_doc::KernelActivity::Idle))?`.
 - Line 3101 (`with_doc(|sd| sd.set_kernel_status("idle"))`) → `with_doc(|sd| sd.set_lifecycle(&runtime_doc::RuntimeLifecycle::Running(runtime_doc::KernelActivity::Idle)))`.
 - Lines 3531, 3581 (`with_doc(|sd| sd.set_kernel_status("starting"))`) → `with_doc(|sd| sd.set_lifecycle(&runtime_doc::RuntimeLifecycle::Resolving))`.
+- Lines 3540, 3564, 3588 (three asserts on `state.kernel.status`). The file's `reset_starting_state` tests read `state.kernel.status.clone()` and assert either `"starting"` or `"not_started"`. Rewrite each read + assert pair:
+
+  ```rust
+  let lifecycle = room
+      .state
+      .read(|sd| sd.read_state().kernel.lifecycle)
+      .unwrap_or(runtime_doc::RuntimeLifecycle::NotStarted);
+  assert!(
+      matches!(lifecycle, runtime_doc::RuntimeLifecycle::Resolving),
+      "expected Resolving (was `starting`), got {lifecycle:?}",
+  );
+  ```
+
+  And for the `not_started` assertions:
+
+  ```rust
+  assert!(
+      matches!(lifecycle, runtime_doc::RuntimeLifecycle::NotStarted),
+      "expected NotStarted, got {lifecycle:?}",
+  );
+  ```
+
+  Replace the `.unwrap()` on the `read` call if the surrounding test already returns a `Result`, or keep `.expect("read runtime state")` if not.
+
+  Also, line 3585 in the same block has a second `room.state.with_doc(|sd| sd.set_kernel_status("starting")).unwrap();` — convert to `with_doc(|sd| sd.set_lifecycle(&runtime_doc::RuntimeLifecycle::Resolving))?` (or `.expect("reset lifecycle")` if the test doesn't return `Result`).
 
 - [ ] **Step 7: Rewrite `room.rs` read + add helper**
 
@@ -1175,7 +1200,46 @@ with:
 
 Rewrite the subsequent match arms so the "else" arm is `_ => { /* continue launching */ }`. The caller-visible flow is identical.
 
-- [ ] **Step 2: Rewrite in-flight phase transitions in `launch_kernel.rs`**
+- [ ] **Step 2: Rewrite the "starting in progress — wait" branch in `launch_kernel.rs`**
+
+The `match prior_lifecycle` block has a second arm (around lines 85–99 in the pre-migration file) that waits up to 60s for an in-flight launch to finish. It currently polls `kernel.status.clone()` and returns when the status becomes one of `"idle"`, `"busy"`, `"error"`, `"shutdown"`, or `"not_started"`. Rewrite to poll `kernel.lifecycle` and return on terminal variants:
+
+```rust
+        // Old shape, for reference:
+        // let s = room
+        //     .state
+        //     .read(|sd| sd.read_state().kernel.status.clone())
+        //     .unwrap_or_default();
+        // if s == "idle" || s == "busy" || s == "error" || s == "shutdown" || s == "not_started" {
+        //     return s;
+        // }
+
+        // New shape — match any terminal lifecycle variant.
+        use runtime_doc::RuntimeLifecycle;
+        let wait_result = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+            loop {
+                let lc = room
+                    .state
+                    .read(|sd| sd.read_state().kernel.lifecycle)
+                    .unwrap_or(RuntimeLifecycle::NotStarted);
+                if matches!(
+                    lc,
+                    RuntimeLifecycle::Running(_)
+                        | RuntimeLifecycle::Error
+                        | RuntimeLifecycle::Shutdown
+                        | RuntimeLifecycle::NotStarted
+                ) {
+                    return lc;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        })
+        .await;
+```
+
+The match arm that consumes this block's return value should also be updated from `kernel_status.as_str()` pattern matching to `matches!(wait_result, RuntimeLifecycle::Running(_))` for the "kernel ready" path; audit the surrounding code after rewriting and update downstream branches that consume the wait result to match on `RuntimeLifecycle` variants instead of strings.
+
+- [ ] **Step 3: Rewrite in-flight phase transitions in `launch_kernel.rs`**
 
 - Around line 465: `sd.set_starting_phase("preparing_env")` → `sd.set_lifecycle(&RuntimeLifecycle::PreparingEnv)`.
 - Around line 1080: `sd.set_starting_phase("launching")` → `sd.set_lifecycle(&RuntimeLifecycle::Launching)`.
@@ -1183,11 +1247,11 @@ Rewrite the subsequent match arms so the "else" arm is `_ => { /* continue launc
 - Around line 1197: `with_doc(|sd| sd.set_starting_phase("connecting"))` → `with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Connecting))`.
 - Around line 1257 (inside the `KernelLaunched` arm): `sd.set_kernel_status("idle")?` → `sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?`.
 
-- [ ] **Step 3: Rewrite `shutdown_kernel.rs`**
+- [ ] **Step 4: Rewrite `shutdown_kernel.rs`**
 
 Line 24: `sd.set_kernel_status("shutdown")?` → `sd.set_lifecycle(&runtime_doc::RuntimeLifecycle::Shutdown)?`.
 
-- [ ] **Step 4: Rewrite `execute_cell.rs` precondition**
+- [ ] **Step 5: Rewrite `execute_cell.rs` precondition**
 
 Around lines 58–63:
 
@@ -1210,11 +1274,11 @@ Around lines 58–63:
 
 Rename the local `status` binding to `lifecycle`.
 
-- [ ] **Step 5: Rewrite `run_all_cells.rs` precondition**
+- [ ] **Step 6: Rewrite `run_all_cells.rs` precondition**
 
 Around lines 16–20, apply the same transformation as Step 4.
 
-- [ ] **Step 6: Rewrite `get_kernel_info.rs`**
+- [ ] **Step 7: Rewrite `get_kernel_info.rs`**
 
 Replace the `handle` body with:
 
@@ -1251,7 +1315,7 @@ pub(crate) async fn handle(room: &NotebookRoom) -> NotebookResponse {
 }
 ```
 
-- [ ] **Step 7: Compile + test**
+- [ ] **Step 8: Compile + test**
 
 ```bash
 cargo check -p runtimed 2>&1 | tail -10
@@ -1260,7 +1324,7 @@ cargo test -p runtimed --lib 2>&1 | tail -30
 
 Expected: green.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
 git add crates/runtimed/src/requests/launch_kernel.rs \
@@ -1538,7 +1602,7 @@ git commit -m "refactor(runtimed-node): readiness check via RuntimeLifecycle::Ru
 - Modify: `crates/runtimed-py/src/output.rs`
 - Modify: `crates/runtimed-py/src/session_core.rs`
 
-- [ ] **Step 1: Update `PyKernelState`**
+- [ ] **Step 1: Update `PyKernelState` (dual-shape — keep `status`)**
 
 Replace the struct (lines 836–847) with:
 
@@ -1554,6 +1618,11 @@ pub struct PyKernelState {
     pub activity: String,
     /// Human-readable reason when lifecycle == "Error". Empty otherwise.
     pub error_reason: String,
+    /// DEPRECATED. Legacy string-status view (`"idle"`, `"busy"`, `"starting"`,
+    /// ...). Retained during the RuntimeLifecycle migration so the in-repo
+    /// metrics scripts and README examples keep working; Task 15 removes it
+    /// after Task 14 migrates those callers.
+    pub status: String,
     pub name: String,
     pub language: String,
     pub env_source: String,
@@ -1576,21 +1645,25 @@ fn __repr__(&self) -> String {
 }
 ```
 
-Update the `From<runtime_doc::RuntimeState>` conversion (around line 1033):
+Update the `From<runtime_doc::RuntimeState>` conversion (around line 1033). Use the local `lifecycle_status_string` helper added in Step 2 to fill the deprecated `status` field:
 
 ```rust
             kernel: PyKernelState {
                 lifecycle: rs.kernel.lifecycle.variant_str().to_string(),
-                activity: match rs.kernel.lifecycle {
+                activity: match &rs.kernel.lifecycle {
                     runtime_doc::RuntimeLifecycle::Running(act) => act.as_str().to_string(),
                     _ => String::new(),
                 },
-                error_reason: rs.kernel.error_reason.unwrap_or_default(),
+                error_reason: rs.kernel.error_reason.clone().unwrap_or_default(),
+                status: crate::session_core::lifecycle_status_string(&rs.kernel.lifecycle)
+                    .to_string(),
                 name: rs.kernel.name,
                 language: rs.kernel.language,
                 env_source: rs.kernel.env_source,
             },
 ```
+
+If `From<runtime_doc::RuntimeState>` lives in `output.rs` and `lifecycle_status_string` is private to `session_core.rs`, either make the helper `pub(crate)` or move it to a shared module (e.g. a new `crates/runtimed-py/src/lifecycle_status.rs`). The plan chooses the first option for minimal churn — in Step 2, declare it `pub(crate) fn` instead of `fn`.
 
 Update `PyRuntimeState::__repr__` (line 1007) to reference `self.kernel.lifecycle` instead of `self.kernel.status`.
 
@@ -1601,7 +1674,7 @@ Add near the top of the file:
 ```rust
 use runtime_doc::{KernelActivity, RuntimeLifecycle};
 
-fn lifecycle_status_string(lc: &RuntimeLifecycle) -> &'static str {
+pub(crate) fn lifecycle_status_string(lc: &RuntimeLifecycle) -> &'static str {
     match lc {
         RuntimeLifecycle::NotStarted => "not_started",
         RuntimeLifecycle::AwaitingTrust => "awaiting_trust",
@@ -1678,14 +1751,28 @@ Apply the five rewrites:
 
 - [ ] **Step 3: Rebuild Python bindings + run tests**
 
-If `nteract-dev` MCP is available, call `up rebuild=true`. Otherwise:
+Two venvs matter for this crate (see CLAUDE.md § Rebuilding Python bindings):
+- `.venv` (repo root) — used by the MCP server and `uv run nteract`.
+- `python/runtimed/.venv` — used by `pytest` integration tests.
+
+Native changes here affect both, so build into both. Run each block from the repo root.
 
 ```bash
-cd crates/runtimed-py && VIRTUAL_ENV=../../.venv uv run --directory ../../python/runtimed maturin develop
+# Build into the workspace venv (nteract MCP + uv run).
+(cd crates/runtimed-py && VIRTUAL_ENV=../../.venv \
+  uv run --directory ../../python/runtimed maturin develop) 2>&1 | tail -20
+
+# Build into the test venv (pytest).
+(cd crates/runtimed-py && VIRTUAL_ENV=../../python/runtimed/.venv \
+  uv run --directory ../../python/runtimed maturin develop) 2>&1 | tail -20
+
+# Run unit tests against the freshly-built extension.
 python/runtimed/.venv/bin/python -m pytest python/runtimed/tests/test_session_unit.py -v 2>&1 | tail -30
 ```
 
-Expected: green.
+If `nteract-dev` MCP is available, `up rebuild=true` handles the first of the two builds (workspace venv). The pytest build is not automated — run it explicitly as shown.
+
+Expected: green. The test suite exercises both the new `lifecycle`/`activity`/`error_reason` attributes and the preserved `status` field — confirm both paths pass before committing.
 
 - [ ] **Step 4: Commit**
 
@@ -1695,178 +1782,7 @@ git commit -m "refactor(runtimed-py): expose lifecycle/activity instead of statu
 ```
 
 ---
-## Task 12: Retire the legacy shape atomically
-
-**Files:**
-- Modify: `crates/runtime-doc/src/doc.rs`
-- Modify: `crates/runtime-doc/src/handle.rs`
-
-This task deletes the old setters, fields, scaffold keys, dual-shape mirror writes, and the `read_state` fallback in one commit. Task 11 already migrated the last non-test consumer (Python bindings), so this retire is safe.
-
-- [ ] **Step 1: Verify no remaining callers**
-
-```bash
-# Look EVERYWHERE — including runtime-doc — for leftover legacy uses.
-# The only intentional wire/presence hits (see "Expected" below) are marked NO-CHANGE
-# in the architecture rules; everything else should be migrated.
-rg -n 'set_kernel_status|set_starting_phase' crates/
-rg -n 'kernel\.status|kernel\.starting_phase' crates/ \
-   --glob '!runtime-doc/src/doc.rs' --glob '!runtime-doc/src/handle.rs'
-rg -n 'kernel\.status|kernel\.starting_phase' python/ scripts/
-rg -n 'kernel\.status|kernel\.starting_phase' packages/ apps/ \
-   --glob '*.ts' --glob '*.tsx'
-```
-
-Expected:
-- First command: the only hits are inside `crates/runtime-doc/src/doc.rs` (method definitions + legacy scaffold puts — all to be deleted below) and `crates/runtime-doc/src/handle.rs` (tests — migrated in Step 2).
-- Second command: empty except `crates/runt/src/main.rs:5182` (wire field on `NotebookResponse::KernelInfo::status`) and `crates/notebook-doc/src/presence.rs` (legacy wire presence status).
-- Third command: empty (Python bindings migrated in Task 11; metrics scripts read `notebook.runtime.kernel.lifecycle` after Task 15 — TODO: Task 15 runs after this one, so metrics scripts will still have `kernel.status` reads here; that's fine because they don't go through `KernelState` in Rust, they use the PyKernelState which Task 11 already fixed).
-- Fourth command: the TS layer still reads `kernel.status` until Tasks 13–14 migrate; that's acceptable because after Task 12 the Rust struct drops `status`, and the serde snapshot the TS layer consumes will simply stop including the `status` field. TS readers that still reference it will see `undefined` at runtime, but Task 13 adds dual-shape TS types with a fallback, and Task 14 removes the readers — verify the TS packages still typecheck before committing this task by running `cd packages/runtimed && pnpm run typecheck` (they reference fields by name that serde no longer emits, so type inference treats them as optional via `#[serde(default)]` or the `KernelState` interface — which still declares `status: string` until Task 13). If any TS site fails, hold on Task 12 until Task 13 lands. In practice, because `KernelState` on the TS side declares `status: string` and the Rust side will no longer emit a `status` key, serde_json will deserialize the missing field as `""` (empty string) in the WASM snapshot, which Tasks 13–14 replace with `lifecycle` pattern-matching. Empty string flows through existing TS consumers harmlessly — no typecheck break expected.
-
-If anything unexpected remains, migrate it first using the Task 5 pattern before proceeding.
-
-- [ ] **Step 2: Migrate `handle.rs` tests**
-
-In `crates/runtime-doc/src/handle.rs`, replace every `sd.set_kernel_status(...)` / `sd.set_starting_phase(...)` / `kernel.status` reference with the new API. Use `?` in tests — add `-> Result<(), crate::RuntimeStateError>` to `fn` signatures or switch to `.expect()`-free patterns. Exact rewrites:
-
-- Line 124 (`handle.with_doc(|sd| sd.set_kernel_status("busy")).unwrap();`) → use the new writer and return a `Result`:
-  ```rust
-  #[test]
-  fn with_doc_notifies_on_change() -> Result<(), crate::RuntimeStateError> {
-      let handle = make_handle();
-      let mut rx = handle.subscribe();
-      handle.with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Busy)))?;
-      assert!(rx.try_recv().is_ok());
-      Ok(())
-  }
-  ```
-
-- Line 131–134 (two-call idempotence test): same pattern — `sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Busy))` twice.
-
-- Lines 143–146 (`sd.set_kernel_status("busy")?; sd.set_starting_phase("resolving")?;` inside a closure): collapse to one call:
-  ```rust
-  handle.with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Resolving))?;
-  ```
-
-- Line 157 (`fork.set_kernel_status("idle").unwrap();`): `fork.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?;`.
-
-- Lines 162–170 (`read_does_not_notify`): the `read` closure currently reads `.kernel.status` — change it to `.kernel.lifecycle`, and update the `assert_eq!` to compare against `RuntimeLifecycle::Running(KernelActivity::Busy)` instead of the string `"busy"`.
-
-Add `use crate::{KernelActivity, RuntimeLifecycle};` at the top of `handle.rs` if it isn't already in scope.
-
-- [ ] **Step 3: Remove old setters**
-
-In `crates/runtime-doc/src/doc.rs`, delete `pub fn set_kernel_status` and `pub fn set_starting_phase` (locate with `rg -n "set_kernel_status|set_starting_phase" crates/runtime-doc/src/doc.rs`).
-
-- [ ] **Step 4: Drop the dual-shape legacy-mirror writes from `set_lifecycle` / `set_activity`**
-
-In `set_lifecycle`, delete the block that writes `status` + `starting_phase`:
-
-```rust
-        // Dual-shape: maintain legacy kernel.status + kernel.starting_phase
-        // for readers not yet migrated. Removed in plan Task 12.
-        let (legacy_status, legacy_phase) = legacy_shape_for(lifecycle);
-        self.doc.put(&kernel, "status", legacy_status)?;
-        self.doc.put(&kernel, "starting_phase", legacy_phase)?;
-```
-
-In `set_activity`, delete the legacy-status mirror:
-
-```rust
-        // Dual-shape: mirror into legacy kernel.status. Removed in Task 12.
-        let legacy_status = match activity { ... };
-        self.doc.put(&kernel, "status", legacy_status)?;
-```
-
-Delete the `fn legacy_shape_for(...)` helper (no longer reachable).
-
-Delete the `set_lifecycle_maintains_legacy_shape` test — it's pinning a behavior we just removed.
-
-- [ ] **Step 5: Drop the legacy fields from `KernelState`**
-
-Replace the `KernelState` struct with the lean version:
-
-```rust
-/// Kernel state snapshot.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct KernelState {
-    #[serde(default)]
-    pub lifecycle: RuntimeLifecycle,
-    #[serde(default)]
-    pub name: String,
-    #[serde(default)]
-    pub language: String,
-    #[serde(default)]
-    pub env_source: String,
-    #[serde(default)]
-    pub runtime_agent_id: String,
-    #[serde(default)]
-    pub error_reason: Option<String>,
-}
-```
-
-Delete the old `impl Default for KernelState` block (the derive now provides it — all fields are `Default`).
-
-- [ ] **Step 6: Simplify `read_state`**
-
-Replace the kernel-state projection with:
-
-```rust
-        let kernel_state = kernel
-            .as_ref()
-            .map(|k| {
-                let lifecycle_str = self.read_str(k, "lifecycle");
-                let activity_str = self.read_str(k, "activity");
-                let lifecycle = RuntimeLifecycle::parse(&lifecycle_str, &activity_str)
-                    .unwrap_or_default();
-                let error_reason_raw = self.read_str(k, "error_reason");
-                KernelState {
-                    lifecycle,
-                    name: self.read_str(k, "name"),
-                    language: self.read_str(k, "language"),
-                    env_source: self.read_str(k, "env_source"),
-                    runtime_agent_id: self.read_str(k, "runtime_agent_id"),
-                    error_reason: Some(error_reason_raw),
-                }
-            })
-            .unwrap_or_default();
-```
-
-Delete `fn legacy_status_to_lifecycle(...)` — it's no longer reachable.
-
-- [ ] **Step 7: Drop the legacy scaffold keys**
-
-In both `new()` and `new_with_actor()`, delete the two lines that scaffold `kernel.status` and `kernel.starting_phase`:
-
-```rust
-doc.put(&kernel, "status", "not_started").expect("…");
-...
-doc.put(&kernel, "starting_phase", "").expect("…");
-```
-
-- [ ] **Step 8: Update the schema doc comment**
-
-Remove the two `DEPRECATED` lines for `status` and `starting_phase` added in Task 2.
-
-- [ ] **Step 9: Run the full workspace**
-
-```bash
-cargo test -p runtime-doc 2>&1 | tail -30
-cargo test --workspace 2>&1 | tail -40
-```
-
-Expected: all tests green.
-
-- [ ] **Step 10: Commit**
-
-```bash
-git add crates/runtime-doc/src/doc.rs
-git commit -m "refactor(runtime-doc): retire legacy kernel.status+starting_phase shape"
-```
-
----
-
-## Task 13: Introduce TS `RuntimeLifecycle` types (dual-shape)
+## Task 12: Introduce TS `RuntimeLifecycle` types (dual-shape)
 
 **Files:**
 - Modify: `packages/runtimed/src/runtime-state.ts`
@@ -1927,7 +1843,7 @@ Update the `KernelState` interface to dual-shape:
 
 ```typescript
 export interface KernelState {
-  /** Typed lifecycle. Task 14 makes this the preferred read. */
+  /** Typed lifecycle. Task 13 makes this the preferred read. */
   lifecycle: RuntimeLifecycle;
   /** @deprecated Legacy status string, replaced by `lifecycle`. */
   status: string;
@@ -2007,7 +1923,7 @@ export {
 } from "./runtime-state";
 ```
 
-Task 14 imports `RuntimeLifecycle` from the package root (`from "runtimed"`); without this re-export the typecheck fails immediately.
+Task 13 imports `RuntimeLifecycle` from the package root (`from "runtimed"`); without this re-export the typecheck fails immediately.
 
 - [ ] **Step 4: Run tests**
 
@@ -2028,7 +1944,7 @@ git commit -m "feat(runtimed-ts): dual-shape KernelState with RuntimeLifecycle"
 
 ---
 
-## Task 14: Migrate TS surface in one green commit
+## Task 13: Migrate TS surface in one green commit
 
 **Files:**
 - Modify: `packages/runtimed/src/derived-state.ts`
@@ -2362,12 +2278,13 @@ git commit -m "refactor(notebook-app): thread RuntimeLifecycle through TS surfac
 ---
 
 
-## Task 15: Migrate Python metrics scripts
+## Task 14: Migrate Python metrics scripts + README examples
 
 **Files:**
 - Modify: `scripts/metrics/kernel-reliability.py`
 - Modify: `scripts/metrics/execution-latency.py`
 - Modify: `scripts/metrics/sync-correctness.py`
+- Modify: `python/runtimed/README.md`
 
 - [ ] **Step 1: Rewrite each script**
 
@@ -2390,7 +2307,27 @@ def _kernel_status(rs):
 
 Substitute `notebook.runtime.kernel.status` with `_kernel_status(notebook.runtime)` at the five call sites in `kernel-reliability.py` (lines 71, 73, 82, 118, 122) and the two in `execution-latency.py` (lines 43, 45, 54) and the two in `sync-correctness.py` (lines 190, 194).
 
-- [ ] **Step 2: Syntax-check**
+- [ ] **Step 2: Update the README example**
+
+`python/runtimed/README.md` around line 97 currently shows:
+
+```python
+rs = notebook.runtime
+if rs.kernel.status == "idle":
+    ...
+```
+
+Replace with the typed form:
+
+```python
+rs = notebook.runtime
+if rs.kernel.lifecycle == "Running" and rs.kernel.activity == "Idle":
+    ...
+```
+
+Grep the whole README for any other `kernel.status` references and update them consistently.
+
+- [ ] **Step 3: Syntax-check**
 
 ```bash
 python3 -m py_compile scripts/metrics/kernel-reliability.py scripts/metrics/execution-latency.py scripts/metrics/sync-correctness.py
@@ -2398,11 +2335,217 @@ python3 -m py_compile scripts/metrics/kernel-reliability.py scripts/metrics/exec
 
 Expected: no output.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add scripts/metrics/kernel-reliability.py scripts/metrics/execution-latency.py scripts/metrics/sync-correctness.py
+git add scripts/metrics/kernel-reliability.py scripts/metrics/execution-latency.py scripts/metrics/sync-correctness.py python/runtimed/README.md
 git commit -m "chore(metrics): read lifecycle+activity instead of kernel.status"
+```
+
+---
+
+## Task 15: Retire the legacy shape atomically
+
+**Files:**
+- Modify: `crates/runtime-doc/src/doc.rs`
+- Modify: `crates/runtime-doc/src/handle.rs`
+- Modify: `crates/runtimed-py/src/output.rs`
+- Modify: `packages/runtimed/src/runtime-state.ts`
+- Modify: `packages/runtimed/tests/sync-engine.test.ts`
+
+Every reader has migrated by now (Rust via Tasks 4–10, Python bindings via Task 11, TS via Tasks 12–13, Python metrics via Task 14). This task deletes the old setters, fields, scaffold keys, dual-shape mirror writes (both CRDT-side in Rust and attribute-side in `PyKernelState`), the legacy `status` + `starting_phase` on the TS `KernelState` interface, and the `read_state` fallback — all in one atomic commit.
+
+- [ ] **Step 1: Verify no remaining callers**
+
+Run these greps from the repo root. Each should return only the intentional wire/presence hits listed below. Any unexpected hit must be migrated before proceeding.
+
+```bash
+rg -n 'set_kernel_status|set_starting_phase' crates/
+rg -n 'kernel\.status|kernel\.starting_phase' crates/ \
+   --glob '!runtime-doc/src/doc.rs' --glob '!runtime-doc/src/handle.rs' \
+   --glob '!runtimed-py/src/output.rs'
+rg -n 'kernel\.status|kernel\.starting_phase' python/ scripts/
+rg -n 'kernel\.status|kernel\.starting_phase' packages/ apps/ --glob '*.ts' --glob '*.tsx'
+```
+
+Expected hits (everything else should be empty):
+
+- First command: only the `pub fn set_kernel_status` / `pub fn set_starting_phase` definitions in `crates/runtime-doc/src/doc.rs` and the legacy-mirror `doc.put(&kernel, "status", …)` / `… "starting_phase", …` calls inside `set_lifecycle` / `set_activity` / `legacy_shape_for`. All deleted in Steps 4–5 below. Plus the legacy puts in `RuntimeStateDoc::new()` / `new_with_actor()` scaffolds, deleted in Step 8.
+- Second command: only `crates/runt/src/main.rs:5182` (the wire field on `NotebookResponse::KernelInfo::status`, unchanged) and `crates/notebook-doc/src/presence.rs` (legacy wire presence status, unchanged).
+- Third command: only `python/runtimed/tests/…` test fixtures asserting on the deprecated `status` attribute. If Task 14 migrated those, empty; otherwise migrate them as part of this task.
+- Fourth command: only TS `KernelState` field definitions and `DEFAULT_RUNTIME_STATE` defaults in `packages/runtimed/src/runtime-state.ts`, plus their two uses in `sync-engine.test.ts` fixtures (lines 106, 601, 645, 1997). All deleted in Step 7.
+
+If anything outside this list shows up, migrate it first (following the Task 5 pattern for Rust, Task 13 for TS, Task 14 for Python) before continuing.
+
+- [ ] **Step 2: Migrate `handle.rs` tests**
+
+In `crates/runtime-doc/src/handle.rs`, replace every `sd.set_kernel_status(...)` / `sd.set_starting_phase(...)` / `kernel.status` reference with the new API. Use `?` in tests — add `-> Result<(), crate::RuntimeStateError>` to `fn` signatures or switch to `.expect()`-free patterns. Exact rewrites:
+
+- Line 124 (`handle.with_doc(|sd| sd.set_kernel_status("busy")).unwrap();`) → use the new writer and return a `Result`:
+  ```rust
+  #[test]
+  fn with_doc_notifies_on_change() -> Result<(), crate::RuntimeStateError> {
+      let handle = make_handle();
+      let mut rx = handle.subscribe();
+      handle.with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Busy)))?;
+      assert!(rx.try_recv().is_ok());
+      Ok(())
+  }
+  ```
+
+- Line 131–134 (two-call idempotence test): same pattern — `sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Busy))` twice.
+
+- Lines 143–146 (`sd.set_kernel_status("busy")?; sd.set_starting_phase("resolving")?;` inside a closure): collapse to one call:
+  ```rust
+  handle.with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Resolving))?;
+  ```
+
+- Line 157 (`fork.set_kernel_status("idle").unwrap();`): `fork.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?;`.
+
+- Lines 162–170 (`read_does_not_notify`): the `read` closure currently reads `.kernel.status` — change it to `.kernel.lifecycle`, and update the `assert_eq!` to compare against `RuntimeLifecycle::Running(KernelActivity::Busy)` instead of the string `"busy"`.
+
+Add `use crate::{KernelActivity, RuntimeLifecycle};` at the top of `handle.rs` if it isn't already in scope.
+
+- [ ] **Step 3: Remove old setters**
+
+In `crates/runtime-doc/src/doc.rs`, delete `pub fn set_kernel_status` and `pub fn set_starting_phase` (locate with `rg -n "set_kernel_status|set_starting_phase" crates/runtime-doc/src/doc.rs`).
+
+- [ ] **Step 4: Drop the dual-shape legacy-mirror writes from `set_lifecycle` / `set_activity`**
+
+In `set_lifecycle`, delete the block that writes `status` + `starting_phase`:
+
+```rust
+        // Dual-shape: maintain legacy kernel.status + kernel.starting_phase
+        // for readers not yet migrated. Removed in plan Task 15.
+        let (legacy_status, legacy_phase) = legacy_shape_for(lifecycle);
+        self.doc.put(&kernel, "status", legacy_status)?;
+        self.doc.put(&kernel, "starting_phase", legacy_phase)?;
+```
+
+In `set_activity`, delete the legacy-status mirror:
+
+```rust
+        // Dual-shape: mirror into legacy kernel.status. Removed in Task 15.
+        let legacy_status = match activity { ... };
+        self.doc.put(&kernel, "status", legacy_status)?;
+```
+
+Delete the `fn legacy_shape_for(...)` helper (no longer reachable).
+
+Delete the `set_lifecycle_maintains_legacy_shape` test — it's pinning a behavior we just removed.
+
+- [ ] **Step 5: Drop the legacy fields from `KernelState`**
+
+Replace the `KernelState` struct with the lean version:
+
+```rust
+/// Kernel state snapshot.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KernelState {
+    #[serde(default)]
+    pub lifecycle: RuntimeLifecycle,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub language: String,
+    #[serde(default)]
+    pub env_source: String,
+    #[serde(default)]
+    pub runtime_agent_id: String,
+    #[serde(default)]
+    pub error_reason: Option<String>,
+}
+```
+
+Delete the old `impl Default for KernelState` block (the derive now provides it — all fields are `Default`).
+
+- [ ] **Step 6: Simplify `read_state`**
+
+Replace the kernel-state projection with:
+
+```rust
+        let kernel_state = kernel
+            .as_ref()
+            .map(|k| {
+                let lifecycle_str = self.read_str(k, "lifecycle");
+                let activity_str = self.read_str(k, "activity");
+                let lifecycle = RuntimeLifecycle::parse(&lifecycle_str, &activity_str)
+                    .unwrap_or_default();
+                let error_reason_raw = self.read_str(k, "error_reason");
+                KernelState {
+                    lifecycle,
+                    name: self.read_str(k, "name"),
+                    language: self.read_str(k, "language"),
+                    env_source: self.read_str(k, "env_source"),
+                    runtime_agent_id: self.read_str(k, "runtime_agent_id"),
+                    error_reason: Some(error_reason_raw),
+                }
+            })
+            .unwrap_or_default();
+```
+
+Delete `fn legacy_status_to_lifecycle(...)` — it's no longer reachable.
+
+- [ ] **Step 7: Drop `PyKernelState.status` and its mirror writes**
+
+In `crates/runtimed-py/src/output.rs`:
+
+- Remove the `pub status: String` field from `PyKernelState` (the one marked DEPRECATED in Task 11).
+- In the `From<runtime_doc::RuntimeState>` conversion, delete the `status: crate::session_core::lifecycle_status_string(...)` line.
+- If any pytest fixture in `python/runtimed/tests/` still references `kernel.status`, update it to `kernel.lifecycle` / `kernel.activity` (grep: `rg -n "\.kernel\.status" python/runtimed/tests/`).
+
+- [ ] **Step 8: Drop legacy fields from the TS `KernelState` interface**
+
+In `packages/runtimed/src/runtime-state.ts`:
+
+- Remove `status: string;` and `starting_phase: string;` from the `KernelState` interface.
+- Remove `status: "not_started",` and `starting_phase: "",` from `DEFAULT_RUNTIME_STATE.kernel`.
+
+In `packages/runtimed/tests/sync-engine.test.ts`, the fixtures rewritten in Task 13 still carry `status: "idle", starting_phase: ""`. Remove those two keys from each fixture (lines 106, 601, 645, 1997 before the Task 13 edits; re-grep after to confirm `rg -n "starting_phase|status:" packages/runtimed/tests/`).
+
+- [ ] **Step 9: Drop the legacy CRDT scaffold keys**
+
+In both `new()` and `new_with_actor()`, delete the two lines that scaffold `kernel.status` and `kernel.starting_phase`:
+
+```rust
+doc.put(&kernel, "status", "not_started").expect("…");
+...
+doc.put(&kernel, "starting_phase", "").expect("…");
+```
+
+- [ ] **Step 10: Update the schema doc comment**
+
+Remove the two `DEPRECATED` lines for `status` and `starting_phase` added in Task 2.
+
+- [ ] **Step 11: Run the full workspace + frontend + Python tests**
+
+Each command runs from the repo root. Rebuild the Python bindings into the test venv before running pytest so the native extension matches the rebuilt `PyKernelState`.
+
+```bash
+cargo xtask lint
+cargo check --workspace
+cargo test --workspace 2>&1 | tail -50
+(cd packages/runtimed && pnpm test) 2>&1 | tail -20
+(cd apps/notebook && pnpm run typecheck) 2>&1 | tail -20
+(cd apps/notebook && pnpm vitest run) 2>&1 | tail -30
+
+(cd crates/runtimed-py && VIRTUAL_ENV=../../.venv \
+  uv run --directory ../../python/runtimed maturin develop) 2>&1 | tail -10
+(cd crates/runtimed-py && VIRTUAL_ENV=../../python/runtimed/.venv \
+  uv run --directory ../../python/runtimed maturin develop) 2>&1 | tail -10
+python/runtimed/.venv/bin/python -m pytest python/runtimed/tests/ -v 2>&1 | tail -30
+```
+
+Expected: all green.
+
+- [ ] **Step 12: Commit**
+
+```bash
+git add crates/runtime-doc/src/doc.rs crates/runtime-doc/src/handle.rs \
+        crates/runtimed-py/src/output.rs \
+        packages/runtimed/src/runtime-state.ts \
+        packages/runtimed/tests/sync-engine.test.ts
+git commit -m "refactor(runtime-doc): retire legacy kernel.status+starting_phase shape"
 ```
 
 ---
@@ -2513,15 +2656,15 @@ EOF
 
 ## Self-review
 
-- **Spec coverage:** every bullet in the spec maps to a task — enums (1), CRDT scaffold (2), struct + dual-shape writers + throttle (3), IOPub branching (4), full Rust caller migration (5–10), Python bindings (11), atomic retire (12), TS (13–14), metrics (15), verification (16).
-- **Commit boundaries honored.** Tasks 2 and 3 populate both shapes (CRDT keys + struct fields). The new writers in Task 3 also maintain the legacy `status` + `starting_phase` keys so readers not yet migrated keep observing correct state. Tasks 4–10 migrate Rust callers one crate at a time; Task 11 migrates the Python bindings. Task 12 atomically retires every piece of the legacy shape after a repo-wide grep (including `runtime-doc/**`) confirms zero callers remain. Tasks 13–14 split the TS migration into "add types + export from barrel" (green) and "migrate every caller in one commit" (green). No task knowingly produces a red intermediate.
+- **Spec coverage:** every bullet in the spec maps to a task — enums (1), CRDT scaffold (2), struct + dual-shape writers + throttle (3), IOPub branching (4), Rust caller migration including the wait-loop and reset_starting_state asserts (5–10), Python bindings dual-shape with `status` retained (11), TS types + barrel exports (12), consolidated TS migration (13), Python metrics + README examples (14), atomic retire covering Rust + PyO3 + TS in one commit (15), verification + restart smoke (16).
+- **Commit boundaries honored.** Tasks 2 and 3 populate both shapes (CRDT keys + struct fields). The new writers in Task 3 also maintain the legacy `status` + `starting_phase` keys so readers not yet migrated keep observing correct state. Tasks 4–10 migrate Rust callers one crate at a time; Task 11 adds `lifecycle`/`activity`/`error_reason` to the Python bindings while keeping `status` dual-shape; Tasks 12–13 split the TS migration into "add types + export from barrel" (green) and "migrate every caller in one commit" (green); Task 14 migrates Python metrics + repo examples. Task 15 atomically retires every piece of the legacy shape after a repo-wide grep (including `runtime-doc/**`) confirms zero callers remain. No task knowingly produces a red intermediate.
 - **Restart path:** Task 16 Step 5 documents the actual state transitions the plan's writes guarantee (`Running(Idle)` settle after successful `KernelRestarted`), notes that intermediate `Shutdown`/`Connecting` depend on Jupyter kernel IOPub behavior, and pins the regression check to "lifecycle must not remain stuck on `Shutdown`."
-- **Missed Rust callers folded in:** `metadata.rs:673` (reader) → Task 5; `runtime_agent.rs:1181`/`:1200` (test asserts) → Task 7; `handle.rs` tests migrated in Task 12 alongside the atomic retire.
-- **Missed frontend test:** `apps/notebook/src/lib/__tests__/kernel-status.test.ts` → Task 14.
-- **TS barrel export:** Task 13 updates `packages/runtimed/src/index.ts` to re-export `RuntimeLifecycle` + `KernelActivity` + `lifecycleStatusString` so Task 14's imports from `"runtimed"` resolve.
+- **Missed Rust callers folded in:** `metadata.rs:673` (reader) → Task 5; `launch_kernel.rs:85-99` (starting-in-progress wait loop) → Task 6; `runtime_agent.rs:1181`/`:1200` (test asserts) → Task 7; `tests.rs:3540/3564/3588` (reset_starting_state asserts) → Task 5; `handle.rs` tests migrated in Task 15 alongside the atomic retire.
+- **Missed frontend test:** `apps/notebook/src/lib/__tests__/kernel-status.test.ts` → Task 13.
+- **TS barrel export:** Task 12 updates `packages/runtimed/src/index.ts` to re-export `RuntimeLifecycle` + `KernelActivity` + `lifecycleStatusString` so Task 13's imports from `"runtimed"` resolve.
 - **error_reason semantics:** `set_lifecycle` does NOT touch `error_reason`. Only `set_lifecycle_with_error(lc, Some("reason"))` sets it; `set_lifecycle_with_error(lc, None)` clears it. Both the populate and preserve-on-reentry tests are in Task 3 Step 1.
-- **Dual-shape writer invariant:** `set_lifecycle` and `set_activity` mirror every write into the legacy `kernel.status` / `kernel.starting_phase` keys during Tasks 3–11. Task 12 removes those mirror writes along with the keys. Pinned by a dedicated test in Task 3 Step 5.
+- **Dual-shape writer invariant:** `set_lifecycle` and `set_activity` mirror every write into the legacy `kernel.status` / `kernel.starting_phase` keys during Tasks 3–14. Task 15 removes those mirror writes along with the keys. Pinned by a dedicated test in Task 3 Step 5.
 - **No `.unwrap()` in test snippets:** plan test snippets use `-> Result<(), crate::RuntimeStateError>` with `?` (or `.expect("msg")` for non-`Result` boundaries), matching the project's `clippy::unwrap_used` policy.
 - **`with_doc` discipline:** every daemon snippet in Tasks 4–11 routes mutations through `room.state.with_doc(|sd| ...)` — never direct `doc.set_*` calls — so subscribers receive change notifications.
-- **Chained `cd` typo fixed:** Tasks 14 and 16 use `(cd <path> && ...)` subshells instead of a running `cd` chain, so each command executes from the repo root.
+- **Chained `cd` typo fixed:** Tasks 13 and 16 use `(cd <path> && ...)` subshells instead of a running `cd` chain, so each command executes from the repo root.
 - **TS throttle safety:** `useDaemonKernel` drives the throttle off a primitive-string `rawStatus` derived by `useMemo`, not directly off the lifecycle object. `Running(Idle) → Shutdown → Running(Idle)` produces the `"idle" → "shutdown" → "idle"` sequence; the existing `if (rawStatus === prev) return;` guard + `busyTimerRef` cleanup handle it.
