@@ -309,7 +309,7 @@ describe("NotebookToolbar", () => {
     });
   });
 
-  describe("missing ipykernel prompt", () => {
+  describe("pixi ipykernel prompt", () => {
     const errorLifecycle: RuntimeLifecycle = { lifecycle: "Error" };
     const idleLifecycle: RuntimeLifecycle = {
       lifecycle: "Running",
@@ -328,37 +328,6 @@ describe("NotebookToolbar", () => {
         />,
       );
       expect(screen.getByText(/ipykernel not found in pixi.toml/)).toBeInTheDocument();
-      expect(screen.getByText(/pixi add ipykernel/)).toBeInTheDocument();
-    });
-
-    it("shows uv prompt when envSource=uv:pyproject and errorReason=missing_ipykernel", () => {
-      render(
-        <NotebookToolbar
-          {...baseProps}
-          runtime="python"
-          kernelStatus={KERNEL_STATUS.ERROR}
-          lifecycle={errorLifecycle}
-          errorReason={KERNEL_ERROR_REASON.MISSING_IPYKERNEL}
-          envSource="uv:pyproject"
-        />,
-      );
-      expect(screen.getByText(/ipykernel not found in pyproject.toml/)).toBeInTheDocument();
-      expect(screen.getByText(/uv add ipykernel/)).toBeInTheDocument();
-    });
-
-    it("shows conda prompt when envSource=conda:env_yml and errorReason=missing_ipykernel", () => {
-      render(
-        <NotebookToolbar
-          {...baseProps}
-          runtime="python"
-          kernelStatus={KERNEL_STATUS.ERROR}
-          lifecycle={errorLifecycle}
-          errorReason={KERNEL_ERROR_REASON.MISSING_IPYKERNEL}
-          envSource="conda:env_yml"
-        />,
-      );
-      expect(screen.getByText(/ipykernel not found in environment.yml/)).toBeInTheDocument();
-      expect(screen.getByText(/conda install ipykernel/)).toBeInTheDocument();
     });
 
     it("does not show pixi prompt for generic pixi error (no missing_ipykernel reason)", () => {
@@ -402,7 +371,7 @@ describe("NotebookToolbar", () => {
       expect(screen.queryByText(/ipykernel not found in pixi.toml/)).not.toBeInTheDocument();
     });
 
-    it("does not show any prompt when envSource is uv:prewarmed", () => {
+    it("does not show pixi prompt when envSource is not pixi", () => {
       render(
         <NotebookToolbar
           {...baseProps}
@@ -413,35 +382,7 @@ describe("NotebookToolbar", () => {
           envSource="uv:prewarmed"
         />,
       );
-      expect(screen.queryByText(/ipykernel not found/)).not.toBeInTheDocument();
-    });
-
-    it("does not show uv prompt when envSource is uv:inline", () => {
-      render(
-        <NotebookToolbar
-          {...baseProps}
-          runtime="python"
-          kernelStatus={KERNEL_STATUS.ERROR}
-          lifecycle={errorLifecycle}
-          errorReason={KERNEL_ERROR_REASON.MISSING_IPYKERNEL}
-          envSource="uv:inline"
-        />,
-      );
-      expect(screen.queryByText(/ipykernel not found/)).not.toBeInTheDocument();
-    });
-
-    it("does not show conda prompt when envSource is conda:inline", () => {
-      render(
-        <NotebookToolbar
-          {...baseProps}
-          runtime="python"
-          kernelStatus={KERNEL_STATUS.ERROR}
-          lifecycle={errorLifecycle}
-          errorReason={KERNEL_ERROR_REASON.MISSING_IPYKERNEL}
-          envSource="conda:inline"
-        />,
-      );
-      expect(screen.queryByText(/ipykernel not found/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/ipykernel not found in pixi.toml/)).not.toBeInTheDocument();
     });
   });
 });

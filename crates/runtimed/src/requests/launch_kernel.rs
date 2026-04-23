@@ -360,84 +360,50 @@ pub(crate) async fn handle(
 
     let parsed_resolved = EnvSource::parse(&resolved_env_source);
 
-    // For project-file env sources, verify ipykernel is declared before
-    // launching. Covers pixi.toml, pyproject.toml (uv), and
-    // environment.yml (conda). Publishes the typed
-    // `KernelErrorReason::MissingIpykernel` so the toolbar can render
-    // the right remediation alongside the RPC error response.
+    // For pixi:toml, verify ipykernel is declared before launching.
+    // Unlike uv (`uv run --with ipykernel`) and conda:env_yml (daemon
+    // injects ipykernel into deps pre-sync), pixi does not auto-inject.
     //
-    // Note: the prior pixi-only branch returned the error response but
-    // did not write `set_lifecycle_with_error`. Aligning with the
-    // auto-launch path in metadata.rs so both producers surface the
-    // typed reason.
-    let project_ipykernel_gate = match parsed_resolved {
-        EnvSource::PixiToml => Some((
-            "pixi.toml",
-            notebook_path.as_ref().and_then(|nb| {
-                crate::project_file::detect_project_file(nb)
-                    .filter(|d| d.kind == crate::project_file::ProjectFileKind::PixiToml)
-                    .map(|d| d.path)
-            }),
-        )),
-        EnvSource::Pyproject => Some((
-            "pyproject.toml",
-            notebook_path.as_ref().and_then(|nb| {
-                crate::project_file::detect_project_file(nb)
-                    .filter(|d| d.kind == crate::project_file::ProjectFileKind::PyprojectToml)
-                    .map(|d| d.path)
-            }),
-        )),
-        EnvSource::EnvYml => Some((
-            "environment.yml",
-            notebook_path.as_ref().and_then(|nb| {
-                crate::project_file::find_nearest_project_file(
-                    std::path::Path::new(nb),
-                    &[crate::project_file::ProjectFileKind::EnvironmentYml],
-                )
+    // Publish the typed `KernelErrorReason::MissingIpykernel` AFTER
+    // `reset_starting_state` so the Error lifecycle survives. The prior
+    // code only returned an `Error` response — the toolbar could
+    // classify the spawn error generically but never rendered the
+    // targeted remediation on the RPC path.
+    if matches!(parsed_resolved, EnvSource::PixiToml) {
+        let pixi_path = notebook_path.as_ref().and_then(|nb| {
+            crate::project_file::detect_project_file(nb)
+                .filter(|d| d.kind == crate::project_file::ProjectFileKind::PixiToml)
                 .map(|d| d.path)
-            }),
-        )),
-        _ => None,
-    };
-
-    if let Some((label, Some(path))) = project_ipykernel_gate {
-        let has_ipykernel = match label {
-            "pixi.toml" => match kernel_launch::tools::pixi_info(&path).await {
+        });
+        if let Some(ref path) = pixi_path {
+            let has_ipykernel = match kernel_launch::tools::pixi_info(path).await {
                 Ok(info) => info.has_ipykernel(),
-                Err(_) => crate::project_file::pixi_toml_has_ipykernel(&path),
-            },
-            "pyproject.toml" => crate::project_file::pyproject_toml_has_ipykernel(&path),
-            "environment.yml" => crate::project_file::environment_yml_has_ipykernel(&path),
-            _ => true,
-        };
-        if !has_ipykernel {
-            warn!(
-                "[notebook-sync] {} at {:?} does not declare ipykernel",
-                label, path
-            );
-            let env_source_label = parsed_resolved.as_str().to_string();
-            if let Err(e) = room.state.with_doc(|sd| {
-                sd.set_lifecycle_with_error(
-                    &RuntimeLifecycle::Error,
-                    Some(KernelErrorReason::MissingIpykernel),
-                )?;
-                sd.set_kernel_info("python", "python", &env_source_label)?;
-                Ok(())
-            }) {
-                warn!("[runtime-state] {}", e);
-            }
-            reset_starting_state(room, None).await;
-            let remediation = match label {
-                "pixi.toml" => "run `pixi add ipykernel` in your project directory",
-                "pyproject.toml" => "run `uv add ipykernel` in your project directory",
-                "environment.yml" => {
-                    "add `ipykernel` to environment.yml and run `conda env update`"
+                Err(_) => crate::project_file::pixi_toml_has_ipykernel(path),
+            };
+            if !has_ipykernel {
+                warn!(
+                    "[notebook-sync] pixi.toml at {:?} does not declare ipykernel",
+                    path
+                );
+                // Tear down the "starting" latch first — reset_starting_state
+                // rewrites lifecycle to NotStarted, so the typed Error write
+                // must come after it to stick.
+                reset_starting_state(room, None).await;
+                let env_source_label = parsed_resolved.as_str().to_string();
+                if let Err(e) = room.state.with_doc(|sd| {
+                    sd.set_lifecycle_with_error(
+                        &RuntimeLifecycle::Error,
+                        Some(KernelErrorReason::MissingIpykernel),
+                    )?;
+                    sd.set_kernel_info("python", "python", &env_source_label)?;
+                    Ok(())
+                }) {
+                    warn!("[runtime-state] {}", e);
                 }
-                _ => "add ipykernel to your project",
-            };
-            return NotebookResponse::Error {
-                error: format!("ipykernel not found in {} — {}", label, remediation),
-            };
+                return NotebookResponse::Error {
+                    error: "ipykernel not found in pixi.toml — run `pixi add ipykernel` in your project directory".to_string(),
+                };
+            }
         }
     }
 
