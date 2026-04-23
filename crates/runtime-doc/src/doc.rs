@@ -1902,7 +1902,18 @@ impl RuntimeStateDoc {
             .map(|k| {
                 let lifecycle_key = self.read_str(k, "lifecycle");
                 let activity_key = self.read_str(k, "activity");
-                let lifecycle = crate::types::resolve_lifecycle(&lifecycle_key, &activity_key);
+                // Pre-typed docs (captured fixtures, `from_doc` with
+                // external bytes) only have the string shape.
+                // resolve_lifecycle falls back to it when the typed keys
+                // are missing.
+                let status = self.read_str(k, "status");
+                let starting_phase = self.read_str(k, "starting_phase");
+                let lifecycle = crate::types::resolve_lifecycle(
+                    &lifecycle_key,
+                    &activity_key,
+                    &status,
+                    &starting_phase,
+                );
                 // error_reason is Option<String> so callers can tell "no
                 // kernel map at all" (None) from "scaffolded but unset"
                 // (Some("")). automunge::read_str_if_present returns None
@@ -4728,6 +4739,68 @@ mod tests {
         let k = doc.read_state().kernel;
         assert_eq!(k.lifecycle, RuntimeLifecycle::NotStarted);
         assert_eq!(k.error_reason, None);
+        Ok(())
+    }
+
+    #[test]
+    fn pre_typed_doc_reads_lifecycle_from_string_shape() -> Result<(), RuntimeStateError> {
+        // A runtime-state doc authored before the typed keys were added
+        // carries only kernel.status + kernel.starting_phase. read_state
+        // must derive the lifecycle from that pair rather than returning
+        // the scaffold default NotStarted. This is the cross-version
+        // compat path for captured test fixtures and any in-flight sync
+        // frame from an older producer.
+        use automerge::{transaction::Transactable, AutoCommit, ObjType, ROOT};
+
+        let mut raw = AutoCommit::new();
+        let kernel = raw
+            .put_object(&ROOT, "kernel", ObjType::Map)
+            .expect("scaffold kernel");
+        raw.put(&kernel, "status", "busy")
+            .expect("pre-typed status");
+        raw.put(&kernel, "starting_phase", "")
+            .expect("pre-typed starting_phase");
+        raw.put(&kernel, "name", "").expect("name");
+        raw.put(&kernel, "language", "").expect("language");
+        raw.put(&kernel, "env_source", "").expect("env_source");
+        raw.put(&kernel, "runtime_agent_id", "")
+            .expect("runtime_agent_id");
+        // Deliberately DO NOT write kernel/lifecycle or kernel/activity.
+
+        let doc = RuntimeStateDoc::from_doc(raw);
+        let k = doc.read_state().kernel;
+        assert_eq!(
+            k.lifecycle,
+            RuntimeLifecycle::Running(KernelActivity::Busy),
+            "pre-typed doc (string shape only) must read as Running(Busy)"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pre_typed_doc_reads_starting_sub_phase() -> Result<(), RuntimeStateError> {
+        // starting_phase carries the sub-state in the pre-typed shape;
+        // the fallback must preserve it.
+        use automerge::{transaction::Transactable, AutoCommit, ObjType, ROOT};
+
+        let mut raw = AutoCommit::new();
+        let kernel = raw
+            .put_object(&ROOT, "kernel", ObjType::Map)
+            .expect("scaffold kernel");
+        raw.put(&kernel, "status", "starting").expect("status");
+        raw.put(&kernel, "starting_phase", "launching")
+            .expect("starting_phase");
+        raw.put(&kernel, "name", "").expect("name");
+        raw.put(&kernel, "language", "").expect("language");
+        raw.put(&kernel, "env_source", "").expect("env_source");
+        raw.put(&kernel, "runtime_agent_id", "")
+            .expect("runtime_agent_id");
+
+        let doc = RuntimeStateDoc::from_doc(raw);
+        assert_eq!(
+            doc.read_state().kernel.lifecycle,
+            RuntimeLifecycle::Launching
+        );
         Ok(())
     }
 }

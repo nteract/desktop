@@ -145,6 +145,31 @@ impl RuntimeLifecycle {
         }
     }
 
+    /// Derive a lifecycle from the pre-typed `(status, starting_phase)`
+    /// string pair. Used as a fallback in [`resolve_lifecycle`] when
+    /// reading a doc that predates the typed keys, so older producers
+    /// still read correctly after callers upgrade.
+    pub fn from_legacy(status: &str, starting_phase: &str) -> Self {
+        match status {
+            "idle" => Self::Running(KernelActivity::Idle),
+            "busy" => Self::Running(KernelActivity::Busy),
+            "starting" => match starting_phase {
+                "resolving" => Self::Resolving,
+                "preparing_env" => Self::PreparingEnv,
+                "launching" => Self::Launching,
+                "connecting" => Self::Connecting,
+                // Unknown or empty sub-phase: fall back to the first
+                // phase so consumers still see "we're starting" rather
+                // than a default `NotStarted`.
+                _ => Self::Resolving,
+            },
+            "error" => Self::Error,
+            "shutdown" => Self::Shutdown,
+            "awaiting_trust" => Self::AwaitingTrust,
+            _ => Self::NotStarted,
+        }
+    }
+
     /// Project a lifecycle back to the `(status, starting_phase)` string
     /// pair for wire-protocol callers that still surface the compressed
     /// shape (`runt mcp`, `runt` CLI, `get_kernel_info` RPC).
@@ -170,13 +195,30 @@ impl RuntimeLifecycle {
 }
 
 /// Read a [`RuntimeLifecycle`] from the CRDT `kernel/lifecycle` and
-/// `kernel/activity` keys.
+/// `kernel/activity` keys, falling back to the pre-typed `status` /
+/// `starting_phase` pair for docs produced before the typed keys
+/// existed.
 ///
-/// Returns [`RuntimeLifecycle::NotStarted`] when the lifecycle key is
-/// absent (unscaffolded doc) or unparseable (future variant,
-/// corruption). Callers get a safe default rather than a broken read.
-pub fn resolve_lifecycle(lifecycle_key: &str, activity_key: &str) -> RuntimeLifecycle {
-    RuntimeLifecycle::parse(lifecycle_key, activity_key).unwrap_or_default()
+/// Every in-repo writer now goes through the typed setters, so the
+/// fallback path is only hit when reading a doc authored by an older
+/// producer (captured test fixture, programmatic `from_doc` with raw
+/// bytes, cross-version in-flight sync frame). Returns
+/// [`RuntimeLifecycle::NotStarted`] if both shapes are absent or
+/// unparseable.
+pub fn resolve_lifecycle(
+    lifecycle_key: &str,
+    activity_key: &str,
+    status: &str,
+    starting_phase: &str,
+) -> RuntimeLifecycle {
+    if let Some(typed) = RuntimeLifecycle::parse(lifecycle_key, activity_key) {
+        return typed;
+    }
+    // Pre-typed doc: derive from the string shape if present.
+    if !status.is_empty() {
+        return RuntimeLifecycle::from_legacy(status, starting_phase);
+    }
+    RuntimeLifecycle::NotStarted
 }
 
 #[cfg(test)]
@@ -355,24 +397,55 @@ mod tests {
     #[test]
     fn resolve_parses_typed_keys() {
         assert_eq!(
-            resolve_lifecycle("Running", "Idle"),
+            resolve_lifecycle("Running", "Idle", "", ""),
             RuntimeLifecycle::Running(KernelActivity::Idle)
         );
         assert_eq!(
-            resolve_lifecycle("Launching", ""),
+            resolve_lifecycle("Launching", "", "", ""),
             RuntimeLifecycle::Launching
         );
-        assert_eq!(resolve_lifecycle("Error", ""), RuntimeLifecycle::Error);
+        assert_eq!(
+            resolve_lifecycle("Error", "", "", ""),
+            RuntimeLifecycle::Error
+        );
+    }
+
+    #[test]
+    fn resolve_falls_back_to_string_shape_when_typed_is_absent() {
+        // Pre-typed doc: only the string shape is populated. Callers
+        // must still read running/busy/error kernels correctly, e.g.
+        // when reading a captured fixture or a cross-version sync frame.
+        assert_eq!(
+            resolve_lifecycle("", "", "busy", ""),
+            RuntimeLifecycle::Running(KernelActivity::Busy)
+        );
+        assert_eq!(
+            resolve_lifecycle("", "", "starting", "launching"),
+            RuntimeLifecycle::Launching
+        );
+        assert_eq!(
+            resolve_lifecycle("", "", "error", ""),
+            RuntimeLifecycle::Error
+        );
     }
 
     #[test]
     fn resolve_defaults_on_empty_or_garbage() {
-        // Unscaffolded doc (key absent) or corruption falls back to
-        // NotStarted rather than returning a broken read.
-        assert_eq!(resolve_lifecycle("", ""), RuntimeLifecycle::NotStarted);
+        // Both shapes absent: default to NotStarted. Unparseable typed
+        // key with no string shape also defaults safely.
         assert_eq!(
-            resolve_lifecycle("BogusFutureVariant", "Idle"),
+            resolve_lifecycle("", "", "", ""),
             RuntimeLifecycle::NotStarted
+        );
+        assert_eq!(
+            resolve_lifecycle("BogusFutureVariant", "Idle", "", ""),
+            RuntimeLifecycle::NotStarted
+        );
+        // Unparseable typed + string shape: the string shape wins so
+        // we don't silently hide the real state.
+        assert_eq!(
+            resolve_lifecycle("BogusFutureVariant", "Idle", "busy", ""),
+            RuntimeLifecycle::Running(KernelActivity::Busy)
         );
     }
 
@@ -381,7 +454,7 @@ mod tests {
         // Running with an unknown activity key parses as
         // Running(KernelActivity::Unknown) rather than falling back.
         assert_eq!(
-            resolve_lifecycle("Running", "Unknown"),
+            resolve_lifecycle("Running", "Unknown", "", ""),
             RuntimeLifecycle::Running(KernelActivity::Unknown)
         );
     }
