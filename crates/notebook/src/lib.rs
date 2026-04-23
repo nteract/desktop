@@ -3398,8 +3398,8 @@ async fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
         "{} Settings",
         runt_workspace::desktop_display_name()
     ))
-    .inner_size(560.0, 580.0)
-    .min_inner_size(450.0, 400.0)
+    .inner_size(640.0, 760.0)
+    .min_inner_size(520.0, 520.0)
     .resizable(true)
     .center()
     .build()

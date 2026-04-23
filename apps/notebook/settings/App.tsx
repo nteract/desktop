@@ -74,7 +74,7 @@ function KeepAliveSlider({
     <div className="space-y-3 pt-4 border-t border-border/50">
       <div>
         <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-          Advanced
+          Runtimes
         </span>
       </div>
       <div className="space-y-1">
@@ -286,16 +286,6 @@ export default function App() {
           </div>
         </div>
 
-        <PrivacySection
-          telemetryEnabled={telemetryEnabled}
-          onTelemetryChange={setTelemetryEnabled}
-          installId={installId}
-          onRotate={rotateInstallId}
-          lastDaemonPingAt={lastDaemonPingAt}
-          lastAppPingAt={lastAppPingAt}
-          lastMcpPingAt={lastMcpPingAt}
-        />
-
         {/* Default Runtime */}
         <div className="space-y-2">
           <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
@@ -453,8 +443,18 @@ export default function App() {
           </div>
         </div>
 
-        {/* Advanced */}
+        {/* Runtimes */}
         <KeepAliveSlider value={keepAliveSecs} onChange={setKeepAliveSecs} />
+
+        <PrivacySection
+          telemetryEnabled={telemetryEnabled}
+          onTelemetryChange={setTelemetryEnabled}
+          installId={installId}
+          onRotate={rotateInstallId}
+          lastDaemonPingAt={lastDaemonPingAt}
+          lastAppPingAt={lastAppPingAt}
+          lastMcpPingAt={lastMcpPingAt}
+        />
 
         {/* Feature Flags — only shown when there are flags to display */}
         {FEATURE_FLAGS.length > 0 && (
