@@ -711,7 +711,7 @@ impl RuntimeStateDoc {
         let len = self.doc.length(&list_id);
         let mut out = Vec::with_capacity(len);
         for i in 0..len {
-            if let Some(val) = crate::json_helpers::read_json_value(&self.doc, &list_id, i) {
+            if let Some(val) = automunge::read_json_value(&self.doc, &list_id, i) {
                 out.push(val);
             }
         }
@@ -1153,7 +1153,7 @@ impl RuntimeStateDoc {
             return Ok(0);
         };
         let len = self.doc.length(&list_id);
-        crate::json_helpers::insert_json_at_index(&mut self.doc, &list_id, len, manifest)?;
+        automunge::insert_json_at_index(&mut self.doc, &list_id, len, manifest)?;
 
         // Update display_index if the manifest has a display_id and output_id
         if let Some(display_id) = manifest
@@ -1191,7 +1191,7 @@ impl RuntimeStateDoc {
         let _ = self.doc.delete(&entry, "outputs");
         let list_id = self.doc.put_object(&entry, "outputs", ObjType::List)?;
         for (i, manifest) in manifests.iter().enumerate() {
-            crate::json_helpers::insert_json_at_index(&mut self.doc, &list_id, i, manifest)?;
+            automunge::insert_json_at_index(&mut self.doc, &list_id, i, manifest)?;
             // Update display_index for manifests with display_id
             if let Some(display_id) = manifest
                 .get("transient")
@@ -1352,8 +1352,7 @@ impl RuntimeStateDoc {
                 // Read the existing output and check text content ref against state.blob_hash.
                 // ContentRef is either {"blob": "hash", "size": N} or {"inline": "text"}.
                 // The cached blob_hash stores the blob hash or the inline content itself.
-                if let Some(existing) =
-                    crate::json_helpers::read_json_value(&self.doc, &list_id, state.index)
+                if let Some(existing) = automunge::read_json_value(&self.doc, &list_id, state.index)
                 {
                     let current_id = existing.get("text").and_then(|t| {
                         t.get("blob")
@@ -1380,7 +1379,7 @@ impl RuntimeStateDoc {
                         // only updating changed fields (text, llm_preview).
                         // This avoids delete+insert which generates tombstones
                         // for the entire Map on every stream coalescence.
-                        crate::json_helpers::update_json_at_index(
+                        automunge::update_json_at_index(
                             &mut self.doc,
                             &list_id,
                             state.index,
@@ -1394,7 +1393,7 @@ impl RuntimeStateDoc {
         }
 
         // No valid state, append new output
-        crate::json_helpers::insert_json_at_index(&mut self.doc, &list_id, output_count, manifest)?;
+        automunge::insert_json_at_index(&mut self.doc, &list_id, output_count, manifest)?;
         Ok((false, output_count))
     }
 
@@ -1415,7 +1414,7 @@ impl RuntimeStateDoc {
         if output_idx >= self.doc.length(&list_id) {
             return Ok(false);
         }
-        crate::json_helpers::update_json_at_index(&mut self.doc, &list_id, output_idx, manifest)?;
+        automunge::update_json_at_index(&mut self.doc, &list_id, output_idx, manifest)?;
         Ok(true)
     }
 
@@ -1427,7 +1426,7 @@ impl RuntimeStateDoc {
         let len = self.doc.length(&list_id);
         let mut out = Vec::with_capacity(len);
         for i in 0..len {
-            if let Some(val) = crate::json_helpers::read_json_value(&self.doc, &list_id, i) {
+            if let Some(val) = automunge::read_json_value(&self.doc, &list_id, i) {
                 out.push(val);
             }
         }
@@ -1450,9 +1449,7 @@ impl RuntimeStateDoc {
                 {
                     let len = self.doc.length(&list_id);
                     for i in 0..len {
-                        if let Some(val) =
-                            crate::json_helpers::read_json_value(&self.doc, &list_id, i)
-                        {
+                        if let Some(val) = automunge::read_json_value(&self.doc, &list_id, i) {
                             results.push((exec_id.clone(), i, val));
                         }
                     }
@@ -1629,7 +1626,7 @@ impl RuntimeStateDoc {
         self.doc.put(&entry, "model_module", model_module)?;
         self.doc.put(&entry, "model_name", model_name)?;
         #[allow(deprecated)]
-        crate::json_helpers::put_json_at_key(&mut self.doc, &entry, "state", state)?;
+        automunge::put_json_at_key(&mut self.doc, &entry, "state", state)?;
         self.doc.put(&entry, "seq", seq as i64)?;
         self.doc.put_object(&entry, "outputs", ObjType::List)?;
         self.doc.put(&entry, "capture_msg_id", "")?;
@@ -1660,7 +1657,7 @@ impl RuntimeStateDoc {
         else {
             return Ok(());
         };
-        crate::json_helpers::update_json_at_key(&mut self.doc, &state_id, key, value)?;
+        automunge::update_json_at_key(&mut self.doc, &state_id, key, value)?;
         Ok(())
     }
 
@@ -1698,14 +1695,13 @@ impl RuntimeStateDoc {
                 | serde_json::Value::Bool(_)
                 | serde_json::Value::Number(_)
                 | serde_json::Value::String(_) => {
-                    let current =
-                        crate::json_helpers::read_json_value(&self.doc, &state_id, key.as_str());
+                    let current = automunge::read_json_value(&self.doc, &state_id, key.as_str());
                     current.as_ref() != Some(new_value)
                 }
                 _ => true,
             };
             if should_write {
-                crate::json_helpers::update_json_at_key(&mut self.doc, &state_id, key, new_value)?;
+                automunge::update_json_at_key(&mut self.doc, &state_id, key, new_value)?;
             }
         }
         Ok(())
@@ -1784,7 +1780,7 @@ impl RuntimeStateDoc {
         let comms = self.get_map("comms")?;
         let (_, entry) = self.doc.get(&comms, comm_id).ok().flatten()?;
         // Read state as native Automerge map → serde_json::Value
-        let state = crate::json_helpers::read_json_value(&self.doc, &entry, "state")
+        let state = automunge::read_json_value(&self.doc, &entry, "state")
             .unwrap_or_else(|| serde_json::json!({}));
         Some(CommDocEntry {
             target_name: self.read_str(&entry, "target_name"),
@@ -1817,7 +1813,7 @@ impl RuntimeStateDoc {
             return Ok(());
         };
         let len = self.doc.length(&list_id);
-        crate::json_helpers::insert_json_at_index(&mut self.doc, &list_id, len, manifest)?;
+        automunge::insert_json_at_index(&mut self.doc, &list_id, len, manifest)?;
         Ok(())
     }
 

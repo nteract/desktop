@@ -6,6 +6,7 @@ members = [
     "crates/kernel-launch",
     "crates/kernel-env",
     "crates/notebook",
+    "crates/automunge",
     "crates/notebook-doc",
     "crates/runtime-doc",
     "crates/notebook-protocol",

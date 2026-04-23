@@ -1,3 +1,13 @@
+//! automunge — JSON-to-Automerge helpers.
+//!
+//! Recursive read, write, and update for `serde_json::Value` in Automerge
+//! documents. Used by both `notebook-doc` (NotebookDoc) and `runtime-doc`
+//! (RuntimeStateDoc) to avoid duplicating these helpers across crates.
+//!
+//! Named after automorph (codeberg.org/dpp/automorph), which we may adopt
+//! when it ships automerge 0.8 support. Until then, this is the single
+//! source of truth for JSON/Automerge conversion.
+
 use automerge::{transaction::Transactable, AutoCommit, AutomergeError, ObjId, ObjType, ReadDoc};
 
 fn scalar_to_json(s: &automerge::ScalarValue) -> Option<serde_json::Value> {
@@ -15,7 +25,7 @@ fn scalar_to_json(s: &automerge::ScalarValue) -> Option<serde_json::Value> {
                 .map_or(serde_json::Value::Null, serde_json::Value::Number),
         ),
         automerge::ScalarValue::Str(s) => Some(serde_json::Value::String(s.to_string())),
-        _ => None, // Timestamp, Counter, Bytes — not used for JSON metadata
+        _ => None,
     }
 }
 
@@ -53,17 +63,11 @@ pub fn read_json_value<P: Into<automerge::Prop>>(
 
 /// Recursively write a JSON value into an Automerge Map at a string key.
 ///
-/// # Deprecation
-///
-/// This function creates new `Map`/`List` objects via `put_object`, which is
-/// dangerous in multi-peer CRDT scenarios: two peers calling `put_object` at
-/// the same key produce competing Automerge objects, and the loser's children
-/// become invisible. Use [`update_json_at_key`] instead — it reuses existing
-/// objects when possible.
-///
-/// See <https://github.com/nteract/desktop/issues/1594>.
+/// Creates new `Map`/`List` objects via `put_object`. Dangerous in multi-peer
+/// CRDT scenarios: two peers calling `put_object` at the same key produce
+/// competing objects. Prefer [`update_json_at_key`] for shared keys.
 #[deprecated(
-    note = "Use update_json_at_key — put_json_at_key creates new Automerge objects that can conflict with other peers. See #1594."
+    note = "Use update_json_at_key to avoid put_object conflicts. See nteract/desktop#1594."
 )]
 #[allow(deprecated)]
 pub fn put_json_at_key(
@@ -109,13 +113,10 @@ pub fn put_json_at_key(
 
 /// Recursively insert a JSON value into an Automerge List at a given index.
 ///
-/// # Safety note
-///
-/// This creates new `Map`/`List` children via `insert_object`, which is safe
-/// when the parent list was just created by the caller (no other peer can have
-/// a competing object at the same index). However, for updating existing list
-/// elements use [`update_json_at_index`] instead.
-#[allow(deprecated)] // Internal calls to put_json_at_key are safe — parent just created
+/// Safe when the parent list was just created by the caller (no competing
+/// objects possible). For updating existing list elements, use
+/// [`update_json_at_index`].
+#[allow(deprecated)]
 pub fn insert_json_at_index(
     doc: &mut AutoCommit,
     parent: &ObjId,
@@ -159,26 +160,10 @@ pub fn insert_json_at_index(
 
 /// Recursively update a JSON value in an Automerge Map, reusing existing objects.
 ///
-/// Unlike [`put_json_at_key`] which creates new `Map`/`List` objects (dangerous in
-/// multi-peer scenarios), this function looks up existing objects and updates
-/// them in-place. Only creates new objects if none exist at the key.
-///
-/// # Safety contract
-///
-/// **Conflict-free when target objects already exist** — the common case for
-/// shared keys like `metadata.runt`, `metadata.kernelspec`, and comm state.
-/// The daemon creates all document structure; clients update existing objects.
-///
-/// **First-write on absent keys still uses `put_object`** and can conflict if
-/// two peers independently create the same absent key. This is acceptable
-/// because our architecture guarantees the daemon is the sole structure creator
-/// — clients never independently create shared Map/List keys.
-///
-/// **List element type changes use delete+insert** which can produce duplicates
-/// under concurrent modification. In practice, concurrent type changes at the
-/// same list position don't occur in our document schema.
-///
-/// See <https://github.com/nteract/desktop/issues/1594>.
+/// Unlike [`put_json_at_key`], this looks up existing objects and updates them
+/// in-place. Only creates new objects if none exist at the key. This is the
+/// read-before-write pattern that avoids `put_object` conflicts in multi-peer
+/// scenarios.
 pub fn update_json_at_key(
     doc: &mut AutoCommit,
     parent: &ObjId,
@@ -205,33 +190,27 @@ pub fn update_json_at_key(
             doc.put(parent, key, s.as_str())?;
         }
         serde_json::Value::Object(map) => {
-            // Reuse existing Map if present, only create if missing or wrong type
             let map_id = match doc.get(parent, key)? {
                 Some((automerge::Value::Object(ObjType::Map), id)) => id,
                 _ => doc.put_object(parent, key, ObjType::Map)?,
             };
-            // Remove stale keys not in the new value
             let existing_keys: Vec<String> = doc.keys(&map_id).collect();
             for old_key in &existing_keys {
                 if !map.contains_key(old_key) {
                     let _ = doc.delete(&map_id, old_key.as_str());
                 }
             }
-            // Recursively update children
             for (k, v) in map {
                 update_json_at_key(doc, &map_id, k, v)?;
             }
         }
         serde_json::Value::Array(arr) => {
-            // Reuse existing List if present, only create if missing or wrong type
             let list_id = match doc.get(parent, key)? {
                 Some((automerge::Value::Object(ObjType::List), id)) => id,
                 _ => doc.put_object(parent, key, ObjType::List)?,
             };
             let existing_len = doc.length(&list_id);
             let new_len = arr.len();
-
-            // Update existing elements in-place
             for (i, item) in arr.iter().enumerate() {
                 if i < existing_len {
                     update_json_at_index(doc, &list_id, i, item)?;
@@ -239,7 +218,6 @@ pub fn update_json_at_key(
                     insert_json_at_index(doc, &list_id, i, item)?;
                 }
             }
-            // Remove excess elements from end to avoid index shifting
             for i in (new_len..existing_len).rev() {
                 let _ = doc.delete(&list_id, i);
             }
@@ -250,11 +228,6 @@ pub fn update_json_at_key(
 
 /// Recursively update a JSON value at an existing index in an Automerge List,
 /// reusing existing objects.
-///
-/// For scalars, uses `put()` at the index (last-writer-wins).
-/// For Objects/Arrays, reuses existing Automerge objects if possible.
-/// If the type at the index doesn't match (e.g. was a scalar, now an object),
-/// deletes and re-inserts.
 pub fn update_json_at_index(
     doc: &mut AutoCommit,
     parent: &ObjId,
@@ -281,10 +254,8 @@ pub fn update_json_at_index(
             doc.put(parent, index, s.as_str())?;
         }
         serde_json::Value::Object(map) => {
-            // Reuse existing Map if present at this index
             let map_id = match doc.get(parent, index)? {
                 Some((automerge::Value::Object(ObjType::Map), id)) => {
-                    // Reuse — remove stale keys
                     let existing_keys: Vec<String> = doc.keys(&id).collect();
                     for old_key in &existing_keys {
                         if !map.contains_key(old_key) {
@@ -294,7 +265,6 @@ pub fn update_json_at_index(
                     id
                 }
                 _ => {
-                    // Type mismatch or missing — delete and re-insert
                     doc.delete(parent, index)?;
                     doc.insert_object(parent, index, ObjType::Map)?
                 }
@@ -304,11 +274,9 @@ pub fn update_json_at_index(
             }
         }
         serde_json::Value::Array(arr) => {
-            // Reuse existing List if present at this index
             let list_id = match doc.get(parent, index)? {
                 Some((automerge::Value::Object(ObjType::List), id)) => {
                     let existing_len = doc.length(&id);
-                    // Remove excess elements from end
                     for i in (arr.len()..existing_len).rev() {
                         let _ = doc.delete(&id, i);
                     }
