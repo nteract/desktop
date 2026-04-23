@@ -1,5 +1,37 @@
 use super::*;
 
+/// Per-room identity and filesystem bindings.
+///
+/// Groups the four fields that describe *which* notebook this room represents,
+/// separate from its document state, broadcasts, or kernel lifecycle. These
+/// fields are read from most code paths but mutated rarely (path changes when
+/// an untitled notebook is saved; working_dir is set once at create time).
+pub struct RoomIdentity {
+    /// Persistence path for this room's Automerge document (not the .ipynb).
+    pub persist_path: PathBuf,
+    /// Whether this notebook is ephemeral (in-memory only, no .ipynb on disk).
+    pub is_ephemeral: AtomicBool,
+    /// The `.ipynb` path, when this room is file-backed. `None` for untitled
+    /// and ephemeral rooms. Mutated when an untitled room is saved to disk
+    /// (see `handle_save_notebook`).
+    pub path: RwLock<Option<PathBuf>>,
+    /// Working directory for untitled notebooks (used for project file detection).
+    /// When the notebook_id is a UUID (untitled), this provides the directory
+    /// context for finding pyproject.toml, pixi.toml, or environment.yaml.
+    pub working_dir: RwLock<Option<PathBuf>>,
+}
+
+impl RoomIdentity {
+    pub fn new(persist_path: PathBuf, path: Option<PathBuf>, ephemeral: bool) -> Self {
+        Self {
+            persist_path,
+            is_ephemeral: AtomicBool::new(ephemeral),
+            path: RwLock::new(path),
+            working_dir: RwLock::new(None),
+        }
+    }
+}
+
 pub struct NotebookRoom {
     /// Permanent, immutable UUID for this room. Used as the map key once
     /// Phase 5 lands; for now coexists with the string-keyed map.
@@ -27,29 +59,19 @@ pub struct NotebookRoom {
     ///
     /// `None` for ephemeral rooms (persistence skipped) and matches `persist_tx`.
     pub flush_request_tx: Option<mpsc::UnboundedSender<FlushRequest>>,
-    /// Persistence path for this room's document.
-    pub persist_path: PathBuf,
+    /// Notebook identity: persist_path, is_ephemeral, .ipynb path, working_dir.
+    pub identity: RoomIdentity,
     /// Number of active peer connections in this room.
     pub active_peers: AtomicUsize,
     /// Whether at least one peer has ever connected to this room.
     pub had_peers: AtomicBool,
-    /// Whether this notebook is ephemeral (in-memory only, no persistence).
-    pub is_ephemeral: AtomicBool,
     /// Blob store for output manifests.
     pub blob_store: Arc<BlobStore>,
     /// Trust state for this notebook (for auto-launch decisions).
     pub trust_state: Arc<RwLock<TrustState>>,
-    /// The `.ipynb` path, when this room is file-backed. `None` for untitled and
-    /// ephemeral rooms. Mutated when an untitled room is saved to disk (see
-    /// `handle_save_notebook`).
-    pub path: RwLock<Option<PathBuf>>,
     /// Raw nbformat attachments preserved from disk, keyed by cell ID.
     /// These are not user-editable in the current UI, so the file remains the source of truth.
     pub nbformat_attachments: Arc<RwLock<HashMap<String, serde_json::Value>>>,
-    /// Working directory for untitled notebooks (used for project file detection).
-    /// When the notebook_id is a UUID (untitled), this provides the directory context
-    /// for finding pyproject.toml, pixi.toml, or environment.yaml.
-    pub working_dir: Arc<RwLock<Option<PathBuf>>>,
     /// Comm channel state for widgets.
     /// Whether a streaming load is in progress for this room.
     /// Prevents two connections from both attempting to load from disk.
@@ -221,15 +243,12 @@ impl NotebookRoom {
             presence: Arc::new(RwLock::new(PresenceState::new())),
             persist_tx,
             flush_request_tx,
-            persist_path,
+            identity: RoomIdentity::new(persist_path, path, ephemeral),
             active_peers: AtomicUsize::new(0),
             had_peers: AtomicBool::new(false),
-            is_ephemeral: AtomicBool::new(ephemeral),
             blob_store,
             trust_state: Arc::new(RwLock::new(trust_state)),
-            path: RwLock::new(path),
             nbformat_attachments: Arc::new(RwLock::new(HashMap::new())),
-            working_dir: Arc::new(RwLock::new(None)),
 
             is_loading: AtomicBool::new(false),
             last_self_write: AtomicU64::new(0),
@@ -313,15 +332,12 @@ impl NotebookRoom {
             presence: Arc::new(RwLock::new(PresenceState::new())),
             persist_tx: Some(persist_tx),
             flush_request_tx: Some(flush_request_tx),
-            persist_path,
+            identity: RoomIdentity::new(persist_path, path, false),
             active_peers: AtomicUsize::new(0),
             had_peers: AtomicBool::new(false),
-            is_ephemeral: AtomicBool::new(false),
             blob_store,
             trust_state: Arc::new(RwLock::new(trust_state)),
-            path: RwLock::new(path),
             nbformat_attachments: Arc::new(RwLock::new(HashMap::new())),
-            working_dir: Arc::new(RwLock::new(None)),
 
             is_loading: AtomicBool::new(false),
             last_self_write: AtomicU64::new(0),

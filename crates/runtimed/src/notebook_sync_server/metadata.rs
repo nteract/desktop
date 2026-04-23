@@ -576,7 +576,13 @@ pub(crate) fn compute_env_sync_diff(
 /// blob-store hashes, then updates the cell-local `resolved_assets` maps so
 /// isolated markdown rendering can rewrite those refs to blob URLs.
 pub(crate) async fn process_markdown_assets(room: &NotebookRoom) {
-    let notebook_path = room.path.read().await.clone().filter(|p| p.exists());
+    let notebook_path = room
+        .identity
+        .path
+        .read()
+        .await
+        .clone()
+        .filter(|p| p.exists());
     let nbformat_attachments = room.nbformat_attachments.read().await.clone();
 
     // Fork BEFORE async resolution so the fork's baseline predates
@@ -2057,7 +2063,7 @@ pub(crate) async fn auto_launch_kernel(
     let notebook_path_opt = if notebook_path.exists() {
         Some(notebook_path.clone())
     } else if is_untitled_notebook(notebook_id) {
-        let working_dir = room.working_dir.read().await;
+        let working_dir = room.identity.working_dir.read().await;
         working_dir.clone().inspect(|p| {
             info!(
                 "[notebook-sync] Using working_dir for untitled notebook: {}",
