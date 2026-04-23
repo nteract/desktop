@@ -36,7 +36,6 @@
   },
   "peerDependencies": {
     "@chenglou/pretext": ">=0.0.4",
-    "apache-arrow": ">=15",
     "react": ">=18",
     "react-dom": ">=18"
   },

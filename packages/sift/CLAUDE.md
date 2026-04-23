@@ -7,7 +7,6 @@ Crossfilter data explorer. Demo: [rgbkrk.github.io/sift](https://rgbkrk.github.i
 - **Vite** — dev server + build
 - **TypeScript** — vanilla TS (React only for header charts + popover)
 - **@chenglou/pretext** — DOM-free text measurement & layout
-- **apache-arrow** — columnar data, streamed via `RecordBatchReader`
 - **parquet-wasm** — loads HuggingFace Parquet files in the browser
 - **React** — header summary charts + category popovers
 - **Rust/WASM** (`nteract-predicate`) — arrow-rs compute kernels
@@ -31,11 +30,11 @@ cargo xtask wasm sift
 
 ### Data flow
 
-1. **Local**: `fetch('data.arrow')` → `RecordBatchReader` → streaming batches
-2. **HuggingFace**: fetch Parquet → `parquet-wasm` → Arrow IPC → `RecordBatchReader`
-3. First batch: detect column types (with smart refinement for string dates/null sentinels), create accumulators, mount table
-4. Subsequent batches: append data, update accumulators + summaries, call `engine.onBatchAppended()`
-5. On filter change: recompute summaries from filtered rows (crossfilter), re-render
+1. **Local**: `fetch('data.arrow')` → buffer → WASM `load_ipc` → `createWasmTableData`
+2. **HuggingFace**: fetch Parquet → WASM `load_parquet_row_group` → `createWasmTableData`
+3. Column types detected by WASM `col_type()`, summaries computed in Rust
+4. Virtual scroll viewport: direct WASM cell access via `get_cell_string`/`get_cell_f64`
+5. On filter change: WASM crossfilter computes filtered summaries, re-render
 
 ### Key files
 

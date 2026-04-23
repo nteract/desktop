@@ -1,7 +1,7 @@
 import { catchError, defer, EMPTY, Observable, Subject, switchMap } from "rxjs";
 import { DATASETS, type DatasetEntry } from "./datasets";
 import { resolveHuggingFaceParquetUrl } from "./parquet-loader";
-import { getModuleSync, loadIpc } from "./predicate";
+import { ensureModule, getModuleSync, loadIpc } from "./predicate";
 import { type Column, createTable, type TableData, type TableEngine } from "./table";
 import { createWasmTableData } from "./wasm-table-data";
 import "./style.css";
@@ -286,7 +286,7 @@ function loadHuggingFaceWasm$(dataset: DatasetEntry, tableRoot: HTMLElement): Ob
           renderLoadingSkeleton(tableRoot, "Loading dataset…");
 
           // Start WASM init in parallel with data fetch
-          const wasmInitPromise = isAvailable();
+          const wasmInitPromise = ensureModule();
 
           // Try local cache first, fall back to HuggingFace
           const localUrl = `${import.meta.env.BASE_URL}datasets/${dataset.id}.parquet`;
@@ -310,10 +310,7 @@ function loadHuggingFaceWasm$(dataset: DatasetEntry, tableRoot: HTMLElement): Ob
             resp = await fetch(url);
           }
 
-          const wasmOk = await wasmInitPromise;
-          if (!wasmOk) {
-            throw new Error("Failed to load nteract-predicate WASM module");
-          }
+          await wasmInitPromise;
           if (!resp.ok) {
             throw new Error(`Failed to fetch Parquet: ${resp.status} ${resp.statusText}`);
           }
