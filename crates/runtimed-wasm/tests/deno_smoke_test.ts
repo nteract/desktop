@@ -92,6 +92,49 @@ Deno.test("NotebookHandle: create new empty doc", () => {
   handle.free();
 });
 
+// Regression guard: the committed WASM bundle must emit a RuntimeState
+// shape the TS consumers in apps/notebook and packages/runtimed can
+// actually read. Past incident: Rust RuntimeLifecycle landed in
+// runtime-doc (#2081/#2085/#2091/#2092) and the frontend migrated to
+// state.kernel.lifecycle.lifecycle (#2093), but the committed
+// runtimed_wasm_bg.wasm was stale. Every render threw TypeError
+// "Cannot read properties of undefined (reading 'lifecycle')", the
+// App ErrorBoundary swallowed it, and every E2E failed with
+// "toolbar not found." CI's existing byte-diff guard can't catch this
+// because WASM isn't reproducible across platforms.
+//
+// This runs against the committed `.wasm` file (via the import above),
+// so it catches the "forgot to rebuild WASM" failure mode directly.
+Deno.test("RuntimeState: committed WASM emits the shape TS consumers expect", () => {
+  const handle = new NotebookHandle("shape-test");
+  const state = handle.get_runtime_state();
+
+  // Kernel state — RuntimeLifecycle is the field the frontend reads;
+  // error_reason must be present (Option<String>, null or string).
+  assertExists(state.kernel, "state.kernel missing");
+  assertExists(state.kernel.lifecycle, "state.kernel.lifecycle missing");
+  assertEquals(
+    state.kernel.lifecycle.lifecycle,
+    "NotStarted",
+    "default lifecycle tag must be NotStarted",
+  );
+  // error_reason is Option<String>. Deserialized as null or string —
+  // must at least be a defined property so `kernel.error_reason` doesn't
+  // throw on access.
+  assert(
+    "error_reason" in state.kernel,
+    "state.kernel.error_reason property must be defined",
+  );
+
+  // Top-level RuntimeState fields the derived-state helpers read.
+  assertExists(state.queue, "state.queue missing");
+  assertExists(state.env, "state.env missing");
+  assertExists(state.trust, "state.trust missing");
+  assertExists(state.executions, "state.executions missing");
+
+  handle.free();
+});
+
 Deno.test("NotebookHandle: add cell and read back", () => {
   const handle = new NotebookHandle("test-nb");
   handle.add_cell(0, "cell-1", "code");
