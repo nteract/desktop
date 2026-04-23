@@ -53,29 +53,25 @@ pub(crate) async fn handle(
     //
     // Scope the write guard so it drops before any async work
     // (deadlock prevention: no lock held across `.await`).
-    let kernel_status = {
-        let mut sd = room.state_doc.write().await;
-        let status = sd.read_state().kernel.status.clone();
-        if status != "idle" && status != "busy" && status != "starting" {
-            // not_started, error, shutdown — atomically claim the
-            // launch by writing "starting" while we hold the write lock.
-            // This prevents a concurrent LaunchKernel from also proceeding.
-            if let Err(e) = sd.clear_comms() {
-                warn!("[runtime-state] {}", e);
+    let kernel_status = room
+        .state
+        .with_doc(|sd| {
+            let status = sd.read_state().kernel.status.clone();
+            if status != "idle" && status != "busy" && status != "starting" {
+                // not_started, error, shutdown — atomically claim the
+                // launch by writing "starting" while we hold the mutex.
+                // This prevents a concurrent LaunchKernel from also proceeding.
+                sd.clear_comms().ok();
+                sd.set_trust("trusted", false).ok();
+                sd.set_kernel_status("starting").ok();
+                sd.set_starting_phase("resolving").ok();
             }
-            if let Err(e) = sd.set_trust("trusted", false) {
-                warn!("[runtime-state] {}", e);
-            }
-            if let Err(e) = sd.set_kernel_status("starting") {
-                warn!("[runtime-state] {}", e);
-            }
-            if let Err(e) = sd.set_starting_phase("resolving") {
-                warn!("[runtime-state] {}", e);
-            }
-            let _ = room.state_changed_tx.send(());
-        }
-        status
-    };
+            Ok(status)
+        })
+        .unwrap_or_else(|e| {
+            warn!("[runtime-state] {}", e);
+            "not_started".to_string()
+        });
     match kernel_status.as_str() {
         "idle" | "busy" => {
             // Agent already has a running kernel — check for restart path below
@@ -85,13 +81,9 @@ pub(crate) async fn handle(
             let wait_result = tokio::time::timeout(std::time::Duration::from_secs(60), async {
                 loop {
                     let s = room
-                        .state_doc
-                        .read()
-                        .await
-                        .read_state()
-                        .kernel
-                        .status
-                        .clone();
+                        .state
+                        .read(|sd| sd.read_state().kernel.status.clone())
+                        .unwrap_or_default();
                     if s == "idle"
                         || s == "busy"
                         || s == "error"
@@ -467,12 +459,11 @@ pub(crate) async fn handle(
     }
 
     // Transition to "preparing_env" phase
+    if let Err(e) = room
+        .state
+        .with_doc(|sd| sd.set_starting_phase("preparing_env"))
     {
-        let mut sd = room.state_doc.write().await;
-        if let Err(e) = sd.set_starting_phase("preparing_env") {
-            warn!("[runtime-state] {}", e);
-        }
-        let _ = room.state_changed_tx.send(());
+        warn!("[runtime-state] {}", e);
     }
 
     // Deno kernels don't need pooled environments
@@ -1085,12 +1076,8 @@ pub(crate) async fn handle(
     );
 
     // Transition to "launching" phase before starting the kernel process
-    {
-        let mut sd = room.state_doc.write().await;
-        if let Err(e) = sd.set_starting_phase("launching") {
-            warn!("[runtime-state] {}", e);
-        }
-        let _ = room.state_changed_tx.send(());
+    if let Err(e) = room.state.with_doc(|sd| sd.set_starting_phase("launching")) {
+        warn!("[runtime-state] {}", e);
     }
 
     // If runtime agent is already connected, restart kernel in-place
@@ -1119,23 +1106,14 @@ pub(crate) async fn handle(
                     }
 
                     publish_kernel_state_presence(room, presence::KernelStatus::Idle, &es).await;
-                    {
-                        let mut sd = room.state_doc.write().await;
-                        if let Err(e) = sd.set_kernel_status("idle") {
-                            warn!("[runtime-state] {}", e);
-                        }
-                        if let Err(e) =
-                            sd.set_kernel_info(&resolved_kernel_type, &resolved_kernel_type, &es)
-                        {
-                            warn!("[runtime-state] {}", e);
-                        }
-                        if let Err(e) =
-                            sd.set_prewarmed_packages(&launched_config.prewarmed_packages)
-                        {
-                            warn!("[runtime-state] {}", e);
-                        }
+                    if let Err(e) = room.state.with_doc(|sd| {
+                        sd.set_kernel_status("idle")?;
+                        sd.set_kernel_info(&resolved_kernel_type, &resolved_kernel_type, &es)?;
+                        sd.set_prewarmed_packages(&launched_config.prewarmed_packages)?;
                         // runtime_agent_id doesn't change on restart — same runtime agent
-                        let _ = room.state_changed_tx.send(());
+                        Ok(())
+                    }) {
+                        warn!("[runtime-state] {}", e);
                     }
 
                     // Compute env sync state against the freshly
@@ -1213,12 +1191,11 @@ pub(crate) async fn handle(
                 }
 
                 // Write "connecting" phase — fills the gap between spawn and connect
+                if let Err(e) = room
+                    .state
+                    .with_doc(|sd| sd.set_starting_phase("connecting"))
                 {
-                    let mut sd = room.state_doc.write().await;
-                    if let Err(e) = sd.set_starting_phase("connecting") {
-                        warn!("[runtime-state] {}", e);
-                    }
-                    let _ = room.state_changed_tx.send(());
+                    warn!("[runtime-state] {}", e);
                 }
 
                 // Wait for THIS runtime agent to connect back via socket
@@ -1272,31 +1249,24 @@ pub(crate) async fn handle(
                         // Write kernel status + info + prewarmed packages
                         // to RuntimeStateDoc
                         {
-                            // Read agent ID before taking the write lock to
-                            // avoid holding state_doc across an .await.
+                            // Read agent ID before the sync mutex to
+                            // avoid holding two locks.
                             let agent_id = room.current_runtime_agent_id.read().await.clone();
-                            let mut sd = room.state_doc.write().await;
-                            if let Err(e) = sd.set_kernel_status("idle") {
-                                warn!("[runtime-state] {}", e);
-                            }
-                            if let Err(e) = sd.set_kernel_info(
-                                &resolved_kernel_type,
-                                &resolved_kernel_type,
-                                &es,
-                            ) {
-                                warn!("[runtime-state] {}", e);
-                            }
-                            if let Err(e) =
-                                sd.set_prewarmed_packages(&launched_config.prewarmed_packages)
-                            {
-                                warn!("[runtime-state] {}", e);
-                            }
-                            if let Some(ref aid) = agent_id {
-                                if let Err(e) = sd.set_runtime_agent_id(aid) {
-                                    warn!("[runtime-state] {}", e);
+                            if let Err(e) = room.state.with_doc(|sd| {
+                                sd.set_kernel_status("idle")?;
+                                sd.set_kernel_info(
+                                    &resolved_kernel_type,
+                                    &resolved_kernel_type,
+                                    &es,
+                                )?;
+                                sd.set_prewarmed_packages(&launched_config.prewarmed_packages)?;
+                                if let Some(ref aid) = agent_id {
+                                    sd.set_runtime_agent_id(aid)?;
                                 }
+                                Ok(())
+                            }) {
+                                warn!("[runtime-state] {}", e);
                             }
-                            let _ = room.state_changed_tx.send(());
                         }
 
                         // Compute env sync state against the freshly

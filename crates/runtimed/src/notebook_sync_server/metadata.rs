@@ -664,8 +664,10 @@ pub(crate) async fn check_and_broadcast_sync_state(room: &NotebookRoom) {
 
     // Check kernel is actually running via RuntimeStateDoc
     {
-        let sd = room.state_doc.read().await;
-        let status = sd.read_state().kernel.status;
+        let status = room
+            .state
+            .read(|sd| sd.read_state().kernel.status.clone())
+            .unwrap_or_default();
         if status != "idle" && status != "busy" {
             return;
         }
@@ -684,22 +686,17 @@ pub(crate) async fn check_and_broadcast_sync_state(room: &NotebookRoom) {
         let in_sync = diff.is_none();
 
         // Write to RuntimeStateDoc
-        {
-            let mut sd = room.state_doc.write().await;
-            let result = match &diff {
-                Some(d) => sd.set_env_sync(
-                    false,
-                    &d.added,
-                    &d.removed,
-                    d.channels_changed,
-                    d.deno_changed,
-                ),
-                None => sd.set_env_sync(true, &[], &[], false, false),
-            };
-            if let Err(e) = result {
-                warn!("[runtime-state] {}", e);
-            }
-            let _ = room.state_changed_tx.send(());
+        if let Err(e) = room.state.with_doc(|sd| match &diff {
+            Some(d) => sd.set_env_sync(
+                false,
+                &d.added,
+                &d.removed,
+                d.channels_changed,
+                d.deno_changed,
+            ),
+            None => sd.set_env_sync(true, &[], &[], false, false),
+        }) {
+            warn!("[runtime-state] {}", e);
         }
 
         let _ = room
@@ -722,12 +719,11 @@ pub(crate) async fn check_and_broadcast_sync_state(room: &NotebookRoom) {
             };
 
             if !added.is_empty() {
+                if let Err(e) = room
+                    .state
+                    .with_doc(|sd| sd.set_env_sync(false, &added, &[], false, false))
                 {
-                    let mut sd = room.state_doc.write().await;
-                    if let Err(e) = sd.set_env_sync(false, &added, &[], false, false) {
-                        warn!("[runtime-state] {}", e);
-                    }
-                    let _ = room.state_changed_tx.send(());
+                    warn!("[runtime-state] {}", e);
                 }
                 let _ = room
                     .kernel_broadcast_tx
@@ -807,11 +803,12 @@ pub(crate) async fn check_and_update_trust_state(room: &NotebookRoom) {
         }
 
         // Update RuntimeStateDoc so the frontend banner reacts immediately
-        let mut sd = room.state_doc.write().await;
-        if let Err(e) = sd.set_trust(status_str, needs_approval) {
+        if let Err(e) = room
+            .state
+            .with_doc(|sd| sd.set_trust(status_str, needs_approval))
+        {
             warn!("[runtime-state] {}", e);
         }
-        let _ = room.state_changed_tx.send(());
     }
 }
 
@@ -1763,17 +1760,14 @@ pub(crate) async fn reset_starting_state(
         None
     };
 
-    // Scope the state_doc write guard so it drops before acquiring
-    // runtime_agent_handle lock (deadlock prevention).
-    {
-        let mut sd = room.state_doc.write().await;
-        if let Err(e) = sd.set_kernel_status("not_started") {
-            warn!("[runtime-state] {}", e);
-        }
-        if let Err(e) = sd.set_prewarmed_packages(&[]) {
-            warn!("[runtime-state] {}", e);
-        }
-        let _ = room.state_changed_tx.send(());
+    // state handle uses std::sync::Mutex - no lock ordering concern
+    // with runtime_agent_handle (tokio::sync::Mutex).
+    if let Err(e) = room.state.with_doc(|sd| {
+        sd.set_kernel_status("not_started")?;
+        sd.set_prewarmed_packages(&[])?;
+        Ok(())
+    }) {
+        warn!("[runtime-state] {}", e);
     }
 
     // Clear stale runtime agent handle so auto-launch can retry.
@@ -2099,13 +2093,11 @@ pub(crate) async fn auto_launch_kernel(
     }
 
     // Clear any stale comm state from a previous kernel (in case it crashed)
-
-    {
-        let mut sd = room.state_doc.write().await;
-        if let Err(e) = sd.clear_comms() {
-            warn!("[runtime-state] {}", e);
-        }
-        let _ = room.state_changed_tx.send(());
+    if let Err(e) = room.state.with_doc(|sd| {
+        sd.clear_comms()?;
+        Ok(())
+    }) {
+        warn!("[runtime-state] {}", e);
     }
 
     // Detection priority:
@@ -2426,18 +2418,13 @@ pub(crate) async fn auto_launch_kernel(
                     "[notebook-sync] pixi.toml at {:?} does not declare ipykernel — cannot launch kernel",
                     detected.path
                 );
-                {
-                    let mut sd = room.state_doc.write().await;
-                    if let Err(e) = sd.set_kernel_status("error") {
-                        warn!("[runtime-state] {}", e);
-                    }
-                    if let Err(e) = sd.set_kernel_info("python", "python", env_source.as_str()) {
-                        warn!("[runtime-state] {}", e);
-                    }
-                    if let Err(e) = sd.set_starting_phase("missing_ipykernel") {
-                        warn!("[runtime-state] {}", e);
-                    }
-                    let _ = room.state_changed_tx.send(());
+                if let Err(e) = room.state.with_doc(|sd| {
+                    sd.set_kernel_status("error")?;
+                    sd.set_kernel_info("python", "python", env_source.as_str())?;
+                    sd.set_starting_phase("missing_ipykernel")?;
+                    Ok(())
+                }) {
+                    warn!("[runtime-state] {}", e);
                 }
                 return;
             }
@@ -2445,12 +2432,11 @@ pub(crate) async fn auto_launch_kernel(
     }
 
     // Transition to "preparing_env" phase now that runtime/env has been resolved
+    if let Err(e) = room
+        .state
+        .with_doc(|sd| sd.set_starting_phase("preparing_env"))
     {
-        let mut sd = room.state_doc.write().await;
-        if let Err(e) = sd.set_starting_phase("preparing_env") {
-            warn!("[runtime-state] {}", e);
-        }
-        let _ = room.state_changed_tx.send(());
+        warn!("[runtime-state] {}", e);
     }
 
     // For inline deps, prepare a cached environment with rich progress
@@ -2780,12 +2766,8 @@ pub(crate) async fn auto_launch_kernel(
     );
 
     // Transition to "launching" phase before starting the kernel process
-    {
-        let mut sd = room.state_doc.write().await;
-        if let Err(e) = sd.set_starting_phase("launching") {
-            warn!("[runtime-state] {}", e);
-        }
-        let _ = room.state_changed_tx.send(());
+    if let Err(e) = room.state.with_doc(|sd| sd.set_starting_phase("launching")) {
+        warn!("[runtime-state] {}", e);
     }
 
     // (prewarmed_packages no longer needed — runtime agent handles its own launch config)
@@ -2836,12 +2818,11 @@ pub(crate) async fn auto_launch_kernel(
                 }
 
                 // Write "connecting" phase — fills the gap between spawn and connect
+                if let Err(e) = room
+                    .state
+                    .with_doc(|sd| sd.set_starting_phase("connecting"))
                 {
-                    let mut sd = room.state_doc.write().await;
-                    if let Err(e) = sd.set_starting_phase("connecting") {
-                        warn!("[runtime-state] {}", e);
-                    }
-                    let _ = room.state_changed_tx.send(());
+                    warn!("[runtime-state] {}", e);
                 }
 
                 // Wait for THIS runtime agent to establish its sync connection
@@ -2899,27 +2880,15 @@ pub(crate) async fn auto_launch_kernel(
 
                         // Write kernel status + info to RuntimeStateDoc so
                         // frontends see "idle" via CRDT sync.
-                        {
-                            let mut sd = room.state_doc.write().await;
-                            if let Err(e) = sd.set_kernel_status("idle") {
-                                warn!("[runtime-state] {}", e);
-                            }
-                            if let Err(e) = sd.set_kernel_info(kernel_type, kernel_type, &es) {
-                                warn!("[runtime-state] {}", e);
-                            }
-                            if let Err(e) = sd.set_runtime_agent_id(&runtime_agent_id) {
-                                warn!("[runtime-state] {}", e);
-                            }
-                            let _ = room.state_changed_tx.send(());
-                        }
-
-                        // Fresh kernel is in sync with its launched config
-                        {
-                            let mut sd = room.state_doc.write().await;
-                            if let Err(e) = sd.set_env_sync(true, &[], &[], false, false) {
-                                warn!("[runtime-state] {}", e);
-                            }
-                            let _ = room.state_changed_tx.send(());
+                        if let Err(e) = room.state.with_doc(|sd| {
+                            sd.set_kernel_status("idle")?;
+                            sd.set_kernel_info(kernel_type, kernel_type, &es)?;
+                            sd.set_runtime_agent_id(&runtime_agent_id)?;
+                            // Fresh kernel is in sync with its launched config
+                            sd.set_env_sync(true, &[], &[], false, false)?;
+                            Ok(())
+                        }) {
+                            warn!("[runtime-state] {}", e);
                         }
 
                         info!(
@@ -3440,16 +3409,11 @@ pub(crate) async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResp
 
     // For project-backed environments, promote inline deps to the project file.
     // Project envs can't hot-install — they need a kernel restart.
-    let env_source = {
-        let sd = room.state_doc.read().await;
-        sd.read_state().kernel.env_source.clone()
-    };
-    if matches!(
-        notebook_protocol::connection::EnvSource::parse(&env_source),
-        notebook_protocol::connection::EnvSource::PixiToml
-            | notebook_protocol::connection::EnvSource::Pyproject
-            | notebook_protocol::connection::EnvSource::EnvYml
-    ) {
+    let env_source = room
+        .state
+        .read(|sd| sd.read_state().kernel.env_source.clone())
+        .unwrap_or_default();
+    if env_source == "pixi:toml" || env_source == "uv:pyproject" || env_source == "conda:env_yml" {
         match promote_inline_deps_to_project(room, &env_source, &launched).await {
             Ok(promoted) if promoted.is_empty() => {
                 return NotebookResponse::SyncEnvironmentComplete {
@@ -3625,12 +3589,11 @@ pub(crate) async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResp
             }
 
             // Mark as in sync in RuntimeStateDoc
+            if let Err(e) = room
+                .state
+                .with_doc(|sd| sd.set_env_sync(true, &[], &[], false, false))
             {
-                let mut sd = room.state_doc.write().await;
-                if let Err(e) = sd.set_env_sync(true, &[], &[], false, false) {
-                    warn!("[runtime-state] {}", e);
-                }
-                let _ = room.state_changed_tx.send(());
+                warn!("[runtime-state] {}", e);
             }
 
             let _ = room

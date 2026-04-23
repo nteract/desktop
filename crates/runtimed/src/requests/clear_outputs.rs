@@ -23,9 +23,12 @@ pub(crate) async fn handle(room: &NotebookRoom, cell_id: String) -> NotebookResp
 
     // Optionally clean up the old execution's outputs in RuntimeStateDoc
     if let Some(ref eid) = old_eid {
-        let mut sd = room.state_doc.write().await;
-        let _ = sd.clear_execution_outputs(eid);
-        let _ = room.state_changed_tx.send(());
+        if let Err(e) = room.state.with_doc(|sd| {
+            sd.clear_execution_outputs(eid)?;
+            Ok(())
+        }) {
+            tracing::warn!("[runtime-state] {}", e);
+        }
     }
 
     // Send to debounced persistence task

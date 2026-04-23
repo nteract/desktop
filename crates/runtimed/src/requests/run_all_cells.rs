@@ -12,8 +12,10 @@ pub(crate) async fn handle(room: &NotebookRoom) -> NotebookResponse {
         if has_runtime_agent {
             // Check if kernel is shut down
             {
-                let sd = room.state_doc.read().await;
-                let status = sd.read_state().kernel.status;
+                let status = room
+                    .state
+                    .read(|sd| sd.read_state().kernel.status.clone())
+                    .unwrap_or_default();
                 if status == "shutdown" || status == "error" {
                     return NotebookResponse::NoKernel {};
                 }
@@ -51,22 +53,19 @@ pub(crate) async fn handle(room: &NotebookRoom) -> NotebookResponse {
             // Write RuntimeStateDoc entries first; on failure bail
             // before stamping NotebookDoc so cell→execution_id pointers
             // cannot dangle. Any single failure aborts the whole batch.
-            {
-                let mut sd = room.state_doc.write().await;
+            if let Err(e) = room.state.with_doc(|sd| {
                 for (execution_id, cell_id, source, seq) in &entries {
-                    if let Err(e) =
-                        sd.create_execution_with_source(execution_id, cell_id, source, *seq)
-                    {
-                        warn!(
-                            "[notebook-sync] Failed to create_execution_with_source for {}: {}",
-                            execution_id, e
-                        );
-                        return NotebookResponse::Error {
-                            error: format!("failed to queue execution: {e}"),
-                        };
-                    }
+                    sd.create_execution_with_source(execution_id, cell_id, source, *seq)?;
                 }
-                let _ = room.state_changed_tx.send(());
+                Ok(())
+            }) {
+                warn!(
+                    "[notebook-sync] Failed to create_execution_with_source: {}",
+                    e
+                );
+                return NotebookResponse::Error {
+                    error: format!("failed to queue execution: {e}"),
+                };
             }
             {
                 let mut doc = room.doc.write().await;

@@ -9,16 +9,16 @@
 //! owning the connection.
 
 use std::collections::VecDeque;
-use std::sync::Arc;
 
 use anyhow::Result;
-use tokio::sync::{broadcast, RwLock};
+use runtime_doc::RuntimeStateHandle;
+use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
 use crate::kernel_connection::KernelConnection;
 use crate::output_prep::{KernelStatus, QueuedCell};
 use crate::protocol::{NotebookBroadcast, QueueEntry};
-use notebook_doc::runtime_state::{QueueEntry as DocQueueEntry, RuntimeStateDoc};
+use notebook_doc::runtime_state::QueueEntry as DocQueueEntry;
 
 /// Maximum execution entries retained in the RuntimeStateDoc.
 ///
@@ -60,10 +60,8 @@ pub struct KernelState {
     status: KernelStatus,
 
     // ── Shared references (not owned, just held) ───────────────────────
-    /// Per-notebook runtime state document (daemon-authoritative).
-    state_doc: Arc<RwLock<RuntimeStateDoc>>,
-    /// Notification channel for RuntimeStateDoc changes.
-    state_changed_tx: broadcast::Sender<()>,
+    /// Per-notebook runtime state handle (daemon-authoritative).
+    state: RuntimeStateHandle,
     /// Broadcast channel for execution events to connected peers.
     broadcast_tx: broadcast::Sender<NotebookBroadcast>,
 }
@@ -71,8 +69,7 @@ pub struct KernelState {
 impl KernelState {
     /// Create a new `KernelState` with initial status `Starting`.
     pub fn new(
-        state_doc: Arc<RwLock<RuntimeStateDoc>>,
-        state_changed_tx: broadcast::Sender<()>,
+        state: RuntimeStateHandle,
         broadcast_tx: broadcast::Sender<NotebookBroadcast>,
     ) -> Self {
         Self {
@@ -80,8 +77,7 @@ impl KernelState {
             executing: None,
             execution_had_error: false,
             status: KernelStatus::Starting,
-            state_doc,
-            state_changed_tx,
+            state,
             broadcast_tx,
         }
     }
@@ -158,14 +154,13 @@ impl KernelState {
         {
             let doc_exec = self.executing_entry().as_ref().map(to_doc_entry);
             let doc_queued = to_doc_entries(&self.queued_entries());
-            let mut sd = self.state_doc.write().await;
-            if let Err(e) = sd.create_execution(&execution_id, &cell_id_ref) {
+            if let Err(e) = self.state.with_doc(|sd| {
+                sd.create_execution(&execution_id, &cell_id_ref)?;
+                sd.set_queue(doc_exec.as_ref(), &doc_queued)?;
+                Ok(())
+            }) {
                 warn!("[runtime-state] {}", e);
             }
-            if let Err(e) = sd.set_queue(doc_exec.as_ref(), &doc_queued) {
-                warn!("[runtime-state] {}", e);
-            }
-            let _ = self.state_changed_tx.send(());
         }
 
         // Try to process if nothing executing
@@ -207,27 +202,26 @@ impl KernelState {
             // Write to state doc
             {
                 let doc_queued = to_doc_entries(&self.queued_entries());
-                let mut sd = self.state_doc.write().await;
-                if let Err(e) = sd.set_execution_done(execution_id, success) {
+                if let Err(e) = self.state.with_doc(|sd| {
+                    sd.set_execution_done(execution_id, success)?;
+                    sd.set_queue(None, &doc_queued)?;
+                    match sd.trim_executions(MAX_EXECUTION_ENTRIES) {
+                        Ok(trimmed) if trimmed > 0 => {
+                            sd.rebuild_from_save();
+                            debug!(
+                                "[kernel-state] Compacted RuntimeStateDoc after trimming {} executions",
+                                trimmed
+                            );
+                        }
+                        Err(e) => {
+                            warn!("[runtime-state] {}", e);
+                        }
+                        _ => {}
+                    }
+                    Ok(())
+                }) {
                     warn!("[runtime-state] {}", e);
                 }
-                if let Err(e) = sd.set_queue(None, &doc_queued) {
-                    warn!("[runtime-state] {}", e);
-                }
-                match sd.trim_executions(MAX_EXECUTION_ENTRIES) {
-                    Ok(trimmed) if trimmed > 0 => {
-                        sd.rebuild_from_save();
-                        debug!(
-                            "[kernel-state] Compacted RuntimeStateDoc after trimming {} executions",
-                            trimmed
-                        );
-                    }
-                    Err(e) => {
-                        warn!("[runtime-state] {}", e);
-                    }
-                    _ => {}
-                }
-                let _ = self.state_changed_tx.send(());
             }
 
             // Process next
@@ -350,14 +344,13 @@ impl KernelState {
         {
             let doc_exec = self.executing_entry().as_ref().map(to_doc_entry);
             let doc_queued = to_doc_entries(&self.queued_entries());
-            let mut sd = self.state_doc.write().await;
-            if let Err(e) = sd.set_execution_running(&cell.execution_id) {
+            if let Err(e) = self.state.with_doc(|sd| {
+                sd.set_execution_running(&cell.execution_id)?;
+                sd.set_queue(doc_exec.as_ref(), &doc_queued)?;
+                Ok(())
+            }) {
                 warn!("[runtime-state] {}", e);
             }
-            if let Err(e) = sd.set_queue(doc_exec.as_ref(), &doc_queued) {
-                warn!("[runtime-state] {}", e);
-            }
-            let _ = self.state_changed_tx.send(());
         }
 
         // Send execute request via the connection
@@ -412,14 +405,15 @@ impl KernelState {
     ///
     /// Used by callers that need to sync state doc after modifying the queue
     /// externally (e.g., interrupt handler).
-    pub async fn write_queue_to_state_doc(&self) {
+    pub fn write_queue_to_state_doc(&self) {
         let doc_exec = self.executing_entry().as_ref().map(to_doc_entry);
         let doc_queued = to_doc_entries(&self.queued_entries());
-        let mut sd = self.state_doc.write().await;
-        if let Err(e) = sd.set_queue(doc_exec.as_ref(), &doc_queued) {
+        if let Err(e) = self.state.with_doc(|sd| {
+            sd.set_queue(doc_exec.as_ref(), &doc_queued)?;
+            Ok(())
+        }) {
             warn!("[runtime-state] {}", e);
         }
-        let _ = self.state_changed_tx.send(());
     }
 }
 
@@ -511,22 +505,27 @@ mod tests {
         fn update_launched_uv_deps(&mut self, _: Vec<String>) {}
     }
 
-    /// Build a `KernelState` wired to the given `RuntimeStateDoc`.
-    fn test_state(
-        state_doc: Arc<RwLock<RuntimeStateDoc>>,
-    ) -> (KernelState, broadcast::Receiver<NotebookBroadcast>) {
+    /// Build a `KernelState` wired to a fresh `RuntimeStateHandle`.
+    fn test_state() -> (
+        KernelState,
+        RuntimeStateHandle,
+        broadcast::Receiver<NotebookBroadcast>,
+    ) {
         let (state_changed_tx, _) = broadcast::channel(64);
+        let handle = RuntimeStateHandle::new(
+            notebook_doc::runtime_state::RuntimeStateDoc::new(),
+            state_changed_tx,
+        );
         let (broadcast_tx, broadcast_rx) = broadcast::channel(64);
-        let state = KernelState::new(state_doc, state_changed_tx, broadcast_tx);
-        (state, broadcast_rx)
+        let state = KernelState::new(handle.clone(), broadcast_tx);
+        (state, handle, broadcast_rx)
     }
 
     // ── kernel_died tests ────────────────────────────────────────────────
 
     #[tokio::test]
     async fn kernel_died_returns_interrupted_execution_and_cleared_queue() {
-        let sd = Arc::new(RwLock::new(RuntimeStateDoc::new()));
-        let (mut state, _rx) = test_state(sd.clone());
+        let (mut state, _handle, _rx) = test_state();
         let mut mock = MockKernel::new();
         state.set_idle();
 
@@ -562,8 +561,7 @@ mod tests {
 
     #[tokio::test]
     async fn kernel_died_idempotent_when_already_dead() {
-        let sd = Arc::new(RwLock::new(RuntimeStateDoc::new()));
-        let (mut state, _rx) = test_state(sd.clone());
+        let (mut state, _handle, _rx) = test_state();
         let mut mock = MockKernel::new();
         state.set_idle();
 
@@ -584,8 +582,7 @@ mod tests {
 
     #[tokio::test]
     async fn kernel_died_with_empty_queue() {
-        let sd = Arc::new(RwLock::new(RuntimeStateDoc::new()));
-        let (mut state, _rx) = test_state(sd.clone());
+        let (mut state, _handle, _rx) = test_state();
         state.set_idle();
 
         let (interrupted, cleared) = state.kernel_died();
@@ -597,8 +594,7 @@ mod tests {
 
     #[tokio::test]
     async fn reset_clears_executing_and_queue() {
-        let sd = Arc::new(RwLock::new(RuntimeStateDoc::new()));
-        let (mut state, _rx) = test_state(sd.clone());
+        let (mut state, _handle, _rx) = test_state();
         let mut mock = MockKernel::new();
         state.set_idle();
 

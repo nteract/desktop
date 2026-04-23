@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use notebook_doc::presence::PresenceState;
-use notebook_doc::runtime_state::RuntimeStateDoc;
+use runtime_doc::RuntimeStateHandle;
 use tokio::sync::{broadcast, mpsc, RwLock};
 
 use crate::blob_store::BlobStore;
@@ -50,10 +50,8 @@ pub struct KernelLaunchConfig {
 /// into the kernel at launch time. Grouped here so `launch()` takes two
 /// structs instead of a dozen parameters.
 pub struct KernelSharedRefs {
-    /// Per-notebook runtime state document (daemon-authoritative).
-    pub state_doc: Arc<RwLock<RuntimeStateDoc>>,
-    /// Notification channel for RuntimeStateDoc changes.
-    pub state_changed_tx: broadcast::Sender<()>,
+    /// Per-notebook runtime state handle (daemon-authoritative).
+    pub state: RuntimeStateHandle,
     /// Content-addressed blob store for output manifests.
     pub blob_store: Arc<BlobStore>,
     /// Broadcast channel for notebook events to connected peers.

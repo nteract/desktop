@@ -107,27 +107,28 @@ pub(crate) async fn save_notebook_to_disk(
     };
 
     // Read outputs and execution_count from RuntimeStateDoc keyed by execution_id.
-    // Lock ordering: doc first (released above), then state_doc.
     let (cell_outputs, cell_execution_counts): (
         HashMap<String, Vec<serde_json::Value>>,
         HashMap<String, Option<i64>>,
-    ) = {
-        let sd = room.state_doc.read().await;
-        let mut outputs_map = HashMap::new();
-        let mut ec_map = HashMap::new();
-        for (cell_id, eid) in &cell_execution_ids {
-            if let Some(eid) = eid.as_ref() {
-                let outputs = sd.get_outputs(eid);
-                if !outputs.is_empty() {
-                    outputs_map.insert(cell_id.clone(), outputs);
-                }
-                if let Some(exec) = sd.get_execution(eid) {
-                    ec_map.insert(cell_id.clone(), exec.execution_count);
+    ) = room
+        .state
+        .read(|sd| {
+            let mut outputs_map = HashMap::new();
+            let mut ec_map = HashMap::new();
+            for (cell_id, eid) in &cell_execution_ids {
+                if let Some(eid) = eid.as_ref() {
+                    let outputs = sd.get_outputs(eid);
+                    if !outputs.is_empty() {
+                        outputs_map.insert(cell_id.clone(), outputs);
+                    }
+                    if let Some(exec) = sd.get_execution(eid) {
+                        ec_map.insert(cell_id.clone(), exec.execution_count);
+                    }
                 }
             }
-        }
-        (outputs_map, ec_map)
-    };
+            (outputs_map, ec_map)
+        })
+        .unwrap_or_default();
 
     let nbformat_attachments = room.nbformat_attachments.read().await.clone();
 

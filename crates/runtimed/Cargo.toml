@@ -75,6 +75,9 @@ automerge = "0.8"
 # Shared notebook document types (cell CRUD, metadata, sync)
 notebook-doc = { path = "../notebook-doc", features = ["persistence"] }
 
+# RuntimeStateHandle — typed handle for per-notebook RuntimeStateDoc
+runtime-doc = { path = "../runtime-doc" }
+
 # Trust verification (shared with notebook crate)
 runt-trust = { path = "../runt-trust" }
 

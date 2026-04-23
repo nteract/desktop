@@ -509,8 +509,7 @@ where
         // Store outputs in RuntimeStateDoc with synthetic execution_ids.
         // Collect (cell_id, synthetic_eid) pairs for linking below.
         let mut cell_eids: HashMap<String, String> = HashMap::new();
-        {
-            let mut sd = room.state_doc.write().await;
+        let _ = room.state.with_doc(|sd| {
             for (_idx, cell, output_refs, _resolved_assets) in &batch {
                 if !output_refs.is_empty() {
                     let synthetic_eid = uuid::Uuid::new_v4().to_string();
@@ -520,7 +519,8 @@ where
                     cell_eids.insert(cell.id.clone(), synthetic_eid);
                 }
             }
-        }
+            Ok(())
+        });
 
         // Add batch to Automerge doc and generate sync message (inside lock)
         let encoded = {
@@ -564,9 +564,7 @@ where
 
         // Notify other peers in the room
         let _ = room.changed_tx.send(());
-        if !cell_eids.is_empty() {
-            let _ = room.state_changed_tx.send(());
-        }
+        // RuntimeStateDoc notification is automatic via with_doc heads check
 
         // Drain incoming sync replies to prevent deadlock
         drain_incoming_frames(reader, room, peer_state).await;
@@ -1111,18 +1109,19 @@ pub(crate) async fn apply_ipynb_changes(
 
         // Apply deferred state_doc writes
         if !deferred_executions.is_empty() {
-            let mut sd = room.state_doc.write().await;
-            for de in &deferred_executions {
-                let _ = sd.create_execution(&de.synthetic_eid, &de.cell_id);
-                if !de.outputs.is_empty() {
-                    let _ = sd.set_outputs(&de.synthetic_eid, de.outputs);
+            let _ = room.state.with_doc(|sd| {
+                for de in &deferred_executions {
+                    let _ = sd.create_execution(&de.synthetic_eid, &de.cell_id);
+                    if !de.outputs.is_empty() {
+                        let _ = sd.set_outputs(&de.synthetic_eid, de.outputs);
+                    }
+                    if let Some(ec) = de.execution_count {
+                        let _ = sd.set_execution_count(&de.synthetic_eid, ec);
+                    }
+                    let _ = sd.set_execution_done(&de.synthetic_eid, true);
                 }
-                if let Some(ec) = de.execution_count {
-                    let _ = sd.set_execution_count(&de.synthetic_eid, ec);
-                }
-                let _ = sd.set_execution_done(&de.synthetic_eid, true);
-            }
-            let _ = room.state_changed_tx.send(());
+                Ok(())
+            });
         }
 
         // Update saved_sources baseline so subsequent external edits are
@@ -1191,14 +1190,17 @@ pub(crate) async fn apply_ipynb_changes(
                 }
                 map
             };
-            let sd = room.state_doc.read().await;
-            let mut state_map = HashMap::new();
-            for (cell_id, eid) in &eid_map {
-                let outputs = sd.get_outputs(eid);
-                let ec = sd.get_execution(eid).and_then(|e| e.execution_count);
-                state_map.insert(cell_id.clone(), (outputs, ec));
-            }
-            state_map
+            room.state
+                .read(|sd| {
+                    let mut state_map = HashMap::new();
+                    for (cell_id, eid) in &eid_map {
+                        let outputs = sd.get_outputs(eid);
+                        let ec = sd.get_execution(eid).and_then(|e| e.execution_count);
+                        state_map.insert(cell_id.clone(), (outputs, ec));
+                    }
+                    state_map
+                })
+                .unwrap_or_default()
         } else {
             HashMap::new()
         };
@@ -1376,18 +1378,19 @@ pub(crate) async fn apply_ipynb_changes(
 
     // Apply deferred state_doc writes
     if !deferred_execs.is_empty() {
-        let mut sd = room.state_doc.write().await;
-        for de in &deferred_execs {
-            let _ = sd.create_execution(&de.synthetic_eid, &de.cell_id);
-            if !de.outputs.is_empty() {
-                let _ = sd.set_outputs(&de.synthetic_eid, de.outputs);
+        let _ = room.state.with_doc(|sd| {
+            for de in &deferred_execs {
+                let _ = sd.create_execution(&de.synthetic_eid, &de.cell_id);
+                if !de.outputs.is_empty() {
+                    let _ = sd.set_outputs(&de.synthetic_eid, de.outputs);
+                }
+                if let Some(ec) = de.execution_count {
+                    let _ = sd.set_execution_count(&de.synthetic_eid, ec);
+                }
+                let _ = sd.set_execution_done(&de.synthetic_eid, true);
             }
-            if let Some(ec) = de.execution_count {
-                let _ = sd.set_execution_count(&de.synthetic_eid, ec);
-            }
-            let _ = sd.set_execution_done(&de.synthetic_eid, true);
-        }
-        let _ = room.state_changed_tx.send(());
+            Ok(())
+        });
     }
 
     // Update saved_sources baseline after applying external changes so

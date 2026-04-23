@@ -55,8 +55,10 @@ pub(crate) async fn handle(room: &Arc<NotebookRoom>, cell_id: String) -> Noteboo
             // Check if kernel is shut down — return NoKernel instead
             // of silently queuing into a dead kernel
             {
-                let sd = room.state_doc.read().await;
-                let status = sd.read_state().kernel.status;
+                let status = room
+                    .state
+                    .read(|sd| sd.read_state().kernel.status.clone())
+                    .unwrap_or_default();
                 if status == "shutdown" || status == "error" {
                     return NotebookResponse::NoKernel {};
                 }
@@ -73,14 +75,19 @@ pub(crate) async fn handle(room: &Arc<NotebookRoom>, cell_id: String) -> Noteboo
                     doc.get_execution_id(&cell_id)
                 };
                 if let Some(eid) = eid {
-                    let sd = room.state_doc.read().await;
-                    if let Some(exec) = sd.get_execution(&eid) {
-                        if exec.status == "queued" || exec.status == "running" {
-                            return NotebookResponse::CellQueued {
-                                cell_id,
-                                execution_id: eid,
-                            };
-                        }
+                    let is_active = room
+                        .state
+                        .read(|sd| {
+                            sd.get_execution(&eid).is_some_and(|exec| {
+                                exec.status == "queued" || exec.status == "running"
+                            })
+                        })
+                        .unwrap_or(false);
+                    if is_active {
+                        return NotebookResponse::CellQueued {
+                            cell_id,
+                            execution_id: eid,
+                        };
                     }
                 }
             }
@@ -93,20 +100,16 @@ pub(crate) async fn handle(room: &Arc<NotebookRoom>, cell_id: String) -> Noteboo
             // Write execution entry with source to RuntimeStateDoc first
             // so that NotebookDoc's cell→execution_id pointer never
             // dangles. If this fails we bail before stamping the cell.
-            {
-                let mut sd = room.state_doc.write().await;
-                if let Err(e) =
-                    sd.create_execution_with_source(&execution_id, &cell_id, &source, seq)
-                {
-                    warn!(
-                        "[notebook-sync] Failed to create_execution_with_source for {}: {}",
-                        execution_id, e
-                    );
-                    return NotebookResponse::Error {
-                        error: format!("failed to queue execution: {e}"),
-                    };
-                }
-                let _ = room.state_changed_tx.send(());
+            if let Err(e) = room.state.with_doc(|sd| {
+                sd.create_execution_with_source(&execution_id, &cell_id, &source, seq)
+            }) {
+                warn!(
+                    "[notebook-sync] Failed to create_execution_with_source for {}: {}",
+                    execution_id, e
+                );
+                return NotebookResponse::Error {
+                    error: format!("failed to queue execution: {e}"),
+                };
             }
 
             // Stamp execution_id on the cell in NotebookDoc

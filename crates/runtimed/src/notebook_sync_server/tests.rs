@@ -641,8 +641,8 @@ fn test_room_with_path(
 
     let (presence_tx, _) = broadcast::channel(64);
 
-    let state_doc = Arc::new(RwLock::new(RuntimeStateDoc::new()));
     let (state_changed_tx, _) = broadcast::channel(16);
+    let state = runtime_doc::RuntimeStateHandle::new(RuntimeStateDoc::new(), state_changed_tx);
     let room = NotebookRoom {
         id: uuid::Uuid::new_v4(),
         doc: Arc::new(RwLock::new(doc)),
@@ -677,8 +677,7 @@ fn test_room_with_path(
         last_save_heads: Arc::new(RwLock::new(Vec::new())),
         last_save_sources: Arc::new(RwLock::new(HashMap::new())),
         watcher_shutdown_tx: Mutex::new(None),
-        state_doc,
-        state_changed_tx,
+        state,
         runtime_agent_handle: Arc::new(Mutex::new(None)),
         runtime_agent_env_path: Arc::new(RwLock::new(None)),
         runtime_agent_launched_config: Arc::new(RwLock::new(None)),
@@ -839,15 +838,17 @@ async fn test_save_notebook_to_disk_with_outputs() {
         doc.update_source("cell1", "print('hello')").unwrap();
         doc.set_execution_id("cell1", Some(eid)).unwrap();
     }
-    {
-        let mut sd = room.state_doc.write().await;
-        let output: serde_json::Value =
-            serde_json::json!({"output_type": "stream", "name": "stdout", "text": ["hello\n"]});
-        sd.create_execution(eid, "cell1").unwrap();
-        sd.set_execution_count(eid, 1).unwrap();
-        sd.set_outputs(eid, &[output]).unwrap();
-        sd.set_execution_done(eid, true).unwrap();
-    }
+    room.state
+        .with_doc(|sd| {
+            let output: serde_json::Value =
+                serde_json::json!({"output_type": "stream", "name": "stdout", "text": ["hello\n"]});
+            sd.create_execution(eid, "cell1")?;
+            sd.set_execution_count(eid, 1)?;
+            sd.set_outputs(eid, &[output])?;
+            sd.set_execution_done(eid, true)?;
+            Ok(())
+        })
+        .unwrap();
 
     save_notebook_to_disk(&room, None).await.unwrap();
 
@@ -1192,9 +1193,15 @@ async fn test_apply_ipynb_changes_updates_execution_count() {
     let eid = doc.get_execution_id("cell-1");
     drop(doc);
     assert!(eid.is_some(), "Should have execution_id set");
-    let sd = room.state_doc.read().await;
-    let exec = sd.get_execution(eid.as_ref().unwrap());
-    assert_eq!(exec.unwrap().execution_count, Some(42));
+    let ec = room
+        .state
+        .read(|sd| {
+            sd.get_execution(eid.as_ref().unwrap())
+                .unwrap()
+                .execution_count
+        })
+        .unwrap();
+    assert_eq!(ec, Some(42));
 }
 
 #[tokio::test]
@@ -1209,12 +1216,14 @@ async fn test_apply_ipynb_changes_preserves_execution_count_when_kernel_running(
         doc.add_cell(0, "cell-1", "code").unwrap();
         doc.set_execution_id("cell-1", Some(eid)).unwrap();
     }
-    {
-        let mut sd = room.state_doc.write().await;
-        sd.create_execution(eid, "cell-1").unwrap();
-        sd.set_execution_count(eid, 10).unwrap();
-        sd.set_execution_done(eid, true).unwrap();
-    }
+    room.state
+        .with_doc(|sd| {
+            sd.create_execution(eid, "cell-1")?;
+            sd.set_execution_count(eid, 10)?;
+            sd.set_execution_done(eid, true)?;
+            Ok(())
+        })
+        .unwrap();
 
     // Apply external changes while kernel is "running"
     let external_cells = vec![CellSnapshot {
@@ -1244,8 +1253,7 @@ async fn test_apply_ipynb_changes_preserves_execution_count_when_kernel_running(
     // Source should be updated
     assert_eq!(cells[0].source, "new source");
     // execution_count should be preserved in RuntimeStateDoc (kernel running)
-    let sd = room.state_doc.read().await;
-    let exec = sd.get_execution(eid);
+    let exec = room.state.read(|sd| sd.get_execution(eid)).unwrap();
     assert_eq!(exec.unwrap().execution_count, Some(10));
 }
 
@@ -1315,11 +1323,9 @@ async fn test_apply_ipynb_changes_new_cell_with_outputs_while_kernel_running() {
         doc.get_execution_id("new-cell")
             .expect("new-cell should have execution_id")
     };
-    let sd = room.state_doc.read().await;
-    let exec = sd.get_execution(&eid);
+    let exec = room.state.read(|sd| sd.get_execution(&eid)).unwrap();
     assert_eq!(exec.unwrap().execution_count, Some(42));
-    let outputs = sd.get_outputs(&eid);
-    drop(sd);
+    let outputs = room.state.read(|sd| sd.get_outputs(&eid)).unwrap();
     assert_eq!(outputs.len(), 1);
     let manifest = &outputs[0];
     assert!(
@@ -2992,18 +2998,15 @@ async fn test_check_and_broadcast_sync_state_no_kernel() {
     }
 
     // Pre-set RuntimeStateDoc env to dirty so we can verify it's NOT changed
-    {
-        let mut sd = room.state_doc.write().await;
-        sd.set_env_sync(false, &["numpy".to_string()], &[], false, false)
-            .unwrap();
-    }
+    room.state
+        .with_doc(|sd| sd.set_env_sync(false, &["numpy".to_string()], &[], false, false))
+        .unwrap();
 
     // No kernel in the room — should be a no-op
     check_and_broadcast_sync_state(&room).await;
 
     // Verify env state was NOT touched (still dirty from pre-set)
-    let sd = room.state_doc.read().await;
-    let state = sd.read_state();
+    let state = room.state.read(|sd| sd.read_state()).unwrap();
     assert!(
         !state.env.in_sync,
         "env should remain dirty when no kernel is present"
@@ -3044,17 +3047,19 @@ async fn test_check_and_broadcast_sync_state_captured_uv_prewarmed_in_sync() {
 
     // Kernel is idle (otherwise the function returns early).
     {
-        let mut sd = room.state_doc.write().await;
-        sd.set_kernel_status("idle").unwrap();
-        // Pre-set to dirty so we can verify it flips to in_sync.
-        sd.set_env_sync(false, &["pandas".to_string()], &[], false, false)
+        room.state
+            .with_doc(|sd| {
+                sd.set_kernel_status("idle")?;
+                // Pre-set to dirty so we can verify it flips to in_sync.
+                sd.set_env_sync(false, &["pandas".to_string()], &[], false, false)?;
+                Ok(())
+            })
             .unwrap();
     }
 
     check_and_broadcast_sync_state(&room).await;
 
-    let sd = room.state_doc.read().await;
-    let state = sd.read_state();
+    let state = room.state.read(|sd| sd.read_state()).unwrap();
     assert!(
         state.env.in_sync,
         "captured-prewarmed launch with matching metadata must be in_sync"
@@ -3095,14 +3100,14 @@ async fn test_check_and_broadcast_sync_state_captured_uv_prewarmed_reports_addit
     }
 
     {
-        let mut sd = room.state_doc.write().await;
-        sd.set_kernel_status("idle").unwrap();
+        room.state
+            .with_doc(|sd| sd.set_kernel_status("idle"))
+            .unwrap();
     }
 
     check_and_broadcast_sync_state(&room).await;
 
-    let sd = room.state_doc.read().await;
-    let state = sd.read_state();
+    let state = room.state.read(|sd| sd.read_state()).unwrap();
     assert!(
         !state.env.in_sync,
         "added dep post-capture must surface as drift"
@@ -3119,8 +3124,8 @@ async fn test_check_and_broadcast_sync_state_no_metadata() {
 
     // Pre-set RuntimeStateDoc env to dirty
     {
-        let mut sd = room.state_doc.write().await;
-        sd.set_env_sync(false, &["pandas".to_string()], &[], false, false)
+        room.state
+            .with_doc(|sd| sd.set_env_sync(false, &["pandas".to_string()], &[], false, false))
             .unwrap();
     }
 
@@ -3128,8 +3133,7 @@ async fn test_check_and_broadcast_sync_state_no_metadata() {
     check_and_broadcast_sync_state(&room).await;
 
     // Verify env state was NOT touched
-    let sd = room.state_doc.read().await;
-    let state = sd.read_state();
+    let state = room.state.read(|sd| sd.read_state()).unwrap();
     assert!(
         !state.env.in_sync,
         "env should remain dirty when no metadata is present"
@@ -3248,8 +3252,9 @@ async fn test_check_and_update_trust_state_no_deps() {
     // Align RuntimeStateDoc with the room's initial Untrusted state so we
     // can verify the function actually writes the new value.
     {
-        let mut sd = room.state_doc.write().await;
-        sd.set_trust("untrusted", true).unwrap();
+        room.state
+            .with_doc(|sd| sd.set_trust("untrusted", true))
+            .unwrap();
     }
 
     // Write an empty metadata snapshot (no dependencies).
@@ -3267,8 +3272,7 @@ async fn test_check_and_update_trust_state_no_deps() {
     drop(ts);
 
     // RuntimeStateDoc should reflect "no_dependencies" with needs_approval=false.
-    let sd = room.state_doc.read().await;
-    let state = sd.read_state();
+    let state = room.state.read(|sd| sd.read_state()).unwrap();
     assert_eq!(state.trust.status, "no_dependencies");
     assert!(!state.trust.needs_approval);
 }
@@ -3285,8 +3289,9 @@ async fn test_check_and_update_trust_state_approval_updates_room() {
 
     // Align RuntimeStateDoc with the room's initial Untrusted state.
     {
-        let mut sd = room.state_doc.write().await;
-        sd.set_trust("untrusted", true).unwrap();
+        room.state
+            .with_doc(|sd| sd.set_trust("untrusted", true))
+            .unwrap();
     }
 
     // Build a snapshot with UV deps and a valid trust signature.
@@ -3311,8 +3316,7 @@ async fn test_check_and_update_trust_state_approval_updates_room() {
     drop(ts);
 
     // RuntimeStateDoc should have "trusted" with needs_approval=false.
-    let sd = room.state_doc.read().await;
-    let state = sd.read_state();
+    let state = room.state.read(|sd| sd.read_state()).unwrap();
     assert_eq!(state.trust.status, "trusted");
     assert!(!state.trust.needs_approval);
 
@@ -3328,8 +3332,9 @@ async fn test_check_and_update_trust_state_idempotent() {
     // first transition to NoDependencies actually mutates the doc and fires
     // a notification.
     {
-        let mut sd = room.state_doc.write().await;
-        sd.set_trust("untrusted", true).unwrap();
+        room.state
+            .with_doc(|sd| sd.set_trust("untrusted", true))
+            .unwrap();
     }
 
     // Write an empty metadata snapshot to trigger Untrusted → NoDependencies.
@@ -3340,7 +3345,7 @@ async fn test_check_and_update_trust_state_idempotent() {
     }
 
     // Subscribe before either call so we capture all notifications.
-    let mut rx = room.state_changed_tx.subscribe();
+    let mut rx = room.state.subscribe();
 
     // First call: state changes from Untrusted → NoDependencies → notification sent.
     check_and_update_trust_state(&room).await;
@@ -3398,8 +3403,9 @@ async fn test_check_and_update_trust_state_external_dep_add_invalidates() {
         *ts = verify_trust_from_snapshot(&signed);
     }
     {
-        let mut sd = room.state_doc.write().await;
-        sd.set_trust("trusted", false).unwrap();
+        room.state
+            .with_doc(|sd| sd.set_trust("trusted", false))
+            .unwrap();
     }
 
     // Sanity check: starting state is Trusted.
@@ -3419,7 +3425,7 @@ async fn test_check_and_update_trust_state_external_dep_add_invalidates() {
     }
 
     // Subscribe before the re-verification so we can observe the flip.
-    let mut rx = room.state_changed_tx.subscribe();
+    let mut rx = room.state.subscribe();
 
     check_and_update_trust_state(&room).await;
 
@@ -3436,8 +3442,7 @@ async fn test_check_and_update_trust_state_external_dep_add_invalidates() {
 
     // RuntimeStateDoc should reflect the flip for the frontend banner.
     {
-        let sd = room.state_doc.read().await;
-        let state = sd.read_state();
+        let state = room.state.read(|sd| sd.read_state()).unwrap();
         assert_eq!(state.trust.status, "signature_invalid");
         assert!(state.trust.needs_approval);
     }
@@ -3525,20 +3530,21 @@ async fn test_reset_starting_state_guard() {
     }
 
     // Set kernel status to "starting" (simulates in-progress launch)
-    {
-        let mut sd = room.state_doc.write().await;
-        sd.set_kernel_status("starting").unwrap();
-    }
+    room.state
+        .with_doc(|sd| sd.set_kernel_status("starting"))
+        .unwrap();
 
     // Call reset with expected="agent-A" (stale handler) — should skip
     reset_starting_state(&room, Some("agent-A")).await;
 
     // Verify: kernel_status should still be "starting" (NOT reset)
     {
-        let sd = room.state_doc.read().await;
+        let status = room
+            .state
+            .read(|sd| sd.read_state().kernel.status.clone())
+            .unwrap();
         assert_eq!(
-            sd.read_state().kernel.status,
-            "starting",
+            status, "starting",
             "Guard should have prevented reset (agent-A != agent-B)"
         );
     }
@@ -3554,10 +3560,12 @@ async fn test_reset_starting_state_guard() {
 
     // Verify: kernel_status should be "not_started"
     {
-        let sd = room.state_doc.read().await;
+        let status = room
+            .state
+            .read(|sd| sd.read_state().kernel.status.clone())
+            .unwrap();
         assert_eq!(
-            sd.read_state().kernel.status,
-            "not_started",
+            status, "not_started",
             "Reset should proceed when expected matches current"
         );
     }
@@ -3572,16 +3580,17 @@ async fn test_reset_starting_state_guard() {
     }
 
     // Call with None (pre-spawn) — should always reset
-    {
-        let mut sd = room.state_doc.write().await;
-        sd.set_kernel_status("starting").unwrap();
-    }
+    room.state
+        .with_doc(|sd| sd.set_kernel_status("starting"))
+        .unwrap();
     reset_starting_state(&room, None).await;
     {
-        let sd = room.state_doc.read().await;
+        let status = room
+            .state
+            .read(|sd| sd.read_state().kernel.status.clone())
+            .unwrap();
         assert_eq!(
-            sd.read_state().kernel.status,
-            "not_started",
+            status, "not_started",
             "None (pre-spawn) should always reset"
         );
     }

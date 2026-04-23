@@ -83,12 +83,10 @@ pub struct NotebookRoom {
     /// Wrapped in Mutex to allow setting after Arc creation.
     /// Sent when the room is evicted to stop the watcher.
     pub(crate) watcher_shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
-    /// Per-notebook RuntimeStateDoc — daemon-authoritative ephemeral state
+    /// Per-notebook RuntimeStateDoc handle — daemon-authoritative ephemeral state
     /// (kernel status, queue, env sync). Clients sync read-only.
-    pub state_doc: Arc<RwLock<RuntimeStateDoc>>,
-    /// Notification channel for RuntimeStateDoc changes.
-    /// Peer sync loops subscribe to push RuntimeStateSync frames.
-    pub state_changed_tx: broadcast::Sender<()>,
+    /// Uses `std::sync::Mutex` internally (no `.await` needed).
+    pub state: runtime_doc::RuntimeStateHandle,
     /// Handle to the runtime agent subprocess that owns this notebook's kernel.
     /// Set by `LaunchKernel` or `auto_launch_kernel` when spawned.
     pub runtime_agent_handle: Arc<Mutex<Option<crate::runtime_agent_handle::RuntimeAgentHandle>>>,
@@ -220,9 +218,8 @@ impl NotebookRoom {
 
         let (presence_tx, _) = broadcast::channel(64);
 
-        let state_doc = Arc::new(RwLock::new(RuntimeStateDoc::new()));
-
         let (state_changed_tx, _) = broadcast::channel(16);
+        let state = runtime_doc::RuntimeStateHandle::new(RuntimeStateDoc::new(), state_changed_tx);
 
         Self {
             id,
@@ -249,8 +246,7 @@ impl NotebookRoom {
             last_save_heads: Arc::new(RwLock::new(Vec::new())),
             last_save_sources: Arc::new(RwLock::new(HashMap::new())),
             watcher_shutdown_tx: Mutex::new(None),
-            state_doc,
-            state_changed_tx,
+            state,
             runtime_agent_handle: Arc::new(Mutex::new(None)),
             runtime_agent_env_path: Arc::new(RwLock::new(None)),
             runtime_agent_launched_config: Arc::new(RwLock::new(None)),
@@ -317,8 +313,8 @@ impl NotebookRoom {
             },
             Some(p) => verify_trust_from_file(p),
         };
-        let state_doc = Arc::new(RwLock::new(RuntimeStateDoc::new()));
         let (state_changed_tx, _) = broadcast::channel(16);
+        let state = runtime_doc::RuntimeStateHandle::new(RuntimeStateDoc::new(), state_changed_tx);
         Self {
             id,
             doc: Arc::new(RwLock::new(doc)),
@@ -344,8 +340,7 @@ impl NotebookRoom {
             last_save_heads: Arc::new(RwLock::new(Vec::new())),
             last_save_sources: Arc::new(RwLock::new(HashMap::new())),
             watcher_shutdown_tx: Mutex::new(None),
-            state_doc,
-            state_changed_tx,
+            state,
             runtime_agent_handle: Arc::new(Mutex::new(None)),
             runtime_agent_env_path: Arc::new(RwLock::new(None)),
             runtime_agent_launched_config: Arc::new(RwLock::new(None)),
@@ -375,14 +370,20 @@ impl NotebookRoom {
             ra.as_ref().is_some_and(|a| a.is_alive())
         };
         if is_alive {
-            let sd = self.state_doc.read().await;
-            let state = sd.read_state();
-            if state.kernel.status != "not_started" && !state.kernel.status.is_empty() {
-                return Some((
-                    state.kernel.name.clone(),
-                    state.kernel.env_source.clone(),
-                    state.kernel.status.clone(),
-                ));
+            let info = self.state.read(|sd| {
+                let state = sd.read_state();
+                if state.kernel.status != "not_started" && !state.kernel.status.is_empty() {
+                    Some((
+                        state.kernel.name.clone(),
+                        state.kernel.env_source.clone(),
+                        state.kernel.status.clone(),
+                    ))
+                } else {
+                    None
+                }
+            });
+            if let Ok(Some(info)) = info {
+                return Some(info);
             }
         }
         None

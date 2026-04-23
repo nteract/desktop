@@ -2680,16 +2680,18 @@ impl Daemon {
                             .collect();
                         (cells, eids)
                     };
-                    let outputs_by_cell: std::collections::HashMap<String, Vec<serde_json::Value>> = {
-                        let state_doc = room.state_doc.read().await;
-                        eids_by_cell
-                            .into_iter()
-                            .filter_map(|(cell_id, eid)| {
-                                let outputs = state_doc.get_outputs(&eid);
-                                (!outputs.is_empty()).then_some((cell_id, outputs))
+                    let outputs_by_cell: std::collections::HashMap<String, Vec<serde_json::Value>> =
+                        room.state
+                            .read(|state_doc| {
+                                eids_by_cell
+                                    .into_iter()
+                                    .filter_map(|(cell_id, eid)| {
+                                        let outputs = state_doc.get_outputs(&eid);
+                                        (!outputs.is_empty()).then_some((cell_id, outputs))
+                                    })
+                                    .collect()
                             })
-                            .collect()
-                    };
+                            .unwrap_or_default();
                     let kernel_info = room.kernel_info().await.map(|(kt, es, status)| {
                         crate::protocol::NotebookKernelInfo {
                             kernel_type: kt,
@@ -3285,8 +3287,7 @@ impl Daemon {
         // 1. In-memory: active rooms (RuntimeStateDoc + notebook doc).
         for batch in rooms.chunks(ROOM_BATCH_SIZE) {
             for (_id, room) in batch {
-                {
-                    let sd = room.state_doc.read().await;
+                let _ = room.state.read(|sd| {
                     let state = sd.read_state();
                     for exec in state.executions.values() {
                         for output in &exec.outputs {
@@ -3299,7 +3300,7 @@ impl Daemon {
                         }
                         collect_blob_hashes_recursive(&comm.state, &mut referenced_hashes);
                     }
-                }
+                });
                 {
                     let doc = room.doc.read().await;
                     for cell in doc.get_cells() {
