@@ -126,8 +126,9 @@ pub struct JupyterKernel {
     comm_coalesce_tx: Option<mpsc::UnboundedSender<(String, serde_json::Value)>>,
     /// Handle to the coalescing task for comm state CRDT writes.
     comm_coalesce_task: Option<JoinHandle<()>>,
-    /// Mapping from msg_id -> (cell_id, execution_id) for routing iopub messages.
-    cell_id_map: Arc<StdMutex<HashMap<String, (String, String)>>>,
+    /// Mapping from execution_id -> cell_id for routing iopub messages.
+    /// With msg_id = execution_id, parent_header.msg_id IS the execution_id.
+    cell_id_map: Arc<StdMutex<HashMap<String, String>>>,
     /// Command sender for iopub/shell tasks.
     cmd_tx: Option<mpsc::Sender<QueueCommand>>,
     /// Monotonic counter for comm insertion order (written to RuntimeStateDoc).
@@ -640,7 +641,7 @@ impl KernelConnection for JupyterKernel {
         let (cmd_tx, cmd_rx) = mpsc::channel::<QueueCommand>(100);
 
         // Shared state refs for spawned tasks
-        let cell_id_map: Arc<StdMutex<HashMap<String, (String, String)>>> =
+        let cell_id_map: Arc<StdMutex<HashMap<String, String>>> =
             Arc::new(StdMutex::new(HashMap::new()));
         let comm_seq = Arc::new(AtomicU64::new(0));
         let pending_history: Arc<StdMutex<HashMap<String, oneshot::Sender<Vec<HistoryEntry>>>>> =
@@ -727,13 +728,13 @@ impl KernelConnection for JupyterKernel {
                                 message.parent_header.as_ref().map(|h| &h.msg_id)
                             );
 
-                            // Look up (cell_id, execution_id) from msg_id
-                            let cell_entry: Option<(String, String)> =
-                                message.parent_header.as_ref().and_then(|h| {
-                                    iopub_cell_id_map.lock().ok()?.get(&h.msg_id).cloned()
-                                });
-                            let cell_id = cell_entry.as_ref().map(|(cid, _)| cid.clone());
-                            let execution_id = cell_entry.as_ref().map(|(_, eid)| eid.clone());
+                            // parent_header.msg_id IS the execution_id (set in execute()).
+                            // Look up cell_id from the execution_id -> cell_id map.
+                            let execution_id =
+                                message.parent_header.as_ref().map(|h| h.msg_id.clone());
+                            let cell_id = execution_id
+                                .as_ref()
+                                .and_then(|eid| iopub_cell_id_map.lock().ok()?.get(eid).cloned());
 
                             // Handle different message types
                             match &message.content {
@@ -754,7 +755,7 @@ impl KernelConnection for JupyterKernel {
                                     });
 
                                     if status_str != "unknown" {
-                                        let is_transient = cell_entry.is_none()
+                                        let is_transient = execution_id.is_none()
                                             && (status_str == "busy" || status_str == "idle");
 
                                         if !is_transient {
@@ -769,7 +770,9 @@ impl KernelConnection for JupyterKernel {
                                     if status.execution_state
                                         == jupyter_protocol::ExecutionState::Idle
                                     {
-                                        if let Some((cid, eid)) = cell_entry.clone() {
+                                        if let (Some(cid), Some(eid)) =
+                                            (cell_id.clone(), execution_id.clone())
+                                        {
                                             let _ = iopub_cmd_tx.try_send(
                                                 QueueCommand::ExecutionDone {
                                                     cell_id: cid,
@@ -1835,13 +1838,11 @@ impl KernelConnection for JupyterKernel {
 
                             match msg.content {
                                 JupyterMessageContent::ExecuteReply(ref reply) => {
-                                    let cell_entry: Option<(String, String)> =
-                                        msg.parent_header.as_ref().and_then(|h| {
-                                            shell_cell_id_map.lock().ok()?.get(&h.msg_id).cloned()
-                                        });
-                                    let cell_id = cell_entry.as_ref().map(|(cid, _)| cid.clone());
                                     let execution_id =
-                                        cell_entry.as_ref().map(|(_, eid)| eid.clone());
+                                        msg.parent_header.as_ref().map(|h| h.msg_id.clone());
+                                    let cell_id = execution_id.as_ref().and_then(|eid| {
+                                        shell_cell_id_map.lock().ok()?.get(eid).cloned()
+                                    });
 
                                     // Process page payloads
                                     if let Some(ref cid) = cell_id {
@@ -2166,26 +2167,25 @@ impl KernelConnection for JupyterKernel {
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("No kernel running"))?;
 
-        // Build execute request
+        // Build execute request with msg_id = execution_id.
+        // IOPub replies echo this back as parent_header.msg_id, so we can
+        // route outputs directly by execution_id without an indirection map.
         let request = ExecuteRequest::new(source.to_string());
-        let message: JupyterMessage = request.into();
-        let msg_id = message.header.msg_id.clone();
+        let mut message: JupyterMessage = request.into();
+        message.header.msg_id = execution_id.to_string();
 
-        // Register msg_id -> (cell_id, execution_id) BEFORE sending.
+        // Register execution_id -> cell_id BEFORE sending.
         // Remove any old mappings for this cell_id first.
         {
             let mut map = self.cell_id_map.lock().unwrap();
-            map.retain(|_, (cid, _)| cid != cell_id);
-            map.insert(
-                msg_id.clone(),
-                (cell_id.to_string(), execution_id.to_string()),
-            );
+            map.retain(|_, cid| cid != cell_id);
+            map.insert(execution_id.to_string(), cell_id.to_string());
         }
 
         shell.send(message).await?;
         info!(
-            "[jupyter-kernel] Sent execute_request: msg_id={} cell_id={} execution_id={}",
-            msg_id, cell_id, execution_id
+            "[jupyter-kernel] Sent execute_request: cell_id={} execution_id={}",
+            cell_id, execution_id
         );
 
         Ok(())
