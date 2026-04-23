@@ -318,6 +318,22 @@ async fn write_setting(key: &str, value: &serde_json::Value) {
     }
 }
 
+/// Rotate the install ID to a fresh UUIDv4 and clear all three
+/// `last_sent_at` markers on the provided settings. Callers persist the
+/// mutated settings via the daemon sync client.
+///
+/// Clearing the markers prevents the 20-hour throttle from silently
+/// suppressing the first ping under the new ID. The 60 req/min rate
+/// limit at the Cloudflare edge is the defense against rotation abuse.
+pub fn rotate_install_id_in(settings: &mut crate::settings_doc::SyncedSettings) -> String {
+    let new_id = uuid::Uuid::new_v4().to_string();
+    settings.install_id = new_id.clone();
+    settings.telemetry_last_daemon_ping_at = None;
+    settings.telemetry_last_app_ping_at = None;
+    settings.telemetry_last_mcp_ping_at = None;
+    new_id
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -430,5 +446,24 @@ mod tests {
     fn test_blocking_gates_consent_not_recorded() {
         let gates = blocking_gates_full(true, true, false, None, 1000);
         assert!(gates.contains(&"consent not recorded"));
+    }
+
+    #[test]
+    fn test_rotate_install_id_changes_id_and_clears_markers() {
+        use crate::settings_doc::SyncedSettings;
+        let mut s = SyncedSettings::default();
+        s.install_id = "abc".to_string();
+        s.telemetry_last_daemon_ping_at = Some(111);
+        s.telemetry_last_app_ping_at = Some(222);
+        s.telemetry_last_mcp_ping_at = Some(333);
+
+        let new_id = rotate_install_id_in(&mut s);
+
+        assert_ne!(new_id, "abc");
+        assert_eq!(s.install_id, new_id);
+        assert!(uuid::Uuid::parse_str(&new_id).is_ok());
+        assert_eq!(s.telemetry_last_daemon_ping_at, None);
+        assert_eq!(s.telemetry_last_app_ping_at, None);
+        assert_eq!(s.telemetry_last_mcp_ping_at, None);
     }
 }
