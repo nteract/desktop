@@ -1,5 +1,3 @@
-import type { Field } from "apache-arrow";
-import { Type } from "apache-arrow";
 import type {
   BooleanColumnSummary,
   CategoricalColumnSummary,
@@ -13,29 +11,6 @@ import type {
 
 export const BIN_COUNT = 25;
 export const TOP_CATEGORIES = 3;
-
-// --- Column type detection from Arrow schema ---
-
-export function detectColumnType(field: Field): ColumnType {
-  const t = field.type.typeId;
-  if (t === Type.Bool) return "boolean";
-  if (t === Type.Timestamp || t === Type.Date || t === Type.DateMillisecond || t === Type.DateDay)
-    return "timestamp";
-  if (
-    t === Type.Int ||
-    t === Type.Float ||
-    t === Type.Decimal ||
-    t === Type.Int8 ||
-    t === Type.Int16 ||
-    t === Type.Int32 ||
-    t === Type.Int64 ||
-    t === Type.Float16 ||
-    t === Type.Float32 ||
-    t === Type.Float64
-  )
-    return "numeric";
-  return "categorical";
-}
 
 // --- Data-driven type refinement ---
 
