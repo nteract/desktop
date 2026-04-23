@@ -148,6 +148,176 @@ impl<'de> Deserialize<'de> for PackageManager {
     }
 }
 
+/// A concrete, resolved environment source.
+///
+/// Carried on `KernelLaunched.env_source` and
+/// `RuntimeStateDoc.kernel.env_source`. The daemon resolves the request-time
+/// `LaunchSpec` into an `EnvSource` before routing the launch; every
+/// downstream code path works against this type.
+///
+/// Deserialization is permissive: unrecognized wire strings land in
+/// `Unknown(s)` rather than failing, so the daemon and clients stay
+/// forward-compatible across versions.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum EnvSource {
+    /// Prewarmed pool env (e.g. `"uv:prewarmed"`). The daemon acquires these
+    /// from its warming pool — they do not prepare their own env.
+    Prewarmed(PackageManager),
+    /// Dependencies declared in notebook metadata (e.g. `"uv:inline"`). The
+    /// daemon builds the env from the metadata before kernel launch.
+    Inline(PackageManager),
+    /// `pyproject.toml` on disk (`"uv:pyproject"`). UV-only by definition.
+    Pyproject,
+    /// `pixi.toml` on disk (`"pixi:toml"`). Pixi-only.
+    PixiToml,
+    /// `environment.yml` on disk (`"conda:env_yml"`). Conda-only.
+    EnvYml,
+    /// PEP 723 script deps extracted from cell source (e.g. `"uv:pep723"`).
+    Pep723(PackageManager),
+    /// Deno TypeScript kernel — no Python env.
+    Deno,
+    /// Unrecognized wire string, preserved verbatim. Produced only by
+    /// `Deserialize` for values we haven't taught the enum about. Handle this
+    /// at match sites by falling back to the historical default (usually
+    /// Uv-family behavior) — never panic.
+    Unknown(String),
+}
+
+impl EnvSource {
+    /// The wire string form.
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Prewarmed(PackageManager::Uv) => "uv:prewarmed",
+            Self::Prewarmed(PackageManager::Conda) => "conda:prewarmed",
+            Self::Prewarmed(PackageManager::Pixi) => "pixi:prewarmed",
+            Self::Prewarmed(PackageManager::Unknown(s)) => s.as_str(),
+            Self::Inline(PackageManager::Uv) => "uv:inline",
+            Self::Inline(PackageManager::Conda) => "conda:inline",
+            Self::Inline(PackageManager::Pixi) => "pixi:inline",
+            Self::Inline(PackageManager::Unknown(s)) => s.as_str(),
+            Self::Pyproject => "uv:pyproject",
+            Self::PixiToml => "pixi:toml",
+            Self::EnvYml => "conda:env_yml",
+            Self::Pep723(PackageManager::Uv) => "uv:pep723",
+            Self::Pep723(PackageManager::Conda) => "conda:pep723",
+            Self::Pep723(PackageManager::Pixi) => "pixi:pep723",
+            Self::Pep723(PackageManager::Unknown(s)) => s.as_str(),
+            Self::Deno => "deno",
+            Self::Unknown(s) => s.as_str(),
+        }
+    }
+
+    /// Parse a wire string. Never fails — unrecognized values land in
+    /// `Unknown(s)`.
+    pub fn parse(input: &str) -> Self {
+        match input {
+            "uv:prewarmed" => Self::Prewarmed(PackageManager::Uv),
+            "conda:prewarmed" => Self::Prewarmed(PackageManager::Conda),
+            "pixi:prewarmed" => Self::Prewarmed(PackageManager::Pixi),
+            "uv:inline" => Self::Inline(PackageManager::Uv),
+            "conda:inline" => Self::Inline(PackageManager::Conda),
+            "pixi:inline" => Self::Inline(PackageManager::Pixi),
+            "uv:pyproject" => Self::Pyproject,
+            "pixi:toml" => Self::PixiToml,
+            "conda:env_yml" => Self::EnvYml,
+            "uv:pep723" => Self::Pep723(PackageManager::Uv),
+            "pixi:pep723" => Self::Pep723(PackageManager::Pixi),
+            "deno" => Self::Deno,
+            other => Self::Unknown(other.to_string()),
+        }
+    }
+
+    /// The package manager associated with this env source, if any.
+    ///
+    /// `Deno` and `Unknown(_)` return `None`.
+    pub fn package_manager(&self) -> Option<PackageManager> {
+        match self {
+            Self::Prewarmed(pm) | Self::Inline(pm) | Self::Pep723(pm) => Some(pm.clone()),
+            Self::Pyproject => Some(PackageManager::Uv),
+            Self::PixiToml => Some(PackageManager::Pixi),
+            Self::EnvYml => Some(PackageManager::Conda),
+            Self::Deno | Self::Unknown(_) => None,
+        }
+    }
+
+    /// True if this source prepares its own environment (no pool env needed).
+    ///
+    /// Used at auto-launch time to decide whether to acquire a prewarmed env
+    /// from the pool. `Inline`, project-file, and `Pep723` sources build
+    /// their env themselves; `Prewarmed` pulls from the pool; `Deno` and
+    /// `Unknown` take the no-pool path.
+    pub fn prepares_own_env(&self) -> bool {
+        matches!(
+            self,
+            Self::Inline(_)
+                | Self::Pyproject
+                | Self::PixiToml
+                | Self::EnvYml
+                | Self::Pep723(_)
+        )
+    }
+}
+
+impl fmt::Display for EnvSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl Serialize for EnvSource {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for EnvSource {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(d)?;
+        Ok(Self::parse(&raw))
+    }
+}
+
+/// Request-time launch specification.
+///
+/// The caller of `LaunchKernel` sends a `LaunchSpec`. The daemon resolves
+/// it into a concrete `EnvSource` before routing the launch. This type
+/// keeps the auto-detection inputs (`""`, `"auto"`, `"auto:uv"`,
+/// `"prewarmed"`) visibly distinct from a concrete env_source in the type
+/// system.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LaunchSpec {
+    /// Auto-detect everything — derived from notebook metadata, project
+    /// files, or PEP 723 script blocks. Wire strings: `""`, `"auto"`,
+    /// `"prewarmed"` (legacy alias).
+    Auto,
+    /// Auto-detect within a specific package manager family. Wire strings:
+    /// `"auto:uv"`, `"auto:conda"`, `"auto:pixi"`.
+    AutoScoped(PackageManager),
+    /// A concrete env_source to honor as-is.
+    Concrete(EnvSource),
+}
+
+impl LaunchSpec {
+    /// Parse a launch spec from the wire string.
+    pub fn parse(input: &str) -> Self {
+        match input {
+            "" | "auto" | "prewarmed" => Self::Auto,
+            "auto:uv" => Self::AutoScoped(PackageManager::Uv),
+            "auto:conda" => Self::AutoScoped(PackageManager::Conda),
+            "auto:pixi" => Self::AutoScoped(PackageManager::Pixi),
+            other => Self::Concrete(EnvSource::parse(other)),
+        }
+    }
+
+    /// If this spec is `AutoScoped(pm)`, returns `Some(pm)`; otherwise None.
+    pub fn auto_scope(&self) -> Option<PackageManager> {
+        match self {
+            Self::AutoScoped(pm) => Some(pm.clone()),
+            _ => None,
+        }
+    }
+}
+
 /// Maximum frame size for data frames: 100 MiB (matches blob size limit).
 const MAX_FRAME_SIZE: usize = 100 * 1024 * 1024;
 
@@ -1184,5 +1354,200 @@ mod tests {
         assert!(PackageManager::Unknown("poetry".to_string())
             .resolve()
             .is_err());
+    }
+
+    // -----------------------------------------------------------
+    // EnvSource tests
+    // -----------------------------------------------------------
+
+    #[test]
+    fn env_source_as_str_round_trips_all_variants() {
+        assert_eq!(
+            EnvSource::Prewarmed(PackageManager::Uv).as_str(),
+            "uv:prewarmed"
+        );
+        assert_eq!(
+            EnvSource::Prewarmed(PackageManager::Conda).as_str(),
+            "conda:prewarmed"
+        );
+        assert_eq!(
+            EnvSource::Prewarmed(PackageManager::Pixi).as_str(),
+            "pixi:prewarmed"
+        );
+        assert_eq!(EnvSource::Inline(PackageManager::Uv).as_str(), "uv:inline");
+        assert_eq!(
+            EnvSource::Inline(PackageManager::Conda).as_str(),
+            "conda:inline"
+        );
+        assert_eq!(
+            EnvSource::Inline(PackageManager::Pixi).as_str(),
+            "pixi:inline"
+        );
+        assert_eq!(EnvSource::Pyproject.as_str(), "uv:pyproject");
+        assert_eq!(EnvSource::PixiToml.as_str(), "pixi:toml");
+        assert_eq!(EnvSource::EnvYml.as_str(), "conda:env_yml");
+        assert_eq!(EnvSource::Pep723(PackageManager::Uv).as_str(), "uv:pep723");
+        assert_eq!(
+            EnvSource::Pep723(PackageManager::Pixi).as_str(),
+            "pixi:pep723"
+        );
+        assert_eq!(EnvSource::Deno.as_str(), "deno");
+    }
+
+    #[test]
+    fn env_source_parse_valid_round_trips() {
+        for s in [
+            "uv:prewarmed",
+            "conda:prewarmed",
+            "pixi:prewarmed",
+            "uv:inline",
+            "conda:inline",
+            "pixi:inline",
+            "uv:pyproject",
+            "pixi:toml",
+            "conda:env_yml",
+            "uv:pep723",
+            "pixi:pep723",
+            "deno",
+        ] {
+            let parsed = EnvSource::parse(s);
+            assert_eq!(parsed.as_str(), s, "round-trip failed for {s}");
+            assert!(!matches!(parsed, EnvSource::Unknown(_)));
+        }
+    }
+
+    #[test]
+    fn env_source_parse_unknown_captures_string() {
+        let pm = EnvSource::parse("weird:future-variant");
+        assert_eq!(pm, EnvSource::Unknown("weird:future-variant".to_string()));
+        assert_eq!(pm.as_str(), "weird:future-variant");
+    }
+
+    #[test]
+    fn env_source_parse_empty_is_unknown() {
+        assert_eq!(EnvSource::parse(""), EnvSource::Unknown(String::new()));
+    }
+
+    #[test]
+    fn env_source_serde_is_string() {
+        let src = EnvSource::Inline(PackageManager::Conda);
+        let json = serde_json::to_string(&src).unwrap();
+        assert_eq!(json, "\"conda:inline\"");
+        let decoded: EnvSource = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, src);
+    }
+
+    #[test]
+    fn env_source_serde_unknown_round_trips_verbatim() {
+        let src = EnvSource::Unknown("something:new".to_string());
+        let json = serde_json::to_string(&src).unwrap();
+        assert_eq!(json, "\"something:new\"");
+        let decoded: EnvSource = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, src);
+    }
+
+    #[test]
+    fn env_source_package_manager_for_all() {
+        assert_eq!(
+            EnvSource::Prewarmed(PackageManager::Uv).package_manager(),
+            Some(PackageManager::Uv)
+        );
+        assert_eq!(
+            EnvSource::Inline(PackageManager::Conda).package_manager(),
+            Some(PackageManager::Conda)
+        );
+        assert_eq!(
+            EnvSource::Pyproject.package_manager(),
+            Some(PackageManager::Uv)
+        );
+        assert_eq!(
+            EnvSource::PixiToml.package_manager(),
+            Some(PackageManager::Pixi)
+        );
+        assert_eq!(
+            EnvSource::EnvYml.package_manager(),
+            Some(PackageManager::Conda)
+        );
+        assert_eq!(
+            EnvSource::Pep723(PackageManager::Pixi).package_manager(),
+            Some(PackageManager::Pixi)
+        );
+        assert_eq!(EnvSource::Deno.package_manager(), None);
+        assert_eq!(EnvSource::Unknown("junk".into()).package_manager(), None);
+    }
+
+    #[test]
+    fn env_source_prepares_own_env() {
+        // Inline / project-file / pep723 sources prepare their own env.
+        assert!(EnvSource::Inline(PackageManager::Uv).prepares_own_env());
+        assert!(EnvSource::Inline(PackageManager::Conda).prepares_own_env());
+        assert!(EnvSource::Inline(PackageManager::Pixi).prepares_own_env());
+        assert!(EnvSource::Pyproject.prepares_own_env());
+        assert!(EnvSource::PixiToml.prepares_own_env());
+        assert!(EnvSource::EnvYml.prepares_own_env());
+        assert!(EnvSource::Pep723(PackageManager::Uv).prepares_own_env());
+        assert!(EnvSource::Pep723(PackageManager::Pixi).prepares_own_env());
+
+        // Prewarmed variants do not prepare their own env.
+        assert!(!EnvSource::Prewarmed(PackageManager::Uv).prepares_own_env());
+        assert!(!EnvSource::Prewarmed(PackageManager::Conda).prepares_own_env());
+        assert!(!EnvSource::Prewarmed(PackageManager::Pixi).prepares_own_env());
+
+        // Deno and Unknown take the "no pool" path.
+        assert!(!EnvSource::Deno.prepares_own_env());
+        assert!(!EnvSource::Unknown("nope".into()).prepares_own_env());
+    }
+
+    // -----------------------------------------------------------
+    // LaunchSpec tests
+    // -----------------------------------------------------------
+
+    #[test]
+    fn launch_spec_parse_auto_variants() {
+        assert_eq!(LaunchSpec::parse(""), LaunchSpec::Auto);
+        assert_eq!(LaunchSpec::parse("auto"), LaunchSpec::Auto);
+        assert_eq!(LaunchSpec::parse("prewarmed"), LaunchSpec::Auto);
+        assert_eq!(
+            LaunchSpec::parse("auto:uv"),
+            LaunchSpec::AutoScoped(PackageManager::Uv)
+        );
+        assert_eq!(
+            LaunchSpec::parse("auto:conda"),
+            LaunchSpec::AutoScoped(PackageManager::Conda)
+        );
+        assert_eq!(
+            LaunchSpec::parse("auto:pixi"),
+            LaunchSpec::AutoScoped(PackageManager::Pixi)
+        );
+    }
+
+    #[test]
+    fn launch_spec_parse_concrete_delegates_to_env_source() {
+        assert_eq!(
+            LaunchSpec::parse("uv:inline"),
+            LaunchSpec::Concrete(EnvSource::Inline(PackageManager::Uv))
+        );
+        assert_eq!(
+            LaunchSpec::parse("deno"),
+            LaunchSpec::Concrete(EnvSource::Deno)
+        );
+    }
+
+    #[test]
+    fn launch_spec_parse_future_value_is_concrete_unknown() {
+        assert_eq!(
+            LaunchSpec::parse("something:new"),
+            LaunchSpec::Concrete(EnvSource::Unknown("something:new".to_string()))
+        );
+    }
+
+    #[test]
+    fn launch_spec_auto_scope_returns_manager() {
+        assert_eq!(LaunchSpec::Auto.auto_scope(), None);
+        assert_eq!(
+            LaunchSpec::AutoScoped(PackageManager::Conda).auto_scope(),
+            Some(PackageManager::Conda)
+        );
+        assert_eq!(LaunchSpec::Concrete(EnvSource::Deno).auto_scope(), None);
     }
 }
