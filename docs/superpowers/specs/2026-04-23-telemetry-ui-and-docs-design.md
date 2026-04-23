@@ -229,16 +229,21 @@ No new backend logic. The Privacy pane reads the same `SyncedSettings` struct an
 
 ## Rollout plan
 
-1. **PR 1 (nteract.io):** Ship `/telemetry`. Structured as separate commits for reviewability:
+Two PRs, one per repo. Each structured as a sequence of reviewable commits.
+
+1. **PR 1 (nteract.io):** Ship `/telemetry`.
    - Commit A: Add Source Serif 4 as `--font-page-serif`, add the `.cream-page` palette scope.
    - Commit B: Scaffold `app/telemetry/page.tsx` + `app/telemetry/raw.md/route.ts`, wire middleware + vercel.json + llms.txt + sitemap.
    - Commit C: Complete page content, typography pass, accordion interactions.
    - Commit D: `lib/telemetry-data.ts` typed module and its unit tests.
-2. **PR 2 (desktop):** Extract `TelemetryDisclosure` component. Update onboarding to the new affirmation layout. Fix the Learn more URL to `/telemetry`.
-3. **PR 3 (desktop):** Add the Settings → Privacy pane with install-ID rotation.
-4. **PR 4 (desktop):** Slim `docs/telemetry.md` to the developer-facing residue.
+2. **PR 2 (desktop):** Ship the desktop touchpoints.
+   - Commit A: Extract `TelemetryDisclosure` shared component (no behavior change).
+   - Commit B: Rework the onboarding step to use `TelemetryDisclosure` in the affirmation layout; fix the Learn more URL to `/telemetry`.
+   - Commit C: Add the Settings → Privacy pane. Wires the shared toggle, install-ID view, last-ping display, link to the page.
+   - Commit D: `rotate_install_id` Tauri command + daemon plumbing, with the rotate-and-clear-markers semantics.
+   - Commit E: Slim `docs/telemetry.md` to the developer-facing residue.
 
-PR 1 ships the page. PRs 2–3 ship the touchpoints. PR 4 unifies the canonical home for the user-facing text. Each PR is reviewable in isolation; the link update in PR 2 depends on PR 1 being live, otherwise the Learn more link dead-ends again.
+PR 2 depends on PR 1 being live so the Learn more link resolves. Within each PR the commits are ordered so any single commit lands a coherent slice; reviewers can read the diff one commit at a time.
 
 ## Follow-ups parked
 
