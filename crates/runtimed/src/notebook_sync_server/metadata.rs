@@ -2011,7 +2011,12 @@ pub(crate) async fn auto_launch_kernel(
 ) {
     // Check if room still has peers (protect against race condition where client disconnects
     // before we finish launching)
-    if room.active_peers.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+    if room
+        .connections
+        .active_peers
+        .load(std::sync::atomic::Ordering::Relaxed)
+        == 0
+    {
         debug!("[notebook-sync] Auto-launch aborted: no peers remaining");
         reset_starting_state(room, None).await;
         return;
@@ -2052,7 +2057,12 @@ pub(crate) async fn auto_launch_kernel(
     }
 
     // Re-check peers (another race check)
-    if room.active_peers.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+    if room
+        .connections
+        .active_peers
+        .load(std::sync::atomic::Ordering::Relaxed)
+        == 0
+    {
         debug!("[notebook-sync] Auto-launch aborted: no peers (after status check)");
         reset_starting_state(room, None).await;
         return;

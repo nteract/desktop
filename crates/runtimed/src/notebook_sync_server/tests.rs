@@ -160,7 +160,7 @@ async fn test_room_load_or_create_new() {
     let doc = room.doc.try_read().unwrap();
     assert_eq!(doc.notebook_id(), Some("test-nb".to_string()));
     assert_eq!(doc.cell_count(), 0);
-    assert_eq!(room.active_peers.load(Ordering::Relaxed), 0);
+    assert_eq!(room.connections.active_peers.load(Ordering::Relaxed), 0);
 }
 
 #[tokio::test]
@@ -262,17 +262,25 @@ async fn test_room_peer_counting() {
     let blob_store = test_blob_store(&tmp);
     let room = NotebookRoom::load_or_create("peer-test", tmp.path(), blob_store);
 
-    assert_eq!(room.active_peers.load(Ordering::Relaxed), 0);
+    assert_eq!(room.connections.active_peers.load(Ordering::Relaxed), 0);
 
-    room.active_peers.fetch_add(1, Ordering::Relaxed);
-    room.active_peers.fetch_add(1, Ordering::Relaxed);
-    assert_eq!(room.active_peers.load(Ordering::Relaxed), 2);
+    room.connections
+        .active_peers
+        .fetch_add(1, Ordering::Relaxed);
+    room.connections
+        .active_peers
+        .fetch_add(1, Ordering::Relaxed);
+    assert_eq!(room.connections.active_peers.load(Ordering::Relaxed), 2);
 
-    room.active_peers.fetch_sub(1, Ordering::Relaxed);
-    assert_eq!(room.active_peers.load(Ordering::Relaxed), 1);
+    room.connections
+        .active_peers
+        .fetch_sub(1, Ordering::Relaxed);
+    assert_eq!(room.connections.active_peers.load(Ordering::Relaxed), 1);
 
-    room.active_peers.fetch_sub(1, Ordering::Relaxed);
-    assert_eq!(room.active_peers.load(Ordering::Relaxed), 0);
+    room.connections
+        .active_peers
+        .fetch_sub(1, Ordering::Relaxed);
+    assert_eq!(room.connections.active_peers.load(Ordering::Relaxed), 0);
 }
 
 #[tokio::test]
@@ -651,8 +659,7 @@ fn test_room_with_path(
         broadcasts: RoomBroadcasts::default(),
         persistence: RoomPersistence::with_debouncer(persist_tx, flush_request_tx),
         identity: RoomIdentity::new(persist_path, Some(notebook_path.clone()), false),
-        active_peers: AtomicUsize::new(0),
-        had_peers: AtomicBool::new(false),
+        connections: RoomConnections::default(),
         blob_store,
         trust_state: Arc::new(RwLock::new(TrustState {
             status: runt_trust::TrustStatus::Untrusted,
