@@ -765,7 +765,19 @@ fn cmd_build(rust_only: bool) {
         require_pnpm();
     }
 
-    // Phase 0: Build the MCP widget HTML before any Rust compilation.
+    // Phase 0a: Install workspace pnpm deps up front. This was previously
+    // kicked off as a background thread alongside cargo build (which made
+    // sense when the MCP widget step below didn't also shell out to pnpm),
+    // but `build_mcp_widget` runs `pnpm --filter <pkg> install` which
+    // assumes the workspace is already initialized. On a fresh clone with
+    // no `node_modules`, that filtered install would spin up the root
+    // install itself — redundant at best, flaky at worst. Do it once,
+    // here, before anyone else touches pnpm.
+    if !rust_only {
+        ensure_pnpm_install();
+    }
+
+    // Phase 0b: Build the MCP widget HTML before any Rust compilation.
     // runt-mcp uses include_str!("../assets/_output.html") which fails
     // if the asset doesn't exist yet. This must run before cargo build.
     if !rust_only {
@@ -778,16 +790,6 @@ fn cmd_build(rust_only: bool) {
             build_mcp_widget();
         }
     }
-
-    // Start pnpm install in background — it only needs to finish before
-    // the frontend build in Phase 2, so overlap it with cargo build.
-    let pnpm_handle = if !rust_only {
-        Some(thread::spawn(|| {
-            ensure_pnpm_install();
-        }))
-    } else {
-        None
-    };
 
     // Phase 1: Build all Rust crates except `notebook`.
     // The `notebook` crate's build.rs declares `rerun-if-changed` on
@@ -817,14 +819,6 @@ fn cmd_build(rust_only: bool) {
     copy_sidecar_binary("runtimed", false);
     copy_sidecar_binary("runt", false);
     copy_sidecar_binary("nteract-mcp", false);
-
-    // Wait for pnpm install before starting frontend build
-    if let Some(handle) = pnpm_handle {
-        handle.join().unwrap_or_else(|_| {
-            eprintln!("pnpm install panicked");
-            exit(1);
-        });
-    }
 
     // Phase 2: Run independent tasks in parallel.
     // - Python env sync + maturin develop (builds .so for MCP server)
@@ -1620,6 +1614,12 @@ fn cmd_build_app() {
 fn build_with_bundle(bundle: &str) {
     require_pnpm();
     require_tauri();
+
+    // Ensure pnpm workspace deps are installed before anything else touches
+    // pnpm — `run_frontend_build` below and any tauri `beforeBuildCommand`
+    // assume node_modules is populated. Fresh clones would otherwise fail
+    // with missing-workspace-package errors.
+    ensure_pnpm_install();
 
     // Generate icons if source exists
     let source_path = "crates/notebook/icons/source.png";
