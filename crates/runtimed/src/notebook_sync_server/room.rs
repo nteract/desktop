@@ -50,9 +50,6 @@ pub struct NotebookRoom {
     /// When the notebook_id is a UUID (untitled), this provides the directory context
     /// for finding pyproject.toml, pixi.toml, or environment.yaml.
     pub working_dir: Arc<RwLock<Option<PathBuf>>>,
-    /// Timestamp when auto-launch was triggered (for grace period on eviction).
-    /// If set, the room won't be evicted for 30 seconds to allow client reconnect.
-    pub auto_launch_at: Arc<RwLock<Option<std::time::Instant>>>,
     /// Comm channel state for widgets.
     /// Whether a streaming load is in progress for this room.
     /// Prevents two connections from both attempting to load from disk.
@@ -239,7 +236,6 @@ impl NotebookRoom {
             path: RwLock::new(path),
             nbformat_attachments: Arc::new(RwLock::new(HashMap::new())),
             working_dir: Arc::new(RwLock::new(None)),
-            auto_launch_at: Arc::new(RwLock::new(None)),
 
             is_loading: AtomicBool::new(false),
             last_self_write: Arc::new(AtomicU64::new(0)),
@@ -333,7 +329,6 @@ impl NotebookRoom {
             path: RwLock::new(path),
             nbformat_attachments: Arc::new(RwLock::new(HashMap::new())),
             working_dir: Arc::new(RwLock::new(None)),
-            auto_launch_at: Arc::new(RwLock::new(None)),
 
             is_loading: AtomicBool::new(false),
             last_self_write: Arc::new(AtomicU64::new(0)),

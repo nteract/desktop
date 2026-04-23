@@ -453,11 +453,6 @@ where
                 "[notebook-sync] Auto-launching kernel for notebook {} (trust: {:?}, new: {})",
                 notebook_id, trust_status, is_new_notebook
             );
-            // Record auto-launch time for grace period on eviction
-            {
-                let mut auto_launch_at = room.auto_launch_at.write().await;
-                *auto_launch_at = Some(std::time::Instant::now());
-            }
             // Write "starting" immediately so clients never see stale "not_started"
             if let Err(e) = room.state.with_doc(|sd| {
                 sd.set_kernel_status("starting")?;
