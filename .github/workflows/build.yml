@@ -141,6 +141,10 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v6
+        with:
+          # Plugin drift check reads committed .wasm artifacts; without LFS
+          # they'd be 132-byte pointer stubs and fail with "missing \\0asm magic".
+          lfs: true
 
       - name: Install rust
         uses: dsherret/rust-toolchain-file@v1
@@ -161,6 +165,12 @@ jobs:
             echo "::error::Checked-in WASM bindings are stale. Run: wasm-pack build crates/runtimed-wasm --target web --out-dir ../../apps/notebook/src/wasm/runtimed-wasm"
             exit 1
           }
+
+      - name: Verify renderer plugins match wasm artifacts
+        # Coherence check, not byte-reproducibility. Catches #2048-style drift
+        # where the wasm was rebuilt but the plugin JS bundle was not (or vice
+        # versa). Runs against checked-in artifacts — no rebuild.
+        run: cargo xtask verify-plugins
 
       - name: Install Deno
         uses: denoland/setup-deno@v2
