@@ -893,10 +893,14 @@ pub fn vite_port_for_workspace(path: &Path) -> u16 {
 /// probe for conflicts and fall back — this is a hint, not a guarantee.
 ///
 /// Port assignments (IANA unassigned range):
-/// - Stable channel: 47820
-/// - Nightly channel: 47821
-/// - Dev worktree: 48000 + hash(worktree) % 1000 (stable per-worktree, no
-///   cross-worktree collisions)
+/// - Stable channel:  47820 (bumps 47820..=47829)
+/// - Nightly channel: 47830 (bumps 47830..=47839)
+/// - Dev worktree:    48000 + hash(worktree) % 1000 (stable per-worktree,
+///   no cross-worktree collisions)
+///
+/// Stable and nightly get disjoint 10-port ranges so they never bump into
+/// each other's preferred port when both are running on the same machine.
+/// See `PREFERRED_BLOB_PORT_RANGE` for the bump budget.
 pub fn preferred_blob_port() -> u16 {
     if is_dev_mode() {
         if let Some(worktree) = get_workspace_path() {
@@ -908,9 +912,17 @@ pub fn preferred_blob_port() -> u16 {
     }
     match build_channel() {
         BuildChannel::Stable => 47820,
-        BuildChannel::Nightly => 47821,
+        BuildChannel::Nightly => 47830,
     }
 }
+
+/// How many consecutive ports past `preferred_blob_port()` the blob server
+/// is allowed to bump through before falling back to an OS-assigned port.
+///
+/// The value (10) matches the per-channel port range carved out in
+/// `preferred_blob_port()` — going higher would let stable drift into
+/// nightly's range or vice versa.
+pub const PREFERRED_BLOB_PORT_RANGE: u16 = 10;
 
 // ============================================================================
 // Directory Paths
@@ -1281,8 +1293,20 @@ mod tests {
         // compile time and from process-wide env vars), so just sanity-check
         // that the returned port is in one of the expected ranges.
         let port = preferred_blob_port();
-        let ok = port == 47820 || port == 47821 || (48000..49000).contains(&port);
+        let ok = port == 47820 || port == 47830 || (48000..49000).contains(&port);
         assert!(ok, "unexpected preferred_blob_port: {port}");
+    }
+
+    #[test]
+    fn test_blob_port_ranges_are_disjoint() {
+        // Stable's bump range and nightly's preferred port must not overlap.
+        let stable_max = 47820 + PREFERRED_BLOB_PORT_RANGE - 1;
+        assert!(
+            stable_max < 47830,
+            "stable range {}..={} overlaps nightly preferred 47830 — shrink PREFERRED_BLOB_PORT_RANGE or move a channel",
+            47820,
+            stable_max,
+        );
     }
 
     #[test]

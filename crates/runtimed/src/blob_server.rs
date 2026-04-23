@@ -34,9 +34,10 @@ use crate::daemon::Daemon;
 use crate::embedded_plugins;
 use crate::task_supervisor::{spawn_best_effort, spawn_supervised};
 
-/// Number of consecutive ports to try starting at the preferred port before
-/// falling back to an OS-assigned port.
-const PREFERRED_PORT_ATTEMPTS: u16 = 10;
+/// How many consecutive ports past the preferred port we'll try before
+/// falling back to an OS-assigned port. Sourced from `runt_workspace` so the
+/// bump budget stays in sync with the per-channel range carve-out.
+const PREFERRED_PORT_ATTEMPTS: u16 = runt_workspace::PREFERRED_BLOB_PORT_RANGE;
 
 /// Start the blob HTTP server on a random localhost port.
 ///
