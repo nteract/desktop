@@ -739,9 +739,16 @@ pub(crate) async fn restart_kernel(
     }
 
     // Wait for kernel ready by polling RuntimeStateDoc (the CRDT source of truth).
-    // Two phases: first wait for the lifecycle to leave `Running(Idle)` (restart
-    // in progress), then wait for it to return (new kernel ready). This prevents
+    // Two phases: first wait for the lifecycle to leave `Running` (restart in
+    // progress), then wait for it to return (new kernel ready). This prevents
     // returning immediately against the pre-restart idle snapshot.
+    //
+    // `Running(Unknown)` counts as ready. `to_legacy()` projects it to
+    // the legacy `"idle"` status for backends that don't yet report an
+    // explicit idle/busy signal, and the pre-typed reader treated that
+    // string as ready. Collapsing `Running(Unknown)` into the "not idle"
+    // bucket would strand restarts in the 30s polling window on those
+    // backends until the first IOPub status arrived.
     if wait_for_ready {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         let mut saw_non_idle = false;
@@ -752,7 +759,9 @@ pub(crate) async fn restart_kernel(
                     if let Ok(rs) = handle.get_runtime_state() {
                         let is_idle = matches!(
                             rs.kernel.lifecycle,
-                            RuntimeLifecycle::Running(KernelActivity::Idle)
+                            RuntimeLifecycle::Running(
+                                KernelActivity::Idle | KernelActivity::Unknown,
+                            )
                         );
                         if !is_idle {
                             saw_non_idle = true;
