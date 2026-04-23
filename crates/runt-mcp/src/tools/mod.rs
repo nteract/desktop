@@ -405,13 +405,23 @@ pub fn arg_bool(request: &CallToolRequestParams, key: &str) -> Option<bool> {
     }
 }
 
-/// Helper: extract a string array argument, tolerating JSON-encoded strings.
+/// Helper: extract a string array argument, tolerating common agent
+/// serialization quirks.
 ///
-/// Same upstream bug as `arg_bool` — Claude Code may serialize arrays as
-/// JSON-encoded strings (e.g., `"[\"numpy\"]"` instead of `["numpy"]`).
-/// See: https://github.com/anthropics/claude-code/issues/32524
+/// Accepted forms (most → least preferred):
+///  1. Native JSON array: `["numpy", "pandas"]`
+///  2. JSON-encoded string: `"[\"numpy\",\"pandas\"]"` (claude-code#32524)
+///  3. Python-repr string: `"['numpy','pandas']"` (gremlin/agent #2084)
+///  4. Bare scalar string: `"numpy"` → `["numpy"]`
+///
+/// Returns `None` only when the key is missing from the arguments map.
+/// Returns `Some(vec![])` when the value is present but unparseable (with
+/// a warning log), so callers can distinguish "not provided" from "provided
+/// but empty/malformed".
 pub fn arg_string_array(request: &CallToolRequestParams, key: &str) -> Option<Vec<String>> {
     let val = request.arguments.as_ref()?.get(key)?;
+
+    // Case 1: native JSON array
     if let Some(arr) = val.as_array() {
         return Some(
             arr.iter()
@@ -419,13 +429,48 @@ pub fn arg_string_array(request: &CallToolRequestParams, key: &str) -> Option<Ve
                 .collect(),
         );
     }
+
     if let Some(s) = val.as_str() {
-        if let Ok(parsed) = serde_json::from_str::<Vec<String>>(s) {
+        let trimmed = s.trim();
+
+        // Case 2: JSON-encoded string  e.g. "[\"numpy\"]"
+        if let Ok(parsed) = serde_json::from_str::<Vec<String>>(trimmed) {
             tracing::warn!("[mcp] Array param '{key}' arrived as JSON string (claude-code#32524)");
             return Some(parsed);
         }
+
+        // Case 3: Python-repr string  e.g. "['numpy','pandas']"
+        // Convert single quotes → double quotes and retry.
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            let json_ified = trimmed.replace('\'', "\"");
+            if let Ok(parsed) = serde_json::from_str::<Vec<String>>(&json_ified) {
+                tracing::warn!(
+                    "[mcp] Array param '{key}' arrived as Python-repr string \
+                     (single-quoted list); coerced to JSON array (#2084)"
+                );
+                return Some(parsed);
+            }
+            // Looks like an array literal but couldn't parse — warn and
+            // return empty so the caller knows something was provided.
+            tracing::warn!(
+                "[mcp] Array param '{key}' looks like a list but failed to parse: {trimmed}"
+            );
+            return Some(vec![]);
+        }
+
+        // Case 4: bare scalar string → single-element array
+        if !trimmed.is_empty() {
+            tracing::warn!(
+                "[mcp] Array param '{key}' arrived as bare string \"{trimmed}\"; \
+                 wrapping in single-element array (#2084)"
+            );
+            return Some(vec![trimmed.to_string()]);
+        }
     }
-    None
+
+    // Present but wrong type (number, bool, object, etc.)
+    tracing::warn!("[mcp] Array param '{key}' has unexpected type: {}", val);
+    Some(vec![])
 }
 
 /// Helper: create a text error result.
@@ -583,8 +628,35 @@ mod tests {
     }
 
     #[test]
-    fn arg_string_array_invalid_string() {
-        let req = make_request(serde_json::json!({"deps": "not-json"}));
-        assert_eq!(arg_string_array(&req, "deps"), None);
+    fn arg_string_array_bare_string_becomes_single_element() {
+        let req = make_request(serde_json::json!({"deps": "numpy"}));
+        assert_eq!(
+            arg_string_array(&req, "deps"),
+            Some(vec!["numpy".to_string()])
+        );
+    }
+
+    #[test]
+    fn arg_string_array_python_repr_single_quotes() {
+        let req = make_request(serde_json::json!({"deps": "['pandas','numpy']"}));
+        assert_eq!(
+            arg_string_array(&req, "deps"),
+            Some(vec!["pandas".to_string(), "numpy".to_string()])
+        );
+    }
+
+    #[test]
+    fn arg_string_array_python_repr_with_spaces() {
+        let req = make_request(serde_json::json!({"deps": "['pandas', 'numpy>=2.0']"}));
+        assert_eq!(
+            arg_string_array(&req, "deps"),
+            Some(vec!["pandas".to_string(), "numpy>=2.0".to_string()])
+        );
+    }
+
+    #[test]
+    fn arg_string_array_wrong_type_returns_empty() {
+        let req = make_request(serde_json::json!({"deps": 42}));
+        assert_eq!(arg_string_array(&req, "deps"), Some(vec![]));
     }
 }
