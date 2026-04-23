@@ -15,10 +15,11 @@ import type { EnvProgressState } from "../hooks/useEnvProgress";
 import type { UpdateStatus } from "../hooks/useUpdater";
 import { KERNEL_ERROR_REASON } from "runtimed";
 import {
-  getLifecycleLabel,
+  getStatusKeyLabel,
   KERNEL_STATUS,
   type KernelStatus,
   type RuntimeLifecycle,
+  type RuntimeStatusKey,
 } from "../lib/kernel-status";
 import type { KernelspecInfo } from "../types";
 import { CondaIcon, DenoIcon, PixiIcon, PythonIcon, UvIcon } from "./icons";
@@ -28,6 +29,7 @@ type EnvBadgeVariant = "uv" | "conda" | "pixi";
 
 interface NotebookToolbarProps {
   kernelStatus: KernelStatus;
+  statusKey: RuntimeStatusKey;
   lifecycle: RuntimeLifecycle;
   errorReason: string | null;
   kernelErrorMessage?: string | null;
@@ -55,6 +57,7 @@ interface NotebookToolbarProps {
 
 export function NotebookToolbar({
   kernelStatus,
+  statusKey,
   lifecycle,
   errorReason,
   kernelErrorMessage,
@@ -105,19 +108,11 @@ export function NotebookToolbar({
     kernelStatus === KERNEL_STATUS.BUSY ||
     kernelStatus === KERNEL_STATUS.STARTING;
 
-  // When the kernel is Running, use the throttled `kernelStatus` (which the
-  // parent hook smooths over sub-60ms busy/idle blips) instead of the raw
-  // lifecycle activity. For every other lifecycle variant the throttle
-  // doesn't apply, so we read the lifecycle directly to keep its richer
-  // sub-state labels (`"resolving environment"`, `"launching kernel"`, …).
-  const labelLifecycle: RuntimeLifecycle =
-    lifecycle.lifecycle === "Running"
-      ? {
-          lifecycle: "Running",
-          activity: kernelStatus === KERNEL_STATUS.BUSY ? "Busy" : "Idle",
-        }
-      : lifecycle;
-  const kernelStatusText = getLifecycleLabel(labelLifecycle, errorReason);
+  // `statusKey` is already the throttled runtime vocabulary from
+  // `useDaemonKernel` — the `RUNNING_BUSY` ↔ `RUNNING_IDLE` transition
+  // has been smoothed over sub-60ms blips; every other sub-state (launching,
+  // resolving, …) passes through untouched with its richer label.
+  const kernelStatusText = getStatusKeyLabel(statusKey, errorReason);
   const envErrorMessage = envProgress?.error ?? null;
   const envStatusText = envProgress?.statusText ?? kernelStatusText;
   const kernelStatusDescription = envProgress?.isActive
