@@ -670,11 +670,9 @@ fn test_room_with_path(
         path: RwLock::new(Some(notebook_path.clone())),
         nbformat_attachments: Arc::new(RwLock::new(HashMap::new())),
         working_dir: Arc::new(RwLock::new(None)),
-        auto_launch_at: Arc::new(RwLock::new(None)),
 
         is_loading: AtomicBool::new(false),
-        last_self_write: Arc::new(AtomicU64::new(0)),
-        last_save_heads: Arc::new(RwLock::new(Vec::new())),
+        last_self_write: AtomicU64::new(0),
         last_save_sources: Arc::new(RwLock::new(HashMap::new())),
         watcher_shutdown_tx: Mutex::new(None),
         state,

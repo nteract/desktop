@@ -50,22 +50,13 @@ pub struct NotebookRoom {
     /// When the notebook_id is a UUID (untitled), this provides the directory context
     /// for finding pyproject.toml, pixi.toml, or environment.yaml.
     pub working_dir: Arc<RwLock<Option<PathBuf>>>,
-    /// Timestamp when auto-launch was triggered (for grace period on eviction).
-    /// If set, the room won't be evicted for 30 seconds to allow client reconnect.
-    pub auto_launch_at: Arc<RwLock<Option<std::time::Instant>>>,
     /// Comm channel state for widgets.
     /// Whether a streaming load is in progress for this room.
     /// Prevents two connections from both attempting to load from disk.
     pub is_loading: AtomicBool,
     /// Timestamp (ms since epoch) of last self-write to the .ipynb file.
     /// Used to skip file watcher events triggered by our own saves.
-    pub last_self_write: Arc<AtomicU64>,
-    /// Automerge heads at the time of the last save to disk.
-    /// Previously used by the file watcher for `fork_at(last_save_heads)` —
-    /// currently unused due to automerge/automerge#1327 but retained so that external
-    /// disk changes merge cleanly with post-save CRDT changes (e.g.,
-    /// background formatting that completed after the save).
-    pub last_save_heads: Arc<RwLock<Vec<automerge::ChangeHash>>>,
+    pub last_self_write: AtomicU64,
     /// Cell sources as they were written to disk at last save.
     ///
     /// The file watcher compares disk content against this snapshot (not the
@@ -239,11 +230,9 @@ impl NotebookRoom {
             path: RwLock::new(path),
             nbformat_attachments: Arc::new(RwLock::new(HashMap::new())),
             working_dir: Arc::new(RwLock::new(None)),
-            auto_launch_at: Arc::new(RwLock::new(None)),
 
             is_loading: AtomicBool::new(false),
-            last_self_write: Arc::new(AtomicU64::new(0)),
-            last_save_heads: Arc::new(RwLock::new(Vec::new())),
+            last_self_write: AtomicU64::new(0),
             last_save_sources: Arc::new(RwLock::new(HashMap::new())),
             watcher_shutdown_tx: Mutex::new(None),
             state,
@@ -333,11 +322,9 @@ impl NotebookRoom {
             path: RwLock::new(path),
             nbformat_attachments: Arc::new(RwLock::new(HashMap::new())),
             working_dir: Arc::new(RwLock::new(None)),
-            auto_launch_at: Arc::new(RwLock::new(None)),
 
             is_loading: AtomicBool::new(false),
-            last_self_write: Arc::new(AtomicU64::new(0)),
-            last_save_heads: Arc::new(RwLock::new(Vec::new())),
+            last_self_write: AtomicU64::new(0),
             last_save_sources: Arc::new(RwLock::new(HashMap::new())),
             watcher_shutdown_tx: Mutex::new(None),
             state,

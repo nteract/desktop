@@ -89,21 +89,17 @@ pub(crate) async fn save_notebook_to_disk(
         }
     };
 
-    // Read cells, metadata, heads, and per-cell execution_ids from the doc.
-    // Heads are captured NOW (at snapshot time) so last_save_heads
-    // matches what we serialize to disk, not what the doc looks like
-    // after the async file write completes.
-    let (cells, metadata_snapshot, snapshot_heads, cell_execution_ids) = {
-        let mut doc = room.doc.write().await;
+    // Read cells, metadata, and per-cell execution_ids from the doc.
+    let (cells, metadata_snapshot, cell_execution_ids) = {
+        let doc = room.doc.write().await;
         let cells = doc.get_cells();
         let metadata_snapshot = doc.get_metadata_snapshot();
-        let heads = doc.get_heads();
         // Collect execution_id for each cell (for output lookup in state doc)
         let eids: HashMap<String, Option<String>> = cells
             .iter()
             .map(|c| (c.id.clone(), doc.get_execution_id(&c.id)))
             .collect();
-        (cells, metadata_snapshot, heads, eids)
+        (cells, metadata_snapshot, eids)
     };
 
     // Read outputs and execution_count from RuntimeStateDoc keyed by execution_id.
@@ -252,16 +248,13 @@ pub(crate) async fn save_notebook_to_disk(
         .unwrap_or(0);
     room.last_self_write.store(now, Ordering::Relaxed);
 
-    // Record snapshot-time heads so the file watcher can fork_at this
-    // point. Only update when saving to the primary path — saving to an
-    // alternate path (Save As) must not corrupt the fork base for the
-    // file watcher.
+    // Snapshot cell sources at save time so the file watcher can distinguish
+    // our own writes from genuine external changes. Only update when saving
+    // to the primary path — saving to an alternate path (Save As) must not
+    // corrupt the baseline for the file watcher.
     let is_primary_path =
         target_path.is_none() || room.path.read().await.as_deref() == Some(notebook_path.as_path());
     if is_primary_path {
-        *room.last_save_heads.write().await = snapshot_heads;
-        // Snapshot cell sources at save time so the file watcher can
-        // distinguish our own writes from genuine external changes.
         let mut saved = HashMap::with_capacity(cells.len());
         for cell in &cells {
             saved.insert(cell.id.clone(), cell.source.clone());
