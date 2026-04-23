@@ -115,3 +115,6 @@ result
 # APT publisher secrets
 scripts/apt/.env
 scripts/apt/debs/*.deb
+
+# Superpowers brainstorming scratch
+.superpowers/
