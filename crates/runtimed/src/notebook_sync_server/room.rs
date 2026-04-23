@@ -56,7 +56,7 @@ pub struct NotebookRoom {
     pub is_loading: AtomicBool,
     /// Timestamp (ms since epoch) of last self-write to the .ipynb file.
     /// Used to skip file watcher events triggered by our own saves.
-    pub last_self_write: Arc<AtomicU64>,
+    pub last_self_write: AtomicU64,
     /// Cell sources as they were written to disk at last save.
     ///
     /// The file watcher compares disk content against this snapshot (not the
@@ -232,7 +232,7 @@ impl NotebookRoom {
             working_dir: Arc::new(RwLock::new(None)),
 
             is_loading: AtomicBool::new(false),
-            last_self_write: Arc::new(AtomicU64::new(0)),
+            last_self_write: AtomicU64::new(0),
             last_save_sources: Arc::new(RwLock::new(HashMap::new())),
             watcher_shutdown_tx: Mutex::new(None),
             state,
@@ -324,7 +324,7 @@ impl NotebookRoom {
             working_dir: Arc::new(RwLock::new(None)),
 
             is_loading: AtomicBool::new(false),
-            last_self_write: Arc::new(AtomicU64::new(0)),
+            last_self_write: AtomicU64::new(0),
             last_save_sources: Arc::new(RwLock::new(HashMap::new())),
             watcher_shutdown_tx: Mutex::new(None),
             state,
