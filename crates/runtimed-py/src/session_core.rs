@@ -722,23 +722,21 @@ pub(crate) async fn restart_kernel(
         }
     }
 
-    // Wait for kernel ready
+    // Wait for kernel ready by polling RuntimeStateDoc (the CRDT source of truth).
     if wait_for_ready {
-        let mut st = state.lock().await;
-        if let Some(rx) = st.broadcast_rx.as_mut() {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-            while std::time::Instant::now() < deadline {
-                match tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await {
-                    Ok(Some(NotebookBroadcast::KernelStatus { status, .. }))
-                        if status == "idle" =>
-                    {
-                        return Ok(progress_messages);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while std::time::Instant::now() < deadline {
+            {
+                let st = state.lock().await;
+                if let Some(handle) = st.handle.as_ref() {
+                    if let Ok(rs) = handle.get_runtime_state() {
+                        if rs.kernel.status == "idle" {
+                            return Ok(progress_messages);
+                        }
                     }
-                    Ok(Some(_)) => continue,
-                    Ok(None) => return Err(to_py_err("Broadcast channel closed")),
-                    Err(_) => continue,
                 }
             }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
     }
 
