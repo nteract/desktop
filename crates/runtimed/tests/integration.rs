@@ -84,14 +84,40 @@ fn test_config(temp_dir: &TempDir) -> DaemonConfig {
         max_age_secs: 3600,
         lock_dir: Some(temp_dir.path().to_path_buf()),
         room_eviction_delay_ms: Some(50), // Fast eviction for tests
+        // Integration tests run dozens of daemons in parallel; the
+        // preferred-port path's 10-slot budget gets saturated and the
+        // sequential `EADDRINUSE` retries push daemon boot past the
+        // test's `wait_for_daemon` timeout. Skip straight to OS-assigned.
+        use_preferred_blob_port: false,
+        // Pin settings files per-temp-dir so parallel daemons don't
+        // contend on the global `~/.cache/runt*/settings.automerge` +
+        // `~/.config/runt*/settings.json` pair at boot.
+        settings_doc_path: Some(temp_dir.path().join("settings.automerge")),
+        settings_json_path: Some(temp_dir.path().join("settings.json")),
         ..Default::default()
     }
 }
 
+/// Max time we'll wait for a test daemon's socket to accept `ping`.
+///
+/// Daemon boot is a few hundred ms in isolation but can stretch to
+/// many seconds under CPU thrash when the whole suite runs in parallel.
+/// Keep the budget generous so the suite isn't flaky under load; a
+/// truly hung daemon still surfaces within the `cargo test` timeout.
+const DAEMON_READY_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Max time we'll wait for initial Automerge sync to hit session-ready.
+///
+/// Same shape as `DAEMON_READY_TIMEOUT`: fine in isolation, slow under
+/// parallel load. Callers at heavy steps (`add_cell_after`, multi-client
+/// sync) have their own per-step assertions; this one just gates the
+/// initial handshake.
+const SESSION_READY_TIMEOUT: Duration = Duration::from_secs(15);
+
 /// Wait for the daemon to be ready by polling the client.
-async fn wait_for_daemon(client: &PoolClient, timeout: Duration) -> bool {
+async fn wait_for_daemon(client: &PoolClient) -> bool {
     let start = std::time::Instant::now();
-    while start.elapsed() < timeout {
+    while start.elapsed() < DAEMON_READY_TIMEOUT {
         if client.ping().await.is_ok() {
             return true;
         }
@@ -184,7 +210,7 @@ async fn test_daemon_ping_pong() {
 
     // Create client and wait for daemon
     let client = PoolClient::new(socket_path);
-    assert!(wait_for_daemon(&client, Duration::from_secs(5)).await);
+    assert!(wait_for_daemon(&client).await);
 
     // Test ping
     let result = client.ping().await;
@@ -210,7 +236,7 @@ async fn test_daemon_status() {
     });
 
     let client = PoolClient::new(socket_path);
-    assert!(wait_for_daemon(&client, Duration::from_secs(5)).await);
+    assert!(wait_for_daemon(&client).await);
 
     // Get status
     let state = client.status().await.unwrap();
@@ -234,7 +260,7 @@ async fn test_daemon_take_empty_pool() {
     });
 
     let client = PoolClient::new(socket_path);
-    assert!(wait_for_daemon(&client, Duration::from_secs(5)).await);
+    assert!(wait_for_daemon(&client).await);
 
     // Try to take from empty pool
     let result = client.take(EnvType::Uv).await.unwrap();
@@ -261,7 +287,7 @@ async fn test_singleton_prevents_second_daemon() {
     });
 
     let client = PoolClient::new(socket_path.clone());
-    assert!(wait_for_daemon(&client, Duration::from_secs(5)).await);
+    assert!(wait_for_daemon(&client).await);
 
     // Try to start second daemon with same paths - should fail
     let config2 = DaemonConfig {
@@ -312,7 +338,7 @@ async fn test_multiple_client_connections() {
     let client2 = PoolClient::new(socket_path.clone());
     let client3 = PoolClient::new(socket_path.clone());
 
-    assert!(wait_for_daemon(&client1, Duration::from_secs(5)).await);
+    assert!(wait_for_daemon(&client1).await);
 
     // All clients should be able to ping concurrently
     let (r1, r2, r3) = tokio::join!(client1.ping(), client2.ping(), client3.ping());
@@ -352,7 +378,7 @@ async fn test_settings_sync_via_unified_socket() {
 
     // Wait for daemon to be ready (via pool channel)
     let pool_client = PoolClient::new(socket_path.clone());
-    assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
+    assert!(wait_for_daemon(&pool_client).await);
 
     // Connect a SyncClient through the unified socket
     let sync_client = SyncClient::connect_with_timeout(socket_path, Duration::from_secs(2))
@@ -382,7 +408,7 @@ async fn test_blob_server_health() {
     });
 
     let client = PoolClient::new(socket_path);
-    assert!(wait_for_daemon(&client, Duration::from_secs(5)).await);
+    assert!(wait_for_daemon(&client).await);
 
     // Read daemon info to find blob port
     let info_path = temp_dir.path().join("daemon.json");
@@ -425,7 +451,7 @@ async fn test_notebook_sync_via_unified_socket() {
 
     // Wait for daemon to be ready
     let pool_client = PoolClient::new(socket_path.clone());
-    assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
+    assert!(wait_for_daemon(&pool_client).await);
 
     // Create first notebook via connect_create — should get empty notebook
     let result1 = connect::connect_create(
@@ -443,7 +469,7 @@ async fn test_notebook_sync_via_unified_socket() {
     let client1 = result1.handle;
 
     assert!(
-        wait_for_session_ready(&client1, Duration::from_secs(2)).await,
+        wait_for_session_ready(&client1, SESSION_READY_TIMEOUT).await,
         "client1 should reach session-ready state within 2s"
     );
 
@@ -461,7 +487,7 @@ async fn test_notebook_sync_via_unified_socket() {
         .handle;
 
     assert!(
-        wait_for_session_ready(&client2, Duration::from_secs(2)).await,
+        wait_for_session_ready(&client2, SESSION_READY_TIMEOUT).await,
         "client2 should reach session-ready state within 2s"
     );
 
@@ -486,7 +512,7 @@ async fn test_notebook_sync_via_unified_socket() {
     .handle;
 
     assert!(
-        wait_for_session_ready(&client3, Duration::from_secs(2)).await,
+        wait_for_session_ready(&client3, SESSION_READY_TIMEOUT).await,
         "client3 should reach session-ready state within 2s"
     );
 
@@ -510,7 +536,7 @@ async fn test_notebook_sync_cross_window_propagation() {
     });
 
     let pool_client = PoolClient::new(socket_path.clone());
-    assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
+    assert!(wait_for_daemon(&pool_client).await);
 
     // First client creates a notebook; second client joins it
     let result = connect::connect_create(
@@ -532,11 +558,11 @@ async fn test_notebook_sync_cross_window_propagation() {
         .handle;
 
     assert!(
-        wait_for_session_ready(&client1, Duration::from_secs(2)).await,
+        wait_for_session_ready(&client1, SESSION_READY_TIMEOUT).await,
         "client1 should reach session-ready state within 2s"
     );
     assert!(
-        wait_for_session_ready(&client2, Duration::from_secs(2)).await,
+        wait_for_session_ready(&client2, SESSION_READY_TIMEOUT).await,
         "client2 should reach session-ready state within 2s"
     );
 
@@ -591,7 +617,7 @@ async fn test_untitled_notebook_persists_through_eviction() {
     });
 
     let pool_client = PoolClient::new(socket_path.clone());
-    assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
+    assert!(wait_for_daemon(&pool_client).await);
 
     // Phase 1: Two clients connect, add cells, then both disconnect
     let notebook_id;
@@ -615,7 +641,7 @@ async fn test_untitled_notebook_persists_through_eviction() {
             .handle;
 
         assert!(
-            wait_for_session_ready(&client1, Duration::from_secs(2)).await,
+            wait_for_session_ready(&client1, SESSION_READY_TIMEOUT).await,
             "client1 should reach session-ready state within 2s"
         );
 
@@ -673,7 +699,7 @@ async fn test_untitled_notebook_persists_through_eviction() {
         .handle;
 
     assert!(
-        wait_for_session_ready(&client3, Duration::from_secs(2)).await,
+        wait_for_session_ready(&client3, SESSION_READY_TIMEOUT).await,
         "reconnected client should reach session-ready state within 2s"
     );
 
@@ -723,7 +749,7 @@ async fn test_eviction_flushes_before_reconnect() {
     });
 
     let pool_client = PoolClient::new(socket_path.clone());
-    assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
+    assert!(wait_for_daemon(&pool_client).await);
 
     // Create an untitled notebook with a few cells, then drop the client to
     // trigger eviction. No autosave path exists for untitled notebooks, so
@@ -745,7 +771,7 @@ async fn test_eviction_flushes_before_reconnect() {
         let client = result.handle;
 
         assert!(
-            wait_for_session_ready(&client, Duration::from_secs(2)).await,
+            wait_for_session_ready(&client, SESSION_READY_TIMEOUT).await,
             "client should reach session-ready state within 2s"
         );
 
@@ -808,7 +834,7 @@ async fn test_notebook_cell_delete_propagation() {
     });
 
     let pool_client = PoolClient::new(socket_path.clone());
-    assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
+    assert!(wait_for_daemon(&pool_client).await);
 
     // Client1 creates a notebook with three cells
     let result = connect::connect_create(
@@ -826,7 +852,7 @@ async fn test_notebook_cell_delete_propagation() {
     let client1 = result.handle;
 
     assert!(
-        wait_for_session_ready(&client1, Duration::from_secs(2)).await,
+        wait_for_session_ready(&client1, SESSION_READY_TIMEOUT).await,
         "client1 should reach session-ready state within 2s"
     );
 
@@ -917,7 +943,7 @@ async fn test_multiple_notebooks_concurrent_isolation() {
     });
 
     let pool_client = PoolClient::new(socket_path.clone());
-    assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
+    assert!(wait_for_daemon(&pool_client).await);
 
     // Create three notebooks concurrently via connect_create
     let (nb_a, nb_b, nb_c) = tokio::join!(
@@ -1079,7 +1105,7 @@ async fn test_streaming_load_via_open_notebook() {
     });
 
     let pool_client = PoolClient::new(socket_path.clone());
-    assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
+    assert!(wait_for_daemon(&pool_client).await);
 
     // Create a notebook with 7 cells (enough for 3 batches of 3 + partial)
     let nb_path = temp_dir.path().join("streaming_test.ipynb");
@@ -1220,7 +1246,7 @@ async fn test_streaming_load_second_client_joins() {
     });
 
     let pool_client = PoolClient::new(socket_path.clone());
-    assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
+    assert!(wait_for_daemon(&pool_client).await);
 
     // Create notebook
     let nb_path = temp_dir.path().join("multi_client.ipynb");
@@ -1304,7 +1330,7 @@ async fn test_legacy_client_no_preamble() {
 
     // Wait for daemon with a modern client first
     let client = PoolClient::new(socket_path.clone());
-    assert!(wait_for_daemon(&client, Duration::from_secs(5)).await);
+    assert!(wait_for_daemon(&client).await);
 
     // Now connect as a legacy client: send a raw length-prefixed JSON
     // handshake WITHOUT the magic bytes preamble.
@@ -1360,7 +1386,7 @@ async fn test_pipe_mode_forwards_sync_frames() {
     });
 
     let pool_client = PoolClient::new(socket_path.clone());
-    assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
+    assert!(wait_for_daemon(&pool_client).await);
 
     // Create a pipe channel
     let (frame_tx, mut frame_rx) = mpsc::unbounded_channel::<Vec<u8>>();
@@ -1436,7 +1462,7 @@ async fn test_pipe_mode_preserves_initial_session_status_frame() {
     });
 
     let pool_client = PoolClient::new(socket_path.clone());
-    assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
+    assert!(wait_for_daemon(&pool_client).await);
 
     let (frame_tx, mut frame_rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
@@ -1479,7 +1505,7 @@ async fn test_pipe_mode_only_pipes_allowed_frame_types() {
     });
 
     let pool_client = PoolClient::new(socket_path.clone());
-    assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
+    assert!(wait_for_daemon(&pool_client).await);
 
     let (frame_tx, mut frame_rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
@@ -1563,7 +1589,7 @@ async fn test_pipe_mode_does_not_forward_response_frames() {
     });
 
     let pool_client = PoolClient::new(socket_path.clone());
-    assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
+    assert!(wait_for_daemon(&pool_client).await);
 
     let (frame_tx, mut frame_rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
@@ -1635,7 +1661,7 @@ async fn test_pipe_mode_preserves_frame_order() {
     });
 
     let pool_client = PoolClient::new(socket_path.clone());
-    assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
+    assert!(wait_for_daemon(&pool_client).await);
 
     let (frame_tx, mut frame_rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
@@ -1735,7 +1761,7 @@ async fn test_pipe_mode_preserves_frame_order() {
     .unwrap()
     .handle;
     assert!(
-        wait_for_session_ready(&client3, Duration::from_secs(2)).await,
+        wait_for_session_ready(&client3, SESSION_READY_TIMEOUT).await,
         "third client should reach session-ready state within 2s"
     );
     let cells = client3.get_cells();
@@ -1945,7 +1971,7 @@ async fn test_create_notebook_with_deps() {
     });
 
     let pool_client = PoolClient::new(socket_path.clone());
-    assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
+    assert!(wait_for_daemon(&pool_client).await);
 
     // Create notebook with conda + two deps
     let result = connect::connect_create(
@@ -2018,7 +2044,7 @@ async fn test_create_notebook_with_explicit_manager_no_deps() {
     });
 
     let pool_client = PoolClient::new(socket_path.clone());
-    assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
+    assert!(wait_for_daemon(&pool_client).await);
 
     // Create notebook with pixi manager, no deps
     let result = connect::connect_create(
@@ -2088,7 +2114,7 @@ async fn test_create_notebook_default_manager_with_deps() {
     });
 
     let pool_client = PoolClient::new(socket_path.clone());
-    assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
+    assert!(wait_for_daemon(&pool_client).await);
 
     // Create notebook with deps but no explicit package manager
     let result = connect::connect_create(
