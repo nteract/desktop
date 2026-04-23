@@ -1027,8 +1027,8 @@ impl PyRuntimeState {
     }
 }
 
-impl From<notebook_doc::runtime_state::RuntimeState> for PyRuntimeState {
-    fn from(rs: notebook_doc::runtime_state::RuntimeState) -> Self {
+impl From<runtime_doc::RuntimeState> for PyRuntimeState {
+    fn from(rs: runtime_doc::RuntimeState) -> Self {
         Self {
             kernel: PyKernelState {
                 status: rs.kernel.status,

@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use notebook_doc::runtime_state::CommDocEntry;
+use runtime_doc::CommDocEntry;
 use runtimed_client::output_resolver as shared;
 
 use crate::output::{DataValue, Output};

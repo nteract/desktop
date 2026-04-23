@@ -13,7 +13,7 @@ use serde::Serialize;
 
 use crate::blob_store::BlobStore;
 use crate::output_store::{self, OutputManifest, DEFAULT_INLINE_THRESHOLD};
-use notebook_doc::runtime_state::RuntimeStateDoc;
+use runtime_doc::RuntimeStateDoc;
 
 /// Store widget buffers in the blob store and replace values in the state
 /// dict with ContentRef objects at the given buffer_paths.

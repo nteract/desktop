@@ -16,6 +16,7 @@ pyo3 = { version = "0.28", features = ["extension-module", "abi3-py39"] }
 pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"] }
 runtimed-client = { path = "../runtimed-client" }
 notebook-doc = { path = "../notebook-doc" }
+runtime-doc = { path = "../runtime-doc" }
 notebook-protocol = { path = "../notebook-protocol" }
 kernel-env = { path = "../kernel-env" }
 notebook-sync = { path = "../notebook-sync" }

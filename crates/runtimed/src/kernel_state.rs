@@ -18,7 +18,7 @@ use tracing::{debug, info, warn};
 use crate::kernel_connection::KernelConnection;
 use crate::output_prep::{KernelStatus, QueuedCell};
 use crate::protocol::{NotebookBroadcast, QueueEntry};
-use notebook_doc::runtime_state::QueueEntry as DocQueueEntry;
+use runtime_doc::QueueEntry as DocQueueEntry;
 
 /// Maximum execution entries retained in the RuntimeStateDoc.
 ///
@@ -512,10 +512,7 @@ mod tests {
         broadcast::Receiver<NotebookBroadcast>,
     ) {
         let (state_changed_tx, _) = broadcast::channel(64);
-        let handle = RuntimeStateHandle::new(
-            notebook_doc::runtime_state::RuntimeStateDoc::new(),
-            state_changed_tx,
-        );
+        let handle = RuntimeStateHandle::new(runtime_doc::RuntimeStateDoc::new(), state_changed_tx);
         let (broadcast_tx, broadcast_rx) = broadcast::channel(64);
         let state = KernelState::new(handle.clone(), broadcast_tx);
         (state, handle, broadcast_rx)

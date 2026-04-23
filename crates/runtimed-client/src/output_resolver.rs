@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use base64::Engine as _;
-use notebook_doc::runtime_state::CommDocEntry;
+use runtime_doc::CommDocEntry;
 use serde_json::Value;
 
 use crate::resolved_output::{DataValue, Output};

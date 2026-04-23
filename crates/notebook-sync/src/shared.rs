@@ -9,7 +9,7 @@ use automerge::sync;
 use automerge::sync::SyncDoc;
 use automerge::AutoCommit;
 use notebook_doc::presence::PresenceState;
-use notebook_doc::runtime_state::RuntimeStateDoc;
+use runtime_doc::RuntimeStateDoc;
 
 /// The shared state behind `Arc<Mutex<SharedDocState>>`.
 ///
