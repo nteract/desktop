@@ -56,6 +56,22 @@ export type RuntimeLifecycle =
   | { lifecycle: "Shutdown" };
 
 export interface KernelState {
+  /**
+   * Flat status bucket string projected from [`lifecycle`]. Kept as a
+   * deprecated shim for pre-migration consumers; new code should match
+   * on `lifecycle` directly (or use `lifecycleToLegacyStatus` from
+   * `runtimed` when the bucket vocabulary is what you want).
+   * @deprecated Read `lifecycle` instead.
+   */
+  status: string;
+  /**
+   * Starting sub-phase string projected from [`lifecycle`]. Only
+   * non-empty when `status === "starting"`. Kept as a deprecated shim
+   * for pre-migration consumers; new code should match on `lifecycle`
+   * directly.
+   * @deprecated Read `lifecycle` instead.
+   */
+  starting_phase: string;
   /** Typed lifecycle. The authoritative view of kernel state. */
   lifecycle: RuntimeLifecycle;
   /**
@@ -142,6 +158,8 @@ export interface RuntimeState {
 
 export const DEFAULT_RUNTIME_STATE: RuntimeState = {
   kernel: {
+    status: "not_started",
+    starting_phase: "",
     lifecycle: { lifecycle: "NotStarted" },
     error_reason: null,
     name: "",

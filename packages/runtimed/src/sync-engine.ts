@@ -51,7 +51,6 @@ import {
   detectUnresolvedOutputs,
   diffComms,
 } from "./comm-diff";
-import { lifecycleToLegacyStatus } from "./derived-state";
 import type { FrameEvent, InitialLoadPhase, SessionStatus, SyncableHandle } from "./handle";
 import type { PoolState } from "./pool-state";
 import {
@@ -638,9 +637,7 @@ export class SyncEngine {
               this.prevExecutions = state.executions;
 
               log.debug(
-                `[sync-engine] runtime state: kernel=${
-                  state.kernel ? lifecycleToLegacyStatus(state.kernel.lifecycle) : "?"
-                }, transitions=${transitions.length}`,
+                `[sync-engine] runtime state: kernel=${state.kernel?.status ?? "?"}, transitions=${transitions.length}`,
               );
 
               this._runtimeState$.next(state);

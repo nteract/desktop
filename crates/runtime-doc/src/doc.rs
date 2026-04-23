@@ -74,8 +74,18 @@ use crate::{KernelActivity, KernelErrorReason, RuntimeLifecycle, StreamOutputSta
 // ── Snapshot types for reading/comparing state ──────────────────────
 
 /// Kernel state snapshot.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KernelState {
+    /// Flat status bucket string, projected from [`lifecycle`] at
+    /// read time for source-compat with pre-migration consumers. New
+    /// code should match on [`lifecycle`] directly.
+    #[serde(default)]
+    pub status: String,
+    /// Starting sub-phase string, projected from [`lifecycle`] at
+    /// read time for source-compat. Only non-empty when `status ==
+    /// "starting"`. New code should match on [`lifecycle`] directly.
+    #[serde(default)]
+    pub starting_phase: String,
     #[serde(default)]
     pub name: String,
     #[serde(default)]
@@ -95,6 +105,21 @@ pub struct KernelState {
     /// deserializes as `Some("")`, indicating "scaffolded but unset").
     #[serde(default)]
     pub error_reason: Option<String>,
+}
+
+impl Default for KernelState {
+    fn default() -> Self {
+        Self {
+            status: "not_started".to_string(),
+            starting_phase: String::new(),
+            name: String::new(),
+            language: String::new(),
+            env_source: String::new(),
+            runtime_agent_id: String::new(),
+            lifecycle: RuntimeLifecycle::NotStarted,
+            error_reason: None,
+        }
+    }
 }
 
 /// An entry in the execution queue.
@@ -751,6 +776,12 @@ impl RuntimeStateDoc {
     ///   `activity` to `""`, because activity is only meaningful while
     ///   running.
     ///
+    /// Also clears any pre-typed `status` / `starting_phase` scalars if
+    /// they're present on the doc. This keeps typed writes
+    /// authoritative: a doc hydrated from pre-typed bytes won't leave
+    /// stale legacy keys that `resolve_lifecycle`'s fallback would
+    /// otherwise read back instead of the fresh typed state.
+    ///
     /// Does NOT touch `error_reason`. Callers that want to set or clear
     /// the error reason should use [`set_lifecycle_with_error`]. This
     /// lets a retry path re-enter `Error` without losing the original
@@ -765,6 +796,24 @@ impl RuntimeStateDoc {
             }
             _ => {
                 self.doc.put(&kernel, "activity", "")?;
+            }
+        }
+        self.clear_legacy_kernel_status(&kernel)?;
+        Ok(())
+    }
+
+    /// Clear the pre-typed `kernel.status` and `kernel.starting_phase`
+    /// scalars if the doc has them. A no-op for docs scaffolded by the
+    /// current `new()` / `new_with_actor()`, which don't write those
+    /// keys at all. Hits when a typed writer mutates a doc hydrated
+    /// from pre-typed bytes.
+    fn clear_legacy_kernel_status(
+        &mut self,
+        kernel: &automerge::ObjId,
+    ) -> Result<(), RuntimeStateError> {
+        for key in ["status", "starting_phase"] {
+            if let Ok(Some((_, _))) = self.doc.get(kernel, key) {
+                self.doc.delete(kernel, key)?;
             }
         }
         Ok(())
@@ -1906,20 +1955,28 @@ impl RuntimeStateDoc {
                 // external bytes) only have the string shape.
                 // resolve_lifecycle falls back to it when the typed keys
                 // are missing.
-                let status = self.read_str(k, "status");
-                let starting_phase = self.read_str(k, "starting_phase");
+                let stored_status = self.read_str(k, "status");
+                let stored_starting_phase = self.read_str(k, "starting_phase");
                 let lifecycle = crate::types::resolve_lifecycle(
                     &lifecycle_key,
                     &activity_key,
-                    &status,
-                    &starting_phase,
+                    &stored_status,
+                    &stored_starting_phase,
                 );
+                // Project the resolved lifecycle back to the string
+                // shape for source-compat with pre-migration consumers.
+                // Always derive from the resolved lifecycle rather than
+                // echoing raw CRDT values so the status field is never
+                // stale relative to lifecycle.
+                let (status, starting_phase) = lifecycle.to_legacy();
                 // error_reason is Option<String> so callers can tell "no
                 // kernel map at all" (None) from "scaffolded but unset"
                 // (Some("")). automunge::read_str_if_present returns None
                 // only when the key itself is absent.
                 let error_reason = automunge::read_str_if_present(&self.doc, k, "error_reason");
                 KernelState {
+                    status: status.to_string(),
+                    starting_phase: starting_phase.to_string(),
                     name: self.read_str(k, "name"),
                     language: self.read_str(k, "language"),
                     env_source: self.read_str(k, "env_source"),
@@ -4774,6 +4831,49 @@ mod tests {
             RuntimeLifecycle::Running(KernelActivity::Busy),
             "pre-typed doc (string shape only) must read as Running(Busy)"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn typed_write_clears_stale_legacy_keys() -> Result<(), RuntimeStateError> {
+        // A doc hydrated from pre-typed bytes carries `kernel.status =
+        // "busy"` with no typed keys. The first set_lifecycle(Error)
+        // must make the read authoritative: the stale legacy keys get
+        // cleared as part of the write, and resolve_lifecycle sees only
+        // the typed state.
+        use automerge::{transaction::Transactable, AutoCommit, ObjType, ROOT};
+
+        let mut raw = AutoCommit::new();
+        let kernel = raw
+            .put_object(&ROOT, "kernel", ObjType::Map)
+            .expect("scaffold kernel");
+        raw.put(&kernel, "status", "busy").expect("status");
+        raw.put(&kernel, "starting_phase", "")
+            .expect("starting_phase");
+        raw.put(&kernel, "name", "").expect("name");
+        raw.put(&kernel, "language", "").expect("language");
+        raw.put(&kernel, "env_source", "").expect("env_source");
+        raw.put(&kernel, "runtime_agent_id", "")
+            .expect("runtime_agent_id");
+
+        let mut doc = RuntimeStateDoc::from_doc(raw);
+        // Pre-typed shape reads correctly via the fallback.
+        assert_eq!(
+            doc.read_state().kernel.lifecycle,
+            RuntimeLifecycle::Running(KernelActivity::Busy)
+        );
+
+        // Typed write transitions to Error and clears the stale legacy
+        // keys. A naive writer that only wrote the typed key would
+        // leave `status = "busy"` behind, which resolve_lifecycle's
+        // mismatch fallback would incorrectly prefer over the fresh
+        // Error state.
+        doc.set_lifecycle(&RuntimeLifecycle::Error)?;
+        let k = doc.read_state().kernel;
+        assert_eq!(k.lifecycle, RuntimeLifecycle::Error);
+        // Projected status is now "error" (from lifecycle), not "busy".
+        assert_eq!(k.status, "error");
+        assert_eq!(k.starting_phase, "");
         Ok(())
     }
 
