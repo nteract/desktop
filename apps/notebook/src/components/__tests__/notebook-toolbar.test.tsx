@@ -13,7 +13,13 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vite-plus/test";
 import type { EnvProgressState } from "../../hooks/useEnvProgress";
 import { KERNEL_ERROR_REASON } from "runtimed";
-import { KERNEL_STATUS, type KernelStatus, type RuntimeLifecycle } from "../../lib/kernel-status";
+import {
+  KERNEL_STATUS,
+  type KernelStatus,
+  RUNTIME_STATUS,
+  type RuntimeLifecycle,
+  type RuntimeStatusKey,
+} from "../../lib/kernel-status";
 import { NotebookToolbar } from "../NotebookToolbar";
 
 function makeEnvProgress(overrides: Partial<EnvProgressState>): EnvProgressState {
@@ -31,8 +37,27 @@ function makeEnvProgress(overrides: Partial<EnvProgressState>): EnvProgressState
   };
 }
 
+/** Default status key for each compressed bucket, used by tests. */
+const STATUS_KEY_FOR: Record<KernelStatus, RuntimeStatusKey> = {
+  [KERNEL_STATUS.NOT_STARTED]: RUNTIME_STATUS.NOT_STARTED,
+  [KERNEL_STATUS.STARTING]: RUNTIME_STATUS.LAUNCHING,
+  [KERNEL_STATUS.IDLE]: RUNTIME_STATUS.RUNNING_IDLE,
+  [KERNEL_STATUS.BUSY]: RUNTIME_STATUS.RUNNING_BUSY,
+  [KERNEL_STATUS.ERROR]: RUNTIME_STATUS.ERROR,
+  [KERNEL_STATUS.SHUTDOWN]: RUNTIME_STATUS.SHUTDOWN,
+  [KERNEL_STATUS.AWAITING_TRUST]: RUNTIME_STATUS.AWAITING_TRUST,
+};
+
+function propsForStatus(status: KernelStatus) {
+  return {
+    kernelStatus: status,
+    statusKey: STATUS_KEY_FOR[status],
+  };
+}
+
 const baseProps = {
   kernelStatus: KERNEL_STATUS.IDLE as KernelStatus,
+  statusKey: RUNTIME_STATUS.RUNNING_IDLE as RuntimeStatusKey,
   lifecycle: { lifecycle: "Running", activity: "Idle" } as RuntimeLifecycle,
   errorReason: null as string | null,
   envSource: null as string | null,
@@ -49,44 +74,44 @@ const baseProps = {
 describe("NotebookToolbar", () => {
   describe("start button visibility", () => {
     it("hides start button when kernel is idle", () => {
-      render(<NotebookToolbar {...baseProps} kernelStatus={KERNEL_STATUS.IDLE} />);
+      render(<NotebookToolbar {...baseProps} {...propsForStatus(KERNEL_STATUS.IDLE)} />);
       expect(screen.queryByTestId("start-kernel-button")).not.toBeInTheDocument();
     });
 
     it("hides start button when kernel is busy", () => {
-      render(<NotebookToolbar {...baseProps} kernelStatus={KERNEL_STATUS.BUSY} />);
+      render(<NotebookToolbar {...baseProps} {...propsForStatus(KERNEL_STATUS.BUSY)} />);
       expect(screen.queryByTestId("start-kernel-button")).not.toBeInTheDocument();
     });
 
     it("hides start button when kernel is starting", () => {
-      render(<NotebookToolbar {...baseProps} kernelStatus={KERNEL_STATUS.STARTING} />);
+      render(<NotebookToolbar {...baseProps} {...propsForStatus(KERNEL_STATUS.STARTING)} />);
       expect(screen.queryByTestId("start-kernel-button")).not.toBeInTheDocument();
     });
 
     it("shows start button when kernel is not started", () => {
-      render(<NotebookToolbar {...baseProps} kernelStatus={KERNEL_STATUS.NOT_STARTED} />);
+      render(<NotebookToolbar {...baseProps} {...propsForStatus(KERNEL_STATUS.NOT_STARTED)} />);
       expect(screen.getByTestId("start-kernel-button")).toBeInTheDocument();
     });
 
     it("shows start button when kernel is shut down", () => {
-      render(<NotebookToolbar {...baseProps} kernelStatus={KERNEL_STATUS.SHUTDOWN} />);
+      render(<NotebookToolbar {...baseProps} {...propsForStatus(KERNEL_STATUS.SHUTDOWN)} />);
       expect(screen.getByTestId("start-kernel-button")).toBeInTheDocument();
     });
 
     it("shows start button when kernel has errored", () => {
-      render(<NotebookToolbar {...baseProps} kernelStatus={KERNEL_STATUS.ERROR} />);
+      render(<NotebookToolbar {...baseProps} {...propsForStatus(KERNEL_STATUS.ERROR)} />);
       expect(screen.getByTestId("start-kernel-button")).toBeInTheDocument();
     });
   });
 
   describe("interrupt button visibility", () => {
     it("shows interrupt button when kernel is running", () => {
-      render(<NotebookToolbar {...baseProps} kernelStatus={KERNEL_STATUS.IDLE} />);
+      render(<NotebookToolbar {...baseProps} {...propsForStatus(KERNEL_STATUS.IDLE)} />);
       expect(screen.getByTestId("interrupt-kernel-button")).toBeInTheDocument();
     });
 
     it("hides interrupt button when kernel is not running", () => {
-      render(<NotebookToolbar {...baseProps} kernelStatus={KERNEL_STATUS.NOT_STARTED} />);
+      render(<NotebookToolbar {...baseProps} {...propsForStatus(KERNEL_STATUS.NOT_STARTED)} />);
       expect(screen.queryByTestId("interrupt-kernel-button")).not.toBeInTheDocument();
     });
   });
@@ -97,7 +122,7 @@ describe("NotebookToolbar", () => {
       render(
         <NotebookToolbar
           {...baseProps}
-          kernelStatus={KERNEL_STATUS.NOT_STARTED}
+          {...propsForStatus(KERNEL_STATUS.NOT_STARTED)}
           onStartKernel={onStartKernel}
         />,
       );
@@ -114,7 +139,7 @@ describe("NotebookToolbar", () => {
       render(
         <NotebookToolbar
           {...baseProps}
-          kernelStatus={KERNEL_STATUS.NOT_STARTED}
+          {...propsForStatus(KERNEL_STATUS.NOT_STARTED)}
           onStartKernel={onStartKernel}
           listKernelspecs={listKernelspecs}
         />,
@@ -136,7 +161,7 @@ describe("NotebookToolbar", () => {
       render(
         <NotebookToolbar
           {...baseProps}
-          kernelStatus={KERNEL_STATUS.NOT_STARTED}
+          {...propsForStatus(KERNEL_STATUS.NOT_STARTED)}
           onStartKernel={onStartKernel}
           listKernelspecs={listKernelspecs}
         />,
@@ -156,7 +181,7 @@ describe("NotebookToolbar", () => {
           {...baseProps}
           runtime="python"
           envSource="uv:/some/path"
-          kernelStatus={KERNEL_STATUS.IDLE}
+          {...propsForStatus(KERNEL_STATUS.IDLE)}
         />,
       );
       const toggle = screen.getByTestId("deps-toggle");
@@ -169,7 +194,7 @@ describe("NotebookToolbar", () => {
           {...baseProps}
           runtime="python"
           envSource="conda:/some/env"
-          kernelStatus={KERNEL_STATUS.IDLE}
+          {...propsForStatus(KERNEL_STATUS.IDLE)}
         />,
       );
       const toggle = screen.getByTestId("deps-toggle");
@@ -182,7 +207,7 @@ describe("NotebookToolbar", () => {
           {...baseProps}
           runtime="python"
           envSource="pixi:toml"
-          kernelStatus={KERNEL_STATUS.IDLE}
+          {...propsForStatus(KERNEL_STATUS.IDLE)}
         />,
       );
       const toggle = screen.getByTestId("deps-toggle");
@@ -196,7 +221,7 @@ describe("NotebookToolbar", () => {
           runtime="python"
           envSource={null}
           envTypeHint="conda"
-          kernelStatus={KERNEL_STATUS.STARTING}
+          {...propsForStatus(KERNEL_STATUS.STARTING)}
         />,
       );
       const toggle = screen.getByTestId("deps-toggle");
@@ -209,7 +234,7 @@ describe("NotebookToolbar", () => {
           {...baseProps}
           runtime="deno"
           envSource="deno:/something"
-          kernelStatus={KERNEL_STATUS.IDLE}
+          {...propsForStatus(KERNEL_STATUS.IDLE)}
         />,
       );
       const toggle = screen.getByTestId("deps-toggle");
@@ -224,7 +249,7 @@ describe("NotebookToolbar", () => {
 
   describe("kernel status display", () => {
     it("shows kernel status text", () => {
-      render(<NotebookToolbar {...baseProps} kernelStatus={KERNEL_STATUS.IDLE} />);
+      render(<NotebookToolbar {...baseProps} {...propsForStatus(KERNEL_STATUS.IDLE)} />);
       const status = screen.getByTestId("kernel-status");
       expect(status.dataset.kernelStatus).toBe("idle");
     });
@@ -233,7 +258,7 @@ describe("NotebookToolbar", () => {
       render(
         <NotebookToolbar
           {...baseProps}
-          kernelStatus={KERNEL_STATUS.STARTING}
+          {...propsForStatus(KERNEL_STATUS.STARTING)}
           envProgress={makeEnvProgress({
             isActive: true,
             statusText: "Installing packages...",
@@ -247,7 +272,7 @@ describe("NotebookToolbar", () => {
       render(
         <NotebookToolbar
           {...baseProps}
-          kernelStatus={KERNEL_STATUS.STARTING}
+          {...propsForStatus(KERNEL_STATUS.STARTING)}
           envProgress={makeEnvProgress({
             isActive: false,
             statusText: "Environment error",
@@ -265,7 +290,7 @@ describe("NotebookToolbar", () => {
         <NotebookToolbar
           {...baseProps}
           runtime="deno"
-          kernelStatus={KERNEL_STATUS.ERROR}
+          {...propsForStatus(KERNEL_STATUS.ERROR)}
           kernelErrorMessage="Deno not found"
         />,
       );
@@ -277,7 +302,7 @@ describe("NotebookToolbar", () => {
         <NotebookToolbar
           {...baseProps}
           runtime="python"
-          kernelStatus={KERNEL_STATUS.ERROR}
+          {...propsForStatus(KERNEL_STATUS.ERROR)}
           kernelErrorMessage="some error"
         />,
       );
@@ -289,7 +314,7 @@ describe("NotebookToolbar", () => {
         <NotebookToolbar
           {...baseProps}
           runtime="deno"
-          kernelStatus={KERNEL_STATUS.IDLE}
+          {...propsForStatus(KERNEL_STATUS.IDLE)}
           kernelErrorMessage="stale error"
         />,
       );
@@ -301,7 +326,7 @@ describe("NotebookToolbar", () => {
         <NotebookToolbar
           {...baseProps}
           runtime="deno"
-          kernelStatus={KERNEL_STATUS.ERROR}
+          {...propsForStatus(KERNEL_STATUS.ERROR)}
           kernelErrorMessage={null}
         />,
       );
@@ -321,7 +346,7 @@ describe("NotebookToolbar", () => {
         <NotebookToolbar
           {...baseProps}
           runtime="python"
-          kernelStatus={KERNEL_STATUS.ERROR}
+          {...propsForStatus(KERNEL_STATUS.ERROR)}
           lifecycle={errorLifecycle}
           errorReason={KERNEL_ERROR_REASON.MISSING_IPYKERNEL}
           envSource="pixi:toml"
@@ -335,7 +360,7 @@ describe("NotebookToolbar", () => {
         <NotebookToolbar
           {...baseProps}
           runtime="python"
-          kernelStatus={KERNEL_STATUS.ERROR}
+          {...propsForStatus(KERNEL_STATUS.ERROR)}
           lifecycle={errorLifecycle}
           envSource="pixi:toml"
         />,
@@ -348,7 +373,7 @@ describe("NotebookToolbar", () => {
         <NotebookToolbar
           {...baseProps}
           runtime="deno"
-          kernelStatus={KERNEL_STATUS.ERROR}
+          {...propsForStatus(KERNEL_STATUS.ERROR)}
           lifecycle={errorLifecycle}
           errorReason={KERNEL_ERROR_REASON.MISSING_IPYKERNEL}
           envSource="pixi:toml"
@@ -362,7 +387,7 @@ describe("NotebookToolbar", () => {
         <NotebookToolbar
           {...baseProps}
           runtime="python"
-          kernelStatus={KERNEL_STATUS.IDLE}
+          {...propsForStatus(KERNEL_STATUS.IDLE)}
           lifecycle={idleLifecycle}
           errorReason={KERNEL_ERROR_REASON.MISSING_IPYKERNEL}
           envSource="pixi:toml"
@@ -376,7 +401,7 @@ describe("NotebookToolbar", () => {
         <NotebookToolbar
           {...baseProps}
           runtime="python"
-          kernelStatus={KERNEL_STATUS.ERROR}
+          {...propsForStatus(KERNEL_STATUS.ERROR)}
           lifecycle={errorLifecycle}
           errorReason={KERNEL_ERROR_REASON.MISSING_IPYKERNEL}
           envSource="uv:prewarmed"

@@ -100,6 +100,7 @@ export {
   RUNTIME_STATUS,
   runtimeStatusKey,
   type RuntimeStatusKey,
+  statusKeyToLegacyStatus,
 } from "./derived-state";
 
 // Notebook client

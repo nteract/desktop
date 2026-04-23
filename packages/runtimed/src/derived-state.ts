@@ -209,3 +209,36 @@ export function runtimeStatusKey(lc: RuntimeState["kernel"]["lifecycle"]): Runti
       return RUNTIME_STATUS.SHUTDOWN;
   }
 }
+
+/**
+ * Project a flat [`RuntimeStatusKey`] down into the compressed
+ * [`KERNEL_STATUS`] bucket vocabulary.
+ *
+ * The three `Running(_)` keys collapse the same way
+ * [`lifecycleToLegacyStatus`] does — `RUNNING_BUSY` → `BUSY`, everything
+ * else in the family → `IDLE`. Useful when a consumer has already produced
+ * a `RuntimeStatusKey` (e.g. after a throttle step) and needs the
+ * compressed shape for predicates or color-branches.
+ */
+export function statusKeyToLegacyStatus(key: RuntimeStatusKey): KernelStatus {
+  switch (key) {
+    case RUNTIME_STATUS.NOT_STARTED:
+      return KERNEL_STATUS.NOT_STARTED;
+    case RUNTIME_STATUS.AWAITING_TRUST:
+      return KERNEL_STATUS.AWAITING_TRUST;
+    case RUNTIME_STATUS.RESOLVING:
+    case RUNTIME_STATUS.PREPARING_ENV:
+    case RUNTIME_STATUS.LAUNCHING:
+    case RUNTIME_STATUS.CONNECTING:
+      return KERNEL_STATUS.STARTING;
+    case RUNTIME_STATUS.RUNNING_BUSY:
+      return KERNEL_STATUS.BUSY;
+    case RUNTIME_STATUS.RUNNING_IDLE:
+    case RUNTIME_STATUS.RUNNING_UNKNOWN:
+      return KERNEL_STATUS.IDLE;
+    case RUNTIME_STATUS.ERROR:
+      return KERNEL_STATUS.ERROR;
+    case RUNTIME_STATUS.SHUTDOWN:
+      return KERNEL_STATUS.SHUTDOWN;
+  }
+}

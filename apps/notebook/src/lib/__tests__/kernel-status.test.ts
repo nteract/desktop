@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   getLifecycleLabel,
+  getStatusKeyLabel,
   isKernelStatus,
   KERNEL_STATUS,
   RUNTIME_STATUS,
   RUNTIME_STATUS_LABELS,
   type RuntimeLifecycle,
+  type RuntimeStatusKey,
 } from "../kernel-status";
 
 describe("isKernelStatus", () => {
@@ -86,6 +88,33 @@ describe("getLifecycleLabel", () => {
 
   it("treats empty-string reason as no reason", () => {
     expect(getLifecycleLabel({ lifecycle: "Error" }, "")).toBe(
+      RUNTIME_STATUS_LABELS[RUNTIME_STATUS.ERROR],
+    );
+  });
+});
+
+describe("getStatusKeyLabel", () => {
+  it("labels every runtime status key", () => {
+    const keys = Object.values(RUNTIME_STATUS) as RuntimeStatusKey[];
+    for (const key of keys) {
+      expect(getStatusKeyLabel(key, null)).toBe(RUNTIME_STATUS_LABELS[key]);
+    }
+  });
+
+  it("appends typed reason when key is error", () => {
+    expect(getStatusKeyLabel(RUNTIME_STATUS.ERROR, "missing_ipykernel")).toBe(
+      "error: missing_ipykernel",
+    );
+  });
+
+  it("ignores reason for non-error keys", () => {
+    expect(getStatusKeyLabel(RUNTIME_STATUS.RUNNING_IDLE, "missing_ipykernel")).toBe(
+      RUNTIME_STATUS_LABELS[RUNTIME_STATUS.RUNNING_IDLE],
+    );
+  });
+
+  it("treats empty-string reason as no reason", () => {
+    expect(getStatusKeyLabel(RUNTIME_STATUS.ERROR, "")).toBe(
       RUNTIME_STATUS_LABELS[RUNTIME_STATUS.ERROR],
     );
   });

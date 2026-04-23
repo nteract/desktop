@@ -9,6 +9,7 @@ export {
   KERNEL_STATUS,
   RUNTIME_STATUS,
   runtimeStatusKey,
+  statusKeyToLegacyStatus,
   type KernelActivity,
   type KernelStatus,
   type RuntimeLifecycle,
@@ -45,19 +46,34 @@ export const RUNTIME_STATUS_LABELS: Record<RuntimeStatusKey, string> = {
 };
 
 /**
- * Render a user-facing label for the typed runtime lifecycle.
+ * Render a user-facing label for a [`RuntimeStatusKey`].
  *
  * Uses the expanded vocabulary — each starting sub-phase and each
  * `Running(_)` activity get their own label. The `Error` case appends
  * the typed reason when one is present; other states ignore `errorReason`.
+ *
+ * Prefer this form when the caller already has a (possibly throttled)
+ * status key. Call sites that still hold the raw lifecycle can use
+ * [`getLifecycleLabel`] which projects first.
+ */
+export function getStatusKeyLabel(key: RuntimeStatusKey, errorReason: string | null): string {
+  if (key === RUNTIME_STATUS.ERROR && errorReason && errorReason.length > 0) {
+    return `error: ${errorReason}`;
+  }
+  return RUNTIME_STATUS_LABELS[key];
+}
+
+/**
+ * Render a user-facing label for the typed runtime lifecycle.
+ *
+ * Thin wrapper around [`getStatusKeyLabel`] that projects the lifecycle
+ * to a [`RuntimeStatusKey`] first. Use the key form directly when you
+ * have already throttled the `Running(Idle)` / `Running(Busy)` flicker
+ * upstream.
  */
 export function getLifecycleLabel(
   lifecycle: RuntimeLifecycle,
   errorReason: string | null,
 ): string {
-  const key = runtimeStatusKey(lifecycle);
-  if (key === RUNTIME_STATUS.ERROR && errorReason && errorReason.length > 0) {
-    return `error: ${errorReason}`;
-  }
-  return RUNTIME_STATUS_LABELS[key];
+  return getStatusKeyLabel(runtimeStatusKey(lifecycle), errorReason);
 }

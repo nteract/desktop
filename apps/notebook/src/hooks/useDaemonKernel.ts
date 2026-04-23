@@ -14,11 +14,13 @@ import {
   deriveEnvSyncState,
   deriveKernelInfo,
   deriveQueueState,
-  KERNEL_STATUS,
   type KernelStatus,
-  lifecycleToLegacyStatus,
   type NotebookClient,
   type NotebookResponse,
+  RUNTIME_STATUS,
+  runtimeStatusKey,
+  type RuntimeStatusKey,
+  statusKeyToLegacyStatus,
 } from "runtimed";
 import { getBlobPort, refreshBlobPort, resetBlobPort } from "../lib/blob-port";
 import { logger } from "../lib/logger";
@@ -93,41 +95,48 @@ export function useDaemonKernel({
   const envSyncState = useMemo(() => deriveEnvSyncState(runtimeState), [runtimeState]);
 
   // ── Busy throttle ────────────────────────────────────────────────
-  // Project the typed lifecycle back to the compressed status vocabulary
-  // (`"idle"`, `"busy"`, `"starting"`, `"error"`, …) so the existing
-  // busy-throttle machinery — which treats IDLE/BUSY as the high-frequency
-  // pair — keeps working unchanged.
-  const rawStatus = lifecycleToLegacyStatus(runtimeState.kernel.lifecycle);
-  const [throttledStatus, setThrottledStatus] = useState<KernelStatus>(rawStatus);
+  // Project the typed lifecycle into the flat `RuntimeStatusKey`
+  // vocabulary and throttle the `RUNNING_BUSY` ↔ `RUNNING_IDLE`
+  // transition so quick execute/idle cycles don't flash "busy" at the
+  // user. Non-Running keys (starting sub-phases, error, shutdown) pass
+  // through untouched — they carry richer sub-state the toolbar wants
+  // to render verbatim.
+  const rawStatusKey = runtimeStatusKey(runtimeState.kernel.lifecycle);
+  const [throttledStatusKey, setThrottledStatusKey] = useState<RuntimeStatusKey>(rawStatusKey);
   const busyTimerRef = useRef<number | null>(null);
-  const prevRawStatusRef = useRef(rawStatus);
+  const prevRawStatusKeyRef = useRef(rawStatusKey);
 
   useEffect(() => {
-    const prev = prevRawStatusRef.current;
-    prevRawStatusRef.current = rawStatus;
-    if (rawStatus === prev) return;
-    const status: KernelStatus = rawStatus;
+    const prev = prevRawStatusKeyRef.current;
+    prevRawStatusKeyRef.current = rawStatusKey;
+    if (rawStatusKey === prev) return;
 
-    if (status === KERNEL_STATUS.BUSY) {
+    if (rawStatusKey === RUNTIME_STATUS.RUNNING_BUSY) {
+      // Delay committing BUSY by 60ms — if IDLE arrives first, the
+      // pending commit is cancelled below and the user never sees a
+      // busy flash.
       if (busyTimerRef.current === null) {
         busyTimerRef.current = window.setTimeout(() => {
           busyTimerRef.current = null;
-          setThrottledStatus(KERNEL_STATUS.BUSY);
+          setThrottledStatusKey(RUNTIME_STATUS.RUNNING_BUSY);
         }, 60);
       }
-    } else if (status === KERNEL_STATUS.IDLE) {
+    } else if (
+      rawStatusKey === RUNTIME_STATUS.RUNNING_IDLE ||
+      rawStatusKey === RUNTIME_STATUS.RUNNING_UNKNOWN
+    ) {
       if (busyTimerRef.current !== null) {
         clearTimeout(busyTimerRef.current);
         busyTimerRef.current = null;
       } else {
-        setThrottledStatus(status);
+        setThrottledStatusKey(rawStatusKey);
       }
     } else {
       if (busyTimerRef.current !== null) {
         clearTimeout(busyTimerRef.current);
         busyTimerRef.current = null;
       }
-      setThrottledStatus(status);
+      setThrottledStatusKey(rawStatusKey);
     }
 
     return () => {
@@ -136,9 +145,10 @@ export function useDaemonKernel({
         busyTimerRef.current = null;
       }
     };
-  }, [rawStatus]);
+  }, [rawStatusKey]);
 
-  const kernelStatus = throttledStatus;
+  const statusKey = throttledStatusKey;
+  const kernelStatus: KernelStatus = statusKeyToLegacyStatus(statusKey);
 
   // ── Callbacks in refs (avoid effect re-runs) ──────────────────────
   const callbacksRef = useRef({
@@ -392,6 +402,7 @@ export function useDaemonKernel({
 
   return {
     kernelStatus,
+    statusKey,
     lifecycle: runtimeState.kernel.lifecycle,
     errorReason: runtimeState.kernel.error_reason,
     queueState,

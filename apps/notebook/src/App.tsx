@@ -311,6 +311,7 @@ function AppContent() {
   // Daemon-owned kernel execution
   const {
     kernelStatus,
+    statusKey,
     lifecycle,
     errorReason,
     kernelInfo,
@@ -1167,6 +1168,7 @@ function AppContent() {
           )}
         <NotebookToolbar
           kernelStatus={kernelStatus}
+          statusKey={statusKey}
           lifecycle={lifecycle}
           errorReason={errorReason}
           envSource={envSource}
