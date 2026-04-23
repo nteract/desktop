@@ -18,7 +18,6 @@ export type { SummaryAccumulator } from "./accumulators";
 export {
   BooleanAccumulator,
   CategoricalAccumulator,
-  detectColumnType,
   formatCell,
   isNullSentinel,
   NumericAccumulator,

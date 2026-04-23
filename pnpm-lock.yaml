@@ -547,9 +547,6 @@ importers:
       '@radix-ui/react-popover':
         specifier: ^1.1.15
         version: 1.1.15(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
-      apache-arrow:
-        specifier: '>=15'
-        version: 21.1.0
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
@@ -590,6 +587,9 @@ importers:
       '@types/react-dom':
         specifier: ^19.2.3
         version: 19.2.3(@types/react@19.2.14)
+      apache-arrow:
+        specifier: ^21.1.0
+        version: 21.1.0
       jsdom:
         specifier: ^29.0.1
         version: 29.0.2

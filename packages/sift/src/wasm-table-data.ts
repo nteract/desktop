@@ -5,7 +5,6 @@
  * prefetchViewport() loads visible rows in one WASM call, then
  * getCell/getCellRaw read from the JS-side cache — no per-cell FFI.
  */
-import { tableFromIPC } from "apache-arrow";
 import { formatCell, stringifyValue } from "./accumulators";
 import { autoWidth } from "./auto-width";
 import type { FilterSpecJson } from "./predicate";
@@ -69,44 +68,39 @@ export function createWasmTableData(
   function prefetchViewport(dataRowIndices: number[]) {
     if (dataRowIndices.length === 0) return;
 
-    // Check if all requested rows are already cached
     const uncached = dataRowIndices.filter((r) => !cache.has(r));
     if (uncached.length === 0) return;
 
-    // Fetch uncached rows in one WASM call
-    const indices = new Uint32Array(uncached);
-    const ipcBytes = mod.get_viewport_by_indices(handle, indices);
-    const table = tableFromIPC(ipcBytes);
-
-    // Populate cache from the Arrow table
-    for (let i = 0; i < uncached.length; i++) {
-      const dataRow = uncached[i];
+    for (const dataRow of uncached) {
       const strings: string[] = [];
       const raws: unknown[] = [];
 
       for (let c = 0; c < numCols; c++) {
-        const col = table.getChildAt(c)!;
-        const val = col.get(i);
-        const colType = columns[c].columnType;
-
-        if (val == null) {
+        if (mod.is_null(handle, dataRow, c)) {
           strings.push("");
           raws.push(null);
-        } else if (colType === "boolean") {
-          const boolVal = typeof val === "boolean" ? val : Boolean(val);
+          continue;
+        }
+
+        const colType = columns[c].columnType;
+
+        if (colType === "boolean") {
+          const s = mod.get_cell_string(handle, dataRow, c);
+          const boolVal = s === "true" || s === "Yes";
           strings.push(boolVal ? "Yes" : "No");
           raws.push(boolVal);
         } else if (colType === "timestamp") {
-          const numVal = typeof val === "bigint" ? Number(val) : Number(val);
+          const numVal = mod.get_cell_f64(handle, dataRow, c);
           strings.push(formatCell("timestamp", numVal));
           raws.push(numVal);
         } else if (colType === "numeric") {
-          const numVal = typeof val === "bigint" ? Number(val) : Number(val);
-          strings.push(stringifyValue(val));
+          const numVal = mod.get_cell_f64(handle, dataRow, c);
+          strings.push(stringifyValue(numVal));
           raws.push(numVal);
         } else {
-          strings.push(stringifyValue(val));
-          raws.push(val);
+          const s = mod.get_cell_string(handle, dataRow, c);
+          strings.push(s);
+          raws.push(s);
         }
       }
 
