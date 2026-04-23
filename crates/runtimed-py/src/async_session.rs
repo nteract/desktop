@@ -78,7 +78,7 @@ impl AsyncSession {
         runtime: String,
         working_dir: Option<PathBuf>,
         peer_label: Option<String>,
-        package_manager: Option<String>,
+        package_manager: Option<notebook_protocol::connection::PackageManager>,
         dependencies: Vec<String>,
     ) -> PyResult<Self> {
         let peer_label = Some(peer_label.unwrap_or_else(session_core::default_peer_label));
@@ -88,7 +88,7 @@ impl AsyncSession {
             &runtime,
             working_dir,
             actor_label.as_deref(),
-            package_manager.as_deref(),
+            package_manager,
             dependencies,
         )
         .await?;
@@ -1020,7 +1020,7 @@ impl AsyncSession {
         let state = Arc::clone(&self.state);
         future_into_py(py, async move {
             let snapshot = session_core::get_notebook_metadata(&state).await?;
-            Ok(session_core::get_metadata_env_type(&snapshot))
+            Ok(session_core::get_metadata_env_type(&snapshot).map(|pm| pm.as_str().to_string()))
         })
     }
 

@@ -727,7 +727,7 @@ pub fn create_empty_notebook(
     runtime: &str,
     default_python_env: crate::settings_doc::PythonEnvType,
     env_id: Option<&str>,
-    package_manager: Option<&str>,
+    package_manager: Option<notebook_protocol::connection::PackageManager>,
     dependencies: &[String],
 ) -> Result<String, String> {
     let env_id = env_id
@@ -771,7 +771,7 @@ pub(crate) fn build_new_notebook_metadata(
     runtime: &str,
     env_id: &str,
     default_python_env: crate::settings_doc::PythonEnvType,
-    package_manager: Option<&str>,
+    package_manager: Option<notebook_protocol::connection::PackageManager>,
     dependencies: &[String],
 ) -> NotebookMetadataSnapshot {
     use crate::notebook_metadata::{
@@ -804,26 +804,36 @@ pub(crate) fn build_new_notebook_metadata(
         ),
         _ => {
             // Resolve which package manager section to create:
-            //   1. Explicit package_manager from the request
-            //   2. No explicit manager - use default_python_env
-            let effective_manager: &str = match package_manager {
-                Some(pm) => {
-                    // Normalize aliases (e.g. "pip" -> "uv", "mamba" -> "conda").
-                    // If the value is unrecognized, fall through to "uv" as a
-                    // safe default - callers should validate before reaching here.
-                    notebook_protocol::connection::normalize_package_manager(pm).unwrap_or("uv")
-                }
-                None => match default_python_env {
-                    crate::settings_doc::PythonEnvType::Conda => "conda",
-                    crate::settings_doc::PythonEnvType::Pixi => "pixi",
-                    _ => "uv",
+            //   1. Explicit package_manager from the request — resolved via
+            //      `PackageManager::resolve()` so wire aliases ("pip",
+            //      "mamba") fold to canonical variants.
+            //   2. Unknown wire value that isn't an alias — fall back to
+            //      `default_python_env` and log; the wire layer is permissive
+            //      but the daemon must land on a real section.
+            //   3. No explicit manager — use `default_python_env`.
+            use notebook_protocol::connection::PackageManager;
+            let default_from_setting = || match default_python_env {
+                crate::settings_doc::PythonEnvType::Conda => PackageManager::Conda,
+                crate::settings_doc::PythonEnvType::Pixi => PackageManager::Pixi,
+                _ => PackageManager::Uv,
+            };
+            let effective_manager: PackageManager = match package_manager {
+                Some(pm) => match pm.resolve() {
+                    Ok(resolved) => resolved,
+                    Err(msg) => {
+                        tracing::warn!(
+                            "[runtimed] build_new_notebook_metadata: {msg}; falling back to default_python_env"
+                        );
+                        default_from_setting()
+                    }
                 },
+                None => default_from_setting(),
             };
 
             let deps = dependencies.to_vec();
 
             let (uv, conda, pixi) = match effective_manager {
-                "conda" => (
+                PackageManager::Conda => (
                     None,
                     Some(CondaInlineMetadata {
                         dependencies: deps,
@@ -832,7 +842,7 @@ pub(crate) fn build_new_notebook_metadata(
                     }),
                     None,
                 ),
-                "pixi" => (
+                PackageManager::Pixi => (
                     None,
                     None,
                     Some(notebook_doc::metadata::PixiInlineMetadata {
@@ -842,7 +852,7 @@ pub(crate) fn build_new_notebook_metadata(
                         python: None,
                     }),
                 ),
-                _ => (
+                PackageManager::Uv => (
                     Some(UvInlineMetadata {
                         dependencies: deps,
                         requires_python: None,
@@ -850,6 +860,12 @@ pub(crate) fn build_new_notebook_metadata(
                     }),
                     None,
                     None,
+                ),
+                // Resolved above — this branch is defensive; Unknown would
+                // already have been folded to a canonical variant or the
+                // default_python_env fallback.
+                PackageManager::Unknown(_) => unreachable!(
+                    "effective_manager was resolved above; Unknown shouldn't reach this match"
                 ),
             };
 

@@ -21,11 +21,12 @@ pub struct DetectedProjectFile {
 }
 
 impl DetectedProjectFile {
-    /// The package manager name (for `detect_package_manager` compatibility).
-    pub fn manager(&self) -> &'static str {
+    /// The package manager for this project file.
+    pub fn manager(&self) -> notebook_protocol::connection::PackageManager {
+        use notebook_protocol::connection::PackageManager;
         match self.kind {
-            ProjectFileKind::PyprojectToml => "uv",
-            ProjectFileKind::PixiToml => "pixi",
+            ProjectFileKind::PyprojectToml => PackageManager::Uv,
+            ProjectFileKind::PixiToml => PackageManager::Pixi,
         }
     }
 

@@ -28,7 +28,125 @@
 //! - `0x07`: SessionControl (JSON, server-originated)
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use std::fmt;
+use std::str::FromStr;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+
+/// Supported package managers for Python notebooks.
+///
+/// The canonical wire format is the lowercase variant name (`"uv"`, `"conda"`,
+/// `"pixi"`). `parse()` additionally accepts `"pip"` (→ Uv) and `"mamba"` (→
+/// Conda) as aliases at user-input boundaries.
+///
+/// Deserialization is permissive: unrecognized wire strings land in
+/// `Unknown(s)` rather than failing, so the `CreateNotebook` handshake stays
+/// forward-compatible and legacy aliases still decode. Resolve `Unknown`
+/// values to a canonical variant at use-site via `resolve()`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum PackageManager {
+    Uv,
+    Conda,
+    Pixi,
+    /// An unrecognized package manager string, carried verbatim from the wire.
+    ///
+    /// Produced only by `Deserialize` for non-canonical values; internal code
+    /// should call `resolve()` before matching. User-input boundaries (Python
+    /// API, MCP `create_notebook`, CLI) should call `parse()` instead, which
+    /// rejects unknowns up front.
+    Unknown(String),
+}
+
+impl PackageManager {
+    /// The wire string form.
+    ///
+    /// Canonical variants return their literal name; `Unknown(s)` returns the
+    /// raw string that was deserialized.
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Uv => "uv",
+            Self::Conda => "conda",
+            Self::Pixi => "pixi",
+            Self::Unknown(s) => s.as_str(),
+        }
+    }
+
+    /// Parse a package manager name with alias support.
+    ///
+    /// Accepts `"uv"`, `"conda"`, `"pixi"` (canonical), plus `"pip"` (→ Uv)
+    /// and `"mamba"` (→ Conda). Returns `Err` for anything else.
+    ///
+    /// Use this at user-input boundaries where immediate validation is
+    /// desired. Wire deserialization is permissive and never errors — see
+    /// `Unknown`.
+    pub fn parse(input: &str) -> Result<Self, String> {
+        match input {
+            "uv" => Ok(Self::Uv),
+            "conda" => Ok(Self::Conda),
+            "pixi" => Ok(Self::Pixi),
+            "pip" => Ok(Self::Uv),
+            "mamba" => Ok(Self::Conda),
+            _ => Err(format!(
+                "Unsupported package manager '{}'. Supported: uv, conda, pixi.",
+                input
+            )),
+        }
+    }
+
+    /// Fold to a canonical variant, resolving known aliases.
+    ///
+    /// `Uv`/`Conda`/`Pixi` pass through. `Unknown("pip")` → `Uv`,
+    /// `Unknown("mamba")` → `Conda`. Any other `Unknown(s)` returns `Err`.
+    ///
+    /// Call this at internal evaluation sites where the code needs one of the
+    /// three canonical variants. Error handling is up to the caller — the
+    /// daemon handshake path falls back to `default_python_env`, for example.
+    pub fn resolve(&self) -> Result<Self, String> {
+        match self {
+            Self::Uv => Ok(Self::Uv),
+            Self::Conda => Ok(Self::Conda),
+            Self::Pixi => Ok(Self::Pixi),
+            Self::Unknown(s) => Self::parse(s),
+        }
+    }
+}
+
+impl fmt::Display for PackageManager {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for PackageManager {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
+    }
+}
+
+impl Serialize for PackageManager {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for PackageManager {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(d)?;
+        // Permissive: unknown strings are captured rather than rejected, so
+        // the handshake stays forward-compatible and legacy aliases
+        // (`"pip"`, `"mamba"`) still decode. Internal callers fold aliases
+        // and reject genuine unknowns via `resolve()`.
+        if raw == "uv" {
+            Ok(Self::Uv)
+        } else if raw == "conda" {
+            Ok(Self::Conda)
+        } else if raw == "pixi" {
+            Ok(Self::Pixi)
+        } else {
+            Ok(Self::Unknown(raw))
+        }
+    }
+}
 
 /// Maximum frame size for data frames: 100 MiB (matches blob size limit).
 const MAX_FRAME_SIZE: usize = 100 * 1024 * 1024;
@@ -147,38 +265,15 @@ pub enum Handshake {
         /// Defaults to false (backward compat). MCP agents use true for scratch compute.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ephemeral: Option<bool>,
-        /// Package manager preference: "uv", "conda", or "pixi".
+        /// Package manager preference: uv, conda, or pixi.
         /// When set, the daemon creates only this manager's metadata section.
         /// When None, the daemon uses its default_python_env setting.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        package_manager: Option<String>,
+        package_manager: Option<PackageManager>,
         /// Dependencies to seed into notebook metadata before auto-launch.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         dependencies: Vec<String>,
     },
-}
-
-/// Validate and normalize a package manager string.
-///
-/// Accepted values (case-sensitive):
-///   - `"uv"`, `"conda"`, `"pixi"` - returned as-is
-///   - `"pip"` - aliased to `"uv"` (uv is the pip-compatible installer)
-///   - `"mamba"` - aliased to `"conda"` (we use rattler under the hood)
-///
-/// Returns `Ok(normalized)` for valid/aliased values, `Err(message)` for
-/// unrecognized input.
-pub fn normalize_package_manager(input: &str) -> Result<&'static str, String> {
-    match input {
-        "uv" => Ok("uv"),
-        "conda" => Ok("conda"),
-        "pixi" => Ok("pixi"),
-        "pip" => Ok("uv"),
-        "mamba" => Ok("conda"),
-        _ => Err(format!(
-            "Unsupported package manager '{}'. Supported: uv, conda, pixi.",
-            input
-        )),
-    }
 }
 
 /// Protocol version constants (strings for handshake compatibility).
@@ -996,22 +1091,98 @@ mod tests {
     }
 
     #[test]
-    fn normalize_package_manager_valid() {
-        assert_eq!(normalize_package_manager("uv").unwrap(), "uv");
-        assert_eq!(normalize_package_manager("conda").unwrap(), "conda");
-        assert_eq!(normalize_package_manager("pixi").unwrap(), "pixi");
+    fn package_manager_as_str_round_trips() {
+        assert_eq!(PackageManager::Uv.as_str(), "uv");
+        assert_eq!(PackageManager::Conda.as_str(), "conda");
+        assert_eq!(PackageManager::Pixi.as_str(), "pixi");
     }
 
     #[test]
-    fn normalize_package_manager_aliases() {
-        assert_eq!(normalize_package_manager("pip").unwrap(), "uv");
-        assert_eq!(normalize_package_manager("mamba").unwrap(), "conda");
+    fn package_manager_parse_valid() {
+        assert_eq!(PackageManager::parse("uv").unwrap(), PackageManager::Uv);
+        assert_eq!(
+            PackageManager::parse("conda").unwrap(),
+            PackageManager::Conda
+        );
+        assert_eq!(PackageManager::parse("pixi").unwrap(), PackageManager::Pixi);
     }
 
     #[test]
-    fn normalize_package_manager_rejects_unknown() {
-        let err = normalize_package_manager("npm").unwrap_err();
+    fn package_manager_parse_aliases() {
+        assert_eq!(PackageManager::parse("pip").unwrap(), PackageManager::Uv);
+        assert_eq!(
+            PackageManager::parse("mamba").unwrap(),
+            PackageManager::Conda
+        );
+    }
+
+    #[test]
+    fn package_manager_parse_rejects_unknown() {
+        let err = PackageManager::parse("npm").unwrap_err();
         assert!(err.contains("Unsupported package manager 'npm'"));
         assert!(err.contains("Supported: uv, conda, pixi"));
+    }
+
+    #[test]
+    fn package_manager_fromstr_works() {
+        let pm: PackageManager = PackageManager::from_str("conda").unwrap();
+        assert_eq!(pm, PackageManager::Conda);
+        assert!(PackageManager::from_str("bogus").is_err());
+    }
+
+    #[test]
+    fn package_manager_display_matches_as_str() {
+        assert_eq!(format!("{}", PackageManager::Uv), "uv");
+        assert_eq!(format!("{}", PackageManager::Conda), "conda");
+        assert_eq!(format!("{}", PackageManager::Pixi), "pixi");
+    }
+
+    #[test]
+    fn package_manager_serde_is_lowercase() {
+        let json = serde_json::to_string(&PackageManager::Conda).unwrap();
+        assert_eq!(json, "\"conda\"");
+        let pm: PackageManager = serde_json::from_str("\"pixi\"").unwrap();
+        assert_eq!(pm, PackageManager::Pixi);
+    }
+
+    #[test]
+    fn package_manager_deserialize_captures_unknown() {
+        // Aliases must decode (wire compatibility for legacy clients).
+        let pm: PackageManager = serde_json::from_str("\"pip\"").unwrap();
+        assert_eq!(pm, PackageManager::Unknown("pip".to_string()));
+        let pm: PackageManager = serde_json::from_str("\"mamba\"").unwrap();
+        assert_eq!(pm, PackageManager::Unknown("mamba".to_string()));
+        // Genuinely unknown values decode to Unknown, not an error.
+        let pm: PackageManager = serde_json::from_str("\"poetry\"").unwrap();
+        assert_eq!(pm, PackageManager::Unknown("poetry".to_string()));
+    }
+
+    #[test]
+    fn package_manager_unknown_round_trips_verbatim() {
+        let pm = PackageManager::Unknown("mamba".to_string());
+        let json = serde_json::to_string(&pm).unwrap();
+        assert_eq!(json, "\"mamba\"");
+        let decoded: PackageManager = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, pm);
+    }
+
+    #[test]
+    fn package_manager_resolve_folds_aliases() {
+        assert_eq!(PackageManager::Uv.resolve().unwrap(), PackageManager::Uv);
+        assert_eq!(
+            PackageManager::Unknown("pip".to_string())
+                .resolve()
+                .unwrap(),
+            PackageManager::Uv
+        );
+        assert_eq!(
+            PackageManager::Unknown("mamba".to_string())
+                .resolve()
+                .unwrap(),
+            PackageManager::Conda
+        );
+        assert!(PackageManager::Unknown("poetry".to_string())
+            .resolve()
+            .is_err());
     }
 }

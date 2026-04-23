@@ -423,9 +423,9 @@ pub async fn create_notebook(
     let deps: Vec<String> = arg_string_array(request, "dependencies").unwrap_or_default();
     let explicit_pkg_manager = match arg_str(request, "package_manager") {
         Some(pm) => {
-            let normalized = notebook_protocol::connection::normalize_package_manager(pm)
+            let parsed = notebook_protocol::connection::PackageManager::parse(pm)
                 .map_err(|msg| McpError::invalid_params(msg, None))?;
-            Some(normalized)
+            Some(parsed)
         }
         None => None,
     };
@@ -438,7 +438,7 @@ pub async fn create_notebook(
         working_dir,
         &server.get_peer_label().await,
         ephemeral,
-        explicit_pkg_manager,
+        explicit_pkg_manager.clone(),
         deps.clone(),
     )
     .await
@@ -453,8 +453,7 @@ pub async fn create_notebook(
             let peer_label = server.get_peer_label().await;
             crate::presence::announce(&result.handle, &peer_label).await;
 
-            let pkg_manager: String = explicit_pkg_manager
-                .map(String::from)
+            let pkg_manager: notebook_protocol::connection::PackageManager = explicit_pkg_manager
                 .unwrap_or_else(|| super::deps::detect_package_manager(&result.handle));
 
             let session = NotebookSession {
@@ -486,7 +485,7 @@ pub async fn create_notebook(
                 "runtime": runtime_info,
                 "dependencies": all_deps,
                 "added_dependencies": deps,
-                "package_manager": pkg_manager,
+                "package_manager": pkg_manager.as_str(),
                 "ephemeral": ephemeral,
             });
 
@@ -685,22 +684,6 @@ mod tests {
         let detected = "pixi".to_string();
         let result: String = explicit.map(String::from).unwrap_or(detected);
         assert_eq!(result, "pixi");
-    }
-
-    /// Validation rejects unknown and aliases known package_manager values.
-    #[test]
-    fn package_manager_validation() {
-        use notebook_protocol::connection::normalize_package_manager;
-
-        // Direct values pass through
-        for valid in ["uv", "conda", "pixi"] {
-            assert_eq!(normalize_package_manager(valid).unwrap(), valid);
-        }
-        // Aliases resolve
-        assert_eq!(normalize_package_manager("pip").unwrap(), "uv");
-        assert_eq!(normalize_package_manager("mamba").unwrap(), "conda");
-        // Unknown values are rejected
-        assert!(normalize_package_manager("npm").is_err());
     }
 
     /// save_notebook response must include notebook_id (unchanged UUID) and path.

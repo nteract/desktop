@@ -214,15 +214,16 @@ impl AsyncClient {
             }
         }
 
-        // Validate and normalize package_manager before entering the async block
-        let normalized_pm = match &package_manager {
-            Some(pm) => {
-                let n = notebook_protocol::connection::normalize_package_manager(pm)
-                    .map_err(pyo3::exceptions::PyValueError::new_err)?;
-                Some(n.to_string())
-            }
-            None => None,
-        };
+        // Validate and normalize package_manager before entering the async block.
+        // Python API accepts "uv"/"conda"/"pixi" plus aliases ("pip", "mamba").
+        let parsed_pm: Option<notebook_protocol::connection::PackageManager> =
+            match &package_manager {
+                Some(pm) => Some(
+                    notebook_protocol::connection::PackageManager::parse(pm)
+                        .map_err(pyo3::exceptions::PyValueError::new_err)?,
+                ),
+                None => None,
+            };
 
         let label = peer_label.or_else(|| self.peer_label.clone());
         let socket_path = self.socket_path.clone();
@@ -235,7 +236,7 @@ impl AsyncClient {
                 runtime,
                 working_dir_buf,
                 label,
-                normalized_pm,
+                parsed_pm,
                 deps,
             )
             .await

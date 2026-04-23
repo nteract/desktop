@@ -53,13 +53,16 @@ pub(crate) fn check_inline_deps(snapshot: &NotebookMetadataSnapshot) -> Option<S
 /// Priority: pixi > conda > uv. Pixi is most specific (manages both conda
 /// and pypi deps). Matches detect_package_manager in runt-mcp and
 /// get_metadata_env_type in runtimed-py.
-fn detect_manager_from_metadata(snapshot: &NotebookMetadataSnapshot) -> Option<&'static str> {
+fn detect_manager_from_metadata(
+    snapshot: &NotebookMetadataSnapshot,
+) -> Option<notebook_protocol::connection::PackageManager> {
+    use notebook_protocol::connection::PackageManager;
     if snapshot.runt.pixi.is_some() {
-        Some("pixi")
+        Some(PackageManager::Pixi)
     } else if snapshot.runt.conda.is_some() {
-        Some("conda")
+        Some(PackageManager::Conda)
     } else if snapshot.runt.uv.is_some() {
-        Some("uv")
+        Some(PackageManager::Uv)
     } else {
         None
     }
@@ -2246,18 +2249,25 @@ pub(crate) async fn auto_launch_kernel(
                 // Check if the metadata has an explicit manager section
                 // (e.g. create_notebook(package_manager="conda") with empty deps).
                 // Use that to pick the pool type instead of default_python_env.
+                use notebook_protocol::connection::PackageManager;
                 let manager = metadata_snapshot
                     .as_ref()
                     .and_then(detect_manager_from_metadata);
+                // Fallback pool for when the metadata didn't declare a section
+                // or the declared section is non-canonical. Non-canonical
+                // shouldn't happen from `detect_manager_from_metadata` (it
+                // only inspects the three typed sections), but the compiler
+                // needs an exhaustive match against `PackageManager`.
+                let fallback = match default_python_env {
+                    crate::settings_doc::PythonEnvType::Conda => "conda:prewarmed",
+                    crate::settings_doc::PythonEnvType::Pixi => "pixi:prewarmed",
+                    _ => "uv:prewarmed",
+                };
                 let prewarmed = match manager {
-                    Some("conda") => "conda:prewarmed",
-                    Some("pixi") => "pixi:prewarmed",
-                    Some("uv") => "uv:prewarmed",
-                    _ => match default_python_env {
-                        crate::settings_doc::PythonEnvType::Conda => "conda:prewarmed",
-                        crate::settings_doc::PythonEnvType::Pixi => "pixi:prewarmed",
-                        _ => "uv:prewarmed",
-                    },
+                    Some(PackageManager::Conda) => "conda:prewarmed",
+                    Some(PackageManager::Pixi) => "pixi:prewarmed",
+                    Some(PackageManager::Uv) => "uv:prewarmed",
+                    Some(PackageManager::Unknown(_)) | None => fallback,
                 };
                 info!(
                     "[notebook-sync] Auto-launch: using prewarmed ({})",
