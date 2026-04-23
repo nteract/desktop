@@ -221,6 +221,7 @@ impl EnvSource {
             "pixi:toml" => Self::PixiToml,
             "conda:env_yml" => Self::EnvYml,
             "uv:pep723" => Self::Pep723(PackageManager::Uv),
+            "conda:pep723" => Self::Pep723(PackageManager::Conda),
             "pixi:pep723" => Self::Pep723(PackageManager::Pixi),
             "deno" => Self::Deno,
             other => Self::Unknown(other.to_string()),
@@ -229,14 +230,29 @@ impl EnvSource {
 
     /// The package manager associated with this env source, if any.
     ///
-    /// `Deno` and `Unknown(_)` return `None`.
+    /// For canonical variants this returns the associated manager directly.
+    /// For `Unknown(s)`, the wire string's prefix is inspected so that a
+    /// forward-compatible value like `"conda:foo"` or `"pixi:bar"` still
+    /// routes to the correct package manager family. `Deno` and `Unknown`
+    /// strings without a recognized prefix return `None`.
     pub fn package_manager(&self) -> Option<PackageManager> {
         match self {
             Self::Prewarmed(pm) | Self::Inline(pm) | Self::Pep723(pm) => Some(pm.clone()),
             Self::Pyproject => Some(PackageManager::Uv),
             Self::PixiToml => Some(PackageManager::Pixi),
             Self::EnvYml => Some(PackageManager::Conda),
-            Self::Deno | Self::Unknown(_) => None,
+            Self::Deno => None,
+            Self::Unknown(s) => {
+                if s.starts_with("uv:") {
+                    Some(PackageManager::Uv)
+                } else if s.starts_with("conda:") {
+                    Some(PackageManager::Conda)
+                } else if s.starts_with("pixi:") {
+                    Some(PackageManager::Pixi)
+                } else {
+                    None
+                }
+            }
         }
     }
 
@@ -1440,6 +1456,34 @@ mod tests {
         assert_eq!(json, "\"something:new\"");
         let decoded: EnvSource = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, src);
+    }
+
+    #[test]
+    fn env_source_conda_pep723_round_trips() {
+        let src = EnvSource::Pep723(PackageManager::Conda);
+        assert_eq!(src.as_str(), "conda:pep723");
+        assert_eq!(EnvSource::parse("conda:pep723"), src);
+    }
+
+    #[test]
+    fn env_source_unknown_prefix_preserves_family() {
+        // Forward-compat: newer peers may send env_source strings we haven't
+        // taught the enum about. Family classification must still route
+        // correctly to the originating package manager's pool / helpers.
+        assert_eq!(
+            EnvSource::parse("conda:foo").package_manager(),
+            Some(PackageManager::Conda)
+        );
+        assert_eq!(
+            EnvSource::parse("uv:new-source").package_manager(),
+            Some(PackageManager::Uv)
+        );
+        assert_eq!(
+            EnvSource::parse("pixi:bar").package_manager(),
+            Some(PackageManager::Pixi)
+        );
+        // No recognized prefix → no manager.
+        assert_eq!(EnvSource::parse("mystery").package_manager(), None);
     }
 
     #[test]
