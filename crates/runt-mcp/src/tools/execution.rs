@@ -114,7 +114,7 @@ pub async fn run_all_cells(
     let runtime_state = handle.get_runtime_state().ok();
 
     // Look up this run's execution state for a given cell.
-    let run_exec = |cell_id: &str| -> Option<&notebook_doc::runtime_state::ExecutionState> {
+    let run_exec = |cell_id: &str| -> Option<&runtime_doc::ExecutionState> {
         let eid = result.cell_execution_ids.get(cell_id)?;
         runtime_state.as_ref()?.executions.get(eid.as_str())
     };

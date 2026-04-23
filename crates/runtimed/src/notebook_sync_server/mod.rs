@@ -47,7 +47,7 @@ use crate::protocol::{EnvSyncDiff, NotebookBroadcast, NotebookRequest, NotebookR
 use crate::task_supervisor::{spawn_best_effort, spawn_supervised};
 use notebook_doc::diff::diff_metadata_touched;
 use notebook_doc::presence::{self, PresenceState};
-use notebook_doc::runtime_state::RuntimeStateDoc;
+use runtime_doc::RuntimeStateDoc;
 
 mod catalog;
 mod load;

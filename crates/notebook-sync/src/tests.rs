@@ -666,8 +666,7 @@ mod tests {
         let mut st = SharedDocState::new(doc, "test-notebook".into());
         // Replace the unscaffolded RuntimeStateDoc with a fully initialized
         // one so tests can write into the `executions` map directly.
-        st.state_doc =
-            notebook_doc::runtime_state::RuntimeStateDoc::new_with_actor("runtimed-sync-test");
+        st.state_doc = runtime_doc::RuntimeStateDoc::new_with_actor("runtimed-sync-test");
         let shared = Arc::new(Mutex::new(st));
 
         let initial_snapshot = NotebookSnapshot::empty();

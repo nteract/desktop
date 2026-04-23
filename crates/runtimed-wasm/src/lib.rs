@@ -14,11 +14,11 @@ use notebook_doc::diff::{diff_doc, CellChangeset, TextPatch};
 use notebook_doc::mime::{is_binary_mime, ResolvedContentRef};
 use notebook_doc::pool_state::{PoolDoc, PoolState};
 use notebook_doc::presence;
-use notebook_doc::runtime_state::{
+use notebook_doc::{CellSnapshot, NotebookDoc};
+use runtime_doc::{
     diff_execution_outputs, diff_output_ids, output_ids_for_execution, ExecutionState,
     RuntimeState, RuntimeStateDoc,
 };
-use notebook_doc::{CellSnapshot, NotebookDoc};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 

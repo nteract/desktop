@@ -18,6 +18,7 @@ ts-bindings = ["dep:ts-rs"]
 [dependencies]
 notebook-protocol = { path = "../notebook-protocol" }
 notebook-doc = { path = "../notebook-doc" }
+runtime-doc = { path = "../runtime-doc" }
 runt-workspace = { path = "../runt-workspace" }
 repr-llm = { path = "../repr-llm" }
 tokio = { workspace = true }

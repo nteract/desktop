@@ -34,13 +34,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use notebook_doc::presence::PresenceState;
-use notebook_doc::runtime_state::{CommDocEntry, RuntimeStateDoc};
 use notebook_protocol::connection::{
     recv_typed_frame, send_json_frame, send_preamble, send_typed_frame, Handshake,
     NotebookFrameType,
 };
 use notebook_protocol::protocol::{RuntimeAgentRequest, RuntimeAgentResponse};
 use runtime_doc::RuntimeStateHandle;
+use runtime_doc::{CommDocEntry, RuntimeStateDoc};
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tracing::{debug, error, info, warn};
 

@@ -17,6 +17,7 @@ runtimed-client = { path = "../runtimed-client" }
 notebook-protocol = { path = "../notebook-protocol" }
 notebook-sync = { path = "../notebook-sync" }
 notebook-doc = { path = "../notebook-doc" }
+runtime-doc = { path = "../runtime-doc" }
 runt-workspace = { path = "../runt-workspace" }
 tokio = { workspace = true }
 serde = { workspace = true }

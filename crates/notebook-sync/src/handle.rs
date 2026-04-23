@@ -35,8 +35,8 @@ use automerge::{AutoCommit, ReadDoc, Value};
 use log::debug;
 use tokio::sync::{mpsc, oneshot, watch};
 
-use notebook_doc::runtime_state::RuntimeState;
 use notebook_protocol::protocol::{NotebookRequest, NotebookResponse};
+use runtime_doc::RuntimeState;
 
 use crate::error::SyncError;
 use crate::shared::SharedDocState;

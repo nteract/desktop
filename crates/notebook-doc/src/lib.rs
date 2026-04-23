@@ -46,8 +46,6 @@ pub mod mime;
 pub mod pep723;
 pub mod pool_state;
 pub mod presence;
-pub mod runtime_state;
-
 use std::collections::HashMap;
 
 /// Current document schema version.
@@ -84,8 +82,6 @@ use serde::{Deserialize, Serialize};
 use log::{info, warn};
 #[cfg(feature = "persistence")]
 use std::path::Path;
-
-pub use runtime_doc::StreamOutputState;
 
 /// Snapshot of a single cell's state, suitable for serialization.
 ///

@@ -18,8 +18,8 @@
 //!   cargo test -p notebook-doc --test generate_fixtures -- --nocapture
 
 use automerge::transaction::Transactable;
-use notebook_doc::runtime_state::RuntimeStateDoc;
 use notebook_doc::{frame_types, NotebookDoc};
+use runtime_doc::RuntimeStateDoc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;

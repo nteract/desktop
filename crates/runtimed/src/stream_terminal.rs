@@ -27,7 +27,7 @@ type StreamKey = (String, String);
 
 // Re-export from the shared notebook-doc crate so existing callers
 // (output_prep, notebook_sync_server) continue to compile.
-pub use notebook_doc::StreamOutputState;
+pub use runtime_doc::StreamOutputState;
 
 /// Simple dimensions struct for creating terminals.
 struct TermDimensions {
