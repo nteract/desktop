@@ -1,5 +1,22 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 
+/**
+ * Optional sink for caught render errors. Wire this to the host logger from
+ * the app entry so CI / production builds capture the React error and its
+ * component stack — the console.error in componentDidCatch is only visible
+ * in dev-mode devtools.
+ */
+type ErrorBoundarySink = (
+  error: Error,
+  componentStack: string | null | undefined,
+) => void;
+
+let _sink: ErrorBoundarySink | null = null;
+
+export function setErrorBoundarySink(sink: ErrorBoundarySink | null): void {
+  _sink = sink;
+}
+
 export interface ErrorBoundaryProps {
   children: ReactNode;
   /** Render prop called when an error is caught. Return the fallback UI. */
@@ -85,6 +102,11 @@ export class ErrorBoundary extends Component<
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     console.error("[ErrorBoundary]", error, errorInfo.componentStack);
+    try {
+      _sink?.(error, errorInfo.componentStack);
+    } catch {
+      // Sink must never throw from the error path.
+    }
     this.props.onError?.(error, errorInfo);
   }
 

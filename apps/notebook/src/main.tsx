@@ -5,9 +5,10 @@ import { createRoot } from "react-dom/client";
 import App from "./App";
 import "./index.css";
 import { IsolatedRendererProvider } from "@/components/isolated/isolated-renderer-context";
+import { setErrorBoundarySink } from "@/lib/error-boundary";
 import { setBlobPortHost } from "./lib/blob-port";
 import { setKernelCompletionHost } from "./lib/kernel-completion";
-import { setLoggerHost } from "./lib/logger";
+import { logger, setLoggerHost } from "./lib/logger";
 import { setMetadataTransport } from "./lib/notebook-metadata";
 import { setOpenUrlHost } from "./lib/open-url";
 
@@ -40,6 +41,14 @@ setBlobPortHost(host);
 setLoggerHost(host);
 setOpenUrlHost(host);
 setKernelCompletionHost(host);
+setErrorBoundarySink((error, componentStack) => {
+  logger.error(
+    "[ErrorBoundary] render error:",
+    error,
+    "component stack:",
+    componentStack ?? "(unavailable)",
+  );
+});
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
