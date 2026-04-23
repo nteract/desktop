@@ -78,53 +78,51 @@ pub fn strip_base(installed: &[String], base: &[&str]) -> Vec<String> {
 /// Gating here surfaces the typed `MissingIpykernel` reason so the UI can
 /// render env-specific remediation.
 ///
-/// Scans for a direct child directory named `ipykernel` or any
-/// `ipykernel-*.dist-info` metadata dir under site-packages. Returns `false`
-/// on any filesystem error or if site-packages cannot be found.
+/// Resolves site-packages by asking the interpreter itself
+/// (`sysconfig.get_paths()['purelib']`) rather than scanning `lib/python*`
+/// — `read_dir` order would pick an arbitrary Python-version directory on
+/// envs with more than one (stale cache, interpreter upgrade), which can
+/// false-negative a working env. The subprocess adds ~50ms; kernel launch
+/// is already seconds.
 ///
-/// Layouts handled:
-/// - UV venvs (POSIX): `{venv}/lib/python*/site-packages/ipykernel`
-/// - UV venvs (Windows): `{venv}/Lib/site-packages/ipykernel`
-/// - Conda envs (POSIX): `{env}/lib/python*/site-packages/ipykernel`
-/// - Conda envs (Windows): `{env}/Lib/site-packages/ipykernel`
+/// Returns `false` on any failure (interpreter missing, spawn error,
+/// non-zero exit, empty output) — conservative: we'd rather surface a
+/// misleading "missing ipykernel" than try to launch a broken env.
+///
+/// Scans for a direct child directory named `ipykernel` or any
+/// `ipykernel-*.dist-info` metadata dir under site-packages.
 #[cfg(feature = "runtime")]
-pub fn venv_has_ipykernel(env_path: &std::path::Path) -> bool {
-    let Some(site_packages) = find_site_packages(env_path) else {
+pub fn venv_has_ipykernel(python_path: &std::path::Path) -> bool {
+    let Some(site_packages) = resolve_site_packages(python_path) else {
         return false;
     };
     site_packages_has_ipykernel(&site_packages)
 }
 
-/// Return the path to the environment's site-packages directory if it can be
-/// located. Handles both POSIX (`lib/python*/site-packages`) and Windows
-/// (`Lib/site-packages`) layouts used by UV venvs and Conda envs.
+/// Ask the given interpreter for its site-packages path.
+///
+/// Uses `sysconfig.get_paths()['purelib']` which is the canonical
+/// pure-Python install target for that interpreter. Returns `None` if
+/// the interpreter cannot be executed or if the output is unexpected.
 #[cfg(feature = "runtime")]
-fn find_site_packages(env_path: &std::path::Path) -> Option<std::path::PathBuf> {
-    // Windows layout: {env}/Lib/site-packages
-    let windows_sp = env_path.join("Lib").join("site-packages");
-    if windows_sp.is_dir() {
-        return Some(windows_sp);
+fn resolve_site_packages(python_path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let output = std::process::Command::new(python_path)
+        .args([
+            "-c",
+            "import sysconfig; print(sysconfig.get_paths()['purelib'])",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
     }
-    // POSIX layout: {env}/lib/python*/site-packages — python minor version varies.
-    let lib = env_path.join("lib");
-    let entries = std::fs::read_dir(&lib).ok()?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        let name = match path.file_name().and_then(|n| n.to_str()) {
-            Some(n) => n,
-            None => continue,
-        };
-        if name.starts_with("python") {
-            let sp = path.join("site-packages");
-            if sp.is_dir() {
-                return Some(sp);
-            }
-        }
+    let sp = String::from_utf8(output.stdout).ok()?;
+    let sp = sp.trim();
+    if sp.is_empty() {
+        return None;
     }
-    None
+    let path = std::path::PathBuf::from(sp);
+    path.is_dir().then_some(path)
 }
 
 #[cfg(feature = "runtime")]
@@ -243,20 +241,14 @@ mod strip_base_tests {
 }
 
 #[cfg(all(test, feature = "runtime"))]
-mod venv_has_ipykernel_tests {
+mod site_packages_has_ipykernel_tests {
     use super::*;
     use tempfile::TempDir;
 
-    fn make_posix_venv_with(files: &[(&str, &str)]) -> TempDir {
+    fn make_site_packages_with(files: &[(&str, &str)]) -> TempDir {
         let tmp = TempDir::new().unwrap();
-        let sp = tmp
-            .path()
-            .join("lib")
-            .join("python3.12")
-            .join("site-packages");
-        std::fs::create_dir_all(&sp).unwrap();
         for (name, kind) in files {
-            let path = sp.join(name);
+            let path = tmp.path().join(name);
             match *kind {
                 "dir" => std::fs::create_dir_all(&path).unwrap(),
                 "file" => std::fs::write(&path, "").unwrap(),
@@ -267,53 +259,53 @@ mod venv_has_ipykernel_tests {
     }
 
     #[test]
-    fn venv_without_ipykernel_returns_false() {
-        let tmp = make_posix_venv_with(&[("numpy", "dir"), ("pandas", "dir")]);
-        assert!(!venv_has_ipykernel(tmp.path()));
+    fn no_ipykernel_returns_false() {
+        let tmp = make_site_packages_with(&[("numpy", "dir"), ("pandas", "dir")]);
+        assert!(!site_packages_has_ipykernel(tmp.path()));
     }
 
     #[test]
-    fn venv_with_ipykernel_package_dir_returns_true() {
-        let tmp = make_posix_venv_with(&[("ipykernel", "dir"), ("numpy", "dir")]);
-        assert!(venv_has_ipykernel(tmp.path()));
+    fn ipykernel_package_dir_returns_true() {
+        let tmp = make_site_packages_with(&[("ipykernel", "dir"), ("numpy", "dir")]);
+        assert!(site_packages_has_ipykernel(tmp.path()));
     }
 
     #[test]
-    fn venv_with_ipykernel_dist_info_returns_true() {
-        let tmp = make_posix_venv_with(&[("ipykernel-6.29.5.dist-info", "dir")]);
-        assert!(venv_has_ipykernel(tmp.path()));
+    fn ipykernel_dist_info_returns_true() {
+        let tmp = make_site_packages_with(&[("ipykernel-6.29.5.dist-info", "dir")]);
+        assert!(site_packages_has_ipykernel(tmp.path()));
     }
 
     #[test]
-    fn empty_venv_returns_false() {
+    fn empty_site_packages_returns_false() {
         let tmp = TempDir::new().unwrap();
-        assert!(!venv_has_ipykernel(tmp.path()));
+        assert!(!site_packages_has_ipykernel(tmp.path()));
     }
 
     #[test]
     fn nonexistent_path_returns_false() {
-        assert!(!venv_has_ipykernel(std::path::Path::new(
+        assert!(!site_packages_has_ipykernel(std::path::Path::new(
             "/definitely/does/not/exist"
         )));
     }
 
     #[test]
     fn similar_prefix_without_ipykernel_returns_false() {
-        // Defensive: a package like `ipykernel_something` must not trip
-        // the dist-info fallback. We only accept `ipykernel-*.dist-info`.
-        let tmp = make_posix_venv_with(&[
+        // Defensive: `ipykernel_something` must not trip the dist-info
+        // fallback. Only `ipykernel-*.dist-info` counts.
+        let tmp = make_site_packages_with(&[
             ("ipykernel_contrib", "dir"),
             ("ipykernelfoo-1.0.dist-info", "dir"),
         ]);
-        assert!(!venv_has_ipykernel(tmp.path()));
+        assert!(!site_packages_has_ipykernel(tmp.path()));
     }
 
     #[test]
-    fn windows_layout_is_supported() {
-        let tmp = TempDir::new().unwrap();
-        let sp = tmp.path().join("Lib").join("site-packages");
-        std::fs::create_dir_all(&sp).unwrap();
-        std::fs::create_dir_all(sp.join("ipykernel")).unwrap();
-        assert!(venv_has_ipykernel(tmp.path()));
+    fn venv_has_ipykernel_returns_false_for_nonexistent_interpreter() {
+        // The outer `venv_has_ipykernel` delegates to a subprocess call
+        // on the interpreter. Bad paths must surface as `false`, not panic.
+        assert!(!venv_has_ipykernel(std::path::Path::new(
+            "/definitely/not/a/python/interpreter"
+        )));
     }
 }

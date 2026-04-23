@@ -2788,12 +2788,25 @@ pub(crate) async fn auto_launch_kernel(
             | EnvSource::Pep723(PackageManager::Uv)
     ) {
         if let Some(ref env) = pooled_env {
-            if !kernel_env::venv_has_ipykernel(&env.venv_path) {
+            if !kernel_env::venv_has_ipykernel(&env.python_path) {
                 warn!(
                     "[notebook-sync] prepared env at {:?} ({}) is missing ipykernel — cannot launch kernel",
                     env.venv_path,
                     env_source.as_str()
                 );
+                // Delete the corrupt env dir. We already `take()`d it
+                // from the pool; putting it back would just hand the
+                // same broken env to the next caller. A fresh warm-up
+                // will land on a clean base.
+                let doomed = env.venv_path.clone();
+                tokio::task::spawn_blocking(move || {
+                    if let Err(e) = std::fs::remove_dir_all(&doomed) {
+                        warn!(
+                            "[notebook-sync] failed to remove corrupt env {:?}: {}",
+                            doomed, e
+                        );
+                    }
+                });
                 let env_source_label = env_source.as_str().to_string();
                 if let Err(e) = room.state.with_doc(|sd| {
                     sd.set_lifecycle_with_error(
