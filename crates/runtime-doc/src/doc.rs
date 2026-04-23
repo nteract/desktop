@@ -67,7 +67,7 @@ use automerge::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::StreamOutputState;
+use crate::{RuntimeLifecycle, StreamOutputState};
 
 // ── Snapshot types for reading/comparing state ──────────────────────
 
@@ -87,6 +87,14 @@ pub struct KernelState {
     /// Used for provenance — identifying which runtime agent is running and detecting stale ones.
     #[serde(default)]
     pub runtime_agent_id: String,
+    /// Typed view derived from `(status, starting_phase)` at snapshot time.
+    ///
+    /// Phase 1 of the RuntimeLifecycle migration: readers can opt into the
+    /// typed enum without any CRDT schema change. Phase 2 introduces a
+    /// dedicated `kernel/lifecycle` key and writer path; at that point
+    /// `lifecycle` will be read directly from the CRDT rather than derived.
+    #[serde(default)]
+    pub lifecycle: RuntimeLifecycle,
 }
 
 impl Default for KernelState {
@@ -98,6 +106,7 @@ impl Default for KernelState {
             language: String::new(),
             env_source: String::new(),
             runtime_agent_id: String::new(),
+            lifecycle: RuntimeLifecycle::NotStarted,
         }
     }
 }
@@ -1854,13 +1863,19 @@ impl RuntimeStateDoc {
 
         let kernel_state = kernel
             .as_ref()
-            .map(|k| KernelState {
-                status: self.read_str(k, "status"),
-                starting_phase: self.read_str(k, "starting_phase"),
-                name: self.read_str(k, "name"),
-                language: self.read_str(k, "language"),
-                env_source: self.read_str(k, "env_source"),
-                runtime_agent_id: self.read_str(k, "runtime_agent_id"),
+            .map(|k| {
+                let status = self.read_str(k, "status");
+                let starting_phase = self.read_str(k, "starting_phase");
+                let lifecycle = RuntimeLifecycle::from_legacy(&status, &starting_phase);
+                KernelState {
+                    status,
+                    starting_phase,
+                    name: self.read_str(k, "name"),
+                    language: self.read_str(k, "language"),
+                    env_source: self.read_str(k, "env_source"),
+                    runtime_agent_id: self.read_str(k, "runtime_agent_id"),
+                    lifecycle,
+                }
             })
             .unwrap_or_default();
 
