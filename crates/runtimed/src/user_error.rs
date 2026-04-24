@@ -51,6 +51,27 @@ pub struct RichFrame {
     pub library: bool,
 }
 
+/// Parse-error-only slot populated for `SyntaxError` /
+/// `IndentationError` / `TabError`. Carries the caret info the
+/// exception object exposes (`offset`, `text`, `msg`, and 3.11+
+/// `end_offset`/`end_lineno` for range underline) so the renderer
+/// can show the offending source line instead of a useless frame list.
+///
+/// `end_lineno` / `end_offset` of 0 means "absent" (the emitter
+/// normalizes CPython's `-1` sentinel to 0).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RichSyntax {
+    pub filename: String,
+    pub lineno: u32,
+    pub offset: u32,
+    #[serde(default)]
+    pub end_lineno: u32,
+    #[serde(default)]
+    pub end_offset: u32,
+    pub text: String,
+    pub msg: String,
+}
+
 /// The rich payload shape the frontend's `TracebackOutput` consumes.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RichTraceback {
@@ -62,6 +83,10 @@ pub struct RichTraceback {
     /// Paste-ready plain text — the ANSI-stripped `traceback.format_exception`
     /// output. Frontend Copy button writes this verbatim.
     pub text: String,
+    /// Present for parse errors. When set, the renderer shows a
+    /// dedicated source-line + caret layout instead of a frame list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub syntax: Option<RichSyntax>,
 }
 
 /// A user-code error, regardless of wire shape.
@@ -253,6 +278,7 @@ pub fn parse_ansi_traceback(
         frames,
         language: Some("python".to_string()),
         text,
+        syntax: None,
     })
 }
 
@@ -751,6 +777,7 @@ mod tests {
             frames: vec![],
             language: Some("python".into()),
             text: "Traceback (most recent call last):\n  File \"/tmp/x.py\", line 1, in <module>\n    1/0\nZeroDivisionError: division by zero".into(),
+            syntax: None,
         };
         let ue = UserErrorOutput::Rich(rt);
         let (ename, evalue, tb) = ue.to_classic();
@@ -953,6 +980,7 @@ mod tests {
             frames: vec![],
             language: Some("python".into()),
             text: "Traceback (most recent call last):\n  File \"/tmp/x.py\", line 1, in t\n    assert False, \"line one\\nline two\\nline three\"\nAssertionError: line one\nline two\nline three".into(),
+            syntax: None,
         };
         let (ename, evalue, tb) = UserErrorOutput::Rich(rt).to_classic();
         assert_eq!(ename, "AssertionError");
@@ -977,6 +1005,7 @@ mod tests {
             frames: vec![],
             language: Some("python".into()),
             text: "line1\nline2\n".into(),
+            syntax: None,
         };
         let (_, _, tb) = UserErrorOutput::Rich(rt).to_classic();
         // "line1\n" "line2\n" → ["line1", "line2"].

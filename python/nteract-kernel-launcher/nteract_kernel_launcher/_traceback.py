@@ -43,6 +43,15 @@ _LIBRARY_PATH_MARKERS = (
 _CONTEXT_BEFORE = 2
 _CONTEXT_AFTER = 2
 
+# Head + tail frames kept when a traceback is longer than head + tail.
+# A RecursionError is 1000 frames; without a cap the payload balloons
+# for no information gain (the frontend already clusters duplicates,
+# but distinct-but-deep stacks still blow up). Head preserves the
+# outermost (user-visible entry) frames; tail preserves the innermost
+# (raise-site) frames. Between them, a sentinel records the count.
+_MAX_HEAD_FRAMES = 5
+_MAX_TAIL_FRAMES = 5
+
 
 # ─── Payload construction ───────────────────────────────────────────────────
 
@@ -70,6 +79,30 @@ def _source_window(filename: str, lineno: int) -> list[dict[str, Any]]:
     return out
 
 
+def _clip_frames(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep head + tail; summarize the middle with a sentinel frame.
+
+    No-op when the stack fits under the cap. Otherwise returns the head,
+    a sentinel row describing how many frames were elided, then the
+    tail. The sentinel is marked ``library: True`` so the frontend's
+    dimming/collapse rules match its "this is noise" semantic.
+    """
+    total = len(frames)
+    if total <= _MAX_HEAD_FRAMES + _MAX_TAIL_FRAMES:
+        return frames
+    head = frames[:_MAX_HEAD_FRAMES]
+    tail = frames[-_MAX_TAIL_FRAMES:]
+    omitted = total - len(head) - len(tail)
+    sentinel: dict[str, Any] = {
+        "filename": "",
+        "lineno": 0,
+        "name": f"… {omitted} frames omitted …",
+        "lines": [],
+        "library": True,
+    }
+    return head + [sentinel] + tail
+
+
 def _strip_leading_library_frames(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Drop library frames above the first user frame.
 
@@ -93,12 +126,71 @@ def _strip_leading_library_frames(frames: list[dict[str, Any]]) -> list[dict[str
     return frames
 
 
+def _build_syntax_error_payload(etype: Any, evalue: Any, tb: Any) -> dict[str, Any]:
+    """Special-case payload for `SyntaxError` and friends.
+
+    Parse errors never have a user-code frame — IPython raises from
+    inside ``ast_parse`` before any cell bytecode runs, so the traceback
+    is all internals and pure noise from the user's perspective.
+
+    The useful information lives on the exception object itself:
+    ``offset``, ``text``, ``msg``, ``lineno``. We emit a payload with
+    empty ``frames`` and an additional ``syntax`` slot carrying the
+    caret location, so the renderer can show something like:
+
+        SyntaxError: invalid syntax
+          | This is not valid syntax
+          |     ^
+
+    Applies to ``SyntaxError``, ``IndentationError``, ``TabError`` —
+    they all share the same attribute surface.
+    """
+    filename = getattr(evalue, "filename", "") or ""
+    lineno = getattr(evalue, "lineno", 0) or 0
+    offset = getattr(evalue, "offset", 0) or 0
+    # `end_lineno` / `end_offset` exist on 3.11+ SyntaxError. When the
+    # parser knows the end of the offending token, we can underline a
+    # range (e.g. `^^^^`) instead of a single caret — Python's own
+    # traceback format does this since 3.11.
+    # `-1` is a documented sentinel meaning "unknown" (see cpython
+    # Objects/exceptions.c); normalize to 0 so the renderer can treat
+    # 0 as "absent".
+    end_lineno_raw = getattr(evalue, "end_lineno", None)
+    end_offset_raw = getattr(evalue, "end_offset", None)
+    end_lineno = end_lineno_raw if isinstance(end_lineno_raw, int) and end_lineno_raw > 0 else 0
+    end_offset = end_offset_raw if isinstance(end_offset_raw, int) and end_offset_raw > 0 else 0
+    text = getattr(evalue, "text", "") or ""
+    msg = getattr(evalue, "msg", None) or str(evalue)
+    return {
+        "ename": etype.__name__ if isinstance(etype, type) else str(etype),
+        "evalue": str(evalue),
+        "frames": [],
+        "language": "python",
+        "text": "".join(_pytraceback.format_exception(etype, evalue, tb)),
+        "syntax": {
+            "filename": filename,
+            "lineno": lineno,
+            "offset": offset,
+            "end_lineno": end_lineno,
+            "end_offset": end_offset,
+            "text": text.rstrip("\n"),
+            "msg": msg,
+        },
+    }
+
+
 def build_rich_payload(etype: Any, evalue: Any, tb: Any) -> dict[str, Any]:
     """Structure an exception into the rich traceback payload.
 
     Assumes the caller protects against exceptions from this function —
     see `_safe_showtraceback` below.
     """
+    # Parse errors take a dedicated code path — their traceback carries
+    # no user-code frame, but the exception object has the caret info
+    # (offset, text) we want to render.
+    if isinstance(evalue, SyntaxError):
+        return _build_syntax_error_payload(etype, evalue, tb)
+
     raw_frames = []
     for f in _pytraceback.extract_tb(tb):
         # `FrameSummary.lineno` is typed as `int | None`; treat missing
@@ -114,7 +206,7 @@ def build_rich_payload(etype: Any, evalue: Any, tb: Any) -> dict[str, Any]:
                 "library": _is_library_frame(f.filename),
             }
         )
-    frames = _strip_leading_library_frames(raw_frames)
+    frames = _clip_frames(_strip_leading_library_frames(raw_frames))
     text = "".join(_pytraceback.format_exception(etype, evalue, tb))
     ename = etype.__name__ if isinstance(etype, type) else str(etype)
     return {

@@ -106,6 +106,112 @@ def test_strip_leading_library_frames_keeps_everything_when_all_library():
     assert out == raw
 
 
+# ─── frame cap (#20) ───────────────────────────────────────────────────────
+
+
+def _mk_frames(n: int) -> list[dict]:
+    return [
+        {
+            "filename": f"/tmp/f{i}.py",
+            "lineno": i + 1,
+            "name": f"f{i}",
+            "lines": [],
+            "library": False,
+        }
+        for i in range(n)
+    ]
+
+
+def test_clip_frames_noop_under_cap():
+    # 10 total (head=5 + tail=5) is the boundary — no clipping.
+    frames = _mk_frames(10)
+    out = _traceback._clip_frames(frames)
+    assert out == frames
+
+
+def test_clip_frames_inserts_sentinel_when_over_cap():
+    frames = _mk_frames(25)
+    out = _traceback._clip_frames(frames)
+    # head (5) + sentinel (1) + tail (5) = 11
+    assert len(out) == 11
+    assert out[:5] == frames[:5]
+    assert out[-5:] == frames[-5:]
+    sentinel = out[5]
+    assert sentinel["library"] is True
+    assert "15 frames omitted" in sentinel["name"]
+    assert sentinel["filename"] == ""
+
+
+def test_build_payload_clips_huge_recursion():
+    # RecursionError-ish: a ton of user-frames.
+    def recurse(n):
+        if n == 0:
+            raise RuntimeError("bottom")
+        return recurse(n - 1)
+
+    try:
+        recurse(200)
+    except RuntimeError as exc:
+        payload = build_rich_payload(type(exc), exc, exc.__traceback__)
+
+    # With cap = head(5) + tail(5) + sentinel, frames should be <= 11.
+    assert len(payload["frames"]) <= 11
+    # Sentinel is present somewhere in the middle.
+    assert any("frames omitted" in f["name"] for f in payload["frames"])
+
+
+# ─── SyntaxError special-case (#25) ────────────────────────────────────────
+
+
+def _capture_syntax_error() -> SyntaxError:
+    try:
+        compile("def oops(\n", "<test>", "exec")
+    except SyntaxError as exc:
+        return exc
+    raise AssertionError("compile should have raised")
+
+
+def test_syntax_error_emits_syntax_slot_and_no_frames():
+    exc = _capture_syntax_error()
+    payload = build_rich_payload(type(exc), exc, exc.__traceback__)
+    assert payload["ename"] == "SyntaxError"
+    # The whole point: no user-frame noise.
+    assert payload["frames"] == []
+    # Syntax slot carries the caret info.
+    syntax = payload.get("syntax")
+    assert syntax is not None
+    assert syntax["filename"] == "<test>"
+    assert syntax["lineno"] == 1
+    assert syntax["offset"] >= 1
+    assert "oops" in syntax["text"]
+    assert syntax["msg"]
+    # end_lineno / end_offset are always present (0 means "absent"),
+    # and when the parser populates them, end_offset >= offset.
+    assert isinstance(syntax["end_lineno"], int)
+    assert isinstance(syntax["end_offset"], int)
+    if syntax["end_offset"] > 0:
+        assert syntax["end_offset"] >= syntax["offset"]
+
+
+def test_syntax_error_text_still_present_for_copy_button():
+    # The `text` field (what the Copy button writes) must still round-trip
+    # the canonical "Traceback ..." output so pasting to an LLM works.
+    exc = _capture_syntax_error()
+    payload = build_rich_payload(type(exc), exc, exc.__traceback__)
+    assert "SyntaxError" in payload["text"]
+
+
+def test_indentation_error_takes_syntax_path():
+    # IndentationError subclasses SyntaxError; same treatment.
+    try:
+        compile("def x():\npass\n", "<test>", "exec")
+    except IndentationError as exc:
+        payload = build_rich_payload(type(exc), exc, exc.__traceback__)
+        assert payload["ename"] == "IndentationError"
+        assert payload["frames"] == []
+        assert payload.get("syntax") is not None
+
+
 # ─── install: wrapping + idempotency ───────────────────────────────────────
 
 

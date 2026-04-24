@@ -43,6 +43,29 @@ interface Frame {
   library?: boolean;
 }
 
+/**
+ * Parse-error-only info, populated when the exception is a
+ * `SyntaxError` / `IndentationError` / `TabError`. These don't have
+ * user-code frames (IPython raises from `ast_parse` before any cell
+ * bytecode runs), so we dedicate a slot to what actually helps:
+ * the offending source line and a caret at `offset`.
+ */
+interface SyntaxInfo {
+  filename: string;
+  lineno: number;
+  offset: number;
+  /**
+   * End of the offending token (Python 3.11+). 0 means "absent" — the
+   * renderer falls back to a single-column caret. When set, we underline
+   * the `[offset, end_offset)` range so multi-char errors read at a
+   * glance. Matches CPython's own traceback format since 3.11.
+   */
+  end_lineno?: number;
+  end_offset?: number;
+  text: string;
+  msg: string;
+}
+
 interface TracebackPayload {
   /** Exception class name, e.g. "ValueError". */
   ename: string;
@@ -64,6 +87,12 @@ interface TracebackPayload {
   text?: string;
   /** Raw traceback strings, for cases where we couldn't parse. */
   raw?: string[];
+  /**
+   * Present for `SyntaxError` / `IndentationError` / `TabError`.
+   * When set, the renderer shows a dedicated parse-error layout
+   * (source line + caret) instead of a frame list.
+   */
+  syntax?: SyntaxInfo;
 }
 
 interface Props {
@@ -126,6 +155,19 @@ export function TracebackOutput({ data, className }: Props) {
     return !c.frame.library;
   };
 
+  // Single-frame polish: when there's exactly one user frame named
+  // `<module>` (cell top-level), skip the chevron row and render the
+  // source block directly. Most real cell errors are this shape; the
+  // ceremonial per-frame row is just noise.
+  const collapseSingleFrame =
+    clusters.length === 1 && clusters[0].frame.name === "<module>" && !clusters[0].frame.library;
+
+  // Inline `ename: evalue` on one line when the evalue fits. Multi-line
+  // evalues (pytest diffs, chained SQL errors) fall through to the
+  // two-line layout. Independent of frame count — a short evalue next
+  // to the ename reads better whether we show frames below or not.
+  const inlineEvalue = Boolean(payload.evalue) && !payload.evalue.includes("\n");
+
   return (
     <div
       data-slot="traceback"
@@ -135,18 +177,35 @@ export function TracebackOutput({ data, className }: Props) {
         className,
       )}
     >
-      <Header ename={payload.ename} evalue={payload.evalue} payload={payload} />
-      {clusters.length > 0 && (
-        <ol className="divide-y divide-destructive/15">
-          {clusters.map((cluster, i) => (
-            <FrameRow
-              key={`${cluster.frame.filename}:${cluster.frame.lineno}:${cluster.firstIndex}`}
-              cluster={cluster}
-              defaultOpen={shouldOpen(cluster, i)}
-              language={language}
-            />
-          ))}
-        </ol>
+      <Header
+        ename={payload.ename}
+        // For parse errors, prefer `syntax.msg` ("invalid syntax") over
+        // `str(evalue)` ("invalid syntax (<tmpfile>, line 1)"). IPython
+        // stringifies SyntaxError with a temp-file tail that's noise
+        // for cell users — the caret block shows location already.
+        evalue={payload.syntax?.msg || payload.evalue}
+        payload={payload}
+        inlineEvalue={inlineEvalue || Boolean(payload.syntax?.msg)}
+      />
+      {payload.syntax ? (
+        <SyntaxErrorBlock syntax={payload.syntax} language={language} />
+      ) : collapseSingleFrame && clusters[0].frame.lines && clusters[0].frame.lines.length > 0 ? (
+        <div className="px-3 pb-2">
+          <SourceBlock lines={clusters[0].frame.lines} language={language} />
+        </div>
+      ) : (
+        clusters.length > 0 && (
+          <ol className="divide-y divide-destructive/15">
+            {clusters.map((cluster, i) => (
+              <FrameRow
+                key={`${cluster.frame.filename}:${cluster.frame.lineno}:${cluster.firstIndex}`}
+                cluster={cluster}
+                defaultOpen={shouldOpen(cluster, i)}
+                language={language}
+              />
+            ))}
+          </ol>
+        )
       )}
     </div>
   );
@@ -158,11 +217,22 @@ function Header({
   ename,
   evalue,
   payload,
+  inlineEvalue,
 }: {
   ename: string;
   evalue: string;
   payload: TracebackPayload;
+  /**
+   * When true, render `ename: evalue` on a single line (for the
+   * single-frame and SyntaxError cases where the two-line header
+   * is unnecessary ceremony).
+   */
+  inlineEvalue?: boolean;
 }) {
+  // Caller already decides whether inlining is appropriate (short,
+  // single-line evalues). Trust that here so the two layouts don't
+  // disagree on edge cases.
+  const canInline = inlineEvalue && Boolean(evalue);
   return (
     <div className="flex items-start gap-2 px-3 py-2 font-mono">
       <OctagonAlert
@@ -171,13 +241,91 @@ function Header({
         strokeWidth={2.5}
       />
       <div className="min-w-0 flex-1">
-        <div className="font-semibold text-destructive">{ename}</div>
-        {evalue && (
-          <div className="mt-0.5 whitespace-pre-wrap break-words text-foreground/85">{evalue}</div>
+        {canInline ? (
+          <div>
+            <span className="font-semibold text-destructive">{ename}</span>
+            <span className="text-destructive/80">: </span>
+            <span className="whitespace-pre-wrap break-words text-foreground/85">{evalue}</span>
+          </div>
+        ) : (
+          <>
+            <div className="font-semibold text-destructive">{ename}</div>
+            {evalue && (
+              <div className="mt-0.5 whitespace-pre-wrap break-words text-foreground/85">
+                {evalue}
+              </div>
+            )}
+          </>
         )}
       </div>
       <CopyButton payload={payload} />
     </div>
+  );
+}
+
+/**
+ * Parse-error layout. Shows the offending source line with a caret at
+ * the `offset` column. No frame list (SyntaxError doesn't have one
+ * that'd be useful). If `text` is empty (older Python versions don't
+ * always populate it), we show just the header.
+ */
+function SyntaxErrorBlock({ syntax, language }: { syntax: SyntaxInfo; language: string }) {
+  const isDark = useDarkMode();
+  const rawTheme = useColorTheme();
+  const colorTheme = rawTheme === "cream" ? "cream" : "classic";
+
+  if (!syntax.text) {
+    return null;
+  }
+
+  // `offset` is 1-based (CPython convention). Clamp to the line length
+  // so the underline never runs past the content.
+  const lineLen = syntax.text.length;
+  const startCol = Math.max(1, Math.min(syntax.offset || 1, lineLen + 1));
+  // When `end_offset` is known AND on the same line AND past `offset`,
+  // underline the whole range. Otherwise fall back to a single caret
+  // at `startCol`.
+  const sameLine = !syntax.end_lineno || syntax.end_lineno === syntax.lineno;
+  const endColRaw = syntax.end_offset ?? 0;
+  const endCol = sameLine && endColRaw > startCol ? Math.min(endColRaw, lineLen + 1) : startCol + 1;
+  const underlineLen = Math.max(1, endCol - startCol);
+  const underlinePadding = " ".repeat(startCol - 1);
+  const underline = "^".repeat(underlineLen);
+
+  const gutterWidth = String(syntax.lineno || 1).length;
+
+  return (
+    <pre
+      className={cn(
+        "mx-3 mb-2 overflow-x-auto rounded border border-destructive/15 bg-muted/40",
+        "px-2 py-1.5 leading-5",
+      )}
+      style={{ fontFamily: CM_FONT_FAMILY, fontSize: "13px" }}
+    >
+      <div className="grid grid-cols-[auto_1fr] gap-x-3 border-l-2 border-destructive bg-destructive/10 pl-1.5">
+        <span
+          className="select-none text-right font-semibold tabular-nums text-destructive"
+          style={{ minWidth: `${gutterWidth}ch` }}
+        >
+          ▸{String(syntax.lineno || 1).padStart(gutterWidth, " ")}
+        </span>
+        <code className="whitespace-pre">
+          {highlight(syntax.text, language, isDark, colorTheme)}
+        </code>
+      </div>
+      <div className="grid grid-cols-[auto_1fr] gap-x-3 border-l-2 border-transparent pl-1.5">
+        <span
+          className="select-none text-right tabular-nums text-muted-foreground/50"
+          style={{ minWidth: `${gutterWidth}ch` }}
+        >
+          {" ".repeat(gutterWidth + 1)}
+        </span>
+        <code className="whitespace-pre font-semibold text-destructive">
+          {underlinePadding}
+          <span aria-hidden="true">{underline}</span>
+        </code>
+      </div>
+    </pre>
   );
 }
 
@@ -363,7 +511,21 @@ function toPayload(data: unknown): TracebackPayload | null {
     language: typeof o.language === "string" ? o.language : undefined,
     text: typeof o.text === "string" ? o.text : undefined,
     raw: Array.isArray(o.raw) ? (o.raw as string[]) : undefined,
+    syntax: isSyntaxInfo(o.syntax) ? o.syntax : undefined,
   };
+}
+
+function isSyntaxInfo(v: unknown): v is SyntaxInfo {
+  if (!v || typeof v !== "object") return false;
+  const s = v as Record<string, unknown>;
+  return (
+    typeof s.filename === "string" &&
+    typeof s.lineno === "number" &&
+    typeof s.offset === "number" &&
+    typeof s.text === "string" &&
+    typeof s.msg === "string"
+  );
+  // end_lineno / end_offset are optional — we don't require them.
 }
 
 function safeStringify(x: unknown): string {
