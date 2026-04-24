@@ -267,42 +267,49 @@ pub enum PoolDepRelation {
 
 /// Split a dependency string into `(bare_name, constraint_tail)`.
 ///
-/// The constraint tail is everything after the bare name with the
-/// environment marker (`; python_version >= '3.10'`) stripped and
-/// leading/trailing whitespace trimmed. Empty tail means the dep is
-/// bare (accepts any version). Returns `None` when the input is empty
-/// or produces an empty bare name.
+/// The constraint tail preserves everything after the bare name —
+/// version specifier, extras, AND any environment marker — with
+/// whitespace squeezed out so variants like `pkg>=1.0` and
+/// `pkg >= 1.0` normalize to the same tail. Empty tail means the
+/// dep is bare and unconditional (accepts any version, always
+/// installed). Returns `None` when the input is empty or produces
+/// an empty bare name.
 ///
-/// Pool matching requires byte-equal tails (or an empty inline tail
-/// satisfied by any pool entry on the same bare). We DON'T attempt
-/// version-range solving — a notebook asking for `numpy<2` against
-/// a pool spec'd for `numpy>=2.2.6` would silently launch with the
-/// wrong version. Mismatched specs force Independent instead.
-fn split_bare_and_constraint(dep: &str) -> Option<(&str, &str)> {
+/// Why the marker stays in the tail: pool `prewarmed_packages` is
+/// the install-spec list, not the actually-installed list. A spec
+/// like `gremlin ; sys_platform == 'darwin'` means gremlin is only
+/// present on Darwin pool envs. On other platforms the pool entry
+/// exists but gremlin isn't installed. Matching against the
+/// unconditional bare name would make a bare-`gremlin` inline dep
+/// hit a pool env that lacks the package. Keeping the marker in the
+/// tail forces a byte-equal match (or fall through to Independent).
+fn split_bare_and_constraint(dep: &str) -> Option<(&str, String)> {
     let trimmed = dep.trim();
     if trimmed.is_empty() {
         return None;
     }
-    // Strip environment marker first — `gremlin ; sys_platform == 'darwin'`
-    // contains `==` inside the marker and is not a version pin.
-    let before_marker = trimmed.split(';').next().unwrap_or(trimmed).trim();
-    let cut_chars = ['>', '<', '=', '!', '~', '[', '@', ' ', '\t'];
-    let cut = before_marker
+    // Cut at the first specifier, marker, or whitespace — whichever
+    // ends the bare name. The tail then carries everything from the
+    // first specifier through the end of the original string (marker
+    // included).
+    let cut_chars = ['>', '<', '=', '!', '~', '[', '@', ';', ' ', '\t'];
+    let cut = trimmed
         .find(|c: char| cut_chars.contains(&c))
-        .unwrap_or(before_marker.len());
-    let bare = before_marker[..cut].trim();
+        .unwrap_or(trimmed.len());
+    let bare = trimmed[..cut].trim();
     if bare.is_empty() {
         return None;
     }
-    let tail = before_marker[cut..].trim();
+    // Whitespace-normalize so `pkg>=1.0` and `pkg >= 1.0` compare
+    // equal. Strips internal whitespace too — `; sys_platform == 'x'`
+    // and `;sys_platform=='x'` both collapse to the same canonical
+    // form, which makes byte-equal comparison actually useful in
+    // practice.
+    let tail: String = trimmed[cut..]
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
     Some((bare, tail))
-}
-
-/// Kept as a thin wrapper so existing tests on bare-name extraction
-/// stay meaningful. Returns `Some(name)` iff `split_bare_and_constraint`
-/// finds one.
-fn strip_to_bare(dep: &str) -> Option<&str> {
-    split_bare_and_constraint(dep).map(|(bare, _)| bare)
 }
 
 /// Check whether an inline dep must bypass pool reuse regardless of
@@ -395,15 +402,17 @@ pub fn compare_deps_to_pool(inline_deps: &[String], pool_packages: &[String]) ->
         return PoolDepRelation::Subset;
     }
 
-    // Pool map: bare_name -> set of constraint tails observed on that
-    // name. A bare entry in the pool contributes "" to the set.
+    // Pool map: bare_name -> set of (normalized) constraint tails
+    // observed on that name. A bare unconditional pool entry
+    // contributes "" to the set; a marker-gated or version-spec'd
+    // entry contributes its canonical tail.
     let mut pool_map: HashMap<String, HashSet<String>> = HashMap::new();
     for p in pool_packages {
         if let Some((bare, tail)) = split_bare_and_constraint(p) {
             pool_map
                 .entry(normalize_package_name(bare))
                 .or_default()
-                .insert(tail.to_string());
+                .insert(tail);
         }
     }
 
@@ -421,21 +430,29 @@ pub fn compare_deps_to_pool(inline_deps: &[String], pool_packages: &[String]) ->
         let key = normalize_package_name(bare);
         match pool_map.get(&key) {
             None => {
-                // Pool doesn't have this package at all — extras can
-                // be installed additively on top of the pool env.
+                // Pool doesn't have this package at all — can be
+                // installed additively on top of the pool env.
                 delta.push(dep.clone());
             }
-            Some(pool_tails) => {
-                if tail.is_empty() || pool_tails.contains(tail) {
-                    // Inline accepts any (no constraint), or the exact
-                    // constraint string is on the pool entry. Covered.
-                } else {
-                    // Pool has the package but with a different
-                    // constraint. Version-range overlap is possible
-                    // but not something we can verify cheaply — refuse
-                    // to reuse to avoid silent wrong-version launches.
-                    return PoolDepRelation::Independent;
-                }
+            Some(pool_tails) if pool_tails.contains(&tail) => {
+                // Same canonical tail on both sides (including the
+                // unconditional-both case where tails are empty).
+                // Covered.
+            }
+            Some(_) => {
+                // Pool has the bare name but with a different
+                // constraint or marker. Three flavors all unsafe:
+                //  - Pool pinned to a range, inline wants a different
+                //    range (or bare) — can't verify pool's installed
+                //    version satisfies the request.
+                //  - Pool marker-gated, inline unconditional — pool
+                //    env may not actually have the package installed
+                //    on platforms where the marker evaluated false.
+                //  - Inline marker-gated, pool unconditional — same
+                //    risk in reverse; we don't evaluate markers here.
+                // Force Independent so the full-build path resolves
+                // everything from scratch.
+                return PoolDepRelation::Independent;
             }
         }
     }
@@ -605,38 +622,58 @@ fn conda_meta_package_names(env_path: &std::path::Path) -> HashSet<String> {
 mod tests {
     use super::*;
 
+    // Helper: take the bare name returned by split_bare_and_constraint.
+    fn bare_of(dep: &str) -> Option<String> {
+        split_bare_and_constraint(dep).map(|(b, _)| b.to_string())
+    }
+
+    // Helper: take the normalized tail returned by split_bare_and_constraint.
+    fn tail_of(dep: &str) -> Option<String> {
+        split_bare_and_constraint(dep).map(|(_, t)| t)
+    }
+
     #[test]
-    fn test_strip_to_bare() {
-        // Already-bare names pass through.
-        assert_eq!(strip_to_bare("pandas"), Some("pandas"));
-        assert_eq!(strip_to_bare("numpy"), Some("numpy"));
-        assert_eq!(strip_to_bare("  pandas  "), Some("pandas"));
-        assert_eq!(strip_to_bare(""), None);
+    fn test_split_bare_and_constraint_bare_names() {
+        assert_eq!(bare_of("pandas").as_deref(), Some("pandas"));
+        assert_eq!(bare_of("numpy").as_deref(), Some("numpy"));
+        assert_eq!(bare_of("  pandas  ").as_deref(), Some("pandas"));
+        assert_eq!(bare_of(""), None);
+        assert_eq!(tail_of("pandas").as_deref(), Some(""));
+    }
 
-        // Version specifiers get stripped to the bare name.
-        assert_eq!(strip_to_bare("pandas>=2.0"), Some("pandas"));
-        assert_eq!(strip_to_bare("pandas==2.0.0"), Some("pandas"));
-        assert_eq!(strip_to_bare("pandas<3"), Some("pandas"));
-        assert_eq!(strip_to_bare("pandas~=2.0"), Some("pandas"));
-        assert_eq!(strip_to_bare("pandas!=1.0"), Some("pandas"));
+    #[test]
+    fn test_split_bare_and_constraint_version_specifiers() {
+        // Version specifiers get split out as the tail — bare name
+        // stays clean.
+        assert_eq!(bare_of("pandas>=2.0").as_deref(), Some("pandas"));
+        assert_eq!(tail_of("pandas>=2.0").as_deref(), Some(">=2.0"));
+        assert_eq!(bare_of("pandas==2.0.0").as_deref(), Some("pandas"));
+        assert_eq!(tail_of("pandas==2.0.0").as_deref(), Some("==2.0.0"));
+        // Whitespace around the specifier normalizes away so
+        // `pkg>=1.0` and `pkg >= 1.0` compare equal.
+        assert_eq!(tail_of("pandas >= 2.0").as_deref(), Some(">=2.0"));
+    }
 
-        // Extras and direct URLs — bare name only, constraint info discarded.
-        assert_eq!(strip_to_bare("pandas[sql]"), Some("pandas"));
+    #[test]
+    fn test_split_bare_and_constraint_keeps_marker() {
+        // Markers are load-bearing: a pool entry with
+        // `pkg ; sys_platform == 'darwin'` only installs on Darwin, so
+        // the marker MUST survive into the tail. Comparison against
+        // bare-`pkg` must fail on platforms where the marker evaluated
+        // false (pool advertises the spec but package isn't installed).
         assert_eq!(
-            strip_to_bare("pandas @ https://example.com"),
-            Some("pandas")
-        );
-
-        // Environment markers — marker stripped first, bare name returned.
-        assert_eq!(
-            strip_to_bare("pandas ; python_version >= '3.8'"),
-            Some("pandas")
-        );
-        // `==` inside a marker (quoted comparison) mustn't corrupt the
-        // bare name — marker-first logic handles this.
-        assert_eq!(
-            strip_to_bare("gremlin ; sys_platform == 'darwin'"),
+            bare_of("gremlin ; sys_platform == 'darwin'").as_deref(),
             Some("gremlin")
+        );
+        // Canonical tail: whitespace stripped.
+        assert_eq!(
+            tail_of("gremlin ; sys_platform == 'darwin'").as_deref(),
+            Some(";sys_platform=='darwin'")
+        );
+        // Versioned + marker: tail carries both.
+        assert_eq!(
+            tail_of("pandas >= 2.0 ; python_version >= '3.10'").as_deref(),
+            Some(">=2.0;python_version>='3.10'")
         );
     }
 
@@ -892,11 +929,65 @@ mod tests {
     }
 
     #[test]
-    fn test_compare_subset_bare_inline_covers_pool_constrained() {
-        // Inline dep is bare (accepts any version), pool has a
-        // constraint. Pool has *some* version of the package → covers.
+    fn test_compare_independent_bare_inline_vs_pool_constrained() {
+        // Pool's `prewarmed_packages` is the install-spec list, not
+        // what's actually installed. A constrained pool entry might
+        // or might not have produced an installed package (marker
+        // evaluated false, resolver skipped it). So even a bare
+        // inline dep that would "accept any version" can't safely
+        // reuse a pool whose entry carries constraints — the package
+        // may not be installed at all.
         let pool = vec!["ipykernel".into(), "numpy>=2.2.6".into()];
         let deps = vec!["numpy".into()];
+        assert!(matches!(
+            compare_deps_to_pool(&deps, &pool),
+            PoolDepRelation::Independent
+        ));
+    }
+
+    #[test]
+    fn test_compare_independent_marker_gated_pool_vs_bare_inline() {
+        // Codex-flagged regression: `gremlin ; sys_platform == 'darwin'`
+        // in the pool's install-spec list only produced an installed
+        // `gremlin` on Darwin pool envs. On Linux, the pool env carries
+        // the spec in `prewarmed_packages` but the package isn't there.
+        // A later bare-`gremlin` inline dep MUST NOT reuse that pool
+        // env, or the notebook launches with a missing import.
+        let pool = vec![
+            "ipykernel".into(),
+            "gremlin ; sys_platform == 'darwin'".into(),
+        ];
+        let deps = vec!["gremlin".into()];
+        assert!(matches!(
+            compare_deps_to_pool(&deps, &pool),
+            PoolDepRelation::Independent
+        ));
+    }
+
+    #[test]
+    fn test_compare_subset_marker_on_both_sides() {
+        // When the inline dep and pool spec carry the same marker
+        // verbatim (the common case: notebook seeded from settings and
+        // pool built from same settings), they canonicalize to the
+        // same tail and match.
+        let pool = vec![
+            "ipykernel".into(),
+            "gremlin ; sys_platform == 'darwin'".into(),
+        ];
+        let deps = vec!["gremlin ; sys_platform == 'darwin'".into()];
+        assert!(matches!(
+            compare_deps_to_pool(&deps, &pool),
+            PoolDepRelation::Subset
+        ));
+    }
+
+    #[test]
+    fn test_compare_subset_normalizes_internal_whitespace() {
+        // `pkg>=1.0` (no spaces) and `pkg >= 1.0` (spaces) produce
+        // the same canonical tail, so either form on one side
+        // matches the other.
+        let pool = vec!["ipykernel".into(), "numpy>=2.2.6".into()];
+        let deps = vec!["numpy >= 2.2.6".into()];
         assert!(matches!(
             compare_deps_to_pool(&deps, &pool),
             PoolDepRelation::Subset
