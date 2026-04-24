@@ -54,6 +54,14 @@ interface SyntaxInfo {
   filename: string;
   lineno: number;
   offset: number;
+  /**
+   * End of the offending token (Python 3.11+). 0 means "absent" — the
+   * renderer falls back to a single-column caret. When set, we underline
+   * the `[offset, end_offset)` range so multi-char errors read at a
+   * glance. Matches CPython's own traceback format since 3.11.
+   */
+  end_lineno?: number;
+  end_offset?: number;
   text: string;
   msg: string;
 }
@@ -148,11 +156,17 @@ export function TracebackOutput({ data, className }: Props) {
   };
 
   // Single-frame polish: when there's exactly one user frame named
-  // `<module>` (cell top-level), inline the evalue next to the ename
-  // in the header and skip the chevron row. Most real cell errors are
-  // this shape; the ceremonial per-frame row is just noise.
+  // `<module>` (cell top-level), skip the chevron row and render the
+  // source block directly. Most real cell errors are this shape; the
+  // ceremonial per-frame row is just noise.
   const collapseSingleFrame =
     clusters.length === 1 && clusters[0].frame.name === "<module>" && !clusters[0].frame.library;
+
+  // Inline `ename: evalue` on one line when the evalue fits. Multi-line
+  // evalues (pytest diffs, chained SQL errors) fall through to the
+  // two-line layout. Independent of frame count — a short evalue next
+  // to the ename reads better whether we show frames below or not.
+  const inlineEvalue = Boolean(payload.evalue) && !payload.evalue.includes("\n");
 
   return (
     <div
@@ -165,9 +179,13 @@ export function TracebackOutput({ data, className }: Props) {
     >
       <Header
         ename={payload.ename}
-        evalue={payload.evalue}
+        // For parse errors, prefer `syntax.msg` ("invalid syntax") over
+        // `str(evalue)` ("invalid syntax (<tmpfile>, line 1)"). IPython
+        // stringifies SyntaxError with a temp-file tail that's noise
+        // for cell users — the caret block shows location already.
+        evalue={payload.syntax?.msg || payload.evalue}
         payload={payload}
-        inlineEvalue={collapseSingleFrame || Boolean(payload.syntax)}
+        inlineEvalue={inlineEvalue || Boolean(payload.syntax?.msg)}
       />
       {payload.syntax ? (
         <SyntaxErrorBlock syntax={payload.syntax} language={language} />
@@ -211,10 +229,10 @@ function Header({
    */
   inlineEvalue?: boolean;
 }) {
-  // Multi-line evalues (pytest AssertionError, chained SQL errors)
-  // never inline cleanly — fall through to the two-line layout even
-  // when the caller asked for inline.
-  const canInline = inlineEvalue && evalue && !evalue.includes("\n");
+  // Caller already decides whether inlining is appropriate (short,
+  // single-line evalues). Trust that here so the two layouts don't
+  // disagree on edge cases.
+  const canInline = inlineEvalue && Boolean(evalue);
   return (
     <div className="flex items-start gap-2 px-3 py-2 font-mono">
       <OctagonAlert
@@ -261,9 +279,18 @@ function SyntaxErrorBlock({ syntax, language }: { syntax: SyntaxInfo; language: 
   }
 
   // `offset` is 1-based (CPython convention). Clamp to the line length
-  // so caret padding never blows past the content.
-  const caretCol = Math.max(1, Math.min(syntax.offset || 1, syntax.text.length + 1));
-  const caretPadding = " ".repeat(caretCol - 1);
+  // so the underline never runs past the content.
+  const lineLen = syntax.text.length;
+  const startCol = Math.max(1, Math.min(syntax.offset || 1, lineLen + 1));
+  // When `end_offset` is known AND on the same line AND past `offset`,
+  // underline the whole range. Otherwise fall back to a single caret
+  // at `startCol`.
+  const sameLine = !syntax.end_lineno || syntax.end_lineno === syntax.lineno;
+  const endColRaw = syntax.end_offset ?? 0;
+  const endCol = sameLine && endColRaw > startCol ? Math.min(endColRaw, lineLen + 1) : startCol + 1;
+  const underlineLen = Math.max(1, endCol - startCol);
+  const underlinePadding = " ".repeat(startCol - 1);
+  const underline = "^".repeat(underlineLen);
 
   const gutterWidth = String(syntax.lineno || 1).length;
 
@@ -293,9 +320,9 @@ function SyntaxErrorBlock({ syntax, language }: { syntax: SyntaxInfo; language: 
         >
           {" ".repeat(gutterWidth + 1)}
         </span>
-        <code className="whitespace-pre text-destructive">
-          {caretPadding}
-          <span aria-hidden="true">^</span>
+        <code className="whitespace-pre font-semibold text-destructive">
+          {underlinePadding}
+          <span aria-hidden="true">{underline}</span>
         </code>
       </div>
     </pre>
@@ -498,6 +525,7 @@ function isSyntaxInfo(v: unknown): v is SyntaxInfo {
     typeof s.text === "string" &&
     typeof s.msg === "string"
   );
+  // end_lineno / end_offset are optional — we don't require them.
 }
 
 function safeStringify(x: unknown): string {

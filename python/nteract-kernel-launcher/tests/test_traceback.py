@@ -185,6 +185,12 @@ def test_syntax_error_emits_syntax_slot_and_no_frames():
     assert syntax["offset"] >= 1
     assert "oops" in syntax["text"]
     assert syntax["msg"]
+    # end_lineno / end_offset are always present (0 means "absent"),
+    # and when the parser populates them, end_offset >= offset.
+    assert isinstance(syntax["end_lineno"], int)
+    assert isinstance(syntax["end_offset"], int)
+    if syntax["end_offset"] > 0:
+        assert syntax["end_offset"] >= syntax["offset"]
 
 
 def test_syntax_error_text_still_present_for_copy_button():

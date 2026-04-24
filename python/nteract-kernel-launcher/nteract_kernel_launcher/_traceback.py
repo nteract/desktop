@@ -148,6 +148,17 @@ def _build_syntax_error_payload(etype: Any, evalue: Any, tb: Any) -> dict[str, A
     filename = getattr(evalue, "filename", "") or ""
     lineno = getattr(evalue, "lineno", 0) or 0
     offset = getattr(evalue, "offset", 0) or 0
+    # `end_lineno` / `end_offset` exist on 3.11+ SyntaxError. When the
+    # parser knows the end of the offending token, we can underline a
+    # range (e.g. `^^^^`) instead of a single caret — Python's own
+    # traceback format does this since 3.11.
+    # `-1` is a documented sentinel meaning "unknown" (see cpython
+    # Objects/exceptions.c); normalize to 0 so the renderer can treat
+    # 0 as "absent".
+    end_lineno_raw = getattr(evalue, "end_lineno", None)
+    end_offset_raw = getattr(evalue, "end_offset", None)
+    end_lineno = end_lineno_raw if isinstance(end_lineno_raw, int) and end_lineno_raw > 0 else 0
+    end_offset = end_offset_raw if isinstance(end_offset_raw, int) and end_offset_raw > 0 else 0
     text = getattr(evalue, "text", "") or ""
     msg = getattr(evalue, "msg", None) or str(evalue)
     return {
@@ -160,6 +171,8 @@ def _build_syntax_error_payload(etype: Any, evalue: Any, tb: Any) -> dict[str, A
             "filename": filename,
             "lineno": lineno,
             "offset": offset,
+            "end_lineno": end_lineno,
+            "end_offset": end_offset,
             "text": text.rstrip("\n"),
             "msg": msg,
         },
