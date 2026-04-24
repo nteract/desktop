@@ -5317,3 +5317,148 @@ dependencies:
         "pip block should be untouched:\n{updated}"
     );
 }
+
+// ── #2150: project-file trust reconciliation tests ─────────────────────
+
+fn write_pyproject_with_deps(dir: &std::path::Path, deps: &[&str]) {
+    let body = format!(
+        "[project]\nname = \"test\"\nversion = \"0.0.1\"\ndependencies = [{}]\n",
+        deps.iter()
+            .map(|d| format!("\"{}\"", d))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    std::fs::write(dir.join("pyproject.toml"), body).unwrap();
+}
+
+fn write_unsigned_ipynb_with_uv_deps(path: &std::path::Path, deps: &[&str]) {
+    let deps_json = deps
+        .iter()
+        .map(|d| format!("\"{}\"", d))
+        .collect::<Vec<_>>()
+        .join(",");
+    let body = format!(
+        r#"{{
+  "cells": [],
+  "metadata": {{
+    "kernelspec": {{"name": "python3", "display_name": "Python 3", "language": "python"}},
+    "language_info": {{"name": "python"}},
+    "runt": {{
+      "schema_version": "1",
+      "uv": {{"dependencies": [{}]}}
+    }}
+  }},
+  "nbformat": 4,
+  "nbformat_minor": 5
+}}"#,
+        deps_json
+    );
+    std::fs::write(path, body).unwrap();
+}
+
+#[test]
+fn test_project_file_deps_match_trust_info_pyproject_match() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_pyproject_with_deps(tmp.path(), &["pandas", "numpy"]);
+    let nb_path = tmp.path().join("notebook.ipynb");
+    write_unsigned_ipynb_with_uv_deps(&nb_path, &["pandas", "numpy"]);
+
+    let info = verify_trust_from_file(&nb_path).info;
+    assert_eq!(info.uv_dependencies, vec!["pandas", "numpy"]);
+    assert!(project_file_deps_match_trust_info(&nb_path, &info));
+}
+
+#[test]
+fn test_project_file_deps_match_trust_info_pyproject_mismatch() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_pyproject_with_deps(tmp.path(), &["pandas"]);
+    let nb_path = tmp.path().join("notebook.ipynb");
+    write_unsigned_ipynb_with_uv_deps(&nb_path, &["pandas", "numpy"]);
+
+    let info = verify_trust_from_file(&nb_path).info;
+    assert!(!project_file_deps_match_trust_info(&nb_path, &info));
+}
+
+#[test]
+fn test_project_file_deps_match_trust_info_no_project_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let nb_path = tmp.path().join("notebook.ipynb");
+    write_unsigned_ipynb_with_uv_deps(&nb_path, &["pandas"]);
+
+    let info = verify_trust_from_file(&nb_path).info;
+    assert!(!project_file_deps_match_trust_info(&nb_path, &info));
+}
+
+/// Regression for #2150: a .ipynb on disk with deps that match a
+/// project file's but no signature (a notebook saved by the pre-fix
+/// build) must land on Trusted at room creation, so the auto-launch
+/// gate in peer.rs doesn't block.
+#[tokio::test]
+#[serial]
+async fn test_new_fresh_promotes_untrusted_when_project_file_deps_match() {
+    let key_tmp = tempfile::tempdir().unwrap();
+    let key_path = key_tmp.path().join("trust-key");
+    std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
+
+    let tmp = tempfile::tempdir().unwrap();
+    write_pyproject_with_deps(tmp.path(), &["pandas", "numpy"]);
+    let nb_path = tmp.path().join("notebook.ipynb");
+    write_unsigned_ipynb_with_uv_deps(&nb_path, &["pandas", "numpy"]);
+
+    // Bare verify sees Untrusted — precondition.
+    assert_eq!(
+        verify_trust_from_file(&nb_path).status,
+        runt_trust::TrustStatus::Untrusted,
+    );
+
+    // Room creation runs reconciliation and should land on Trusted.
+    let blob_store = test_blob_store(&tmp);
+    let room = NotebookRoom::new_fresh(
+        uuid::Uuid::new_v4(),
+        Some(nb_path.clone()),
+        tmp.path(),
+        blob_store,
+        false,
+    );
+
+    let ts = room.trust_state.read().await;
+    assert_eq!(
+        ts.status,
+        runt_trust::TrustStatus::Trusted,
+        "room init should promote Untrusted -> Trusted when project-file deps match",
+    );
+
+    std::env::remove_var("RUNT_TRUST_KEY_PATH");
+}
+
+/// Counterpart: if deps differ, room init must leave trust Untrusted.
+#[tokio::test]
+#[serial]
+async fn test_new_fresh_leaves_untrusted_when_deps_differ() {
+    let key_tmp = tempfile::tempdir().unwrap();
+    let key_path = key_tmp.path().join("trust-key");
+    std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
+
+    let tmp = tempfile::tempdir().unwrap();
+    write_pyproject_with_deps(tmp.path(), &["pandas"]);
+    let nb_path = tmp.path().join("notebook.ipynb");
+    write_unsigned_ipynb_with_uv_deps(&nb_path, &["pandas", "numpy"]);
+
+    let blob_store = test_blob_store(&tmp);
+    let room = NotebookRoom::new_fresh(
+        uuid::Uuid::new_v4(),
+        Some(nb_path.clone()),
+        tmp.path(),
+        blob_store,
+        false,
+    );
+
+    let ts = room.trust_state.read().await;
+    assert_eq!(
+        ts.status,
+        runt_trust::TrustStatus::Untrusted,
+        "mismatched deps must not auto-promote",
+    );
+
+    std::env::remove_var("RUNT_TRUST_KEY_PATH");
+}

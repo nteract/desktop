@@ -898,6 +898,65 @@ pub(crate) async fn resolve_metadata_snapshot(
     None
 }
 
+/// Check whether a notebook's inline dependency list exactly matches a
+/// project file's dependency list (pyproject.toml / environment.yml /
+/// pixi.toml) in the notebook's own directory.
+///
+/// When this is true, the notebook's deps are an exact mirror of a file
+/// the user already has on disk. Signing them is safe because the trust
+/// surface ("these deps came from this machine") is already satisfied by
+/// file ownership. Used by #2150's room-init and streaming-load
+/// reconciliation to heal notebooks saved by pre-fix builds whose
+/// daemon-written deps never got a signature.
+///
+/// Returns `false` when no project file is found, when no kind matches
+/// the notebook's populated dep section, or when the lists differ.
+///
+/// Side-effect-free: does not read the notebook itself, does not touch
+/// the trust key, does not write anywhere. Callers decide what to do
+/// with the match.
+pub(crate) fn project_file_deps_match_trust_info(
+    notebook_path: &Path,
+    info: &runt_trust::TrustInfo,
+) -> bool {
+    let Some(parent) = notebook_path.parent() else {
+        return false;
+    };
+    let Some(detected) = crate::project_file::detect_project_file(parent) else {
+        return false;
+    };
+    // Order-insensitive compare: `extract_pyproject_deps` already sorts,
+    // but a hand-edited .ipynb may hold deps in any order. Sort both
+    // sides so the match is stable regardless of source ordering.
+    fn sorted(xs: &[String]) -> Vec<String> {
+        let mut v = xs.to_vec();
+        v.sort();
+        v
+    }
+    match detected.kind {
+        crate::project_file::ProjectFileKind::PyprojectToml => {
+            let Ok(content) = std::fs::read_to_string(&detected.path) else {
+                return false;
+            };
+            let project_deps = extract_pyproject_deps(&content);
+            !project_deps.is_empty() && sorted(&project_deps) == sorted(&info.uv_dependencies)
+        }
+        crate::project_file::ProjectFileKind::EnvironmentYml => {
+            let Ok(env_config) = crate::project_file::parse_environment_yml(&detected.path) else {
+                return false;
+            };
+            !env_config.dependencies.is_empty()
+                && sorted(&env_config.dependencies) == sorted(&info.conda_dependencies)
+        }
+        crate::project_file::ProjectFileKind::PixiToml => {
+            // Pixi deps currently bypass the HMAC check entirely
+            // (see #2151). Reconciliation is a no-op here until that
+            // lands — returning false keeps behavior unchanged.
+            false
+        }
+    }
+}
+
 /// Verify trust status of a notebook by reading its file from disk.
 /// Returns TrustState with the verification result.
 ///

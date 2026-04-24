@@ -342,7 +342,26 @@ impl NotebookRoom {
                     pending_launch: false,
                 },
             },
-            Some(p) => verify_trust_from_file(p),
+            Some(p) => {
+                let mut initial = verify_trust_from_file(p);
+                // #2150 reconciliation: if the .ipynb on disk has deps that
+                // exactly match a project file's deps (pyproject/env.yml),
+                // treat it as Trusted in memory so the auto-launch gate in
+                // peer.rs does not block. The signature lands in the doc
+                // via streaming_load's reconciliation pass, which fires
+                // before the first sync flush.
+                if matches!(initial.status, runt_trust::TrustStatus::Untrusted)
+                    && project_file_deps_match_trust_info(p, &initial.info)
+                {
+                    info!(
+                        "[notebook-sync] Reconciled project-file trust for {:?} (deps match; promoting Untrusted -> Trusted)",
+                        p
+                    );
+                    initial.status = runt_trust::TrustStatus::Trusted;
+                    initial.info.status = runt_trust::TrustStatus::Trusted;
+                }
+                initial
+            }
         };
         info!(
             "[notebook-sync] Trust status for {}: {:?}",
@@ -413,7 +432,16 @@ impl NotebookRoom {
                     pending_launch: false,
                 },
             },
-            Some(p) => verify_trust_from_file(p),
+            Some(p) => {
+                let mut initial = verify_trust_from_file(p);
+                if matches!(initial.status, runt_trust::TrustStatus::Untrusted)
+                    && project_file_deps_match_trust_info(p, &initial.info)
+                {
+                    initial.status = runt_trust::TrustStatus::Trusted;
+                    initial.info.status = runt_trust::TrustStatus::Trusted;
+                }
+                initial
+            }
         };
         let (state_changed_tx, _) = broadcast::channel(16);
         let state = runtime_doc::RuntimeStateHandle::new(RuntimeStateDoc::new(), state_changed_tx);
