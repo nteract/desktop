@@ -1844,14 +1844,23 @@ pub(crate) async fn reset_starting_state(
 /// Returns `Ok((PooledEnv, actual_packages))` on success, `Err(())` on failure.
 pub(crate) async fn try_uv_pool_for_inline_deps(
     deps: &[String],
+    bootstrap_dx: bool,
     daemon: &std::sync::Arc<crate::daemon::Daemon>,
     progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler>,
 ) -> Result<(crate::PooledEnv, Vec<String>), ()> {
+    // The effective install set includes `dx` when `bootstrap_dx` is on.
+    // Using it for both the pool-compat check and the delta install
+    // keeps the env content consistent with the inline cache hash we
+    // rename to below — otherwise we'd cache a pool env under the
+    // bootstrap key without `dx` actually installed, and subsequent
+    // cache hits would silently fail `import dx` in the kernel.
+    let effective_deps = crate::inline_env::inline_deps_with_bootstrap(deps, bootstrap_dx);
+
     // Quick pre-check: if any dep has version specifiers, skip pool entirely
     // (avoids consuming a pool env we'd have to discard)
     let settings_packages = daemon.uv_pool_packages().await;
     if matches!(
-        crate::inline_env::compare_deps_to_pool(deps, &settings_packages),
+        crate::inline_env::compare_deps_to_pool(&effective_deps, &settings_packages),
         crate::inline_env::PoolDepRelation::Independent
     ) {
         debug!("[notebook-sync] UV inline deps have version constraints, skipping pool reuse");
@@ -1868,7 +1877,7 @@ pub(crate) async fn try_uv_pool_for_inline_deps(
     };
 
     let actual_packages = env.prewarmed_packages.clone();
-    let relation = crate::inline_env::compare_deps_to_pool(deps, &actual_packages);
+    let relation = crate::inline_env::compare_deps_to_pool(&effective_deps, &actual_packages);
 
     match relation {
         crate::inline_env::PoolDepRelation::Subset => {
@@ -1876,8 +1885,13 @@ pub(crate) async fn try_uv_pool_for_inline_deps(
             // Promote the pool env into the inline-env cache so the next
             // restart with the same deps cache-hits instead of taking
             // another pool env. See #2089 / #2083.
-            crate::inline_env::claim_pool_env_for_uv_inline_cache(&mut env, deps, None, false)
-                .await;
+            crate::inline_env::claim_pool_env_for_uv_inline_cache(
+                &mut env,
+                deps,
+                None,
+                bootstrap_dx,
+            )
+            .await;
             Ok((env, actual_packages))
         }
         crate::inline_env::PoolDepRelation::Additive { delta } => {
@@ -1902,7 +1916,10 @@ pub(crate) async fn try_uv_pool_for_inline_deps(
                     // Promote the pool env into the inline-env cache so
                     // the next restart cache-hits. See #2089 / #2083.
                     crate::inline_env::claim_pool_env_for_uv_inline_cache(
-                        &mut env, deps, None, false,
+                        &mut env,
+                        deps,
+                        None,
+                        bootstrap_dx,
                     )
                     .await;
                     progress_handler.on_progress(
@@ -2609,7 +2626,14 @@ pub(crate) async fn auto_launch_kernel(
                 (env, Some(deps))
             } else if prerelease.is_none() {
                 // Try pool reuse for bare deps without prerelease
-                match try_uv_pool_for_inline_deps(&deps, &daemon, progress_handler.clone()).await {
+                match try_uv_pool_for_inline_deps(
+                    &deps,
+                    bootstrap_dx,
+                    &daemon,
+                    progress_handler.clone(),
+                )
+                .await
+                {
                     Ok((env, pool_pkgs)) => {
                         let mut pooled = env;
                         pooled.prewarmed_packages = pool_pkgs;

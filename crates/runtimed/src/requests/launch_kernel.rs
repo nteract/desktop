@@ -695,8 +695,13 @@ pub(crate) async fn handle(
                 (env, Some(deps))
             } else if prerelease.is_none() {
                 // Try pool reuse for bare deps without prerelease
-                match try_uv_pool_for_inline_deps(&deps, daemon, launch_progress_handler.clone())
-                    .await
+                match try_uv_pool_for_inline_deps(
+                    &deps,
+                    bootstrap_dx,
+                    daemon,
+                    launch_progress_handler.clone(),
+                )
+                .await
                 {
                     Ok((env, pool_pkgs)) => {
                         let mut pooled = env;

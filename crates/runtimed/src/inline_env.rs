@@ -65,7 +65,7 @@ fn get_inline_cache_dir() -> std::path::PathBuf {
 /// has to ride along with the inline env. Folding `dx` into the dep list
 /// also changes the env hash so bootstrap and non-bootstrap envs don't
 /// collide in the cache.
-fn inline_deps_with_bootstrap(deps: &[String], bootstrap_dx: bool) -> Vec<String> {
+pub(crate) fn inline_deps_with_bootstrap(deps: &[String], bootstrap_dx: bool) -> Vec<String> {
     if bootstrap_dx {
         let mut out = deps.to_vec();
         out.push("dx".to_string());
