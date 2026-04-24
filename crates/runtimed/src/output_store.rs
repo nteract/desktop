@@ -235,9 +235,17 @@ pub struct DisplayDataManifest {
 }
 
 /// Maximum head/tail size per side in bytes.
-const PREVIEW_BYTE_CAP: usize = 1024;
+// Size/line caps for the head+tail preview we stamp on blob-spilled
+// manifests. Sized so typical cell outputs (df.head, model.summary,
+// short training logs) fit entirely under the cap — when the cap is
+// tight, agents reading `get_cell`/`execute_cell` responses get a
+// head/tail/elision marker instead of real output, and many agents
+// don't follow the blob URL. Genuine multi-MB dumps (full training
+// runs, scraped pages) still spill. Callers that need the full blob
+// content can request it explicitly via `get_cell(full_output=true)`.
+const PREVIEW_BYTE_CAP: usize = 8 * 1024;
 /// Maximum head/tail size per side in lines.
-const PREVIEW_LINE_CAP: usize = 40;
+const PREVIEW_LINE_CAP: usize = 200;
 
 /// LLM-friendly summary of a spilled stream text blob. Populated at
 /// manifest-creation time so readers never need to fetch the blob just
@@ -1180,27 +1188,31 @@ mod tests {
 
     #[test]
     fn stream_preview_long_text_has_head_and_tail() {
-        let text = (0..200)
+        // Enough lines to force head+tail+elided past the line cap.
+        let total = PREVIEW_LINE_CAP * 4;
+        let text = (0..total)
             .map(|i| format!("line {i}"))
             .collect::<Vec<_>>()
             .join("\n");
         let p = StreamPreview::from_text(&text);
         assert!(p.head.starts_with("line 0\n"));
-        assert!(p.tail.ends_with("line 199"));
-        assert!(p.head.len() <= 1024);
-        assert!(p.head.lines().count() <= 40);
-        assert!(p.tail.len() <= 1024);
-        assert!(p.tail.lines().count() <= 40);
+        assert!(p.tail.ends_with(&format!("line {}", total - 1)));
+        assert!(p.head.len() <= PREVIEW_BYTE_CAP);
+        assert!(p.head.lines().count() <= PREVIEW_LINE_CAP);
+        assert!(p.tail.len() <= PREVIEW_BYTE_CAP);
+        assert!(p.tail.lines().count() <= PREVIEW_LINE_CAP);
         assert_eq!(p.total_bytes, text.len() as u64);
-        assert_eq!(p.total_lines, 200);
+        assert_eq!(p.total_lines, total as u64);
     }
 
     #[test]
     fn stream_preview_caps_head_at_byte_limit_mid_line() {
-        let text = "x".repeat(10_000);
+        // Force one line longer than the byte cap.
+        let total_bytes = PREVIEW_BYTE_CAP * 4;
+        let text = "x".repeat(total_bytes);
         let p = StreamPreview::from_text(&text);
-        assert!(p.head.len() <= 1024);
-        assert_eq!(p.total_bytes, 10_000);
+        assert!(p.head.len() <= PREVIEW_BYTE_CAP);
+        assert_eq!(p.total_bytes, total_bytes as u64);
     }
 
     #[test]
@@ -1233,13 +1245,14 @@ mod tests {
 
     #[test]
     fn stream_preview_caps_tail_on_long_single_line() {
-        // A single multi-KB line should cap the tail too. The tail walks
-        // forward to the next char boundary, so allow a small overrun on
-        // the advertised byte cap (≤ 3 bytes of slack for UTF-8).
-        let text = "y".repeat(10_000);
+        // A single multi-byte-cap line should cap the tail too. The tail
+        // walks forward to the next char boundary, so allow a small
+        // overrun on the advertised byte cap (≤ 3 bytes of slack for UTF-8).
+        let total_bytes = PREVIEW_BYTE_CAP * 4;
+        let text = "y".repeat(total_bytes);
         let p = StreamPreview::from_text(&text);
-        assert_eq!(p.total_bytes, 10_000);
-        assert!(p.tail.len() <= 1024 + 3);
+        assert_eq!(p.total_bytes, total_bytes as u64);
+        assert!(p.tail.len() <= PREVIEW_BYTE_CAP + 3);
         // Head plus tail together should still sample both ends of the stream.
         assert!(p.head.starts_with('y'));
     }
@@ -1251,20 +1264,22 @@ mod tests {
         // iterated forward from `lines.len() - line_cap` and broke on the
         // byte cap, which silently dropped the newest lines.
         //
-        // Build 100 lines of 60 bytes each. The last 40 lines sum to 2400
-        // bytes, well over the 1 KiB cap. The tail should contain the very
-        // last line ("line 99") even though it had to drop earlier ones to
-        // stay within the cap.
-        let text: String = (0..100)
-            .map(|i| format!("{}line {i}\n", "x".repeat(50)))
+        // Build `line_cap * 2` lines each wide enough that the tail window
+        // exceeds the byte cap. The tail should contain the very last line
+        // even though it had to drop earlier ones to stay within the cap.
+        let line_width = (PREVIEW_BYTE_CAP / PREVIEW_LINE_CAP) + 10;
+        let total_lines = PREVIEW_LINE_CAP * 2;
+        let text: String = (0..total_lines)
+            .map(|i| format!("{}line {i}\n", "x".repeat(line_width)))
             .collect();
         let p = StreamPreview::from_text(&text);
+        let last = format!("line {}", total_lines - 1);
         assert!(
-            p.tail.contains("line 99"),
+            p.tail.contains(&last),
             "tail should contain the final line; got: {:?}",
             p.tail
         );
-        assert!(p.tail.len() <= 1024 + 3);
+        assert!(p.tail.len() <= PREVIEW_BYTE_CAP + 3);
     }
 
     #[test]
@@ -1299,13 +1314,14 @@ mod tests {
         // Three-byte code point repeated past the cap — must not panic and
         // must produce valid UTF-8. Allow a few bytes of slack because
         // safe_byte_slice rounds to char boundaries.
-        let text = "日".repeat(1_000); // 3 bytes each = 3_000 bytes
+        let char_count = PREVIEW_BYTE_CAP * 2; // each char = 3 bytes, so well past the cap
+        let text = "日".repeat(char_count);
         let p = StreamPreview::from_text(&text);
-        assert_eq!(p.total_bytes, 3_000);
+        assert_eq!(p.total_bytes, (char_count * 3) as u64);
         assert!(p.head.chars().all(|c| c == '日'));
         assert!(p.tail.chars().all(|c| c == '日'));
-        assert!(p.head.len() <= 1024 + 3);
-        assert!(p.tail.len() <= 1024 + 3);
+        assert!(p.head.len() <= PREVIEW_BYTE_CAP + 3);
+        assert!(p.tail.len() <= PREVIEW_BYTE_CAP + 3);
     }
 
     #[tokio::test]

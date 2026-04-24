@@ -17,6 +17,13 @@ use super::{arg_bool, arg_str, tool_error, tool_success};
 pub struct GetCellParams {
     /// The cell ID to retrieve.
     pub cell_id: String,
+    /// Return the unabridged output text for any stream or error that was
+    /// spilled to the blob store. When false (the default), outputs past the
+    /// daemon's preview cap render as a head + tail + elision marker +
+    /// blob URL. Pass `true` only when the agent truly needs the full
+    /// text — the response can grow large and will consume context budget.
+    #[serde(default)]
+    pub full_output: Option<bool>,
 }
 
 #[allow(dead_code)]
@@ -50,6 +57,7 @@ pub async fn get_cell(
 ) -> Result<CallToolResult, McpError> {
     let cell_id = arg_str(request, "cell_id")
         .ok_or_else(|| McpError::invalid_params("Missing required parameter: cell_id", None))?;
+    let full_output = arg_bool(request, "full_output").unwrap_or(false);
 
     let handle = require_handle!(server);
 
@@ -75,13 +83,22 @@ pub async fn get_cell(
         raw_outputs = handle.get_cell_outputs(cell_id).unwrap_or_default();
     }
 
-    // Resolve outputs (with widget state synthesis)
+    // Resolve outputs (with widget state synthesis). `get_cell` is the
+    // only tool that honors `full_output=true`; all other paths hardcode
+    // preview mode to protect the agent's context budget.
     let comms = handle.get_runtime_state().ok().map(|rs| rs.comms);
     let outputs = output_resolver::resolve_cell_outputs_for_llm(
         &raw_outputs,
-        &server.blob_base_url,
-        &server.blob_store_path,
-        comms.as_ref(),
+        output_resolver::ResolveCtx {
+            blob_base_url: server.blob_base_url.as_deref(),
+            blob_store_path: server.blob_store_path.as_deref(),
+            comms: comms.as_ref(),
+            length: if full_output {
+                output_resolver::OutputLength::Full
+            } else {
+                output_resolver::OutputLength::Preview
+            },
+        },
     )
     .await;
 
@@ -176,11 +193,16 @@ pub async fn get_all_cells(
 
                 // Resolve outputs through the output resolver so that
                 // text/llm+plain is synthesized and viz specs are summarized.
+                // `get_all_cells` never fetches full blob text — a batch of
+                // cells could blow context even with one large output.
                 let resolved = output_resolver::resolve_cell_outputs_for_llm(
                     raw_outputs,
-                    &server.blob_base_url,
-                    &server.blob_store_path,
-                    comms.as_ref(),
+                    output_resolver::ResolveCtx {
+                        blob_base_url: server.blob_base_url.as_deref(),
+                        blob_store_path: server.blob_store_path.as_deref(),
+                        comms: comms.as_ref(),
+                        ..Default::default()
+                    },
                 )
                 .await;
                 let output_texts: Vec<String> = resolved
@@ -216,9 +238,12 @@ pub async fn get_all_cells(
                 let raw_outputs = outputs_by_cell.get(&cell.id).unwrap_or(&empty_outputs);
                 let outputs = output_resolver::resolve_cell_outputs_for_llm(
                     raw_outputs,
-                    &server.blob_base_url,
-                    &server.blob_store_path,
-                    comms.as_ref(),
+                    output_resolver::ResolveCtx {
+                        blob_base_url: server.blob_base_url.as_deref(),
+                        blob_store_path: server.blob_store_path.as_deref(),
+                        comms: comms.as_ref(),
+                        ..Default::default()
+                    },
                 )
                 .await;
                 let header = formatting::format_cell_header(&cell.id, &cell.cell_type, ec, status);
@@ -260,9 +285,12 @@ pub async fn get_all_cells(
                 if include_outputs && !raw_outputs.is_empty() {
                     let outputs = output_resolver::resolve_cell_outputs_for_llm(
                         raw_outputs,
-                        &server.blob_base_url,
-                        &server.blob_store_path,
-                        comms.as_ref(),
+                        output_resolver::ResolveCtx {
+                            blob_base_url: server.blob_base_url.as_deref(),
+                            blob_store_path: server.blob_store_path.as_deref(),
+                            comms: comms.as_ref(),
+                            ..Default::default()
+                        },
                     )
                     .await;
                     let output_text = formatting::format_outputs_text(&outputs);

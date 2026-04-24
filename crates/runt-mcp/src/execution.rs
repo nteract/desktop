@@ -125,14 +125,17 @@ pub async fn execute_and_wait(
     };
 
     let comms = handle.get_runtime_state().ok().map(|rs| rs.comms);
+    // Execute paths (and `and_run` variants) always use preview mode —
+    // agents that need unabridged output should call `get_cell(full_output=true)`
+    // afterwards rather than paying for it on every run.
+    let ctx = output_resolver::ResolveCtx {
+        blob_base_url: blob_base_url.as_deref(),
+        blob_store_path: blob_store_path.as_deref(),
+        comms: comms.as_ref(),
+        ..Default::default()
+    };
     let outputs = if !output_manifests.is_empty() {
-        output_resolver::resolve_cell_outputs_for_llm(
-            &output_manifests,
-            blob_base_url,
-            blob_store_path,
-            comms.as_ref(),
-        )
-        .await
+        output_resolver::resolve_cell_outputs_for_llm(&output_manifests, ctx).await
     } else {
         // Outputs live in RuntimeStateDoc keyed by execution_id. Fetch via
         // the explicit lookup — CellSnapshot no longer carries them.
@@ -140,13 +143,7 @@ pub async fn execute_and_wait(
         if raw_outputs.is_empty() {
             Vec::new()
         } else {
-            output_resolver::resolve_cell_outputs_for_llm(
-                &raw_outputs,
-                blob_base_url,
-                blob_store_path,
-                comms.as_ref(),
-            )
-            .await
+            output_resolver::resolve_cell_outputs_for_llm(&raw_outputs, ctx).await
         }
     };
 

@@ -1901,9 +1901,11 @@ async fn stream_blob_spill_is_renderable_by_llm_resolver() {
 
     let outputs = resolve_cell_outputs_for_llm(
         &[manifest_json],
-        &Some("http://127.0.0.1:1234".to_string()),
-        &Some(dir.path().to_path_buf()),
-        None,
+        runtimed_client::output_resolver::ResolveCtx {
+            blob_base_url: Some("http://127.0.0.1:1234"),
+            blob_store_path: Some(dir.path()),
+            ..Default::default()
+        },
     )
     .await;
 
@@ -1941,9 +1943,11 @@ async fn error_blob_spill_is_renderable_by_llm_resolver() {
 
     let outputs = resolve_cell_outputs_for_llm(
         &[manifest_json],
-        &Some("http://127.0.0.1:1234".to_string()),
-        &Some(dir.path().to_path_buf()),
-        None,
+        runtimed_client::output_resolver::ResolveCtx {
+            blob_base_url: Some("http://127.0.0.1:1234"),
+            blob_store_path: Some(dir.path()),
+            ..Default::default()
+        },
     )
     .await;
 
