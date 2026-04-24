@@ -816,6 +816,26 @@ pub(crate) async fn check_and_update_trust_state(room: &NotebookRoom) {
     }
 }
 
+/// Sign the snapshot's runt dependency metadata with the daemon's trust key
+/// and write the signature + timestamp back into the snapshot in place.
+///
+/// Does not persist the snapshot — the caller writes it back to the doc.
+/// Used by both `resign_trusted_snapshot` (re-sign a previously-Trusted
+/// notebook whose deps changed) and the project-file bootstrap path in
+/// `auto_launch_kernel` (auto-sign deps the daemon itself sourced from
+/// pyproject.toml / pixi.toml / environment.yml so the trust dialog
+/// doesn't fire on deps that came from a file the user already owns).
+pub(crate) fn auto_sign_in_place(snapshot: &mut NotebookMetadataSnapshot) -> Result<(), String> {
+    let runt_value = serde_json::to_value(&snapshot.runt)
+        .map_err(|e| format!("serialize runt metadata: {}", e))?;
+    let mut additional = std::collections::HashMap::new();
+    additional.insert("runt".to_string(), runt_value);
+    let signature = runt_trust::sign_notebook_dependencies(&additional)?;
+    snapshot.runt.trust_signature = Some(signature);
+    snapshot.runt.trust_timestamp = Some(chrono::Utc::now().to_rfc3339());
+    Ok(())
+}
+
 /// Re-sign the notebook's current metadata with the daemon's trust key and
 /// write the new signature back into the Automerge doc. Used when deps have
 /// changed on a previously-Trusted notebook, so the user doesn't have to
@@ -831,14 +851,7 @@ async fn resign_trusted_snapshot(room: &NotebookRoom) -> Result<bool, String> {
         return Ok(false);
     };
 
-    let runt_value = serde_json::to_value(&snapshot.runt)
-        .map_err(|e| format!("serialize runt metadata: {}", e))?;
-    let mut additional = std::collections::HashMap::new();
-    additional.insert("runt".to_string(), runt_value);
-    let signature = runt_trust::sign_notebook_dependencies(&additional)?;
-
-    snapshot.runt.trust_signature = Some(signature);
-    snapshot.runt.trust_timestamp = Some(chrono::Utc::now().to_rfc3339());
+    auto_sign_in_place(&mut snapshot)?;
 
     doc.fork_and_merge(|fork| {
         let _ = fork.set_metadata_snapshot(&snapshot);
@@ -2268,9 +2281,24 @@ pub(crate) async fn auto_launch_kernel(
                         doc.fork_and_merge(|fork| {
                             let mut snap = fork.get_metadata_snapshot().unwrap_or_default();
                             let current_deps = snap.runt.pixi.as_ref().map(|p| &p.dependencies);
-                            if current_deps.is_none_or(|d| d != &deps) {
+                            let deps_match = current_deps.is_some_and(|d| d == &deps);
+                            // Re-sign even when deps already match if the snapshot
+                            // isn't verifiably trusted — covers notebooks bootstrapped
+                            // by the pre-fix build (matching deps, no signature).
+                            let trust_ok = matches!(
+                                verify_trust_from_snapshot(&snap).status,
+                                runt_trust::TrustStatus::Trusted
+                                    | runt_trust::TrustStatus::NoDependencies
+                            );
+                            if !deps_match || !trust_ok {
                                 let pixi = snap.pixi_section_or_default();
                                 pixi.dependencies = deps;
+                                if let Err(e) = auto_sign_in_place(&mut snap) {
+                                    warn!(
+                                        "[notebook-sync] Failed to auto-sign pixi.toml bootstrap: {}",
+                                        e
+                                    );
+                                }
                                 let _ = fork.set_metadata_snapshot(&snap);
                                 changed = true;
                             }
@@ -2295,7 +2323,13 @@ pub(crate) async fn auto_launch_kernel(
                         doc.fork_and_merge(|fork| {
                             let mut snap = fork.get_metadata_snapshot().unwrap_or_default();
                             let current_deps = snap.runt.uv.as_ref().map(|u| &u.dependencies);
-                            if current_deps.is_none_or(|d| d != &deps) {
+                            let deps_match = current_deps.is_some_and(|d| d == &deps);
+                            let trust_ok = matches!(
+                                verify_trust_from_snapshot(&snap).status,
+                                runt_trust::TrustStatus::Trusted
+                                    | runt_trust::TrustStatus::NoDependencies
+                            );
+                            if !deps_match || !trust_ok {
                                 let uv = snap.runt.uv.get_or_insert_with(|| {
                                     notebook_doc::metadata::UvInlineMetadata {
                                         dependencies: Vec::new(),
@@ -2304,6 +2338,12 @@ pub(crate) async fn auto_launch_kernel(
                                     }
                                 });
                                 uv.dependencies = deps;
+                                if let Err(e) = auto_sign_in_place(&mut snap) {
+                                    warn!(
+                                        "[notebook-sync] Failed to auto-sign pyproject.toml bootstrap: {}",
+                                        e
+                                    );
+                                }
                                 let _ = fork.set_metadata_snapshot(&snap);
                                 changed = true;
                             }
@@ -2325,7 +2365,13 @@ pub(crate) async fn auto_launch_kernel(
                         doc.fork_and_merge(|fork| {
                             let mut snap = fork.get_metadata_snapshot().unwrap_or_default();
                             let current_deps = snap.runt.conda.as_ref().map(|c| &c.dependencies);
-                            if current_deps.is_none_or(|d| d != &deps) {
+                            let deps_match = current_deps.is_some_and(|d| d == &deps);
+                            let trust_ok = matches!(
+                                verify_trust_from_snapshot(&snap).status,
+                                runt_trust::TrustStatus::Trusted
+                                    | runt_trust::TrustStatus::NoDependencies
+                            );
+                            if !deps_match || !trust_ok {
                                 let conda = snap.runt.conda.get_or_insert_with(|| {
                                     notebook_doc::metadata::CondaInlineMetadata {
                                         dependencies: Vec::new(),
@@ -2334,6 +2380,12 @@ pub(crate) async fn auto_launch_kernel(
                                     }
                                 });
                                 conda.dependencies = deps;
+                                if let Err(e) = auto_sign_in_place(&mut snap) {
+                                    warn!(
+                                        "[notebook-sync] Failed to auto-sign environment.yml bootstrap: {}",
+                                        e
+                                    );
+                                }
                                 let _ = fork.set_metadata_snapshot(&snap);
                                 changed = true;
                             }
