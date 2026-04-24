@@ -2169,7 +2169,7 @@ impl Daemon {
             needs_trust_approval,
             error: None,
             ephemeral: false,
-            notebook_path: Some(path.clone()),
+            notebook_path: Some(notebook_id.clone()),
         };
         send_json_frame(&mut writer, &response).await?;
 

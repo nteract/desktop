@@ -645,7 +645,7 @@ async fn initialize_notebook_sync_open(
 
     let (frame_tx, raw_frame_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
 
-    let path_for_payload = path.to_string_lossy().to_string();
+    let caller_path = path.to_string_lossy().to_string();
     let result = notebook_sync::connect::connect_open_relay(socket_path, path, frame_tx)
         .await
         .map_err(|e| format!("sync connect (open): {}", e))?;
@@ -668,7 +668,7 @@ async fn initialize_notebook_sync_open(
         cell_count: info.cell_count,
         needs_trust_approval: info.needs_trust_approval,
         ephemeral: info.ephemeral,
-        notebook_path: Some(path_for_payload),
+        notebook_path: info.notebook_path.or(Some(caller_path)),
         runtime: None,
     };
 
