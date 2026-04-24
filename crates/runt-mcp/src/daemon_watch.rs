@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use runtimed_client::client::PoolClient;
 use runtimed_client::daemon_connection::{DaemonConnection, DaemonEvent};
 use tokio::sync::{broadcast, RwLock};
 use tracing::{info, warn};
@@ -189,36 +190,61 @@ fn looks_like_uuid(target: &str) -> bool {
 /// For file-backed notebooks, uses `connect_open(path)` so the daemon
 /// reloads from disk (the UUID-only path would yield an empty document
 /// because file-backed rooms' `.automerge` persist files are deleted).
-/// For ephemeral notebooks, uses `connect(uuid)` and detects data loss
-/// (empty document after reconnect means the daemon evicted the room).
-/// When this happens, the session is cleared so the watch loop stops
-/// trying to rejoin — without this, the 10s reconnect cycle would
-/// perpetually recreate peers and prevent proper room eviction (#2088).
+///
+/// For ephemeral notebooks, checks `list_rooms` first to verify the room
+/// still exists in the daemon. If the room was evicted during the
+/// disconnect, the session is cleared immediately without creating a new
+/// peer connection — avoiding the creation of phantom rooms (#2088).
 async fn rejoin(
     socket_path: &Path,
     session: &Arc<RwLock<Option<NotebookSession>>>,
     peer_label: &Arc<RwLock<String>>,
     override_target: Option<String>,
 ) {
-    let (notebook_id, notebook_path, prev_cell_count) = match override_target {
-        Some(target) if looks_like_uuid(&target) => (target, None, 0),
+    let (notebook_id, notebook_path) = match override_target {
+        Some(target) if looks_like_uuid(&target) => (target, None),
         Some(target) => {
             // Treat as file path. We'll learn the real notebook_id from
             // connect_open's response.
-            (target.clone(), Some(target), 0)
+            (target.clone(), Some(target))
         }
         None => {
             let guard = session.read().await;
             match guard.as_ref() {
-                Some(s) => (
-                    s.notebook_id.clone(),
-                    s.notebook_path.clone(),
-                    s.handle.get_cell_ids().len(),
-                ),
+                Some(s) => (s.notebook_id.clone(), s.notebook_path.clone()),
                 None => return,
             }
         }
     };
+
+    // For ephemeral notebooks (no file path), verify the room still exists
+    // in the daemon before attempting to rejoin. This is the explicit signal
+    // that the room was evicted — no heuristics needed. Without this check,
+    // a `connect(uuid)` to an evicted room would create a new empty room,
+    // wasting a kernel and preventing proper eviction (#2088).
+    let has_file = notebook_path
+        .as_ref()
+        .is_some_and(|p| std::path::Path::new(p.as_str()).exists());
+    if !has_file {
+        let client = PoolClient::new(socket_path.to_path_buf());
+        match client.list_rooms().await {
+            Ok(rooms) => {
+                if !rooms.iter().any(|r| r.notebook_id == notebook_id) {
+                    info!(
+                        "Room {notebook_id} no longer exists in daemon; \
+                         clearing session (notebook was evicted)"
+                    );
+                    *session.write().await = None;
+                    return;
+                }
+            }
+            Err(e) => {
+                warn!("list_rooms failed during rejoin check: {e}");
+                // Can't verify — fall through to the connect attempt which
+                // will also fail if the daemon is truly unreachable.
+            }
+        }
+    }
 
     let label = peer_label.read().await.clone();
 
@@ -271,21 +297,6 @@ async fn rejoin(
 
         match result {
             Ok((handle, broadcast_rx, new_cell_count, new_notebook_id)) => {
-                if prev_cell_count > 0 && new_cell_count == 0 && notebook_path.is_none() {
-                    warn!(
-                        "Ephemeral notebook lost: rejoined {notebook_id} but document is empty \
-                         (had {prev_cell_count} cells). Clearing session to stop reconnect loop."
-                    );
-                    // Clear the session so the watch loop stops trying to
-                    // rejoin an evicted ephemeral notebook. Without this,
-                    // every 10s daemon_watch reconnects, briefly creates a
-                    // peer, detects the empty doc, and drops — but the
-                    // session stays `Some`, so `has_session` remains true and
-                    // the cycle repeats, preventing proper eviction (#2088).
-                    *session.write().await = None;
-                    return;
-                }
-
                 crate::presence::announce(&handle, &label).await;
 
                 let new_session = NotebookSession {
