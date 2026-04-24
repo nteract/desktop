@@ -4999,3 +4999,55 @@ async fn capture_migrates_pre_upgrade_notebook() {
         vec!["polars".to_string()]
     );
 }
+
+#[test]
+fn test_env_yml_insertion_point_skips_pip_block() {
+    let content = "name: test\ndependencies:\n  - numpy\n  - pip:\n    - pyyaml\n    - requests\n  - scipy\nchannels:\n  - conda-forge\n";
+    let point = find_env_yml_deps_insertion_point(content);
+    let expected =
+        "name: test\ndependencies:\n  - numpy\n  - pip:\n    - pyyaml\n    - requests\n  - scipy\n"
+            .len();
+    assert_eq!(point, Some(expected));
+}
+
+#[test]
+fn test_env_yml_insertion_point_pip_block_at_end() {
+    let content = "dependencies:\n  - numpy\n  - pandas\n  - pip:\n    - pyyaml\n";
+    let point = find_env_yml_deps_insertion_point(content);
+    // Insert after last top-level conda dep, before pip block
+    let expected = "dependencies:\n  - numpy\n  - pandas\n".len();
+    assert_eq!(point, Some(expected));
+}
+
+#[test]
+fn test_extract_all_env_yml_package_names() {
+    let content = "\
+name: test
+channels:
+  - conda-forge
+dependencies:
+  - numpy=1.24
+  - python=3.11
+  - pip:
+    - pyyaml>=6.0
+    - requests
+  - scipy
+";
+    let names = extract_all_env_yml_package_names(content);
+    assert!(names.contains("numpy"), "should contain conda dep numpy");
+    assert!(names.contains("python"), "should contain python");
+    assert!(names.contains("scipy"), "should contain conda dep scipy");
+    assert!(names.contains("pyyaml"), "should contain pip dep pyyaml");
+    assert!(
+        names.contains("requests"),
+        "should contain pip dep requests"
+    );
+    assert_eq!(names.len(), 5);
+}
+
+#[test]
+fn test_extract_all_env_yml_package_names_malformed() {
+    let content = "not: valid: {{yaml";
+    let names = extract_all_env_yml_package_names(content);
+    assert!(names.is_empty());
+}
