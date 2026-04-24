@@ -713,12 +713,17 @@ pub fn validate_package_specifier(spec: &str) -> Result<(), String> {
 
 /// Strict specifier check for conda/pixi envs.
 ///
-/// Same base rules as [`validate_package_specifier`] plus a rejection
-/// of PEP 508 extras syntax (`pkg[extra]`). Conda matchspecs and
-/// rattler package names don't accept brackets — without this guard,
-/// a UI-accepted spec like `dx[polars]` lands in the Automerge doc,
-/// hits rattler's installer, and SIGKILLs the kernel with an
-/// `invalid bracket` error. See issue #2119.
+/// Same base rules as [`validate_package_specifier`] with a targeted
+/// rejection of PEP 508 extras syntax (`pkg[extra]` / `pkg[a,b]`).
+/// Conda MatchSpec grammar DOES accept brackets — but only for
+/// `key=value` attribute pairs (e.g. `foo[version=1.0.*]`,
+/// `python[channel=conda-forge]`). PEP 508 extras are `[name]` or
+/// `[name,name,...]` with no `=`; rattler SIGKILLs the kernel with
+/// `invalid bracket` when one lands in a conda/pixi dep list.
+///
+/// We tell the two apart by the presence of `=` inside the first
+/// bracket group: with `=` it's a MatchSpec attribute (allow); without
+/// `=` it's PEP 508 extras (reject). See #2119 and the follow-up.
 ///
 /// # Examples
 ///
@@ -726,17 +731,42 @@ pub fn validate_package_specifier(spec: &str) -> Result<(), String> {
 /// use notebook_doc::metadata::validate_conda_package_specifier;
 /// assert!(validate_conda_package_specifier("pandas>=2.0").is_ok());
 /// assert!(validate_conda_package_specifier("conda-forge::numpy").is_ok());
+/// // Conda MatchSpec attribute brackets — valid.
+/// assert!(validate_conda_package_specifier("foo[version=1.0.*]").is_ok());
+/// assert!(validate_conda_package_specifier("python[channel=conda-forge]").is_ok());
+/// // PEP 508 extras — rejected (would crash rattler).
 /// assert!(validate_conda_package_specifier("dx[polars]").is_err());
 /// assert!(validate_conda_package_specifier("requests[security]").is_err());
 /// ```
 pub fn validate_conda_package_specifier(spec: &str) -> Result<(), String> {
-    if spec.contains('[') || spec.contains(']') {
-        return Err(format!(
-            "'{spec}' uses PEP 508 extras syntax (brackets), which conda \
-             and pixi don't accept. Add the extra as a separate dependency, \
-             or switch to a uv-managed environment."
-        ));
+    // Scan every `[…]` group, not just the first. A stray second group
+    // (`python[channel=conda-forge][gpu]`) or an unmatched `[`
+    // (`requests[security`) would otherwise slip through and surface
+    // downstream as a confusing rattler error.
+    let mut cursor = spec;
+    while let Some(open) = cursor.find('[') {
+        let after_open = &cursor[open + 1..];
+        let Some(close_rel) = after_open.find(']') else {
+            return Err(format!(
+                "'{spec}' has an unmatched `[` — conda MatchSpec brackets must be \
+                 closed `[key=value]` pairs."
+            ));
+        };
+        let inside = &after_open[..close_rel];
+        if !inside.contains('=') {
+            return Err(format!(
+                "'{spec}' uses PEP 508 extras syntax (`[{inside}]`), which conda \
+                 and pixi don't accept. Conda MatchSpec brackets must be \
+                 `key=value` pairs (e.g. `[version=1.0.*]`). Add the extra as a \
+                 separate dependency, or switch to a uv-managed environment."
+            ));
+        }
+        cursor = &after_open[close_rel + 1..];
     }
+    // Defer to the shared name-extraction + character-set check so
+    // mangled inputs like `"\"numpy\""` still get rejected. The call
+    // splits on `[` before checking, so MatchSpec attribute brackets
+    // already passed above don't trip this.
     validate_package_specifier(spec)
 }
 
@@ -1032,15 +1062,43 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_conda_specifier_accepts_matchspec_attribute_brackets() {
+        // Conda MatchSpec attribute brackets — these are valid rattler
+        // syntax and must pass through unharmed.
+        assert!(validate_conda_package_specifier("foo[version=1.0.*]").is_ok());
+        assert!(validate_conda_package_specifier("python[channel=conda-forge]").is_ok());
+        assert!(validate_conda_package_specifier("numpy[build=py311_*]").is_ok());
+        assert!(validate_conda_package_specifier("numpy >1.8,<2[channel=conda-forge]").is_ok());
+    }
+
+    #[test]
     fn test_validate_conda_specifier_rejects_pep508_extras() {
         // The exact case from #2119 — must reject rather than silently
         // letting rattler SIGKILL the kernel.
         let err = validate_conda_package_specifier("dx[polars]").unwrap_err();
-        assert!(err.contains("brackets"), "got: {err}");
+        assert!(err.contains("extras"), "got: {err}");
         assert!(validate_conda_package_specifier("requests[security]").is_err());
         assert!(validate_conda_package_specifier("pkg[a,b]>=1.0").is_err());
-        // Stray closing bracket still caught.
-        assert!(validate_conda_package_specifier("pandas]").is_err());
+    }
+
+    #[test]
+    fn test_validate_conda_specifier_rejects_unmatched_brackets() {
+        // Codex v1 review on #2126 flagged this: an unmatched `[` used
+        // to slip through the first-group check. Loop over all groups
+        // and reject unclosed ones.
+        let err = validate_conda_package_specifier("requests[security").unwrap_err();
+        assert!(err.contains("unmatched"), "got: {err}");
+        assert!(validate_conda_package_specifier("foo[version=1.0.*").is_err());
+    }
+
+    #[test]
+    fn test_validate_conda_specifier_rejects_second_bracket_group_as_extras() {
+        // MatchSpec attribute + trailing PEP 508 extras must also be
+        // caught; the first bracket group with `=` isn't a license to
+        // smuggle `[gpu]` past the validator.
+        let err = validate_conda_package_specifier("python[channel=conda-forge][gpu]").unwrap_err();
+        assert!(err.contains("extras"), "got: {err}");
+        assert!(validate_conda_package_specifier("foo[version=1.0][a,b]").is_err());
     }
 
     #[test]
