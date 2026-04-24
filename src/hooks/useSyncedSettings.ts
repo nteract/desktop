@@ -87,9 +87,8 @@ export function isKnownPythonEnv(value: string): value is "uv" | "conda" | "pixi
  */
 export const FEATURE_FLAG_METADATA = {
   bootstrap_dx: {
-    label: "nteract/dx DataFrame rendering",
-    description:
-      "Install nteract-kernel-launcher + dx into UV kernels and enable rich DataFrame rendering via dx.install(). Requires restarting any running kernels.",
+    label: "Rich DataFrames and Exceptions",
+    description: "Enable the nteract kernel launcher into Python runtimes.",
   },
 } as const satisfies Record<string, { label: string; description: string }>;
 
