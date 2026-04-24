@@ -296,6 +296,11 @@ fn augmented_path() -> String {
     format!("{prefix}{sep}{base}")
 }
 
+/// `(mtime, size)` identity pair cheap enough to snapshot on every
+/// `up rebuild=true`. `None` means the binary didn't exist when
+/// sampled.
+type BinaryFingerprint = Option<(std::time::SystemTime, u64)>;
+
 /// Snapshot a cargo-built binary's identity for "did the rebuild
 /// actually produce a different binary?" checks.
 ///
@@ -305,7 +310,7 @@ fn augmented_path() -> String {
 /// that doesn't require hashing the whole ~200 MB binary.
 ///
 /// Returns `None` when the binary doesn't exist (first build).
-fn binary_fingerprint(project_root: &Path, name: &str) -> Option<(std::time::SystemTime, u64)> {
+fn binary_fingerprint(project_root: &Path, name: &str) -> BinaryFingerprint {
     let path = cargo_binary(project_root, name);
     let meta = std::fs::metadata(&path).ok()?;
     Some((meta.modified().ok()?, meta.len()))
@@ -315,12 +320,7 @@ fn binary_fingerprint(project_root: &Path, name: &str) -> Option<(std::time::Sys
 /// (`runtimed`) and the MCP child host (`runt`, via `runt-cli`).
 /// Returns a tuple of fingerprints; `None` in either slot means the
 /// binary didn't exist at snapshot time.
-fn managed_binary_fingerprints(
-    project_root: &Path,
-) -> (
-    Option<(std::time::SystemTime, u64)>,
-    Option<(std::time::SystemTime, u64)>,
-) {
+fn managed_binary_fingerprints(project_root: &Path) -> (BinaryFingerprint, BinaryFingerprint) {
     (
         binary_fingerprint(project_root, "runtimed"),
         binary_fingerprint(project_root, "runt"),
@@ -331,10 +331,7 @@ fn managed_binary_fingerprints(
 /// actually touched the binary (or it didn't exist before and does
 /// now). Treat post-build `None` defensively as "changed" so a
 /// vanished binary forces a restart attempt with clear error paths.
-fn fingerprint_changed(
-    before: &Option<(std::time::SystemTime, u64)>,
-    after: &Option<(std::time::SystemTime, u64)>,
-) -> bool {
+fn fingerprint_changed(before: &BinaryFingerprint, after: &BinaryFingerprint) -> bool {
     match (before, after) {
         (Some(b), Some(a)) => b != a,
         (None, Some(_)) => true,
