@@ -135,6 +135,125 @@ pub async fn prepare_conda_inline_env(
     })
 }
 
+/// Rename a pool-derived UV env to the inline-cache hash location so the
+/// next launch with the same inline deps cache-hits via
+/// [`check_uv_inline_cache`] instead of taking another pool env.
+///
+/// Idempotent and best-effort: skips when the env is already at the target,
+/// when another flow beat us to the target path, or when the rename fails.
+/// Updates `venv_path` / `python_path` on success so callers can continue
+/// using the `PooledEnv` without thinking about the rename.
+///
+/// See #2089 / #2083: without this, a pool-reuse inline launch leaves the
+/// env at `runtimed-uv-XXXX` and the next restart misses the inline cache,
+/// takes a fresh pool env, and re-solves from scratch.
+pub async fn claim_pool_env_for_uv_inline_cache(
+    env: &mut crate::PooledEnv,
+    deps: &[String],
+    prerelease: Option<&str>,
+    bootstrap_dx: bool,
+) {
+    let uv_deps = kernel_env::UvDependencies {
+        dependencies: inline_deps_with_bootstrap(deps, bootstrap_dx),
+        requires_python: Some(">=3.13".to_string()),
+        prerelease: prerelease.map(|s| s.to_string()),
+    };
+    let hash = kernel_env::uv::compute_env_hash(&uv_deps, None);
+    let target = get_inline_cache_dir().join(&hash);
+    rename_env_to_target(&mut env.venv_path, &mut env.python_path, target).await;
+}
+
+/// Rename a pool-derived Conda env to the inline-cache hash location. See
+/// [`claim_pool_env_for_uv_inline_cache`] for the rationale; same mechanism,
+/// conda hash function.
+pub async fn claim_pool_env_for_conda_inline_cache(
+    env: &mut crate::PooledEnv,
+    deps: &[String],
+    channels: &[String],
+) {
+    let conda_deps = kernel_env::CondaDependencies {
+        dependencies: deps.to_vec(),
+        channels: if channels.is_empty() {
+            vec!["conda-forge".to_string()]
+        } else {
+            channels.to_vec()
+        },
+        python: None,
+        env_id: None,
+    };
+    let hash = kernel_env::conda::compute_env_hash(&conda_deps);
+    let target = get_inline_cache_dir().join(&hash);
+    rename_env_to_target(&mut env.venv_path, &mut env.python_path, target).await;
+}
+
+/// Shared rename logic: move `venv_path` to `target` and rewrite the python
+/// path relative to the new root. Preserves the original `python_path`
+/// layout (e.g. `bin/python` vs `Scripts/python.exe`).
+async fn rename_env_to_target(
+    venv_path: &mut std::path::PathBuf,
+    python_path: &mut std::path::PathBuf,
+    target: std::path::PathBuf,
+) {
+    if *venv_path == target {
+        return; // already at target (e.g. prior claim)
+    }
+    if !venv_path.exists() {
+        tracing::warn!(
+            "[inline-env] claim_pool_env: source {:?} no longer exists, skipping rename",
+            venv_path
+        );
+        return;
+    }
+    if target.exists() {
+        // Concurrent build produced the same cache entry first. Leave our
+        // env at the pool path; the next launch will cache-hit on their
+        // entry and our pool path becomes orphan for the normal cleanup
+        // paths. No correctness issue.
+        tracing::info!(
+            "[inline-env] claim_pool_env: target {:?} already exists, leaving env at {:?}",
+            target,
+            venv_path
+        );
+        return;
+    }
+    if let Some(parent) = target.parent() {
+        if let Err(e) = tokio::fs::create_dir_all(parent).await {
+            tracing::warn!(
+                "[inline-env] claim_pool_env: failed to create cache parent {:?}: {}",
+                parent,
+                e
+            );
+            return;
+        }
+    }
+    // Preserve the python_path's layout relative to the old venv root.
+    let rel_python = python_path
+        .strip_prefix(&*venv_path)
+        .ok()
+        .map(|p| p.to_path_buf());
+    match tokio::fs::rename(&*venv_path, &target).await {
+        Ok(()) => {
+            tracing::info!(
+                "[inline-env] claim_pool_env: renamed {:?} -> {:?} for inline-cache reuse",
+                venv_path,
+                target
+            );
+            *venv_path = target.clone();
+            if let Some(rel) = rel_python {
+                *python_path = target.join(rel);
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                "[inline-env] claim_pool_env: rename {:?} -> {:?} failed: {}",
+                venv_path,
+                target,
+                e
+            );
+        }
+    }
+}
+
 /// Result of comparing inline deps against pool packages.
 #[derive(Debug)]
 pub enum PoolDepRelation {

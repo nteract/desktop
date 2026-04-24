@@ -1859,7 +1859,7 @@ pub(crate) async fn try_uv_pool_for_inline_deps(
     }
 
     // Take the env, then compare against what it *actually* has installed
-    let env = match daemon.take_uv_env().await {
+    let mut env = match daemon.take_uv_env().await {
         Some(env) => env,
         None => {
             info!("[notebook-sync] UV pool empty, falling back to full build");
@@ -1873,6 +1873,11 @@ pub(crate) async fn try_uv_pool_for_inline_deps(
     match relation {
         crate::inline_env::PoolDepRelation::Subset => {
             info!("[notebook-sync] Inline UV deps are subset of pool env, reusing directly");
+            // Promote the pool env into the inline-env cache so the next
+            // restart with the same deps cache-hits instead of taking
+            // another pool env. See #2089 / #2083.
+            crate::inline_env::claim_pool_env_for_uv_inline_cache(&mut env, deps, None, false)
+                .await;
             Ok((env, actual_packages))
         }
         crate::inline_env::PoolDepRelation::Additive { delta } => {
@@ -1894,6 +1899,12 @@ pub(crate) async fn try_uv_pool_for_inline_deps(
                         "[notebook-sync] Installed {} delta packages into pool env",
                         delta.len()
                     );
+                    // Promote the pool env into the inline-env cache so
+                    // the next restart cache-hits. See #2089 / #2083.
+                    crate::inline_env::claim_pool_env_for_uv_inline_cache(
+                        &mut env, deps, None, false,
+                    )
+                    .await;
                     progress_handler.on_progress(
                         "uv",
                         kernel_env::EnvProgressPhase::Ready {
@@ -1975,7 +1986,7 @@ pub(crate) async fn try_conda_pool_for_inline_deps(
     }
 
     // Take the env, then compare against what it *actually* has installed
-    let env = match daemon.take_conda_env().await {
+    let mut env = match daemon.take_conda_env().await {
         Some(env) => env,
         None => {
             info!("[notebook-sync] Conda pool empty, falling back to full build");
@@ -1989,6 +2000,10 @@ pub(crate) async fn try_conda_pool_for_inline_deps(
     match relation {
         crate::inline_env::PoolDepRelation::Subset => {
             info!("[notebook-sync] Inline Conda deps are subset of pool env, reusing directly");
+            // Promote the pool env into the inline-env cache so the next
+            // restart cache-hits. See #2089 / #2083.
+            crate::inline_env::claim_pool_env_for_conda_inline_cache(&mut env, deps, channels)
+                .await;
             Ok((env, actual_packages))
         }
         crate::inline_env::PoolDepRelation::Additive { delta } => {
@@ -2016,6 +2031,12 @@ pub(crate) async fn try_conda_pool_for_inline_deps(
                         "[notebook-sync] Installed {} delta packages into Conda pool env",
                         delta.len()
                     );
+                    // Promote the pool env into the inline-env cache so
+                    // the next restart cache-hits. See #2089 / #2083.
+                    crate::inline_env::claim_pool_env_for_conda_inline_cache(
+                        &mut env, deps, channels,
+                    )
+                    .await;
                     progress_handler.on_progress(
                         "conda",
                         kernel_env::EnvProgressPhase::Ready {
