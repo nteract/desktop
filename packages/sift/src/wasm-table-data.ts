@@ -5,7 +5,6 @@
  * prefetchViewport() loads visible rows in one WASM call, then
  * getCell/getCellRaw read from the JS-side cache — no per-cell FFI.
  */
-import { formatCell, stringifyValue } from "./accumulators";
 import { autoWidth } from "./auto-width";
 import type { FilterSpecJson } from "./predicate";
 import { getModuleSync } from "./predicate";
@@ -82,24 +81,15 @@ export function createWasmTableData(
           continue;
         }
 
-        const colType = columns[c].columnType;
+        const s = mod.get_cell_string(handle, dataRow, c);
+        strings.push(s);
 
-        if (colType === "boolean") {
-          const s = mod.get_cell_string(handle, dataRow, c);
-          const boolVal = s === "true" || s === "Yes";
-          strings.push(boolVal ? "Yes" : "No");
-          raws.push(boolVal);
-        } else if (colType === "timestamp") {
-          const numVal = mod.get_cell_f64(handle, dataRow, c);
-          strings.push(formatCell("timestamp", numVal));
-          raws.push(numVal);
-        } else if (colType === "numeric") {
-          const numVal = mod.get_cell_f64(handle, dataRow, c);
-          strings.push(stringifyValue(numVal));
-          raws.push(numVal);
+        const colType = columns[c].columnType;
+        if (colType === "numeric" || colType === "timestamp") {
+          raws.push(mod.get_cell_f64(handle, dataRow, c));
+        } else if (colType === "boolean") {
+          raws.push(s === "Yes");
         } else {
-          const s = mod.get_cell_string(handle, dataRow, c);
-          strings.push(s);
           raws.push(s);
         }
       }
@@ -112,33 +102,19 @@ export function createWasmTableData(
     columns,
     rowCount: numRows,
     getCell(row: number, col: number): string {
-      // Try cache first (populated by prefetchViewport)
       const cached = cache.get(row);
       if (cached) return cached.strings[col];
-
-      // Fallback to per-cell WASM call
       if (mod.is_null(handle, row, col)) return "";
-      const colType = columns[col].columnType;
-      if (colType === "timestamp") {
-        const v = mod.get_cell_f64(handle, row, col);
-        if (Number.isFinite(v)) return formatCell("timestamp", v);
-      }
       return mod.get_cell_string(handle, row, col);
     },
     getCellRaw(row: number, col: number): unknown {
-      // Try cache first
       const cached = cache.get(row);
       if (cached) return cached.raws[col];
-
-      // Fallback to per-cell WASM call
       if (mod.is_null(handle, row, col)) return null;
       const colType = columns[col].columnType;
-      if (colType === "numeric" || colType === "timestamp") {
+      if (colType === "numeric" || colType === "timestamp")
         return mod.get_cell_f64(handle, row, col);
-      }
-      if (colType === "boolean") {
-        return mod.get_cell_string(handle, row, col) === "Yes";
-      }
+      if (colType === "boolean") return mod.get_cell_string(handle, row, col) === "Yes";
       return mod.get_cell_string(handle, row, col);
     },
     columnSummaries: columns.map(() => null),
