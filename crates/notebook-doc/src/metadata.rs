@@ -739,18 +739,29 @@ pub fn validate_package_specifier(spec: &str) -> Result<(), String> {
 /// assert!(validate_conda_package_specifier("requests[security]").is_err());
 /// ```
 pub fn validate_conda_package_specifier(spec: &str) -> Result<(), String> {
-    if let Some(open) = spec.find('[') {
-        if let Some(close_rel) = spec[open + 1..].find(']') {
-            let inside = &spec[open + 1..open + 1 + close_rel];
-            if !inside.contains('=') {
-                return Err(format!(
-                    "'{spec}' uses PEP 508 extras syntax (`[{inside}]`), which conda \
-                     and pixi don't accept. Conda MatchSpec brackets must be \
-                     `key=value` pairs (e.g. `[version=1.0.*]`). Add the extra as a \
-                     separate dependency, or switch to a uv-managed environment."
-                ));
-            }
+    // Scan every `[…]` group, not just the first. A stray second group
+    // (`python[channel=conda-forge][gpu]`) or an unmatched `[`
+    // (`requests[security`) would otherwise slip through and surface
+    // downstream as a confusing rattler error.
+    let mut cursor = spec;
+    while let Some(open) = cursor.find('[') {
+        let after_open = &cursor[open + 1..];
+        let Some(close_rel) = after_open.find(']') else {
+            return Err(format!(
+                "'{spec}' has an unmatched `[` — conda MatchSpec brackets must be \
+                 closed `[key=value]` pairs."
+            ));
+        };
+        let inside = &after_open[..close_rel];
+        if !inside.contains('=') {
+            return Err(format!(
+                "'{spec}' uses PEP 508 extras syntax (`[{inside}]`), which conda \
+                 and pixi don't accept. Conda MatchSpec brackets must be \
+                 `key=value` pairs (e.g. `[version=1.0.*]`). Add the extra as a \
+                 separate dependency, or switch to a uv-managed environment."
+            ));
         }
+        cursor = &after_open[close_rel + 1..];
     }
     // Defer to the shared name-extraction + character-set check so
     // mangled inputs like `"\"numpy\""` still get rejected. The call
@@ -1068,6 +1079,26 @@ mod tests {
         assert!(err.contains("extras"), "got: {err}");
         assert!(validate_conda_package_specifier("requests[security]").is_err());
         assert!(validate_conda_package_specifier("pkg[a,b]>=1.0").is_err());
+    }
+
+    #[test]
+    fn test_validate_conda_specifier_rejects_unmatched_brackets() {
+        // Codex v1 review on #2126 flagged this: an unmatched `[` used
+        // to slip through the first-group check. Loop over all groups
+        // and reject unclosed ones.
+        let err = validate_conda_package_specifier("requests[security").unwrap_err();
+        assert!(err.contains("unmatched"), "got: {err}");
+        assert!(validate_conda_package_specifier("foo[version=1.0.*").is_err());
+    }
+
+    #[test]
+    fn test_validate_conda_specifier_rejects_second_bracket_group_as_extras() {
+        // MatchSpec attribute + trailing PEP 508 extras must also be
+        // caught; the first bracket group with `=` isn't a license to
+        // smuggle `[gpu]` past the validator.
+        let err = validate_conda_package_specifier("python[channel=conda-forge][gpu]").unwrap_err();
+        assert!(err.contains("extras"), "got: {err}");
+        assert!(validate_conda_package_specifier("foo[version=1.0][a,b]").is_err());
     }
 
     #[test]
