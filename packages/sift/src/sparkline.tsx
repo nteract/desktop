@@ -973,11 +973,7 @@ function BooleanRatioBar({
 
 // --- Timestamp histogram ---
 
-function formatDateRange(
-  minMs: number,
-  maxMs: number,
-  timezone?: string | null,
-): [string, string] {
+function formatDateRange(minMs: number, maxMs: number, timezone?: string | null): [string, string] {
   const tz = timezone ?? "UTC";
   const min = new Date(minMs);
   const max = new Date(maxMs);
@@ -1118,7 +1114,11 @@ function TimestampHistogram({
       </div>
       <span className="sift-th-range">
         {summary.min === summary.max ? minLabel : `${minLabel} – ${maxLabel}`}
-        {!timezone && <span className="sift-tz-default" title="No timezone in data, displayed as UTC">UTC</span>}
+        {!timezone && (
+          <span className="sift-tz-default" title="No timezone in data, displayed as UTC">
+            UTC
+          </span>
+        )}
       </span>
     </div>
   );
