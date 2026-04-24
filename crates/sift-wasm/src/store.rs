@@ -226,6 +226,13 @@ pub fn col_type(handle: u32, col: usize) -> Result<String, JsValue> {
     .map_err(|e| JsValue::from_str(&e))
 }
 
+/// Get the IANA timezone of a timestamp column, or null if not set.
+#[wasm_bindgen]
+pub fn col_timezone(handle: u32, col: usize) -> Result<Option<String>, JsValue> {
+    with_store(handle, |s| s.col_timezones.get(col).cloned().flatten())
+        .map_err(|e| JsValue::from_str(&e))
+}
+
 /// Check if a cell is null.
 #[wasm_bindgen]
 pub fn is_null(handle: u32, row: usize, col: usize) -> Result<bool, JsValue> {
