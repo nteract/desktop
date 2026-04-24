@@ -611,7 +611,12 @@ where
                     .as_ref()
                     .map(|c| c.dependencies.clone())
                     .unwrap_or_default(),
-                conda_channels: vec![],
+                conda_channels: meta
+                    .runt
+                    .conda
+                    .as_ref()
+                    .map(|c| c.channels.clone())
+                    .unwrap_or_default(),
             };
             if super::metadata::project_file_deps_match_trust_info(path, &derived) {
                 match super::metadata::auto_sign_in_place(&mut meta) {

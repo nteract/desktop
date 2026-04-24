@@ -945,8 +945,15 @@ pub(crate) fn project_file_deps_match_trust_info(
             let Ok(env_config) = crate::project_file::parse_environment_yml(&detected.path) else {
                 return false;
             };
+            // Channels are part of the signed trust payload (runt_trust
+            // extracts them into TrustInfo) and conda channel priority
+            // affects package resolution, so channel order matters.
+            // Compare exact, preserving order. A notebook with matching
+            // deps but different channels stays Untrusted — that's a
+            // real trust event, not a silent heal.
             !env_config.dependencies.is_empty()
                 && sorted(&env_config.dependencies) == sorted(&info.conda_dependencies)
+                && env_config.channels == info.conda_channels
         }
         crate::project_file::ProjectFileKind::PixiToml => {
             // Pixi deps currently bypass the HMAC check entirely
@@ -2418,19 +2425,22 @@ pub(crate) async fn auto_launch_kernel(
             crate::project_file::ProjectFileKind::EnvironmentYml => {
                 if let Ok(env_config) = crate::project_file::parse_environment_yml(&detected.path) {
                     let deps = env_config.dependencies;
+                    let channels = env_config.channels;
                     if !deps.is_empty() {
                         let mut doc = room.doc.write().await;
                         let mut changed = false;
                         doc.fork_and_merge(|fork| {
                             let mut snap = fork.get_metadata_snapshot().unwrap_or_default();
                             let current_deps = snap.runt.conda.as_ref().map(|c| &c.dependencies);
+                            let current_channels = snap.runt.conda.as_ref().map(|c| &c.channels);
                             let deps_match = current_deps.is_some_and(|d| d == &deps);
+                            let channels_match = current_channels.is_some_and(|c| c == &channels);
                             let trust_ok = matches!(
                                 verify_trust_from_snapshot(&snap).status,
                                 runt_trust::TrustStatus::Trusted
                                     | runt_trust::TrustStatus::NoDependencies
                             );
-                            if !deps_match || !trust_ok {
+                            if !deps_match || !channels_match || !trust_ok {
                                 let conda = snap.runt.conda.get_or_insert_with(|| {
                                     notebook_doc::metadata::CondaInlineMetadata {
                                         dependencies: Vec::new(),
@@ -2439,6 +2449,12 @@ pub(crate) async fn auto_launch_kernel(
                                     }
                                 });
                                 conda.dependencies = deps;
+                                // Channels are part of the signed trust
+                                // payload. Mirror env.yml's channels
+                                // exactly so reconciliation on reopen
+                                // can verify the notebook's channel
+                                // list didn't drift from source.
+                                conda.channels = channels;
                                 if let Err(e) = auto_sign_in_place(&mut snap) {
                                     warn!(
                                         "[notebook-sync] Failed to auto-sign environment.yml bootstrap: {}",
