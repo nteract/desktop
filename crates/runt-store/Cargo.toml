@@ -1,0 +1,34 @@
+[package]
+name = "runt-store"
+version = "0.0.1"
+edition.workspace = true
+description = "Daemon local data store (spike: LanceDB-backed trust allowlist + room for history/search/completion caches)"
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+# Match lancedb's arrow version to avoid the "two `arrow-array` in the
+# dep graph" compile error. lancedb 0.27 re-exports arrow under
+# `lancedb::arrow::*`, but depending on arrow directly at the same
+# version keeps call sites readable.
+arrow-array = "57"
+arrow-schema = "57"
+dashmap = "6"
+dirs = "6"
+futures-util = "0.3"
+lancedb = { version = "0.27", default-features = false }
+parking_lot = "0.12"
+serde = { workspace = true }
+thiserror = "2"
+tokio = { workspace = true, features = ["sync", "fs", "rt"] }
+tracing = "0.1"
+
+[dev-dependencies]
+criterion = { version = "0.7", features = ["async_tokio"] }
+tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[[bench]]
+name = "trust_allowlist"
+harness = false
