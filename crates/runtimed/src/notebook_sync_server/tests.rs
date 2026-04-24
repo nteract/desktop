@@ -3859,26 +3859,36 @@ async fn test_reset_generation_guard_with_concurrent_spawn() {
 
 #[test]
 fn test_env_yml_insertion_point_no_trailing_newline() {
-    // File without trailing newline — must not panic or return out-of-bounds offset
+    use rattler_conda_types::EnvironmentYaml;
     let content = "dependencies:\n  - numpy";
-    let point = find_env_yml_deps_insertion_point(content);
-    assert!(point.is_some());
-    assert!(point.unwrap() <= content.len());
+    let ins = find_env_yml_deps_insertion_point(content).unwrap();
+    assert!(ins.offset <= content.len());
+    assert_eq!(ins.indent, "  ");
+    assert_eq!(ins.newline, "\n");
+    assert!(ins.needs_leading_newline);
+    // Simulate insertion and verify the result parses
+    let mut result = content.to_string();
+    let mut insert_str = String::new();
+    if ins.needs_leading_newline {
+        insert_str.push_str(ins.newline);
+    }
+    insert_str.push_str(&format!("{}- pandas{}", ins.indent, ins.newline));
+    result.insert_str(ins.offset, &insert_str);
+    EnvironmentYaml::from_yaml_str(&result).expect("inserted YAML should parse");
 }
 
 #[test]
 fn test_env_yml_insertion_point_with_trailing_newline() {
     let content = "dependencies:\n  - numpy\n  - pandas\n";
-    let point = find_env_yml_deps_insertion_point(content);
-    assert_eq!(point, Some(content.len()));
+    let ins = find_env_yml_deps_insertion_point(content).unwrap();
+    assert_eq!(ins.offset, content.len());
 }
 
 #[test]
 fn test_env_yml_insertion_point_before_next_key() {
     let content = "dependencies:\n  - numpy\nchannels:\n  - conda-forge\n";
-    let point = find_env_yml_deps_insertion_point(content);
-    // Should insert after "  - numpy\n", before "channels:"
-    assert_eq!(point, Some("dependencies:\n  - numpy\n".len()));
+    let ins = find_env_yml_deps_insertion_point(content).unwrap();
+    assert_eq!(ins.offset, "dependencies:\n  - numpy\n".len());
 }
 
 /// Pre-v4 .ipynb (no output_id fields) gets IDs minted on load,
@@ -5003,20 +5013,36 @@ async fn capture_migrates_pre_upgrade_notebook() {
 #[test]
 fn test_env_yml_insertion_point_skips_pip_block() {
     let content = "name: test\ndependencies:\n  - numpy\n  - pip:\n    - pyyaml\n    - requests\n  - scipy\nchannels:\n  - conda-forge\n";
-    let point = find_env_yml_deps_insertion_point(content);
+    let ins = find_env_yml_deps_insertion_point(content).unwrap();
     let expected =
         "name: test\ndependencies:\n  - numpy\n  - pip:\n    - pyyaml\n    - requests\n  - scipy\n"
             .len();
-    assert_eq!(point, Some(expected));
+    assert_eq!(ins.offset, expected);
 }
 
 #[test]
 fn test_env_yml_insertion_point_pip_block_at_end() {
     let content = "dependencies:\n  - numpy\n  - pandas\n  - pip:\n    - pyyaml\n";
-    let point = find_env_yml_deps_insertion_point(content);
-    // Insert after last top-level conda dep, before pip block
+    let ins = find_env_yml_deps_insertion_point(content).unwrap();
     let expected = "dependencies:\n  - numpy\n  - pandas\n".len();
-    assert_eq!(point, Some(expected));
+    assert_eq!(ins.offset, expected);
+}
+
+#[test]
+fn test_env_yml_insertion_point_crlf() {
+    let content = "dependencies:\r\n  - numpy\r\n  - pandas\r\n";
+    let ins = find_env_yml_deps_insertion_point(content).unwrap();
+    assert_eq!(ins.offset, content.len());
+    assert_eq!(ins.newline, "\r\n");
+    assert_eq!(ins.indent, "  ");
+}
+
+#[test]
+fn test_env_yml_insertion_point_four_space_indent() {
+    let content = "dependencies:\n    - numpy\n    - pandas\n";
+    let ins = find_env_yml_deps_insertion_point(content).unwrap();
+    assert_eq!(ins.offset, content.len());
+    assert_eq!(ins.indent, "    ");
 }
 
 #[test]
