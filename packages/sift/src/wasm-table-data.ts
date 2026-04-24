@@ -50,6 +50,7 @@ export function createWasmTableData(
   for (let c = 0; c < numCols; c++) {
     const wasmType = mod.col_type(handle, c);
     const colType = mapColType(wasmType);
+    const timezone = colType === "timestamp" ? (mod.col_timezone(handle, c) ?? null) : null;
     const overrides = columnOverrides?.[names[c]];
     columns.push({
       key: names[c],
@@ -58,6 +59,7 @@ export function createWasmTableData(
       sortable: overrides?.sortable ?? true,
       numeric: colType === "numeric",
       columnType: colType,
+      timezone,
     });
   }
 

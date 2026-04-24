@@ -27,6 +27,7 @@ struct DataStore {
     num_cols: usize,
     col_names: Vec<String>,
     col_types: Vec<String>, // "numeric", "categorical", "boolean", "timestamp"
+    col_timezones: Vec<Option<String>>,
     /// Original column arrays saved before casting, keyed by column index.
     /// Used to restore original data when casting back to the original type.
     original_columns: HashMap<usize, (Vec<arrow::array::ArrayRef>, String)>,
@@ -44,6 +45,13 @@ impl DataStore {
         };
         let local_row = row - self.batch_offsets[batch_idx];
         Some((batch_idx, local_row))
+    }
+
+    fn extract_timezone(dt: &DataType) -> Option<String> {
+        match dt {
+            DataType::Timestamp(_, Some(tz)) if !tz.is_empty() => Some(tz.to_string()),
+            _ => None,
+        }
     }
 
     fn detect_col_type(dt: &DataType) -> &'static str {
@@ -104,6 +112,11 @@ fn store_batches(batches: Vec<RecordBatch>, schema: &arrow::datatypes::Schema) -
         .iter()
         .map(|f| DataStore::detect_col_type(f.data_type()).to_string())
         .collect();
+    let col_timezones: Vec<Option<String>> = schema
+        .fields()
+        .iter()
+        .map(|f| DataStore::extract_timezone(f.data_type()))
+        .collect();
 
     let mut batch_offsets = Vec::new();
     let mut total_rows = 0;
@@ -129,6 +142,7 @@ fn store_batches(batches: Vec<RecordBatch>, schema: &arrow::datatypes::Schema) -
                 num_cols,
                 col_names,
                 col_types,
+                col_timezones,
                 original_columns: HashMap::new(),
             },
         );
@@ -212,6 +226,13 @@ pub fn col_type(handle: u32, col: usize) -> Result<String, JsValue> {
     .map_err(|e| JsValue::from_str(&e))
 }
 
+/// Get the IANA timezone of a timestamp column, or null if not set.
+#[wasm_bindgen]
+pub fn col_timezone(handle: u32, col: usize) -> Result<Option<String>, JsValue> {
+    with_store(handle, |s| s.col_timezones.get(col).cloned().flatten())
+        .map_err(|e| JsValue::from_str(&e))
+}
+
 /// Check if a cell is null.
 #[wasm_bindgen]
 pub fn is_null(handle: u32, row: usize, col: usize) -> Result<bool, JsValue> {
@@ -255,13 +276,17 @@ fn timestamp_cell_ms(column: &dyn Array, local_row: usize) -> Option<i64> {
     }
 }
 
-/// Format epoch milliseconds as "Apr 23, 2026".
-fn format_timestamp_ms(ms: i64) -> String {
+/// Format epoch milliseconds as "Apr 23, 2026", respecting the column timezone.
+fn format_timestamp_ms(ms: i64, tz: Option<&str>) -> String {
+    use chrono_tz::Tz;
     let secs = ms / 1000;
     let nanos = ((ms % 1000) * 1_000_000) as u32;
-    match DateTime::from_timestamp(secs, nanos) {
-        Some(dt) => dt.format("%b %-d, %Y").to_string(),
-        None => ms.to_string(),
+    let Some(utc_dt) = DateTime::from_timestamp(secs, nanos) else {
+        return ms.to_string();
+    };
+    match tz.and_then(|s| s.parse::<Tz>().ok()) {
+        Some(tz) => utc_dt.with_timezone(&tz).format("%b %-d, %Y").to_string(),
+        None => utc_dt.format("%b %-d, %Y").to_string(),
     }
 }
 
@@ -284,9 +309,10 @@ pub fn get_cell_string(handle: u32, row: usize, col: usize) -> Result<String, Js
             return s;
         }
 
-        // Timestamps → human-readable date
+        // Timestamps → human-readable date in the column's timezone (or UTC)
         if let Some(ms) = timestamp_cell_ms(column.as_ref(), local_row) {
-            return format_timestamp_ms(ms);
+            let tz = s.col_timezones.get(col).and_then(|t| t.as_deref());
+            return format_timestamp_ms(ms, tz);
         }
 
         match column.data_type() {

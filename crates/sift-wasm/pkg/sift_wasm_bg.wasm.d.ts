@@ -3,6 +3,7 @@
 export const memory: WebAssembly.Memory;
 export const cast_column: (a: number, b: number, c: number, d: number, e: number) => void;
 export const col_names: (a: number, b: number) => void;
+export const col_timezone: (a: number, b: number, c: number) => void;
 export const col_type: (a: number, b: number, c: number) => void;
 export const filter_rows: (a: number, b: number, c: number, d: number, e: number) => void;
 export const free: (a: number) => void;

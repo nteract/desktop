@@ -15,6 +15,11 @@ export function cast_column(handle: number, col: number, target_type: string): v
 export function col_names(handle: number): any;
 
 /**
+ * Get the IANA timezone of a timestamp column, or null if not set.
+ */
+export function col_timezone(handle: number, col: number): string | undefined;
+
+/**
  * Get the detected type of a column ("numeric", "categorical", "boolean", "timestamp").
  */
 export function col_type(handle: number, col: number): string;
@@ -226,6 +231,7 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly cast_column: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly col_names: (a: number, b: number) => void;
+    readonly col_timezone: (a: number, b: number, c: number) => void;
     readonly col_type: (a: number, b: number, c: number) => void;
     readonly filter_rows: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly free: (a: number) => void;

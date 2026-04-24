@@ -368,6 +368,13 @@ h1 {
   letter-spacing: normal;
 }
 
+.sift-tz-default {
+  font-size: 9px;
+  opacity: 0.5;
+  margin-left: 4px;
+  vertical-align: super;
+}
+
 .sift-th-profile {
   display: block;
   margin-top: 1px;
