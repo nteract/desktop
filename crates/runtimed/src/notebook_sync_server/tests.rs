@@ -3490,6 +3490,132 @@ async fn test_check_and_update_trust_state_no_autoresign_when_not_previously_tru
     std::env::remove_var("RUNT_TRUST_KEY_PATH");
 }
 
+// ── auto_sign_in_place: regression coverage for project-file bootstrap ──
+//
+// The daemon's auto-launch path writes project-file deps (pyproject.toml,
+// pixi.toml, environment.yml) into `metadata.runt.{uv,conda,pixi}`. Before
+// this helper existed, those self-writes landed without a signature and
+// flipped the notebook to Untrusted — causing the trust dialog to fire
+// (and flicker on brand-new notebooks opened inside a project dir) for
+// deps the user already had on disk in a file they own.
+
+#[tokio::test]
+#[serial]
+async fn test_auto_sign_in_place_uv_yields_trusted() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let key_path = temp_dir.path().join("trust-key");
+    std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
+
+    let mut snap = snapshot_with_uv(vec!["pandas".to_string(), "numpy".to_string()]);
+    assert!(snap.runt.trust_signature.is_none());
+
+    auto_sign_in_place(&mut snap).expect("auto_sign_in_place");
+
+    assert!(snap.runt.trust_signature.is_some());
+    assert!(snap.runt.trust_timestamp.is_some());
+    assert_eq!(
+        verify_trust_from_snapshot(&snap).status,
+        runt_trust::TrustStatus::Trusted,
+    );
+
+    std::env::remove_var("RUNT_TRUST_KEY_PATH");
+}
+
+#[tokio::test]
+#[serial]
+async fn test_auto_sign_in_place_conda_yields_trusted() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let key_path = temp_dir.path().join("trust-key");
+    std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
+
+    let mut snap = snapshot_with_conda(vec!["scipy".to_string()]);
+    auto_sign_in_place(&mut snap).expect("auto_sign_in_place");
+
+    assert_eq!(
+        verify_trust_from_snapshot(&snap).status,
+        runt_trust::TrustStatus::Trusted,
+    );
+
+    std::env::remove_var("RUNT_TRUST_KEY_PATH");
+}
+
+// Pixi deps currently bypass the HMAC trust check entirely —
+// `runt_trust::verify_notebook_trust` only short-circuits on uv+conda
+// emptiness and never looks at pixi, so a pixi-only snapshot always
+// returns NoDependencies regardless of signature state. Covering pixi
+// in `auto_sign_in_place` is still worth it (forward-compat for when
+// pixi joins the trust check), but the test asserts today's behavior.
+#[tokio::test]
+#[serial]
+async fn test_auto_sign_in_place_pixi_writes_signature() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let key_path = temp_dir.path().join("trust-key");
+    std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
+
+    let mut snap = snapshot_empty();
+    snap.runt.pixi = Some(notebook_doc::metadata::PixiInlineMetadata {
+        dependencies: vec!["pandas".to_string()],
+        pypi_dependencies: vec![],
+        channels: vec!["conda-forge".to_string()],
+        python: None,
+    });
+
+    auto_sign_in_place(&mut snap).expect("auto_sign_in_place");
+
+    assert!(snap.runt.trust_signature.is_some());
+    assert!(snap.runt.trust_timestamp.is_some());
+    assert_eq!(
+        verify_trust_from_snapshot(&snap).status,
+        runt_trust::TrustStatus::NoDependencies,
+    );
+
+    std::env::remove_var("RUNT_TRUST_KEY_PATH");
+}
+
+/// Regression for the pyproject.toml trust-dialog flicker: simulate the
+/// auto-launch bootstrap end state (deps written + auto-signed) and drive
+/// it through `check_and_update_trust_state`. Trust must land on Trusted
+/// without a needs-approval transition.
+#[tokio::test]
+#[serial]
+async fn test_pyproject_bootstrap_state_lands_trusted() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let key_path = temp_dir.path().join("trust-key");
+    std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _path) = test_room_with_path(&tmp, "pyproject_bootstrap.ipynb");
+
+    // Brand-new room state the user would see: trust banner is shown for
+    // a pyproject-backed notebook the daemon is about to populate.
+    {
+        room.state
+            .with_doc(|sd| sd.set_trust("untrusted", true))
+            .unwrap();
+    }
+
+    // What the bootstrap block writes into the doc after the fix: deps
+    // from pyproject.toml plus an auto-signature covering them.
+    let mut snap = snapshot_with_uv(vec!["pandas".to_string(), "numpy".to_string()]);
+    auto_sign_in_place(&mut snap).expect("auto_sign_in_place");
+    {
+        let mut doc = room.doc.write().await;
+        doc.set_metadata_snapshot(&snap).unwrap();
+    }
+
+    check_and_update_trust_state(&room).await;
+
+    let ts = room.trust_state.read().await;
+    assert_eq!(ts.status, runt_trust::TrustStatus::Trusted);
+    drop(ts);
+
+    let state = room.state.read(|sd| sd.read_state()).unwrap();
+    assert_eq!(state.trust.status, "trusted");
+    assert!(!state.trust.needs_approval);
+
+    std::env::remove_var("RUNT_TRUST_KEY_PATH");
+}
+
 // ── Per-agent oneshot channel tests ──────────────────────────────
 
 #[tokio::test]
