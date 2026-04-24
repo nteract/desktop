@@ -173,9 +173,7 @@ function Header({
       <div className="min-w-0 flex-1">
         <div className="font-semibold text-destructive">{ename}</div>
         {evalue && (
-          <div className="mt-0.5 whitespace-pre-wrap break-words text-foreground/85">
-            {evalue}
-          </div>
+          <div className="mt-0.5 whitespace-pre-wrap break-words text-foreground/85">{evalue}</div>
         )}
       </div>
       <CopyButton payload={payload} />
