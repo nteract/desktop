@@ -3234,6 +3234,10 @@ pub(crate) struct EnvYmlInsertionPoint {
     pub indent: String,
     /// The line ending used by the file (`"\n"` or `"\r\n"`).
     pub newline: &'static str,
+    /// True when the content before `offset` doesn't end with a newline
+    /// (e.g. file has no trailing newline). Callers must prepend `newline`
+    /// before the first inserted dep.
+    pub needs_leading_newline: bool,
 }
 
 /// Find the insertion point for new conda deps in an environment.yml string.
@@ -3291,10 +3295,14 @@ pub(crate) fn find_env_yml_deps_insertion_point(content: &str) -> Option<EnvYmlI
         byte_offset += line_len;
     }
 
-    last_dep_end.map(|offset| EnvYmlInsertionPoint {
-        offset,
-        indent: baseline_indent.unwrap_or_else(|| "  ".to_string()),
-        newline,
+    last_dep_end.map(|offset| {
+        let needs_leading_newline = offset > 0 && content.as_bytes()[offset - 1] != b'\n';
+        EnvYmlInsertionPoint {
+            offset,
+            indent: baseline_indent.unwrap_or_else(|| "  ".to_string()),
+            newline,
+            needs_leading_newline,
+        }
     })
 }
 
@@ -3498,6 +3506,9 @@ pub(crate) async fn promote_inline_deps_to_project(
                         let insertion = find_env_yml_deps_insertion_point(&content);
                         if let Some(ins) = insertion {
                             let mut insert_str = String::new();
+                            if ins.needs_leading_newline {
+                                insert_str.push_str(ins.newline);
+                            }
                             for dep in &to_add {
                                 insert_str
                                     .push_str(&format!("{}- {}{}", ins.indent, dep, ins.newline));

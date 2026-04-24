@@ -3859,12 +3859,22 @@ async fn test_reset_generation_guard_with_concurrent_spawn() {
 
 #[test]
 fn test_env_yml_insertion_point_no_trailing_newline() {
-    // File without trailing newline — must not panic or return out-of-bounds offset
+    use rattler_conda_types::EnvironmentYaml;
     let content = "dependencies:\n  - numpy";
     let ins = find_env_yml_deps_insertion_point(content).unwrap();
     assert!(ins.offset <= content.len());
     assert_eq!(ins.indent, "  ");
     assert_eq!(ins.newline, "\n");
+    assert!(ins.needs_leading_newline);
+    // Simulate insertion and verify the result parses
+    let mut result = content.to_string();
+    let mut insert_str = String::new();
+    if ins.needs_leading_newline {
+        insert_str.push_str(ins.newline);
+    }
+    insert_str.push_str(&format!("{}- pandas{}", ins.indent, ins.newline));
+    result.insert_str(ins.offset, &insert_str);
+    EnvironmentYaml::from_yaml_str(&result).expect("inserted YAML should parse");
 }
 
 #[test]
