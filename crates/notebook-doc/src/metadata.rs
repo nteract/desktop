@@ -711,6 +711,35 @@ pub fn validate_package_specifier(spec: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Strict specifier check for conda/pixi envs.
+///
+/// Same base rules as [`validate_package_specifier`] plus a rejection
+/// of PEP 508 extras syntax (`pkg[extra]`). Conda matchspecs and
+/// rattler package names don't accept brackets — without this guard,
+/// a UI-accepted spec like `dx[polars]` lands in the Automerge doc,
+/// hits rattler's installer, and SIGKILLs the kernel with an
+/// `invalid bracket` error. See issue #2119.
+///
+/// # Examples
+///
+/// ```
+/// use notebook_doc::metadata::validate_conda_package_specifier;
+/// assert!(validate_conda_package_specifier("pandas>=2.0").is_ok());
+/// assert!(validate_conda_package_specifier("conda-forge::numpy").is_ok());
+/// assert!(validate_conda_package_specifier("dx[polars]").is_err());
+/// assert!(validate_conda_package_specifier("requests[security]").is_err());
+/// ```
+pub fn validate_conda_package_specifier(spec: &str) -> Result<(), String> {
+    if spec.contains('[') || spec.contains(']') {
+        return Err(format!(
+            "'{spec}' uses PEP 508 extras syntax (brackets), which conda \
+             and pixi don't accept. Add the extra as a separate dependency, \
+             or switch to a uv-managed environment."
+        ));
+    }
+    validate_package_specifier(spec)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -988,6 +1017,37 @@ mod tests {
         assert!(validate_package_specifier("[\"pandas\"").is_err());
         assert!(validate_package_specifier("\"numpy\"").is_err());
         assert!(validate_package_specifier("\"seaborn\"]").is_err());
+    }
+
+    // ── validate_conda_package_specifier ───────────────────────
+
+    #[test]
+    fn test_validate_conda_specifier_accepts_plain_and_versioned() {
+        assert!(validate_conda_package_specifier("pandas").is_ok());
+        assert!(validate_conda_package_specifier("pandas>=2.0").is_ok());
+        assert!(validate_conda_package_specifier("numpy==1.24.0").is_ok());
+        assert!(validate_conda_package_specifier("python=3.12").is_ok());
+        assert!(validate_conda_package_specifier("conda-forge::numpy").is_ok());
+        assert!(validate_conda_package_specifier("conda-forge::numpy>=1.24").is_ok());
+    }
+
+    #[test]
+    fn test_validate_conda_specifier_rejects_pep508_extras() {
+        // The exact case from #2119 — must reject rather than silently
+        // letting rattler SIGKILL the kernel.
+        let err = validate_conda_package_specifier("dx[polars]").unwrap_err();
+        assert!(err.contains("brackets"), "got: {err}");
+        assert!(validate_conda_package_specifier("requests[security]").is_err());
+        assert!(validate_conda_package_specifier("pkg[a,b]>=1.0").is_err());
+        // Stray closing bracket still caught.
+        assert!(validate_conda_package_specifier("pandas]").is_err());
+    }
+
+    #[test]
+    fn test_validate_conda_specifier_rejects_empty_and_mangled() {
+        assert!(validate_conda_package_specifier("").is_err());
+        assert!(validate_conda_package_specifier("   ").is_err());
+        assert!(validate_conda_package_specifier("\"numpy\"").is_err());
     }
 
     // ── detect_runtime ───────────────────────────────────────────

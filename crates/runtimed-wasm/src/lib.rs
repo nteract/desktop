@@ -1252,7 +1252,13 @@ impl NotebookHandle {
 
     /// Add a Conda dependency, deduplicating by package name (case-insensitive).
     /// Initializes the Conda section with ["conda-forge"] channels if absent.
+    ///
+    /// Rejects PEP 508 extras syntax (`pkg[extra]`) — conda matchspecs
+    /// don't accept brackets, and letting one through SIGKILLs the
+    /// kernel at install time. See issue #2119.
     pub fn add_conda_dependency(&mut self, pkg: &str) -> Result<(), JsError> {
+        notebook_doc::metadata::validate_conda_package_specifier(pkg)
+            .map_err(|e| JsError::new(&e))?;
         self.invalidate_metadata_cache();
         self.doc
             .add_conda_dependency(pkg)
@@ -1299,7 +1305,12 @@ impl NotebookHandle {
     // ── Pixi dependency operations ──────────────────────────────────
 
     /// Add a Pixi conda dependency (matchspec). Deduplicates by package name.
+    ///
+    /// Rejects PEP 508 extras syntax (`pkg[extra]`) — pixi uses
+    /// rattler-style matchspecs which don't accept brackets. See #2119.
     pub fn add_pixi_dependency(&mut self, pkg: &str) -> Result<(), JsError> {
+        notebook_doc::metadata::validate_conda_package_specifier(pkg)
+            .map_err(|e| JsError::new(&e))?;
         self.invalidate_metadata_cache();
         self.doc
             .add_pixi_dependency(pkg)
