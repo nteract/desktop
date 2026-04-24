@@ -2660,6 +2660,7 @@ class TestTrustApproval:
         import json
 
         from runtimed import KERNEL_ERROR_REASON
+        from runtimed._notebook import Notebook
 
         (tmp_path / "environment.yml").write_text(
             "name: nteract-integration-probe-unbuilt-env-xyz\n"
@@ -2685,7 +2686,8 @@ class TestTrustApproval:
             )
         )
 
-        notebook = await client.open_notebook(str(nb_path))
+        session = await client.open_notebook(str(nb_path))
+        notebook = Notebook(session)
 
         # Poll briefly for the daemon to detect the miss and write the
         # error lifecycle. Auto-launch runs in a spawned task, so the
