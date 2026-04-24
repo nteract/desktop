@@ -364,6 +364,18 @@ impl KernelConnection for JupyterKernel {
                                 cmd.arg(&connection_file_path);
                                 cmd.stdout(Stdio::null());
                                 cmd.stderr(Stdio::piped());
+                                if bootstrap_dx {
+                                    // The env belongs to the user (created from
+                                    // their environment.yml). Writing launcher
+                                    // files into a shared conda env is a
+                                    // permissions / cleanup hazard, so inject
+                                    // the daemon-side launcher via PYTHONPATH —
+                                    // same pattern as `uv run` and `pixi exec`.
+                                    // Without this, `-m nteract_kernel_launcher`
+                                    // fails immediately with ModuleNotFoundError.
+                                    let dir = crate::launcher_cache::launcher_cache_dir().await?;
+                                    cmd.env("PYTHONPATH", &dir);
+                                }
                                 cmd
                             } else {
                                 return Err(anyhow::anyhow!(
