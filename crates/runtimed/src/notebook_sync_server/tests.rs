@@ -5482,6 +5482,75 @@ fn test_project_file_deps_match_trust_info_no_project_file() {
     assert!(!project_file_deps_match_trust_info(&nb_path, &info));
 }
 
+// ── #2157: conda:env_yml fallback when declared env is missing ─────────
+
+/// When the env.yml declares a conda env that isn't built on the test
+/// machine, `missing_conda_env_yml_name` returns the declared name so
+/// the auto-launch path can fall back to the conda pool instead of
+/// hard-failing in the runtime agent.
+#[test]
+fn test_missing_conda_env_yml_name_detects_unbuilt_named_env() {
+    let tmp = tempfile::tempdir().unwrap();
+    let yml_path = tmp.path().join("environment.yml");
+    std::fs::write(
+        &yml_path,
+        "name: nteract-integration-probe-definitely-not-built-xyz\ndependencies:\n  - python\n",
+    )
+    .unwrap();
+    let detected = crate::project_file::DetectedProjectFile {
+        path: yml_path,
+        kind: crate::project_file::ProjectFileKind::EnvironmentYml,
+    };
+    assert_eq!(
+        missing_conda_env_yml_name(&detected).as_deref(),
+        Some("nteract-integration-probe-definitely-not-built-xyz"),
+    );
+}
+
+/// `missing_conda_env_yml_name` is an env.yml-specific check — pyproject
+/// and pixi project files never report as "missing" through this helper.
+#[test]
+fn test_missing_conda_env_yml_name_skips_non_envyml() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_pyproject_with_deps(tmp.path(), &["pandas"]);
+    let detected = crate::project_file::DetectedProjectFile {
+        path: tmp.path().join("pyproject.toml"),
+        kind: crate::project_file::ProjectFileKind::PyprojectToml,
+    };
+    assert_eq!(missing_conda_env_yml_name(&detected), None);
+}
+
+/// env.yml with a `prefix:` pointing at a real directory is "built"
+/// (python exists). Helper returns None so the normal conda:env_yml
+/// path runs.
+#[test]
+fn test_missing_conda_env_yml_name_prefix_with_python_is_not_missing() {
+    let tmp = tempfile::tempdir().unwrap();
+    // Fabricate a fake conda env layout: prefix/bin/python exists.
+    let prefix = tmp.path().join("fake-env");
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::fs::create_dir_all(prefix.join("bin")).unwrap();
+        std::fs::write(prefix.join("bin").join("python"), "#!/bin/sh\nexit 0\n").unwrap();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::fs::create_dir_all(&prefix).unwrap();
+        std::fs::write(prefix.join("python.exe"), "").unwrap();
+    }
+    let yml_path = tmp.path().join("environment.yml");
+    std::fs::write(
+        &yml_path,
+        format!("prefix: {}\ndependencies:\n  - python\n", prefix.display()),
+    )
+    .unwrap();
+    let detected = crate::project_file::DetectedProjectFile {
+        path: yml_path,
+        kind: crate::project_file::ProjectFileKind::EnvironmentYml,
+    };
+    assert_eq!(missing_conda_env_yml_name(&detected), None);
+}
+
 /// Regression for #2150: a .ipynb on disk with deps that match a
 /// project file's but no signature (a notebook saved by the pre-fix
 /// build) must land on Trusted at room creation, so the auto-launch

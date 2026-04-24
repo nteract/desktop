@@ -898,6 +898,35 @@ pub(crate) async fn resolve_metadata_snapshot(
     None
 }
 
+/// If the detected project file is an `environment.yml` whose declared
+/// conda env isn't built on this machine, return the declared env name
+/// so the caller can fall back to a pool env instead of hard-failing in
+/// the runtime agent.
+///
+/// Used by the auto-launch path: `conda:env_yml` otherwise tries to
+/// resolve the named env and errors with "could not resolve conda
+/// environment prefix" when the env doesn't exist. The kernel hangs in
+/// "initializing" forever. With this check we can detect the miss
+/// upfront and route the launch through the conda pool.
+///
+/// Returns `None` when the project file isn't `environment.yml`, when
+/// the env is built and usable, or when env.yml has no `name:`/`prefix:`
+/// field (in which case the existing error path handles it).
+pub(crate) fn missing_conda_env_yml_name(
+    detected: &crate::project_file::DetectedProjectFile,
+) -> Option<String> {
+    if detected.kind != crate::project_file::ProjectFileKind::EnvironmentYml {
+        return None;
+    }
+    if crate::project_file::resolve_conda_env_prefix(&detected.path).is_some() {
+        return None;
+    }
+    crate::project_file::parse_environment_yml(&detected.path)
+        .ok()
+        .and_then(|c| c.name)
+        .or_else(|| Some(String::from("(unnamed)")))
+}
+
 /// Check whether a notebook's inline dependency list exactly matches a
 /// project file's dependency list (pyproject.toml / environment.yml /
 /// pixi.toml) in the notebook's own directory.
@@ -2493,11 +2522,30 @@ pub(crate) async fn auto_launch_kernel(
                 // Project file wins because inline deps get promoted to the
                 // project file at sync/launch time (project is source of truth).
                 let env_source: EnvSource = if let Some(ref proj) = project_source {
-                    info!(
-                        "[notebook-sync] Auto-launch: using project file -> {}",
-                        proj.as_str()
-                    );
-                    proj.clone()
+                    // If the project file is an environment.yml whose
+                    // declared conda env isn't built on this machine,
+                    // fall back to the conda pool instead of letting
+                    // `conda:env_yml` fail downstream in the runtime
+                    // agent. Without this, the kernel hangs in
+                    // `initializing` forever (#2157).
+                    if let Some(missing_name) = detected_project_file
+                        .as_ref()
+                        .and_then(missing_conda_env_yml_name)
+                    {
+                        let fallback = EnvSource::Prewarmed(PackageManager::Conda);
+                        warn!(
+                            "[notebook-sync] conda:env_yml declared env '{}' not built on this machine; falling back to {}",
+                            missing_name,
+                            fallback.as_str()
+                        );
+                        fallback
+                    } else {
+                        info!(
+                            "[notebook-sync] Auto-launch: using project file -> {}",
+                            proj.as_str()
+                        );
+                        proj.clone()
+                    }
                 } else if let Some(ref source) = inline_source {
                     // Skip Deno inline source for Python notebooks (kernelspec takes priority)
                     if !matches!(source, EnvSource::Deno) {
@@ -2566,11 +2614,24 @@ pub(crate) async fn auto_launch_kernel(
                     // Default to Python
                     // Priority: project file > inline deps > prewarmed
                     let env_source: EnvSource = if let Some(ref source) = project_source {
-                        info!(
-                            "[notebook-sync] Auto-launch: using project file -> {}",
-                            source.as_str()
-                        );
-                        source.clone()
+                        if let Some(missing_name) = detected_project_file
+                            .as_ref()
+                            .and_then(missing_conda_env_yml_name)
+                        {
+                            let fallback = EnvSource::Prewarmed(PackageManager::Conda);
+                            warn!(
+                                "[notebook-sync] conda:env_yml declared env '{}' not built on this machine; falling back to {}",
+                                missing_name,
+                                fallback.as_str()
+                            );
+                            fallback
+                        } else {
+                            info!(
+                                "[notebook-sync] Auto-launch: using project file -> {}",
+                                source.as_str()
+                            );
+                            source.clone()
+                        }
                     } else if let Some(ref source) = inline_source {
                         info!(
                             "[notebook-sync] Auto-launch: found inline deps -> {}",
