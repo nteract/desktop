@@ -176,6 +176,14 @@
         "cell_id": {
           "description": "The cell ID to retrieve.",
           "type": "string"
+        },
+        "full_output": {
+          "default": null,
+          "description": "Return the unabridged output text for any stream or error that was\nspilled to the blob store. When false (the default), outputs past the\ndaemon's preview cap render as a head + tail + elision marker +\nblob URL. Pass `true` only when the agent truly needs the full\ntext — the response can grow large and will consume context budget.",
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       },
       "required": [

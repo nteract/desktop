@@ -18,6 +18,39 @@ use crate::resolved_output::{DataValue, Output};
 
 pub use notebook_doc::mime::{mime_kind, MimeKind};
 
+/// Whether to render blob-spilled streams/errors as the head+tail preview
+/// or fetch the full blob text.
+///
+/// Default is `Preview`. `Full` is opt-in and only honored by the
+/// `get_cell(full_output=true)` path — batch reads and execution paths
+/// always use `Preview` so they don't silently blow LLM context.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum OutputLength {
+    #[default]
+    Preview,
+    Full,
+}
+
+/// Context for resolving output manifests.
+///
+/// Groups the blob-store location, widget-state lookup, and preview/full
+/// mode so call sites don't accumulate a tail of `None, None, None, false`
+/// args. Use [`ResolveCtx::default()`] for the common "preview, no blob
+/// base, no comms" case.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ResolveCtx<'a> {
+    /// Base URL for the daemon's blob HTTP server
+    /// (`http://127.0.0.1:<port>`). `None` when fetching from disk.
+    pub blob_base_url: Option<&'a str>,
+    /// On-disk blob store root, when reading blobs directly.
+    pub blob_store_path: Option<&'a std::path::Path>,
+    /// Widget state for comm-view synthesis on display_data outputs.
+    pub comms: Option<&'a HashMap<String, CommDocEntry>>,
+    /// Whether to render the blob-preview marker (default) or fetch the
+    /// full blob text. See [`OutputLength`].
+    pub length: OutputLength,
+}
+
 /// MIME type for Jupyter widget view references.
 const WIDGET_VIEW_MIME: &str = "application/vnd.jupyter.widget-view+json";
 
@@ -553,15 +586,11 @@ pub async fn resolve_cell_outputs(
 /// is resolved; everything else is described from manifest metadata.
 pub async fn resolve_cell_outputs_for_llm(
     raw_outputs: &[serde_json::Value],
-    blob_base_url: &Option<String>,
-    blob_store_path: &Option<PathBuf>,
-    comms: Option<&HashMap<String, CommDocEntry>>,
+    ctx: ResolveCtx<'_>,
 ) -> Vec<Output> {
     let mut outputs = Vec::with_capacity(raw_outputs.len());
     for manifest in raw_outputs {
-        if let Some(output) =
-            resolve_output_for_llm(manifest, blob_base_url, blob_store_path, comms).await
-        {
+        if let Some(output) = resolve_output_for_llm(manifest, ctx).await {
             outputs.push(output);
         }
     }
@@ -575,36 +604,46 @@ pub async fn resolve_cell_outputs_for_llm(
 /// only fetches the highest-priority text MIME type.
 pub async fn resolve_output_for_llm(
     manifest: &serde_json::Value,
-    blob_base_url: &Option<String>,
-    blob_store_path: &Option<PathBuf>,
-    comms: Option<&HashMap<String, CommDocEntry>>,
+    ctx: ResolveCtx<'_>,
 ) -> Option<Output> {
     let output_type = manifest.get("output_type")?.as_str()?;
+    // Bridge ctx -> the internal helper signatures without touching them.
+    // Allocations are cheap (single Option<String> / PathBuf clone) and
+    // only paid when a caller actually provides these fields.
+    let blob_base_url = ctx.blob_base_url.map(String::from);
+    let blob_store_path = ctx.blob_store_path.map(|p| p.to_path_buf());
 
     match output_type {
         // Stream and error are text-only — resolve as normal.
         "stream" => {
             let name = manifest.get("name")?.as_str()?;
             let text_ref = manifest.get("text")?;
-            // Fast path: Blob + preview → render without fetching.
-            if let Some(blob_hash) = text_ref.get("blob").and_then(|v| v.as_str()) {
-                if let Some(preview) = manifest.get("llm_preview") {
-                    let text = render_stream_preview(preview, blob_hash, blob_base_url);
-                    return Some(Output::stream(name, &text));
+            // Fast path: Blob + preview → render without fetching. Used
+            // for `OutputLength::Preview` (the default). `Full` skips this
+            // and drops through to `resolve_text_ref`, which fetches the
+            // full blob — the escape hatch for `get_cell(full_output=true)`.
+            if ctx.length == OutputLength::Preview {
+                if let Some(blob_hash) = text_ref.get("blob").and_then(|v| v.as_str()) {
+                    if let Some(preview) = manifest.get("llm_preview") {
+                        let text = render_stream_preview(preview, blob_hash, &blob_base_url);
+                        return Some(Output::stream(name, &text));
+                    }
                 }
             }
-            let text = resolve_text_ref(text_ref, blob_base_url, blob_store_path).await?;
+            let text = resolve_text_ref(text_ref, &blob_base_url, &blob_store_path).await?;
             Some(Output::stream(name, &text))
         }
         "error" => {
             let ename = manifest.get("ename")?.as_str()?.to_string();
             let evalue = manifest.get("evalue")?.as_str()?.to_string();
             let traceback_val = manifest.get("traceback")?;
-            // Fast path: Blob + preview → render without fetching.
-            if let Some(blob_hash) = traceback_val.get("blob").and_then(|v| v.as_str()) {
-                if let Some(preview) = manifest.get("llm_preview") {
-                    let tb = render_error_preview(preview, blob_hash, blob_base_url);
-                    return Some(Output::error(&ename, &evalue, tb));
+            // Same preview/full opt-out as the stream case above.
+            if ctx.length == OutputLength::Preview {
+                if let Some(blob_hash) = traceback_val.get("blob").and_then(|v| v.as_str()) {
+                    if let Some(preview) = manifest.get("llm_preview") {
+                        let tb = render_error_preview(preview, blob_hash, &blob_base_url);
+                        return Some(Output::error(&ename, &evalue, tb));
+                    }
                 }
             }
             let traceback = if let Some(arr) = traceback_val.as_array() {
@@ -613,14 +652,20 @@ pub async fn resolve_output_for_llm(
                     .collect()
             } else {
                 let tb_str =
-                    resolve_text_ref(traceback_val, blob_base_url, blob_store_path).await?;
+                    resolve_text_ref(traceback_val, &blob_base_url, &blob_store_path).await?;
                 serde_json::from_str::<Vec<String>>(&tb_str).ok()?
             };
             Some(Output::error(&ename, &evalue, traceback))
         }
         "display_data" | "execute_result" => {
-            resolve_display_for_llm(output_type, manifest, blob_base_url, blob_store_path, comms)
-                .await
+            resolve_display_for_llm(
+                output_type,
+                manifest,
+                &blob_base_url,
+                &blob_store_path,
+                ctx.comms,
+            )
+            .await
         }
         _ => None,
     }
@@ -1603,7 +1648,7 @@ mod tests {
             "text/plain": inline_ref("hello world"),
             "image/png": blob_ref("abc123", 50_000),
         }));
-        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+        let Some(output) = resolve_output_for_llm(&manifest, ResolveCtx::default()).await else {
             panic!("resolve should succeed");
         };
         let Some(data) = output.data else {
@@ -1622,7 +1667,7 @@ mod tests {
             "text/latex": inline_ref("$E=mc^2$"),
             "text/plain": inline_ref("E=mc^2"),
         }));
-        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+        let Some(output) = resolve_output_for_llm(&manifest, ResolveCtx::default()).await else {
             panic!("resolve should succeed");
         };
         let Some(data) = output.data else {
@@ -1642,7 +1687,7 @@ mod tests {
             "text/plain": inline_ref("raw repr"),
             "image/png": blob_ref("img123", 100_000),
         }));
-        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+        let Some(output) = resolve_output_for_llm(&manifest, ResolveCtx::default()).await else {
             panic!("resolve should succeed");
         };
         let Some(data) = output.data else {
@@ -1662,7 +1707,7 @@ mod tests {
         let manifest = make_display_manifest(json!({
             "text/plain": inline_ref(&large_text),
         }));
-        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+        let Some(output) = resolve_output_for_llm(&manifest, ResolveCtx::default()).await else {
             panic!("resolve should succeed");
         };
         let Some(data) = output.data else {
@@ -1688,7 +1733,7 @@ mod tests {
         let manifest = make_display_manifest(json!({
             "text/plain": inline_ref(&text),
         }));
-        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+        let Some(output) = resolve_output_for_llm(&manifest, ResolveCtx::default()).await else {
             panic!("resolve should succeed");
         };
         let Some(data) = output.data else {
@@ -1707,7 +1752,15 @@ mod tests {
             "image/svg+xml": blob_ref("svg456", 12_000),
         }));
         let blob_base = Some("http://localhost:9999".to_string());
-        let Some(output) = resolve_output_for_llm(&manifest, &blob_base, &None, None).await else {
+        let Some(output) = resolve_output_for_llm(
+            &manifest,
+            ResolveCtx {
+                blob_base_url: blob_base.as_deref(),
+                ..Default::default()
+            },
+        )
+        .await
+        else {
             panic!("resolve should succeed");
         };
         let Some(data) = output.data else {
@@ -1736,7 +1789,7 @@ mod tests {
             "application/vnd.vegalite.v5+json": inline_ref(r#"{"mark":"point","encoding":{"x":{"field":"Horsepower","type":"quantitative"},"y":{"field":"Miles_per_Gallon","type":"quantitative"}}}"#),
             "text/plain": inline_ref("alt.Chart(...)"),
         }));
-        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+        let Some(output) = resolve_output_for_llm(&manifest, ResolveCtx::default()).await else {
             panic!("resolve should succeed");
         };
         let Some(data) = output.data else {
@@ -1758,7 +1811,7 @@ mod tests {
             "application/vnd.plotly.v1+json": inline_ref(r#"{"data":[{"type":"bar","x":["A","B"],"y":[1,2]}],"layout":{"title":"Test"}}"#),
             "text/plain": inline_ref("Figure()"),
         }));
-        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+        let Some(output) = resolve_output_for_llm(&manifest, ResolveCtx::default()).await else {
             panic!("resolve should succeed");
         };
         let Some(data) = output.data else {
@@ -1778,7 +1831,7 @@ mod tests {
             "application/geo+json": inline_ref(r#"{"type":"FeatureCollection","features":[{"type":"Feature","geometry":{"type":"Point","coordinates":[0,0]},"properties":{"name":"origin"}}]}"#),
             "text/plain": inline_ref("<GeoJSON object>"),
         }));
-        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+        let Some(output) = resolve_output_for_llm(&manifest, ResolveCtx::default()).await else {
             panic!("resolve should succeed");
         };
         let Some(data) = output.data else {
@@ -1799,7 +1852,7 @@ mod tests {
             "text/html": inline_ref("<b>bold</b>"),
             "text/plain": inline_ref("bold"),
         }));
-        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+        let Some(output) = resolve_output_for_llm(&manifest, ResolveCtx::default()).await else {
             panic!("resolve should succeed");
         };
         let Some(data) = output.data else {
@@ -1823,7 +1876,7 @@ mod tests {
             "text/plain": inline_ref("IntSlider(value=42)"),
         }));
         // No comms passed → widget synthesis can't look up state
-        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+        let Some(output) = resolve_output_for_llm(&manifest, ResolveCtx::default()).await else {
             panic!("resolve should succeed");
         };
         let Some(data) = output.data else {
@@ -1840,7 +1893,7 @@ mod tests {
     #[tokio::test]
     async fn llm_empty_data_map() {
         let manifest = make_display_manifest(json!({}));
-        let output = resolve_output_for_llm(&manifest, &None, &None, None).await;
+        let output = resolve_output_for_llm(&manifest, ResolveCtx::default()).await;
         // Empty data map still produces an output, just with empty data
         let Some(output) = output else {
             panic!("should produce output");
@@ -1858,7 +1911,7 @@ mod tests {
             "name": "stdout",
             "text": inline_ref("hello from stdout"),
         });
-        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+        let Some(output) = resolve_output_for_llm(&manifest, ResolveCtx::default()).await else {
             panic!("resolve should succeed");
         };
         assert_eq!(output.output_type, "stream");
@@ -1873,7 +1926,7 @@ mod tests {
             "evalue": "bad value",
             "traceback": ["line 1", "line 2"],
         });
-        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+        let Some(output) = resolve_output_for_llm(&manifest, ResolveCtx::default()).await else {
             panic!("resolve should succeed");
         };
         assert_eq!(output.output_type, "error");
@@ -1887,7 +1940,7 @@ mod tests {
     #[tokio::test]
     async fn llm_execute_result_has_execution_count() {
         let manifest = make_execute_result_manifest(json!({"text/plain": inline_ref("42")}), 5);
-        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+        let Some(output) = resolve_output_for_llm(&manifest, ResolveCtx::default()).await else {
             panic!("resolve should succeed");
         };
         assert_eq!(output.output_type, "execute_result");
@@ -1901,7 +1954,7 @@ mod tests {
             "text/latex": blob_ref("latex_hash", 5000),
             "text/plain": inline_ref("fallback plain"),
         }));
-        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+        let Some(output) = resolve_output_for_llm(&manifest, ResolveCtx::default()).await else {
             panic!("resolve should succeed");
         };
         let Some(data) = output.data else {
@@ -1922,7 +1975,15 @@ mod tests {
             "text/html": blob_ref("html_hash", 8_000),
         }));
         let blob_base = Some("http://localhost:9999".to_string());
-        let Some(output) = resolve_output_for_llm(&manifest, &blob_base, &None, None).await else {
+        let Some(output) = resolve_output_for_llm(
+            &manifest,
+            ResolveCtx {
+                blob_base_url: blob_base.as_deref(),
+                ..Default::default()
+            },
+        )
+        .await
+        else {
             panic!("resolve should succeed");
         };
         let Some(data) = output.data else {
@@ -1952,7 +2013,7 @@ mod tests {
             "application/vnd.apache.parquet": blob_ref("pq_hash_123", 10_000),
             "text/llm+plain": inline_ref("DataFrame (polars): 3 rows × 2 columns\nColumns:\n  - id: Int64\n  - name: String"),
         }));
-        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+        let Some(output) = resolve_output_for_llm(&manifest, ResolveCtx::default()).await else {
             panic!("resolve should succeed");
         };
         let Some(data) = output.data else {
@@ -1982,7 +2043,7 @@ mod tests {
             "application/vnd.vegalite.v5+json": inline_ref(r#"{"mark": "bar"}"#),
             "text/llm+plain": inline_ref("Custom author summary: sales by region"),
         }));
-        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+        let Some(output) = resolve_output_for_llm(&manifest, ResolveCtx::default()).await else {
             panic!("resolve should succeed");
         };
         let Some(data) = output.data else {
@@ -2003,7 +2064,7 @@ mod tests {
         let manifest = make_display_manifest(json!({
             "application/vnd.apache.parquet": blob_ref("pq_hash_456", 10_000),
         }));
-        let Some(output) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+        let Some(output) = resolve_output_for_llm(&manifest, ResolveCtx::default()).await else {
             panic!("resolve should succeed");
         };
         // Without blob store access, the synthesizer can't read bytes and
@@ -2031,7 +2092,7 @@ mod tests {
                 "image/png": blob_ref("fig_png", 80_000),
             })),
         ];
-        let outputs = resolve_cell_outputs_for_llm(&manifests, &None, &None, None).await;
+        let outputs = resolve_cell_outputs_for_llm(&manifests, ResolveCtx::default()).await;
         assert_eq!(outputs.len(), 2);
         assert_eq!(outputs[0].output_type, "stream");
         assert_eq!(outputs[1].output_type, "display_data");
@@ -2060,9 +2121,10 @@ mod tests {
         });
         let Some(out) = resolve_output_for_llm(
             &manifest,
-            &Some("http://localhost:9999".to_string()),
-            &None,
-            None,
+            ResolveCtx {
+                blob_base_url: Some("http://localhost:9999"),
+                ..Default::default()
+            },
         )
         .await
         else {
@@ -2091,7 +2153,7 @@ mod tests {
                 "total_lines": 10u64,
             },
         });
-        let Some(out) = resolve_output_for_llm(&manifest, &None, &None, None).await else {
+        let Some(out) = resolve_output_for_llm(&manifest, ResolveCtx::default()).await else {
             panic!("resolve should succeed");
         };
         let Some(text) = out.text else {
@@ -2118,9 +2180,10 @@ mod tests {
         });
         let Some(out) = resolve_output_for_llm(
             &manifest,
-            &Some("http://localhost:9999".to_string()),
-            &None,
-            None,
+            ResolveCtx {
+                blob_base_url: Some("http://localhost:9999"),
+                ..Default::default()
+            },
         )
         .await
         else {
@@ -2157,7 +2220,14 @@ mod tests {
             "name": "stdout",
             "text": {"blob": hash, "size": 18},
         });
-        let Some(out) = resolve_output_for_llm(&manifest, &None, &Some(store_path), None).await
+        let Some(out) = resolve_output_for_llm(
+            &manifest,
+            ResolveCtx {
+                blob_store_path: Some(&store_path),
+                ..Default::default()
+            },
+        )
+        .await
         else {
             panic!("resolve should succeed");
         };
