@@ -1117,6 +1117,19 @@ pub(crate) fn spawn_notebook_file_watcher(
                                 }
                             };
 
+                            // Refresh original_nbformat_minor so the save
+                            // path reflects external upgrades (e.g. an editor
+                            // adding cell IDs and bumping to 4.5).
+                            if let Some(minor) = json
+                                .get("nbformat_minor")
+                                .and_then(|v| v.as_u64())
+                                .and_then(|n| u32::try_from(n).ok())
+                            {
+                                room.persistence
+                                    .original_nbformat_minor
+                                    .store(minor, Ordering::Relaxed);
+                            }
+
                             // Parse cells from the .ipynb
                             // None = parse failure (missing cells key), Some([]) = valid empty notebook
                             let ParsedIpynbCells {
