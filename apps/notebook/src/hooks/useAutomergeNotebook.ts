@@ -209,7 +209,10 @@ export function useAutomergeNotebook() {
     handleRef.current?.free();
     handleRef.current = handle;
     handle.set_mime_priority(DEFAULT_MIME_PRIORITY);
-    const initialBlobPort = getBlobPort();
+    let initialBlobPort = getBlobPort();
+    if (initialBlobPort === null) {
+      initialBlobPort = await refreshBlobPort();
+    }
     if (initialBlobPort !== null) {
       handle.set_blob_port(initialBlobPort);
     }
