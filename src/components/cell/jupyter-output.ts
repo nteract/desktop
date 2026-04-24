@@ -32,4 +32,17 @@ export type JupyterOutput =
       ename: string;
       evalue: string;
       traceback: string[];
+      /**
+       * Optional rich-traceback sibling payload. Carries the structured
+       * traceback shape `TracebackOutput` expects (ename, evalue,
+       * frames with source context, highlight markers). Present when:
+       *
+       * - the kernel emitted rich via `application/vnd.nteract.traceback+json`
+       *   (nteract-kernel-launcher path), OR
+       * - the daemon synthesized one from the ANSI traceback at
+       *   `.ipynb` load via the Rust-side parser.
+       *
+       * When absent, the output renders via plain `AnsiErrorOutput`.
+       */
+      rich?: unknown;
     });

@@ -10,6 +10,7 @@ import { injectPluginsForMimes, needsPlugin } from "@/components/isolated/iframe
 import { AnsiErrorOutput, AnsiStreamOutput } from "@/components/outputs/ansi-output";
 import { isSafeForMainDom } from "@/components/outputs/safe-mime-types";
 import { DEFAULT_PRIORITY, MediaRouter } from "@/components/outputs/media-router";
+import { TracebackOutput } from "@/components/outputs/traceback-output";
 import { useWidgetStore } from "@/components/widgets/widget-store-context";
 import { useColorTheme, useDarkMode } from "@/lib/dark-mode";
 import { ErrorBoundary } from "@/lib/error-boundary";
@@ -201,6 +202,14 @@ function renderOutput(
       );
 
     case "error":
+      // Rich sibling is set by the daemon when either the kernel
+      // emitted `application/vnd.nteract.traceback+json` (launcher path)
+      // or the Rust-side ANSI parser synthesized one at `.ipynb` load.
+      // When absent, fall back to the plain ANSI render — the classic
+      // path still works for vanilla ipykernel_launcher.
+      if (output.rich != null && typeof output.rich === "object") {
+        return <TracebackOutput key={key} data={output.rich} />;
+      }
       return (
         <AnsiErrorOutput
           key={key}
@@ -417,19 +426,37 @@ export function OutputArea({
           outputIndex: index,
         });
       } else if (output.output_type === "error") {
-        batch.push({
-          mimeType: "text/plain",
-          data: output.traceback.join("\n"),
-          metadata: {
-            isError: true,
-            ename: output.ename,
-            evalue: output.evalue,
-            traceback: output.traceback,
-          },
-          outputId,
-          cellId,
-          outputIndex: index,
-        });
+        // Prefer the rich payload when present so mixed cells (HTML +
+        // raise, plotly + raise, widget + raise) don't downgrade to
+        // plain ANSI just because a sibling output forced iframe
+        // isolation. The iframe's OutputRenderer routes the rich MIME
+        // through TracebackOutput; without this branch we'd send
+        // text/plain and the iframe's AnsiErrorOutput fallback would
+        // win, losing the rich upgrade.
+        if (output.rich != null && typeof output.rich === "object") {
+          batch.push({
+            mimeType: "application/vnd.nteract.traceback+json",
+            data: output.rich,
+            metadata: { isError: true },
+            outputId,
+            cellId,
+            outputIndex: index,
+          });
+        } else {
+          batch.push({
+            mimeType: "text/plain",
+            data: output.traceback.join("\n"),
+            metadata: {
+              isError: true,
+              ename: output.ename,
+              evalue: output.evalue,
+              traceback: output.traceback,
+            },
+            outputId,
+            cellId,
+            outputIndex: index,
+          });
+        }
       }
     });
 

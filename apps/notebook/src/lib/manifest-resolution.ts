@@ -61,6 +61,17 @@ export type OutputManifest =
       ename: string;
       evalue: string;
       traceback: ContentRef;
+      /**
+       * Optional rich-traceback sibling. Carries the structured payload
+       * the frontend's `TracebackOutput` renders (ename, evalue, frames
+       * with source context, highlight markers). Present when the
+       * kernel emitted rich via `application/vnd.nteract.traceback+json`
+       * OR the daemon synthesized one from an ANSI traceback at load.
+       *
+       * In-memory only — `.ipynb` save strips the sibling so files stay
+       * nbformat-clean (see `resolve_manifest` in `output_store.rs`).
+       */
+      rich?: ContentRef;
     });
 
 /**
@@ -268,19 +279,68 @@ export async function resolveManifest(
       };
     }
     case "error": {
-      const tracebackJson = await resolveContentRef(
-        manifest.traceback,
-        blobPort,
-      );
+      const tracebackJson = await resolveContentRef(manifest.traceback, blobPort);
       const traceback = JSON.parse(tracebackJson) as string[];
+      const rich = await resolveRich(manifest.rich, blobPort);
       return {
         output_id,
         output_type: "error",
         ename: manifest.ename,
         evalue: manifest.evalue,
         traceback,
+        rich,
       };
     }
+  }
+}
+
+/**
+ * Resolve the optional rich-traceback ContentRef into the parsed payload.
+ *
+ * Returns `undefined` when the manifest has no sibling OR the JSON
+ * parse fails. The caller (OutputArea) treats `undefined` as "fall
+ * back to AnsiErrorOutput", so a malformed payload never blocks
+ * rendering — we just lose the rich upgrade for that one output.
+ */
+async function resolveRich(
+  ref: ContentRef | undefined,
+  blobPort: number,
+): Promise<Record<string, unknown> | undefined> {
+  if (!ref) return undefined;
+  try {
+    const json = await resolveContentRef(ref, blobPort);
+    return JSON.parse(json) as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Sync counterpart. Three-state to distinguish "no sibling" (caller
+ * finishes resolution) from "sibling exists but blob-backed" (caller
+ * must return null so the async path picks it up):
+ *
+ * - `"absent"`   → no sibling on the manifest, output is complete
+ * - `"async"`    → sibling present but needs a blob fetch
+ * - `{...}`      → resolved payload (or empty object for a malformed
+ *                  blob — async-retrying a parse failure would loop)
+ */
+type RichSyncResult = "absent" | "async" | Record<string, unknown>;
+
+function resolveRichSync(
+  ref: ContentRef | undefined,
+  blobPort: number,
+): RichSyncResult {
+  if (!ref) return "absent";
+  const json = resolveContentRefSync(ref, blobPort);
+  if (json === null) return "async";
+  try {
+    return JSON.parse(json) as Record<string, unknown>;
+  } catch {
+    // Resolved bytes parsed as non-JSON — TracebackOutput's fallback
+    // will render the raw object view. Async would just fail the same
+    // parse.
+    return {};
   }
 }
 
@@ -336,12 +396,19 @@ export function resolveManifestSync(
       const tracebackJson = resolveContentRefSync(manifest.traceback, blobPort);
       if (tracebackJson === null) return null;
       const traceback = JSON.parse(tracebackJson) as string[];
+      const richResult = resolveRichSync(manifest.rich, blobPort);
+      // If the rich sibling exists but needs a blob fetch, defer the
+      // whole output to the async path. Otherwise callers treat this
+      // as fully resolved and never upgrade to rich rendering.
+      if (richResult === "async") return null;
+      const rich = richResult === "absent" ? undefined : richResult;
       return {
         output_id,
         output_type: "error",
         ename: manifest.ename,
         evalue: manifest.evalue,
         traceback,
+        rich,
       };
     }
   }

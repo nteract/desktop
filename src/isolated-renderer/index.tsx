@@ -36,6 +36,7 @@ import { ImageOutput } from "@/components/outputs/image-output";
 import { JavaScriptOutput } from "@/components/outputs/javascript-output";
 import { JsonOutput } from "@/components/outputs/json-output";
 import { PdfOutput } from "@/components/outputs/pdf-output";
+import { TracebackOutput } from "@/components/outputs/traceback-output";
 import { VideoOutput } from "@/components/outputs/video-output";
 import { SvgOutput } from "@/components/outputs/svg-output";
 import { WidgetView } from "@/components/widgets/widget-view";
@@ -392,7 +393,15 @@ function OutputRenderer({ payload }: { payload: RenderPayload }) {
     );
   }
 
-  // Handle error output
+  // Rich traceback MIME — take precedence over the text/plain error
+  // fallback so cells that mix rich outputs with errors (e.g., display
+  // HTML then raise) still get the rich render inside the iframe.
+  if (mimeType === "application/vnd.nteract.traceback+json") {
+    return <TracebackOutput data={data} />;
+  }
+
+  // Handle error output (classic ANSI path — fallback when no rich
+  // sibling was available to promote above).
   if (mimeType === "text/plain" && metadata?.isError) {
     return (
       <AnsiErrorOutput

@@ -467,6 +467,13 @@ pub enum OutputManifest {
         traceback: ContentRef,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         llm_preview: Option<ErrorPreview>,
+        /// Rich traceback sibling — the structured payload the frontend's
+        /// `TracebackOutput` renders. Present when this error arrived
+        /// with [`user_error::TRACEBACK_MIME`] from the launcher, OR was
+        /// synthesized on load via the ANSI parser. In-memory only; not
+        /// serialized to `.ipynb` (see `resolve_manifest`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rich: Option<ContentRef>,
     },
 }
 
@@ -531,6 +538,35 @@ pub async fn create_manifest(
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
 
+    // Rich-MIME promotion. A display_data or execute_result carrying
+    // `application/vnd.nteract.traceback+json` IS an error — the
+    // launcher short-circuits `_showtraceback` to emit it this way. Keep
+    // the CRDT shape aligned with the nbformat semantic by building an
+    // `OutputManifest::Error` directly, with the rich payload carried
+    // as a sibling `ContentRef`. On save, `resolve_manifest` emits the
+    // classic nbformat shape and drops the sibling — .ipynb stays
+    // standards-clean.
+    if matches!(output_type, "display_data" | "execute_result") {
+        if let Some(ue) = crate::user_error::UserErrorOutput::from_nbformat(output) {
+            let (ename, evalue, traceback_strings) = ue.to_classic();
+            let rich_payload = match &ue {
+                crate::user_error::UserErrorOutput::Rich(rt) => Some(rt.clone()),
+                _ => None,
+            };
+            let manifest = build_error_manifest(
+                existing_output_id,
+                ename,
+                evalue,
+                traceback_strings,
+                rich_payload,
+                blob_store,
+                threshold,
+            )
+            .await?;
+            return Ok(manifest);
+        }
+    }
+
     let manifest = match output_type {
         "display_data" => {
             let data = convert_data_bundle(output.get("data"), blob_store, threshold).await?;
@@ -584,38 +620,50 @@ pub async fn create_manifest(
             }
         }
         "error" => {
-            let ename = output
-                .get("ename")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let evalue = output
-                .get("evalue")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let traceback_value = output
-                .get("traceback")
-                .cloned()
-                .unwrap_or(Value::Array(vec![]));
-            let traceback_json = serde_json::to_string(&traceback_value)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            let traceback =
-                ContentRef::from_data(&traceback_json, "application/json", blob_store, threshold)
-                    .await?;
-            let llm_preview = match &traceback {
-                ContentRef::Blob { .. } => {
-                    Some(ErrorPreview::from_traceback_value(&traceback_value))
+            // Go through UserErrorOutput so we can synthesize a rich
+            // sibling from the ANSI traceback when loading classic
+            // `.ipynb` error outputs. Missing ename/evalue fall through
+            // as empty strings (matches the previous behavior).
+            let ue = crate::user_error::UserErrorOutput::from_nbformat(output);
+            let (ename, evalue, traceback_strings, rich_payload) = match ue {
+                Some(u) => {
+                    let rich = u.to_rich();
+                    let (e, v, tb) = u.to_classic();
+                    (e, v, tb, rich)
                 }
-                ContentRef::Inline { .. } => None,
+                None => (
+                    output
+                        .get("ename")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    output
+                        .get("evalue")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    output
+                        .get("traceback")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str().map(str::to_string))
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    None,
+                ),
             };
-            OutputManifest::Error {
-                output_id: existing_output_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+            build_error_manifest(
+                existing_output_id,
                 ename,
                 evalue,
-                traceback,
-                llm_preview,
-            }
+                traceback_strings,
+                rich_payload,
+                blob_store,
+                threshold,
+            )
+            .await?
         }
         _ => {
             return Err(io::Error::new(
@@ -626,6 +674,64 @@ pub async fn create_manifest(
     };
 
     Ok(manifest)
+}
+
+/// Build an `OutputManifest::Error` from the canonical fields.
+///
+/// Used by `create_manifest` for both the classic error branch and the
+/// rich-MIME-promoted display_data/execute_result case. Centralizes:
+/// - the traceback-as-JSON-array ContentRef encoding,
+/// - llm_preview synthesis for blob'd tracebacks, and
+/// - the optional rich sibling encoding.
+async fn build_error_manifest(
+    existing_output_id: Option<String>,
+    ename: String,
+    evalue: String,
+    traceback_strings: Vec<String>,
+    rich_payload: Option<crate::user_error::RichTraceback>,
+    blob_store: &BlobStore,
+    threshold: usize,
+) -> io::Result<OutputManifest> {
+    let traceback_value = Value::Array(
+        traceback_strings
+            .iter()
+            .map(|s| Value::String(s.clone()))
+            .collect(),
+    );
+    let traceback_json = serde_json::to_string(&traceback_value)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let traceback =
+        ContentRef::from_data(&traceback_json, "application/json", blob_store, threshold).await?;
+    let llm_preview = match &traceback {
+        ContentRef::Blob { .. } => Some(ErrorPreview::from_traceback_value(&traceback_value)),
+        ContentRef::Inline { .. } => None,
+    };
+
+    let rich = match rich_payload {
+        Some(rt) => {
+            let rich_json = serde_json::to_string(&rt)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            Some(
+                ContentRef::from_data(
+                    &rich_json,
+                    crate::user_error::TRACEBACK_MIME,
+                    blob_store,
+                    threshold,
+                )
+                .await?,
+            )
+        }
+        None => None,
+    };
+
+    Ok(OutputManifest::Error {
+        output_id: existing_output_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+        ename,
+        evalue,
+        traceback,
+        llm_preview,
+        rich,
+    })
 }
 
 /// Write ref-MIME buffers to the blob store before the manifest is built.
@@ -1497,6 +1603,130 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(manifest, OutputManifest::Error { ename, .. } if ename == "ValueError"));
+    }
+
+    #[tokio::test]
+    async fn test_create_manifest_error_from_ipynb_synthesizes_rich_sibling() {
+        // A .ipynb-loaded classic error whose traceback carries recognizable
+        // frames should build an Error manifest WITH a `rich` sibling,
+        // synthesized via the ANSI parser. Lets loaded-from-disk notebooks
+        // render rich without per-cell parsing on the frontend.
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+
+        let output = serde_json::json!({
+            "output_type": "error",
+            "ename": "ZeroDivisionError",
+            "evalue": "division by zero",
+            "traceback": [
+                "Traceback (most recent call last):",
+                "  File \"/tmp/foo.py\", line 10, in main",
+                "    return divide(1, 0)",
+                "  File \"/tmp/foo.py\", line 4, in divide",
+                "    return a / b",
+                "ZeroDivisionError: division by zero",
+            ],
+        });
+
+        let manifest = create_manifest(&output, &store, DEFAULT_INLINE_THRESHOLD)
+            .await
+            .unwrap();
+        let OutputManifest::Error { rich, .. } = manifest else {
+            panic!("expected Error manifest");
+        };
+        assert!(rich.is_some(), "rich sibling should be synthesized");
+    }
+
+    #[tokio::test]
+    async fn test_create_manifest_error_no_frames_no_rich_sibling() {
+        // If the ANSI parser can't recover any frames, we skip the rich
+        // sibling rather than emit a header-only payload.
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+
+        let output = serde_json::json!({
+            "output_type": "error",
+            "ename": "ValueError",
+            "evalue": "bad",
+            "traceback": ["just some noise", "ValueError: bad"],
+        });
+        let manifest = create_manifest(&output, &store, DEFAULT_INLINE_THRESHOLD)
+            .await
+            .unwrap();
+        let OutputManifest::Error { rich, .. } = manifest else {
+            panic!("expected Error manifest");
+        };
+        assert!(rich.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_create_manifest_display_data_with_mime_promotes_to_error() {
+        // Launcher emits display_data carrying TRACEBACK_MIME. The manifest
+        // created here must be OutputManifest::Error with the rich sibling
+        // carrying the payload, and classic fields populated from
+        // `to_classic()` projection. On save, .ipynb will emit output_type:
+        // "error" with the recovered traceback[].
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+
+        let payload = serde_json::json!({
+            "ename": "KeyError",
+            "evalue": "'missing'",
+            "frames": [{"filename": "/tmp/x.py", "lineno": 2, "name": "f"}],
+            "text": "Traceback (most recent call last):\n  File \"/tmp/x.py\", line 2, in f\n    user[\"missing\"]\nKeyError: 'missing'",
+        });
+        let output = serde_json::json!({
+            "output_type": "display_data",
+            "data": { crate::user_error::TRACEBACK_MIME: payload },
+        });
+
+        let manifest = create_manifest(&output, &store, DEFAULT_INLINE_THRESHOLD)
+            .await
+            .unwrap();
+        let OutputManifest::Error {
+            ename,
+            evalue,
+            rich,
+            ..
+        } = manifest
+        else {
+            panic!("expected Error manifest (promoted from display_data)");
+        };
+        assert_eq!(ename, "KeyError");
+        assert_eq!(evalue, "'missing'");
+        assert!(rich.is_some(), "rich sibling should survive promotion");
+    }
+
+    #[tokio::test]
+    async fn test_error_manifest_resolves_back_to_classic_ipynb_shape() {
+        // End-to-end: the save path (`resolve_manifest`) strips the rich
+        // sibling so .ipynb stays standards-clean. Even a promoted
+        // display_data becomes output_type="error" on disk.
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+
+        let payload = serde_json::json!({
+            "ename": "KeyError",
+            "evalue": "'missing'",
+            "frames": [],
+            "text": "Traceback (most recent call last):\n  File \"/tmp/x.py\", line 1, in <module>\n    user[\"missing\"]\nKeyError: 'missing'",
+        });
+        let output = serde_json::json!({
+            "output_type": "display_data",
+            "data": { crate::user_error::TRACEBACK_MIME: payload },
+        });
+        let manifest = create_manifest(&output, &store, DEFAULT_INLINE_THRESHOLD)
+            .await
+            .unwrap();
+        let resolved = resolve_manifest(&manifest, &store).await.unwrap();
+        assert_eq!(resolved["output_type"], "error");
+        assert_eq!(resolved["ename"], "KeyError");
+        assert_eq!(resolved["evalue"], "'missing'");
+        assert!(resolved["traceback"].is_array());
+        assert!(
+            resolved.get("rich").is_none(),
+            "rich sibling must not leak to .ipynb"
+        );
     }
 
     #[tokio::test]
