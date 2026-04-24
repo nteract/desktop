@@ -916,13 +916,30 @@ pub(crate) fn missing_conda_env_yml_name(
     if detected.kind != crate::project_file::ProjectFileKind::EnvironmentYml {
         return None;
     }
-    if crate::project_file::resolve_conda_env_prefix(&detected.path).is_some() {
-        return None;
+    // `resolve_conda_env_prefix` returns the `prefix:` value verbatim
+    // without checking existence (it only validates via `find_named_conda_env`
+    // for the `name:` path). For an env declared with `prefix: /missing`
+    // we'd incorrectly conclude the env is built and skip the typed
+    // error. Verify the python binary exists before accepting the prefix.
+    if let Some(prefix) = crate::project_file::resolve_conda_env_prefix(&detected.path) {
+        if crate::project_file::conda_python_path(&prefix).exists() {
+            return None;
+        }
     }
-    crate::project_file::parse_environment_yml(&detected.path)
-        .ok()
-        .and_then(|c| c.name)
-        .or_else(|| Some(String::from("(unnamed)")))
+    // Declared but not built. Prefer the `name:` for display, fall back
+    // to the `prefix:` path, then to a placeholder if env.yml has
+    // neither (the kernel path's existing error handles the
+    // shape-broken case; we still want a useful banner).
+    let config = crate::project_file::parse_environment_yml(&detected.path).ok();
+    if let Some(ref c) = config {
+        if let Some(ref name) = c.name {
+            return Some(name.clone());
+        }
+        if let Some(ref prefix) = c.prefix {
+            return Some(prefix.display().to_string());
+        }
+    }
+    Some(String::from("(unnamed)"))
 }
 
 /// Check whether a notebook's inline dependency list exactly matches a

@@ -5588,6 +5588,60 @@ fn test_missing_conda_env_yml_name_skips_non_envyml() {
     assert_eq!(missing_conda_env_yml_name(&detected), None);
 }
 
+/// Codex P2 on #2167: `prefix:` pointing at a non-existent path must
+/// be reported as missing so `auto_launch_kernel` surfaces the typed
+/// error instead of letting the runtime agent die with the generic
+/// resolver message. The reported name falls back to the prefix path
+/// when env.yml has no `name:`.
+#[test]
+fn test_missing_conda_env_yml_name_prefix_missing_reports_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let missing_prefix = tmp.path().join("definitely-does-not-exist");
+    let yml_path = tmp.path().join("environment.yml");
+    std::fs::write(
+        &yml_path,
+        format!(
+            "prefix: {}\ndependencies:\n  - python\n",
+            missing_prefix.display()
+        ),
+    )
+    .unwrap();
+    let detected = crate::project_file::DetectedProjectFile {
+        path: yml_path,
+        kind: crate::project_file::ProjectFileKind::EnvironmentYml,
+    };
+    let reported = missing_conda_env_yml_name(&detected).expect("prefix: missing should report");
+    assert!(
+        reported.contains("definitely-does-not-exist"),
+        "reported name should include the prefix path; got {reported:?}",
+    );
+}
+
+/// When env.yml has both `name:` and a non-existent `prefix:`, the
+/// name wins for display (shorter, more identifiable).
+#[test]
+fn test_missing_conda_env_yml_name_prefers_name_over_missing_prefix() {
+    let tmp = tempfile::tempdir().unwrap();
+    let missing_prefix = tmp.path().join("definitely-does-not-exist");
+    let yml_path = tmp.path().join("environment.yml");
+    std::fs::write(
+        &yml_path,
+        format!(
+            "name: myenv\nprefix: {}\ndependencies:\n  - python\n",
+            missing_prefix.display()
+        ),
+    )
+    .unwrap();
+    let detected = crate::project_file::DetectedProjectFile {
+        path: yml_path,
+        kind: crate::project_file::ProjectFileKind::EnvironmentYml,
+    };
+    assert_eq!(
+        missing_conda_env_yml_name(&detected).as_deref(),
+        Some("myenv"),
+    );
+}
+
 #[test]
 fn test_missing_conda_env_yml_name_prefix_with_python_is_not_missing() {
     let tmp = tempfile::tempdir().unwrap();
