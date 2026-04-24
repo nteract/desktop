@@ -33,7 +33,8 @@ export function filter_rows(ipc_bytes: Uint8Array, mask: Uint8Array): Uint8Array
 export function free(handle: number): void;
 
 /**
- * Get a cell value as f64 (for numeric sorting/comparison). Returns NaN for non-numeric or null.
+ * Get a cell value as f64. Returns NaN for null or unsupported types.
+ * Handles numeric types and timestamps (as epoch milliseconds).
  */
 export function get_cell_f64(handle: number, row: number, col: number): number;
 

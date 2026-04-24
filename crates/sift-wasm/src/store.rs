@@ -9,6 +9,7 @@ use arrow::record_batch::RecordBatch;
 use arrow_cast::display::ArrayFormatter;
 use arrow_ord::sort::{sort_to_indices, SortOptions};
 use arrow_select::concat::concat;
+use chrono::DateTime;
 use nteract_predicate::summary::{CategoryCount, HistogramBin};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde::Deserialize;
@@ -222,6 +223,48 @@ pub fn is_null(handle: u32, row: usize, col: usize) -> Result<bool, JsValue> {
     .map_err(|e| JsValue::from_str(&e))
 }
 
+/// Extract a single timestamp cell as epoch milliseconds. Returns None for
+/// non-timestamp types or if the downcast fails.
+fn timestamp_cell_ms(column: &dyn Array, local_row: usize) -> Option<i64> {
+    match column.data_type() {
+        DataType::Timestamp(TimeUnit::Millisecond, _) => column
+            .as_any()
+            .downcast_ref::<arrow::array::TimestampMillisecondArray>()
+            .map(|a| a.value(local_row)),
+        DataType::Timestamp(TimeUnit::Microsecond, _) => column
+            .as_any()
+            .downcast_ref::<arrow::array::TimestampMicrosecondArray>()
+            .map(|a| a.value(local_row) / 1000),
+        DataType::Timestamp(TimeUnit::Nanosecond, _) => column
+            .as_any()
+            .downcast_ref::<arrow::array::TimestampNanosecondArray>()
+            .map(|a| a.value(local_row) / 1_000_000),
+        DataType::Timestamp(TimeUnit::Second, _) => column
+            .as_any()
+            .downcast_ref::<arrow::array::TimestampSecondArray>()
+            .map(|a| a.value(local_row) * 1000),
+        DataType::Date32 => column
+            .as_any()
+            .downcast_ref::<arrow::array::Date32Array>()
+            .map(|a| a.value(local_row) as i64 * 86_400_000),
+        DataType::Date64 => column
+            .as_any()
+            .downcast_ref::<arrow::array::Date64Array>()
+            .map(|a| a.value(local_row)),
+        _ => None,
+    }
+}
+
+/// Format epoch milliseconds as "Apr 23, 2026".
+fn format_timestamp_ms(ms: i64) -> String {
+    let secs = ms / 1000;
+    let nanos = ((ms % 1000) * 1_000_000) as u32;
+    match DateTime::from_timestamp(secs, nanos) {
+        Some(dt) => dt.format("%b %-d, %Y").to_string(),
+        None => ms.to_string(),
+    }
+}
+
 /// Get a cell value as a formatted string (for display).
 #[wasm_bindgen]
 pub fn get_cell_string(handle: u32, row: usize, col: usize) -> Result<String, JsValue> {
@@ -239,6 +282,11 @@ pub fn get_cell_string(handle: u32, row: usize, col: usize) -> Result<String, Js
         // the shared helper so all variants dispatch correctly.
         if let Some(s) = nteract_predicate::arrow_utils::string_at(column.as_ref(), local_row) {
             return s;
+        }
+
+        // Timestamps → human-readable date
+        if let Some(ms) = timestamp_cell_ms(column.as_ref(), local_row) {
+            return format_timestamp_ms(ms);
         }
 
         match column.data_type() {
@@ -277,7 +325,8 @@ pub fn get_cell_string(handle: u32, row: usize, col: usize) -> Result<String, Js
     .map_err(|e| JsValue::from_str(&e))
 }
 
-/// Get a cell value as f64 (for numeric sorting/comparison). Returns NaN for non-numeric or null.
+/// Get a cell value as f64. Returns NaN for null or unsupported types.
+/// Handles numeric types and timestamps (as epoch milliseconds).
 #[wasm_bindgen]
 pub fn get_cell_f64(handle: u32, row: usize, col: usize) -> Result<f64, JsValue> {
     with_store(handle, |s| {
@@ -288,6 +337,11 @@ pub fn get_cell_f64(handle: u32, row: usize, col: usize) -> Result<f64, JsValue>
         let column = s.batches[batch_idx].column(col);
         if column.is_null(local_row) {
             return f64::NAN;
+        }
+
+        // Timestamps → epoch ms as f64
+        if let Some(ms) = timestamp_cell_ms(column.as_ref(), local_row) {
+            return ms as f64;
         }
 
         match column.data_type() {
@@ -520,75 +574,22 @@ pub fn store_temporal_histogram(handle: u32, col: usize) -> Result<JsValue, JsVa
 
 /// Extract timestamp values as milliseconds from an Arrow column.
 fn extract_timestamp_ms(column: &dyn Array, out: &mut Vec<i64>) {
-    match column.data_type() {
-        DataType::Timestamp(TimeUnit::Millisecond, _) => {
-            if let Some(arr) = column
-                .as_any()
-                .downcast_ref::<arrow::array::TimestampMillisecondArray>()
-            {
-                for i in 0..arr.len() {
-                    if !arr.is_null(i) {
-                        out.push(arr.value(i));
-                    }
+    // Int64 fallback: treat raw i64 as epoch ms (common for cast timestamps)
+    if matches!(column.data_type(), DataType::Int64) {
+        if let Some(arr) = column.as_any().downcast_ref::<Int64Array>() {
+            for i in 0..arr.len() {
+                if !arr.is_null(i) {
+                    out.push(arr.value(i));
                 }
             }
         }
-        DataType::Timestamp(TimeUnit::Microsecond, _) => {
-            if let Some(arr) = column
-                .as_any()
-                .downcast_ref::<arrow::array::TimestampMicrosecondArray>()
-            {
-                for i in 0..arr.len() {
-                    if !arr.is_null(i) {
-                        out.push(arr.value(i) / 1000);
-                    }
-                }
-            }
+        return;
+    }
+
+    for i in 0..column.len() {
+        if let Some(ms) = timestamp_cell_ms(column, i) {
+            out.push(ms);
         }
-        DataType::Timestamp(TimeUnit::Nanosecond, _) => {
-            if let Some(arr) = column
-                .as_any()
-                .downcast_ref::<arrow::array::TimestampNanosecondArray>()
-            {
-                for i in 0..arr.len() {
-                    if !arr.is_null(i) {
-                        out.push(arr.value(i) / 1_000_000);
-                    }
-                }
-            }
-        }
-        DataType::Timestamp(TimeUnit::Second, _) => {
-            if let Some(arr) = column
-                .as_any()
-                .downcast_ref::<arrow::array::TimestampSecondArray>()
-            {
-                for i in 0..arr.len() {
-                    if !arr.is_null(i) {
-                        out.push(arr.value(i) * 1000);
-                    }
-                }
-            }
-        }
-        DataType::Date32 => {
-            if let Some(arr) = column.as_any().downcast_ref::<arrow::array::Date32Array>() {
-                for i in 0..arr.len() {
-                    if !arr.is_null(i) {
-                        out.push(arr.value(i) as i64 * 86_400_000);
-                    }
-                }
-            }
-        }
-        DataType::Int64 => {
-            // Fallback: treat i64 as epoch ms (common for cast timestamps)
-            if let Some(arr) = column.as_any().downcast_ref::<Int64Array>() {
-                for i in 0..arr.len() {
-                    if !arr.is_null(i) {
-                        out.push(arr.value(i));
-                    }
-                }
-            }
-        }
-        _ => {}
     }
 }
 
