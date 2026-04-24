@@ -156,13 +156,21 @@ pub async fn watch(
             }
             WatchDecision::RejoinInitial(target) => {
                 info!("Performing initial rejoin to {target}");
-                rejoin(&socket_path, &session, &peer_label, Some(target)).await;
-                was_disconnected = false;
+                let ok = rejoin(&socket_path, &session, &peer_label, Some(target)).await;
+                // Only clear the disconnect flag if rejoin succeeded or
+                // the session was explicitly cleared (room evicted). If
+                // rejoin exhausted retries, keep was_disconnected=true so
+                // the next Connected event retries rather than going NoOp.
+                if ok {
+                    was_disconnected = false;
+                }
             }
             WatchDecision::RejoinContinuation => {
                 info!("Daemon reachable, rejoining notebook session");
-                rejoin(&socket_path, &session, &peer_label, None).await;
-                was_disconnected = false;
+                let ok = rejoin(&socket_path, &session, &peer_label, None).await;
+                if ok {
+                    was_disconnected = false;
+                }
             }
             WatchDecision::MarkDisconnected => {
                 was_disconnected = true;
@@ -195,12 +203,17 @@ fn looks_like_uuid(target: &str) -> bool {
 /// still exists in the daemon. If the room was evicted during the
 /// disconnect, the session is cleared immediately without creating a new
 /// peer connection — avoiding the creation of phantom rooms (#2088).
+///
+/// Returns `true` if the rejoin succeeded or the session was explicitly
+/// cleared (room evicted). Returns `false` if retries were exhausted
+/// without success — the caller should keep `was_disconnected` true so
+/// the next `Connected` event retries.
 async fn rejoin(
     socket_path: &Path,
     session: &Arc<RwLock<Option<NotebookSession>>>,
     peer_label: &Arc<RwLock<String>>,
     override_target: Option<String>,
-) {
+) -> bool {
     let (notebook_id, notebook_path) = match override_target {
         Some(target) if looks_like_uuid(&target) => (target, None),
         Some(target) => {
@@ -212,7 +225,7 @@ async fn rejoin(
             let guard = session.read().await;
             match guard.as_ref() {
                 Some(s) => (s.notebook_id.clone(), s.notebook_path.clone()),
-                None => return,
+                None => return true, // No session to rejoin — not a failure
             }
         }
     };
@@ -235,7 +248,7 @@ async fn rejoin(
                          clearing session (notebook was evicted)"
                     );
                     *session.write().await = None;
-                    return;
+                    return true; // Session cleared intentionally
                 }
             }
             Err(e) => {
@@ -307,7 +320,7 @@ async fn rejoin(
                 };
                 *session.write().await = Some(new_session);
                 info!("Rejoined notebook session ({new_cell_count} cells)");
-                return;
+                return true;
             }
             Err(e) => {
                 if attempt < REJOIN_MAX_RETRIES {
@@ -323,6 +336,8 @@ async fn rejoin(
             }
         }
     }
+
+    false // All retries exhausted
 }
 
 #[cfg(test)]
