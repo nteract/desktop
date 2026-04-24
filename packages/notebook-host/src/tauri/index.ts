@@ -13,12 +13,11 @@
  * and tighten the import direction.
  */
 
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as pluginOpenDialog, save as pluginSaveDialog } from "@tauri-apps/plugin-dialog";
 import {
-  attachConsole as pluginAttachConsole,
   debug as pluginDebug,
   error as pluginError,
   info as pluginInfo,
@@ -259,7 +258,6 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
   const commands = createCommandRegistry();
 
   // plugin-log always resolves; fire-and-forget so callers stay sync.
-  // `isTauri()` guards the one-time `attachConsole()` for tests and SSR.
   const log: HostLog = {
     debug(message) {
       pluginDebug(message).catch(() => {});
@@ -274,12 +272,17 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
       pluginError(message).catch(() => {});
     },
   };
-  // In a real Tauri window, mirror plugin-log output to the browser console
-  // so devtools shows it alongside Rust-side entries. Safe to call outside
-  // Tauri — the plugin no-ops when IPC isn't available.
-  if (isTauri() && import.meta.env.DEV) {
-    pluginAttachConsole().catch(() => {});
-  }
+  // NOTE: the old `pluginAttachConsole()` mirror was removed because it
+  // created a feedback loop with apps that wrap `console.error` to forward
+  // back into plugin-log (our notebook app does this for panic visibility):
+  //
+  //   frontend error → wrapped console.error → logger.error → pluginError
+  //     → Rust log bus → attachConsole listener → console.error (wrapped!)
+  //     → logger.error → pluginError → … forever.
+  //
+  // Apps that want Rust logs in devtools should attach their own
+  // `attachLogger(…)` listener at boot that calls the *original* console
+  // methods captured before any wrapping. See `apps/notebook/src/main.tsx`.
 
   const host: NotebookHost = {
     name: "tauri",

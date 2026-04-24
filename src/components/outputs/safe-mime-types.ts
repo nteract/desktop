@@ -16,6 +16,9 @@ const MAIN_DOM_SAFE_TYPES = new Set([
   "image/bmp",
   // Structured data — tree viewer, no script risk
   "application/json",
+  // Rich traceback payloads — our own schema, rendered by TracebackOutput.
+  // Experimental; shape is not yet persisted to .ipynb.
+  "application/vnd.nteract.traceback+json",
 ]);
 
 /** Check if a MIME type can safely render in the main DOM (no iframe needed). */

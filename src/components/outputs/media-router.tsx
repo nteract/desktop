@@ -21,6 +21,9 @@ const JavaScriptOutput = lazy(() =>
     default: m.JavaScriptOutput,
   })),
 );
+const TracebackOutput = lazy(() =>
+  import("./traceback-output").then((m) => ({ default: m.TracebackOutput })),
+);
 
 /**
  * Check if the current window is inside an iframe
@@ -42,7 +45,11 @@ function isInIframe(): boolean {
  * Platforms can override this with the `priority` prop.
  */
 export const DEFAULT_PRIORITY = [
-  // Rich formats first
+  // Our own rich traceback lives at the top — if we minted the MIME we
+  // trust it, and no reasonable kernel emits a traceback alongside a
+  // widget/plot/dataframe in the same output. Keeping it #1 also means
+  // the JSON-tree fallback never wins on a mistyped payload.
+  "application/vnd.nteract.traceback+json",
   "application/vnd.jupyter.widget-view+json",
   "application/vnd.plotly.v1+json",
   "application/vnd.vegalite.v6+json",
@@ -373,6 +380,13 @@ export function MediaRouter({
     // JavaScript (only in iframe)
     if (mimeType === "application/javascript") {
       return <JavaScriptOutput code={String(content)} className={className} />;
+    }
+
+    // Rich traceback — our own schema, main-DOM React, hackable from a
+    // notebook via `display_data` with this MIME. Precedes the generic
+    // `+json` fallback so we don't drop into the JSON tree viewer.
+    if (mimeType === "application/vnd.nteract.traceback+json") {
+      return <TracebackOutput data={content} className={className} />;
     }
 
     // JSON and structured data (but not custom +json types without a renderer)
