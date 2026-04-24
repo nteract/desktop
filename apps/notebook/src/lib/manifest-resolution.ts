@@ -61,6 +61,17 @@ export type OutputManifest =
       ename: string;
       evalue: string;
       traceback: ContentRef;
+      /**
+       * Optional rich-traceback sibling. Carries the structured payload
+       * the frontend's `TracebackOutput` renders (ename, evalue, frames
+       * with source context, highlight markers). Present when the
+       * kernel emitted rich via `application/vnd.nteract.traceback+json`
+       * OR the daemon synthesized one from an ANSI traceback at load.
+       *
+       * In-memory only — `.ipynb` save strips the sibling so files stay
+       * nbformat-clean (see `resolve_manifest` in `output_store.rs`).
+       */
+      rich?: ContentRef;
     });
 
 /**
@@ -268,19 +279,53 @@ export async function resolveManifest(
       };
     }
     case "error": {
-      const tracebackJson = await resolveContentRef(
-        manifest.traceback,
-        blobPort,
-      );
+      const tracebackJson = await resolveContentRef(manifest.traceback, blobPort);
       const traceback = JSON.parse(tracebackJson) as string[];
+      const rich = await resolveRich(manifest.rich, blobPort);
       return {
         output_id,
         output_type: "error",
         ename: manifest.ename,
         evalue: manifest.evalue,
         traceback,
+        rich,
       };
     }
+  }
+}
+
+/**
+ * Resolve the optional rich-traceback ContentRef into the parsed payload.
+ *
+ * Returns `undefined` when the manifest has no sibling OR the resolve
+ * returned malformed JSON. The caller (OutputArea) treats `undefined`
+ * as "fall back to AnsiErrorOutput", so a bad payload never blocks
+ * rendering — we just lose the rich upgrade.
+ */
+async function resolveRich(
+  ref: ContentRef | undefined,
+  blobPort: number,
+): Promise<Record<string, unknown> | undefined> {
+  if (!ref) return undefined;
+  try {
+    const json = await resolveContentRef(ref, blobPort);
+    return JSON.parse(json) as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+}
+
+function resolveRichSync(
+  ref: ContentRef | undefined,
+  blobPort: number,
+): Record<string, unknown> | undefined {
+  if (!ref) return undefined;
+  try {
+    const json = resolveContentRefSync(ref, blobPort);
+    if (json === null) return undefined;
+    return JSON.parse(json) as Record<string, unknown>;
+  } catch {
+    return undefined;
   }
 }
 
@@ -336,12 +381,14 @@ export function resolveManifestSync(
       const tracebackJson = resolveContentRefSync(manifest.traceback, blobPort);
       if (tracebackJson === null) return null;
       const traceback = JSON.parse(tracebackJson) as string[];
+      const rich = resolveRichSync(manifest.rich, blobPort);
       return {
         output_id,
         output_type: "error",
         ename: manifest.ename,
         evalue: manifest.evalue,
         traceback,
+        rich,
       };
     }
   }

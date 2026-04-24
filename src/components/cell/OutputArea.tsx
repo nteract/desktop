@@ -10,6 +10,7 @@ import { injectPluginsForMimes, needsPlugin } from "@/components/isolated/iframe
 import { AnsiErrorOutput, AnsiStreamOutput } from "@/components/outputs/ansi-output";
 import { isSafeForMainDom } from "@/components/outputs/safe-mime-types";
 import { DEFAULT_PRIORITY, MediaRouter } from "@/components/outputs/media-router";
+import { TracebackOutput } from "@/components/outputs/traceback-output";
 import { useWidgetStore } from "@/components/widgets/widget-store-context";
 import { useColorTheme, useDarkMode } from "@/lib/dark-mode";
 import { ErrorBoundary } from "@/lib/error-boundary";
@@ -201,6 +202,14 @@ function renderOutput(
       );
 
     case "error":
+      // Rich sibling is set by the daemon when either the kernel
+      // emitted `application/vnd.nteract.traceback+json` (launcher path)
+      // or the Rust-side ANSI parser synthesized one at `.ipynb` load.
+      // When absent, fall back to the plain ANSI render — the classic
+      // path still works for vanilla ipykernel_launcher.
+      if (output.rich != null && typeof output.rich === "object") {
+        return <TracebackOutput key={key} data={output.rich} />;
+      }
       return (
         <AnsiErrorOutput
           key={key}
