@@ -5068,3 +5068,56 @@ dependencies:
     );
     assert!(names.pip.contains("pyyaml"), "pyyaml should be in pip set");
 }
+
+#[tokio::test]
+async fn test_promote_conda_dep_not_blocked_by_pip_duplicate() {
+    // End-to-end: pyyaml exists under pip: in environment.yml. The user adds
+    // pyyaml as a conda dep in notebook metadata. Promotion must write pyyaml
+    // as a top-level conda dep AND leave the pip block untouched. See #2076.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _notebook_path) = test_room_with_path(&tmp, "test.ipynb");
+
+    let env_yml_path = tmp.path().join("environment.yml");
+    let initial_content = "\
+name: test-env
+channels:
+  - conda-forge
+dependencies:
+  - numpy
+  - pip:
+    - pyyaml
+";
+    std::fs::write(&env_yml_path, initial_content).unwrap();
+
+    // Baseline: launched with numpy only (pip deps not in this list)
+    let launched = notebook_protocol::protocol::LaunchedEnvConfig {
+        environment_yml_path: Some(env_yml_path.clone()),
+        environment_yml_deps: Some(vec!["numpy".to_string()]),
+        ..Default::default()
+    };
+
+    // CRDT says the user wants pyyaml as a conda dep
+    let snapshot = snapshot_with_conda(vec!["numpy".to_string(), "pyyaml".to_string()]);
+    {
+        let mut doc = room.doc.write().await;
+        let _ = doc.set_metadata_snapshot(&snapshot);
+    }
+
+    let result = promote_inline_deps_to_project(&room, "conda:env_yml", &launched)
+        .await
+        .expect("promotion should succeed");
+
+    assert_eq!(result, vec!["+pyyaml"]);
+
+    let updated = std::fs::read_to_string(&env_yml_path).unwrap();
+    // pyyaml added as top-level conda dep
+    assert!(
+        updated.contains("\n  - pyyaml\n"),
+        "pyyaml should be a top-level conda dep:\n{updated}"
+    );
+    // pip block untouched
+    assert!(
+        updated.contains("  - pip:\n    - pyyaml\n"),
+        "pip block should be untouched:\n{updated}"
+    );
+}
