@@ -21,6 +21,7 @@ export type Column = {
   sortable: boolean;
   numeric: boolean;
   columnType: ColumnType;
+  timezone?: string | null;
 };
 
 export type NumericColumnSummary = {
@@ -65,6 +66,7 @@ export type TimestampColumnSummary = {
   bins: { x0: number; x1: number; count: number }[];
   /** Number of null/undefined values. */
   nullCount?: number;
+  timezone?: string | null;
 };
 
 export type ColumnSummary =

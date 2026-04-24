@@ -27,6 +27,7 @@ type PredicateModule = {
   num_cols(handle: number): number;
   col_names(handle: number): string[];
   col_type(handle: number, col: number): string;
+  col_timezone(handle: number, col: number): string | null;
   get_cell_string(handle: number, row: number, col: number): string;
   get_cell_f64(handle: number, row: number, col: number): number;
   is_null(handle: number, row: number, col: number): boolean;
