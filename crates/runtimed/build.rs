@@ -19,6 +19,20 @@ fn main() {
     // rerun-if-changed above, cargo won't use its default behavior).
     println!("cargo:rerun-if-changed=build.rs");
 
+    // Re-run whenever the current HEAD moves so the embedded git hash
+    // reflects the tree actually being compiled. Without this, a `git
+    // checkout` or merge leaves cargo happy to reuse a stale OUT_DIR
+    // whose `git_hash.txt` points at a previous commit — the daemon
+    // then mis-reports its version (e.g. 7583085 after landing bf42cea)
+    // and anyone reading the status thinks the binary is out of date.
+    //
+    // `.git/HEAD` covers branch switches. `.git/refs/heads/<branch>`
+    // covers new commits on the current branch; we tell cargo to watch
+    // the packed-refs file too for the common "refs compacted" case.
+    println!("cargo:rerun-if-changed=../../.git/HEAD");
+    println!("cargo:rerun-if-changed=../../.git/index");
+    println!("cargo:rerun-if-changed=../../.git/packed-refs");
+
     write_git_hash();
 }
 
