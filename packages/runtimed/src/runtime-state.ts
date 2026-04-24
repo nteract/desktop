@@ -23,9 +23,7 @@ export type KernelActivity = "Unknown" | "Idle" | "Busy";
  * [`KERNEL_ERROR_REASON`] constants instead of bare string literals when
  * gating UI on a specific cause.
  */
-export type KernelErrorReasonKey =
-  | "missing_ipykernel"
-  | "conda_env_yml_missing";
+export type KernelErrorReasonKey = "missing_ipykernel" | "conda_env_yml_missing";
 
 /**
  * Typed error-reason strings. Mirrors `KernelErrorReason::as_str()` on
