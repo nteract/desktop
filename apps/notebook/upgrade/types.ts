@@ -13,3 +13,10 @@ export type UpgradeStep =
   | { step: "upgrading_daemon" }
   | { step: "ready" }
   | { step: "failed"; error: string };
+
+export interface CliMigrationInfo {
+  dir: string;
+  cli_name: string;
+  nb_name: string;
+  has_marker: boolean;
+}
