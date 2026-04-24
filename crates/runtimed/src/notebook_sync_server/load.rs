@@ -185,11 +185,14 @@ pub(crate) const STREAMING_BATCH_SIZE: usize = 3;
 
 type NbformatAttachmentMap = HashMap<String, serde_json::Value>;
 type ResolvedAssets = HashMap<String, String>;
-type ParsedStreamingNotebook = (
-    Vec<StreamingCell>,
-    Option<NotebookMetadataSnapshot>,
-    NbformatAttachmentMap,
-);
+
+pub(crate) struct ParsedStreamingNotebook {
+    pub cells: Vec<StreamingCell>,
+    pub metadata: Option<NotebookMetadataSnapshot>,
+    pub attachments: NbformatAttachmentMap,
+    /// Original nbformat_minor from the file (0 if absent).
+    pub nbformat_minor: u32,
+}
 type StreamingLoadBatchEntry = (usize, StreamingCell, Vec<serde_json::Value>, ResolvedAssets);
 
 fn should_resolve_markdown_assets(cell_type: &str) -> bool {
@@ -271,10 +274,24 @@ pub(crate) fn parse_notebook_jiter(bytes: &[u8]) -> Result<ParsedStreamingNotebo
         NotebookMetadataSnapshot::from_metadata_value(&serde_meta)
     });
 
+    let nbformat_minor = jobj_get(obj, "nbformat_minor")
+        .and_then(|v| match v {
+            jiter::JsonValue::Int(n) => u32::try_from(*n).ok(),
+            _ => None,
+        })
+        .unwrap_or(0);
+
     let cells_arr = match jobj_get(obj, "cells") {
         Some(jiter::JsonValue::Array(arr)) => arr,
         Some(_) => return Err("'cells' is not an array".to_string()),
-        None => return Ok((vec![], metadata, HashMap::new())),
+        None => {
+            return Ok(ParsedStreamingNotebook {
+                cells: vec![],
+                metadata,
+                attachments: HashMap::new(),
+                nbformat_minor,
+            })
+        }
     };
 
     use loro_fractional_index::FractionalIndex;
@@ -361,7 +378,12 @@ pub(crate) fn parse_notebook_jiter(bytes: &[u8]) -> Result<ParsedStreamingNotebo
         });
     }
 
-    Ok((cells, metadata, attachments))
+    Ok(ParsedStreamingNotebook {
+        cells,
+        metadata,
+        attachments,
+        nbformat_minor,
+    })
 }
 
 /// Convert a single output `serde_json::Value` to a blob store manifest hash.
@@ -461,7 +483,13 @@ where
         .await
         .map_err(|e| format!("Failed to read notebook: {}", e))?;
 
-    let (cells, metadata, nbformat_attachments) = parse_notebook_jiter(&bytes)?;
+    let parsed = parse_notebook_jiter(&bytes)?;
+    room.persistence
+        .original_nbformat_minor
+        .store(parsed.nbformat_minor, Ordering::Relaxed);
+    let cells = parsed.cells;
+    let metadata = parsed.metadata;
+    let nbformat_attachments = parsed.attachments;
     {
         let mut cache = room.persistence.nbformat_attachments.write().await;
         *cache = nbformat_attachments.clone();

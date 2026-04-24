@@ -1,4 +1,21 @@
+use serde::Serialize;
+
 use super::*;
+
+/// Serialize a notebook JSON value with 1-space indent and trailing newline,
+/// matching the nbformat/Jupyter convention.
+fn serialize_notebook_json(value: &serde_json::Value) -> Result<String, String> {
+    let mut buf = Vec::new();
+    let formatter = serde_json::ser::PrettyFormatter::with_indent(b" ");
+    let mut ser = serde_json::Serializer::with_formatter(&mut buf, formatter);
+    value
+        .serialize(&mut ser)
+        .map_err(|e| format!("Failed to serialize notebook: {e}"))?;
+    let mut content =
+        String::from_utf8(buf).map_err(|e| format!("Invalid UTF-8 in notebook: {e}"))?;
+    content.push('\n');
+    Ok(content)
+}
 
 #[derive(Debug)]
 pub(crate) enum SaveError {
@@ -63,21 +80,10 @@ pub(crate) async fn save_notebook_to_disk(
         },
     };
 
-    // Read existing .ipynb to preserve unknown metadata and cell metadata
-    // Distinguish between file-not-found (ok, create new) and parse errors (warn, continue)
-    let existing: Option<serde_json::Value> = match tokio::fs::read_to_string(&notebook_path).await
-    {
-        Ok(content) => match serde_json::from_str(&content) {
-            Ok(value) => Some(value),
-            Err(e) => {
-                warn!(
-                    "[notebook-sync] Existing notebook at {:?} has invalid JSON ({}), \
-                     will overwrite without preserving metadata",
-                    notebook_path, e
-                );
-                None
-            }
-        },
+    // Read existing .ipynb as raw bytes (used for metadata preservation and
+    // content-hash guard to skip no-op writes).
+    let existing_raw: Option<Vec<u8>> = match tokio::fs::read(&notebook_path).await {
+        Ok(bytes) => Some(bytes),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => {
             warn!(
@@ -88,6 +94,20 @@ pub(crate) async fn save_notebook_to_disk(
             None
         }
     };
+    let existing: Option<serde_json::Value> =
+        existing_raw
+            .as_ref()
+            .and_then(|bytes| match serde_json::from_slice(bytes) {
+                Ok(value) => Some(value),
+                Err(e) => {
+                    warn!(
+                        "[notebook-sync] Existing notebook at {:?} has invalid JSON ({}), \
+                     will overwrite without preserving metadata",
+                        notebook_path, e
+                    );
+                    None
+                }
+            });
 
     // Read cells, metadata, and per-cell execution_ids from the doc.
     let (cells, metadata_snapshot, cell_execution_ids) = {
@@ -128,6 +148,15 @@ pub(crate) async fn save_notebook_to_disk(
 
     let nbformat_attachments = room.nbformat_attachments_snapshot().await;
 
+    // Decide whether to emit cell IDs. Pre-4.5 notebooks had no cell IDs;
+    // writing synthetic `__external_cell_N` IDs would inject fields that
+    // were never in the original file.
+    let original_minor = room
+        .persistence
+        .original_nbformat_minor
+        .load(Ordering::Relaxed);
+    let should_write_cell_ids = original_minor >= 5 || original_minor == 0;
+
     // Reconstruct cells as JSON
     // Cell metadata now comes from the CellSnapshot (populated during load)
     let mut nb_cells = Vec::new();
@@ -151,12 +180,20 @@ pub(crate) async fn save_notebook_to_disk(
             lines
         };
 
-        let mut cell_json = serde_json::json!({
-            "id": cell.id,
-            "cell_type": cell.cell_type,
-            "source": source_lines,
-            "metadata": cell_meta,
-        });
+        let mut cell_json = if should_write_cell_ids {
+            serde_json::json!({
+                "id": cell.id,
+                "cell_type": cell.cell_type,
+                "source": source_lines,
+                "metadata": cell_meta,
+            })
+        } else {
+            serde_json::json!({
+                "cell_type": cell.cell_type,
+                "source": source_lines,
+                "metadata": cell_meta,
+            })
+        };
 
         if cell.cell_type == "code" {
             // Resolve outputs from RuntimeStateDoc (keyed by execution_id)
@@ -196,14 +233,20 @@ pub(crate) async fn save_notebook_to_disk(
         snapshot.merge_into_metadata_value(&mut metadata).ok();
     }
 
-    // Build the final notebook JSON
-    // Cell IDs were introduced in nbformat 4.5, so ensure minor >= 5
+    // Build the final notebook JSON.
+    // Preserve the original nbformat_minor for pre-4.5 notebooks rather
+    // than forcing an upgrade that would inject cell IDs into files that
+    // never had them.
     let existing_minor = existing
         .as_ref()
         .and_then(|nb| nb.get("nbformat_minor"))
         .and_then(|v| v.as_u64())
         .unwrap_or(5);
-    let nbformat_minor = std::cmp::max(existing_minor, 5);
+    let nbformat_minor = if should_write_cell_ids {
+        std::cmp::max(existing_minor, 5)
+    } else {
+        existing_minor
+    };
 
     let cell_count = nb_cells.len();
     let notebook_json = serde_json::json!({
@@ -213,10 +256,30 @@ pub(crate) async fn save_notebook_to_disk(
         "cells": nb_cells,
     });
 
-    // Serialize with trailing newline (nbformat convention)
-    let content = serde_json::to_string_pretty(&notebook_json)
-        .map_err(|e| SaveError::Retryable(format!("Failed to serialize notebook: {e}")))?;
-    let content_with_newline = format!("{content}\n");
+    let content_with_newline =
+        serialize_notebook_json(&notebook_json).map_err(SaveError::Retryable)?;
+
+    // Content-hash guard: skip the write if the serialized bytes match what is
+    // already on disk. Prevents no-op autosaves from dirtying the working tree.
+    if let Some(ref raw) = existing_raw {
+        if raw.as_slice() == content_with_newline.as_bytes() {
+            debug!(
+                "[notebook-sync] Skipping write - content unchanged for {:?}",
+                notebook_path
+            );
+            // Still update save baselines so the file watcher stays consistent.
+            let is_primary_path = target_path.is_none()
+                || room.identity.path.read().await.as_deref() == Some(notebook_path.as_path());
+            if is_primary_path {
+                let mut saved = HashMap::with_capacity(cells.len());
+                for cell in &cells {
+                    saved.insert(cell.id.clone(), cell.source.clone());
+                }
+                *room.persistence.last_save_sources.write().await = saved;
+            }
+            return Ok(notebook_path.to_string_lossy().to_string());
+        }
+    }
 
     // Ensure parent directory exists (agents often construct paths programmatically)
     if let Some(parent) = notebook_path.parent() {
@@ -229,7 +292,7 @@ pub(crate) async fn save_notebook_to_disk(
     }
 
     // Write to disk (async to avoid blocking the runtime)
-    tokio::fs::write(&notebook_path, content_with_newline)
+    tokio::fs::write(&notebook_path, &content_with_newline)
         .await
         .map_err(|e| {
             let msg = format!("Failed to write notebook: {e}");
@@ -243,7 +306,7 @@ pub(crate) async fn save_notebook_to_disk(
 
     // Update last_self_write timestamp so the file watcher skips our own write.
     // Applies to all rooms (including ephemeral that were just promoted to
-    // file-backed via this save) — a watcher may start up right after
+    // file-backed via this save) - a watcher may start up right after
     // `finalize_untitled_promotion` and will consult this baseline.
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -255,7 +318,7 @@ pub(crate) async fn save_notebook_to_disk(
 
     // Snapshot cell sources at save time so the file watcher can distinguish
     // our own writes from genuine external changes. Only update when saving
-    // to the primary path — saving to an alternate path (Save As) must not
+    // to the primary path - saving to an alternate path (Save As) must not
     // corrupt the baseline for the file watcher.
     let is_primary_path = target_path.is_none()
         || room.identity.path.read().await.as_deref() == Some(notebook_path.as_path());
@@ -431,6 +494,12 @@ pub(crate) async fn clone_notebook_to_disk(
     // Generate fresh env_id for the cloned notebook
     let new_env_id = uuid::Uuid::new_v4().to_string();
 
+    let original_minor = room
+        .persistence
+        .original_nbformat_minor
+        .load(Ordering::Relaxed);
+    let should_write_cell_ids = original_minor >= 5 || original_minor == 0;
+
     // Build cells with cleared outputs and execution counts, but preserved metadata
     let mut nb_cells = Vec::new();
     for cell in &cells {
@@ -447,12 +516,20 @@ pub(crate) async fn clone_notebook_to_disk(
         // Use metadata from the Automerge doc (populated during notebook load)
         let cell_meta = cell.metadata.clone();
 
-        let mut cell_json = serde_json::json!({
-            "id": cell.id,
-            "cell_type": cell.cell_type,
-            "source": source_lines,
-            "metadata": cell_meta,
-        });
+        let mut cell_json = if should_write_cell_ids {
+            serde_json::json!({
+                "id": cell.id,
+                "cell_type": cell.cell_type,
+                "source": source_lines,
+                "metadata": cell_meta,
+            })
+        } else {
+            serde_json::json!({
+                "cell_type": cell.cell_type,
+                "source": source_lines,
+                "metadata": cell_meta,
+            })
+        };
 
         if cell.cell_type == "code" {
             // Clear outputs and execution_count for cloned notebook
@@ -485,13 +562,16 @@ pub(crate) async fn clone_notebook_to_disk(
         snapshot.merge_into_metadata_value(&mut metadata).ok();
     }
 
-    // Determine nbformat_minor from existing or default to 5 (for cell IDs)
     let existing_minor = existing
         .as_ref()
         .and_then(|nb| nb.get("nbformat_minor"))
         .and_then(|v| v.as_u64())
         .unwrap_or(5);
-    let nbformat_minor = std::cmp::max(existing_minor, 5);
+    let nbformat_minor = if should_write_cell_ids {
+        std::cmp::max(existing_minor, 5)
+    } else {
+        existing_minor
+    };
 
     // Build the final notebook JSON
     let cell_count = nb_cells.len();
@@ -502,10 +582,8 @@ pub(crate) async fn clone_notebook_to_disk(
         "cells": nb_cells,
     });
 
-    // Serialize with trailing newline
-    let content = serde_json::to_string_pretty(&notebook_json)
-        .map_err(|e| format!("Failed to serialize notebook: {e}"))?;
-    let content_with_newline = format!("{content}\n");
+    let content_with_newline =
+        serialize_notebook_json(&notebook_json).map_err(|e| e.to_string())?;
 
     // Write to disk
     tokio::fs::write(&clone_path, content_with_newline)
@@ -824,8 +902,11 @@ fn spawn_autosave_debouncer_with_config(
                         };
 
                         if should_flush {
-                            // Skip during initial load
+                            // Skip during initial load. Also clear last_receive
+                            // so load-time change notifications don't trigger a
+                            // save the moment loading completes.
                             if room.is_loading() {
+                                last_receive = None;
                                 continue;
                             }
 

@@ -244,8 +244,9 @@ impl NotebookMetadataSnapshot {
     }
 
     /// Merge this snapshot into a mutable JSON object representing the full
-    /// notebook metadata. Replaces `kernelspec`, `language_info`, and `runt`
-    /// while preserving all other keys.
+    /// notebook metadata. Updates `kernelspec`, `language_info`, and `runt`
+    /// when the snapshot has values; leaves existing file values untouched
+    /// when the snapshot field is `None` (meaning "unknown", not "remove").
     pub fn merge_into_metadata_value(
         &self,
         metadata: &mut serde_json::Value,
@@ -255,36 +256,27 @@ impl NotebookMetadataSnapshot {
             None => return Ok(()),
         };
 
-        // Replace kernelspec
-        match &self.kernelspec {
-            Some(ks) => {
-                let v = serde_json::to_value(ks)?;
-                obj.insert("kernelspec".to_string(), v);
-            }
-            None => {
-                obj.remove("kernelspec");
-            }
+        // Replace kernelspec only when the snapshot has a value.
+        // None means "not yet known" (e.g. no kernel launched), not "erase."
+        if let Some(ks) = &self.kernelspec {
+            let v = serde_json::to_value(ks)?;
+            obj.insert("kernelspec".to_string(), v);
         }
 
         // Merge language_info (preserve fields we don't track, like codemirror_mode)
-        match &self.language_info {
-            Some(li) => {
-                let v = serde_json::to_value(li)?;
-                if let Some(existing) = obj.get_mut("language_info") {
-                    // Deep-merge: update tracked fields, keep the rest
-                    if let Some(existing_obj) = existing.as_object_mut() {
-                        if let Some(new_obj) = v.as_object() {
-                            for (k, val) in new_obj {
-                                existing_obj.insert(k.clone(), val.clone());
-                            }
+        if let Some(li) = &self.language_info {
+            let v = serde_json::to_value(li)?;
+            if let Some(existing) = obj.get_mut("language_info") {
+                // Deep-merge: update tracked fields, keep the rest
+                if let Some(existing_obj) = existing.as_object_mut() {
+                    if let Some(new_obj) = v.as_object() {
+                        for (k, val) in new_obj {
+                            existing_obj.insert(k.clone(), val.clone());
                         }
                     }
-                } else {
-                    obj.insert("language_info".to_string(), v);
                 }
-            }
-            None => {
-                obj.remove("language_info");
+            } else {
+                obj.insert("language_info".to_string(), v);
             }
         }
 
@@ -914,13 +906,44 @@ mod tests {
 
         // Kernelspec was replaced
         assert_eq!(metadata["kernelspec"]["name"], "python3");
-        // language_info was removed (snapshot has None)
+        // language_info was not in the original metadata and snapshot has None,
+        // so it should remain absent (None means "unknown", not "add empty")
         assert!(metadata.get("language_info").is_none());
         // Unknown keys preserved
         assert_eq!(metadata["jupyter"]["some_custom_field"], true);
         assert_eq!(metadata["custom_extension"], "preserved");
         // Runt was added
         assert_eq!(metadata["runt"]["schema_version"], "1");
+    }
+
+    #[test]
+    fn test_merge_preserves_existing_when_snapshot_none() {
+        let mut metadata = serde_json::json!({
+            "kernelspec": {
+                "name": "python3",
+                "display_name": "Python 3",
+                "language": "python"
+            },
+            "language_info": {
+                "name": "python",
+                "version": "3.11.5",
+                "codemirror_mode": {"name": "ipython", "version": 3}
+            }
+        });
+
+        let snapshot = NotebookMetadataSnapshot {
+            kernelspec: None,
+            language_info: None,
+            runt: RuntMetadata::new_uv("env-1".to_string()),
+        };
+
+        snapshot.merge_into_metadata_value(&mut metadata).unwrap();
+
+        // None means "unknown", not "remove": existing values preserved
+        assert_eq!(metadata["kernelspec"]["name"], "python3");
+        assert_eq!(metadata["language_info"]["name"], "python");
+        assert_eq!(metadata["language_info"]["version"], "3.11.5");
+        assert!(metadata["language_info"]["codemirror_mode"].is_object());
     }
 
     #[test]
