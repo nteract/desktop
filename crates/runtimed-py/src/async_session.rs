@@ -910,6 +910,9 @@ impl AsyncSession {
         let state = Arc::clone(&self.state);
         let package = package.to_string();
         future_into_py(py, async move {
+            // Reject PEP 508 extras before they land in the doc — see #2119.
+            notebook_doc::metadata::validate_conda_package_specifier(&package)
+                .map_err(pyo3::exceptions::PyValueError::new_err)?;
             let mut snapshot = session_core::get_notebook_metadata(&state).await?;
             snapshot.add_conda_dependency(&package);
             session_core::set_notebook_metadata(&state, &snapshot).await
@@ -924,6 +927,10 @@ impl AsyncSession {
     ) -> PyResult<Bound<'py, PyAny>> {
         let state = Arc::clone(&self.state);
         future_into_py(py, async move {
+            for package in &packages {
+                notebook_doc::metadata::validate_conda_package_specifier(package)
+                    .map_err(pyo3::exceptions::PyValueError::new_err)?;
+            }
             let mut snapshot = session_core::get_notebook_metadata(&state).await?;
             for package in &packages {
                 snapshot.add_conda_dependency(package);
@@ -972,6 +979,9 @@ impl AsyncSession {
         let state = Arc::clone(&self.state);
         let package = package.to_string();
         future_into_py(py, async move {
+            // Reject PEP 508 extras before they land in the doc — see #2119.
+            notebook_doc::metadata::validate_conda_package_specifier(&package)
+                .map_err(pyo3::exceptions::PyValueError::new_err)?;
             let mut snapshot = session_core::get_notebook_metadata(&state).await?;
             snapshot.add_pixi_dependency(&package);
             session_core::set_notebook_metadata(&state, &snapshot).await
@@ -986,6 +996,10 @@ impl AsyncSession {
     ) -> PyResult<Bound<'py, PyAny>> {
         let state = Arc::clone(&self.state);
         future_into_py(py, async move {
+            for package in &packages {
+                notebook_doc::metadata::validate_conda_package_specifier(package)
+                    .map_err(pyo3::exceptions::PyValueError::new_err)?;
+            }
             let mut snapshot = session_core::get_notebook_metadata(&state).await?;
             for package in &packages {
                 snapshot.add_pixi_dependency(package);

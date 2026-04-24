@@ -130,12 +130,21 @@ pub(crate) fn add_dep_for_manager(
 ) -> Result<(), String> {
     use notebook_protocol::connection::PackageManager;
     match manager {
-        PackageManager::Conda => handle
-            .add_conda_dependency(package)
-            .map_err(|e| format!("Failed to add conda dependency: {e}")),
-        PackageManager::Pixi => handle
-            .add_pixi_dependency(package)
-            .map_err(|e| format!("Failed to add pixi dependency: {e}")),
+        PackageManager::Conda => {
+            // Reject PEP 508 extras (`pkg[extra]`) before they land in
+            // the doc — conda matchspecs crash rattler with `invalid
+            // bracket` and take the kernel with them. See #2119.
+            notebook_doc::metadata::validate_conda_package_specifier(package)?;
+            handle
+                .add_conda_dependency(package)
+                .map_err(|e| format!("Failed to add conda dependency: {e}"))
+        }
+        PackageManager::Pixi => {
+            notebook_doc::metadata::validate_conda_package_specifier(package)?;
+            handle
+                .add_pixi_dependency(package)
+                .map_err(|e| format!("Failed to add pixi dependency: {e}"))
+        }
         PackageManager::Uv | PackageManager::Unknown(_) => handle
             .add_uv_dependency(package)
             .map_err(|e| format!("Failed to add uv dependency: {e}")),

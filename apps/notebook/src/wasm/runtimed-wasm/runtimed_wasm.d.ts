@@ -63,10 +63,17 @@ export class NotebookHandle {
     /**
      * Add a Conda dependency, deduplicating by package name (case-insensitive).
      * Initializes the Conda section with ["conda-forge"] channels if absent.
+     *
+     * Rejects PEP 508 extras syntax (`pkg[extra]`) — conda matchspecs
+     * don't accept brackets, and letting one through SIGKILLs the
+     * kernel at install time. See issue #2119.
      */
     add_conda_dependency(pkg: string): void;
     /**
      * Add a Pixi conda dependency (matchspec). Deduplicates by package name.
+     *
+     * Rejects PEP 508 extras syntax (`pkg[extra]`) — pixi uses
+     * rattler-style matchspecs which don't accept brackets. See #2119.
      */
     add_pixi_dependency(pkg: string): void;
     /**
