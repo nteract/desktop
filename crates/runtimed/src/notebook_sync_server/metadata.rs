@@ -2029,8 +2029,13 @@ pub(crate) async fn try_conda_pool_for_inline_deps(
                 env_path: env.venv_path.clone(),
                 python_path: env.python_path.clone(),
             };
+            // Pass ALL inline deps to sync_dependencies, not just the delta.
+            // The conda solver treats the spec list as the complete desired
+            // state: packages not in the specs get removed by the Installer.
+            // Passing only the delta would drop the original user packages
+            // that are already installed in the pool env. See #2134.
             let conda_deps = kernel_env::CondaDependencies {
-                dependencies: delta.clone(),
+                dependencies: deps.to_vec(),
                 channels: vec!["conda-forge".to_string()],
                 python: None,
                 env_id: None,
