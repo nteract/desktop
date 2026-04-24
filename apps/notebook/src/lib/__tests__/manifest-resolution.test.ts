@@ -240,6 +240,57 @@ describe("resolveManifestSync", () => {
     expect(resolveManifestSync(manifest, blobPort)).toBeNull();
   });
 
+  it("resolves error manifest with inline rich sibling", () => {
+    // Launcher-emitted rich payload: small enough to live inline on the
+    // manifest. Sync resolve should attach the parsed payload to the output.
+    const richPayload = { ename: "KeyError", evalue: "'x'", frames: [], text: "KeyError: 'x'" };
+    const manifest: OutputManifest = {
+      output_type: "error",
+      ename: "KeyError",
+      evalue: "'x'",
+      traceback: { inline: JSON.stringify(["KeyError: 'x'"]) },
+      rich: { inline: JSON.stringify(richPayload) },
+    };
+    const output = resolveManifestSync(manifest, blobPort);
+    expect(output).not.toBeNull();
+    if (output && output.output_type === "error") {
+      expect(output.rich).toEqual(richPayload);
+    }
+  });
+
+  it("defers sync resolution when rich is blob-backed", () => {
+    // Classic traceback is inline (would normally be sync-resolvable),
+    // but the rich sibling exceeds the 1KB threshold and lives in a blob.
+    // Without deferring, callers would accept the sync result as final
+    // and the rich payload would never be fetched — rich tracebacks of
+    // any size would downgrade to ANSI rendering.
+    const manifest: OutputManifest = {
+      output_type: "error",
+      ename: "ZeroDivisionError",
+      evalue: "division by zero",
+      traceback: { inline: JSON.stringify(["ZeroDivisionError: division by zero"]) },
+      rich: { blob: "richblob", size: 4096 },
+    };
+    expect(resolveManifestSync(manifest, blobPort)).toBeNull();
+  });
+
+  it("omits rich field when absent on the manifest", () => {
+    // Classic path with no rich sibling (e.g. vanilla ipykernel_launcher
+    // whose ANSI traceback didn't parse into frames). rich stays
+    // undefined so OutputArea falls through to AnsiErrorOutput.
+    const manifest: OutputManifest = {
+      output_type: "error",
+      ename: "ValueError",
+      evalue: "bad",
+      traceback: { inline: JSON.stringify(["ValueError: bad"]) },
+    };
+    const output = resolveManifestSync(manifest, blobPort);
+    expect(output).not.toBeNull();
+    if (output && output.output_type === "error") {
+      expect(output.rich).toBeUndefined();
+    }
+  });
+
   it("auto-parses JSON MIME types in sync resolution", () => {
     const manifest: OutputManifest = {
       output_type: "execute_result",

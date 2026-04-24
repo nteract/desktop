@@ -297,10 +297,10 @@ export async function resolveManifest(
 /**
  * Resolve the optional rich-traceback ContentRef into the parsed payload.
  *
- * Returns `undefined` when the manifest has no sibling OR the resolve
- * returned malformed JSON. The caller (OutputArea) treats `undefined`
- * as "fall back to AnsiErrorOutput", so a bad payload never blocks
- * rendering — we just lose the rich upgrade.
+ * Returns `undefined` when the manifest has no sibling OR the JSON
+ * parse fails. The caller (OutputArea) treats `undefined` as "fall
+ * back to AnsiErrorOutput", so a malformed payload never blocks
+ * rendering — we just lose the rich upgrade for that one output.
  */
 async function resolveRich(
   ref: ContentRef | undefined,
@@ -315,17 +315,32 @@ async function resolveRich(
   }
 }
 
+/**
+ * Sync counterpart. Three-state to distinguish "no sibling" (caller
+ * finishes resolution) from "sibling exists but blob-backed" (caller
+ * must return null so the async path picks it up):
+ *
+ * - `"absent"`   → no sibling on the manifest, output is complete
+ * - `"async"`    → sibling present but needs a blob fetch
+ * - `{...}`      → resolved payload (or empty object for a malformed
+ *                  blob — async-retrying a parse failure would loop)
+ */
+type RichSyncResult = "absent" | "async" | Record<string, unknown>;
+
 function resolveRichSync(
   ref: ContentRef | undefined,
   blobPort: number,
-): Record<string, unknown> | undefined {
-  if (!ref) return undefined;
+): RichSyncResult {
+  if (!ref) return "absent";
+  const json = resolveContentRefSync(ref, blobPort);
+  if (json === null) return "async";
   try {
-    const json = resolveContentRefSync(ref, blobPort);
-    if (json === null) return undefined;
     return JSON.parse(json) as Record<string, unknown>;
   } catch {
-    return undefined;
+    // Resolved bytes parsed as non-JSON — TracebackOutput's fallback
+    // will render the raw object view. Async would just fail the same
+    // parse.
+    return {};
   }
 }
 
@@ -381,7 +396,12 @@ export function resolveManifestSync(
       const tracebackJson = resolveContentRefSync(manifest.traceback, blobPort);
       if (tracebackJson === null) return null;
       const traceback = JSON.parse(tracebackJson) as string[];
-      const rich = resolveRichSync(manifest.rich, blobPort);
+      const richResult = resolveRichSync(manifest.rich, blobPort);
+      // If the rich sibling exists but needs a blob fetch, defer the
+      // whole output to the async path. Otherwise callers treat this
+      // as fully resolved and never upgrade to rich rendering.
+      if (richResult === "async") return null;
+      const rich = richResult === "absent" ? undefined : richResult;
       return {
         output_id,
         output_type: "error",

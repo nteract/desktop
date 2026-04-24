@@ -64,6 +64,14 @@ export type JupyterOutput =
       ename: string;
       evalue: string;
       traceback: string[];
+      /**
+       * Optional rich-traceback sibling payload (see
+       * `src/components/cell/jupyter-output.ts` for the canonical doc).
+       * Present when the kernel emitted rich via
+       * `application/vnd.nteract.traceback+json` OR the daemon
+       * synthesized one from the ANSI traceback at `.ipynb` load.
+       */
+      rich?: unknown;
     });
 
 export interface KernelspecInfo {
