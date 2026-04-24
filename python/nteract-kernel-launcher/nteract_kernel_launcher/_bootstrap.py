@@ -34,7 +34,7 @@ import logging
 import os
 from typing import Any
 
-from nteract_kernel_launcher import _buffer_hook
+from nteract_kernel_launcher import _buffer_hook, _traceback
 from nteract_kernel_launcher._buffer_hook import pending_buffers
 from nteract_kernel_launcher._format import serialize_dataframe
 from nteract_kernel_launcher._refs import BLOB_REF_MIME, BlobRef, build_ref_bundle
@@ -261,6 +261,13 @@ def load_ipython_extension(ip: Any) -> None:
         _enable_third_party_renderers()
     except Exception as exc:  # noqa: BLE001
         log.warning("third-party renderer enable failed: %s", exc)
+
+    # Traceback install goes last so earlier failures can't prevent it.
+    # The wrapper itself is bulletproof — see `_traceback.install`.
+    try:
+        _traceback.install(ip)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("traceback install failed: %s", exc)
 
 
 def unload_ipython_extension(ip: Any) -> None:
