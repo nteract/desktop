@@ -727,6 +727,8 @@ pub struct NotebookConnectionInfo {
     pub needs_trust_approval: bool,
     /// Whether this notebook is ephemeral (in-memory only, no persistence).
     pub ephemeral: bool,
+    /// On-disk path when the notebook is file-backed.
+    pub notebook_path: Option<String>,
 }
 
 #[pymethods]
@@ -751,6 +753,7 @@ impl NotebookConnectionInfo {
             cell_count: info.cell_count,
             needs_trust_approval: info.needs_trust_approval,
             ephemeral: info.ephemeral,
+            notebook_path: info.notebook_path,
         }
     }
 }

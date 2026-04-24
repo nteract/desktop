@@ -200,6 +200,8 @@ pub struct RoomInfo {
     pub kernel_status: Option<String>,
     #[serde(default)]
     pub ephemeral: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notebook_path: Option<String>,
 }
 
 /// Blob channel request.
