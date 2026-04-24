@@ -49,6 +49,9 @@ enum WatchDecision {
     /// Rejoin using the current session's state — for reconnect or
     /// same-version restart while we already have a session.
     RejoinContinuation,
+    /// Record that the daemon was lost. The watch loop uses this to
+    /// gate `RejoinContinuation` — only after a disconnect.
+    MarkDisconnected,
     /// Nothing to do.
     NoOp,
 }
@@ -57,16 +60,27 @@ enum WatchDecision {
 ///
 /// `initial_target` is consumed on the first event that triggers a rejoin
 /// so the seeded hand-off from the proxy only applies once.
+///
+/// `was_disconnected` tracks whether the daemon connection was lost since
+/// the last successful join. This prevents the 10-second heartbeat
+/// `Connected` events from triggering spurious rejoins — only a
+/// `Connected` event that follows an actual `Disconnected` triggers a
+/// `RejoinContinuation`. Without this, every heartbeat creates a brief
+/// 2→1 peer cycle that keeps the room alive indefinitely (#2088).
 fn classify(
     event: &DaemonEvent,
     initial_target: &mut Option<String>,
     has_session: bool,
+    was_disconnected: bool,
 ) -> WatchDecision {
     match event {
         DaemonEvent::Upgraded { previous, current } => {
             if previous.version != current.version {
                 return WatchDecision::Exit(EXIT_DAEMON_UPGRADED);
             }
+            // Same-version restart (new pid) always needs a rejoin —
+            // the old peer connection is dead regardless of
+            // was_disconnected (the daemon process recycled).
             if let Some(t) = initial_target.take() {
                 WatchDecision::RejoinInitial(t)
             } else if has_session {
@@ -76,15 +90,22 @@ fn classify(
             }
         }
         DaemonEvent::Connected { .. } => {
+            // Initial target always takes priority (proxy hand-off).
             if let Some(t) = initial_target.take() {
-                WatchDecision::RejoinInitial(t)
-            } else if has_session {
+                return WatchDecision::RejoinInitial(t);
+            }
+            // Only rejoin after a real disconnect, not on routine
+            // heartbeat refreshes. DaemonConnection emits Connected
+            // every HEARTBEAT_INTERVAL (10s); without this gate the
+            // watch loop would reconnect every 10s, creating a brief
+            // 2-peer spike that resets the eviction timer (#2088).
+            if has_session && was_disconnected {
                 WatchDecision::RejoinContinuation
             } else {
                 WatchDecision::NoOp
             }
         }
-        DaemonEvent::Disconnected => WatchDecision::NoOp,
+        DaemonEvent::Disconnected => WatchDecision::MarkDisconnected,
     }
 }
 
@@ -102,18 +123,27 @@ pub async fn watch(
         info!("Seeded initial rejoin target from {REJOIN_ENV_VAR}");
     }
 
+    // Track whether we've been through a Disconnected state.
+    // `initial_target.is_some()` seeds this to true so the first
+    // Connected event (which always fires on supervisor startup)
+    // triggers the initial rejoin without requiring a prior disconnect.
+    let mut was_disconnected = initial_target.is_some();
+
     loop {
         let event = match rx.recv().await {
             Ok(ev) => ev,
             Err(broadcast::error::RecvError::Lagged(n)) => {
                 warn!("Daemon event stream lagged, dropped {n} events");
+                // Treat a lag as a potential disconnect — we may have
+                // missed a Disconnected event in the dropped batch.
+                was_disconnected = true;
                 continue;
             }
             Err(broadcast::error::RecvError::Closed) => return 0,
         };
 
         let has_session = session.read().await.is_some();
-        match classify(&event, &mut initial_target, has_session) {
+        match classify(&event, &mut initial_target, has_session, was_disconnected) {
             WatchDecision::Exit(code) => {
                 if let DaemonEvent::Upgraded { previous, current } = &event {
                     info!(
@@ -126,10 +156,15 @@ pub async fn watch(
             WatchDecision::RejoinInitial(target) => {
                 info!("Performing initial rejoin to {target}");
                 rejoin(&socket_path, &session, &peer_label, Some(target)).await;
+                was_disconnected = false;
             }
             WatchDecision::RejoinContinuation => {
                 info!("Daemon reachable, rejoining notebook session");
                 rejoin(&socket_path, &session, &peer_label, None).await;
+                was_disconnected = false;
+            }
+            WatchDecision::MarkDisconnected => {
+                was_disconnected = true;
             }
             WatchDecision::NoOp => {}
         }
@@ -304,8 +339,9 @@ mod tests {
             current: info_with("1.1.0", 200),
         };
         let mut initial = None;
+        // Version change exits regardless of was_disconnected.
         assert_eq!(
-            classify(&event, &mut initial, false),
+            classify(&event, &mut initial, false, false),
             WatchDecision::Exit(EXIT_DAEMON_UPGRADED)
         );
         assert!(initial.is_none(), "initial target should not be consumed");
@@ -313,13 +349,16 @@ mod tests {
 
     #[test]
     fn same_version_restart_triggers_continuation_rejoin() {
+        // Upgraded (same-version) always triggers rejoin — the daemon
+        // process recycled so the old peer is dead. was_disconnected
+        // is irrelevant for Upgraded events.
         let event = DaemonEvent::Upgraded {
             previous: info_with("1.0.0", 100),
             current: info_with("1.0.0", 200),
         };
         let mut initial = None;
         assert_eq!(
-            classify(&event, &mut initial, true),
+            classify(&event, &mut initial, true, false),
             WatchDecision::RejoinContinuation
         );
     }
@@ -331,7 +370,10 @@ mod tests {
             current: info_with("1.0.0", 200),
         };
         let mut initial = None;
-        assert_eq!(classify(&event, &mut initial, false), WatchDecision::NoOp);
+        assert_eq!(
+            classify(&event, &mut initial, false, false),
+            WatchDecision::NoOp
+        );
     }
 
     #[test]
@@ -340,22 +382,28 @@ mod tests {
             info: info_with("1.0.0", 100),
         };
         let mut initial = Some("abc-uuid".to_string());
+        // Initial target is consumed on first Connected regardless of
+        // was_disconnected.
         assert_eq!(
-            classify(&event, &mut initial, false),
+            classify(&event, &mut initial, false, false),
             WatchDecision::RejoinInitial("abc-uuid".to_string())
         );
         assert!(initial.is_none(), "initial target must be consumed");
 
-        // Second Connected without a session should now be a no-op.
-        assert_eq!(classify(&event, &mut initial, false), WatchDecision::NoOp);
+        // Second Connected without session and without prior disconnect
+        // is a no-op.
+        assert_eq!(
+            classify(&event, &mut initial, false, false),
+            WatchDecision::NoOp
+        );
     }
 
     #[test]
-    fn disconnected_is_always_noop() {
+    fn disconnected_marks_disconnected() {
         let mut initial = Some("abc".to_string());
         assert_eq!(
-            classify(&DaemonEvent::Disconnected, &mut initial, true),
-            WatchDecision::NoOp
+            classify(&DaemonEvent::Disconnected, &mut initial, true, false),
+            WatchDecision::MarkDisconnected
         );
         assert!(
             initial.is_some(),
@@ -371,6 +419,43 @@ mod tests {
         assert!(!looks_like_uuid("relative/path"));
     }
 
+    /// Connected events that are just heartbeat refreshes (no prior
+    /// disconnect) must NOT trigger RejoinContinuation. This is the
+    /// primary fix for #2088 — without this gate, every 10s heartbeat
+    /// Connected event would create a brief 2→1 peer cycle that resets
+    /// the eviction timer, keeping the room alive indefinitely.
+    #[test]
+    fn heartbeat_connected_does_not_rejoin() {
+        let event = DaemonEvent::Connected {
+            info: info_with("1.0.0", 100),
+        };
+        let mut initial = None;
+
+        // has_session=true but was_disconnected=false (steady-state
+        // heartbeat) → must be NoOp, not RejoinContinuation.
+        assert_eq!(
+            classify(&event, &mut initial, true, false),
+            WatchDecision::NoOp,
+            "heartbeat Connected must not trigger rejoin"
+        );
+    }
+
+    /// Connected events AFTER a Disconnected should trigger
+    /// RejoinContinuation — the peer connection was actually lost.
+    #[test]
+    fn reconnect_after_disconnect_triggers_rejoin() {
+        let connected = DaemonEvent::Connected {
+            info: info_with("1.0.0", 100),
+        };
+        let mut initial = None;
+
+        // After disconnect, Connected should trigger rejoin.
+        assert_eq!(
+            classify(&connected, &mut initial, true, true),
+            WatchDecision::RejoinContinuation
+        );
+    }
+
     /// After an ephemeral notebook is evicted and the session is cleared,
     /// subsequent Connected/Upgraded events should produce NoOp (not
     /// RejoinContinuation). This regression test verifies the fix for #2088
@@ -383,14 +468,19 @@ mod tests {
         };
         let mut initial = None;
 
-        // With has_session = true, we get RejoinContinuation.
+        // With has_session=true AND was_disconnected=true, we get
+        // RejoinContinuation.
         assert_eq!(
-            classify(&event, &mut initial, true),
+            classify(&event, &mut initial, true, true),
             WatchDecision::RejoinContinuation
         );
 
-        // After the session is cleared (has_session = false), same event is NoOp.
-        assert_eq!(classify(&event, &mut initial, false), WatchDecision::NoOp);
+        // After the session is cleared (has_session=false), same event
+        // is NoOp even with was_disconnected=true.
+        assert_eq!(
+            classify(&event, &mut initial, false, true),
+            WatchDecision::NoOp
+        );
 
         // Same for Upgraded (same-version restart).
         let upgraded = DaemonEvent::Upgraded {
@@ -398,7 +488,7 @@ mod tests {
             current: info_with("1.0.0", 200),
         };
         assert_eq!(
-            classify(&upgraded, &mut initial, false),
+            classify(&upgraded, &mut initial, false, false),
             WatchDecision::NoOp
         );
     }
