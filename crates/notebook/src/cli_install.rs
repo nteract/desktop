@@ -846,7 +846,10 @@ fn escalate_shell_command(shell_cmd: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(test)]
+// All tests below exercise Unix-only shell-script symlink paths. On
+// Windows the module would be empty and `use super::*;` resolves to
+// nothing, tripping clippy's `unused-imports` on `-D warnings`.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
