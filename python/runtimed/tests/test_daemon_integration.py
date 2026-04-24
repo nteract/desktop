@@ -2541,6 +2541,153 @@ class TestTrustApproval:
         assert info is not None
         assert info.needs_trust_approval is False
 
+    async def test_pyproject_trust_heal_at_room_init(self, client, tmp_path):
+        """A notebook saved by a pre-fix build has pyproject-matching deps
+        but no trust signature. On reopen, room-init reconciliation should
+        promote it to Trusted so `needs_trust_approval` is False and the
+        auto-launch gate does not block.
+
+        Regression for nteract/desktop#2150.
+        """
+        import json
+
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "test"\nversion = "0.0.1"\ndependencies = ["pandas", "numpy"]\n'
+        )
+
+        nb_path = tmp_path / "notebook.ipynb"
+        nb_path.write_text(
+            json.dumps(
+                {
+                    "nbformat": 4,
+                    "nbformat_minor": 5,
+                    "metadata": {
+                        "runt": {
+                            "schema_version": "1",
+                            "uv": {"dependencies": ["pandas", "numpy"]},
+                            # No trust_signature - simulates pre-fix daemon write
+                        }
+                    },
+                    "cells": [],
+                }
+            )
+        )
+
+        session = await client.open_notebook(str(nb_path))
+        info = await session.connection_info()
+        assert info is not None
+        assert info.needs_trust_approval is False, (
+            "pyproject-matching deps without a signature must heal at room init, "
+            "not block auto-launch"
+        )
+
+    async def test_pyproject_mismatch_stays_untrusted(self, client, tmp_path):
+        """If inline deps differ from pyproject.toml, reconciliation must
+        decline and the notebook stays Untrusted. This preserves real trust
+        events (novel deps arriving) instead of silently signing them.
+        """
+        import json
+
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "test"\nversion = "0.0.1"\ndependencies = ["pandas"]\n'
+        )
+
+        nb_path = tmp_path / "notebook.ipynb"
+        nb_path.write_text(
+            json.dumps(
+                {
+                    "nbformat": 4,
+                    "nbformat_minor": 5,
+                    "metadata": {
+                        "runt": {
+                            "schema_version": "1",
+                            "uv": {"dependencies": ["pandas", "malicious-pkg"]},
+                        }
+                    },
+                    "cells": [],
+                }
+            )
+        )
+
+        session = await client.open_notebook(str(nb_path))
+        info = await session.connection_info()
+        assert info is not None
+        assert info.needs_trust_approval is True
+
+    async def test_envyml_trust_heal_includes_channels(self, client, tmp_path):
+        """environment.yml reconciliation must match both deps and channels.
+        A notebook with matching deps AND matching channels heals.
+        """
+        import json
+
+        (tmp_path / "environment.yml").write_text(
+            "name: test-env\nchannels:\n  - conda-forge\ndependencies:\n  - pandas\n  - numpy\n"
+        )
+
+        nb_path = tmp_path / "notebook.ipynb"
+        nb_path.write_text(
+            json.dumps(
+                {
+                    "nbformat": 4,
+                    "nbformat_minor": 5,
+                    "metadata": {
+                        "runt": {
+                            "schema_version": "1",
+                            "conda": {
+                                "dependencies": ["pandas", "numpy"],
+                                "channels": ["conda-forge"],
+                            },
+                        }
+                    },
+                    "cells": [],
+                }
+            )
+        )
+
+        session = await client.open_notebook(str(nb_path))
+        info = await session.connection_info()
+        assert info is not None
+        assert info.needs_trust_approval is False
+
+    async def test_envyml_channel_mismatch_blocks_heal(self, client, tmp_path):
+        """Codex P1 on #2158: a notebook with matching conda deps but
+        different inline channels must stay Untrusted. Without this, a
+        notebook could smuggle an approved signature over channels that
+        didn't come from the project file.
+        """
+        import json
+
+        (tmp_path / "environment.yml").write_text(
+            "name: test-env\nchannels:\n  - conda-forge\ndependencies:\n  - pandas\n  - numpy\n"
+        )
+
+        nb_path = tmp_path / "notebook.ipynb"
+        nb_path.write_text(
+            json.dumps(
+                {
+                    "nbformat": 4,
+                    "nbformat_minor": 5,
+                    "metadata": {
+                        "runt": {
+                            "schema_version": "1",
+                            "conda": {
+                                "dependencies": ["pandas", "numpy"],
+                                "channels": ["http://evil.example"],
+                            },
+                        }
+                    },
+                    "cells": [],
+                }
+            )
+        )
+
+        session = await client.open_notebook(str(nb_path))
+        info = await session.connection_info()
+        assert info is not None
+        assert info.needs_trust_approval is True, (
+            "channel mismatch must block reconciliation even when deps match"
+        )
+
 
 # ============================================================================
 # Presence Tests
