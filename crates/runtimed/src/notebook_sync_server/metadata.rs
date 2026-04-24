@@ -2281,7 +2281,16 @@ pub(crate) async fn auto_launch_kernel(
                         doc.fork_and_merge(|fork| {
                             let mut snap = fork.get_metadata_snapshot().unwrap_or_default();
                             let current_deps = snap.runt.pixi.as_ref().map(|p| &p.dependencies);
-                            if current_deps.is_none_or(|d| d != &deps) {
+                            let deps_match = current_deps.is_some_and(|d| d == &deps);
+                            // Re-sign even when deps already match if the snapshot
+                            // isn't verifiably trusted — covers notebooks bootstrapped
+                            // by the pre-fix build (matching deps, no signature).
+                            let trust_ok = matches!(
+                                verify_trust_from_snapshot(&snap).status,
+                                runt_trust::TrustStatus::Trusted
+                                    | runt_trust::TrustStatus::NoDependencies
+                            );
+                            if !deps_match || !trust_ok {
                                 let pixi = snap.pixi_section_or_default();
                                 pixi.dependencies = deps;
                                 if let Err(e) = auto_sign_in_place(&mut snap) {
@@ -2314,7 +2323,13 @@ pub(crate) async fn auto_launch_kernel(
                         doc.fork_and_merge(|fork| {
                             let mut snap = fork.get_metadata_snapshot().unwrap_or_default();
                             let current_deps = snap.runt.uv.as_ref().map(|u| &u.dependencies);
-                            if current_deps.is_none_or(|d| d != &deps) {
+                            let deps_match = current_deps.is_some_and(|d| d == &deps);
+                            let trust_ok = matches!(
+                                verify_trust_from_snapshot(&snap).status,
+                                runt_trust::TrustStatus::Trusted
+                                    | runt_trust::TrustStatus::NoDependencies
+                            );
+                            if !deps_match || !trust_ok {
                                 let uv = snap.runt.uv.get_or_insert_with(|| {
                                     notebook_doc::metadata::UvInlineMetadata {
                                         dependencies: Vec::new(),
@@ -2350,7 +2365,13 @@ pub(crate) async fn auto_launch_kernel(
                         doc.fork_and_merge(|fork| {
                             let mut snap = fork.get_metadata_snapshot().unwrap_or_default();
                             let current_deps = snap.runt.conda.as_ref().map(|c| &c.dependencies);
-                            if current_deps.is_none_or(|d| d != &deps) {
+                            let deps_match = current_deps.is_some_and(|d| d == &deps);
+                            let trust_ok = matches!(
+                                verify_trust_from_snapshot(&snap).status,
+                                runt_trust::TrustStatus::Trusted
+                                    | runt_trust::TrustStatus::NoDependencies
+                            );
+                            if !deps_match || !trust_ok {
                                 let conda = snap.runt.conda.get_or_insert_with(|| {
                                     notebook_doc::metadata::CondaInlineMetadata {
                                         dependencies: Vec::new(),

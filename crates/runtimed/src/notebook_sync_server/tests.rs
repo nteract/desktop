@@ -3572,6 +3572,50 @@ async fn test_auto_sign_in_place_pixi_writes_signature() {
     std::env::remove_var("RUNT_TRUST_KEY_PATH");
 }
 
+/// Regression for Codex P2: a notebook saved by the pre-fix build has
+/// pyproject deps already written into the CRDT but no trust signature.
+/// On reopen with the fix, the bootstrap must detect the untrusted state
+/// and sign even when deps match.
+#[tokio::test]
+#[serial]
+async fn test_bootstrap_re_signs_matching_but_unsigned_snapshot() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let key_path = temp_dir.path().join("trust-key");
+    std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
+
+    // Pre-fix state: matching pyproject deps, no signature.
+    let mut snap = snapshot_with_uv(vec!["pandas".to_string(), "numpy".to_string()]);
+    assert!(snap.runt.trust_signature.is_none());
+    assert_eq!(
+        verify_trust_from_snapshot(&snap).status,
+        runt_trust::TrustStatus::Untrusted,
+        "precondition: matching unsigned deps verify as Untrusted"
+    );
+
+    // Apply the bootstrap's new gate: when deps match but the snapshot
+    // doesn't verify as Trusted/NoDependencies, sign it.
+    let pyproject_deps = vec!["pandas".to_string(), "numpy".to_string()];
+    let current_deps = snap.runt.uv.as_ref().map(|u| u.dependencies.clone());
+    let deps_match = current_deps.as_ref().is_some_and(|d| d == &pyproject_deps);
+    let trust_ok = matches!(
+        verify_trust_from_snapshot(&snap).status,
+        runt_trust::TrustStatus::Trusted | runt_trust::TrustStatus::NoDependencies,
+    );
+    assert!(deps_match);
+    assert!(!trust_ok);
+    if !deps_match || !trust_ok {
+        auto_sign_in_place(&mut snap).expect("auto_sign_in_place");
+    }
+
+    assert_eq!(
+        verify_trust_from_snapshot(&snap).status,
+        runt_trust::TrustStatus::Trusted,
+        "bootstrap must sign matching-but-unsigned snapshots, not skip them"
+    );
+
+    std::env::remove_var("RUNT_TRUST_KEY_PATH");
+}
+
 /// Regression for the pyproject.toml trust-dialog flicker: simulate the
 /// auto-launch bootstrap end state (deps written + auto-signed) and drive
 /// it through `check_and_update_trust_state`. Trust must land on Trusted
