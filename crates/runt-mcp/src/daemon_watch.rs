@@ -155,9 +155,10 @@ fn looks_like_uuid(target: &str) -> bool {
 /// reloads from disk (the UUID-only path would yield an empty document
 /// because file-backed rooms' `.automerge` persist files are deleted).
 /// For ephemeral notebooks, uses `connect(uuid)` and detects data loss
-/// (empty document after reconnect means the daemon lost the ephemeral
-/// data; we keep the stale session because its errors are clearer than
-/// "no session").
+/// (empty document after reconnect means the daemon evicted the room).
+/// When this happens, the session is cleared so the watch loop stops
+/// trying to rejoin — without this, the 10s reconnect cycle would
+/// perpetually recreate peers and prevent proper room eviction (#2088).
 async fn rejoin(
     socket_path: &Path,
     session: &Arc<RwLock<Option<NotebookSession>>>,
@@ -238,8 +239,15 @@ async fn rejoin(
                 if prev_cell_count > 0 && new_cell_count == 0 && notebook_path.is_none() {
                     warn!(
                         "Ephemeral notebook lost: rejoined {notebook_id} but document is empty \
-                         (had {prev_cell_count} cells). Keeping stale session."
+                         (had {prev_cell_count} cells). Clearing session to stop reconnect loop."
                     );
+                    // Clear the session so the watch loop stops trying to
+                    // rejoin an evicted ephemeral notebook. Without this,
+                    // every 10s daemon_watch reconnects, briefly creates a
+                    // peer, detects the empty doc, and drops — but the
+                    // session stays `Some`, so `has_session` remains true and
+                    // the cycle repeats, preventing proper eviction (#2088).
+                    *session.write().await = None;
                     return;
                 }
 
@@ -361,5 +369,37 @@ mod tests {
         assert!(!looks_like_uuid("/tmp/notebook.ipynb"));
         assert!(!looks_like_uuid("notebook.ipynb"));
         assert!(!looks_like_uuid("relative/path"));
+    }
+
+    /// After an ephemeral notebook is evicted and the session is cleared,
+    /// subsequent Connected/Upgraded events should produce NoOp (not
+    /// RejoinContinuation). This regression test verifies the fix for #2088
+    /// — without clearing the session, the watch loop would reconnect every
+    /// 10s, briefly creating peers and preventing proper room eviction.
+    #[test]
+    fn cleared_session_stops_continuation_rejoins() {
+        let event = DaemonEvent::Connected {
+            info: info_with("1.0.0", 100),
+        };
+        let mut initial = None;
+
+        // With has_session = true, we get RejoinContinuation.
+        assert_eq!(
+            classify(&event, &mut initial, true),
+            WatchDecision::RejoinContinuation
+        );
+
+        // After the session is cleared (has_session = false), same event is NoOp.
+        assert_eq!(classify(&event, &mut initial, false), WatchDecision::NoOp);
+
+        // Same for Upgraded (same-version restart).
+        let upgraded = DaemonEvent::Upgraded {
+            previous: info_with("1.0.0", 100),
+            current: info_with("1.0.0", 200),
+        };
+        assert_eq!(
+            classify(&upgraded, &mut initial, false),
+            WatchDecision::NoOp
+        );
     }
 }
