@@ -276,13 +276,17 @@ fn timestamp_cell_ms(column: &dyn Array, local_row: usize) -> Option<i64> {
     }
 }
 
-/// Format epoch milliseconds as "Apr 23, 2026".
-fn format_timestamp_ms(ms: i64) -> String {
+/// Format epoch milliseconds as "Apr 23, 2026", respecting the column timezone.
+fn format_timestamp_ms(ms: i64, tz: Option<&str>) -> String {
+    use chrono_tz::Tz;
     let secs = ms / 1000;
     let nanos = ((ms % 1000) * 1_000_000) as u32;
-    match DateTime::from_timestamp(secs, nanos) {
-        Some(dt) => dt.format("%b %-d, %Y").to_string(),
-        None => ms.to_string(),
+    let Some(utc_dt) = DateTime::from_timestamp(secs, nanos) else {
+        return ms.to_string();
+    };
+    match tz.and_then(|s| s.parse::<Tz>().ok()) {
+        Some(tz) => utc_dt.with_timezone(&tz).format("%b %-d, %Y").to_string(),
+        None => utc_dt.format("%b %-d, %Y").to_string(),
     }
 }
 
@@ -305,9 +309,10 @@ pub fn get_cell_string(handle: u32, row: usize, col: usize) -> Result<String, Js
             return s;
         }
 
-        // Timestamps → human-readable date
+        // Timestamps → human-readable date in the column's timezone (or UTC)
         if let Some(ms) = timestamp_cell_ms(column.as_ref(), local_row) {
-            return format_timestamp_ms(ms);
+            let tz = s.col_timezones.get(col).and_then(|t| t.as_deref());
+            return format_timestamp_ms(ms, tz);
         }
 
         match column.data_type() {
