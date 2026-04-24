@@ -678,9 +678,13 @@ pub(crate) async fn handle(
                 .as_ref()
                 .and_then(get_inline_uv_prerelease);
 
-            // Fast path: check inline env cache first (instant on hit)
+            // Fast path: check inline env cache first (instant on hit).
+            // `check_uv_inline_cache` re-vendors the launcher on hit when
+            // bootstrap_dx is on, so stale pre-0.2.0 envs are brought up
+            // to today's layout before the kernel boots.
             if let Some(cached) =
                 crate::inline_env::check_uv_inline_cache(&deps, prerelease.as_deref(), bootstrap_dx)
+                    .await
             {
                 info!(
                     "[notebook-sync] LaunchKernel: UV inline cache hit at {:?}",

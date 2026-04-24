@@ -328,9 +328,15 @@ pub fn compare_deps_to_pool(inline_deps: &[String], pool_packages: &[String]) ->
 ///
 /// Returns `Some(PreparedEnv)` on cache hit, `None` on miss.
 ///
-/// `bootstrap_dx` is accepted for call-site compatibility and currently
-/// ignored — see [`prepare_uv_inline_env`].
-pub fn check_uv_inline_cache(
+/// On hit, when `bootstrap_dx` is on, re-vendor the launcher into the
+/// cached venv before returning. Reason: since 0.2.0,
+/// `inline_deps_with_bootstrap` is a no-op and the env hash no longer
+/// differs by feature flag, so a pre-upgrade non-bootstrap cache entry
+/// (or a pre-0.2.0 single-file-launcher bootstrap entry) can answer a
+/// bootstrap launch. `vendor_into_venv` is idempotent + cleans up the
+/// legacy single-file module, so calling it unconditionally on hit
+/// brings the cached env up to today's layout before the kernel boots.
+pub async fn check_uv_inline_cache(
     deps: &[String],
     prerelease: Option<&str>,
     bootstrap_dx: bool,
@@ -350,14 +356,24 @@ pub fn check_uv_inline_cache(
     #[cfg(windows)]
     let python_path = venv_path.join("Scripts").join("python.exe");
 
-    if python_path.exists() {
-        Some(PreparedEnv {
-            env_path: venv_path,
-            python_path,
-        })
-    } else {
-        None
+    if !python_path.exists() {
+        return None;
     }
+
+    if bootstrap_dx {
+        if let Err(err) = kernel_env::launcher::vendor_into_venv(&python_path).await {
+            tracing::warn!(
+                "[inline-env] UV cache hit at {:?}: vendor_into_venv failed: {}",
+                python_path,
+                err
+            );
+        }
+    }
+
+    Some(PreparedEnv {
+        env_path: venv_path,
+        python_path,
+    })
 }
 
 /// Check if a cached Conda inline environment already exists for the given deps.

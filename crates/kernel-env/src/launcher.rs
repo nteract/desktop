@@ -120,7 +120,14 @@ async fn remove_legacy_single_file(purelib: &Path) -> Result<()> {
     }
 }
 
-async fn write_package_files(pkg_dir: &Path) -> Result<()> {
+/// Write every embedded launcher file into `pkg_dir` atomically.
+///
+/// Each file goes to a unique temp path and then renames into place, so
+/// a concurrent reader importing from the directory never sees a
+/// half-written module. Exposed so the daemon's launcher cache
+/// (`runtimed::launcher_cache`) reuses the same atomic-write pattern
+/// the per-venv vendoring path relies on.
+pub async fn write_package_files(pkg_dir: &Path) -> Result<()> {
     tokio::fs::create_dir_all(pkg_dir)
         .await
         .with_context(|| format!("create package dir {pkg_dir:?}"))?;
