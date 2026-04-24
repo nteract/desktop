@@ -15,8 +15,6 @@ interface PrivacySectionProps {
   lastMcpPingAt: number | null;
 }
 
-const TELEMETRY_PAGE_URL = "https://nteract.io/telemetry";
-
 function formatRelative(secs: number | null): string {
   if (secs === null) return "never";
   const now = Math.floor(Date.now() / 1000);
