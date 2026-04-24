@@ -1118,6 +1118,7 @@ function TimestampHistogram({
       </div>
       <span className="sift-th-range">
         {summary.min === summary.max ? minLabel : `${minLabel} – ${maxLabel}`}
+        {!timezone && <span className="sift-tz-default" title="No timezone in data, displayed as UTC">UTC</span>}
       </span>
     </div>
   );
