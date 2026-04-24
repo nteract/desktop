@@ -289,8 +289,10 @@ const MIN_WARM_BASES: usize = 2;
 
 fn uv_prewarmed_packages(
     extra: &[String],
-    feature_flags: notebook_protocol::protocol::FeatureFlags,
+    _feature_flags: notebook_protocol::protocol::FeatureFlags,
 ) -> Vec<String> {
+    // The launcher package is vendored post-creation; `bootstrap_dx` no
+    // longer adds a PyPI dep to the prewarm set.
     let mut packages = vec![
         "ipykernel".to_string(),
         "ipywidgets".to_string(),
@@ -298,10 +300,6 @@ fn uv_prewarmed_packages(
         "nbformat".to_string(),
         "uv".to_string(),
     ];
-    if feature_flags.bootstrap_dx {
-        // Launcher is vendored post-creation; only `dx` needs installing.
-        packages.push("dx".to_string());
-    }
     packages.extend(extra.iter().cloned());
     packages
 }
@@ -2449,10 +2447,12 @@ impl Daemon {
                 );
                 // Backstop: re-vendor the launcher into this env. Pool entries
                 // warmed by a pre-upgrade daemon (or rehydrated from disk) may
-                // be missing `nteract_kernel_launcher.py`. Idempotent and
-                // cheap. On failure, warn and continue -- the env is still
-                // usable for non-launcher kernels, and launcher-using kernels
-                // will fail with a clearer error at startup.
+                // be missing the `nteract_kernel_launcher` package, or may
+                // have the pre-0.2.0 single-file module that vendor now
+                // cleans up. Idempotent and cheap. On failure, warn and
+                // continue -- the env is still usable for non-launcher
+                // kernels, and launcher-using kernels will fail with a
+                // clearer error at startup.
                 if let Err(err) = kernel_env::launcher::vendor_into_venv(&e.python_path).await {
                     warn!(
                         "[runtimed] Pool take (UV): failed to re-vendor launcher into {:?}: {}",

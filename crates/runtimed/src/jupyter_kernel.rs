@@ -522,10 +522,10 @@ impl KernelConnection for JupyterKernel {
                             "[jupyter-kernel] Starting Python kernel from env at {:?}",
                             pooled_env.python_path
                         );
-                        // Every pool env (UV/conda/pixi) is vendored with
-                        // `nteract_kernel_launcher.py` at creation + take time,
-                        // so `-m nteract_kernel_launcher` resolves regardless of
-                        // flavor when bootstrap_dx is on.
+                        // Every pool env (UV/conda/pixi) is vendored with the
+                        // `nteract_kernel_launcher` package at creation + take
+                        // time, so `-m nteract_kernel_launcher` resolves
+                        // regardless of flavor when bootstrap_dx is on.
                         let launcher_module = if bootstrap_dx {
                             "nteract_kernel_launcher"
                         } else {

@@ -1848,12 +1848,9 @@ pub(crate) async fn try_uv_pool_for_inline_deps(
     daemon: &std::sync::Arc<crate::daemon::Daemon>,
     progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler>,
 ) -> Result<(crate::PooledEnv, Vec<String>), ()> {
-    // The effective install set includes `dx` when `bootstrap_dx` is on.
-    // Using it for both the pool-compat check and the delta install
-    // keeps the env content consistent with the inline cache hash we
-    // rename to below — otherwise we'd cache a pool env under the
-    // bootstrap key without `dx` actually installed, and subsequent
-    // cache hits would silently fail `import dx` in the kernel.
+    // `inline_deps_with_bootstrap` is a shim since 0.2.0 — launcher
+    // vendoring replaced the `dx` PyPI install, so effective == inline.
+    // Kept so the call sites don't all have to shift on the same PR.
     let effective_deps = crate::inline_env::inline_deps_with_bootstrap(deps, bootstrap_dx);
 
     // Quick pre-check: if any dep has version specifiers, skip pool entirely

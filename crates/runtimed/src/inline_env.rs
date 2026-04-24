@@ -58,21 +58,21 @@ fn get_inline_cache_dir() -> std::path::PathBuf {
         .join("inline-envs")
 }
 
-/// Combine inline deps with `dx` when `bootstrap_dx` is requested.
+/// Return inline deps unchanged.
 ///
-/// The vendored `nteract_kernel_launcher` shipped inside the daemon binary
-/// handles its own placement in site-packages; only the `dx` PyPI install
-/// has to ride along with the inline env. Folding `dx` into the dep list
-/// also changes the env hash so bootstrap and non-bootstrap envs don't
-/// collide in the cache.
-pub(crate) fn inline_deps_with_bootstrap(deps: &[String], bootstrap_dx: bool) -> Vec<String> {
-    if bootstrap_dx {
-        let mut out = deps.to_vec();
-        out.push("dx".to_string());
-        out
-    } else {
-        deps.to_vec()
-    }
+/// Historically this appended `dx` when `bootstrap_dx` was set, so the
+/// PyPI package would land in the inline env and the dep-hash would
+/// distinguish bootstrap and non-bootstrap caches. Since 0.2.0 the
+/// launcher package (which carries everything dx used to provide)
+/// ships inside the daemon binary and is vendored via PYTHONPATH —
+/// the inline env contents are identical either way, and bootstrap
+/// vs non-bootstrap envs can share the cache.
+///
+/// Kept as a shim so callers don't all have to change on the same PR.
+/// `bootstrap_dx` is accepted and ignored — plan to drop the parameter
+/// once the field ripens into a pure launcher-module selector.
+pub(crate) fn inline_deps_with_bootstrap(deps: &[String], _bootstrap_dx: bool) -> Vec<String> {
+    deps.to_vec()
 }
 
 /// Prepare a cached UV environment with the given inline dependencies.
@@ -80,9 +80,9 @@ pub(crate) fn inline_deps_with_bootstrap(deps: &[String], bootstrap_dx: bool) ->
 /// If a cached environment with the same deps already exists, returns it
 /// immediately. Otherwise creates a new environment with uv venv + uv pip install.
 ///
-/// When `bootstrap_dx` is true, `dx` is added to the install set so
-/// `import dx; dx.install()` succeeds inside the kernel. This changes the
-/// env hash, so bootstrap and non-bootstrap envs are cached separately.
+/// `bootstrap_dx` is accepted for call-site compatibility and currently
+/// ignored — launcher vendoring replaced the per-env `dx` PyPI install,
+/// so bootstrap and non-bootstrap envs are identical and share the cache.
 pub async fn prepare_uv_inline_env(
     deps: &[String],
     prerelease: Option<&str>,
@@ -328,9 +328,8 @@ pub fn compare_deps_to_pool(inline_deps: &[String], pool_packages: &[String]) ->
 ///
 /// Returns `Some(PreparedEnv)` on cache hit, `None` on miss.
 ///
-/// `bootstrap_dx` must match the value that will be passed to
-/// [`prepare_uv_inline_env`] so the hash lookup matches the env that will
-/// be created (or was created) on a miss.
+/// `bootstrap_dx` is accepted for call-site compatibility and currently
+/// ignored — see [`prepare_uv_inline_env`].
 pub fn check_uv_inline_cache(
     deps: &[String],
     prerelease: Option<&str>,
