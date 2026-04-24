@@ -2,11 +2,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check } from "@tauri-apps/plugin-updater";
-import { AlertTriangle, Check, Circle, Loader2, Notebook } from "lucide-react";
+import { AlertTriangle, Check, Circle, Link2, Loader2, Notebook, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import type { NotebookStatus, UpgradeStep } from "./types";
+import type { CliMigrationInfo, NotebookStatus, UpgradeStep } from "./types";
 
 type Phase = "review" | "progress";
 
@@ -99,6 +99,126 @@ function StepRow({ step }: { step: StepInfo }) {
   );
 }
 
+function CliMigrationCard({
+  migration,
+  onComplete,
+}: {
+  migration: CliMigrationInfo;
+  onComplete: () => void;
+}) {
+  const [acting, setActing] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
+
+  const handleSymlink = useCallback(async () => {
+    setActing(true);
+    try {
+      await invoke("migrate_cli_to_symlink");
+      setResult({ ok: true, message: "Replaced with symlink. Future updates are automatic." });
+      onComplete();
+    } catch (e) {
+      const msg = String(e);
+      if (msg.includes("Cancelled")) {
+        setActing(false);
+        return;
+      }
+      setResult({ ok: false, message: msg });
+    } finally {
+      setActing(false);
+    }
+  }, [onComplete]);
+
+  const handleRemove = useCallback(async () => {
+    setActing(true);
+    try {
+      await invoke("remove_system_cli");
+      setResult({ ok: true, message: "Removed. The CLI is available at ~/.local/bin." });
+      onComplete();
+    } catch (e) {
+      const msg = String(e);
+      if (msg.includes("Cancelled")) {
+        setActing(false);
+        return;
+      }
+      setResult({ ok: false, message: msg });
+    } finally {
+      setActing(false);
+    }
+  }, [onComplete]);
+
+  const handleSkip = useCallback(() => {
+    setResult({
+      ok: true,
+      message:
+        "Skipped. You can remove it later with: sudo rm " +
+        migration.dir +
+        "/" +
+        migration.cli_name,
+    });
+    onComplete();
+  }, [migration, onComplete]);
+
+  if (result) {
+    return (
+      <div
+        className={cn(
+          "p-3 rounded-md border text-sm",
+          result.ok
+            ? "bg-muted/50 border-border text-muted-foreground"
+            : "bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800 text-red-800 dark:text-red-200",
+        )}
+      >
+        {result.message}
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-4 rounded-md border border-amber-200 dark:border-amber-800 bg-amber-50/50 dark:bg-amber-900/10 space-y-3">
+      <div className="space-y-1.5">
+        <p className="text-sm font-medium">
+          CLI at {migration.dir}/{migration.cli_name}
+        </p>
+        <p className="text-xs text-muted-foreground">
+          A previous version copied the binary here. This requires admin credentials to update on
+          every upgrade. You can replace it with a symlink (auto-updates, one-time prompt), remove
+          it, or skip for now.
+        </p>
+      </div>
+      <div className="flex gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleSymlink}
+          disabled={acting}
+          className="h-8 text-xs gap-1.5"
+        >
+          {acting ? <Loader2 className="h-3 w-3 animate-spin" /> : <Link2 className="h-3 w-3" />}
+          Replace with symlink
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleRemove}
+          disabled={acting}
+          className="h-8 text-xs gap-1.5"
+        >
+          {acting ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
+          Remove
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={handleSkip}
+          disabled={acting}
+          className="h-8 text-xs text-muted-foreground"
+        >
+          Skip
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [phase, setPhase] = useState<Phase>("review");
   const [notebooks, setNotebooks] = useState<NotebookStatus[]>([]);
@@ -116,6 +236,9 @@ export default function App() {
     { id: "upgrading", label: "Upgrading daemon", status: "pending" },
     { id: "ready", label: "Ready to restart", status: "pending" },
   ]);
+
+  const [cliMigration, setCliMigration] = useState<CliMigrationInfo | null>(null);
+  const [cliMigrationDone, setCliMigrationDone] = useState(false);
 
   // Fetch notebook status on mount
   useEffect(() => {
@@ -177,6 +300,7 @@ export default function App() {
   const hasBusyKernels = notebooks.some((nb) => nb.kernel_status === "busy");
   const isReady = steps.every((s) => s.status === "completed");
   const hasFailed = steps.some((s) => s.status === "failed");
+  const showMigration = cliMigration !== null && isReady;
 
   const handleAbort = useCallback(async (windowLabel: string) => {
     setAbortingKernels((prev) => new Set(prev).add(windowLabel));
@@ -250,6 +374,18 @@ export default function App() {
       await invoke("run_upgrade");
     } catch (e) {
       setError(String(e));
+      return;
+    }
+
+    // Check for system-wide CLI that needs migration
+    try {
+      const migration = await invoke<CliMigrationInfo | null>("detect_cli_migration");
+      if (migration) {
+        setCliMigration(migration);
+      }
+    } catch (e) {
+      // Non-fatal, just skip the migration prompt
+      console.warn("CLI migration detection failed:", e);
     }
   }, []);
 
@@ -312,14 +448,22 @@ export default function App() {
           <>
             <div className="text-center space-y-2">
               <h1 className="text-2xl font-semibold tracking-tight">
-                {isReady ? "Update Complete" : hasFailed ? "Update Failed" : "Updating..."}
+                {isReady && !showMigration
+                  ? "Update Complete"
+                  : hasFailed
+                    ? "Update Failed"
+                    : showMigration
+                      ? "Update Complete"
+                      : "Updating..."}
               </h1>
               <p className="text-sm text-muted-foreground">
-                {isReady
+                {isReady && !showMigration
                   ? "Ready to restart with the new version"
                   : hasFailed
                     ? "Something went wrong"
-                    : "Please wait while we prepare the update"}
+                    : showMigration
+                      ? "One more thing before restarting"
+                      : "Please wait while we prepare the update"}
               </p>
             </div>
 
@@ -361,6 +505,13 @@ export default function App() {
               ))}
             </div>
 
+            {showMigration && !cliMigrationDone && (
+              <CliMigrationCard
+                migration={cliMigration}
+                onComplete={() => setCliMigrationDone(true)}
+              />
+            )}
+
             {error && (
               <div className="flex items-start gap-2 p-3 rounded-md bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800">
                 <AlertTriangle className="h-4 w-4 text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
@@ -373,7 +524,12 @@ export default function App() {
                 Close
               </Button>
             ) : (
-              <Button onClick={handleRestart} disabled={!isReady} className="w-full" size="lg">
+              <Button
+                onClick={handleRestart}
+                disabled={!isReady || (showMigration && !cliMigrationDone)}
+                className="w-full"
+                size="lg"
+              >
                 {isReady ? "Restart Now" : "Preparing..."}
               </Button>
             )}

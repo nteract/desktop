@@ -66,7 +66,7 @@ pub fn about_menu_label() -> String {
 
 pub fn install_cli_menu_label() -> String {
     format!(
-        "Install '{}' Command in PATH...",
+        "Install '{}' Command in PATH",
         runt_workspace::cli_command_name()
     )
 }

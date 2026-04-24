@@ -397,32 +397,12 @@ pub fn ensure_cli_current(app: &tauri::AppHandle) {
         } else {
             log::info!("[cli_install] CLI updated successfully");
         }
-
-        // Check system-wide install too. We can't silently refresh it (requires
-        // admin privileges), but we can log a warning so diagnostics catch it.
-        if is_cli_installed_system() {
-            let system_dir = PathBuf::from(SYSTEM_INSTALL_DIR);
-            let system_runt = system_dir.join(cli_command_name());
-            if let Some(bundled) = get_bundled_runt_path(app) {
-                let system_size = fs::metadata(&system_runt).map(|m| m.len()).unwrap_or(0);
-                let bundled_size = fs::metadata(&bundled).map(|m| m.len()).unwrap_or(0);
-                if system_size != bundled_size {
-                    log::warn!(
-                        "[cli_install] System-wide {} is stale (size {} vs bundled {}). \
-                         It will be updated on next in-app upgrade, or re-run Install CLI from the menu.",
-                        system_runt.display(),
-                        system_size,
-                        bundled_size
-                    );
-                }
-            }
-        }
     }
 }
 
 /// Check if the CLI is already installed (checks user-local, system-wide, and legacy locations).
 pub fn is_cli_installed() -> bool {
-    is_cli_installed_local() || is_cli_installed_system() || is_cli_installed_legacy()
+    is_cli_installed_local() || is_cli_installed_legacy()
 }
 
 /// Check if the CLI is installed to the user-local directory (`~/.local/bin`).
@@ -433,16 +413,10 @@ pub fn is_cli_installed_local() -> bool {
     dir.join(cli_name).exists() && dir.join(nb_name).exists()
 }
 
-/// Check if the CLI has a legacy install in `/usr/local/bin` (pre-system-wide era).
-/// Returns false if the system-wide marker is present (that's a managed install,
-/// not a legacy one).
+/// Check if the CLI has a legacy install in `/usr/local/bin`.
 pub fn is_cli_installed_legacy() -> bool {
     #[cfg(unix)]
     {
-        // If the system-wide marker exists, this is a managed install, not legacy
-        if is_cli_installed_system() {
-            return false;
-        }
         let legacy = PathBuf::from(LEGACY_INSTALL_DIR);
         let cli_name = cli_command_name();
         let nb_name = cli_notebook_alias_name();
@@ -452,19 +426,6 @@ pub fn is_cli_installed_legacy() -> bool {
     {
         false
     }
-}
-
-/// Channel-specific marker file placed by system-wide install to distinguish
-/// our managed copy from binaries installed by other means (Homebrew, manual, etc.).
-fn system_install_marker() -> String {
-    format!(".nteract-managed-{}", cli_command_name())
-}
-
-/// Check if the CLI is installed system-wide by nteract (looks for our marker file).
-pub fn is_cli_installed_system() -> bool {
-    PathBuf::from(SYSTEM_INSTALL_DIR)
-        .join(system_install_marker())
-        .exists()
 }
 
 /// Install the CLI to `~/.local/bin` (no admin privileges needed).
@@ -499,271 +460,6 @@ pub fn install_cli(app: &tauri::AppHandle) -> Result<(), String> {
     }
 
     Ok(())
-}
-
-/// System-wide install directory.
-pub const SYSTEM_INSTALL_DIR: &str = if cfg!(unix) {
-    "/usr/local/bin"
-} else {
-    "C:\\Program Files\\nteract"
-};
-
-/// Install the CLI system-wide to `/usr/local/bin` (Unix) or `C:\Program Files\nteract`
-/// (Windows) using OS privilege escalation.
-/// Returns Ok(()) on success, Err with message on failure.
-pub fn install_cli_system(app: &tauri::AppHandle) -> Result<(), String> {
-    let bundled_runt = get_bundled_runt_path(app)
-        .ok_or_else(|| "Could not find bundled runt binary".to_string())?;
-
-    let dir = PathBuf::from(SYSTEM_INSTALL_DIR);
-    // On Windows, executables need the .exe extension to be discoverable via PATH
-    let runt_name = if cfg!(windows) {
-        format!("{}.exe", cli_command_name())
-    } else {
-        cli_command_name().to_string()
-    };
-    let runt_dest = dir.join(runt_name);
-    let nb_dest = dir.join(cli_notebook_alias_name());
-
-    // Build the nb wrapper script content
-    let nb_script = format!(
-        "#!/bin/bash\n# {} - open notebooks faster than you can say {} notebook\nexec {} notebook \"$@\"\n",
-        cli_notebook_alias_name(),
-        cli_command_name(),
-        cli_command_name()
-    );
-
-    install_with_privilege_escalation(&bundled_runt, &runt_dest, &nb_dest, &nb_script)?;
-
-    log::info!(
-        "[cli_install] CLI installed system-wide: {} (copied from {})",
-        runt_dest.display(),
-        bundled_runt.display()
-    );
-
-    Ok(())
-}
-
-/// Install CLI commands to a privileged directory using OS-specific escalation.
-#[cfg(target_os = "macos")]
-fn install_with_privilege_escalation(
-    bundled_runt: &std::path::Path,
-    runt_dest: &std::path::Path,
-    nb_dest: &std::path::Path,
-    nb_script: &str,
-) -> Result<(), String> {
-    // Build the shell script that will run with admin privileges.
-    // We copy the binary (not symlink) so the install is durable even if the
-    // app bundle is moved, unmounted, or accessed by another user account.
-    let dir = shell_escape(
-        runt_dest
-            .parent()
-            .ok_or("Invalid install destination")?
-            .to_string_lossy()
-            .as_ref(),
-    );
-    let marker = shell_escape(
-        runt_dest
-            .parent()
-            .ok_or("Invalid install destination")?
-            .join(system_install_marker())
-            .to_string_lossy()
-            .as_ref(),
-    );
-    let shell_cmd = format!(
-        "mkdir -p {dir} && rm -f {runt} {nb} && cp {src} {runt} && chmod 755 {runt} && printf '%s' {nb_escaped} > {nb} && chmod 755 {nb} && touch {marker}",
-        src = shell_escape(bundled_runt.to_string_lossy().as_ref()),
-        runt = shell_escape(runt_dest.to_string_lossy().as_ref()),
-        nb = shell_escape(nb_dest.to_string_lossy().as_ref()),
-        nb_escaped = shell_escape(nb_script),
-    );
-
-    // Write the shell command to a secure temp file to avoid multiline string
-    // issues in AppleScript. Use a unique filename and restrict permissions to
-    // prevent TOCTOU attacks (another process replacing the script before osascript
-    // executes it with admin privileges).
-    let temp_script =
-        std::env::temp_dir().join(format!("nteract-cli-install-{}.sh", std::process::id()));
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o700)
-            .open(&temp_script)
-            .or_else(|_| {
-                // File might exist from a previous failed attempt
-                let _ = fs::remove_file(&temp_script);
-                fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .mode(0o700)
-                    .open(&temp_script)
-            })
-            .map_err(|e| format!("Failed to create install script: {}", e))?;
-        file.write_all(shell_cmd.as_bytes())
-            .map_err(|e| format!("Failed to write install script: {}", e))?;
-    }
-
-    let escaped_script_path = temp_script
-        .to_string_lossy()
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"");
-    let output = std::process::Command::new("osascript")
-        .arg("-e")
-        .arg(format!(
-            "do shell script \"sh '{escaped_script_path}'\" with administrator privileges"
-        ))
-        .output()
-        .map_err(|e| format!("Failed to run privilege escalation: {}", e))?;
-
-    // Clean up temp script
-    let _ = fs::remove_file(&temp_script);
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        // User clicked "Cancel" in the authorization dialog
-        if stderr.contains("User canceled")
-            || stderr.contains("user canceled")
-            || stderr.contains("-128")
-        {
-            return Err("Installation cancelled.".to_string());
-        }
-        return Err(format!("Privilege escalation failed: {}", stderr.trim()));
-    }
-
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn install_with_privilege_escalation(
-    bundled_runt: &std::path::Path,
-    runt_dest: &std::path::Path,
-    nb_dest: &std::path::Path,
-    nb_script: &str,
-) -> Result<(), String> {
-    let dir = shell_escape(
-        runt_dest
-            .parent()
-            .ok_or("Invalid install destination")?
-            .to_string_lossy()
-            .as_ref(),
-    );
-    let marker = shell_escape(
-        runt_dest
-            .parent()
-            .ok_or("Invalid install destination")?
-            .join(system_install_marker())
-            .to_string_lossy()
-            .as_ref(),
-    );
-    let shell_cmd = format!(
-        "mkdir -p {dir} && rm -f {runt} {nb} && cp {src} {runt} && chmod 755 {runt} && printf '%s' {nb_escaped} > {nb} && chmod 755 {nb} && touch {marker}",
-        src = shell_escape(bundled_runt.to_string_lossy().as_ref()),
-        runt = shell_escape(runt_dest.to_string_lossy().as_ref()),
-        nb = shell_escape(nb_dest.to_string_lossy().as_ref()),
-        nb_escaped = shell_escape(nb_script),
-    );
-
-    let output = std::process::Command::new("pkexec")
-        .arg("sh")
-        .arg("-c")
-        .arg(&shell_cmd)
-        .output()
-        .map_err(|e| format!("Failed to run privilege escalation: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("dismissed") || stderr.contains("Not authorized") {
-            return Err("Installation cancelled.".to_string());
-        }
-        return Err(format!("Privilege escalation failed: {}", stderr.trim()));
-    }
-
-    Ok(())
-}
-
-#[cfg(target_os = "windows")]
-fn install_with_privilege_escalation(
-    bundled_runt: &std::path::Path,
-    runt_dest: &std::path::Path,
-    nb_dest: &std::path::Path,
-    _nb_script: &str,
-) -> Result<(), String> {
-    // On Windows, use PowerShell's Start-Process with -Verb RunAs for UAC elevation.
-    // We copy the runt binary and create a .cmd wrapper for nb (since copying the
-    // binary would just give another runt instance, not a notebook shorthand).
-    // Use a temp file for error reporting since Start-Process -Verb RunAs doesn't
-    // propagate the inner process exit code.
-    let install_dir = runt_dest
-        .parent()
-        .ok_or("Invalid install destination")?
-        .to_string_lossy()
-        .replace('\'', "''");
-    let src = bundled_runt.to_string_lossy().replace('\'', "''");
-    let runt = runt_dest.to_string_lossy().replace('\'', "''");
-    // nb on Windows is a .cmd wrapper that calls runt notebook
-    let nb_cmd = nb_dest.with_extension("cmd");
-    let nb = nb_cmd.to_string_lossy().replace('\'', "''");
-    let cli_cmd = runt_workspace::cli_command_name();
-
-    let marker = system_install_marker().replace('\'', "''");
-
-    let err_file = std::env::temp_dir().join("nteract-cli-install-err.txt");
-    let err_path = err_file.to_string_lossy().replace('\'', "''");
-
-    // The elevated script: create dir, copy runt, write nb.cmd wrapper, add to PATH,
-    // then broadcast WM_SETTINGCHANGE so new shells pick up the PATH change.
-    let ps_cmd = format!(
-        "$ErrorActionPreference='Stop'; try {{ \
-         New-Item -ItemType Directory -Force -Path '{install_dir}' | Out-Null; \
-         Remove-Item -Force -ErrorAction SilentlyContinue '{runt}','{nb}'; \
-         Copy-Item '{src}' '{runt}'; \
-         Set-Content -Path '{nb}' -Value \"@echo off`r`n{cli_cmd} notebook %*\" -Encoding ASCII; \
-         New-Item -ItemType File -Force -Path '{install_dir}\\{marker}' | Out-Null; \
-         $path = [Environment]::GetEnvironmentVariable('Path','Machine'); \
-         if ($path -notlike '*{install_dir}*') {{ \
-           [Environment]::SetEnvironmentVariable('Path', '{install_dir};' + $path, 'Machine'); \
-           Add-Type -Namespace Win32 -Name NativeMethods -MemberDefinition '[DllImport(\"user32.dll\", SetLastError=true, CharSet=CharSet.Auto)] public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);'; \
-           $r = [UIntPtr]::Zero; \
-           [Win32.NativeMethods]::SendMessageTimeout([IntPtr]0xFFFF, 0x1A, [UIntPtr]::Zero, 'Environment', 2, 5000, [ref]$r) | Out-Null \
-         }}; \
-         Remove-Item -Force -ErrorAction SilentlyContinue '{err_path}' \
-         }} catch {{ $_.Exception.Message | Out-File '{err_path}' -Encoding utf8 }}"
-    );
-
-    let output = std::process::Command::new("powershell")
-        .args([
-            "-Command",
-            &format!(
-                "Start-Process powershell -Verb RunAs -Wait -ArgumentList '-Command','{}'",
-                ps_cmd.replace('\'', "''")
-            ),
-        ])
-        .output()
-        .map_err(|e| format!("Failed to run privilege escalation: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Privilege escalation failed: {}", stderr.trim()));
-    }
-
-    // Check the error file written by the elevated script
-    if err_file.exists() {
-        let err_msg = fs::read_to_string(&err_file).unwrap_or_default();
-        let _ = fs::remove_file(&err_file);
-        if !err_msg.trim().is_empty() {
-            return Err(format!("Installation failed: {}", err_msg.trim()));
-        }
-    }
-
-    Ok(())
-}
-
-/// Escape a string for use inside a single-quoted shell argument.
-#[cfg(unix)]
-fn shell_escape(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// Warn if legacy /usr/local/bin has stale CLI copies that shadow ~/.local/bin.
@@ -927,6 +623,226 @@ fn ensure_shell_path(bin_dir: &std::path::Path) -> Result<(), String> {
         "[cli_install] Added ~/.local/bin to PATH in {}",
         rc_path.display()
     );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// System CLI migration (one-time, user-initiated during upgrade)
+// ---------------------------------------------------------------------------
+
+/// Information about a system-wide CLI install that should be migrated.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SystemCliMigration {
+    pub dir: String,
+    pub cli_name: String,
+    pub nb_name: String,
+}
+
+/// Detect a system-wide CLI install in `/usr/local/bin` that was placed by nteract.
+///
+/// Only returns `Some` when the `.nteract-managed-*` marker file is present.
+/// Without that marker the binary could belong to Homebrew, a manual install,
+/// or another tool, and we must not touch it with elevated privileges.
+#[cfg(unix)]
+pub fn detect_system_cli_migration() -> Option<SystemCliMigration> {
+    let dir = PathBuf::from(LEGACY_INSTALL_DIR);
+    let cli_name = cli_command_name();
+    let marker_name = format!(".nteract-managed-{}", cli_name);
+
+    if !dir.join(&marker_name).exists() {
+        return None;
+    }
+
+    let runt_path = dir.join(cli_name);
+
+    // Symlinks pointing into an nteract bundle are fine and don't need migration.
+    if !runt_path.exists() || runt_path.is_symlink() {
+        return None;
+    }
+
+    let nb_name = cli_notebook_alias_name();
+
+    Some(SystemCliMigration {
+        dir: dir.to_string_lossy().to_string(),
+        cli_name: cli_name.to_string(),
+        nb_name: nb_name.to_string(),
+    })
+}
+
+#[cfg(not(unix))]
+pub fn detect_system_cli_migration() -> Option<SystemCliMigration> {
+    None
+}
+
+/// Replace the system-wide CLI copy with a symlink to the app bundle binary.
+/// Requires privilege escalation (one-time).
+#[cfg(target_os = "macos")]
+pub fn migrate_system_cli_to_symlink(app: &tauri::AppHandle) -> Result<(), String> {
+    let bundled_runt = get_bundled_runt_path(app)
+        .ok_or_else(|| "Could not find bundled runt binary".to_string())?;
+
+    let dir = PathBuf::from(LEGACY_INSTALL_DIR);
+    let cli_name = cli_command_name();
+    let nb_name = cli_notebook_alias_name();
+    let marker_name = format!(".nteract-managed-{}", cli_name);
+
+    let shell_cmd = format!(
+        "rm -f {runt} {nb} {marker} && ln -s {src} {runt}",
+        src = shell_escape(bundled_runt.to_string_lossy().as_ref()),
+        runt = shell_escape(dir.join(cli_name).to_string_lossy().as_ref()),
+        nb = shell_escape(dir.join(nb_name).to_string_lossy().as_ref()),
+        marker = shell_escape(dir.join(&marker_name).to_string_lossy().as_ref()),
+    );
+
+    escalate_shell_command(&shell_cmd)
+}
+
+/// Remove the system-wide CLI entirely. Requires privilege escalation.
+#[cfg(target_os = "macos")]
+pub fn remove_system_cli(app: &tauri::AppHandle) -> Result<(), String> {
+    let _ = app;
+    let dir = PathBuf::from(LEGACY_INSTALL_DIR);
+    let cli_name = cli_command_name();
+    let nb_name = cli_notebook_alias_name();
+    let marker_name = format!(".nteract-managed-{}", cli_name);
+
+    let shell_cmd = format!(
+        "rm -f {runt} {nb} {marker}",
+        runt = shell_escape(dir.join(cli_name).to_string_lossy().as_ref()),
+        nb = shell_escape(dir.join(nb_name).to_string_lossy().as_ref()),
+        marker = shell_escape(dir.join(&marker_name).to_string_lossy().as_ref()),
+    );
+
+    escalate_shell_command(&shell_cmd)
+}
+
+/// Replace the system-wide CLI copy with a symlink to the app bundle binary.
+#[cfg(target_os = "linux")]
+pub fn migrate_system_cli_to_symlink(app: &tauri::AppHandle) -> Result<(), String> {
+    let bundled_runt = get_bundled_runt_path(app)
+        .ok_or_else(|| "Could not find bundled runt binary".to_string())?;
+
+    let dir = PathBuf::from(LEGACY_INSTALL_DIR);
+    let cli_name = cli_command_name();
+    let nb_name = cli_notebook_alias_name();
+    let marker_name = format!(".nteract-managed-{}", cli_name);
+
+    let shell_cmd = format!(
+        "rm -f {runt} {nb} {marker} && ln -s {src} {runt}",
+        src = shell_escape(bundled_runt.to_string_lossy().as_ref()),
+        runt = shell_escape(dir.join(cli_name).to_string_lossy().as_ref()),
+        nb = shell_escape(dir.join(nb_name).to_string_lossy().as_ref()),
+        marker = shell_escape(dir.join(&marker_name).to_string_lossy().as_ref()),
+    );
+
+    escalate_shell_command(&shell_cmd)
+}
+
+/// Remove the system-wide CLI entirely.
+#[cfg(target_os = "linux")]
+pub fn remove_system_cli(app: &tauri::AppHandle) -> Result<(), String> {
+    let _ = app;
+    let dir = PathBuf::from(LEGACY_INSTALL_DIR);
+    let cli_name = cli_command_name();
+    let nb_name = cli_notebook_alias_name();
+    let marker_name = format!(".nteract-managed-{}", cli_name);
+
+    let shell_cmd = format!(
+        "rm -f {runt} {nb} {marker}",
+        runt = shell_escape(dir.join(cli_name).to_string_lossy().as_ref()),
+        nb = shell_escape(dir.join(nb_name).to_string_lossy().as_ref()),
+        marker = shell_escape(dir.join(&marker_name).to_string_lossy().as_ref()),
+    );
+
+    escalate_shell_command(&shell_cmd)
+}
+
+#[cfg(target_os = "windows")]
+pub fn migrate_system_cli_to_symlink(_app: &tauri::AppHandle) -> Result<(), String> {
+    Err("Symlink migration is not supported on Windows".to_string())
+}
+
+#[cfg(target_os = "windows")]
+pub fn remove_system_cli(_app: &tauri::AppHandle) -> Result<(), String> {
+    Err("System CLI removal is not supported on Windows".to_string())
+}
+
+/// Escape a string for use inside a single-quoted shell argument.
+#[cfg(unix)]
+fn shell_escape(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Run a shell command with OS privilege escalation.
+#[cfg(target_os = "macos")]
+fn escalate_shell_command(shell_cmd: &str) -> Result<(), String> {
+    let temp_script =
+        std::env::temp_dir().join(format!("nteract-cli-migrate-{}.sh", std::process::id()));
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o700)
+            .open(&temp_script)
+            .or_else(|_| {
+                let _ = fs::remove_file(&temp_script);
+                fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o700)
+                    .open(&temp_script)
+            })
+            .map_err(|e| format!("Failed to create migration script: {}", e))?;
+        file.write_all(shell_cmd.as_bytes())
+            .map_err(|e| format!("Failed to write migration script: {}", e))?;
+    }
+
+    let escaped_script_path = temp_script
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    let output = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(format!(
+            "do shell script \"sh '{escaped_script_path}'\" with administrator privileges"
+        ))
+        .output()
+        .map_err(|e| format!("Failed to run privilege escalation: {}", e))?;
+
+    let _ = fs::remove_file(&temp_script);
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("User canceled")
+            || stderr.contains("user canceled")
+            || stderr.contains("-128")
+        {
+            return Err("Cancelled.".to_string());
+        }
+        return Err(format!("Privilege escalation failed: {}", stderr.trim()));
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn escalate_shell_command(shell_cmd: &str) -> Result<(), String> {
+    let output = std::process::Command::new("pkexec")
+        .arg("sh")
+        .arg("-c")
+        .arg(shell_cmd)
+        .output()
+        .map_err(|e| format!("Failed to run privilege escalation: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("dismissed") || stderr.contains("Not authorized") {
+            return Err("Cancelled.".to_string());
+        }
+        return Err(format!("Privilege escalation failed: {}", stderr.trim()));
+    }
+
     Ok(())
 }
 

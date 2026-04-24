@@ -1441,23 +1441,32 @@ async fn run_upgrade(
             Err(e) => log::warn!("[upgrade] Local CLI re-install failed (non-fatal): {}", e),
         }
     }
-    // System-wide installs are copies (not symlinks), so they need updating too.
-    if cli_install::is_cli_installed_system() {
-        match cli_install::install_cli_system(&app) {
-            Ok(()) => log::info!("[upgrade] System-wide CLI re-installed successfully"),
-            Err(e) => log::warn!(
-                "[upgrade] System-wide CLI re-install failed (non-fatal): {}",
-                e
-            ),
-        }
-    }
-
     // Step 6: Signal ready
     app.emit("upgrade:progress", UpgradeProgress::Ready)
         .map_err(|e| e.to_string())?;
 
     log::info!("[upgrade] Upgrade complete, ready for restart");
     Ok(())
+}
+
+/// Check if there is a system-wide CLI install that should be migrated.
+#[tauri::command]
+fn detect_cli_migration() -> Option<cli_install::SystemCliMigration> {
+    cli_install::detect_system_cli_migration()
+}
+
+/// Replace the system-wide CLI copy at `/usr/local/bin` with a symlink to the
+/// app bundle. Requires one-time privilege escalation.
+#[tauri::command]
+fn migrate_cli_to_symlink(app: tauri::AppHandle) -> Result<(), String> {
+    cli_install::migrate_system_cli_to_symlink(&app)
+}
+
+/// Remove the system-wide CLI from `/usr/local/bin` entirely.
+/// Requires one-time privilege escalation.
+#[tauri::command]
+fn remove_system_cli(app: tauri::AppHandle) -> Result<(), String> {
+    cli_install::remove_system_cli(&app)
 }
 
 /// Ensure the daemon is running using Tauri's sidecar API.
@@ -4210,6 +4219,9 @@ pub fn run(
             get_upgrade_notebook_status,
             abort_kernel_for_upgrade,
             run_upgrade,
+            detect_cli_migration,
+            migrate_cli_to_symlink,
+            remove_system_cli,
             // pyproject.toml discovery
             detect_pyproject,
             get_pyproject_dependencies,
@@ -4746,28 +4758,9 @@ pub fn run(
                 crate::menu::MENU_INSTALL_CLI => {
                     let app_handle = app.clone();
                     tauri::async_runtime::spawn(async move {
-                        // Show confirmation dialog — this requires admin privileges
-                        let install_dir = crate::cli_install::SYSTEM_INSTALL_DIR;
-                        let confirmed =
-                            tauri_plugin_dialog::DialogExt::dialog(&app_handle)
-                                .message(format!(
-                                    "This will install the CLI commands to {install_dir}, which requires administrator privileges.",
-                                ))
-                                .title("Install CLI?")
-                                .kind(tauri_plugin_dialog::MessageDialogKind::Info)
-                                .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCancelCustom(
-                                    "Install".to_string(),
-                                    "Cancel".to_string(),
-                                ))
-                                .blocking_show();
-
-                        if !confirmed {
-                            return;
-                        }
-
                         let result = tauri::async_runtime::spawn_blocking({
                             let app_handle = app_handle.clone();
-                            move || crate::cli_install::install_cli_system(&app_handle)
+                            move || crate::cli_install::install_cli(&app_handle)
                         })
                         .await;
 
@@ -4777,7 +4770,7 @@ pub fn run(
                                 let cli_cmd = runt_workspace::cli_command_name();
                                 let nb_cmd = runt_workspace::cli_notebook_alias_name();
                                 let success_message = format!(
-                                    "The '{cli_cmd}' and '{nb_cmd}' commands have been installed to {install_dir}.\n\nOpen a new terminal and run: {cli_cmd} --help"
+                                    "The '{cli_cmd}' and '{nb_cmd}' commands have been installed to ~/.local/bin.\n\nOpen a new terminal and run: {cli_cmd} --help"
                                 );
                                 let _ = tauri_plugin_dialog::DialogExt::dialog(&app_handle)
                                     .message(success_message)
@@ -4787,13 +4780,11 @@ pub fn run(
                             }
                             Ok(Err(e)) => {
                                 log::error!("[cli_install] CLI installation failed: {}", e);
-                                if e != "Installation cancelled." {
-                                    let _ = tauri_plugin_dialog::DialogExt::dialog(&app_handle)
-                                        .message(format!("Failed to install CLI: {}", e))
-                                        .title("Installation Failed")
-                                        .kind(tauri_plugin_dialog::MessageDialogKind::Error)
-                                        .blocking_show();
-                                }
+                                let _ = tauri_plugin_dialog::DialogExt::dialog(&app_handle)
+                                    .message(format!("Failed to install CLI: {}", e))
+                                    .title("Installation Failed")
+                                    .kind(tauri_plugin_dialog::MessageDialogKind::Error)
+                                    .blocking_show();
                             }
                             Err(e) => {
                                 log::error!("[cli_install] CLI install task panicked: {}", e);
