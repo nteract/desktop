@@ -118,7 +118,8 @@ export function free(handle) {
 }
 
 /**
- * Get a cell value as f64 (for numeric sorting/comparison). Returns NaN for non-numeric or null.
+ * Get a cell value as f64. Returns NaN for null or unsupported types.
+ * Handles numeric types and timestamps (as epoch milliseconds).
  * @param {number} handle
  * @param {number} row
  * @param {number} col
