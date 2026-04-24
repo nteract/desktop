@@ -648,13 +648,13 @@ pub async fn show_notebook(
     server: &NteractMcp,
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
-    // Resolve notebook_id from param or current session
-    let target = match arg_str(request, "notebook_id") {
-        Some(id) => id.to_string(),
+    // Resolve notebook_id (and optional path) from param or current session
+    let (target, session_path) = match arg_str(request, "notebook_id") {
+        Some(id) => (id.to_string(), None),
         None => {
             let session = server.session.read().await;
             match session.as_ref() {
-                Some(s) => s.notebook_id.clone(),
+                Some(s) => (s.notebook_id.clone(), s.notebook_path.clone()),
                 None => {
                     return tool_error(
                         "No notebook_id provided and no active session. \
@@ -672,19 +672,16 @@ pub async fn show_notebook(
         .list_rooms()
         .await
         .map_err(|e| McpError::internal_error(format!("Failed to list notebooks: {e}"), None))?;
-    if !rooms.iter().any(|r| r.notebook_id == target) {
+    let room = rooms.iter().find(|r| r.notebook_id == target);
+    if room.is_none() {
         return tool_error(&format!(
             "Notebook '{}' is not currently running. \
              Use list_active_notebooks() to see active notebooks.",
             target
         ));
     }
-
-    let is_ephemeral = rooms
-        .iter()
-        .find(|r| r.notebook_id == target)
-        .map(|r| r.ephemeral)
-        .unwrap_or(false);
+    let room = room.unwrap();
+    let is_ephemeral = room.ephemeral;
 
     if !has_display() {
         let mut result = serde_json::json!({
@@ -700,11 +697,18 @@ pub async fn show_notebook(
         return tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default());
     }
 
-    // Launch the app using the binary's build channel.
-    // NOTE: If RUNTIMED_SOCKET_PATH points at a different channel's daemon,
-    // this may open the wrong app. That's a known dev-only edge case.
-    let is_file_backed = std::path::Path::new(&target).is_absolute();
-    if is_file_backed {
+    // Resolve the on-disk path: prefer room path (authoritative), then session
+    // path, then fall back to the target string if it looks like a file path.
+    let resolved_path = room
+        .notebook_path
+        .as_deref()
+        .or(session_path.as_deref())
+        .filter(|p| std::path::Path::new(p).is_absolute());
+
+    if let Some(path) = resolved_path {
+        runt_workspace::open_notebook_app(Some(std::path::Path::new(path)), &[])
+            .map_err(|e| McpError::internal_error(format!("Failed to open app: {e}"), None))?;
+    } else if std::path::Path::new(&target).is_absolute() {
         runt_workspace::open_notebook_app(Some(std::path::Path::new(&target)), &[])
             .map_err(|e| McpError::internal_error(format!("Failed to open app: {e}"), None))?;
     } else {

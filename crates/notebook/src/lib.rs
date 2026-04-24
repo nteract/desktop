@@ -742,9 +742,7 @@ async fn initialize_notebook_sync_create(
         cell_count: info.cell_count,
         needs_trust_approval: info.needs_trust_approval,
         ephemeral: info.ephemeral,
-        // Create mode has no on-disk path. If the room was created from a
-        // restored untitled-session snapshot it still has no file backing.
-        notebook_path: None,
+        notebook_path: info.notebook_path.clone(),
         runtime: Some(runtime),
     };
 

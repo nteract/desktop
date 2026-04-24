@@ -1910,6 +1910,7 @@ impl Daemon {
                 needs_trust_approval: false,
                 error: Some(error),
                 ephemeral: false,
+                notebook_path: None,
             };
             send_json_frame(writer, &response).await?;
             Ok(())
@@ -2168,6 +2169,7 @@ impl Daemon {
             needs_trust_approval,
             error: None,
             ephemeral: false,
+            notebook_path: Some(path.clone()),
         };
         send_json_frame(&mut writer, &response).await?;
 
@@ -2306,6 +2308,7 @@ impl Daemon {
                 needs_trust_approval: false,
                 error: Some(format!("Failed to create notebook: {}", e)),
                 ephemeral: false,
+                notebook_path: None,
             };
             send_json_frame(&mut writer, &response).await?;
             let _ = tokio::io::copy(&mut reader, &mut tokio::io::sink()).await;
@@ -2322,6 +2325,13 @@ impl Daemon {
         } else {
             (connection::PROTOCOL_V2, 2)
         };
+        let notebook_path = room
+            .identity
+            .path
+            .read()
+            .await
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string());
         let response = NotebookConnectionInfo {
             protocol: proto_str.to_string(),
             protocol_version: Some(proto_ver),
@@ -2331,6 +2341,7 @@ impl Daemon {
             needs_trust_approval: false,
             error: None,
             ephemeral,
+            notebook_path,
         };
         send_json_frame(&mut writer, &response).await?;
 
@@ -2860,6 +2871,14 @@ impl Daemon {
                         .map(|(kt, es, st)| (Some(kt), Some(es), Some(st)))
                         .unwrap_or((None, None, None));
 
+                    let notebook_path = room
+                        .identity
+                        .path
+                        .read()
+                        .await
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().to_string());
+
                     room_infos.push(crate::protocol::RoomInfo {
                         notebook_id: notebook_id.clone(),
                         active_peers: room
@@ -2878,6 +2897,7 @@ impl Daemon {
                             .identity
                             .is_ephemeral
                             .load(std::sync::atomic::Ordering::Relaxed),
+                        notebook_path,
                     });
                 }
                 Response::RoomsList { rooms: room_infos }

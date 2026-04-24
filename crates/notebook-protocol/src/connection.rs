@@ -590,6 +590,10 @@ pub struct NotebookConnectionInfo {
     /// Whether this notebook is ephemeral (in-memory only, no persistence).
     #[serde(default)]
     pub ephemeral: bool,
+    /// On-disk path when the room is file-backed. Populated by `CreateNotebook`
+    /// when `notebook_id_hint` resolves to a room that already has a path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notebook_path: Option<String>,
 }
 
 /// Frame types for notebook sync connections.
@@ -1069,6 +1073,7 @@ mod tests {
             needs_trust_approval: false,
             error: None,
             ephemeral: false,
+            notebook_path: None,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert_eq!(
@@ -1086,6 +1091,7 @@ mod tests {
             needs_trust_approval: false,
             error: None,
             ephemeral: false,
+            notebook_path: None,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains(&format!(r#""protocol_version":{}"#, PROTOCOL_VERSION)));
@@ -1101,6 +1107,7 @@ mod tests {
             needs_trust_approval: true,
             error: None,
             ephemeral: false,
+            notebook_path: None,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains(r#""needs_trust_approval":true"#));
@@ -1115,9 +1122,30 @@ mod tests {
             needs_trust_approval: false,
             error: Some("File not found".into()),
             ephemeral: false,
+            notebook_path: None,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains(r#""error":"File not found""#));
+
+        // With notebook_path
+        let info = NotebookConnectionInfo {
+            protocol: "v2".into(),
+            protocol_version: None,
+            daemon_version: None,
+            notebook_id: "550e8400-e29b-41d4-a716-446655440000".into(),
+            cell_count: 5,
+            needs_trust_approval: false,
+            error: None,
+            ephemeral: false,
+            notebook_path: Some("/home/user/notebook.ipynb".into()),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains(r#""notebook_path":"/home/user/notebook.ipynb""#));
+
+        // Backward compat: deserialize without notebook_path
+        let old_json = r#"{"protocol":"v2","notebook_id":"abc","cell_count":1,"needs_trust_approval":false,"ephemeral":false}"#;
+        let info: NotebookConnectionInfo = serde_json::from_str(old_json).unwrap();
+        assert!(info.notebook_path.is_none());
     }
 
     #[tokio::test]
