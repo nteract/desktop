@@ -19,6 +19,7 @@ serde = { workspace = true }
 serde-wasm-bindgen = "0.6"
 bytes = { workspace = true }
 chrono = { version = "0.4", default-features = false }
+chrono-tz = "0.10"
 
 arrow = { version = "54", default-features = false, features = ["ipc", "ffi"] }
 arrow-cast = { version = "54", default-features = false }

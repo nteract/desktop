@@ -27,6 +27,7 @@ struct DataStore {
     num_cols: usize,
     col_names: Vec<String>,
     col_types: Vec<String>, // "numeric", "categorical", "boolean", "timestamp"
+    col_timezones: Vec<Option<String>>,
     /// Original column arrays saved before casting, keyed by column index.
     /// Used to restore original data when casting back to the original type.
     original_columns: HashMap<usize, (Vec<arrow::array::ArrayRef>, String)>,
@@ -44,6 +45,13 @@ impl DataStore {
         };
         let local_row = row - self.batch_offsets[batch_idx];
         Some((batch_idx, local_row))
+    }
+
+    fn extract_timezone(dt: &DataType) -> Option<String> {
+        match dt {
+            DataType::Timestamp(_, Some(tz)) if !tz.is_empty() => Some(tz.to_string()),
+            _ => None,
+        }
     }
 
     fn detect_col_type(dt: &DataType) -> &'static str {
@@ -104,6 +112,11 @@ fn store_batches(batches: Vec<RecordBatch>, schema: &arrow::datatypes::Schema) -
         .iter()
         .map(|f| DataStore::detect_col_type(f.data_type()).to_string())
         .collect();
+    let col_timezones: Vec<Option<String>> = schema
+        .fields()
+        .iter()
+        .map(|f| DataStore::extract_timezone(f.data_type()))
+        .collect();
 
     let mut batch_offsets = Vec::new();
     let mut total_rows = 0;
@@ -129,6 +142,7 @@ fn store_batches(batches: Vec<RecordBatch>, schema: &arrow::datatypes::Schema) -
                 num_cols,
                 col_names,
                 col_types,
+                col_timezones,
                 original_columns: HashMap::new(),
             },
         );
