@@ -283,6 +283,42 @@ fn bare_package_name(dep: &str) -> Option<&str> {
     Some(trimmed)
 }
 
+/// Extract the package name from a conda dependency specifier, stripping
+/// channel qualifiers (`conda-forge::numpy`) and version constraints
+/// (`numpy>=1.24`).  Returns the bare, untrimmed name suitable for
+/// [`normalize_package_name`].
+///
+/// Examples:
+/// - `"numpy"` → `Some("numpy")`
+/// - `"numpy>=1.24"` → `Some("numpy")`
+/// - `"conda-forge::numpy>=1.24"` → `Some("numpy")`
+/// - `"conda-forge::numpy"` → `Some("numpy")`
+/// - `""` → `None`
+fn extract_conda_package_name(dep: &str) -> Option<&str> {
+    let trimmed = dep.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // Strip channel qualifier (e.g. "conda-forge::numpy" → "numpy")
+    let after_channel = match trimmed.find("::") {
+        Some(pos) => &trimmed[pos + 2..],
+        None => trimmed,
+    };
+    // Strip version/specifier suffix
+    let specifier_chars = ['>', '<', '=', '!', '~', '[', ';', '@'];
+    let name = match after_channel.find(|c: char| specifier_chars.contains(&c) || c.is_whitespace())
+    {
+        Some(pos) => &after_channel[..pos],
+        None => after_channel,
+    };
+    let name = name.trim();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
+}
+
 /// Normalize a package name for comparison: lowercase, replace `_` with `-`.
 fn normalize_package_name(name: &str) -> String {
     name.to_lowercase().replace('_', "-")
@@ -415,29 +451,10 @@ pub fn check_conda_inline_cache(deps: &[String], channels: &[String]) -> Option<
     if !deps.is_empty() {
         let installed = conda_meta_package_names(&env_path);
         for dep in deps {
-            let Some(bare) = bare_package_name(dep) else {
-                // Has a version specifier — extract the name portion for matching.
-                let name = dep
-                    .split(|c: char| {
-                        ['>', '<', '=', '!', '~', '[', ';', '@'].contains(&c) || c.is_whitespace()
-                    })
-                    .next()
-                    .unwrap_or("")
-                    .trim();
-                if name.is_empty() {
-                    continue;
-                }
-                if !installed.contains(&normalize_package_name(name)) {
-                    tracing::warn!(
-                        "[inline-env] Conda cache {:?} missing requested package {:?} — evicting stale cache",
-                        env_path, dep
-                    );
-                    let _ = std::fs::remove_dir_all(&env_path);
-                    return None;
-                }
+            let Some(name) = extract_conda_package_name(dep) else {
                 continue;
             };
-            if !installed.contains(&normalize_package_name(bare)) {
+            if !installed.contains(&normalize_package_name(name)) {
                 tracing::warn!(
                     "[inline-env] Conda cache {:?} missing requested package {:?} — evicting stale cache",
                     env_path, dep
@@ -519,6 +536,39 @@ mod tests {
         assert_eq!(bare_package_name("pandas[sql]"), None);
         assert_eq!(bare_package_name("pandas ; python_version >= '3.8'"), None);
         assert_eq!(bare_package_name("pandas @ https://example.com"), None);
+    }
+
+    #[test]
+    fn test_extract_conda_package_name() {
+        // Bare names
+        assert_eq!(extract_conda_package_name("numpy"), Some("numpy"));
+        assert_eq!(extract_conda_package_name("pandas"), Some("pandas"));
+        assert_eq!(extract_conda_package_name("  scipy  "), Some("scipy"));
+        assert_eq!(extract_conda_package_name(""), None);
+
+        // Version specifiers
+        assert_eq!(extract_conda_package_name("numpy>=1.24"), Some("numpy"));
+        assert_eq!(extract_conda_package_name("pandas==2.0.0"), Some("pandas"));
+        assert_eq!(extract_conda_package_name("pandas<3"), Some("pandas"));
+        assert_eq!(extract_conda_package_name("pandas~=2.0"), Some("pandas"));
+
+        // Channel qualifiers
+        assert_eq!(
+            extract_conda_package_name("conda-forge::numpy"),
+            Some("numpy")
+        );
+        assert_eq!(
+            extract_conda_package_name("conda-forge::numpy>=1.24"),
+            Some("numpy")
+        );
+        assert_eq!(extract_conda_package_name("defaults::scipy"), Some("scipy"));
+
+        // Extras / markers
+        assert_eq!(extract_conda_package_name("pandas[sql]"), Some("pandas"));
+        assert_eq!(
+            extract_conda_package_name("pandas ; python_version >= '3.8'"),
+            Some("pandas")
+        );
     }
 
     #[test]
