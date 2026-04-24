@@ -2180,7 +2180,8 @@ async fn bench_streaming_load_phases() {
     let read_elapsed = t0.elapsed();
 
     let t_parse = std::time::Instant::now();
-    let (cells, _metadata, _attachments) = parse_notebook_jiter(&bytes).unwrap();
+    let parsed = parse_notebook_jiter(&bytes).unwrap();
+    let cells = parsed.cells;
     let parse_elapsed = t_parse.elapsed();
 
     eprintln!(
