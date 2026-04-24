@@ -276,17 +276,24 @@ fn timestamp_cell_ms(column: &dyn Array, local_row: usize) -> Option<i64> {
     }
 }
 
-/// Format epoch milliseconds as "Apr 23, 2026", respecting the column timezone.
-fn format_timestamp_ms(ms: i64, tz: Option<&str>) -> String {
+/// Format epoch milliseconds for display, respecting the column timezone.
+/// Date-only types (Date32/Date64) use "Apr 23, 2026".
+/// Timestamp types with time precision use "Apr 23, 2026, 7:30 AM".
+fn format_timestamp_ms(ms: i64, tz: Option<&str>, has_time: bool) -> String {
     use chrono_tz::Tz;
     let secs = ms / 1000;
     let nanos = ((ms % 1000) * 1_000_000) as u32;
     let Some(utc_dt) = DateTime::from_timestamp(secs, nanos) else {
         return ms.to_string();
     };
+    let fmt = if has_time {
+        "%b %-d, %Y, %-I:%M %p"
+    } else {
+        "%b %-d, %Y"
+    };
     match tz.and_then(|s| s.parse::<Tz>().ok()) {
-        Some(tz) => utc_dt.with_timezone(&tz).format("%b %-d, %Y").to_string(),
-        None => utc_dt.format("%b %-d, %Y").to_string(),
+        Some(tz) => utc_dt.with_timezone(&tz).format(fmt).to_string(),
+        None => utc_dt.format(fmt).to_string(),
     }
 }
 
@@ -312,7 +319,8 @@ pub fn get_cell_string(handle: u32, row: usize, col: usize) -> Result<String, Js
         // Timestamps → human-readable date in the column's timezone (or UTC)
         if let Some(ms) = timestamp_cell_ms(column.as_ref(), local_row) {
             let tz = s.col_timezones.get(col).and_then(|t| t.as_deref());
-            return format_timestamp_ms(ms, tz);
+            let has_time = matches!(column.data_type(), DataType::Timestamp(_, _));
+            return format_timestamp_ms(ms, tz, has_time);
         }
 
         match column.data_type() {
@@ -1717,5 +1725,58 @@ fn get_string_value(arr: &dyn Array, row: usize) -> String {
             })
             .unwrap_or_default(),
         _ => format!("{:?}", arr.as_any()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_date_only() {
+        let ms = 1_776_902_400_000; // 2026-04-23 00:00:00 UTC
+        assert_eq!(format_timestamp_ms(ms, None, false), "Apr 23, 2026");
+    }
+
+    #[test]
+    fn format_datetime_utc() {
+        let ms = 1_776_929_400_000; // 2026-04-23 07:30:00 UTC
+        assert_eq!(format_timestamp_ms(ms, None, true), "Apr 23, 2026, 7:30 AM");
+    }
+
+    #[test]
+    fn format_datetime_with_timezone() {
+        let ms = 1_776_954_600_000; // 2026-04-23 14:30:00 UTC = 07:30 AM PDT
+        assert_eq!(
+            format_timestamp_ms(ms, Some("America/Los_Angeles"), true),
+            "Apr 23, 2026, 7:30 AM"
+        );
+    }
+
+    #[test]
+    fn format_date_with_timezone_shifts_day() {
+        // 2026-04-23 03:00:00 UTC = Apr 22 8:00 PM in LA
+        let ms = 1_776_902_400_000 + 3 * 3_600_000;
+        assert_eq!(
+            format_timestamp_ms(ms, Some("America/Los_Angeles"), false),
+            "Apr 22, 2026"
+        );
+    }
+
+    #[test]
+    fn format_midnight_utc_datetime() {
+        let ms = 1_776_902_400_000; // 2026-04-23 00:00:00 UTC
+        assert_eq!(
+            format_timestamp_ms(ms, None, true),
+            "Apr 23, 2026, 12:00 AM"
+        );
+    }
+
+    #[test]
+    fn format_invalid_timestamp() {
+        assert_eq!(
+            format_timestamp_ms(i64::MAX, None, false),
+            i64::MAX.to_string()
+        );
     }
 }
