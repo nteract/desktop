@@ -3284,6 +3284,9 @@ pub(crate) fn extract_env_yml_package_names(content: &str) -> EnvYmlPackageNames
     };
 
     let Ok(env) = EnvironmentYaml::from_yaml_str(content) else {
+        warn!(
+            "[notebook-sync] Failed to parse environment.yml for dedup; skipping duplicate check"
+        );
         return result;
     };
 
