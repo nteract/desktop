@@ -45,11 +45,12 @@ function isInIframe(): boolean {
  * Platforms can override this with the `priority` prop.
  */
 export const DEFAULT_PRIORITY = [
-  // Rich formats first
-  "application/vnd.jupyter.widget-view+json",
-  // Our own rich traceback — must outrank text/plain and +json fallbacks
-  // so a display_data carrying both gets the rich component, not the tree.
+  // Our own rich traceback lives at the top — if we minted the MIME we
+  // trust it, and no reasonable kernel emits a traceback alongside a
+  // widget/plot/dataframe in the same output. Keeping it #1 also means
+  // the JSON-tree fallback never wins on a mistyped payload.
   "application/vnd.nteract.traceback+json",
+  "application/vnd.jupyter.widget-view+json",
   "application/vnd.plotly.v1+json",
   "application/vnd.vegalite.v6+json",
   "application/vnd.vegalite.v6.json",

@@ -196,8 +196,14 @@ describe("getSelectedMimeType", () => {
   });
 
   describe("DEFAULT_PRIORITY constant", () => {
-    it("has widget as highest priority", () => {
-      expect(DEFAULT_PRIORITY[0]).toBe("application/vnd.jupyter.widget-view+json");
+    it("has nteract traceback as highest priority", () => {
+      // We minted this MIME, so we trust it above everything else. Real
+      // kernels don't emit traceback alongside widget/plot/dataframe.
+      expect(DEFAULT_PRIORITY[0]).toBe("application/vnd.nteract.traceback+json");
+    });
+
+    it("places widget-view just after our traceback MIME", () => {
+      expect(DEFAULT_PRIORITY[1]).toBe("application/vnd.jupyter.widget-view+json");
     });
 
     it("has text/plain as lowest priority", () => {
