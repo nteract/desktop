@@ -1848,11 +1848,19 @@ pub(crate) async fn try_uv_pool_for_inline_deps(
     daemon: &std::sync::Arc<crate::daemon::Daemon>,
     progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler>,
 ) -> Result<(crate::PooledEnv, Vec<String>), ()> {
+    // The effective install set includes `dx` when `bootstrap_dx` is on.
+    // Using it for both the pool-compat check and the delta install
+    // keeps the env content consistent with the inline cache hash we
+    // rename to below — otherwise we'd cache a pool env under the
+    // bootstrap key without `dx` actually installed, and subsequent
+    // cache hits would silently fail `import dx` in the kernel.
+    let effective_deps = crate::inline_env::inline_deps_with_bootstrap(deps, bootstrap_dx);
+
     // Quick pre-check: if any dep has version specifiers, skip pool entirely
     // (avoids consuming a pool env we'd have to discard)
     let settings_packages = daemon.uv_pool_packages().await;
     if matches!(
-        crate::inline_env::compare_deps_to_pool(deps, &settings_packages),
+        crate::inline_env::compare_deps_to_pool(&effective_deps, &settings_packages),
         crate::inline_env::PoolDepRelation::Independent
     ) {
         debug!("[notebook-sync] UV inline deps have version constraints, skipping pool reuse");
@@ -1869,7 +1877,7 @@ pub(crate) async fn try_uv_pool_for_inline_deps(
     };
 
     let actual_packages = env.prewarmed_packages.clone();
-    let relation = crate::inline_env::compare_deps_to_pool(deps, &actual_packages);
+    let relation = crate::inline_env::compare_deps_to_pool(&effective_deps, &actual_packages);
 
     match relation {
         crate::inline_env::PoolDepRelation::Subset => {
