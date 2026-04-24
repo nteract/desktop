@@ -1150,7 +1150,7 @@ impl KernelConnection for JupyterKernel {
                                         continue;
                                     }
 
-                                    if let Some(_cid) = cell_id {
+                                    if let Some(cid) = cell_id.as_ref() {
                                         let _output_type = match &message.content {
                                             JupyterMessageContent::DisplayData(_) => "display_data",
                                             JupyterMessageContent::ExecuteResult(_) => {
@@ -1211,6 +1211,28 @@ impl KernelConnection for JupyterKernel {
                                             if let Err(e) = state_for_iopub.merge(&mut fork) {
                                                 warn!("[runtime-state] merge: {}", e);
                                             }
+                                        }
+
+                                        // Rich-traceback detection. A display_data or
+                                        // execute_result carrying TRACEBACK_MIME IS an error
+                                        // semantically — the launcher short-circuits
+                                        // `_showtraceback` and emits rich display_data instead
+                                        // of classic ErrorOutput. Without this, the runtime
+                                        // never flips `execution_had_error`, and
+                                        // `Execution.result().success` comes back true for
+                                        // failed cells. Route through the same CellError
+                                        // command the classic arm uses.
+                                        if matches!(
+                                            crate::user_error::UserErrorOutput::from_iopub(
+                                                &message.content
+                                            ),
+                                            Some(crate::user_error::UserErrorOutput::Rich(_))
+                                        ) {
+                                            let _ =
+                                                iopub_cmd_tx.try_send(QueueCommand::CellError {
+                                                    cell_id: cid.clone(),
+                                                    execution_id: eid,
+                                                });
                                         }
                                     }
                                 }

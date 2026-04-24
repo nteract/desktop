@@ -83,9 +83,9 @@ impl UserErrorOutput {
     ///
     /// Returns:
     /// - `Classic` for `ErrorOutput { ename, evalue, traceback }`
-    /// - `Rich`    for `DisplayData` / `ExecuteResult` whose `data`
-    ///             contains [`TRACEBACK_MIME`]
-    /// - `None`    otherwise
+    /// - `Rich` for `DisplayData` / `ExecuteResult` whose `data` contains
+    ///   [`TRACEBACK_MIME`]
+    /// - `None` otherwise
     ///
     /// This is the runtime agent's single entry point for deciding
     /// "did user code raise?" — both wire shapes route through it.
