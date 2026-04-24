@@ -694,4 +694,182 @@ mod tests {
         let rt = ue.to_rich().unwrap();
         assert_eq!(rt.frames.len(), 1);
     }
+
+    // ── Coverage gaps Codex flagged: document behavior explicitly ──
+
+    #[test]
+    fn chained_raise_from_parses_flat_with_separator_in_text() {
+        // `raise X() from Y()` produces two traceback segments joined by
+        // "The above exception was the direct cause of the following
+        // exception:". Our parser treats them flat — all File frames get
+        // captured, the last exception line wins, and the separator text
+        // survives in `rt.text` via build_paste_text.
+        let tb = vec![
+            "Traceback (most recent call last):".to_string(),
+            "  File \"/tmp/a.py\", line 1, in root_cause".to_string(),
+            "    raise ValueError(\"cause\")".to_string(),
+            "ValueError: cause".to_string(),
+            "".to_string(),
+            "The above exception was the direct cause of the following exception:".to_string(),
+            "".to_string(),
+            "Traceback (most recent call last):".to_string(),
+            "  File \"/tmp/b.py\", line 4, in outer".to_string(),
+            "    raise RuntimeError(\"wrapper\") from exc".to_string(),
+            "RuntimeError: wrapper".to_string(),
+        ];
+        let rt = parse_ansi_traceback("RuntimeError", "wrapper", &tb).unwrap();
+        assert_eq!(rt.frames.len(), 2);
+        assert_eq!(rt.frames[0].name, "root_cause");
+        assert_eq!(rt.frames[1].name, "outer");
+        // Outer exception (the one raised last) is what the user sees.
+        assert_eq!(rt.ename, "RuntimeError");
+        assert_eq!(rt.evalue, "wrapper");
+        // Separator preserved in the copy-ready text.
+        assert!(rt
+            .text
+            .contains("The above exception was the direct cause of the following exception:"));
+    }
+
+    #[test]
+    fn during_handling_separator_preserved_in_text() {
+        let tb = vec![
+            "Traceback (most recent call last):".to_string(),
+            "  File \"/tmp/a.py\", line 1, in first".to_string(),
+            "    raise ValueError(\"first\")".to_string(),
+            "ValueError: first".to_string(),
+            "".to_string(),
+            "During handling of the above exception, another exception occurred:".to_string(),
+            "".to_string(),
+            "Traceback (most recent call last):".to_string(),
+            "  File \"/tmp/b.py\", line 2, in second".to_string(),
+            "    raise RuntimeError(\"second\")".to_string(),
+            "RuntimeError: second".to_string(),
+        ];
+        let rt = parse_ansi_traceback("RuntimeError", "second", &tb).unwrap();
+        assert_eq!(rt.frames.len(), 2);
+        assert!(rt
+            .text
+            .contains("During handling of the above exception, another exception occurred:"));
+    }
+
+    #[test]
+    fn exception_group_falls_back_to_none_today() {
+        // Python 3.11 ExceptionGroup tracebacks prefix nested frames with
+        // `|`. Our parser doesn't recognize `|   File ...`, and
+        // `ExceptionGroup: ...` doesn't match the exception-line allowlist
+        // (`ExceptionGroup` doesn't end with Error/Warning/Exception/...).
+        // Documenting: today, ExceptionGroup-only tracebacks yield `None`,
+        // and the caller falls back to the Classic ANSI render. Revisit
+        // if/when we decide to natively support nested groups.
+        let tb = vec![
+            "  + Exception Group Traceback (most recent call last):".to_string(),
+            "  |   File \"/tmp/x.py\", line 1, in <module>".to_string(),
+            "  |     raise ExceptionGroup(\"wrap\", [ValueError(\"a\")])".to_string(),
+            "  | ExceptionGroup: wrap (1 sub-exception)".to_string(),
+            "  +-+---------------- 1 ----------------".to_string(),
+            "    | ValueError: a".to_string(),
+            "    +------------------------------------".to_string(),
+        ];
+        // ename/evalue not provided — we can't recover anything useful.
+        assert!(parse_ansi_traceback("", "", &tb).is_none());
+    }
+
+    #[test]
+    fn multiline_evalue_roundtrip_via_rich_to_classic() {
+        // Some Python exceptions carry embedded newlines in their message
+        // (e.g. AssertionError in pytest, SQLAlchemy chained contexts).
+        // A Rich variant's `to_classic()` must preserve them in the
+        // resulting traceback-array entries.
+        let rt = RichTraceback {
+            ename: "AssertionError".into(),
+            evalue: "line one\nline two\nline three".into(),
+            frames: vec![],
+            language: Some("python".into()),
+            text: "Traceback (most recent call last):\n  File \"/tmp/x.py\", line 1, in t\n    assert False, \"line one\\nline two\\nline three\"\nAssertionError: line one\nline two\nline three".into(),
+        };
+        let (ename, evalue, tb) = UserErrorOutput::Rich(rt).to_classic();
+        assert_eq!(ename, "AssertionError");
+        assert!(evalue.contains("line one") && evalue.contains("line three"));
+        // Interior blank lines would become empty strings in the array;
+        // here we just confirm the line count grew with the multi-line
+        // tail.
+        assert!(tb.len() >= 6);
+    }
+
+    #[test]
+    fn to_classic_drops_final_trailing_newline_only() {
+        // traceback.format_exception typically ends with a single
+        // trailing "\n". split_inclusive keeps the newline ON each
+        // entry; trim_end_matches('\n') strips exactly one trailing
+        // newline per line. The final empty-after-the-newline element
+        // split_inclusive produces for a trailing '\n' gets trimmed to
+        // empty string, which is an acceptable (empty) array entry.
+        let rt = RichTraceback {
+            ename: "E".into(),
+            evalue: "v".into(),
+            frames: vec![],
+            language: Some("python".into()),
+            text: "line1\nline2\n".into(),
+        };
+        let (_, _, tb) = UserErrorOutput::Rich(rt).to_classic();
+        // "line1\n" "line2\n" → ["line1", "line2"].
+        // `split_inclusive` does NOT produce a trailing empty entry for
+        // "foo\n", so we get exactly two strings.
+        assert_eq!(tb, vec!["line1".to_string(), "line2".to_string()]);
+    }
+
+    #[test]
+    fn from_nbformat_accepts_execute_result_rich_candidate() {
+        // `execute_result` with our MIME should also classify as Rich
+        // (some emitters use execute_result for the last-expression shape).
+        let payload = json!({
+            "ename": "KeyError",
+            "evalue": "'x'",
+            "frames": [{"filename": "/tmp/x.py", "lineno": 1, "name": "f"}],
+            "text": "KeyError: 'x'",
+        });
+        let v = json!({
+            "output_type": "execute_result",
+            "execution_count": 1,
+            "data": { TRACEBACK_MIME: payload },
+        });
+        let ue = UserErrorOutput::from_nbformat(&v).unwrap();
+        assert!(matches!(ue, UserErrorOutput::Rich(_)));
+    }
+
+    #[test]
+    fn pep657_caret_rails_dropped_from_structured_lines_kept_in_text() {
+        // Python 3.11+ adds fine-grained carets under the failing source
+        // line. IPython's traceback includes line numbers on source
+        // lines; the caret rail is an unnumbered sibling. Our parser:
+        //   - captures the numbered source line (with highlight),
+        //   - `is_caret_rail` drops the `~^^^` rail from structured
+        //     `frame.lines`,
+        //   - but the caret rail IS in `rt.text` since that comes from
+        //     the ANSI-stripped join of the original traceback.
+        let tb = vec![
+            "  File \"/tmp/x.py\", line 1, in <module>".to_string(),
+            "----> 1 a[b] + c".to_string(),
+            "        ~^^^".to_string(),
+            "TypeError: unsupported operand type(s)".to_string(),
+        ];
+        let rt = parse_ansi_traceback("TypeError", "unsupported operand type(s)", &tb).unwrap();
+        let lines = rt.frames[0]
+            .lines
+            .as_ref()
+            .expect("numbered source line should be captured");
+        // The source line is present and flagged as highlighted.
+        let src = lines
+            .iter()
+            .find(|l| l.lineno == 1)
+            .expect("line 1 source captured");
+        assert!(src.highlight);
+        assert!(src.source.contains("a[b]"));
+        // No structured-lines entry is a pure caret rail.
+        assert!(!lines
+            .iter()
+            .any(|l| l.source.trim().chars().all(|c| c == '^' || c == '~')));
+        // The caret rail is visible in the copy-ready text, though.
+        assert!(rt.text.contains("~^^^"));
+    }
 }
