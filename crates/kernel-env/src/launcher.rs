@@ -67,6 +67,12 @@ pub const LAUNCHER_FILES: &[(&str, &str)] = &[
         "_summary.py",
         include_str!("../../../python/nteract-kernel-launcher/nteract_kernel_launcher/_summary.py"),
     ),
+    (
+        "_traceback.py",
+        include_str!(
+            "../../../python/nteract-kernel-launcher/nteract_kernel_launcher/_traceback.py"
+        ),
+    ),
 ];
 
 /// Ask the target Python for its `purelib` site-packages directory.
