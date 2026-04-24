@@ -8,7 +8,7 @@
 //! task handles, request/response infrastructure, process lifecycle.  Does
 //! **not** hold queue, executing cell, or status — those live in `KernelState`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -587,9 +587,17 @@ impl KernelConnection for JupyterKernel {
         let mut process = cmd.kill_on_drop(true).spawn()?;
         drop(listeners);
 
-        // Capture kernel stderr for diagnostics
+        // Capture kernel stderr for diagnostics. Per-line logs go at debug (or
+        // warn when the line looks error-shaped), but we also ring-buffer the
+        // last N lines so the early-exit path can surface them in the error
+        // message. Without this, users on stable (default warn) saw only
+        // "exit status: 1" with no clue why the kernel died.
+        const STDERR_BUFFER_LINES: usize = 50;
+        let stderr_buffer: Arc<StdMutex<VecDeque<String>>> =
+            Arc::new(StdMutex::new(VecDeque::with_capacity(STDERR_BUFFER_LINES)));
         if let Some(stderr) = process.stderr.take() {
             let kid = kernel_id.clone();
+            let buffer = stderr_buffer.clone();
             spawn_best_effort("kernel-stderr", async move {
                 use tokio::io::{AsyncBufReadExt, BufReader};
                 let mut lines = BufReader::new(stderr).lines();
@@ -600,6 +608,11 @@ impl KernelConnection for JupyterKernel {
                     } else {
                         debug!("[kernel-stderr:{}] {}", kid, line);
                     }
+                    let mut queue = buffer.lock().unwrap();
+                    if queue.len() == STDERR_BUFFER_LINES {
+                        queue.pop_front();
+                    }
+                    queue.push_back(line);
                 }
             });
         }
@@ -619,13 +632,26 @@ impl KernelConnection for JupyterKernel {
         // Early crash detection: check if process exited during startup
         match process.try_wait() {
             Ok(Some(exit_status)) => {
+                // Give the stderr drain task a brief window to flush pipe
+                // buffers before we read what was captured.
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                let captured = {
+                    let queue = stderr_buffer.lock().unwrap();
+                    queue.iter().cloned().collect::<Vec<_>>().join("\n")
+                };
+                let stderr_tail = if captured.is_empty() {
+                    "(no stderr captured before exit)".to_string()
+                } else {
+                    format!("stderr tail:\n{}", captured)
+                };
                 error!(
-                    "[jupyter-kernel] Kernel process exited immediately: {} (kernel_id={})",
-                    exit_status, kernel_id
+                    "[jupyter-kernel] Kernel process exited immediately: {} (kernel_id={})\n{}",
+                    exit_status, kernel_id, stderr_tail
                 );
                 return Err(anyhow::anyhow!(
-                    "Kernel process exited immediately: {}",
-                    exit_status
+                    "Kernel process exited immediately: {}\n{}",
+                    exit_status,
+                    stderr_tail
                 ));
             }
             Ok(None) => {
