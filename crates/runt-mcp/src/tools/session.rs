@@ -672,15 +672,13 @@ pub async fn show_notebook(
         .list_rooms()
         .await
         .map_err(|e| McpError::internal_error(format!("Failed to list notebooks: {e}"), None))?;
-    let room = rooms.iter().find(|r| r.notebook_id == target);
-    if room.is_none() {
+    let Some(room) = rooms.iter().find(|r| r.notebook_id == target) else {
         return tool_error(&format!(
             "Notebook '{}' is not currently running. \
              Use list_active_notebooks() to see active notebooks.",
             target
         ));
-    }
-    let room = room.unwrap();
+    };
     let is_ephemeral = room.ephemeral;
 
     if !has_display() {
