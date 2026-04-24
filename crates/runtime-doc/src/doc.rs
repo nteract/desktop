@@ -105,6 +105,16 @@ pub struct KernelState {
     /// deserializes as `Some("")`, indicating "scaffolded but unset").
     #[serde(default)]
     pub error_reason: Option<String>,
+    /// Free-form details accompanying an error, shown to the user via
+    /// the frontend banner and exposed to MCP tools. Carries specifics
+    /// that don't fit in the typed [`error_reason`] enum — e.g., the
+    /// name of a conda env declared in environment.yml that isn't
+    /// built on this machine, with a suggested remediation command.
+    ///
+    /// `None` when the CRDT field is absent; empty string indicates
+    /// "scaffolded but unset" (same convention as `error_reason`).
+    #[serde(default)]
+    pub error_details: Option<String>,
 }
 
 impl Default for KernelState {
@@ -118,6 +128,7 @@ impl Default for KernelState {
             runtime_agent_id: String::new(),
             lifecycle: RuntimeLifecycle::NotStarted,
             error_reason: None,
+            error_details: None,
         }
     }
 }
@@ -294,6 +305,8 @@ impl RuntimeStateDoc {
             .expect("scaffold kernel.activity");
         doc.put(&kernel, "error_reason", "")
             .expect("scaffold kernel.error_reason");
+        doc.put(&kernel, "error_details", "")
+            .expect("scaffold kernel.error_details");
 
         // queue/
         let queue = doc
@@ -380,6 +393,8 @@ impl RuntimeStateDoc {
             .expect("scaffold kernel.activity");
         doc.put(&kernel, "error_reason", "")
             .expect("scaffold kernel.error_reason");
+        doc.put(&kernel, "error_details", "")
+            .expect("scaffold kernel.error_details");
 
         let queue = doc
             .put_object(&ROOT, "queue", ObjType::Map)
@@ -836,10 +851,28 @@ impl RuntimeStateDoc {
         lifecycle: &RuntimeLifecycle,
         reason: Option<KernelErrorReason>,
     ) -> Result<(), RuntimeStateError> {
+        self.set_lifecycle_with_error_details(lifecycle, reason, None)
+    }
+
+    /// Like [`set_lifecycle_with_error`] but also writes a free-form
+    /// `error_details` string alongside the typed reason. Use for errors
+    /// where the user-facing banner needs specifics that don't fit in
+    /// [`KernelErrorReason`] — e.g., the name of a missing conda env.
+    ///
+    /// - `Some(details)` records the explanation (non-empty recommended).
+    /// - `None` clears `error_details` to `""`.
+    pub fn set_lifecycle_with_error_details(
+        &mut self,
+        lifecycle: &RuntimeLifecycle,
+        reason: Option<KernelErrorReason>,
+        details: Option<&str>,
+    ) -> Result<(), RuntimeStateError> {
         self.set_lifecycle(lifecycle)?;
         let kernel = self.scaffold_map("kernel")?;
         let reason_str = reason.map(|r| r.as_str()).unwrap_or("");
         self.doc.put(&kernel, "error_reason", reason_str)?;
+        let details_str = details.unwrap_or("");
+        self.doc.put(&kernel, "error_details", details_str)?;
         Ok(())
     }
 
@@ -2009,6 +2042,7 @@ impl RuntimeStateDoc {
                             None
                         }
                     });
+                let error_details = automunge::read_str_if_present(&self.doc, k, "error_details");
                 KernelState {
                     status: status.to_string(),
                     starting_phase: starting_phase.to_string(),
@@ -2018,6 +2052,7 @@ impl RuntimeStateDoc {
                     runtime_agent_id: self.read_str(k, "runtime_agent_id"),
                     lifecycle,
                     error_reason,
+                    error_details,
                 }
             })
             .unwrap_or_default();

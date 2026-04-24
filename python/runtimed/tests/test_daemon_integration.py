@@ -2649,6 +2649,73 @@ class TestTrustApproval:
         assert info is not None
         assert info.needs_trust_approval is False
 
+    async def test_envyml_missing_env_surfaces_error_state(self, client, tmp_path):
+        """#2157: when environment.yml declares a conda env that isn't built
+        on this machine, the daemon must set RuntimeStateDoc lifecycle to
+        Error with a typed reason and descriptive details — NOT silently
+        fall back to a pool env, and NOT leave the kernel stuck in
+        `initializing` forever.
+        """
+        import asyncio
+        import json
+
+        from runtimed import KERNEL_ERROR_REASON
+
+        (tmp_path / "environment.yml").write_text(
+            "name: nteract-integration-probe-unbuilt-env-xyz\n"
+            "channels:\n  - conda-forge\n"
+            "dependencies:\n  - pandas\n"
+        )
+        nb_path = tmp_path / "notebook.ipynb"
+        nb_path.write_text(
+            json.dumps(
+                {
+                    "nbformat": 4,
+                    "nbformat_minor": 5,
+                    "metadata": {
+                        "kernelspec": {
+                            "name": "python3",
+                            "display_name": "Python 3",
+                            "language": "python",
+                        },
+                        "runt": {"schema_version": "1"},
+                    },
+                    "cells": [],
+                }
+            )
+        )
+
+        notebook = await client.open_notebook(str(nb_path))
+
+        # Poll briefly for the daemon to detect the miss and write the
+        # error lifecycle. Auto-launch runs in a spawned task, so the
+        # state might lag the open_notebook response.
+        deadline = asyncio.get_event_loop().time() + 5.0
+        kernel_state = None
+        while asyncio.get_event_loop().time() < deadline:
+            kernel_state = notebook.runtime.kernel
+            lifecycle = kernel_state.lifecycle
+            # RuntimeLifecycle serializes as {"lifecycle": "Error"} or the
+            # typed enum depending on binding — match both shapes.
+            if getattr(lifecycle, "lifecycle", None) == "Error" or str(lifecycle) == "Error":
+                break
+            await asyncio.sleep(0.1)
+
+        assert kernel_state is not None
+        lifecycle = kernel_state.lifecycle
+        lifecycle_tag = getattr(lifecycle, "lifecycle", None) or str(lifecycle)
+        assert lifecycle_tag == "Error", (
+            f"expected lifecycle=Error after env.yml miss; got {lifecycle_tag!r}"
+        )
+        assert kernel_state.error_reason == KERNEL_ERROR_REASON.CONDA_ENV_YML_MISSING
+        details = kernel_state.error_details or ""
+        assert "nteract-integration-probe-unbuilt-env-xyz" in details, (
+            f"error_details should name the declared env; got {details!r}"
+        )
+        assert "conda env create -f" in details, (
+            f"error_details should suggest the remediation; got {details!r}"
+        )
+
     async def test_envyml_channel_mismatch_blocks_heal(self, client, tmp_path):
         """Codex P1 on #2158: a notebook with matching conda deps but
         different inline channels must stay Untrusted. Without this, a

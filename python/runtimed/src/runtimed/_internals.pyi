@@ -281,6 +281,13 @@ class KernelState:
         CRDT key is absent; empty string when scaffolded but unset."""
         ...
     @property
+    def error_details(self) -> str | None:
+        """Free-form error details accompanying error_reason. None when
+        the CRDT key is absent; empty string when scaffolded but unset.
+        Carries specifics that don't fit the typed reason enum — e.g.,
+        the name of a missing conda env plus a remediation command."""
+        ...
+    @property
     def name(self) -> str:
         """Kernel display name (e.g. "charming-toucan")."""
         ...

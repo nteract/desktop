@@ -898,6 +898,33 @@ pub(crate) async fn resolve_metadata_snapshot(
     None
 }
 
+/// If the detected project file is an `environment.yml` whose declared
+/// conda env isn't built on this machine, return the declared env name.
+///
+/// The auto-launch path uses this to detect the miss upfront and set a
+/// specific error lifecycle (with `KernelErrorReason::CondaEnvYmlMissing`
+/// and human-readable details) instead of letting the runtime agent
+/// die with a generic "could not resolve conda environment prefix" and
+/// leaving the kernel stuck in `initializing` forever. Covers #2157.
+///
+/// Returns `None` when the project file isn't `environment.yml`, when
+/// the env is built and usable, or when env.yml has no `name:`/`prefix:`
+/// (the kernel path's existing error handles the shape-broken case).
+pub(crate) fn missing_conda_env_yml_name(
+    detected: &crate::project_file::DetectedProjectFile,
+) -> Option<String> {
+    if detected.kind != crate::project_file::ProjectFileKind::EnvironmentYml {
+        return None;
+    }
+    if crate::project_file::resolve_conda_env_prefix(&detected.path).is_some() {
+        return None;
+    }
+    crate::project_file::parse_environment_yml(&detected.path)
+        .ok()
+        .and_then(|c| c.name)
+        .or_else(|| Some(String::from("(unnamed)")))
+}
+
 /// Check whether a notebook's inline dependency list exactly matches a
 /// project file's dependency list (pyproject.toml / environment.yml /
 /// pixi.toml) in the notebook's own directory.
@@ -2475,6 +2502,35 @@ pub(crate) async fn auto_launch_kernel(
                     }
                 }
             }
+        }
+    }
+
+    // #2157: If the detected project file is an environment.yml whose
+    // declared conda env isn't built on this machine, surface a typed
+    // error instead of spawning a runtime agent that would die with
+    // "could not resolve conda environment prefix". Silent fallback to
+    // a pool env was rejected as user-hostile: env.yml users expect
+    // their declared deps to be installed, and a pool env lacks them.
+    // Writing Error + details gives the frontend enough to render a
+    // specific banner and MCP tools enough to report the miss.
+    if let Some(ref detected) = detected_project_file {
+        if let Some(env_name) = missing_conda_env_yml_name(detected) {
+            let yml_path = detected.path.display().to_string();
+            let details = format!(
+                "environment.yml declares conda env '{}', which is not built on this machine. Run: conda env create -f {}",
+                env_name, yml_path
+            );
+            warn!("[notebook-sync] {}", details);
+            if let Err(e) = room.state.with_doc(|sd| {
+                sd.set_lifecycle_with_error_details(
+                    &RuntimeLifecycle::Error,
+                    Some(runtime_doc::KernelErrorReason::CondaEnvYmlMissing),
+                    Some(&details),
+                )
+            }) {
+                warn!("[runtime-state] {}", e);
+            }
+            return;
         }
     }
 

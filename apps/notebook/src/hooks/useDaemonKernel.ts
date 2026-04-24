@@ -405,6 +405,7 @@ export function useDaemonKernel({
     statusKey,
     lifecycle: runtimeState.kernel.lifecycle,
     errorReason: runtimeState.kernel.error_reason,
+    errorDetails: runtimeState.kernel.error_details,
     queueState,
     kernelInfo,
     envSyncState,

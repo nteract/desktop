@@ -55,18 +55,26 @@ pub enum KernelErrorReason {
     /// Pixi-managed environment is missing the `ipykernel` package.
     /// `NotebookToolbar` gates its "install ipykernel" prompt on this.
     MissingIpykernel,
+    /// environment.yml declares a conda env (by `name:` or `prefix:`) that
+    /// isn't built on this machine. Daemon sets this instead of silently
+    /// falling back to a pool env, so the frontend can tell the user what
+    /// to do (`conda env create -f environment.yml`). Accompanying
+    /// `error_details` carries the env name.
+    CondaEnvYmlMissing,
 }
 
 impl KernelErrorReason {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::MissingIpykernel => "missing_ipykernel",
+            Self::CondaEnvYmlMissing => "conda_env_yml_missing",
         }
     }
 
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "missing_ipykernel" => Some(Self::MissingIpykernel),
+            "conda_env_yml_missing" => Some(Self::CondaEnvYmlMissing),
             _ => None,
         }
     }
