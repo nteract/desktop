@@ -47,6 +47,7 @@ pub mod stream_terminal;
 pub mod sync_server;
 pub mod task_supervisor;
 pub mod terminal_size;
+pub mod user_error;
 
 /// Get the daemon version string (e.g., "0.1.0-dev.10+abc123").
 /// Used for protocol version checking and debugging.
