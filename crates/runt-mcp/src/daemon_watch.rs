@@ -60,9 +60,11 @@ enum WatchDecision {
 /// Classify a `DaemonEvent` into the action the watch loop should take.
 ///
 /// `initial_target` is **not consumed** by `classify()`. The watch loop
-/// is responsible for clearing it after a successful rejoin. This ensures
-/// the target survives failed rejoin attempts and can be retried on the
-/// next `Connected` event.
+/// is responsible for clearing it — either after a successful rejoin, or
+/// when a tool call establishes a session first (making the handoff
+/// stale). This ensures the target survives failed rejoin attempts and
+/// can be retried on the next `Connected` event, but never overwrites a
+/// session that the user explicitly switched to.
 ///
 /// `was_disconnected` tracks whether the daemon connection was lost since
 /// the last successful join. This prevents the 10-second heartbeat
@@ -146,6 +148,17 @@ pub async fn watch(
         };
 
         let has_session = session.read().await.is_some();
+
+        // Once a tool call (connect_notebook / create_notebook) has
+        // established a live session, the proxy's initial handoff target
+        // is stale. Without this, a pending initial_target would win over
+        // the user's active session on the next Connected/Upgraded event,
+        // overwriting or clearing whatever notebook the user switched to.
+        if has_session && initial_target.is_some() {
+            info!("Clearing stale initial rejoin target (session already active)");
+            initial_target = None;
+        }
+
         match classify(&event, &initial_target, has_session, was_disconnected) {
             WatchDecision::Exit(code) => {
                 if let DaemonEvent::Upgraded { previous, current } = &event {
@@ -534,6 +547,41 @@ mod tests {
         assert_eq!(
             classify(&upgraded, &initial, false, false),
             WatchDecision::NoOp
+        );
+    }
+
+    /// Once a tool call (connect_notebook / create_notebook) establishes a
+    /// session, the proxy's initial handoff target becomes stale. The watch
+    /// loop clears initial_target before calling classify() when
+    /// has_session=true, so a heartbeat Connected with a stale handoff
+    /// yields RejoinContinuation (if was_disconnected) or NoOp — never
+    /// RejoinInitial that would overwrite the user's active notebook.
+    #[test]
+    fn stale_handoff_cleared_when_session_exists() {
+        let connected = DaemonEvent::Connected {
+            info: info_with("1.0.0", 100),
+        };
+
+        // Simulate: proxy set initial_target, but before the first
+        // Connected event, a connect_notebook tool call established a
+        // session. The watch loop clears initial_target because
+        // has_session=true.
+        let initial_after_clear: Option<String> = None;
+
+        // With session active and was_disconnected=false (steady state),
+        // heartbeat is NoOp — does NOT rejoin to the stale target.
+        assert_eq!(
+            classify(&connected, &initial_after_clear, true, false),
+            WatchDecision::NoOp,
+            "stale handoff must not override active session"
+        );
+
+        // With session active and was_disconnected=true (daemon bounced),
+        // RejoinContinuation uses the current session — not the stale target.
+        assert_eq!(
+            classify(&connected, &initial_after_clear, true, true),
+            WatchDecision::RejoinContinuation,
+            "should rejoin current session, not stale target"
         );
     }
 
