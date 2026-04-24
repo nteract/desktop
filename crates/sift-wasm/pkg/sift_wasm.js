@@ -47,6 +47,34 @@ export function col_names(handle) {
 }
 
 /**
+ * Get the IANA timezone of a timestamp column, or null if not set.
+ * @param {number} handle
+ * @param {number} col
+ * @returns {string | undefined}
+ */
+export function col_timezone(handle, col) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.col_timezone(retptr, handle, col);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+        var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
+        if (r3) {
+            throw takeObject(r2);
+        }
+        let v1;
+        if (r0 !== 0) {
+            v1 = getStringFromWasm0(r0, r1).slice();
+            wasm.__wbindgen_export4(r0, r1 * 1, 1);
+        }
+        return v1;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
  * Get the detected type of a column ("numeric", "categorical", "boolean", "timestamp").
  * @param {number} handle
  * @param {number} col
