@@ -579,7 +579,62 @@ where
     }
 
     // 3. Set metadata (if present) and sync it
-    if let Some(meta) = metadata {
+    if let Some(mut meta) = metadata {
+        // #2150 reconciliation: if the parsed metadata has inline deps but
+        // no valid signature AND those deps exactly match a detected
+        // project file's deps, sign the snapshot in place before it lands
+        // in the doc. This keeps the doc's trust state consistent with
+        // room.trust_state (which room creation already promoted to
+        // Trusted via the same match condition) and stops
+        // check_and_update_trust_state from flipping it back to Untrusted
+        // after the first sync flush.
+        let needs_reconcile = matches!(
+            super::metadata::verify_trust_from_snapshot(&meta).status,
+            runt_trust::TrustStatus::Untrusted | runt_trust::TrustStatus::SignatureInvalid
+        );
+        if needs_reconcile {
+            // Build a TrustInfo-shaped view of the parsed meta so we can
+            // reuse the existing match helper. Only uv/conda deps are in
+            // scope for the trust check today (pixi bypasses trust, see
+            // #2151) so we only need to populate those.
+            let derived = runt_trust::TrustInfo {
+                status: runt_trust::TrustStatus::Untrusted,
+                uv_dependencies: meta
+                    .runt
+                    .uv
+                    .as_ref()
+                    .map(|u| u.dependencies.clone())
+                    .unwrap_or_default(),
+                conda_dependencies: meta
+                    .runt
+                    .conda
+                    .as_ref()
+                    .map(|c| c.dependencies.clone())
+                    .unwrap_or_default(),
+                conda_channels: meta
+                    .runt
+                    .conda
+                    .as_ref()
+                    .map(|c| c.channels.clone())
+                    .unwrap_or_default(),
+            };
+            if super::metadata::project_file_deps_match_trust_info(path, &derived) {
+                match super::metadata::auto_sign_in_place(&mut meta) {
+                    Ok(()) => {
+                        info!(
+                            "[streaming-load] Signed project-file-matching metadata for {}",
+                            path.display()
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            "[streaming-load] Failed to auto-sign project-file-matching metadata: {}",
+                            e
+                        );
+                    }
+                }
+            }
+        }
         let encoded = {
             let mut doc = room.doc.write().await;
             if let Err(e) = doc.set_metadata_snapshot(&meta) {

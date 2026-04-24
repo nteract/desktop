@@ -898,6 +898,72 @@ pub(crate) async fn resolve_metadata_snapshot(
     None
 }
 
+/// Check whether a notebook's inline dependency list exactly matches a
+/// project file's dependency list (pyproject.toml / environment.yml /
+/// pixi.toml) in the notebook's own directory.
+///
+/// When this is true, the notebook's deps are an exact mirror of a file
+/// the user already has on disk. Signing them is safe because the trust
+/// surface ("these deps came from this machine") is already satisfied by
+/// file ownership. Used by #2150's room-init and streaming-load
+/// reconciliation to heal notebooks saved by pre-fix builds whose
+/// daemon-written deps never got a signature.
+///
+/// Returns `false` when no project file is found, when no kind matches
+/// the notebook's populated dep section, or when the lists differ.
+///
+/// Side-effect-free: does not read the notebook itself, does not touch
+/// the trust key, does not write anywhere. Callers decide what to do
+/// with the match.
+pub(crate) fn project_file_deps_match_trust_info(
+    notebook_path: &Path,
+    info: &runt_trust::TrustInfo,
+) -> bool {
+    let Some(parent) = notebook_path.parent() else {
+        return false;
+    };
+    let Some(detected) = crate::project_file::detect_project_file(parent) else {
+        return false;
+    };
+    // Order-insensitive compare: `extract_pyproject_deps` already sorts,
+    // but a hand-edited .ipynb may hold deps in any order. Sort both
+    // sides so the match is stable regardless of source ordering.
+    fn sorted(xs: &[String]) -> Vec<String> {
+        let mut v = xs.to_vec();
+        v.sort();
+        v
+    }
+    match detected.kind {
+        crate::project_file::ProjectFileKind::PyprojectToml => {
+            let Ok(content) = std::fs::read_to_string(&detected.path) else {
+                return false;
+            };
+            let project_deps = extract_pyproject_deps(&content);
+            !project_deps.is_empty() && sorted(&project_deps) == sorted(&info.uv_dependencies)
+        }
+        crate::project_file::ProjectFileKind::EnvironmentYml => {
+            let Ok(env_config) = crate::project_file::parse_environment_yml(&detected.path) else {
+                return false;
+            };
+            // Channels are part of the signed trust payload (runt_trust
+            // extracts them into TrustInfo) and conda channel priority
+            // affects package resolution, so channel order matters.
+            // Compare exact, preserving order. A notebook with matching
+            // deps but different channels stays Untrusted — that's a
+            // real trust event, not a silent heal.
+            !env_config.dependencies.is_empty()
+                && sorted(&env_config.dependencies) == sorted(&info.conda_dependencies)
+                && env_config.channels == info.conda_channels
+        }
+        crate::project_file::ProjectFileKind::PixiToml => {
+            // Pixi deps currently bypass the HMAC check entirely
+            // (see #2151). Reconciliation is a no-op here until that
+            // lands — returning false keeps behavior unchanged.
+            false
+        }
+    }
+}
+
 /// Verify trust status of a notebook by reading its file from disk.
 /// Returns TrustState with the verification result.
 ///
@@ -2359,19 +2425,22 @@ pub(crate) async fn auto_launch_kernel(
             crate::project_file::ProjectFileKind::EnvironmentYml => {
                 if let Ok(env_config) = crate::project_file::parse_environment_yml(&detected.path) {
                     let deps = env_config.dependencies;
+                    let channels = env_config.channels;
                     if !deps.is_empty() {
                         let mut doc = room.doc.write().await;
                         let mut changed = false;
                         doc.fork_and_merge(|fork| {
                             let mut snap = fork.get_metadata_snapshot().unwrap_or_default();
                             let current_deps = snap.runt.conda.as_ref().map(|c| &c.dependencies);
+                            let current_channels = snap.runt.conda.as_ref().map(|c| &c.channels);
                             let deps_match = current_deps.is_some_and(|d| d == &deps);
+                            let channels_match = current_channels.is_some_and(|c| c == &channels);
                             let trust_ok = matches!(
                                 verify_trust_from_snapshot(&snap).status,
                                 runt_trust::TrustStatus::Trusted
                                     | runt_trust::TrustStatus::NoDependencies
                             );
-                            if !deps_match || !trust_ok {
+                            if !deps_match || !channels_match || !trust_ok {
                                 let conda = snap.runt.conda.get_or_insert_with(|| {
                                     notebook_doc::metadata::CondaInlineMetadata {
                                         dependencies: Vec::new(),
@@ -2380,6 +2449,12 @@ pub(crate) async fn auto_launch_kernel(
                                     }
                                 });
                                 conda.dependencies = deps;
+                                // Channels are part of the signed trust
+                                // payload. Mirror env.yml's channels
+                                // exactly so reconciliation on reopen
+                                // can verify the notebook's channel
+                                // list didn't drift from source.
+                                conda.channels = channels;
                                 if let Err(e) = auto_sign_in_place(&mut snap) {
                                     warn!(
                                         "[notebook-sync] Failed to auto-sign environment.yml bootstrap: {}",
