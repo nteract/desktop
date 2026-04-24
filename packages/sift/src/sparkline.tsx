@@ -1032,6 +1032,7 @@ function TimestampHistogram({
   visibleBins,
   activeFilter,
   onFilter,
+  timezone,
 }: {
   summary: TimestampColumnSummary;
   width: number;

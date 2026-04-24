@@ -936,13 +936,14 @@ export function createTable(
       switch (f.kind) {
         case "range": {
           const colType = columns[c].columnType;
+          const tz = columns[c].timezone ?? "UTC";
           if (f.min === f.max) {
-            // Single value — no range display needed
             if (colType === "timestamp") {
               text += new Date(f.min).toLocaleDateString(undefined, {
                 month: "short",
                 day: "numeric",
                 year: "2-digit",
+                timeZone: tz,
               });
             } else {
               text += f.min.toLocaleString(undefined, {
@@ -955,6 +956,7 @@ export function createTable(
                 month: "short",
                 day: "numeric",
                 year: "2-digit",
+                timeZone: tz,
               });
             text += `${fmt(f.min)} – ${fmt(f.max)}`;
           } else {
@@ -1764,11 +1766,13 @@ export function createTable(
     switch (f.kind) {
       case "range": {
         if (colIndex !== undefined && columns[colIndex].columnType === "timestamp") {
+          const tz = columns[colIndex].timezone ?? "UTC";
           const fmt = (v: number) =>
             new Date(v).toLocaleDateString(undefined, {
               month: "short",
               day: "numeric",
               year: "2-digit",
+              timeZone: tz,
             });
           return `${fmt(f.min)} – ${fmt(f.max)}`;
         }
