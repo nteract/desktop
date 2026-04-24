@@ -168,8 +168,8 @@ pub async fn create_pixi_environment(
         ));
     }
 
-    // Vendor the single-file nteract_kernel_launcher module into site-packages
-    // so `python -m nteract_kernel_launcher` resolves from this env. Without
+    // Vendor the `nteract_kernel_launcher` package into site-packages so
+    // `python -m nteract_kernel_launcher` resolves from this env. Without
     // this, bootstrap_dx kernels die with ModuleNotFoundError at launch.
     // Run before Ready so the env is fully provisioned when the caller sees it.
     crate::launcher::vendor_into_venv(&python_path)

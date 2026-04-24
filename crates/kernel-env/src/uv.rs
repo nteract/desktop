@@ -53,20 +53,12 @@ pub async fn check_uv_available() -> bool {
 /// by the unified env design's capture step (`strip_base`) so the notebook's
 /// metadata records only user-level deps. Keep this in sync with the warmer.
 ///
-/// `dx` is here even though it's only installed when the `bootstrap_dx`
-/// feature flag is on. Treating it as base keeps the feature flag's state
-/// from leaking into captured notebook metadata — the flag continues to
-/// control launch-time behaviour (`RUNT_BOOTSTRAP_DX` env var + launcher
-/// module selection) without forcing every flag-on notebook to pin `dx`
-/// in its dep list.
-pub const UV_BASE_PACKAGES: &[&str] = &[
-    "ipykernel",
-    "ipywidgets",
-    "anywidget",
-    "nbformat",
-    "uv",
-    "dx",
-];
+/// The `dx` PyPI package is no longer installed — its behavior (DataFrame
+/// formatters, buffer hooks, nteract renderers) is provided by the vendored
+/// `nteract_kernel_launcher` package that the daemon injects via PYTHONPATH.
+/// The `bootstrap_dx` feature flag now gates launcher-vs-vanilla, not a
+/// PyPI install.
+pub const UV_BASE_PACKAGES: &[&str] = &["ipykernel", "ipywidgets", "anywidget", "nbformat", "uv"];
 
 /// Compute the unified env hash for a notebook. Used by the captured-deps
 /// reopen path from the unified env resolution design (see
@@ -507,11 +499,7 @@ pub async fn prepare_environment_unified(
     // `deps.dependencies` is the user-level set (with base already stripped
     // at capture time). This ensures a reopen-path rebuild produces the same
     // installed set as the original pool env.
-    let mut packages: Vec<String> = UV_BASE_PACKAGES
-        .iter()
-        .filter(|p| **p != "dx") // dx is installed via bootstrap_dx flag, not unconditionally
-        .map(|p| p.to_string())
-        .collect();
+    let mut packages: Vec<String> = UV_BASE_PACKAGES.iter().map(|p| p.to_string()).collect();
     packages.extend(deps.dependencies.iter().cloned());
 
     let mut install_args = vec![
