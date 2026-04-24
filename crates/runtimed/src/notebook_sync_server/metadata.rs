@@ -3268,23 +3268,30 @@ pub(crate) fn find_env_yml_deps_insertion_point(content: &str) -> Option<usize> 
     last_dep_end
 }
 
-/// Extract all package names from an environment.yml string (both conda and pip
-/// sections). Returns lowercased names for dedup checks before writing to the file.
-pub(crate) fn extract_all_env_yml_package_names(
-    content: &str,
-) -> std::collections::HashSet<String> {
+/// Parsed package names from an environment.yml, split by namespace.
+pub(crate) struct EnvYmlPackageNames {
+    pub conda: std::collections::HashSet<String>,
+    pub pip: std::collections::HashSet<String>,
+}
+
+/// Extract package names from an environment.yml string, split into conda and
+/// pip namespaces. Names are lowercased for case-insensitive comparison.
+pub(crate) fn extract_env_yml_package_names(content: &str) -> EnvYmlPackageNames {
     use rattler_conda_types::EnvironmentYaml;
-    let mut names = std::collections::HashSet::new();
+    let mut result = EnvYmlPackageNames {
+        conda: std::collections::HashSet::new(),
+        pip: std::collections::HashSet::new(),
+    };
 
     let Ok(env) = EnvironmentYaml::from_yaml_str(content) else {
-        return names;
+        return result;
     };
 
     for spec in env.match_specs() {
         if let rattler_conda_types::PackageNameMatcher::Exact(name) = &spec.name {
             let n = name.as_normalized().to_string().to_lowercase();
             if !n.is_empty() {
-                names.insert(n);
+                result.conda.insert(n);
             }
         }
     }
@@ -3293,12 +3300,12 @@ pub(crate) fn extract_all_env_yml_package_names(
         for spec in pip_specs {
             let name = notebook_doc::metadata::extract_package_name(spec);
             if !name.is_empty() {
-                names.insert(name);
+                result.pip.insert(name);
             }
         }
     }
 
-    names
+    result
 }
 
 /// For removals, compares CRDT deps against launched baseline and runs
@@ -3443,8 +3450,10 @@ pub(crate) async fn promote_inline_deps_to_project(
         if !to_add.is_empty() {
             match std::fs::read_to_string(yml_path) {
                 Ok(content) => {
-                    // Dedup against ALL names already in the file (conda + pip)
-                    let existing_names = extract_all_env_yml_package_names(&content);
+                    // Dedup against conda names already in the file — not pip,
+                    // since a user may intentionally promote a conda dep that
+                    // also exists under pip:.
+                    let existing_names = extract_env_yml_package_names(&content).conda;
                     let to_add: Vec<&str> = to_add
                         .into_iter()
                         .filter(|d| {

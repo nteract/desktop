@@ -5020,7 +5020,7 @@ fn test_env_yml_insertion_point_pip_block_at_end() {
 }
 
 #[test]
-fn test_extract_all_env_yml_package_names() {
+fn test_extract_env_yml_package_names_splits_namespaces() {
     let content = "\
 name: test
 channels:
@@ -5033,21 +5033,38 @@ dependencies:
     - requests
   - scipy
 ";
-    let names = extract_all_env_yml_package_names(content);
-    assert!(names.contains("numpy"), "should contain conda dep numpy");
-    assert!(names.contains("python"), "should contain python");
-    assert!(names.contains("scipy"), "should contain conda dep scipy");
-    assert!(names.contains("pyyaml"), "should contain pip dep pyyaml");
-    assert!(
-        names.contains("requests"),
-        "should contain pip dep requests"
-    );
-    assert_eq!(names.len(), 5);
+    let names = extract_env_yml_package_names(content);
+    assert!(names.conda.contains("numpy"));
+    assert!(names.conda.contains("python"));
+    assert!(names.conda.contains("scipy"));
+    assert_eq!(names.conda.len(), 3);
+    assert!(names.pip.contains("pyyaml"));
+    assert!(names.pip.contains("requests"));
+    assert_eq!(names.pip.len(), 2);
 }
 
 #[test]
-fn test_extract_all_env_yml_package_names_malformed() {
+fn test_extract_env_yml_package_names_malformed() {
     let content = "not: valid: {{yaml";
-    let names = extract_all_env_yml_package_names(content);
-    assert!(names.is_empty());
+    let names = extract_env_yml_package_names(content);
+    assert!(names.conda.is_empty());
+    assert!(names.pip.is_empty());
+}
+
+#[test]
+fn test_env_yml_conda_dep_not_blocked_by_pip_duplicate() {
+    // A package under pip: must not prevent promoting the same name as a
+    // conda dep — they are different namespaces. See #2076 review.
+    let content = "\
+dependencies:
+  - numpy
+  - pip:
+    - pyyaml
+";
+    let names = extract_env_yml_package_names(content);
+    assert!(
+        !names.conda.contains("pyyaml"),
+        "pyyaml is pip-only, not in conda set"
+    );
+    assert!(names.pip.contains("pyyaml"), "pyyaml should be in pip set");
 }
