@@ -3229,6 +3229,7 @@ pub(crate) async fn handle_notebook_request(
 pub(crate) fn find_env_yml_deps_insertion_point(content: &str) -> Option<usize> {
     let mut in_deps = false;
     let mut last_dep_end = None;
+    let mut baseline_indent: Option<usize> = None;
 
     for (i, line) in content.lines().enumerate() {
         let trimmed = line.trim();
@@ -3247,12 +3248,64 @@ pub(crate) fn find_env_yml_deps_insertion_point(content: &str) -> Option<usize> 
         }
 
         if in_deps && trimmed.starts_with("- ") {
+            let indent = line.len() - line.trim_start().len();
+            match baseline_indent {
+                None => baseline_indent = Some(indent),
+                Some(base) if indent != base => continue,
+                _ => {}
+            }
+            // Skip YAML sub-section entries like "- pip:" — they introduce
+            // nested blocks, not package specs.
+            let entry = trimmed.trim_start_matches("- ");
+            if entry.ends_with(':') && !entry.contains(' ') {
+                continue;
+            }
             let offset: usize = content.lines().take(i + 1).map(|l| l.len() + 1).sum();
             last_dep_end = Some(offset.min(content.len()));
         }
     }
 
     last_dep_end
+}
+
+/// Parsed package names from an environment.yml, split by namespace.
+pub(crate) struct EnvYmlPackageNames {
+    pub conda: std::collections::HashSet<String>,
+    pub pip: std::collections::HashSet<String>,
+}
+
+/// Extract package names from an environment.yml string, split into conda and
+/// pip namespaces. Names are lowercased for case-insensitive comparison.
+pub(crate) fn extract_env_yml_package_names(content: &str) -> EnvYmlPackageNames {
+    use rattler_conda_types::EnvironmentYaml;
+    let mut result = EnvYmlPackageNames {
+        conda: std::collections::HashSet::new(),
+        pip: std::collections::HashSet::new(),
+    };
+
+    let Ok(env) = EnvironmentYaml::from_yaml_str(content) else {
+        return result;
+    };
+
+    for spec in env.match_specs() {
+        if let rattler_conda_types::PackageNameMatcher::Exact(name) = &spec.name {
+            let n = name.as_normalized().to_string().to_lowercase();
+            if !n.is_empty() {
+                result.conda.insert(n);
+            }
+        }
+    }
+
+    if let Some(pip_specs) = env.pip_specs() {
+        for spec in pip_specs {
+            let name = notebook_doc::metadata::extract_package_name(spec);
+            if !name.is_empty() {
+                result.pip.insert(name);
+            }
+        }
+    }
+
+    result
 }
 
 /// For removals, compares CRDT deps against launched baseline and runs
@@ -3397,29 +3450,42 @@ pub(crate) async fn promote_inline_deps_to_project(
         if !to_add.is_empty() {
             match std::fs::read_to_string(yml_path) {
                 Ok(content) => {
-                    let mut new_content = content.clone();
-                    // Find the end of the dependencies: section to insert new deps
-                    let insertion_point = find_env_yml_deps_insertion_point(&content);
-                    if let Some(pos) = insertion_point {
-                        let mut insert_str = String::new();
-                        for dep in &to_add {
-                            insert_str.push_str(&format!("  - {}\n", dep));
-                            promoted.push(format!("+{}", dep));
-                        }
-                        new_content.insert_str(pos, &insert_str);
-                        if let Err(e) = std::fs::write(yml_path, &new_content) {
-                            errors.push(format!("Failed to write environment.yml: {}", e));
-                        }
-                    } else {
-                        // No dependencies: section found — append one
-                        let mut append_str = String::from("\ndependencies:\n");
-                        for dep in &to_add {
-                            append_str.push_str(&format!("  - {}\n", dep));
-                            promoted.push(format!("+{}", dep));
-                        }
-                        new_content.push_str(&append_str);
-                        if let Err(e) = std::fs::write(yml_path, &new_content) {
-                            errors.push(format!("Failed to write environment.yml: {}", e));
+                    // Dedup against conda names already in the file — not pip,
+                    // since a user may intentionally promote a conda dep that
+                    // also exists under pip:.
+                    let existing_names = extract_env_yml_package_names(&content).conda;
+                    let to_add: Vec<&str> = to_add
+                        .into_iter()
+                        .filter(|d| {
+                            let name =
+                                notebook_doc::metadata::extract_package_name(d).to_lowercase();
+                            !existing_names.contains(&name)
+                        })
+                        .collect();
+
+                    if !to_add.is_empty() {
+                        let mut new_content = content.clone();
+                        let insertion_point = find_env_yml_deps_insertion_point(&content);
+                        if let Some(pos) = insertion_point {
+                            let mut insert_str = String::new();
+                            for dep in &to_add {
+                                insert_str.push_str(&format!("  - {}\n", dep));
+                                promoted.push(format!("+{}", dep));
+                            }
+                            new_content.insert_str(pos, &insert_str);
+                            if let Err(e) = std::fs::write(yml_path, &new_content) {
+                                errors.push(format!("Failed to write environment.yml: {}", e));
+                            }
+                        } else {
+                            let mut append_str = String::from("\ndependencies:\n");
+                            for dep in &to_add {
+                                append_str.push_str(&format!("  - {}\n", dep));
+                                promoted.push(format!("+{}", dep));
+                            }
+                            new_content.push_str(&append_str);
+                            if let Err(e) = std::fs::write(yml_path, &new_content) {
+                                errors.push(format!("Failed to write environment.yml: {}", e));
+                            }
                         }
                     }
                 }

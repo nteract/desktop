@@ -4999,3 +4999,72 @@ async fn capture_migrates_pre_upgrade_notebook() {
         vec!["polars".to_string()]
     );
 }
+
+#[test]
+fn test_env_yml_insertion_point_skips_pip_block() {
+    let content = "name: test\ndependencies:\n  - numpy\n  - pip:\n    - pyyaml\n    - requests\n  - scipy\nchannels:\n  - conda-forge\n";
+    let point = find_env_yml_deps_insertion_point(content);
+    let expected =
+        "name: test\ndependencies:\n  - numpy\n  - pip:\n    - pyyaml\n    - requests\n  - scipy\n"
+            .len();
+    assert_eq!(point, Some(expected));
+}
+
+#[test]
+fn test_env_yml_insertion_point_pip_block_at_end() {
+    let content = "dependencies:\n  - numpy\n  - pandas\n  - pip:\n    - pyyaml\n";
+    let point = find_env_yml_deps_insertion_point(content);
+    // Insert after last top-level conda dep, before pip block
+    let expected = "dependencies:\n  - numpy\n  - pandas\n".len();
+    assert_eq!(point, Some(expected));
+}
+
+#[test]
+fn test_extract_env_yml_package_names_splits_namespaces() {
+    let content = "\
+name: test
+channels:
+  - conda-forge
+dependencies:
+  - numpy=1.24
+  - python=3.11
+  - pip:
+    - pyyaml>=6.0
+    - requests
+  - scipy
+";
+    let names = extract_env_yml_package_names(content);
+    assert!(names.conda.contains("numpy"));
+    assert!(names.conda.contains("python"));
+    assert!(names.conda.contains("scipy"));
+    assert_eq!(names.conda.len(), 3);
+    assert!(names.pip.contains("pyyaml"));
+    assert!(names.pip.contains("requests"));
+    assert_eq!(names.pip.len(), 2);
+}
+
+#[test]
+fn test_extract_env_yml_package_names_malformed() {
+    let content = "not: valid: {{yaml";
+    let names = extract_env_yml_package_names(content);
+    assert!(names.conda.is_empty());
+    assert!(names.pip.is_empty());
+}
+
+#[test]
+fn test_env_yml_conda_dep_not_blocked_by_pip_duplicate() {
+    // A package under pip: must not prevent promoting the same name as a
+    // conda dep — they are different namespaces. See #2076 review.
+    let content = "\
+dependencies:
+  - numpy
+  - pip:
+    - pyyaml
+";
+    let names = extract_env_yml_package_names(content);
+    assert!(
+        !names.conda.contains("pyyaml"),
+        "pyyaml is pip-only, not in conda set"
+    );
+    assert!(names.pip.contains("pyyaml"), "pyyaml should be in pip set");
+}
