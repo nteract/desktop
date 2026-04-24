@@ -1,5 +1,7 @@
 import { NotebookHostProvider } from "@nteract/notebook-host";
 import { createTauriHost } from "@nteract/notebook-host/tauri";
+import { isTauri } from "@tauri-apps/api/core";
+import { attachLogger, LogLevel } from "@tauri-apps/plugin-log";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
@@ -50,12 +52,21 @@ setErrorBoundarySink((error, componentStack) => {
   );
 });
 
+// Capture original console methods BEFORE wrapping. The Rust-log mirror
+// below uses these originals to avoid re-entering the `console.error`
+// wrapper (which would immediately feed back into plugin-log → Rust →
+// attachLogger → here → plugin-log → …, an infinite loop).
+const originalConsoleError = console.error.bind(console);
+const originalConsoleWarn = console.warn.bind(console);
+const originalConsoleInfo = console.info.bind(console);
+const originalConsoleDebug = console.debug.bind(console);
+const originalConsoleLog = console.log.bind(console);
+
 // Forward `console.error` into the host logger so it lands in notebook.log in
 // packaged / CI builds, not just dev devtools. Specifically: WASM panics
 // routed via `console_error_panic_hook` become visible in `e2e-logs/app.log`
 // with file:line:message — without this, they disappear in production.
 // Preserves the original console behavior so devtools stays unchanged.
-const originalConsoleError = console.error.bind(console);
 console.error = (...args: unknown[]) => {
   originalConsoleError(...args);
   try {
@@ -64,6 +75,35 @@ console.error = (...args: unknown[]) => {
     // Never let the forwarding path break the original error.
   }
 };
+
+// Mirror Rust log entries into devtools during dev so plugin-log output is
+// visible alongside frontend logs. Uses `attachLogger` (not `attachConsole`,
+// which would route through the wrapped `console.error` above and loop) and
+// dispatches to the ORIGINAL console methods. The wrapped forwarder never
+// sees these writes, so no feedback cycle.
+if (isTauri() && import.meta.env.DEV) {
+  attachLogger(({ level, message }) => {
+    switch (level) {
+      case LogLevel.Trace:
+      case LogLevel.Debug:
+        originalConsoleDebug(message);
+        break;
+      case LogLevel.Info:
+        originalConsoleInfo(message);
+        break;
+      case LogLevel.Warn:
+        originalConsoleWarn(message);
+        break;
+      case LogLevel.Error:
+        originalConsoleError(message);
+        break;
+      default:
+        originalConsoleLog(message);
+    }
+  }).catch(() => {
+    // Plugin missing / IPC unavailable — dev mirror is a nice-to-have.
+  });
+}
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

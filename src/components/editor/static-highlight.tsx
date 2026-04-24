@@ -109,7 +109,7 @@ function getInlineHighlighter(isDark: boolean, colorTheme: ColorTheme) {
  *
  * Returns plain text if the language is not recognized.
  */
-function highlight(
+export function highlight(
   code: string,
   language: string | undefined,
   isDark: boolean,
