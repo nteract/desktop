@@ -79,6 +79,30 @@ pub enum UserErrorOutput {
 }
 
 impl UserErrorOutput {
+    /// Read an IOPub `JupyterMessageContent` and recognize a user error.
+    ///
+    /// Returns:
+    /// - `Classic` for `ErrorOutput { ename, evalue, traceback }`
+    /// - `Rich`    for `DisplayData` / `ExecuteResult` whose `data`
+    ///             contains [`TRACEBACK_MIME`]
+    /// - `None`    otherwise
+    ///
+    /// This is the runtime agent's single entry point for deciding
+    /// "did user code raise?" — both wire shapes route through it.
+    pub fn from_iopub(content: &jupyter_protocol::JupyterMessageContent) -> Option<Self> {
+        use jupyter_protocol::JupyterMessageContent as J;
+        match content {
+            J::ErrorOutput(err) => Some(UserErrorOutput::Classic {
+                ename: err.ename.clone(),
+                evalue: err.evalue.clone(),
+                traceback: err.traceback.clone(),
+            }),
+            J::DisplayData(dd) => media_rich(&dd.data).map(UserErrorOutput::Rich),
+            J::ExecuteResult(er) => media_rich(&er.data).map(UserErrorOutput::Rich),
+            _ => None,
+        }
+    }
+
     /// Read an nbformat-shaped output value and recognize a user error.
     ///
     /// Returns:
@@ -167,6 +191,23 @@ fn rich_from_value(raw: &serde_json::Value) -> Option<RichTraceback> {
         serde_json::Value::String(s) => serde_json::from_str(s).ok(),
         other => serde_json::from_value(other.clone()).ok(),
     }
+}
+
+/// Scan a `Media` bundle for our traceback MIME and decode the payload.
+///
+/// The `MediaType::Other((mime, value))` arm is where custom MIMEs land
+/// on the Rust side after jupyter-protocol deserializes IOPub JSON.
+/// We accept both object and stringified-JSON payload shapes (mirrors
+/// the nbformat path — some publish routes stringify vnd.* MIMEs).
+fn media_rich(data: &jupyter_protocol::Media) -> Option<RichTraceback> {
+    for mt in &data.content {
+        if let jupyter_protocol::MediaType::Other((mime, value)) = mt {
+            if mime == TRACEBACK_MIME {
+                return rich_from_value(value);
+            }
+        }
+    }
+    None
 }
 
 // ─── ANSI traceback parser ────────────────────────────────────────────────
@@ -491,6 +532,132 @@ fn build_paste_text(stripped: &str, ename: &str, evalue: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // ── UserErrorOutput::from_iopub ──────────────────────────────────
+
+    fn rich_payload() -> serde_json::Value {
+        json!({
+            "ename": "KeyError",
+            "evalue": "'x'",
+            "frames": [{"filename": "/tmp/x.py", "lineno": 1, "name": "f"}],
+            "text": "KeyError: 'x'",
+        })
+    }
+
+    #[test]
+    fn from_iopub_error_output_is_classic() {
+        let content =
+            jupyter_protocol::JupyterMessageContent::ErrorOutput(jupyter_protocol::ErrorOutput {
+                ename: "ZeroDivisionError".into(),
+                evalue: "division by zero".into(),
+                traceback: vec!["line1".into(), "line2".into()],
+            });
+        let ue = UserErrorOutput::from_iopub(&content).unwrap();
+        match ue {
+            UserErrorOutput::Classic {
+                ename,
+                evalue,
+                traceback,
+            } => {
+                assert_eq!(ename, "ZeroDivisionError");
+                assert_eq!(evalue, "division by zero");
+                assert_eq!(traceback.len(), 2);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn from_iopub_display_data_with_mime_is_rich() {
+        let data = jupyter_protocol::Media {
+            content: vec![jupyter_protocol::MediaType::Other((
+                TRACEBACK_MIME.to_string(),
+                rich_payload(),
+            ))],
+        };
+        let content =
+            jupyter_protocol::JupyterMessageContent::DisplayData(jupyter_protocol::DisplayData {
+                data,
+                metadata: Default::default(),
+                transient: None,
+            });
+        let ue = UserErrorOutput::from_iopub(&content).unwrap();
+        match ue {
+            UserErrorOutput::Rich(rt) => {
+                assert_eq!(rt.ename, "KeyError");
+                assert_eq!(rt.evalue, "'x'");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn from_iopub_execute_result_with_mime_is_rich() {
+        // Some emitters use execute_result for last-expression errors.
+        let data = jupyter_protocol::Media {
+            content: vec![jupyter_protocol::MediaType::Other((
+                TRACEBACK_MIME.to_string(),
+                rich_payload(),
+            ))],
+        };
+        let content = jupyter_protocol::JupyterMessageContent::ExecuteResult(
+            jupyter_protocol::ExecuteResult {
+                execution_count: jupyter_protocol::ExecutionCount::new(1),
+                data,
+                metadata: Default::default(),
+                transient: None,
+            },
+        );
+        let ue = UserErrorOutput::from_iopub(&content).unwrap();
+        assert!(matches!(ue, UserErrorOutput::Rich(_)));
+    }
+
+    #[test]
+    fn from_iopub_display_data_without_mime_is_none() {
+        let data = jupyter_protocol::Media {
+            content: vec![jupyter_protocol::MediaType::Plain("plain text".into())],
+        };
+        let content =
+            jupyter_protocol::JupyterMessageContent::DisplayData(jupyter_protocol::DisplayData {
+                data,
+                metadata: Default::default(),
+                transient: None,
+            });
+        assert!(UserErrorOutput::from_iopub(&content).is_none());
+    }
+
+    #[test]
+    fn from_iopub_stringified_mime_payload_is_rich() {
+        // Mirror the nbformat stringified case: the value can be a JSON string.
+        let as_str = serde_json::to_string(&rich_payload()).unwrap();
+        let data = jupyter_protocol::Media {
+            content: vec![jupyter_protocol::MediaType::Other((
+                TRACEBACK_MIME.to_string(),
+                serde_json::Value::String(as_str),
+            ))],
+        };
+        let content =
+            jupyter_protocol::JupyterMessageContent::DisplayData(jupyter_protocol::DisplayData {
+                data,
+                metadata: Default::default(),
+                transient: None,
+            });
+        assert!(matches!(
+            UserErrorOutput::from_iopub(&content).unwrap(),
+            UserErrorOutput::Rich(_)
+        ));
+    }
+
+    #[test]
+    fn from_iopub_unrelated_messages_are_none() {
+        let content = jupyter_protocol::JupyterMessageContent::StreamContent(
+            jupyter_protocol::StreamContent {
+                name: jupyter_protocol::Stdio::Stdout,
+                text: "hi\n".into(),
+            },
+        );
+        assert!(UserErrorOutput::from_iopub(&content).is_none());
+    }
 
     // ── UserErrorOutput::from_nbformat ───────────────────────────────
 
