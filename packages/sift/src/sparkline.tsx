@@ -973,22 +973,17 @@ function BooleanRatioBar({
 
 // --- Timestamp histogram ---
 
-function formatDateRange(minMs: number, maxMs: number): [string, string] {
+function formatDateRange(
+  minMs: number,
+  maxMs: number,
+  timezone?: string | null,
+): [string, string] {
+  const tz = timezone ?? "UTC";
   const min = new Date(minMs);
   const max = new Date(maxMs);
   const spanDays = (maxMs - minMs) / (1000 * 60 * 60 * 24);
 
   if (maxMs === minMs) {
-    // Zero-span: filtered to a single value. Render date + time in UTC
-    // so Date32 values (days-since-epoch normalized to midnight UTC)
-    // still show the correct calendar day in non-UTC locales. Using
-    // local time here would shift `2024-01-01` to `Dec 31, 2023, 4:00
-    // PM` for a viewer in America/Los_Angeles. Real Datetime instants
-    // also render in UTC, which is a reasonable trade for a filtered
-    // single-value header where absolute-time correctness matters
-    // more than the user's local wall-clock. A proper Date32-vs-
-    // Datetime distinction would need source-type plumbing through
-    // the summary.
     const fmt = (d: Date) =>
       d.toLocaleString(undefined, {
         year: "numeric",
@@ -996,43 +991,41 @@ function formatDateRange(minMs: number, maxMs: number): [string, string] {
         day: "numeric",
         hour: "2-digit",
         minute: "2-digit",
-        timeZone: "UTC",
+        timeZone: tz,
         timeZoneName: "short",
       });
     return [fmt(min), fmt(max)];
   }
 
   if (spanDays < 1) {
-    // < 24 hours: show time only
     const fmt = (d: Date) =>
-      d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+      d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", timeZone: tz });
     return [fmt(min), fmt(max)];
   }
   if (spanDays > 730) {
-    // > 2 years: just show years
     return [
-      min.toLocaleDateString(undefined, { year: "numeric" }),
-      max.toLocaleDateString(undefined, { year: "numeric" }),
+      min.toLocaleDateString(undefined, { year: "numeric", timeZone: tz }),
+      max.toLocaleDateString(undefined, { year: "numeric", timeZone: tz }),
     ];
   }
   if (spanDays > 60) {
-    // > 2 months: month + year
     return [
-      min.toLocaleDateString(undefined, { year: "numeric", month: "short" }),
-      max.toLocaleDateString(undefined, { year: "numeric", month: "short" }),
+      min.toLocaleDateString(undefined, { year: "numeric", month: "short", timeZone: tz }),
+      max.toLocaleDateString(undefined, { year: "numeric", month: "short", timeZone: tz }),
     ];
   }
-  // < 2 months: full date
   return [
     min.toLocaleDateString(undefined, {
       year: "numeric",
       month: "short",
       day: "numeric",
+      timeZone: tz,
     }),
     max.toLocaleDateString(undefined, {
       year: "numeric",
       month: "short",
       day: "numeric",
+      timeZone: tz,
     }),
   ];
 }
@@ -1049,8 +1042,9 @@ function TimestampHistogram({
   visibleBins?: number[];
   activeFilter?: RangeFilter | null;
   onFilter: FilterCallback;
+  timezone?: string | null;
 }) {
-  const [minLabel, maxLabel] = formatDateRange(summary.min, summary.max);
+  const [minLabel, maxLabel] = formatDateRange(summary.min, summary.max, timezone);
 
   const hasOverlay = visibleBins && Math.max(...visibleBins) > 0;
   const isFiltered = !!activeFilter;
@@ -1138,6 +1132,7 @@ function ColumnSummaryChart({
   visibleBins,
   activeFilter,
   onFilter,
+  timezone,
 }: {
   summary: NonNullSummary;
   unfilteredSummary?: NonNullSummary;
@@ -1145,6 +1140,7 @@ function ColumnSummaryChart({
   visibleBins?: number[];
   activeFilter?: ColumnFilter;
   onFilter: FilterCallback;
+  timezone?: string | null;
 }) {
   switch (summary.kind) {
     case "numeric": {
@@ -1169,6 +1165,7 @@ function ColumnSummaryChart({
           visibleBins={visibleBins}
           activeFilter={activeFilter?.kind === "range" ? activeFilter : null}
           onFilter={onFilter}
+          timezone={timezone}
         />
       );
     case "boolean":
@@ -1226,6 +1223,7 @@ export function renderColumnSummary(
   activeFilter?: ColumnFilter,
   onFilter?: FilterCallback,
   unfilteredSummary?: NonNullSummary,
+  timezone?: string | null,
 ) {
   let root = roots.get(container);
   if (!root) {
@@ -1240,6 +1238,7 @@ export function renderColumnSummary(
       visibleBins={visibleBins}
       activeFilter={activeFilter ?? null}
       onFilter={onFilter ?? (() => {})}
+      timezone={timezone}
     />,
   );
 }

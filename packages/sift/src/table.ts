@@ -594,6 +594,7 @@ export function createTable(
         filters[c],
         filterCallbacks[c],
         unfiltered,
+        data.columns[c].timezone,
       );
     }
   }
