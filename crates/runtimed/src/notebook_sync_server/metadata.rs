@@ -1844,6 +1844,7 @@ pub(crate) async fn reset_starting_state(
 /// Returns `Ok((PooledEnv, actual_packages))` on success, `Err(())` on failure.
 pub(crate) async fn try_uv_pool_for_inline_deps(
     deps: &[String],
+    bootstrap_dx: bool,
     daemon: &std::sync::Arc<crate::daemon::Daemon>,
     progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler>,
 ) -> Result<(crate::PooledEnv, Vec<String>), ()> {
@@ -1876,8 +1877,13 @@ pub(crate) async fn try_uv_pool_for_inline_deps(
             // Promote the pool env into the inline-env cache so the next
             // restart with the same deps cache-hits instead of taking
             // another pool env. See #2089 / #2083.
-            crate::inline_env::claim_pool_env_for_uv_inline_cache(&mut env, deps, None, false)
-                .await;
+            crate::inline_env::claim_pool_env_for_uv_inline_cache(
+                &mut env,
+                deps,
+                None,
+                bootstrap_dx,
+            )
+            .await;
             Ok((env, actual_packages))
         }
         crate::inline_env::PoolDepRelation::Additive { delta } => {
@@ -1902,7 +1908,10 @@ pub(crate) async fn try_uv_pool_for_inline_deps(
                     // Promote the pool env into the inline-env cache so
                     // the next restart cache-hits. See #2089 / #2083.
                     crate::inline_env::claim_pool_env_for_uv_inline_cache(
-                        &mut env, deps, None, false,
+                        &mut env,
+                        deps,
+                        None,
+                        bootstrap_dx,
                     )
                     .await;
                     progress_handler.on_progress(
@@ -2609,7 +2618,14 @@ pub(crate) async fn auto_launch_kernel(
                 (env, Some(deps))
             } else if prerelease.is_none() {
                 // Try pool reuse for bare deps without prerelease
-                match try_uv_pool_for_inline_deps(&deps, &daemon, progress_handler.clone()).await {
+                match try_uv_pool_for_inline_deps(
+                    &deps,
+                    bootstrap_dx,
+                    &daemon,
+                    progress_handler.clone(),
+                )
+                .await
+                {
                     Ok((env, pool_pkgs)) => {
                         let mut pooled = env;
                         pooled.prewarmed_packages = pool_pkgs;
