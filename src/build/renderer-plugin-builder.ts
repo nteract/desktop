@@ -110,6 +110,28 @@ export function extractBuildOutput(result: unknown, label: string): { code: stri
  * @param pluginName Plugin name (used for output file name)
  * @returns Promise resolving to the built code and CSS
  */
+/**
+ * Vite plugin that prevents the sift-wasm binary from being inlined.
+ *
+ * The wasm-bindgen glue contains `new URL('sift_wasm_bg.wasm', import.meta.url)`
+ * which Vite resolves and base64-inlines into the JS bundle (~6.9 MB). The sift
+ * renderer plugin loads the WASM from the blob server via setWasmUrl() instead,
+ * so the inline copy is never used. This plugin rewrites the URL reference to a
+ * dummy string, preventing the inline.
+ */
+function excludeWasmInline(): import("vite-plus").Plugin {
+  return {
+    name: "exclude-wasm-inline",
+    transform(code, id) {
+      if (!id.includes("sift_wasm") || !code.includes("sift_wasm_bg.wasm")) return;
+      return code.replace(
+        /new URL\(['"]sift_wasm_bg\.wasm['"],\s*import\.meta\.url\)/g,
+        `"__wasm_loaded_via_setWasmUrl__"`,
+      );
+    },
+  };
+}
+
 export async function buildRendererPlugin(
   pluginEntry: string,
   pluginName: string,
@@ -119,7 +141,7 @@ export async function buildRendererPlugin(
   const result = await build({
     configFile: false,
     mode: "production",
-    plugins: [tailwindcss()],
+    plugins: [tailwindcss(), excludeWasmInline()],
     esbuild: {
       jsx: "automatic",
       jsxImportSource: "react",
