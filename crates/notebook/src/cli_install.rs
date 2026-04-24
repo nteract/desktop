@@ -636,39 +636,36 @@ pub struct SystemCliMigration {
     pub dir: String,
     pub cli_name: String,
     pub nb_name: String,
-    pub has_marker: bool,
 }
 
 /// Detect a system-wide CLI install in `/usr/local/bin` that was placed by nteract.
 ///
-/// Returns `Some` if at least the CLI binary exists at the legacy path. The
-/// presence of the `.nteract-managed-*` marker file confirms it was placed by
-/// the old system-wide installer, but we also detect unmarked legacy installs.
+/// Only returns `Some` when the `.nteract-managed-*` marker file is present.
+/// Without that marker the binary could belong to Homebrew, a manual install,
+/// or another tool, and we must not touch it with elevated privileges.
 #[cfg(unix)]
 pub fn detect_system_cli_migration() -> Option<SystemCliMigration> {
     let dir = PathBuf::from(LEGACY_INSTALL_DIR);
     let cli_name = cli_command_name();
-    let runt_path = dir.join(cli_name);
+    let marker_name = format!(".nteract-managed-{}", cli_name);
 
-    if !runt_path.exists() {
+    if !dir.join(&marker_name).exists() {
         return None;
     }
 
-    // Only consider it ours if it's a regular file (stale copy). Symlinks
-    // pointing into an nteract bundle are fine and don't need migration.
-    if runt_path.is_symlink() {
+    let runt_path = dir.join(cli_name);
+
+    // Symlinks pointing into an nteract bundle are fine and don't need migration.
+    if !runt_path.exists() || runt_path.is_symlink() {
         return None;
     }
 
     let nb_name = cli_notebook_alias_name();
-    let marker_name = format!(".nteract-managed-{}", cli_name);
-    let has_marker = dir.join(&marker_name).exists();
 
     Some(SystemCliMigration {
         dir: dir.to_string_lossy().to_string(),
         cli_name: cli_name.to_string(),
         nb_name: nb_name.to_string(),
-        has_marker,
     })
 }
 

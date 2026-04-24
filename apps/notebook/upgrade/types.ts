@@ -18,5 +18,4 @@ export interface CliMigrationInfo {
   dir: string;
   cli_name: string;
   nb_name: string;
-  has_marker: boolean;
 }
