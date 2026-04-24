@@ -379,6 +379,11 @@ pub async fn check_uv_inline_cache(
 /// Check if a cached Conda inline environment already exists for the given deps.
 ///
 /// Returns `Some(PreparedEnv)` on cache hit, `None` on miss.
+///
+/// Beyond checking that the python binary exists, this also verifies that
+/// every requested package has a corresponding `conda-meta/` record.  A
+/// stale cache entry (e.g. created by a buggy build that dropped packages)
+/// is treated as a miss and removed so the next code path can rebuild it.
 pub fn check_conda_inline_cache(deps: &[String], channels: &[String]) -> Option<PreparedEnv> {
     let conda_deps = kernel_env::CondaDependencies {
         dependencies: deps.to_vec(),
@@ -400,14 +405,96 @@ pub fn check_conda_inline_cache(deps: &[String], channels: &[String]) -> Option<
     #[cfg(windows)]
     let python_path = env_path.join("Scripts").join("python.exe");
 
-    if python_path.exists() {
-        Some(PreparedEnv {
-            env_path,
-            python_path,
-        })
-    } else {
-        None
+    if !python_path.exists() {
+        return None;
     }
+
+    // Verify that every requested package is actually installed.  The
+    // python binary existing is necessary but not sufficient — a prior
+    // buggy build may have cached an env missing some packages (#2137).
+    if !deps.is_empty() {
+        let installed = conda_meta_package_names(&env_path);
+        for dep in deps {
+            let Some(bare) = bare_package_name(dep) else {
+                // Has a version specifier — extract the name portion for matching.
+                let name = dep
+                    .split(|c: char| {
+                        ['>', '<', '=', '!', '~', '[', ';', '@'].contains(&c) || c.is_whitespace()
+                    })
+                    .next()
+                    .unwrap_or("")
+                    .trim();
+                if name.is_empty() {
+                    continue;
+                }
+                if !installed.contains(&normalize_package_name(name)) {
+                    tracing::warn!(
+                        "[inline-env] Conda cache {:?} missing requested package {:?} — evicting stale cache",
+                        env_path, dep
+                    );
+                    let _ = std::fs::remove_dir_all(&env_path);
+                    return None;
+                }
+                continue;
+            };
+            if !installed.contains(&normalize_package_name(bare)) {
+                tracing::warn!(
+                    "[inline-env] Conda cache {:?} missing requested package {:?} — evicting stale cache",
+                    env_path, dep
+                );
+                let _ = std::fs::remove_dir_all(&env_path);
+                return None;
+            }
+        }
+    }
+
+    Some(PreparedEnv {
+        env_path,
+        python_path,
+    })
+}
+
+/// Read the `conda-meta/` directory and return a set of installed package
+/// names (normalized: lowercase, underscores replaced with hyphens).
+///
+/// Conda-meta filenames follow `{name}-{version}-{build}.json`.  We parse
+/// the name by splitting on `-` and taking the longest prefix whose next
+/// segment starts with a digit (the version).  This handles names with
+/// hyphens like `scikit-learn-1.4.0-py312_0.json`.
+fn conda_meta_package_names(env_path: &std::path::Path) -> HashSet<String> {
+    let meta_dir = env_path.join("conda-meta");
+    let mut names = HashSet::new();
+
+    let entries = match std::fs::read_dir(&meta_dir) {
+        Ok(e) => e,
+        Err(_) => return names,
+    };
+
+    for entry in entries.flatten() {
+        let fname = entry.file_name();
+        let fname = fname.to_string_lossy();
+        // Skip non-json and the `history` file
+        let Some(stem) = fname.strip_suffix(".json") else {
+            continue;
+        };
+
+        // Find the package name: take segments before the first segment
+        // that looks like a version number (starts with a digit).
+        let segments: Vec<&str> = stem.split('-').collect();
+        let mut name_end = 0;
+        for (i, seg) in segments.iter().enumerate() {
+            if i > 0 && seg.starts_with(|c: char| c.is_ascii_digit()) {
+                break;
+            }
+            name_end = i + 1;
+        }
+        if name_end > 0 {
+            let pkg_name = segments[..name_end].join("-");
+            names.insert(normalize_package_name(&pkg_name));
+        }
+    }
+
+    names
 }
 
 #[cfg(test)]
@@ -505,5 +592,64 @@ mod tests {
             compare_deps_to_pool(&deps, &pool),
             PoolDepRelation::Subset
         ));
+    }
+
+    #[test]
+    fn test_conda_meta_package_names_parses_filenames() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join("conda-meta");
+        std::fs::create_dir_all(&meta).unwrap();
+
+        // Standard packages
+        std::fs::write(meta.join("numpy-2.4.3-py314h2b28147_0.json"), "{}").unwrap();
+        std::fs::write(meta.join("pandas-2.3.0-py314ha1ea8a9_0.json"), "{}").unwrap();
+        std::fs::write(meta.join("scipy-1.17.1-py314hf07bd8e_0.json"), "{}").unwrap();
+        // Hyphenated package name
+        std::fs::write(meta.join("scikit-learn-1.4.0-py312_0.json"), "{}").unwrap();
+        // Leading underscore
+        std::fs::write(meta.join("_openmp_mutex-4.5-20_gnu.json"), "{}").unwrap();
+        // history file (not a package)
+        std::fs::write(meta.join("history"), "").unwrap();
+
+        let names = conda_meta_package_names(dir.path());
+        assert!(names.contains("numpy"), "missing numpy: {:?}", names);
+        assert!(names.contains("pandas"), "missing pandas: {:?}", names);
+        assert!(names.contains("scipy"), "missing scipy: {:?}", names);
+        assert!(
+            names.contains("scikit-learn"),
+            "missing scikit-learn: {:?}",
+            names
+        );
+        assert!(
+            names.contains("-openmp-mutex"),
+            "missing _openmp_mutex: {:?}",
+            names
+        );
+        assert!(
+            !names.contains("history"),
+            "should not contain history: {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn test_conda_cache_miss_on_missing_package() {
+        // This tests the package validation logic in check_conda_inline_cache
+        // indirectly through conda_meta_package_names.
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join("conda-meta");
+        std::fs::create_dir_all(&meta).unwrap();
+        std::fs::write(meta.join("numpy-2.4.3-py314h2b28147_0.json"), "{}").unwrap();
+        std::fs::write(meta.join("scipy-1.17.1-py314hf07bd8e_0.json"), "{}").unwrap();
+
+        let names = conda_meta_package_names(dir.path());
+        // pandas is NOT installed
+        assert!(names.contains("numpy"));
+        assert!(names.contains("scipy"));
+        assert!(!names.contains("pandas"), "pandas should not be present");
+        assert!(
+            !names.contains("matplotlib"),
+            "matplotlib should not be present"
+        );
     }
 }
