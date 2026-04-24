@@ -296,6 +296,49 @@ fn augmented_path() -> String {
     format!("{prefix}{sep}{base}")
 }
 
+/// `(mtime, size)` identity pair cheap enough to snapshot on every
+/// `up rebuild=true`. `None` means the binary didn't exist when
+/// sampled.
+type BinaryFingerprint = Option<(std::time::SystemTime, u64)>;
+
+/// Snapshot a cargo-built binary's identity for "did the rebuild
+/// actually produce a different binary?" checks.
+///
+/// Cargo is smart enough to leave the binary's mtime untouched when
+/// nothing upstream changed (incremental build, no relink). Combined
+/// with the file size, this is a cheap proxy for "same bits on disk"
+/// that doesn't require hashing the whole ~200 MB binary.
+///
+/// Returns `None` when the binary doesn't exist (first build).
+fn binary_fingerprint(project_root: &Path, name: &str) -> BinaryFingerprint {
+    let path = cargo_binary(project_root, name);
+    let meta = std::fs::metadata(&path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
+}
+
+/// Snapshot both binaries `up rebuild=true` touches: the daemon
+/// (`runtimed`) and the MCP child host (`runt`, via `runt-cli`).
+/// Returns a tuple of fingerprints; `None` in either slot means the
+/// binary didn't exist at snapshot time.
+fn managed_binary_fingerprints(project_root: &Path) -> (BinaryFingerprint, BinaryFingerprint) {
+    (
+        binary_fingerprint(project_root, "runtimed"),
+        binary_fingerprint(project_root, "runt"),
+    )
+}
+
+/// Compare a before/after fingerprint pair. Returns true iff cargo
+/// actually touched the binary (or it didn't exist before and does
+/// now). Treat post-build `None` defensively as "changed" so a
+/// vanished binary forces a restart attempt with clear error paths.
+fn fingerprint_changed(before: &BinaryFingerprint, after: &BinaryFingerprint) -> bool {
+    match (before, after) {
+        (Some(b), Some(a)) => b != a,
+        (None, Some(_)) => true,
+        (_, None) => true,
+    }
+}
+
 /// Run `cargo build -p runtimed` to rebuild the daemon binary.
 ///
 /// Returns `true` on success, `false` on failure.
@@ -1094,6 +1137,24 @@ impl Supervisor {
         let project_root = self.state.read().await.project_root.clone();
 
         // Step 2: rebuild (cargo + maturin)
+        //
+        // Snapshot *both* managed binaries before cargo build.
+        // `run_cargo_build_daemon` actually compiles `runtimed` AND
+        // `runt-cli` (the MCP child host) in one invocation; they can
+        // change independently on the same rebuild call — editing
+        // `crates/runt-mcp/src/**` relinks runt-cli while leaving
+        // runtimed untouched. We gate daemon restart on the runtimed
+        // fingerprint and child restart on the runt fingerprint, so a
+        // rebuild that updates only one triggers only the restart it
+        // needs. Matches the file-watcher's existing rule: changes in
+        // crates/runt-mcp trigger child-only restart.
+        let (daemon_before, child_before) = if params.rebuild {
+            managed_binary_fingerprints(&project_root)
+        } else {
+            (None, None)
+        };
+        let mut daemon_changed_by_rebuild = false;
+        let mut child_changed_by_rebuild = false;
         if params.rebuild {
             info!("[supervisor] up: rebuild requested");
             if !run_cargo_build_daemon(&project_root) {
@@ -1101,7 +1162,17 @@ impl Supervisor {
                     "up: cargo build -p runtimed failed. See the supervisor logs for details.",
                 )]));
             }
-            report.push("rebuild: daemon binary built".into());
+            let (daemon_after, child_after) = managed_binary_fingerprints(&project_root);
+            daemon_changed_by_rebuild = fingerprint_changed(&daemon_before, &daemon_after);
+            child_changed_by_rebuild = fingerprint_changed(&child_before, &child_after);
+            report.push(
+                match (daemon_changed_by_rebuild, child_changed_by_rebuild) {
+                    (true, true) => "rebuild: daemon + runt-cli binaries built".into(),
+                    (true, false) => "rebuild: daemon binary built (runt-cli fresh)".into(),
+                    (false, true) => "rebuild: runt-cli binary built (daemon fresh)".into(),
+                    (false, false) => "rebuild: no binary changes (cargo fresh)".into(),
+                },
+            );
 
             if std::env::var("SKIP_MATURIN").unwrap_or_default() != "1" {
                 if !run_maturin_develop(&project_root) {
@@ -1128,12 +1199,24 @@ impl Supervisor {
         }
 
         // Step 4: ensure daemon running
-        let needs_daemon_restart = if params.rebuild {
-            true
-        } else {
-            match daemon_status(&project_root) {
-                Some(info) if info.running => {
-                    // Check for version mismatch with expected
+        //
+        // `rebuild=true` used to imply a daemon restart unconditionally.
+        // That meant every `up rebuild=true` call killed the dev daemon
+        // and collaterally evicted any ephemeral notebook sessions,
+        // even when cargo's rebuild was a no-op (Rust source unchanged).
+        // Now we only restart when the binary actually changed — the
+        // check below reuses the existing "is the running daemon at the
+        // expected version?" path for the not-rebuilt case.
+        let needs_daemon_restart = match daemon_status(&project_root) {
+            Some(info) if info.running => {
+                if daemon_changed_by_rebuild {
+                    report.push("daemon: binary changed — restarting".into());
+                    true
+                } else {
+                    // Check for version mismatch with expected. Covers
+                    // both `rebuild=false` and `rebuild=true` where the
+                    // cargo output was Fresh (binary_changed_by_rebuild
+                    // is false).
                     let running = info.daemon_info.as_ref().and_then(|di| di.version.as_ref());
                     let expected = expected_daemon_version(&project_root);
                     match (running, expected) {
@@ -1152,10 +1235,10 @@ impl Supervisor {
                         }
                     }
                 }
-                _ => {
-                    report.push("daemon: not running — starting".into());
-                    true
-                }
+            }
+            _ => {
+                report.push("daemon: not running — starting".into());
+                true
             }
         };
 
@@ -1195,6 +1278,13 @@ impl Supervisor {
         }
 
         // Step 6: ensure child healthy
+        //
+        // Restart the MCP child when any of:
+        //  - child isn't running (can't skip),
+        //  - daemon restarted (need fresh child tied to new daemon),
+        //  - runt-cli binary changed (the child IS runt-cli; stale
+        //    bytes otherwise — matches the file-watcher's existing
+        //    rule for `crates/runt-mcp/src/**` changes).
         let child_healthy = {
             let state = self.state.read().await;
             if let Some(ref proxy) = state.proxy {
@@ -1205,7 +1295,7 @@ impl Supervisor {
             }
         };
 
-        if !child_healthy || needs_daemon_restart {
+        if !child_healthy || needs_daemon_restart || child_changed_by_rebuild {
             // Clear circuit breaker on manual up
             {
                 let state = self.state.read().await;
@@ -1214,7 +1304,14 @@ impl Supervisor {
                 }
             }
             match self.restart_child().await {
-                Ok(()) => report.push("child: restarted".into()),
+                Ok(()) => {
+                    let reason = if child_changed_by_rebuild && !needs_daemon_restart {
+                        "child: restarted (runt-cli binary changed)"
+                    } else {
+                        "child: restarted"
+                    };
+                    report.push(reason.into());
+                }
                 Err(e) => report.push(format!("child: restart FAILED — {e}")),
             }
         } else {
@@ -2774,5 +2871,89 @@ mod tests {
         // Sanity guards on the small accessor functions the dispatcher reads.
         assert_eq!(default_restart_target(), "child");
         assert_eq!(default_log_lines(), 50);
+    }
+
+    // `binary_fingerprint` gates the new "skip restart when cargo
+    // build was a no-op" flow. It must be stable for an unchanged
+    // binary and sensitive to size changes.
+
+    fn write_bin(project_root: &Path, name: &str, bytes: &[u8]) -> PathBuf {
+        let target = project_root.join("target");
+        let subdir = target.join(if use_release_binaries() {
+            "release"
+        } else {
+            "debug"
+        });
+        std::fs::create_dir_all(&subdir).unwrap();
+        let path = subdir.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    #[test]
+    fn binary_fingerprint_missing_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        // No target/debug/runtimed binary in a fresh tempdir.
+        assert!(binary_fingerprint(dir.path(), "runtimed").is_none());
+        assert!(binary_fingerprint(dir.path(), "runt").is_none());
+    }
+
+    #[test]
+    fn binary_fingerprint_stable_for_unchanged_file() {
+        // Two reads of an unchanged file return the same fingerprint.
+        // The skip-restart logic depends on `before != after` being
+        // false when cargo doesn't touch the binary.
+        let dir = tempfile::tempdir().unwrap();
+        write_bin(dir.path(), "runtimed", b"original contents");
+        let first = binary_fingerprint(dir.path(), "runtimed").expect("fingerprint after write");
+        let second = binary_fingerprint(dir.path(), "runtimed").expect("fingerprint on re-read");
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn binary_fingerprint_differs_on_size_change() {
+        // Different sized content → different fingerprint. mtime
+        // difference alone depends on filesystem granularity, but size
+        // is always a hard signal that something changed.
+        let dir = tempfile::tempdir().unwrap();
+        write_bin(dir.path(), "runtimed", b"one");
+        let before = binary_fingerprint(dir.path(), "runtimed").expect("first fingerprint");
+        write_bin(dir.path(), "runtimed", b"different size");
+        let after = binary_fingerprint(dir.path(), "runtimed").expect("second fingerprint");
+        assert_ne!(before, after);
+    }
+
+    #[test]
+    fn fingerprint_changed_detects_all_transitions() {
+        let a = Some((std::time::UNIX_EPOCH, 100));
+        let b = Some((std::time::UNIX_EPOCH, 200));
+        // Unchanged fingerprint → false.
+        assert!(!fingerprint_changed(&a, &a));
+        // Size change → true.
+        assert!(fingerprint_changed(&a, &b));
+        // Didn't exist before, does now → true (first build).
+        assert!(fingerprint_changed(&None, &a));
+        // Vanished after build → treated as changed (defensive).
+        assert!(fingerprint_changed(&a, &None));
+        // Both None — treat as changed defensively (can't prove unchanged).
+        assert!(fingerprint_changed(&None, &None));
+    }
+
+    #[test]
+    fn managed_binary_fingerprints_tracks_daemon_and_runt_independently() {
+        // runtimed and runt live side-by-side in target/; the helper
+        // must pick up each one without them interfering.
+        let dir = tempfile::tempdir().unwrap();
+        write_bin(dir.path(), "runtimed", b"daemon v1");
+        write_bin(dir.path(), "runt", b"cli v1");
+        let (d_before, c_before) = managed_binary_fingerprints(dir.path());
+        assert!(d_before.is_some());
+        assert!(c_before.is_some());
+
+        // Rewrite only runt — daemon fingerprint must stay stable.
+        write_bin(dir.path(), "runt", b"cli v2 with extra bytes");
+        let (d_after, c_after) = managed_binary_fingerprints(dir.path());
+        assert_eq!(d_before, d_after, "runtimed untouched");
+        assert_ne!(c_before, c_after, "runt changed");
     }
 }
