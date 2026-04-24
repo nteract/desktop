@@ -639,10 +639,10 @@ impl Supervisor {
     /// Start the Vite dev server for hot-reload frontend development.
     async fn start_vite(&self) -> Result<u16, String> {
         // Phase 1: Check existing process and extract state (hold lock briefly)
-        let (project_root, needs_start) = {
+        let project_root = {
             let mut state = self.state.write().await;
 
-            // Already running?
+            // Already running under our management?
             if let Some(proc) = state.managed.get_mut("vite") {
                 if proc.is_alive() {
                     return proc
@@ -653,13 +653,9 @@ impl Supervisor {
                 state.managed.remove("vite");
             }
 
-            (state.project_root.clone(), true)
+            state.project_root.clone()
             // Lock dropped here
         };
-
-        if !needs_start {
-            unreachable!();
-        }
 
         // Phase 2: Derive port and run pnpm install without holding the lock
         let port = std::env::var("RUNTIMED_VITE_PORT")
@@ -667,6 +663,19 @@ impl Supervisor {
             .or_else(|| std::env::var("CONDUCTOR_PORT").ok())
             .and_then(|p| p.parse::<u16>().ok())
             .unwrap_or_else(|| runt_workspace::vite_port_for_workspace(&project_root));
+
+        // Phase 2.5: If the port is already live, adopt it instead of
+        // trying to spawn our own. Common case: a prior `up vite=true`
+        // timed out and killed the pnpm parent, but pnpm's grandchildren
+        // (node/vite-plus) survived and are now serving. We shouldn't
+        // kill a working server just because it isn't in our managed
+        // map — the sweep phase already runs before us, so by this point
+        // anything live on this port is either our own orphan (adopt it)
+        // or something we deliberately decided not to sweep.
+        if vite_port_is_live(port).await {
+            info!("[supervisor] Vite already serving on port {port}; adopting");
+            return Ok(port);
+        }
 
         // Ensure pnpm install is in sync with the lockfile. Previously this
         // only ran when node_modules was completely missing, which missed
@@ -972,6 +981,15 @@ impl Supervisor {
     #[cfg(unix)]
     async fn sweep_zombie_vites(&self, port: u16) -> Vec<u32> {
         {
+            // If the port is actively serving, don't sweep. Could be a
+            // working Vite from a previous session (our orphan, or a
+            // user-started one). `start_vite` will adopt it at phase 2.5.
+            // Without this check we kill-and-respawn on every `up`,
+            // which creates the orphan we're trying to avoid.
+            if vite_port_is_live(port).await {
+                return Vec::new();
+            }
+
             let managed_pid: Option<u32> = {
                 let mut state = self.state.write().await;
                 let proc = state.managed.get_mut("vite");
@@ -1998,13 +2016,36 @@ impl ServerHandler for Supervisor {
 
 /// Read the last N lines of a log file (caps at 64KB to avoid huge reads).
 /// Maximum time to wait for Vite to start accepting connections.
-const VITE_READY_TIMEOUT: Duration = Duration::from_secs(20);
+///
+/// Cold-start budget. A fresh Vite with `buildAllRendererPlugins` doing
+/// markdown/plotly/vega/leaflet/sift IIFE builds takes 30-50s on this
+/// machine. The previous 20s budget triggered on every cold start and
+/// the supervisor's kill-on-timeout then orphaned pnpm's grandchildren,
+/// which would bind the port ~30s later and survive into the next `up`
+/// call as a zombie.
+const VITE_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// After first successful TCP connect, wait this long to see whether
 /// Vite crashes on its initial build. The renderer-plugin build phase
 /// is an async promise — Vite prints "Local: http://…" *before* the
 /// build resolves, so a port-bind alone isn't proof of health.
 const VITE_POST_CONNECT_STABILIZE: Duration = Duration::from_millis(1500);
+
+/// Quick probe to decide whether something is already listening on the
+/// Vite port. Non-strict — a successful TCP connect means "we should
+/// adopt this port rather than trying to spawn our own Vite". The
+/// risk of adopting a non-Vite server on a project-specific port
+/// `vite_port_for_workspace(&root)` is low in dev contexts.
+async fn vite_port_is_live(port: u16) -> bool {
+    let addr = format!("127.0.0.1:{port}");
+    tokio::time::timeout(
+        Duration::from_millis(400),
+        tokio::net::TcpStream::connect(&addr),
+    )
+    .await
+    .map(|r| r.is_ok())
+    .unwrap_or(false)
+}
 
 /// Wait for a freshly-spawned Vite child to be actually serving, or
 /// return a specific failure. Polls two signals in a loop:
