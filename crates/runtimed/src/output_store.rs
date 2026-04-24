@@ -840,14 +840,19 @@ pub async fn update_manifest_display_data(
         return Ok(None);
     }
 
-    // Create updated manifest with new data (preserves output_id)
+    // Create updated manifest with new data (preserves output_id). Use
+    // the same `convert_data_bundle` the initial-display path uses so
+    // blob-ref MIME entries get promoted to their wrapped content type.
+    // Previously this went through a duplicate helper that skipped the
+    // promotion, which left rich payloads (e.g. dx parquet) rendered as
+    // raw JSON refs after `DisplayHandle.update()`.
     match manifest {
         OutputManifest::DisplayData {
             output_id,
             transient,
             ..
         } => {
-            let data = convert_value_to_content_refs(new_data, blob_store, threshold).await?;
+            let data = convert_data_bundle(Some(new_data), blob_store, threshold).await?;
             let metadata = new_metadata.clone().into_iter().collect();
             let updated = OutputManifest::DisplayData {
                 output_id: output_id.clone(),
@@ -863,7 +868,7 @@ pub async fn update_manifest_display_data(
             transient,
             ..
         } => {
-            let data = convert_value_to_content_refs(new_data, blob_store, threshold).await?;
+            let data = convert_data_bundle(Some(new_data), blob_store, threshold).await?;
             let metadata = new_metadata.clone().into_iter().collect();
             let updated = OutputManifest::ExecuteResult {
                 output_id: output_id.clone(),
@@ -876,37 +881,6 @@ pub async fn update_manifest_display_data(
         }
         _ => Ok(None),
     }
-}
-
-/// Convert a data Value (MIME bundle) to ContentRef map.
-async fn convert_value_to_content_refs(
-    data: &Value,
-    blob_store: &BlobStore,
-    threshold: usize,
-) -> io::Result<HashMap<String, ContentRef>> {
-    let mut result = HashMap::new();
-    if let Value::Object(map) = data {
-        for (mime_type, value) in map {
-            let content_ref = if is_binary_mime(mime_type) {
-                // Binary MIME type: base64-decode → store raw bytes in blob.
-                let base64_str = value_to_string(value);
-                let raw_bytes = base64::engine::general_purpose::STANDARD
-                    .decode(&base64_str)
-                    .map_err(|e| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!("base64 decode failed for {}: {}", mime_type, e),
-                        )
-                    })?;
-                ContentRef::from_binary(&raw_bytes, mime_type, blob_store).await?
-            } else {
-                let content_str = value_to_string(value);
-                ContentRef::from_data(&content_str, mime_type, blob_store, threshold).await?
-            };
-            result.insert(mime_type.clone(), content_ref);
-        }
-    }
-    Ok(result)
 }
 
 /// Resolve a manifest back to a full Jupyter output JSON value.
@@ -2096,6 +2070,81 @@ mod tests {
         .await
         .unwrap();
         assert!(not_updated.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_update_manifest_promotes_blob_ref_mime() {
+        // Regression for task #14: `DisplayHandle.update()` previously went
+        // through a duplicate data-bundle converter that didn't promote
+        // `application/vnd.nteract.blob-ref+json` entries to their wrapped
+        // content type. dx parquet outputs stayed as raw ref JSON after
+        // update; only the initial display path promoted.
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+
+        // Seed the blob store with a payload and get its hash (mimics the
+        // kernel-side `nteract.dx.blob` upload that happens before the
+        // display_data message lands).
+        let payload_bytes = b"fake-parquet-bytes-for-the-test";
+        let hash = store
+            .put(payload_bytes, "application/vnd.apache.parquet")
+            .await
+            .unwrap();
+
+        // Initial display_data: a blob-ref entry wrapping parquet.
+        let initial = serde_json::json!({
+            "output_type": "display_data",
+            "data": {
+                "application/vnd.nteract.blob-ref+json": {
+                    "hash": hash,
+                    "content_type": "application/vnd.apache.parquet",
+                    "size": payload_bytes.len(),
+                }
+            },
+            "metadata": {},
+            "transient": { "display_id": "my-df" }
+        });
+        let manifest = create_manifest(&initial, &store, DEFAULT_INLINE_THRESHOLD)
+            .await
+            .unwrap();
+
+        // An update comes in with a new blob-ref pointing at the same hash
+        // (it would be a fresh hash in practice, but reuse for simplicity).
+        let new_data = serde_json::json!({
+            "application/vnd.nteract.blob-ref+json": {
+                "hash": hash,
+                "content_type": "application/vnd.apache.parquet",
+                "size": payload_bytes.len(),
+            }
+        });
+
+        let updated = update_manifest_display_data(
+            &manifest,
+            "my-df",
+            &new_data,
+            &serde_json::Map::new(),
+            &store,
+            DEFAULT_INLINE_THRESHOLD,
+        )
+        .await
+        .unwrap()
+        .expect("update should produce a manifest");
+
+        // After update, the manifest's data map MUST contain the wrapped
+        // content-type, not the raw blob-ref MIME. This is the fix: before
+        // this change, the update path stored the ref MIME as-is.
+        let OutputManifest::DisplayData { data, .. } = updated else {
+            panic!("expected DisplayData variant");
+        };
+        assert!(
+            data.contains_key("application/vnd.apache.parquet"),
+            "update must promote blob-ref to wrapped content type; got keys: {:?}",
+            data.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            !data.contains_key("application/vnd.nteract.blob-ref+json"),
+            "raw blob-ref MIME must not appear in promoted manifest"
+        );
     }
 
     #[test]

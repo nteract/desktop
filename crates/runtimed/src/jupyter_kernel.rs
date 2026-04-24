@@ -1247,10 +1247,30 @@ impl KernelConnection for JupyterKernel {
                                             }
                                         };
 
+                                        let data_value =
+                                            serde_json::to_value(&update.data).unwrap_or_default();
+
+                                        // Preflight ZMQ buffers keyed by blob-ref MIME into
+                                        // the blob store — mirror the initial-display path.
+                                        // Without this, `DisplayHandle.update(df2)` carries
+                                        // buffers the kernel still holds but the daemon never
+                                        // persists, and the blob-ref promotion downstream
+                                        // would drop the entry on `BlobStore::exists` miss.
+                                        let iopub_buffers: Vec<Vec<u8>> =
+                                            message.buffers.iter().map(|b| b.to_vec()).collect();
+                                        let preflight_wrapper =
+                                            serde_json::json!({ "data": data_value });
+                                        crate::output_store::preflight_ref_buffers(
+                                            &preflight_wrapper,
+                                            &iopub_buffers,
+                                            &blob_store,
+                                        )
+                                        .await;
+
                                         let updated = update_output_by_display_id_with_manifests(
                                             &mut fork,
                                             display_id,
-                                            &serde_json::to_value(&update.data).unwrap_or_default(),
+                                            &data_value,
                                             &update.metadata,
                                             &blob_store,
                                         )
