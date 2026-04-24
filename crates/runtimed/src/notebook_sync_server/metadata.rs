@@ -3226,46 +3226,76 @@ pub(crate) async fn handle_notebook_request(
 /// Find the byte offset in an environment.yml string where new dependencies
 /// should be inserted (end of the `dependencies:` list, before the next
 /// top-level key or EOF).
-pub(crate) fn find_env_yml_deps_insertion_point(content: &str) -> Option<usize> {
-    let mut in_deps = false;
-    let mut last_dep_end = None;
-    let mut baseline_indent: Option<usize> = None;
+/// Where and how to insert new conda deps into an environment.yml.
+pub(crate) struct EnvYmlInsertionPoint {
+    /// Byte offset where new lines should be inserted.
+    pub offset: usize,
+    /// The indent prefix to use for each new `- dep` line (e.g. `"  "`).
+    pub indent: String,
+    /// The line ending used by the file (`"\n"` or `"\r\n"`).
+    pub newline: &'static str,
+}
 
-    for (i, line) in content.lines().enumerate() {
+/// Find the insertion point for new conda deps in an environment.yml string.
+///
+/// Returns the byte offset, detected indent, and line ending style so callers
+/// can insert deps that match the file's existing formatting. Uses
+/// `split_inclusive` for correct byte offsets on both LF and CRLF files.
+pub(crate) fn find_env_yml_deps_insertion_point(content: &str) -> Option<EnvYmlInsertionPoint> {
+    let newline: &'static str = if content.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+
+    let mut in_deps = false;
+    let mut last_dep_end: Option<usize> = None;
+    let mut baseline_indent: Option<String> = None;
+    let mut byte_offset = 0usize;
+
+    for raw_line in content.split_inclusive('\n') {
+        let line_len = raw_line.len();
+        let line = raw_line.trim_end_matches('\n').trim_end_matches('\r');
         let trimmed = line.trim();
 
         if !line.starts_with(' ') && !line.starts_with('\t') {
             if trimmed == "dependencies:" {
                 in_deps = true;
-                // Position after this line (clamped for files without trailing newline)
-                let offset: usize = content.lines().take(i + 1).map(|l| l.len() + 1).sum();
-                last_dep_end = Some(offset.min(content.len()));
+                last_dep_end = Some(byte_offset + line_len);
+                byte_offset += line_len;
                 continue;
             } else if in_deps && !trimmed.is_empty() && !trimmed.starts_with('#') {
-                // Hit a new top-level key — insert before it
-                return last_dep_end;
+                break;
             }
         }
 
         if in_deps && trimmed.starts_with("- ") {
-            let indent = line.len() - line.trim_start().len();
-            match baseline_indent {
-                None => baseline_indent = Some(indent),
-                Some(base) if indent != base => continue,
+            let indent_str = &line[..line.len() - line.trim_start().len()];
+            match &baseline_indent {
+                None => baseline_indent = Some(indent_str.to_string()),
+                Some(base) if indent_str != base.as_str() => {
+                    byte_offset += line_len;
+                    continue;
+                }
                 _ => {}
             }
-            // Skip YAML sub-section entries like "- pip:" — they introduce
-            // nested blocks, not package specs.
+            // Skip YAML sub-section entries like "- pip:"
             let entry = trimmed.trim_start_matches("- ");
             if entry.ends_with(':') && !entry.contains(' ') {
+                byte_offset += line_len;
                 continue;
             }
-            let offset: usize = content.lines().take(i + 1).map(|l| l.len() + 1).sum();
-            last_dep_end = Some(offset.min(content.len()));
+            last_dep_end = Some(byte_offset + line_len);
         }
+
+        byte_offset += line_len;
     }
 
-    last_dep_end
+    last_dep_end.map(|offset| EnvYmlInsertionPoint {
+        offset,
+        indent: baseline_indent.unwrap_or_else(|| "  ".to_string()),
+        newline,
+    })
 }
 
 /// Parsed package names from an environment.yml, split by namespace.
@@ -3465,27 +3495,29 @@ pub(crate) async fn promote_inline_deps_to_project(
 
                     if !to_add.is_empty() {
                         let mut new_content = content.clone();
-                        let insertion_point = find_env_yml_deps_insertion_point(&content);
-                        if let Some(pos) = insertion_point {
+                        let insertion = find_env_yml_deps_insertion_point(&content);
+                        if let Some(ins) = insertion {
                             let mut insert_str = String::new();
                             for dep in &to_add {
-                                insert_str.push_str(&format!("  - {}\n", dep));
+                                insert_str
+                                    .push_str(&format!("{}- {}{}", ins.indent, dep, ins.newline));
                                 promoted.push(format!("+{}", dep));
                             }
-                            new_content.insert_str(pos, &insert_str);
-                            if let Err(e) = std::fs::write(yml_path, &new_content) {
-                                errors.push(format!("Failed to write environment.yml: {}", e));
-                            }
+                            new_content.insert_str(ins.offset, &insert_str);
                         } else {
-                            let mut append_str = String::from("\ndependencies:\n");
+                            new_content.push_str("\ndependencies:\n");
                             for dep in &to_add {
-                                append_str.push_str(&format!("  - {}\n", dep));
+                                new_content.push_str(&format!("  - {}\n", dep));
                                 promoted.push(format!("+{}", dep));
                             }
-                            new_content.push_str(&append_str);
-                            if let Err(e) = std::fs::write(yml_path, &new_content) {
-                                errors.push(format!("Failed to write environment.yml: {}", e));
-                            }
+                        }
+                        // Validate the result parses before writing
+                        if let Err(e) =
+                            rattler_conda_types::EnvironmentYaml::from_yaml_str(&new_content)
+                        {
+                            errors.push(format!("Inserted deps produced invalid YAML: {}", e));
+                        } else if let Err(e) = std::fs::write(yml_path, &new_content) {
+                            errors.push(format!("Failed to write environment.yml: {}", e));
                         }
                     }
                 }
