@@ -23,15 +23,23 @@ export type KernelActivity = "Unknown" | "Idle" | "Busy";
  * [`KERNEL_ERROR_REASON`] constants instead of bare string literals when
  * gating UI on a specific cause.
  */
-export type KernelErrorReasonKey = "missing_ipykernel";
+export type KernelErrorReasonKey = "missing_ipykernel" | "conda_env_yml_missing";
 
 /**
- * Typed error-reason strings. Mirrors
- * `KernelErrorReason::MissingIpykernel.as_str()` on the Rust side —
- * both ends use the same literal so the CRDT value is unambiguous.
+ * Typed error-reason strings. Mirrors `KernelErrorReason::as_str()` on
+ * the Rust side — both ends use the same literal so the CRDT value is
+ * unambiguous.
  */
 export const KERNEL_ERROR_REASON = {
   MISSING_IPYKERNEL: "missing_ipykernel",
+  /**
+   * environment.yml declares a conda env that isn't built on this
+   * machine. Daemon sets this instead of silently falling back to a
+   * pool env so the UI can render a specific "build your env" banner.
+   * `kernel.error_details` carries the declared env name and the
+   * remediation command.
+   */
+  CONDA_ENV_YML_MISSING: "conda_env_yml_missing",
 } as const satisfies Record<string, KernelErrorReasonKey>;
 
 /**
@@ -64,6 +72,14 @@ export interface KernelState {
    * unset. Most consumers can treat both as "no reason."
    */
   error_reason: string | null;
+  /**
+   * Free-form details accompanying an error, shown to the user via the
+   * banner. Carries specifics that don't fit in the typed
+   * `error_reason` enum — e.g., the name of a conda env declared in
+   * environment.yml that isn't built on this machine, with a suggested
+   * remediation command. `null`/empty when absent or unset.
+   */
+  error_details: string | null;
   name: string;
   language: string;
   env_source: string;
@@ -144,6 +160,7 @@ export const DEFAULT_RUNTIME_STATE: RuntimeState = {
   kernel: {
     lifecycle: { lifecycle: "NotStarted" },
     error_reason: null,
+    error_details: null,
     name: "",
     language: "",
     env_source: "",

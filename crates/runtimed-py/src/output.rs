@@ -858,6 +858,10 @@ pub struct PyKernelState {
     /// CRDT key is absent (pre-migration doc); `Some("")` when the key is
     /// scaffolded but no reason has been recorded.
     pub error_reason: Option<String>,
+    /// Free-form details accompanying an error, shown to the user via
+    /// the frontend banner and surfaced to MCP tools. `None` when the
+    /// CRDT key is absent; `Some("")` when scaffolded but unset.
+    pub error_details: Option<String>,
     /// Kernel display name (e.g. "charming-toucan")
     pub name: String,
     /// Kernel language (e.g. "python", "typescript")
@@ -1068,6 +1072,7 @@ impl From<runtime_doc::RuntimeState> for PyRuntimeState {
                 lifecycle: lifecycle_variant,
                 activity,
                 error_reason: rs.kernel.error_reason,
+                error_details: rs.kernel.error_details,
                 name: rs.kernel.name,
                 language: rs.kernel.language,
                 env_source: rs.kernel.env_source,

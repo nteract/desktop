@@ -5555,3 +5555,116 @@ async fn test_new_fresh_leaves_untrusted_when_deps_differ() {
 
     std::env::remove_var("RUNT_TRUST_KEY_PATH");
 }
+
+// ── #2157: environment.yml declares unbuilt conda env ─────────────────
+
+#[test]
+fn test_missing_conda_env_yml_name_detects_unbuilt_named_env() {
+    let tmp = tempfile::tempdir().unwrap();
+    let yml_path = tmp.path().join("environment.yml");
+    std::fs::write(
+        &yml_path,
+        "name: nteract-integration-probe-definitely-not-built-xyz\ndependencies:\n  - python\n",
+    )
+    .unwrap();
+    let detected = crate::project_file::DetectedProjectFile {
+        path: yml_path,
+        kind: crate::project_file::ProjectFileKind::EnvironmentYml,
+    };
+    assert_eq!(
+        missing_conda_env_yml_name(&detected).as_deref(),
+        Some("nteract-integration-probe-definitely-not-built-xyz"),
+    );
+}
+
+#[test]
+fn test_missing_conda_env_yml_name_skips_non_envyml() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_pyproject_with_deps(tmp.path(), &["pandas"]);
+    let detected = crate::project_file::DetectedProjectFile {
+        path: tmp.path().join("pyproject.toml"),
+        kind: crate::project_file::ProjectFileKind::PyprojectToml,
+    };
+    assert_eq!(missing_conda_env_yml_name(&detected), None);
+}
+
+/// Codex P2 on #2167: `prefix:` pointing at a non-existent path must
+/// be reported as missing so `auto_launch_kernel` surfaces the typed
+/// error instead of letting the runtime agent die with the generic
+/// resolver message. The reported name falls back to the prefix path
+/// when env.yml has no `name:`.
+#[test]
+fn test_missing_conda_env_yml_name_prefix_missing_reports_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let missing_prefix = tmp.path().join("definitely-does-not-exist");
+    let yml_path = tmp.path().join("environment.yml");
+    std::fs::write(
+        &yml_path,
+        format!(
+            "prefix: {}\ndependencies:\n  - python\n",
+            missing_prefix.display()
+        ),
+    )
+    .unwrap();
+    let detected = crate::project_file::DetectedProjectFile {
+        path: yml_path,
+        kind: crate::project_file::ProjectFileKind::EnvironmentYml,
+    };
+    let reported = missing_conda_env_yml_name(&detected).expect("prefix: missing should report");
+    assert!(
+        reported.contains("definitely-does-not-exist"),
+        "reported name should include the prefix path; got {reported:?}",
+    );
+}
+
+/// When env.yml has both `name:` and a non-existent `prefix:`, the
+/// name wins for display (shorter, more identifiable).
+#[test]
+fn test_missing_conda_env_yml_name_prefers_name_over_missing_prefix() {
+    let tmp = tempfile::tempdir().unwrap();
+    let missing_prefix = tmp.path().join("definitely-does-not-exist");
+    let yml_path = tmp.path().join("environment.yml");
+    std::fs::write(
+        &yml_path,
+        format!(
+            "name: myenv\nprefix: {}\ndependencies:\n  - python\n",
+            missing_prefix.display()
+        ),
+    )
+    .unwrap();
+    let detected = crate::project_file::DetectedProjectFile {
+        path: yml_path,
+        kind: crate::project_file::ProjectFileKind::EnvironmentYml,
+    };
+    assert_eq!(
+        missing_conda_env_yml_name(&detected).as_deref(),
+        Some("myenv"),
+    );
+}
+
+#[test]
+fn test_missing_conda_env_yml_name_prefix_with_python_is_not_missing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let prefix = tmp.path().join("fake-env");
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::fs::create_dir_all(prefix.join("bin")).unwrap();
+        std::fs::write(prefix.join("bin").join("python"), "#!/bin/sh\nexit 0\n").unwrap();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::fs::create_dir_all(&prefix).unwrap();
+        std::fs::write(prefix.join("python.exe"), "").unwrap();
+    }
+    let yml_path = tmp.path().join("environment.yml");
+    std::fs::write(
+        &yml_path,
+        format!("prefix: {}\ndependencies:\n  - python\n", prefix.display()),
+    )
+    .unwrap();
+    let detected = crate::project_file::DetectedProjectFile {
+        path: yml_path,
+        kind: crate::project_file::ProjectFileKind::EnvironmentYml,
+    };
+    assert_eq!(missing_conda_env_yml_name(&detected), None);
+}

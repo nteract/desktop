@@ -19,10 +19,10 @@ from typing import Final, Literal
 
 # ── Kernel error reasons ────────────────────────────────────────────
 
-#: Pixi-managed environment is missing the ``ipykernel`` package.
-#: Matches ``KernelErrorReason::MissingIpykernel.as_str()`` on the Rust
-#: side and ``KERNEL_ERROR_REASON.MISSING_IPYKERNEL`` in TypeScript.
-KernelErrorReasonKey = Literal["missing_ipykernel"]
+#: Typed error-reason strings on ``kernel.error_reason``. Mirrors
+#: ``KernelErrorReason::as_str()`` in the Rust ``runtime_doc`` crate and
+#: ``KERNEL_ERROR_REASON`` in the TypeScript ``@runtimed`` package.
+KernelErrorReasonKey = Literal["missing_ipykernel", "conda_env_yml_missing"]
 
 
 class KERNEL_ERROR_REASON:
@@ -35,6 +35,12 @@ class KERNEL_ERROR_REASON:
     """
 
     MISSING_IPYKERNEL: Final[KernelErrorReasonKey] = "missing_ipykernel"
+    #: environment.yml declares a conda env that isn't built on this
+    #: machine. Daemon sets this instead of silently falling back to a
+    #: pool env so the frontend can render a specific "build your env"
+    #: banner and MCP tools can report the miss. ``kernel.error_details``
+    #: carries the declared env name and remediation command.
+    CONDA_ENV_YML_MISSING: Final[KernelErrorReasonKey] = "conda_env_yml_missing"
 
 
 # ── Kernel status strings (legacy `kernel.status` vocabulary) ───────

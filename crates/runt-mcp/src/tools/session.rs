@@ -180,6 +180,28 @@ fn read_runtime_info(handle: &notebook_sync::handle::DocHandle) -> serde_json::V
                     serde_json::json!(state.env.prewarmed_packages),
                 );
             }
+            // Error surface (#2157): when the kernel is in an error
+            // state, MCP clients get both the typed reason (stable
+            // for programmatic handling) and the human-readable
+            // details (for surfacing to the user).
+            if matches!(state.kernel.lifecycle, runtime_doc::RuntimeLifecycle::Error) {
+                if let Some(reason) = state
+                    .kernel
+                    .error_reason
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                {
+                    info.insert("error_reason".into(), serde_json::json!(reason));
+                }
+                if let Some(details) = state
+                    .kernel
+                    .error_details
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                {
+                    info.insert("error_details".into(), serde_json::json!(details));
+                }
+            }
         }
         Err(_) => {
             info.insert("kernel_status".into(), serde_json::json!("unknown"));
