@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
+import type { ProjectContext, ProjectFileKind } from "runtimed";
 import { logger } from "../lib/logger";
 import {
   addUvDependency,
@@ -9,6 +9,7 @@ import {
   setUvRequiresPython,
   useUvDependencies,
 } from "../lib/notebook-metadata";
+import { useRuntimeState } from "../lib/runtime-state";
 
 export interface NotebookDependencies {
   dependencies: string[];
@@ -23,7 +24,13 @@ export type EnvSyncState =
   | { status: "synced" }
   | { status: "dirty"; added: string[]; removed: string[] };
 
-/** Full pyproject.toml dependencies for display */
+/**
+ * Full pyproject.toml dependencies for display.
+ *
+ * Derived from `RuntimeState.project_context`. Fields the daemon does
+ * not currently surface (`project_name`, `index_url`) are emitted as
+ * `null`; UI code treats them as optional today.
+ */
 export interface PyProjectDeps {
   path: string;
   relative_path: string;
@@ -34,7 +41,14 @@ export interface PyProjectDeps {
   index_url: string | null;
 }
 
-/** Info about a detected pyproject.toml */
+/**
+ * Info about a detected pyproject.toml.
+ *
+ * Derived from `RuntimeState.project_context`. `has_venv` is `false`
+ * because the daemon does not currently check the filesystem for a
+ * `.venv` next to the project file; consumers must not treat this as
+ * authoritative for "is the env built yet."
+ */
 export interface PyProjectInfo {
   path: string;
   relative_path: string;
@@ -46,17 +60,27 @@ export interface PyProjectInfo {
   has_venv: boolean;
 }
 
+/**
+ * Project-file kind the frontend cares about here. Narrowed from the
+ * CRDT's `ProjectFileKind` so we only select pyproject detections.
+ */
+const PYPROJECT: ProjectFileKind = "PyprojectToml";
+
+/**
+ * Narrow `ProjectContext.Detected` to the pyproject case. Returns the
+ * raw `project_file` + `parsed` for any consumer that needs the full
+ * CRDT shape; higher-level helpers below pick off the pieces the UI
+ * actually uses.
+ */
+function detectedPyproject(ctx: ProjectContext) {
+  if (ctx.state !== "Detected") return null;
+  if (ctx.project_file.kind !== PYPROJECT) return null;
+  return ctx;
+}
+
 export function useDependencies() {
   const [loading, setLoading] = useState(false);
-
-  // pyproject.toml state
-  const [pyprojectInfo, setPyprojectInfo] = useState<PyProjectInfo | null>(null);
-  const [pyprojectDeps, setPyprojectDeps] = useState<PyProjectDeps | null>(null);
-
-  // Detect pyproject on mount
-  useEffect(() => {
-    invoke<PyProjectInfo | null>("detect_pyproject").then(setPyprojectInfo);
-  }, []);
+  const runtimeState = useRuntimeState();
 
   // Reactive read from the WASM Automerge doc via useSyncExternalStore.
   // Re-renders automatically when the doc changes (bootstrap, sync, writes).
@@ -136,46 +160,63 @@ export function useDependencies() {
   // True if uv metadata exists (even with empty deps)
   const isUvConfigured = dependencies !== null;
 
-  // Load full pyproject dependencies
-  const loadPyprojectDeps = useCallback(async () => {
-    try {
-      const deps = await invoke<PyProjectDeps | null>("get_pyproject_dependencies");
-      setPyprojectDeps(deps);
-    } catch (e) {
-      logger.error("Failed to load pyproject dependencies:", e);
+  // Derive pyproject info + deps from RuntimeState.project_context. The
+  // daemon writes this field on notebook open and on save-as; clients
+  // read it via the normal Automerge sync. See issue #2208.
+  const { pyprojectInfo, pyprojectDeps } = useMemo(() => {
+    const ctx = runtimeState.project_context;
+    const detected = detectedPyproject(ctx);
+    if (!detected) {
+      return { pyprojectInfo: null, pyprojectDeps: null };
     }
-  }, []);
+    const { project_file, parsed } = detected;
+    const info: PyProjectInfo = {
+      path: project_file.absolute_path,
+      relative_path: project_file.relative_to_notebook,
+      project_name: null,
+      has_dependencies: parsed.dependencies.length > 0,
+      dependency_count: parsed.dependencies.length,
+      has_dev_dependencies: parsed.dev_dependencies.length > 0,
+      requires_python: parsed.requires_python,
+      has_venv: false,
+    };
+    const deps: PyProjectDeps = {
+      path: project_file.absolute_path,
+      relative_path: project_file.relative_to_notebook,
+      project_name: null,
+      dependencies: parsed.dependencies,
+      dev_dependencies: parsed.dev_dependencies,
+      requires_python: parsed.requires_python,
+      index_url: null,
+    };
+    return { pyprojectInfo: info, pyprojectDeps: deps };
+  }, [runtimeState.project_context]);
 
-  // Load pyproject deps when we detect a pyproject.toml
-  useEffect(() => {
-    if (pyprojectInfo?.has_dependencies) {
-      loadPyprojectDeps();
-    }
-  }, [pyprojectInfo, loadPyprojectDeps]);
-
-  // Import dependencies from pyproject.toml into notebook metadata
+  // Import dependencies from pyproject.toml into notebook metadata.
+  // Reads from the synced CRDT snapshot and writes via the existing
+  // UV metadata helpers. Deduplication is handled by `addUvDependency`
+  // in notebook-doc (case-insensitive), so repeat imports stay safe.
   const importFromPyproject = useCallback(async () => {
+    if (!pyprojectDeps) {
+      logger.warn("[deps] importFromPyproject called with no pyproject detected");
+      return;
+    }
     setLoading(true);
     try {
-      await invoke("import_pyproject_dependencies");
-      logger.info("[deps] Imported dependencies from pyproject.toml");
+      const all = [...pyprojectDeps.dependencies, ...pyprojectDeps.dev_dependencies];
+      for (const pkg of all) {
+        await addUvDependency(pkg);
+      }
+      if (pyprojectDeps.requires_python !== null) {
+        await setUvRequiresPython(pyprojectDeps.requires_python);
+      }
+      logger.info(`[deps] Imported ${all.length} dependencies from pyproject.toml`);
     } catch (e) {
       logger.error("Failed to import from pyproject.toml:", e);
     } finally {
       setLoading(false);
     }
-  }, []);
-
-  // Refresh pyproject detection
-  const refreshPyproject = useCallback(async () => {
-    const info = await invoke<PyProjectInfo | null>("detect_pyproject");
-    setPyprojectInfo(info);
-    if (info?.has_dependencies) {
-      await loadPyprojectDeps();
-    } else {
-      setPyprojectDeps(null);
-    }
-  }, [loadPyprojectDeps]);
+  }, [pyprojectDeps]);
 
   return {
     dependencies,
@@ -192,6 +233,5 @@ export function useDependencies() {
     pyprojectInfo,
     pyprojectDeps,
     importFromPyproject,
-    refreshPyproject,
   };
 }

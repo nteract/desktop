@@ -58,6 +58,7 @@
 //!     unreadable_reason: Str  ("" unless state == "unreadable")
 //!     parsed/                 Map (present when state == "detected")
 //!       dependencies: List[Str]
+//!       dev_dependencies: List[Str]
 //!       requires_python: Str|null
 //!       prerelease: Str|null
 //!       extras: Str           (JSON-encoded ProjectFileExtras)
@@ -1875,6 +1876,7 @@ impl RuntimeStateDoc {
             _ => return ProjectFileParsed::default(),
         };
         let dependencies = self.read_str_list(&parsed_obj, "dependencies");
+        let dev_dependencies = self.read_str_list(&parsed_obj, "dev_dependencies");
         let requires_python = self.read_opt_str(&parsed_obj, "requires_python");
         let prerelease = self.read_opt_str(&parsed_obj, "prerelease");
         let extras_json = self.read_str(&parsed_obj, "extras");
@@ -1885,6 +1887,7 @@ impl RuntimeStateDoc {
         };
         ProjectFileParsed {
             dependencies,
+            dev_dependencies,
             requires_python,
             prerelease,
             extras,
@@ -1900,6 +1903,12 @@ impl RuntimeStateDoc {
         let deps_list = self.doc.put_object(&obj, "dependencies", ObjType::List)?;
         for (i, dep) in parsed.dependencies.iter().enumerate() {
             self.doc.insert(&deps_list, i, dep.as_str())?;
+        }
+        let dev_list = self
+            .doc
+            .put_object(&obj, "dev_dependencies", ObjType::List)?;
+        for (i, dep) in parsed.dev_dependencies.iter().enumerate() {
+            self.doc.insert(&dev_list, i, dep.as_str())?;
         }
         match parsed.requires_python.as_deref() {
             Some(s) => self.doc.put(&obj, "requires_python", s)?,
@@ -1922,6 +1931,8 @@ impl RuntimeStateDoc {
         // invariant on project_context means this put_object is safe.
         let obj = self.doc.put_object(pc, "parsed", ObjType::Map)?;
         self.doc.put_object(&obj, "dependencies", ObjType::List)?;
+        self.doc
+            .put_object(&obj, "dev_dependencies", ObjType::List)?;
         self.doc.put(&obj, "requires_python", ScalarValue::Null)?;
         self.doc.put(&obj, "prerelease", ScalarValue::Null)?;
         self.doc.put(&obj, "extras", "")?;
@@ -2567,6 +2578,8 @@ fn scaffold_project_context(doc: &mut AutoCommit) {
         .expect("scaffold project_context.parsed");
     doc.put_object(&parsed, "dependencies", ObjType::List)
         .expect("scaffold project_context.parsed.dependencies");
+    doc.put_object(&parsed, "dev_dependencies", ObjType::List)
+        .expect("scaffold project_context.parsed.dev_dependencies");
     doc.put(&parsed, "requires_python", ScalarValue::Null)
         .expect("scaffold project_context.parsed.requires_python");
     doc.put(&parsed, "prerelease", ScalarValue::Null)
@@ -5317,6 +5330,7 @@ mod tests {
             },
             parsed: ProjectFileParsed {
                 dependencies: vec!["pandas>=2.0".into(), "numpy".into()],
+                dev_dependencies: vec![],
                 requires_python: Some(">=3.10".into()),
                 prerelease: None,
                 extras: ProjectFileExtras::None,
@@ -5339,6 +5353,7 @@ mod tests {
             },
             parsed: ProjectFileParsed {
                 dependencies: vec!["python=3.11".into()],
+                dev_dependencies: vec![],
                 requires_python: None,
                 prerelease: None,
                 extras: ProjectFileExtras::Pixi {
@@ -5365,6 +5380,7 @@ mod tests {
             },
             parsed: ProjectFileParsed {
                 dependencies: vec!["numpy".into(), "scipy".into()],
+                dev_dependencies: vec![],
                 requires_python: None,
                 prerelease: None,
                 extras: ProjectFileExtras::EnvironmentYml {
@@ -5405,6 +5421,7 @@ mod tests {
             },
             parsed: ProjectFileParsed {
                 dependencies: vec!["pandas".into()],
+                dev_dependencies: vec![],
                 requires_python: Some(">=3.10".into()),
                 prerelease: None,
                 extras: ProjectFileExtras::None,

@@ -174,57 +174,114 @@ fn parse_detected(
     }
 }
 
-/// pyproject.toml: extract `[project].dependencies` + `[project].requires-python`.
-/// Matches the style of `metadata::extract_pyproject_deps`.
+/// pyproject.toml: extract `[project].dependencies`,
+/// `[project].requires-python`, and `[tool.uv.dev-dependencies]`.
+///
+/// A tiny state machine over `(current_table, in_list)`. Each table
+/// header flips `current_table`; two assignments inside `[project]` and
+/// `[tool.uv]` collect string-array entries either inline (single-line
+/// `x = ["a", "b"]`) or across a multi-line list.
 fn parse_pyproject_toml(content: &str) -> ProjectFileParsed {
-    let mut in_project = false;
-    let mut in_deps = false;
+    let mut current_table = String::new();
+    let mut in_list_for: Option<ListTarget> = None;
     let mut deps: Vec<String> = Vec::new();
+    let mut dev_deps: Vec<String> = Vec::new();
     let mut requires_python: Option<String> = None;
 
     for line in content.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with('[') {
-            in_deps = false;
-            in_project = trimmed == "[project]";
+
+        if let Some(header) = trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            current_table = header.to_string();
+            in_list_for = None;
             continue;
         }
-        if !in_project {
-            continue;
-        }
-        if let Some(value) = trimmed.strip_prefix("requires-python") {
-            if let Some(v) = extract_toml_string_value(value) {
-                requires_python = Some(v);
+
+        // Mid-list continuation.
+        if let Some(target) = in_list_for {
+            if trimmed == "]" || trimmed.starts_with(']') {
+                in_list_for = None;
+                continue;
             }
-            continue;
-        }
-        if trimmed == "dependencies = [" || trimmed.starts_with("dependencies = [") {
-            in_deps = true;
-            if let Some(rest) = trimmed.strip_prefix("dependencies = [") {
-                if let Some(inner) = rest.strip_suffix(']') {
-                    push_string_entries(inner, &mut deps);
-                    in_deps = false;
+            if let Some(entry) = extract_quoted_entry(trimmed) {
+                match target {
+                    ListTarget::Deps => deps.push(entry),
+                    ListTarget::DevDeps => dev_deps.push(entry),
                 }
             }
             continue;
         }
-        if in_deps {
-            if trimmed == "]" || trimmed.starts_with(']') {
-                in_deps = false;
+
+        // [project] fields.
+        if current_table == "project" {
+            if let Some(value) = trimmed.strip_prefix("requires-python") {
+                if let Some(v) = extract_toml_string_value(value) {
+                    requires_python = Some(v);
+                }
                 continue;
             }
-            if let Some(dep) = extract_quoted_entry(trimmed) {
-                deps.push(dep);
+            if let Some(rest) = strip_assignment_start(trimmed, "dependencies") {
+                absorb_list_entry(rest, &mut deps, &mut in_list_for, ListTarget::Deps);
+                continue;
+            }
+        }
+
+        // [tool.uv].dev-dependencies. PEP 735 also puts dev deps under
+        // [dependency-groups.dev] — worth following up if we find uv
+        // projects using that style in the wild.
+        if current_table == "tool.uv" {
+            if let Some(rest) = strip_assignment_start(trimmed, "dev-dependencies") {
+                absorb_list_entry(rest, &mut dev_deps, &mut in_list_for, ListTarget::DevDeps);
+                continue;
             }
         }
     }
 
     ProjectFileParsed {
         dependencies: deps,
+        dev_dependencies: dev_deps,
         requires_python,
         prerelease: None,
         extras: ProjectFileExtras::None,
     }
+}
+
+/// Which list we're currently collecting mid-stream.
+#[derive(Debug, Clone, Copy)]
+enum ListTarget {
+    Deps,
+    DevDeps,
+}
+
+/// Match `<key> = ...` at the start of a line and return the tail past
+/// the `=`. Rejects prefixes that happen to share the key's name (e.g.
+/// `dependencies-extra = ...`).
+fn strip_assignment_start<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    let rest = line.strip_prefix(key)?;
+    let rest = rest.trim_start();
+    rest.strip_prefix('=').map(str::trim_start)
+}
+
+/// Absorb the right-hand side of a list assignment. Handles the inline
+/// form (`= ["a", "b"]`), the multi-line form (`= [` opener), and the
+/// "empty-trailing-lines before `[`" variant that some formatters emit.
+fn absorb_list_entry(
+    rhs: &str,
+    dest: &mut Vec<String>,
+    in_list_for: &mut Option<ListTarget>,
+    target: ListTarget,
+) {
+    let Some(after_bracket) = rhs.strip_prefix('[') else {
+        return;
+    };
+    if let Some(inner) = after_bracket.strip_suffix(']') {
+        push_string_entries(inner, dest);
+        return;
+    }
+    // Multi-line list: walk following lines until the closing bracket.
+    // The line with the `[` may still hold one entry before newline.
+    push_string_entries(after_bracket, dest);
+    *in_list_for = Some(target);
 }
 
 /// Commit-2 pixi parsing keeps the easy signals: channels (top-level
@@ -301,6 +358,7 @@ fn parse_pixi_toml(content: &str) -> ProjectFileParsed {
 
     ProjectFileParsed {
         dependencies: deps,
+        dev_dependencies: Vec::new(),
         requires_python: None,
         prerelease: None,
         extras: ProjectFileExtras::Pixi {
@@ -321,6 +379,7 @@ fn parse_environment_yml(path: &Path, content: &str) -> Result<ProjectFileParsed
 
     Ok(ProjectFileParsed {
         dependencies: config.dependencies,
+        dev_dependencies: Vec::new(),
         requires_python: config.python,
         prerelease: None,
         extras: ProjectFileExtras::EnvironmentYml { pip },
@@ -462,6 +521,44 @@ mod tests {
             panic!("expected Detected");
         };
         assert_eq!(parsed.dependencies, vec!["pandas>=2.0", "numpy"]);
+    }
+
+    #[test]
+    fn build_context_pyproject_captures_tool_uv_dev_dependencies() {
+        let temp = TempDir::new().unwrap();
+        write(
+            temp.path(),
+            "pyproject.toml",
+            "[project]\nname = \"demo\"\ndependencies = [\"pandas\"]\n\n[tool.uv]\ndev-dependencies = [\"pytest\", \"ruff>=0.6\"]\n",
+        );
+        let notebook = write(temp.path(), "demo.ipynb", "{}");
+
+        let ctx = build_context(&notebook);
+        let ProjectContext::Detected { parsed, .. } = ctx else {
+            panic!("expected Detected");
+        };
+        assert_eq!(parsed.dependencies, vec!["pandas"]);
+        assert_eq!(parsed.dev_dependencies, vec!["pytest", "ruff>=0.6"]);
+    }
+
+    #[test]
+    fn build_context_pyproject_empty_dev_deps_when_tool_uv_absent() {
+        // Plain [project] pyproject with no [tool.uv] block. Not having
+        // dev-dependencies shouldn't leak values from a prior state; it
+        // should be an empty vec.
+        let temp = TempDir::new().unwrap();
+        write(
+            temp.path(),
+            "pyproject.toml",
+            "[project]\nname = \"demo\"\ndependencies = [\"pandas\"]\n",
+        );
+        let notebook = write(temp.path(), "demo.ipynb", "{}");
+
+        let ctx = build_context(&notebook);
+        let ProjectContext::Detected { parsed, .. } = ctx else {
+            panic!("expected Detected");
+        };
+        assert!(parsed.dev_dependencies.is_empty());
     }
 
     #[test]

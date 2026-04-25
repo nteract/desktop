@@ -9,7 +9,6 @@ pub mod mcpb_install;
 pub mod menu;
 
 pub mod pixi;
-pub mod pyproject;
 pub mod session;
 pub mod settings;
 pub mod shell_env;
@@ -3300,124 +3299,13 @@ async fn send_frame_bytes(
 // ============================================================================
 // pyproject.toml Discovery and Environment Commands
 // ============================================================================
-
-/// Detect pyproject.toml near the notebook and return info about it.
-#[tauri::command]
-async fn detect_pyproject(
-    window: tauri::Window,
-    registry: tauri::State<'_, WindowNotebookRegistry>,
-) -> Result<Option<pyproject::PyProjectInfo>, String> {
-    // Use the notebook path if file-backed, else fall back to the window's
-    // working_dir so ephemeral clones and other untitled notebooks still
-    // resolve project files.
-    let Some(notebook_path) = project_search_path_for_window(&window, registry.inner())? else {
-        return Ok(None);
-    };
-
-    // Find pyproject.toml walking up from notebook directory
-    let Some(pyproject_path) = pyproject::find_pyproject(&notebook_path) else {
-        return Ok(None);
-    };
-
-    // Parse and create info
-    let config = pyproject::parse_pyproject(&pyproject_path).map_err(|e| e.to_string())?;
-    let info = pyproject::create_pyproject_info(&config, &notebook_path);
-
-    info!(
-        "Detected pyproject.toml at {} with {} dependencies",
-        info.relative_path, info.dependency_count
-    );
-
-    Ok(Some(info))
-}
-
-/// Full pyproject dependencies for display in the UI.
-#[derive(Serialize)]
-struct PyProjectDepsJson {
-    path: String,
-    relative_path: String,
-    project_name: Option<String>,
-    dependencies: Vec<String>,
-    dev_dependencies: Vec<String>,
-    requires_python: Option<String>,
-    index_url: Option<String>,
-}
-
-/// Get full parsed dependencies from the detected pyproject.toml.
-#[tauri::command]
-async fn get_pyproject_dependencies(
-    window: tauri::Window,
-    registry: tauri::State<'_, WindowNotebookRegistry>,
-) -> Result<Option<PyProjectDepsJson>, String> {
-    let Some(notebook_path) = project_search_path_for_window(&window, registry.inner())? else {
-        return Ok(None);
-    };
-
-    let Some(pyproject_path) = pyproject::find_pyproject(&notebook_path) else {
-        return Ok(None);
-    };
-
-    let config = pyproject::parse_pyproject(&pyproject_path).map_err(|e| e.to_string())?;
-
-    let relative_path = pathdiff::diff_paths(
-        &config.path,
-        notebook_path.parent().unwrap_or(&notebook_path),
-    )
-    .map(|p| p.display().to_string())
-    .unwrap_or_else(|| config.path.display().to_string());
-
-    Ok(Some(PyProjectDepsJson {
-        path: config.path.display().to_string(),
-        relative_path,
-        project_name: config.project_name,
-        dependencies: config.dependencies,
-        dev_dependencies: config.dev_dependencies,
-        requires_python: config.requires_python,
-        index_url: config.index_url,
-    }))
-}
-
-/// Import dependencies from pyproject.toml into notebook metadata.
-/// This makes the notebook more portable.
-#[tauri::command]
-async fn import_pyproject_dependencies(
-    window: tauri::Window,
-    registry: tauri::State<'_, WindowNotebookRegistry>,
-) -> Result<(), String> {
-    let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
-
-    let Some(notebook_path) = project_search_path_for_window(&window, registry.inner())? else {
-        return Err("No notebook path or working directory set".to_string());
-    };
-
-    let Some(pyproject_path) = pyproject::find_pyproject(&notebook_path) else {
-        return Err("No pyproject.toml found".to_string());
-    };
-
-    let config = pyproject::parse_pyproject(&pyproject_path).map_err(|e| e.to_string())?;
-
-    let guard = notebook_sync.lock().await;
-    let handle = guard.as_ref().ok_or("Not connected to daemon")?;
-    let snapshot = get_metadata_snapshot(handle).await;
-    let mut metadata = snapshot
-        .as_ref()
-        .map(metadata_from_snapshot)
-        .unwrap_or_else(|| metadata_from_snapshot(&default_metadata_snapshot()));
-    let all_deps = pyproject::get_all_dependencies(&config);
-    let deps = uv_env::NotebookDependencies {
-        dependencies: all_deps.clone(),
-        requires_python: config.requires_python,
-        prerelease: None,
-    };
-    uv_env::set_dependencies(&mut metadata, &deps);
-    let new_snapshot = snapshot_from_nbformat(&metadata);
-    set_metadata_snapshot(handle, &new_snapshot).await?;
-    info!(
-        "Imported {} dependencies from pyproject.toml into notebook",
-        all_deps.len()
-    );
-    Ok(())
-}
+//
+// Deleted in favour of daemon-side walk-up (#2208). The daemon writes
+// `RuntimeStateDoc.project_context` on notebook open and save-as; the
+// frontend reads it reactively via `useDependencies`, and the import
+// flow writes UV deps through the existing WASM metadata helpers.
+// No `detect_pyproject` / `get_pyproject_dependencies` /
+// `import_pyproject_dependencies` commands anymore.
 
 // ============================================================================
 // Trust Verification Commands
@@ -4590,10 +4478,9 @@ pub fn run(
             detect_cli_migration,
             migrate_cli_to_symlink,
             remove_system_cli,
-            // pyproject.toml discovery
-            detect_pyproject,
-            get_pyproject_dependencies,
-            import_pyproject_dependencies,
+            // pyproject.toml: discovery + import now flow through
+            // RuntimeStateDoc.project_context and WASM metadata writes.
+            // No Tauri commands live here.
             // pixi.toml support
             detect_pixi_toml,
             import_pixi_dependencies,
