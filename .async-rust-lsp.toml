@@ -1,0 +1,13 @@
+# Project-local config for https://github.com/rgbkrk/async-rust-lsp
+#
+# These wrappers ultimately call `read_exact` / `write_all`, so they
+# inherit the same cancel-unsafety. The LSP rule can't follow function
+# bodies across files; listing them here teaches it to flag direct uses
+# inside `tokio::select!` arms — the exact pattern that produced the
+# `frame too large: 1818192238 bytes` desync fixed in PR #2182.
+
+[rules.cancel-unsafe-in-select]
+extra = [
+    "recv_typed_frame",
+    "send_typed_frame",
+]
