@@ -329,7 +329,7 @@ Use `nteract-dev` as the MCP server name for this source tree. Keep `nteract` fo
 
 ### MCP Server
 
-`nteract-dev` proxies the Rust-native `runt mcp` server (direct Automerge access, no Python overhead). It auto-builds `runt` on startup and watches `crates/runt-mcp/src/` for hot reload.
+`nteract-dev` proxies the Rust-native `runt mcp` server (direct Automerge access, no Python overhead). It auto-builds `runt` on startup. Source edits don't trigger rebuilds by default; use `up rebuild=true` to pick up changes to the daemon or Python bindings.
 
 `runt mcp` can also be run standalone (no proxy): `./target/debug/runt mcp`. It reads `RUNTIMED_SOCKET_PATH` for the daemon connection.
 
@@ -363,13 +363,17 @@ When `nteract-dev` is active, agents also get the full nteract tool suite. **Use
 
 **Audit workflow example:** After modifying daemon or kernel code, use `connect_notebook` on a test fixture, `execute_cell` to run it, then `get_cell` to inspect outputs — confirming the change works end-to-end without leaving the agent session.
 
-### Hot reload
+### Rebuilding
 
-`nteract-dev` watches source directories and auto-restarts the child on changes:
-- **`crates/runt-mcp/src/`** → `cargo build -p runt` + restart (Rust MCP mode)
-- **`crates/runtimed-client/src/`** → `cargo build -p runt` + `maturin develop` + restart (shared code)
-- **`crates/runtimed-py/src/`, `crates/runtimed/src/`** → `maturin develop` + `cargo build` + restart
-- **`python/nteract/src/`, `python/runtimed/src/`** → child restart (Python mode) or background `maturin develop` (Rust mode)
+The supervisor does not watch source files. Rebuild on demand:
+
+- **Rust or Python bindings changed** → `up rebuild=true`. Rebuilds `runt` and runs `maturin develop`, then restarts the child.
+- **Only the MCP server itself changed** (`crates/runt-mcp/src/`) → `up rebuild=true` covers this too.
+- **Daemon source changed** → `up rebuild=true`, optionally with `daemon=true` to bounce the daemon as well.
+
+If you want the old always-on file watcher, set `NTERACT_DEV_WATCH=1` in the supervisor's environment. It's off by default because every source touch kicked `cargo build` + `maturin develop`, which churned sccache keys across the workspace and put the Rust cache-hit rate near zero during normal edits.
+
+`SKIP_MATURIN=1` (already set in `.mcp.json`) tells `up rebuild=true` to skip the maturin step. Pair it with `NTERACT_DEV_AUTOMATURIN=1` only if you want the startup-probe reintroduced; by default the supervisor starts without touching Python bindings.
 
 ### Tool availability
 

@@ -2628,14 +2628,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
 
-        // Ensure maturin develop in background (non-blocking, dev workflow only).
-        // File watcher will re-run this when Rust bindings change.
-        let pr = project_root.clone();
-        tokio::task::spawn_blocking(move || {
-            if !ensure_maturin_develop(&pr) {
-                warn!("maturin develop failed — Python bindings may be stale");
-            }
-        });
+        // Python bindings are rebuilt on demand via `up rebuild=true`.
+        // Startup used to probe `import runtimed` and trigger `maturin
+        // develop` in the background; that fired on every session rejoin
+        // and churned sccache keys for the whole runtimed-py dependency
+        // graph. Now the supervisor starts clean and the user opts in
+        // explicitly. `SKIP_MATURIN=1` remains the escape hatch that
+        // also skips the `up rebuild=true` maturin step.
+        if std::env::var("SKIP_MATURIN").unwrap_or_default() != "1"
+            && std::env::var("NTERACT_DEV_AUTOMATURIN").unwrap_or_default() == "1"
+        {
+            let pr = project_root.clone();
+            tokio::task::spawn_blocking(move || {
+                if !ensure_maturin_develop(&pr) {
+                    warn!("maturin develop failed — Python bindings may be stale");
+                }
+            });
+        }
 
         // 2c: Create the MCP proxy and spawn the child
         let mut child_env = std::collections::HashMap::new();
@@ -2706,20 +2715,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             warn!("Failed to send resources/list_changed after init: {e}");
         }
 
-        // 2f: Start file watcher
-        let mut file_change_rx = start_file_watcher(&project_root).unwrap_or_else(|e| {
-            warn!("File watcher failed to start: {e}");
-            mpsc::channel(1).1
-        });
+        // 2f: Start file watcher (opt-in). Off by default. Watching the
+        // six source roots and kicking cargo + maturin on every edit
+        // invalidated sccache keys at a rate that showed up as ~2%
+        // Rust cache-hit rates during normal work. Explicit rebuilds
+        // via `up rebuild=true` keep the cache coherent, match the
+        // existing common flow, and don't surprise a session mid-edit.
+        if std::env::var("NTERACT_DEV_WATCH").unwrap_or_default() == "1" {
+            let mut file_change_rx = start_file_watcher(&project_root).unwrap_or_else(|e| {
+                warn!("File watcher failed to start: {e}");
+                mpsc::channel(1).1
+            });
 
-        // Run the file watcher loop in this task
-        let watcher_supervisor = Supervisor {
-            state: state_for_watcher,
-            child_ready: Arc::new(Notify::new()),
-        };
-        while let Some(change_kind) = file_change_rx.recv().await {
-            info!("File change detected: {change_kind:?}");
-            watcher_supervisor.handle_file_change(change_kind).await;
+            let watcher_supervisor = Supervisor {
+                state: state_for_watcher,
+                child_ready: Arc::new(Notify::new()),
+            };
+            while let Some(change_kind) = file_change_rx.recv().await {
+                info!("File change detected: {change_kind:?}");
+                watcher_supervisor.handle_file_change(change_kind).await;
+            }
+        } else {
+            info!(
+                "File watcher disabled. Set NTERACT_DEV_WATCH=1 to enable; \
+                 otherwise use `up rebuild=true` to rebuild on demand."
+            );
+            // Keep the reference so its Drop doesn't cancel any futures.
+            let _ = state_for_watcher;
         }
     });
 
