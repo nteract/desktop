@@ -1213,9 +1213,6 @@ fn cmd_wasm(target: Option<&str>, skip_renderer_plugins: bool) {
 
     if build_runtimed {
         println!("Building runtimed-wasm...");
-        // `--profile wasm-release` retains function names + line tables so
-        // browser-console panics show real symbols instead of `wasm[0]:0x12345`.
-        // See workspace `[profile.wasm-release]`.
         run_cmd(
             "wasm-pack",
             &[
@@ -1223,8 +1220,6 @@ fn cmd_wasm(target: Option<&str>, skip_renderer_plugins: bool) {
                 "crates/runtimed-wasm",
                 "--target",
                 "web",
-                "--profile",
-                "wasm-release",
                 "--out-dir",
                 "../../apps/notebook/src/wasm/runtimed-wasm",
             ],

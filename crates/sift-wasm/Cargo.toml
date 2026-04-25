@@ -31,10 +31,6 @@ parquet = { version = "54", default-features = false, features = ["arrow", "snap
 serde_json = { workspace = true }
 wasm-bindgen-test = "0.3"
 
-# wasm-pack's metadata schema only recognizes `release`, `profiling`,
-# `dev`. Custom profiles like our `wasm-release` (workspace-level)
-# fall back to the `release` block here. Don't add a `wasm-release`
-# section — wasm-pack warns "unknown key" and ignores it.
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = false
 

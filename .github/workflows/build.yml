@@ -164,9 +164,7 @@ jobs:
           tool: wasm-pack@0.14.0
 
       - name: Build runtimed-wasm
-        # Must match `cargo xtask wasm runtimed` so the up-to-date check
-        # below diffs against artifacts produced by the same profile.
-        run: wasm-pack build crates/runtimed-wasm --target web --profile wasm-release --out-dir ../../apps/notebook/src/wasm/runtimed-wasm
+        run: wasm-pack build crates/runtimed-wasm --target web --out-dir ../../apps/notebook/src/wasm/runtimed-wasm
 
       - name: Check runtimed-wasm bindings are up to date
         run: |
@@ -176,9 +174,7 @@ jobs:
           }
 
       - name: Build sift-wasm
-        # Must match `cargo xtask wasm sift` so the up-to-date check below
-        # diffs against artifacts produced by the same profile.
-        run: wasm-pack build crates/sift-wasm --target web --profile wasm-release
+        run: wasm-pack build crates/sift-wasm --target web --release
 
       - name: Check sift-wasm bindings are up to date
         run: |

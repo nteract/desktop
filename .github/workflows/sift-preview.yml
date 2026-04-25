@@ -45,8 +45,7 @@ jobs:
           tool: wasm-pack@0.14.0
 
       - name: Build sift-wasm
-        # Match `cargo xtask wasm sift` so demo panics show real symbols.
-        run: wasm-pack build crates/sift-wasm --target web --profile wasm-release
+        run: wasm-pack build crates/sift-wasm --target web --release
 
       - uses: voidzero-dev/setup-vp@v1
         with:
