@@ -16,7 +16,7 @@
 | Build release DMG | `cargo xtask build-dmg` |
 | nteract-dev MCP server | `cargo xtask run-mcp` |
 | MCP config JSON | `cargo xtask run-mcp --print-config` |
-| Direct `runt mcp` (no proxy) | `cargo xtask dev-mcp` |
+| Direct `runt mcp` (no proxy) | `./target/debug/runt mcp` |
 | Lint (check mode) | `cargo xtask lint` |
 | Lint (auto-fix) | `cargo xtask lint --fix` |
 
@@ -396,15 +396,15 @@ These tools are always available, even when the child `runt mcp` is down:
 
 ### Direct mode (no proxy)
 
-If you don't need auto-restart or file watching, `dev-mcp` runs `runt mcp`
-directly:
+If you don't need auto-restart or file watching, run `runt mcp`
+directly from the dev build:
 
 ```bash
 # Terminal 1: start the dev daemon
 cargo xtask dev-daemon
 
-# Terminal 2: build bindings + launch MCP server
-cargo xtask dev-mcp
+# Terminal 2: launch MCP server (Rust-native, no Python)
+./target/debug/runt mcp
 ```
 
 ### How it works

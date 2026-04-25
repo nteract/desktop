@@ -104,8 +104,8 @@
     "reveal_target": "dock",
   },
   {
-    "label": "Dev MCP (print config)",
-    "command": "cargo xtask dev-mcp --print-config",
+    "label": "MCP (print config)",
+    "command": "cargo xtask run-mcp --print-config",
     "env": {
       "RUNTIMED_DEV": "1",
       "RUNTIMED_WORKSPACE_PATH": "$ZED_WORKTREE_ROOT",

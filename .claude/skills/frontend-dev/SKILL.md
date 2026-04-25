@@ -156,8 +156,8 @@ Use `nteract-dev` as the repo-local MCP server name so it stays distinct from an
 # Terminal 1: start dev daemon
 cargo xtask dev-daemon
 
-# Terminal 2: build bindings + launch MCP server
-cargo xtask dev-mcp
+# Terminal 2: launch MCP server directly (Rust-native, no Python)
+./target/debug/runt mcp
 ```
 
 ### nteract-dev Tools

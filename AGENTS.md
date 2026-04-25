@@ -286,7 +286,7 @@ uv run nteract   # Alternative: finds and launches runt mcp
 
 - Source builds default to the `nightly` channel. Only `RUNT_BUILD_CHANNEL=stable` opts a source-built `cargo xtask` or `cargo` flow into stable names, app launch behavior, and cache/socket namespaces.
 - Use the default nightly flow for normal repo development. Opt into stable only when you are specifically validating stable branding, stable socket/cache paths, or stable app-launch behavior.
-- `cargo xtask dev-daemon`, `cargo xtask notebook`, `cargo xtask run`, `cargo xtask run-mcp`, and `cargo xtask dev-mcp` all follow `RUNT_BUILD_CHANNEL`.
+- `cargo xtask dev-daemon`, `cargo xtask notebook`, `cargo xtask run`, and `cargo xtask run-mcp` all follow `RUNT_BUILD_CHANNEL`.
 
 ### Telemetry
 
@@ -440,8 +440,6 @@ All build, lint, and dev commands go through `cargo xtask`. **Run `cargo xtask h
 | | `cargo xtask install-nightly` | Install runtimed + runt + nteract-mcp as the local nightly (cloud-box / headless-Linux first-install). Refuses on macOS unless `--on-macos`; refuses when an app bundle is installed unless `--replace-installed-app`. |
 | MCP | `cargo xtask run-mcp` | nteract-dev (daemon + MCP + auto-restart) |
 | | `cargo xtask run-mcp --print-config` | Print MCP client config JSON |
-| | `cargo xtask dev-mcp` | Direct `runt mcp` (no proxy, no auto-restart) |
-| | `cargo xtask dev-mcp --print-config` | Print direct MCP client config JSON |
 | | `cargo xtask mcp-inspector` | Launch MCP Inspector UI for testing runt mcp |
 | Lint | `cargo xtask lint` | Check formatting (Rust fmt, JS/TS, Python) |
 | | `cargo xtask lint --fix` | Auto-fix formatting |

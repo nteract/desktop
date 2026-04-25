@@ -76,9 +76,9 @@ here is what happens under the hood:
 ```mermaid
 graph LR
     A["1. pnpm install"] --> M["2. Build MCP widget HTML<br/>crates/runt-mcp/assets/_output.html"]
-    M --> R["3. cargo build<br/>-p runtimed -p runt -p mcp-supervisor -p notebook"]
+    M --> R["3. cargo build<br/>-p runtimed -p runt -p nteract-mcp -p mcp-supervisor"]
     R --> E["4. Copy sidecar binaries<br/>for Tauri bundling"]
-    E --> P["5. In parallel:<br/>uv sync + maturin develop<br/>and pnpm frontend build"]
+    E --> P["5. pnpm frontend build"]
     P --> F["6. cargo tauri build<br/>or debug link step"]
 
     classDef step fill:#f3e5f5,stroke:#7b1fa2
