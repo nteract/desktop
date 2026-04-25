@@ -380,6 +380,7 @@ impl NotebookDoc {
                 kernelspec,
                 language_info,
                 runt: runt.unwrap_or_default(),
+                extras: std::collections::BTreeMap::new(),
             });
         }
 
@@ -1951,6 +1952,7 @@ pub fn get_metadata_snapshot_from_doc(
             kernelspec,
             language_info,
             runt: runt.unwrap_or_default(),
+            extras: std::collections::BTreeMap::new(),
         });
     }
 
@@ -3351,12 +3353,15 @@ mod tests {
                 name: "python3".to_string(),
                 display_name: "Python 3".to_string(),
                 language: Some("python".to_string()),
+                extras: std::collections::BTreeMap::new(),
             }),
             language_info: Some(metadata::LanguageInfoSnapshot {
                 name: "python".to_string(),
                 version: Some("3.11.5".to_string()),
+                extras: std::collections::BTreeMap::new(),
             }),
             runt: metadata::RuntMetadata::default(),
+            extras: std::collections::BTreeMap::new(),
         };
 
         doc.set_metadata_snapshot(&snapshot).unwrap();
@@ -3373,9 +3378,11 @@ mod tests {
                 name: "python3".to_string(),
                 display_name: "Python 3".to_string(),
                 language: Some("python".to_string()),
+                extras: std::collections::BTreeMap::new(),
             }),
             language_info: None,
             runt: metadata::RuntMetadata::default(),
+            extras: std::collections::BTreeMap::new(),
         };
 
         doc.set_metadata_snapshot(&snapshot).unwrap();
@@ -3749,9 +3756,11 @@ mod tests {
                 name: "python3".to_string(),
                 display_name: "Python 3".to_string(),
                 language: Some("python".to_string()),
+                extras: std::collections::BTreeMap::new(),
             }),
             language_info: None,
             runt: metadata::RuntMetadata::default(),
+            extras: std::collections::BTreeMap::new(),
         };
 
         doc.set_metadata_snapshot(&snapshot).unwrap();
@@ -3771,9 +3780,11 @@ mod tests {
                 name: "python3".to_string(),
                 display_name: "Python 3".to_string(),
                 language: Some("python".to_string()),
+                extras: std::collections::BTreeMap::new(),
             }),
             language_info: None,
             runt: metadata::RuntMetadata::default(),
+            extras: std::collections::BTreeMap::new(),
         };
 
         doc.set_metadata_snapshot(&snapshot).unwrap();
@@ -3795,9 +3806,11 @@ mod tests {
                 name: "python3".to_string(),
                 display_name: "Python 3".to_string(),
                 language: Some("python".to_string()),
+                extras: std::collections::BTreeMap::new(),
             }),
             language_info: None,
             runt: metadata::RuntMetadata::default(),
+            extras: std::collections::BTreeMap::new(),
         };
 
         doc.set_metadata_snapshot(&snapshot).unwrap();
@@ -3976,9 +3989,11 @@ mod tests {
                 name: "python3".to_string(),
                 display_name: "Python 3".to_string(),
                 language: Some("python".to_string()),
+                extras: std::collections::BTreeMap::new(),
             }),
             language_info: None,
             runt: metadata::RuntMetadata::default(),
+            extras: std::collections::BTreeMap::new(),
         };
         doc.set_metadata_snapshot(&snapshot1).unwrap();
 
@@ -3988,12 +4003,15 @@ mod tests {
                 name: "deno".to_string(),
                 display_name: "Deno".to_string(),
                 language: Some("typescript".to_string()),
+                extras: std::collections::BTreeMap::new(),
             }),
             language_info: Some(metadata::LanguageInfoSnapshot {
                 name: "typescript".to_string(),
                 version: None,
+                extras: std::collections::BTreeMap::new(),
             }),
             runt: metadata::RuntMetadata::default(),
+            extras: std::collections::BTreeMap::new(),
         };
         doc.set_metadata_snapshot(&snapshot2).unwrap();
 
