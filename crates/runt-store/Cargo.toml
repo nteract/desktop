@@ -2,7 +2,7 @@
 name = "runt-store"
 version = "0.0.1"
 edition.workspace = true
-description = "Daemon local data store (spike: libSQL/Turso-backed trust allowlist + room for history/search/completion caches)"
+description = "Daemon local data store (spike: pure-Rust Turso-backed trust allowlist + room for history/search/completion caches)"
 repository.workspace = true
 license.workspace = true
 
@@ -10,11 +10,10 @@ license.workspace = true
 anyhow = { workspace = true }
 dashmap = "6"
 dirs = "6"
-# libsql core only — no replication, no remote, no sync, no TLS. This
-# is the embedded SQLite-fork path; the remote/replication features
-# would drag in hyper + tower + tonic which belong on a cloud-sync
-# future, not the daemon's local store.
-libsql = { version = "0.9", default-features = false, features = ["core"] }
+# Pure-Rust Turso. No C toolchain for cross-compilation, no FFI.
+# `mimalloc` is the default and worth keeping for SQLite-comparable
+# alloc perf. `sync` (cloud replication) is intentionally left off.
+turso = "0.5"
 parking_lot = "0.12"
 serde = { workspace = true }
 thiserror = "2"

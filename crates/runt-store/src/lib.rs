@@ -1,27 +1,31 @@
-//! `runt-store` — daemon local data store (Turso/libSQL spike).
+//! `runt-store` — daemon local data store (pure-Rust `turso` spike).
 //!
 //! # What this is
 //!
-//! Mirror of the LanceDB spike (PR #2176) using libSQL core only.
-//! Same `TrustAllowlist` facade, same 9 integration tests, same
-//! benchmark harness. Apples-to-apples comparison for the "what
-//! should own daemon-side accumulated state?" decision.
+//! Third backend in the daemon-store evaluation after Lance (#2176)
+//! and libSQL (#2178). This one uses the `turso` crate — the Turso
+//! team's ground-up, pure-Rust rewrite of the SQLite engine.
 //!
-//! See PR #2176 for the LanceDB numbers and the broader workload
-//! analysis (parquet/sift, Arrow IPC, indexed search, history cache).
+//! Same `TrustAllowlist` facade, same 9 integration tests, same
+//! criterion harness. Apples-to-apples numbers.
+//!
+//! # Why pure Rust matters
+//!
+//! libSQL ships the SQLite C source via `libsql-ffi` + `cc`. That's
+//! fine for macOS/Linux dev boxes but adds a C toolchain dependency
+//! for every target, and complicates Windows cross-compilation. The
+//! `turso` crate is 100% Rust — no `cc`, no `bindgen`, no C sources.
+//! Worth paying some perf to keep the daemon's build story clean,
+//! *if* the pure-Rust version is close enough.
 //!
 //! # Speed model
 //!
-//! Same in-memory-first pattern as the Lance spike:
+//! Same in-memory-first pattern:
 //!
 //! - Reads on the hot path never touch disk. The whole table is
-//!   materialized into a `HashSet` at `open()` time, and `contains()`
+//!   materialized into a `HashSet` at `open()` time, `contains()`
 //!   is a pure `HashSet` lookup.
 //! - Writes update the set and append to the DB in the same call.
-//!
-//! libSQL gives us WAL + synchronous=NORMAL out of the box, which is
-//! effectively what we'd want for an "append decisions, rarely remove"
-//! workload.
 //!
 //! # On disk
 //!

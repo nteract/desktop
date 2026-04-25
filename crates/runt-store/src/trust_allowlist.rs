@@ -3,7 +3,9 @@
 //!
 //! # Storage model
 //!
-//! Durability via libSQL (Turso fork of SQLite). One table:
+//! Durability via the `turso` crate — the Turso team's ground-up
+//! pure-Rust rewrite of the SQLite engine, SQLite-compatible on the
+//! wire + file format. One table:
 //!
 //! ```sql
 //! CREATE TABLE trust_allowlist (
@@ -11,18 +13,20 @@
 //!   name      TEXT NOT NULL,
 //!   added_at  INTEGER NOT NULL,
 //!   PRIMARY KEY (manager, name)
-//! ) WITHOUT ROWID;
+//! );
 //! ```
 //!
-//! `WITHOUT ROWID` keeps the B-tree keyed by the natural identifier,
-//! which is what we want for both lookup and upsert. `added_at` is
-//! Unix seconds.
+//! `added_at` is Unix seconds. (Note: `turso` 0.5 does not yet parse
+//! `WITHOUT ROWID`, so the primary key goes on a normal b-tree over
+//! rowid. Functionally identical for our lookup pattern, since we
+//! always hit the `(manager, name)` index. Reintroduce once turso
+//! catches up to SQLite's full DDL.)
 //!
 //! # Hot path
 //!
 //! All rows are loaded into an in-memory `HashSet` at `open()` time.
 //! `contains()` is a pure set lookup — no disk I/O, no `.await`. The
-//! set is the authoritative view inside the running daemon; libSQL is
+//! set is the authoritative view inside the running daemon; turso is
 //! the durability layer and source of truth on cold start.
 
 use std::collections::HashSet;
@@ -30,9 +34,9 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use libsql::{params, Builder};
 use parking_lot::RwLock;
 use thiserror::Error;
+use turso::{params, Builder};
 
 const DB_FILE: &str = "allowlist.db";
 
@@ -72,8 +76,8 @@ pub struct TrustedPackage {
 
 #[derive(Debug, Error)]
 pub enum TrustAllowlistError {
-    #[error("libsql error: {0}")]
-    LibSql(#[from] libsql::Error),
+    #[error("turso error: {0}")]
+    Turso(#[from] turso::Error),
     #[error("store directory unavailable")]
     NoStoreDir,
     #[error("io error: {0}")]
@@ -82,11 +86,11 @@ pub enum TrustAllowlistError {
     Clock(#[from] std::time::SystemTimeError),
 }
 
-/// In-memory view of the allowlist backed by a libSQL database on disk.
+/// In-memory view of the allowlist backed by a turso database on disk.
 #[derive(Clone)]
 pub struct TrustAllowlist {
     entries: Arc<RwLock<HashSet<(PackageManager, String)>>>,
-    db: Arc<libsql::Database>,
+    db: Arc<turso::Database>,
 }
 
 impl TrustAllowlist {
@@ -96,28 +100,25 @@ impl TrustAllowlist {
     pub async fn open(store_dir: &Path) -> Result<Self, TrustAllowlistError> {
         tokio::fs::create_dir_all(store_dir).await?;
         let db_path = store_dir.join(DB_FILE);
-        let db = Builder::new_local(&db_path).build().await?;
+        let db_path_str = db_path
+            .to_str()
+            .ok_or(TrustAllowlistError::NoStoreDir)?
+            .to_string();
+        let db = Builder::new_local(&db_path_str).build().await?;
         let conn = db.connect()?;
 
-        // Pragmas tuned for a local, single-process store: WAL so
-        // readers and writers don't block each other, NORMAL sync
-        // (WAL is already durable on checkpoint, full FSYNC is
-        // overkill for accumulated user decisions), foreign_keys off
-        // (nothing references us).
-        conn.execute_batch(
-            "PRAGMA journal_mode=WAL;\n\
-             PRAGMA synchronous=NORMAL;\n\
-             PRAGMA foreign_keys=OFF;",
-        )
-        .await?;
+        // turso 0.5 uses WAL by default and doesn't expose a
+        // `PRAGMA journal_mode` yet — it's the engine's built-in
+        // durability mode. No pragma batch needed.
 
-        conn.execute_batch(
+        conn.execute(
             "CREATE TABLE IF NOT EXISTS trust_allowlist (\n\
                manager  TEXT NOT NULL,\n\
                name     TEXT NOT NULL,\n\
                added_at INTEGER NOT NULL,\n\
                PRIMARY KEY (manager, name)\n\
-             ) WITHOUT ROWID;",
+             )",
+            (),
         )
         .await?;
 
@@ -191,19 +192,19 @@ impl TrustAllowlist {
             return Ok(());
         }
 
-        let conn = self.db.connect()?;
-        // Use a transaction so the batch append is atomic. With
-        // WAL + synchronous=NORMAL this remains cheap (one fsync at
-        // commit) but guarantees either all-or-nothing on crash.
-        conn.execute("BEGIN IMMEDIATE", ()).await?;
+        let mut conn = self.db.connect()?;
+        // Batch the appends in a single transaction so the write is
+        // atomic — either all rows land or none do. turso uses WAL
+        // internally so the per-commit cost is one fsync.
+        let tx = conn.transaction().await?;
         for name in &fresh {
-            conn.execute(
+            tx.execute(
                 "INSERT OR IGNORE INTO trust_allowlist (manager, name, added_at) VALUES (?1, ?2, ?3)",
                 params![manager.as_str().to_string(), name.clone(), now],
             )
             .await?;
         }
-        conn.execute("COMMIT", ()).await?;
+        tx.commit().await?;
         Ok(())
     }
 
