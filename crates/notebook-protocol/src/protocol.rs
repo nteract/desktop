@@ -385,12 +385,19 @@ pub enum NotebookRequest {
         path: Option<String>,
     },
 
-    /// Clone the notebook to a new path with fresh env_id and cleared outputs.
-    /// Used for "Save As Copy" functionality - creates a new independent notebook
-    /// without affecting the current document.
-    CloneNotebook {
-        /// Target path for the cloned notebook (absolute, .ipynb appended if needed).
-        path: String,
+    /// Fork the current notebook into a new ephemeral (in-memory only) room.
+    ///
+    /// Creates a new UUID, copies cells + metadata from the source room,
+    /// resets env_id, clears outputs and trust. The new room exists only
+    /// on the daemon until a peer connects to it via `Handshake::NotebookSync`
+    /// and optionally promotes it to file-backed via Save-As.
+    ///
+    /// Outputs and execution counts are NOT copied — forking widget state
+    /// into a kernel-less room would render disconnected live comms.
+    CloneAsEphemeral {
+        /// Source notebook UUID. Must refer to a room currently loaded in
+        /// the daemon (file-backed, untitled, or ephemeral).
+        source_notebook_id: String,
     },
 
     /// Sync environment with current metadata (hot-install new packages).
@@ -496,10 +503,16 @@ pub enum NotebookResponse {
     /// Save failed with a structured error.
     SaveError { error: SaveErrorKind },
 
-    /// Notebook cloned successfully to a new file.
+    /// Notebook forked into a new ephemeral room.
     NotebookCloned {
-        /// The absolute path where the cloned notebook was written.
-        path: String,
+        /// UUID of the newly-created ephemeral room.
+        notebook_id: String,
+        /// Effective working directory the cloned room inherits from its
+        /// source: the source's .ipynb parent if file-backed, or the
+        /// source room's explicit working_dir for untitled sources.
+        /// Passed through to new-window creation for project-file resolution.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        working_dir: Option<String>,
     },
 
     /// Generic success.
