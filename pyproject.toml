@@ -13,6 +13,7 @@ dependencies = [
     "pyarrow>=14",
     "numpy>=2.2.6",
     "narwhals>=1.0",
+    "anywidget>=0.9.21",
 ]
 
 [build-system]
