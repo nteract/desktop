@@ -148,17 +148,8 @@ pub(crate) async fn save_notebook_to_disk(
 
     let nbformat_attachments = room.nbformat_attachments_snapshot().await;
 
-    // Decide whether to emit cell IDs. Pre-4.5 notebooks had no cell IDs;
-    // writing synthetic `__external_cell_N` IDs would inject fields that
-    // were never in the original file.
-    let original_minor = room
-        .persistence
-        .original_nbformat_minor
-        .load(Ordering::Relaxed);
-    let should_write_cell_ids = original_minor >= 5 || original_minor == 0;
-
-    // Reconstruct cells as JSON
-    // Cell metadata now comes from the CellSnapshot (populated during load)
+    // Reconstruct cells as JSON. Cell IDs are always written — pre-4.5
+    // notebooks loaded without IDs got fresh UUIDs minted at parse time.
     let mut nb_cells = Vec::new();
     for cell in &cells {
         // Use metadata from the Automerge doc (populated during notebook load)
@@ -180,20 +171,12 @@ pub(crate) async fn save_notebook_to_disk(
             lines
         };
 
-        let mut cell_json = if should_write_cell_ids {
-            serde_json::json!({
-                "id": cell.id,
-                "cell_type": cell.cell_type,
-                "source": source_lines,
-                "metadata": cell_meta,
-            })
-        } else {
-            serde_json::json!({
-                "cell_type": cell.cell_type,
-                "source": source_lines,
-                "metadata": cell_meta,
-            })
-        };
+        let mut cell_json = serde_json::json!({
+            "id": cell.id,
+            "cell_type": cell.cell_type,
+            "source": source_lines,
+            "metadata": cell_meta,
+        });
 
         if cell.cell_type == "code" {
             // Resolve outputs from RuntimeStateDoc (keyed by execution_id)
@@ -234,19 +217,13 @@ pub(crate) async fn save_notebook_to_disk(
     }
 
     // Build the final notebook JSON.
-    // Preserve the original nbformat_minor for pre-4.5 notebooks rather
-    // than forcing an upgrade that would inject cell IDs into files that
-    // never had them.
+    // We always write cell IDs, so nbformat_minor is at least 5.
     let existing_minor = existing
         .as_ref()
         .and_then(|nb| nb.get("nbformat_minor"))
         .and_then(|v| v.as_u64())
         .unwrap_or(5);
-    let nbformat_minor = if should_write_cell_ids {
-        std::cmp::max(existing_minor, 5)
-    } else {
-        existing_minor
-    };
+    let nbformat_minor = std::cmp::max(existing_minor, 5);
 
     let cell_count = nb_cells.len();
     let notebook_json = serde_json::json!({
@@ -494,12 +471,6 @@ pub(crate) async fn clone_notebook_to_disk(
     // Generate fresh env_id for the cloned notebook
     let new_env_id = uuid::Uuid::new_v4().to_string();
 
-    let original_minor = room
-        .persistence
-        .original_nbformat_minor
-        .load(Ordering::Relaxed);
-    let should_write_cell_ids = original_minor >= 5 || original_minor == 0;
-
     // Build cells with cleared outputs and execution counts, but preserved metadata
     let mut nb_cells = Vec::new();
     for cell in &cells {
@@ -516,20 +487,12 @@ pub(crate) async fn clone_notebook_to_disk(
         // Use metadata from the Automerge doc (populated during notebook load)
         let cell_meta = cell.metadata.clone();
 
-        let mut cell_json = if should_write_cell_ids {
-            serde_json::json!({
-                "id": cell.id,
-                "cell_type": cell.cell_type,
-                "source": source_lines,
-                "metadata": cell_meta,
-            })
-        } else {
-            serde_json::json!({
-                "cell_type": cell.cell_type,
-                "source": source_lines,
-                "metadata": cell_meta,
-            })
-        };
+        let mut cell_json = serde_json::json!({
+            "id": cell.id,
+            "cell_type": cell.cell_type,
+            "source": source_lines,
+            "metadata": cell_meta,
+        });
 
         if cell.cell_type == "code" {
             // Clear outputs and execution_count for cloned notebook
@@ -567,11 +530,7 @@ pub(crate) async fn clone_notebook_to_disk(
         .and_then(|nb| nb.get("nbformat_minor"))
         .and_then(|v| v.as_u64())
         .unwrap_or(5);
-    let nbformat_minor = if should_write_cell_ids {
-        std::cmp::max(existing_minor, 5)
-    } else {
-        existing_minor
-    };
+    let nbformat_minor = std::cmp::max(existing_minor, 5);
 
     // Build the final notebook JSON
     let cell_count = nb_cells.len();
@@ -1117,24 +1076,12 @@ pub(crate) fn spawn_notebook_file_watcher(
                                 }
                             };
 
-                            // Refresh original_nbformat_minor so the save
-                            // path reflects external upgrades (e.g. an editor
-                            // adding cell IDs and bumping to 4.5).
-                            if let Some(minor) = json
-                                .get("nbformat_minor")
-                                .and_then(|v| v.as_u64())
-                                .and_then(|n| u32::try_from(n).ok())
-                            {
-                                room.persistence
-                                    .original_nbformat_minor
-                                    .store(minor, Ordering::Relaxed);
-                            }
-
                             // Parse cells from the .ipynb
                             // None = parse failure (missing cells key), Some([]) = valid empty notebook
                             let ParsedIpynbCells {
                                 cells: external_cells,
                                 outputs_by_cell: external_outputs,
+                                attachments: external_attachments,
                             } = match parse_cells_from_ipynb(&json) {
                                 Some(parsed) => parsed,
                                 None => {
@@ -1145,7 +1092,6 @@ pub(crate) fn spawn_notebook_file_watcher(
                                     continue;
                                 }
                             };
-                            let external_attachments = parse_nbformat_attachments_from_ipynb(&json);
                             let external_metadata = parse_metadata_from_ipynb(&json);
 
                             // Check if kernel is running (to preserve outputs)

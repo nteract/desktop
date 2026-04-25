@@ -820,6 +820,63 @@ async fn test_save_notebook_to_disk_enforces_nbformat_minor_5() {
     );
 }
 
+/// Round-trip a pre-4.5 notebook with no cell IDs through load+save and
+/// confirm every saved cell carries a stable ID. The earlier behavior
+/// minted positional `__external_cell_N` IDs that drifted across the
+/// autosave-write-watch loop, desyncing source from cell type. With real
+/// UUIDs, every save persists identifiers that survive any number of
+/// reloads.
+#[tokio::test]
+async fn test_save_persists_real_ids_for_legacy_notebook() {
+    use std::io::Write;
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "legacy.ipynb");
+
+    // Pre-4.5 notebook with cells that have no `id` field.
+    {
+        let mut f = std::fs::File::create(&notebook_path).unwrap();
+        writeln!(
+            f,
+            r##"{{
+                "nbformat": 4,
+                "nbformat_minor": 2,
+                "metadata": {{}},
+                "cells": [
+                    {{ "cell_type": "code", "source": "x = 1", "execution_count": null, "outputs": [] }},
+                    {{ "cell_type": "markdown", "source": "# Title", "metadata": {{}} }}
+                ]
+            }}"##
+        )
+        .unwrap();
+    }
+
+    let blob_store = room.blob_store.clone();
+    {
+        let mut doc = room.doc.write().await;
+        load_notebook_from_disk(&mut doc, &notebook_path, &blob_store)
+            .await
+            .unwrap();
+    }
+
+    save_notebook_to_disk(&room, None).await.unwrap();
+
+    let content = std::fs::read_to_string(&notebook_path).unwrap();
+    let saved: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let cells = saved.get("cells").and_then(|v| v.as_array()).unwrap();
+    assert_eq!(cells.len(), 2);
+    for cell in cells {
+        let id = cell
+            .get("id")
+            .and_then(|v| v.as_str())
+            .expect("every saved cell must carry an id");
+        assert!(
+            uuid::Uuid::parse_str(id).is_ok(),
+            "expected UUID, got {id:?}"
+        );
+    }
+    assert_eq!(saved.get("nbformat_minor"), Some(&serde_json::json!(5)));
+}
+
 #[tokio::test]
 async fn test_save_notebook_to_disk_with_outputs() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -1078,9 +1135,11 @@ fn test_parse_cells_from_ipynb_missing_ids() {
     let parsed = parse_cells_from_ipynb(&json).expect("Should parse valid notebook");
     let cells = &parsed.cells;
     assert_eq!(cells.len(), 2);
-    // Should generate fallback IDs based on index
-    assert_eq!(cells[0].id, "__external_cell_0");
-    assert_eq!(cells[1].id, "__external_cell_1");
+    // Should mint fresh UUIDs for ID-less cells so the next save writes
+    // stable identifiers rather than positional placeholders.
+    assert!(uuid::Uuid::parse_str(&cells[0].id).is_ok());
+    assert!(uuid::Uuid::parse_str(&cells[1].id).is_ok());
+    assert_ne!(cells[0].id, cells[1].id);
     assert_eq!(cells[0].source, "x = 1");
     assert_eq!(cells[1].source, "y = 2");
 }
