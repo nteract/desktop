@@ -687,6 +687,7 @@ impl AsyncSession {
                 name,
                 display_name,
                 language,
+                extras: Default::default(),
             });
             session_core::set_notebook_metadata(&state, &snapshot).await
         })

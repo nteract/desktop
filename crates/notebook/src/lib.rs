@@ -551,21 +551,7 @@ fn metadata_from_snapshot(
 
 /// Helper to create a default empty NotebookMetadataSnapshot.
 fn default_metadata_snapshot() -> notebook_doc::metadata::NotebookMetadataSnapshot {
-    notebook_doc::metadata::NotebookMetadataSnapshot {
-        kernelspec: None,
-        language_info: None,
-        runt: notebook_doc::metadata::RuntMetadata {
-            schema_version: "1".to_string(),
-            env_id: None,
-            uv: None,
-            conda: None,
-            pixi: None,
-            deno: None,
-            trust_signature: None,
-            trust_timestamp: None,
-            extra: std::collections::BTreeMap::new(),
-        },
-    }
+    notebook_doc::metadata::NotebookMetadataSnapshot::default()
 }
 
 /// Convert nbformat metadata into a `NotebookMetadataSnapshot`.
@@ -581,6 +567,7 @@ fn snapshot_from_nbformat(
         name: ks.name.clone(),
         display_name: ks.display_name.clone(),
         language: ks.language.clone(),
+        extras: Default::default(),
     });
 
     let language_info = metadata
@@ -589,6 +576,7 @@ fn snapshot_from_nbformat(
         .map(|li| LanguageInfoSnapshot {
             name: li.name.clone(),
             version: li.version.clone(),
+            extras: Default::default(),
         });
 
     let convert_legacy_deno = |dd: crate::deno_env::DenoDependencies| DenoMetadata {
@@ -661,6 +649,7 @@ fn snapshot_from_nbformat(
         kernelspec,
         language_info,
         runt,
+        extras: std::collections::BTreeMap::new(),
     }
 }
 

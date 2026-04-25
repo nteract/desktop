@@ -4145,13 +4145,15 @@ mod tests {
         use crate::metadata::{KernelspecSnapshot, NotebookMetadataSnapshot};
         let mut doc = NotebookDoc::new_with_actor("test-nb", "test");
 
-        let mut snap = NotebookMetadataSnapshot::default();
-        snap.kernelspec = Some(KernelspecSnapshot {
-            name: "python3".to_string(),
-            display_name: "Python 3".to_string(),
-            language: Some("python".to_string()),
-            extras: Default::default(),
-        });
+        let mut snap = NotebookMetadataSnapshot {
+            kernelspec: Some(KernelspecSnapshot {
+                name: "python3".to_string(),
+                display_name: "Python 3".to_string(),
+                language: Some("python".to_string()),
+                extras: Default::default(),
+            }),
+            ..Default::default()
+        };
         snap.extras
             .insert("kernelspec".to_string(), serde_json::json!({"BAD": true}));
 
@@ -4174,12 +4176,14 @@ mod tests {
         use crate::metadata::{LanguageInfoSnapshot, NotebookMetadataSnapshot};
         let mut doc = NotebookDoc::new_with_actor("test-nb", "test");
 
-        let mut snap = NotebookMetadataSnapshot::default();
-        snap.language_info = Some(LanguageInfoSnapshot {
-            name: "python".to_string(),
-            version: Some("3.11.5".to_string()),
-            extras: Default::default(),
-        });
+        let mut snap = NotebookMetadataSnapshot {
+            language_info: Some(LanguageInfoSnapshot {
+                name: "python".to_string(),
+                version: Some("3.11.5".to_string()),
+                extras: Default::default(),
+            }),
+            ..Default::default()
+        };
         snap.extras.insert(
             "language_info".to_string(),
             serde_json::json!({"BAD": true}),
@@ -4194,11 +4198,16 @@ mod tests {
 
     #[test]
     fn set_metadata_snapshot_drops_extras_colliding_with_runt() {
-        use crate::metadata::NotebookMetadataSnapshot;
+        use crate::metadata::{NotebookMetadataSnapshot, RuntMetadata};
         let mut doc = NotebookDoc::new_with_actor("test-nb", "test");
 
-        let mut snap = NotebookMetadataSnapshot::default();
-        snap.runt.env_id = Some("real-env-id".to_string());
+        let mut snap = NotebookMetadataSnapshot {
+            runt: RuntMetadata {
+                env_id: Some("real-env-id".to_string()),
+                ..RuntMetadata::default()
+            },
+            ..Default::default()
+        };
         snap.extras
             .insert("runt".to_string(), serde_json::json!({"env_id": "bogus"}));
 

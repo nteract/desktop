@@ -340,9 +340,9 @@ mod tests {
                         name: "python3".into(),
                         display_name: "Python 3".into(),
                         language: Some("python".into()),
+                        extras: Default::default(),
                     }),
-                    language_info: None,
-                    runt: notebook_doc::metadata::RuntMetadata::default(),
+                    ..Default::default()
                 };
                 nd.set_metadata_snapshot(&snapshot).unwrap();
                 *doc = nd.into_inner();
@@ -536,9 +536,9 @@ mod tests {
                 name: "deno".into(),
                 display_name: "Deno".into(),
                 language: Some("typescript".into()),
+                extras: Default::default(),
             }),
-            language_info: None,
-            runt: notebook_doc::metadata::RuntMetadata::default(),
+            ..Default::default()
         };
 
         handle.set_metadata_snapshot(&snapshot).unwrap();
@@ -1152,9 +1152,9 @@ mod integration_tests {
                 name: "python3".into(),
                 display_name: "Python 3".into(),
                 language: Some("python".into()),
+                extras: Default::default(),
             }),
-            language_info: None,
-            runt: notebook_doc::metadata::RuntMetadata::default(),
+            ..Default::default()
         };
 
         handle

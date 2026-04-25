@@ -1655,26 +1655,32 @@ mod is_empty_tests {
 
     #[test]
     fn runt_with_env_id_is_not_empty() {
-        let mut runt = RuntMetadata::default();
-        runt.env_id = Some("abc-123".to_string());
+        let runt = RuntMetadata {
+            env_id: Some("abc-123".to_string()),
+            ..RuntMetadata::default()
+        };
         assert!(!runt.is_empty());
     }
 
     #[test]
     fn runt_with_uv_is_not_empty() {
-        let mut runt = RuntMetadata::default();
-        runt.uv = Some(UvInlineMetadata {
-            dependencies: vec!["pandas".to_string()],
-            requires_python: None,
-            prerelease: None,
-        });
+        let runt = RuntMetadata {
+            uv: Some(UvInlineMetadata {
+                dependencies: vec!["pandas".to_string()],
+                requires_python: None,
+                prerelease: None,
+            }),
+            ..RuntMetadata::default()
+        };
         assert!(!runt.is_empty());
     }
 
     #[test]
     fn runt_with_trust_signature_is_not_empty() {
-        let mut runt = RuntMetadata::default();
-        runt.trust_signature = Some("hmac-sha256:deadbeef".to_string());
+        let runt = RuntMetadata {
+            trust_signature: Some("hmac-sha256:deadbeef".to_string()),
+            ..RuntMetadata::default()
+        };
         assert!(!runt.is_empty());
     }
 
@@ -1683,13 +1689,18 @@ mod is_empty_tests {
         let mut runt = RuntMetadata::default();
         runt.extra
             .insert("future_field".to_string(), serde_json::json!(42));
+        // Mutating a field through a mutable method (BTreeMap::insert)
+        // rather than reassigning via Default::default() — clippy is
+        // fine with this shape.
         assert!(!runt.is_empty());
     }
 
     #[test]
     fn runt_with_modified_schema_version_is_not_empty() {
-        let mut runt = RuntMetadata::default();
-        runt.schema_version = "2".to_string();
+        let runt = RuntMetadata {
+            schema_version: "2".to_string(),
+            ..RuntMetadata::default()
+        };
         assert!(!runt.is_empty());
     }
 }
