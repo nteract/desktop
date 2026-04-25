@@ -335,6 +335,9 @@ pub async fn dispatch(
         // Cell metadata
         "add_cell_tags" => cell_meta::add_cell_tags(server, request).await,
         "remove_cell_tags" => cell_meta::remove_cell_tags(server, request).await,
+        // Hidden from tool listing but still callable for backwards compat
+        "set_cells_source_hidden" => cell_meta::set_cells_source_hidden(server, request).await,
+        "set_cells_outputs_hidden" => cell_meta::set_cells_outputs_hidden(server, request).await,
         // Execution
         "execute_cell" => execution::execute_cell(server, request).await,
         "run_all_cells" => execution::run_all_cells(server, request).await,

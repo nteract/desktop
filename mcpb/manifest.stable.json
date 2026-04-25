@@ -117,20 +117,16 @@
       "name": "remove_cell_tags"
     },
     {
-      "description": "Hide or show cell source.",
-      "name": "set_cells_source_hidden"
-    },
-    {
-      "description": "Hide or show cell outputs.",
-      "name": "set_cells_outputs_hidden"
-    },
-    {
       "description": "Execute a code cell.",
       "name": "execute_cell"
     },
     {
       "description": "Execute all code cells in order.",
       "name": "run_all_cells"
+    },
+    {
+      "description": "Get outputs for an execution by ID. Returns status (done/error/running/queued) so you know if outputs are complete. Use the execution_id from execute_cell, set_cell(and_run), or run_all_cells.",
+      "name": "get_results"
     },
     {
       "description": "Interrupt execution.",
