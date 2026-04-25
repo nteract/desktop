@@ -40,7 +40,7 @@ import { useTrust } from "./hooks/useTrust";
 import { useUpdater } from "./hooks/useUpdater";
 import { startAttributionDispatch } from "./lib/attribution-registry";
 import { getBlobPort, useBlobPort } from "./lib/blob-port";
-import { subscribeBroadcast } from "./lib/notebook-frame-bus";
+import { useRuntimeState } from "./lib/runtime-state";
 import {
   flushCellUIState,
   setExecutingCellIds as storeSetExecutingCellIds,
@@ -166,8 +166,6 @@ function AppContent() {
     save,
     openNotebook,
     cloneNotebook,
-    dirty,
-    setDirty,
 
     applyExecutionCountFromDaemon,
     setCellSourceHidden,
@@ -878,28 +876,28 @@ function AppContent() {
     }
   }, []);
 
-  // Path transitions. `path_changed` with a non-null path means the room is
-  // now file-backed — flip ephemeral false and update the title base. A null
-  // path puts the room back into untitled state.
+  // Path transitions are driven by `RuntimeStateDoc.path` (frame 0x05).
+  // A non-null value means the room is file-backed; a null value (only
+  // really at first mount before sync catches up) keeps the room in
+  // untitled state. The runtime state hook returns the same default
+  // until the daemon's first state sync arrives, so this effect is a
+  // straight projection.
+  const runtimePath = useRuntimeState().path;
   useEffect(() => {
-    return subscribeBroadcast((payload) => {
-      const b = payload as { event?: string; path?: string | null };
-      if (b.event !== "path_changed") return;
-      applyNotebookPath(b.path);
-    });
-  }, [applyNotebookPath]);
+    applyNotebookPath(runtimePath);
+  }, [applyNotebookPath, runtimePath]);
 
-  // Render the asterisk purely from frontend state. `titleBase` is the
-  // filename, `dirty || ephemeral` adds the prefix. One setTitle per change;
-  // no read-then-write race against `applyPathChanged`.
+  // Title is purely a function of `ephemeral`. Untitled notebooks get
+  // the `*` prefix; saved notebooks render their filename. Autosave
+  // (2s quiet, 10s max) keeps the file current within seconds of any
+  // edit, so the file-backed case never shows an unsaved-changes dot.
   useEffect(() => {
     if (titleBase == null) return;
-    const showDirty = dirty || ephemeral === true;
-    const next = showDirty ? `* ${titleBase}` : titleBase;
+    const next = ephemeral === true ? `* ${titleBase}` : titleBase;
     host.window.setTitle(next).catch(() => {
-      // Window may have been closed between rapid dirty toggles
+      // Window may have been closed mid-render.
     });
-  }, [host, dirty, ephemeral, titleBase]);
+  }, [host, ephemeral, titleBase]);
 
   // Cmd+F to open global find
   useEffect(() => {
@@ -1317,7 +1315,6 @@ function AppContent() {
         <CrdtBridgeProvider
           getHandle={getHandle}
           onSyncNeeded={triggerSync}
-          setDirty={setDirty}
           localActor={localActor}
         >
           <NotebookView

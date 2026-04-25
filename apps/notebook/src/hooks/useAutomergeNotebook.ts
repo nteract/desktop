@@ -93,7 +93,6 @@ export function useAutomergeNotebook() {
   const host = useNotebookHost();
   const cellIds = useCellIds();
   const [focusedCellId, setFocusedCellId] = useState<string | null>(null);
-  const [dirty, setDirtyState] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -102,10 +101,6 @@ export function useAutomergeNotebook() {
   const outputCacheRef = useRef<Map<string, JupyterOutput>>(new Map());
   const interactiveReadyRef = useRef(false);
   const latestSessionStatusRef = useRef<SessionStatus | null>(null);
-
-  // Local-edit timestamp. Bumped on every `setDirty(true)` and used to
-  // compute dirty against `runtimeState.last_saved` from the daemon.
-  const lastEditAtRef = useRef<number>(0);
   const prevPathRef = useRef<string | null>(null);
 
   // SyncEngine and transport refs — stable across re-renders.
@@ -117,23 +112,11 @@ export function useAutomergeNotebook() {
     refreshBlobPort();
   }, []);
 
-  // ── Runtime-state-driven dirty + path tracking ────────────────────
-  //
-  // `last_saved` and `path` live on RuntimeStateDoc (frame 0x05). The
-  // daemon writes them on autosave / save-as. The frontend computes
-  // dirty from a local-edit timestamp vs. `last_saved`, and mirrors the
-  // path change to Tauri so the window title updates.
+  // Mirror `RuntimeStateDoc.path` to Tauri so the window title tracks
+  // path renames (untitled→saved, save-as). The doc is daemon-authored
+  // and reaches us via normal CRDT sync (frame 0x05).
   const runtimeState = useRuntimeState();
-  const lastSavedAt = runtimeState.last_saved ? Date.parse(runtimeState.last_saved) : Number.NaN;
   const runtimePath = runtimeState.path ?? null;
-
-  useEffect(() => {
-    if (Number.isFinite(lastSavedAt) && lastSavedAt >= lastEditAtRef.current) {
-      setDirtyState(false);
-      host.notebook.markClean().catch(() => {});
-    }
-  }, [lastSavedAt, host]);
-
   useEffect(() => {
     if (runtimePath !== prevPathRef.current) {
       prevPathRef.current = runtimePath;
@@ -142,14 +125,6 @@ export function useAutomergeNotebook() {
       }
     }
   }, [runtimePath, host]);
-
-  // Wrap setDirty so all callers (internal + external) stamp the
-  // local-edit timestamp when they mark the notebook dirty. The dirty
-  // → false transition fires from the `last_saved` effect above.
-  const setDirty = useCallback((next: boolean) => {
-    if (next) lastEditAtRef.current = Date.now();
-    setDirtyState(next);
-  }, []);
 
   // ── Core helpers ───────────────────────────────────────────────────
 
@@ -220,7 +195,6 @@ export function useAutomergeNotebook() {
       if (!mutate(handle)) return false;
       rematerializeCellsSync(handle);
       engine.flush();
-      setDirty(true);
       return true;
     },
     [rematerializeCellsSync],
@@ -516,7 +490,6 @@ export function useAutomergeNotebook() {
 
     updateCellById(cellId, (c) => ({ ...c, source }));
     engine.scheduleFlush();
-    setDirty(true);
   }, []);
 
   const clearOutputsLocal = useCallback((_cellId: string) => {
@@ -566,7 +539,6 @@ export function useAutomergeNotebook() {
       rematerializeCellsSync(handle);
       engine.flush();
       setFocusedCellId(cellId);
-      setDirty(true);
 
       const cell = getNotebookCellsSnapshot().find((c) => c.id === cellId);
       return (
@@ -642,8 +614,7 @@ export function useAutomergeNotebook() {
   // ── File operations ────────────────────────────────────────────────
 
   const save = useCallback(async () => {
-    const saved = await saveNotebook(host, flushSync);
-    if (saved) setDirty(false);
+    await saveNotebook(host, flushSync);
   }, [host, flushSync]);
 
   const openNotebook = useCallback(() => openNotebookFile(host), [host]);
@@ -714,8 +685,6 @@ export function useAutomergeNotebook() {
     save,
     openNotebook,
     cloneNotebook,
-    dirty,
-    setDirty,
     loadError,
     updateOutputByDisplayId,
     applyExecutionCountFromDaemon,
