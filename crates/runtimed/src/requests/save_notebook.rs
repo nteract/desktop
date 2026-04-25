@@ -150,6 +150,12 @@ pub(crate) async fn handle(
             if let Err(e) = room.state.with_doc(|sd| sd.set_path(Some(&path_str))) {
                 tracing::warn!("[save_notebook] set_path failed: {}", e);
             }
+            // Walk up from the new location; the previous project_context
+            // reflected the old parent directory and is now stale.
+            crate::notebook_sync_server::refresh_project_context_on_save_as(
+                room,
+                canonical.as_path(),
+            );
         }
         // If path didn't change, this is save-in-place: nothing else.
     }
