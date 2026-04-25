@@ -55,13 +55,13 @@ Optional but strongly recommended. `cargo xtask` paths already wire sccache in; 
 
 ### lld linker (macOS arm64)
 
-`.cargo/config.toml` links macOS arm64 builds through LLVM's `lld`. Install it once:
+`.envrc` links macOS arm64 builds through LLVM's `lld` when it's installed. Without `lld` the build falls back to Apple's system `ld`. Install to cut incremental link time by roughly a third:
 
 ```bash
 brew install lld
 ```
 
-Without it, `cargo build` on arm64 Macs fails at link time. The rustflag is scoped to `aarch64-apple-darwin`; Intel and Linux use their platform defaults.
+The rustflag goes through direnv, not `.cargo/config.toml`, so CI runners and contributors without `lld` aren't forced to install it.
 
 ### MCP Server Configuration
 
