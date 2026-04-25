@@ -10,6 +10,8 @@ use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
+mod bump;
+
 /// Find the workspace root (nearest ancestor containing a Cargo.toml with
 /// a `[workspace]` section). Subcommands that need repo-relative paths
 /// can call `ensure_workspace_root_cwd()` from within the subcommand to
@@ -37,7 +39,7 @@ fn find_workspace_root() -> Option<PathBuf> {
 /// those must stay relative to the shell cwd where the user invoked
 /// `cargo xtask`. A global cd silently reinterprets those args against
 /// the workspace root and opens/writes the wrong files.
-fn ensure_workspace_root_cwd() {
+pub(crate) fn ensure_workspace_root_cwd() {
     if let Some(root) = find_workspace_root() {
         let _ = env::set_current_dir(&root);
     }
@@ -149,6 +151,10 @@ fn main() {
             cmd_sync_tool_cache(check);
         }
         "check-dep-budget" => cmd_check_dep_budget(),
+        "bump" => {
+            let level = args.get(1).map(String::as_str).unwrap_or("patch");
+            bump::cmd_bump(level);
+        }
         "--help" | "-h" | "help" => print_help(),
         cmd => {
             eprintln!("Unknown command: {cmd}");
@@ -223,6 +229,9 @@ Other:
   sync-tool-cache            Regenerate tool-cache.json + MCPB manifests from runt binary
   sync-tool-cache --check    Check caches are up to date + description byte budget (for CI)
   check-dep-budget           Check transitive dependency counts against per-crate budgets
+  bump [patch|minor|major]   Bump every versioned artifact (crates, Tauri app,
+                             Python, frontend packages, plugin manifests) in
+                             lockstep and regenerate Cargo.lock. Defaults to patch.
   help                       Show this help
 "
     );
