@@ -375,12 +375,14 @@ impl NotebookDoc {
         let runt = read_json_value(&self.doc, &meta_id, "runt")
             .and_then(|v| serde_json::from_value::<metadata::RuntMetadata>(v).ok());
 
-        if kernelspec.is_some() || language_info.is_some() || runt.is_some() {
+        let extras = scan_metadata_extras(&self.doc, &meta_id);
+
+        if kernelspec.is_some() || language_info.is_some() || runt.is_some() || !extras.is_empty() {
             return Some(metadata::NotebookMetadataSnapshot {
                 kernelspec,
                 language_info,
                 runt: runt.unwrap_or_default(),
-                extras: std::collections::BTreeMap::new(),
+                extras,
             });
         }
 
@@ -426,9 +428,28 @@ impl NotebookDoc {
             }
         }
 
-        let runt_v = serde_json::to_value(&snapshot.runt)
-            .map_err(|e| AutomergeError::InvalidObjId(format!("serialize runt: {}", e)))?;
-        update_json_at_key(&mut self.doc, &meta_id, "runt", &runt_v)?;
+        // Write runt only when non-empty so vanilla Jupyter notebooks
+        // round-trip without stamping a synthetic runt blob.
+        if snapshot.runt.is_empty() {
+            let _ = self.doc.delete(&meta_id, "runt");
+        } else {
+            let runt_v = serde_json::to_value(&snapshot.runt)
+                .map_err(|e| AutomergeError::InvalidObjId(format!("serialize runt: {}", e)))?;
+            update_json_at_key(&mut self.doc, &meta_id, "runt", &runt_v)?;
+        }
+
+        // Write extras. Each key becomes its own Automerge Map so
+        // concurrent edits to metadata.jupytext.* from two peers merge
+        // per-field. Guard against callers that stuff known top-level
+        // keys into extras — those would double-write at the same
+        // Automerge key.
+        for (key, value) in &snapshot.extras {
+            if matches!(key.as_str(), "kernelspec" | "language_info" | "runt") {
+                report_extras_collision(key);
+                continue;
+            }
+            update_json_at_key(&mut self.doc, &meta_id, key, value)?;
+        }
 
         Ok(())
     }
@@ -1877,6 +1898,71 @@ pub use automunge::{
     update_json_at_key,
 };
 
+/// Report a metadata-extras collision with a known typed key.
+///
+/// Called by `NotebookDoc::set_metadata_snapshot` when a caller stuffs
+/// a reserved key (`kernelspec`, `language_info`, `runt`) into the
+/// extras bag. Dropping the write is safe — the typed field carries
+/// the real value — but it indicates a caller bug that would otherwise
+/// silently cause an Automerge double-write at the same key. Error
+/// level so it surfaces on stable channels too.
+///
+/// Uses `log` under the `persistence` feature (daemon, native builds)
+/// and `eprintln!` otherwise (WASM, where a plain stderr message is
+/// the best we can do without pulling in a web-sys dep).
+fn report_extras_collision(key: &str) {
+    let msg = format!(
+        "[notebook-doc] metadata.extras collision: key {:?} is reserved for \
+         a typed field; dropping to avoid Automerge double-write. This \
+         indicates a caller bug in snapshot construction.",
+        key
+    );
+    #[cfg(feature = "persistence")]
+    log::error!("{}", msg);
+    #[cfg(not(feature = "persistence"))]
+    eprintln!("{}", msg);
+}
+
+/// Keys that live at `metadata.*` in the Automerge doc but must NOT be
+/// round-tripped as extras on the NotebookMetadataSnapshot:
+///
+/// - `kernelspec`, `language_info`, `runt`: modeled by typed fields.
+/// - `runtime`: an nteract-internal scalar (set by bootstrap,
+///   mutated by `set_metadata`) used for runtime-type detection.
+///   It's a schema artifact, not an nbformat key, so it must not
+///   surface on disk via the extras save path.
+/// - `ephemeral`: an nteract-internal scalar marking in-memory-only
+///   rooms.
+fn is_snapshot_reserved_metadata_key(key: &str) -> bool {
+    matches!(
+        key,
+        "kernelspec" | "language_info" | "runt" | "runtime" | "ephemeral"
+    )
+}
+
+/// Scan an Automerge metadata Map for top-level keys that aren't modeled
+/// by `NotebookMetadataSnapshot`'s typed fields.
+///
+/// Shared by `NotebookDoc::get_metadata_snapshot` and the free-function
+/// `get_metadata_snapshot_from_doc`. Both must behave identically —
+/// different behavior would mean the frontend sync snapshot and Python
+/// bindings disagree with the daemon's view of the same doc.
+fn scan_metadata_extras(
+    doc: &AutoCommit,
+    meta_id: &ObjId,
+) -> std::collections::BTreeMap<String, serde_json::Value> {
+    let mut extras = std::collections::BTreeMap::new();
+    for key in doc.keys(meta_id) {
+        if is_snapshot_reserved_metadata_key(&key) {
+            continue;
+        }
+        if let Some(value) = read_json_value(doc, meta_id, &key) {
+            extras.insert(key, value);
+        }
+    }
+    extras
+}
+
 /// Read cell metadata with native Automerge map support and legacy string fallback.
 ///
 /// Tries to read `metadata` as an `ObjType::Map` first (native storage),
@@ -1947,12 +2033,14 @@ pub fn get_metadata_snapshot_from_doc(
     let runt = read_json_value(doc, &meta_id, "runt")
         .and_then(|v| serde_json::from_value::<metadata::RuntMetadata>(v).ok());
 
-    if kernelspec.is_some() || language_info.is_some() || runt.is_some() {
+    let extras = scan_metadata_extras(doc, &meta_id);
+
+    if kernelspec.is_some() || language_info.is_some() || runt.is_some() || !extras.is_empty() {
         return Some(metadata::NotebookMetadataSnapshot {
             kernelspec,
             language_info,
             runt: runt.unwrap_or_default(),
-            extras: std::collections::BTreeMap::new(),
+            extras,
         });
     }
 
@@ -3387,10 +3475,15 @@ mod tests {
 
         doc.set_metadata_snapshot(&snapshot).unwrap();
 
-        // Native keys should exist
+        // kernelspec gets written. `runt` is empty (default) so the
+        // snapshot writer intentionally skips it to avoid stamping
+        // synthetic metadata on vanilla notebooks.
         let meta_id = doc.metadata_map_id().unwrap();
         assert!(doc.get_json_value(&meta_id, "kernelspec").is_some());
-        assert!(doc.get_json_value(&meta_id, "runt").is_some());
+        assert!(
+            doc.get_json_value(&meta_id, "runt").is_none(),
+            "empty runt must not be written to the doc"
+        );
 
         // Read back via native keys
         let read_back = doc.get_metadata_snapshot().unwrap();
@@ -4018,5 +4111,123 @@ mod tests {
         let read_back = doc.get_metadata_snapshot().unwrap();
         assert_eq!(read_back.kernelspec.as_ref().unwrap().name, "deno");
         assert_eq!(read_back.language_info.as_ref().unwrap().name, "typescript");
+    }
+
+    #[test]
+    fn set_metadata_snapshot_writes_extras_as_siblings() {
+        use crate::metadata::NotebookMetadataSnapshot;
+        let mut doc = NotebookDoc::new_with_actor("test-nb", "test");
+        let mut snap = NotebookMetadataSnapshot::default();
+        snap.extras.insert(
+            "jupytext".to_string(),
+            serde_json::json!({"paired_paths": [["x.py", "py:percent"]]}),
+        );
+        snap.extras.insert(
+            "colab".to_string(),
+            serde_json::json!({"kernel": {"name": "python3"}}),
+        );
+        doc.set_metadata_snapshot(&snap).unwrap();
+
+        let round_tripped = doc.get_metadata_snapshot().unwrap();
+        assert_eq!(round_tripped.extras.len(), 2);
+        assert_eq!(
+            round_tripped.extras.get("jupytext"),
+            Some(&serde_json::json!({"paired_paths": [["x.py", "py:percent"]]}))
+        );
+        assert_eq!(
+            round_tripped.extras.get("colab"),
+            Some(&serde_json::json!({"kernel": {"name": "python3"}}))
+        );
+    }
+
+    #[test]
+    fn set_metadata_snapshot_drops_extras_colliding_with_kernelspec() {
+        use crate::metadata::{KernelspecSnapshot, NotebookMetadataSnapshot};
+        let mut doc = NotebookDoc::new_with_actor("test-nb", "test");
+
+        let mut snap = NotebookMetadataSnapshot::default();
+        snap.kernelspec = Some(KernelspecSnapshot {
+            name: "python3".to_string(),
+            display_name: "Python 3".to_string(),
+            language: Some("python".to_string()),
+            extras: Default::default(),
+        });
+        snap.extras
+            .insert("kernelspec".to_string(), serde_json::json!({"BAD": true}));
+
+        doc.set_metadata_snapshot(&snap).unwrap();
+
+        let round_tripped = doc.get_metadata_snapshot().unwrap();
+        assert_eq!(
+            round_tripped.kernelspec.as_ref().unwrap().name,
+            "python3",
+            "typed kernelspec must survive collision"
+        );
+        assert!(
+            !round_tripped.extras.contains_key("kernelspec"),
+            "collision-dropped key must not appear in extras"
+        );
+    }
+
+    #[test]
+    fn set_metadata_snapshot_drops_extras_colliding_with_language_info() {
+        use crate::metadata::{LanguageInfoSnapshot, NotebookMetadataSnapshot};
+        let mut doc = NotebookDoc::new_with_actor("test-nb", "test");
+
+        let mut snap = NotebookMetadataSnapshot::default();
+        snap.language_info = Some(LanguageInfoSnapshot {
+            name: "python".to_string(),
+            version: Some("3.11.5".to_string()),
+            extras: Default::default(),
+        });
+        snap.extras.insert(
+            "language_info".to_string(),
+            serde_json::json!({"BAD": true}),
+        );
+
+        doc.set_metadata_snapshot(&snap).unwrap();
+
+        let round_tripped = doc.get_metadata_snapshot().unwrap();
+        assert_eq!(round_tripped.language_info.as_ref().unwrap().name, "python");
+        assert!(!round_tripped.extras.contains_key("language_info"));
+    }
+
+    #[test]
+    fn set_metadata_snapshot_drops_extras_colliding_with_runt() {
+        use crate::metadata::NotebookMetadataSnapshot;
+        let mut doc = NotebookDoc::new_with_actor("test-nb", "test");
+
+        let mut snap = NotebookMetadataSnapshot::default();
+        snap.runt.env_id = Some("real-env-id".to_string());
+        snap.extras
+            .insert("runt".to_string(), serde_json::json!({"env_id": "bogus"}));
+
+        doc.set_metadata_snapshot(&snap).unwrap();
+
+        let round_tripped = doc.get_metadata_snapshot().unwrap();
+        assert_eq!(
+            round_tripped.runt.env_id.as_deref(),
+            Some("real-env-id"),
+            "typed runt must win over colliding extras"
+        );
+        assert!(!round_tripped.extras.contains_key("runt"));
+    }
+
+    #[test]
+    fn get_metadata_snapshot_from_doc_reads_extras() {
+        use crate::metadata::NotebookMetadataSnapshot;
+        let mut doc = NotebookDoc::new_with_actor("test-nb", "test");
+        let mut snap = NotebookMetadataSnapshot::default();
+        snap.extras.insert(
+            "jupytext".to_string(),
+            serde_json::json!({"paired_paths": [["x.py", "py:percent"]]}),
+        );
+        doc.set_metadata_snapshot(&snap).unwrap();
+
+        // Read via the free-function path (used by notebook-sync +
+        // Python bindings, not the &self method).
+        let round_tripped = crate::get_metadata_snapshot_from_doc(doc.doc())
+            .expect("free function should surface extras");
+        assert!(round_tripped.extras.contains_key("jupytext"));
     }
 }
