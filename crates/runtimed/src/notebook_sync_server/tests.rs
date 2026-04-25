@@ -5859,6 +5859,16 @@ async fn test_clone_as_ephemeral_forks_cells_and_clears_outputs() {
         doc.update_source("code-1", "x = 1").unwrap();
         doc.add_cell(1, "md-1", "markdown").unwrap();
         doc.update_source("md-1", "# hello").unwrap();
+        // Seed resolved_assets on the markdown cell so we can verify the
+        // clone carries them through (markdown cells render via
+        // `cell.resolvedAssets` — asset ref -> blob hash — and an empty
+        // map would break inline images).
+        let mut assets = HashMap::new();
+        assets.insert(
+            "attachment:image.png".to_string(),
+            "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef".to_string(),
+        );
+        doc.set_cell_resolved_assets("md-1", &assets).unwrap();
         // Stamp source metadata: env_id + trust signature + timestamp.
         let mut snap = snapshot_empty();
         snap.runt.env_id = Some("source-env-id".to_string());
@@ -5954,11 +5964,26 @@ async fn test_clone_as_ephemeral_forks_cells_and_clears_outputs() {
         Some("2026-04-25T00:00:00Z")
     );
 
-    // Attachments copied.
+    // Attachments copied (nbformat cache, used by save path).
     let clone_attachments = clone_room.nbformat_attachments_snapshot().await;
     assert_eq!(
         clone_attachments.get("md-1"),
         Some(&serde_json::json!({"image.png": {"image/png": "base64data"}}))
+    );
+
+    // resolved_assets copied on the markdown cell (CRDT-level asset map,
+    // used by frontend rendering of cell.resolvedAssets).
+    let clone_md_assets = clone_room
+        .doc
+        .read()
+        .await
+        .get_cell_resolved_assets("md-1")
+        .expect("markdown cell should carry resolved_assets map");
+    assert_eq!(
+        clone_md_assets
+            .get("attachment:image.png")
+            .map(String::as_str),
+        Some("deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
     );
 }
 
