@@ -92,7 +92,7 @@ The rustflag goes through direnv, not `.cargo/config.toml`, so CI runners and co
 - Binaries: `~/.local/share/runt-nightly/bin/{runtimed-nightly,runt-nightly,nteract-mcp-nightly}`
 - Symlinks: `/usr/local/bin/{runtimed-nightly,runt-nightly,nteract-mcp-nightly}` → the install dir
 - Daemon socket: `~/.cache/runt-nightly/runtimed.sock`
-- Install command: `cargo xtask install-nightly` (refuses on macOS and when an app bundle is installed — see § `install-nightly` below)
+- Install command: `./scripts/install-nightly` (refuses on macOS and when an app bundle is installed)
 - Version: Built from source, updated after each PR merge
 
 **Verification steps:** See `.claude/rules/mcp-servers.md` § Verifying Daemon Isolation.
@@ -437,7 +437,7 @@ All build, lint, and dev commands go through `cargo xtask`. **Run `cargo xtask h
 | | `cargo xtask build-dmg` | Build a DMG bundle (CI/release packaging) |
 | Daemon | `cargo xtask dev-daemon` | Per-worktree dev daemon |
 | | `cargo xtask dev-daemon --release` | Run the per-worktree daemon in release mode |
-| | `cargo xtask install-nightly` | Install runtimed + runt + nteract-mcp as the local nightly (cloud-box / headless-Linux first-install). Refuses on macOS unless `--on-macos`; refuses when an app bundle is installed unless `--replace-installed-app`. |
+| | `./scripts/install-nightly` | Install runtimed + runt + nteract-mcp as the local nightly (cloud-box / headless-Linux first-install). Refuses on macOS unless `--on-macos`; refuses when an app bundle is installed unless `--replace-installed-app`. |
 | MCP | `cargo xtask run-mcp` | nteract-dev (daemon + MCP + auto-restart) |
 | | `cargo xtask run-mcp --print-config` | Print MCP client config JSON |
 | | `cargo xtask mcp-inspector` | Launch MCP Inspector UI for testing runt mcp |
@@ -457,7 +457,7 @@ The daemon is a separate process from the notebook app. When you change code in 
 ### Stopping the Daemon
 
 - `./target/debug/runt daemon stop` — stops only your worktree's daemon
-- `cargo xtask install-nightly` — gracefully installs or reinstalls the full nightly stack (Linux/headless only; refuses on macOS by default)
+- `./scripts/install-nightly` — gracefully installs or reinstalls the full nightly stack (Linux/headless only; refuses on macOS by default)
 
 Avoid system-wide process killers (`pkill`, `killall`) — they affect every worktree and every other agent on the machine.
 

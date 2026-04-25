@@ -19,7 +19,7 @@ cargo xtask e2e test        # Smoke/default E2E run
 cargo xtask e2e test-all    # Full suite, including fixture coverage
 ```
 
-`cargo xtask e2e ...` handles app launch, waits for the embedded WebDriver server on port `4445`, runs `pnpm test:e2e`, and then cleans up. The older `cargo xtask build-e2e` alias still exists, but it is deprecated.
+`cargo xtask e2e ...` handles app launch, waits for the embedded WebDriver server on port `4445`, runs `pnpm test:e2e`, and then cleans up
 
 #### Fixture Tests
 
