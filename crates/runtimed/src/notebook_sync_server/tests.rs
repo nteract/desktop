@@ -6165,3 +6165,87 @@ async fn test_save_does_not_stamp_synthetic_runt_on_vanilla_notebook() {
         nb["metadata"]
     );
 }
+
+#[tokio::test]
+async fn test_clone_as_ephemeral_carries_unknown_metadata_extras() {
+    // Codex F3 on PR #2192: clone must preserve unknown top-level
+    // metadata keys from source (jupytext, colab, vscode, etc.).
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (rooms, path_index, docs_dir, blob_store) = clone_test_scaffolding(&tmp);
+
+    let source_uuid = Uuid::new_v4();
+    let source_room = get_or_create_room(
+        &rooms,
+        &path_index,
+        source_uuid,
+        Some(tmp.path().join("source.ipynb")),
+        &docs_dir,
+        blob_store.clone(),
+        false,
+    )
+    .await;
+
+    // Seed source doc with kernelspec (so snapshot is Some) plus
+    // unknown extras.
+    {
+        let mut doc = source_room.doc.write().await;
+        let mut snap = snapshot_empty();
+        snap.kernelspec = Some(crate::notebook_metadata::KernelspecSnapshot {
+            name: "python3".to_string(),
+            display_name: "Python 3".to_string(),
+            language: Some("python".to_string()),
+            extras: std::collections::BTreeMap::new(),
+        });
+        snap.extras.insert(
+            "jupytext".to_string(),
+            serde_json::json!({"paired_paths": [["x.py", "py:percent"]]}),
+        );
+        snap.extras.insert(
+            "vscode".to_string(),
+            serde_json::json!({"extension": {"id": "ms-python.python"}}),
+        );
+        doc.set_metadata_snapshot(&snap).unwrap();
+    }
+
+    let response = crate::requests::clone_notebook::handle_inner(
+        &rooms,
+        &path_index,
+        &docs_dir,
+        blob_store.clone(),
+        source_uuid.to_string(),
+    )
+    .await;
+
+    let clone_id = match response {
+        NotebookResponse::NotebookCloned { notebook_id, .. } => notebook_id,
+        other => panic!("Expected NotebookCloned, got {other:?}"),
+    };
+    let clone_uuid = Uuid::parse_str(&clone_id).unwrap();
+    let clone_room = rooms
+        .lock()
+        .await
+        .get(&clone_uuid)
+        .cloned()
+        .expect("clone room should be registered");
+
+    let clone_snap = clone_room
+        .doc
+        .read()
+        .await
+        .get_metadata_snapshot()
+        .expect("clone has metadata");
+    assert!(
+        clone_snap.extras.contains_key("jupytext"),
+        "jupytext must survive clone; extras: {:?}",
+        clone_snap.extras.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        clone_snap.extras.contains_key("vscode"),
+        "vscode must survive clone; extras: {:?}",
+        clone_snap.extras.keys().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        clone_snap.extras["jupytext"],
+        serde_json::json!({"paired_paths": [["x.py", "py:percent"]]})
+    );
+}
