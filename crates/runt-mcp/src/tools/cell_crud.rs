@@ -12,7 +12,7 @@ use notebook_protocol::protocol::NotebookRequest;
 use crate::execution;
 use crate::NteractMcp;
 
-use super::{arg_bool, arg_str, arg_string_array, tool_error, tool_success};
+use super::{arg_bool, arg_str, arg_string_array, cell_not_found, tool_error, tool_success};
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -185,10 +185,8 @@ pub async fn set_cell(
         .unwrap_or(30.0);
 
     let handle = require_handle!(server);
-
-    // Verify cell exists
-    if handle.get_cell(cell_id).is_none() {
-        return tool_error(&format!("Cell not found: {cell_id}"));
+    if let Some(err) = cell_not_found(&handle, cell_id) {
+        return err;
     }
 
     if source.is_none() && cell_type.is_none() {
@@ -248,20 +246,19 @@ pub async fn delete_cell(
         .ok_or_else(|| McpError::invalid_params("Missing required parameter: cell_id", None))?;
 
     let handle = require_handle!(server);
+    if let Some(err) = cell_not_found(&handle, cell_id) {
+        return err;
+    }
 
     let peer_label = server.get_peer_label().await;
     crate::presence::emit_focus(&handle, cell_id, &peer_label).await;
 
-    let deleted = handle
+    handle
         .delete_cell(cell_id)
         .map_err(|e| McpError::internal_error(format!("Failed to delete cell: {e}"), None))?;
 
-    if deleted {
-        let result = serde_json::json!({ "cell_id": cell_id, "deleted": true });
-        tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
-    } else {
-        tool_error(&format!("Cell not found: {cell_id}"))
-    }
+    let result = serde_json::json!({ "cell_id": cell_id, "deleted": true });
+    tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
 }
 
 /// Move a cell to a new position.
@@ -276,12 +273,9 @@ pub async fn move_cell(
 
     let after_cell_id = arg_str(request, "after_cell_id");
 
-    // Validate the cell being moved exists
-    if handle.get_cell(cell_id).is_none() {
-        return tool_error(&format!("Cell not found: {cell_id}"));
+    if let Some(err) = cell_not_found(&handle, cell_id) {
+        return err;
     }
-
-    // Validate the anchor cell exists (if specified)
     if let Some(anchor) = after_cell_id {
         if handle.get_cell(anchor).is_none() {
             return tool_error(&format!(

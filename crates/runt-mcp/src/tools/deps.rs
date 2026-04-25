@@ -206,8 +206,9 @@ pub async fn add_dependency(
     let manager = detect_package_manager(&handle);
 
     for package in &packages {
-        add_dep_for_manager(&handle, package, &manager)
-            .map_err(|e| McpError::internal_error(e, None))?;
+        if let Err(e) = add_dep_for_manager(&handle, package, &manager) {
+            return tool_error(&e);
+        }
     }
     // For the response, use the first package as `package` for backward compat
     let package = packages.first().map(|s| s.as_str()).unwrap_or(raw_package);

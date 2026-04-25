@@ -11,7 +11,7 @@ use crate::execution;
 use crate::formatting;
 use crate::NteractMcp;
 
-use super::{arg_bool, arg_str, tool_error, tool_success};
+use super::{arg_bool, arg_str, cell_not_found, tool_error, tool_success};
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -52,9 +52,8 @@ pub async fn execute_cell(
         .and_then(|v| v.as_f64())
         .unwrap_or(30.0);
 
-    // Verify cell exists
-    if handle.get_cell(cell_id).is_none() {
-        return tool_error(&format!("Cell not found: {cell_id}"));
+    if let Some(err) = cell_not_found(&handle, cell_id) {
+        return err;
     }
 
     let peer_label = server.get_peer_label().await;
