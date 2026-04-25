@@ -126,7 +126,7 @@ ASSERT stderr contains "error: unrecognized subcommand"
 
 TEST "version matches regex"
 RUN runt --version
-ASSERT stdout matches /runt-cli \d+\.\d+\.\d+/
+ASSERT stdout matches /runt \d+\.\d+\.\d+/
 ```
 
 **Available assertions:**

@@ -301,7 +301,7 @@ jobs:
       - name: Build external binaries
         shell: bash
         run: |
-          cargo build --release -p runtimed -p runt-cli -p nteract-mcp
+          cargo build --release -p runtimed -p runt -p nteract-mcp
           TARGET=$(rustc --print host-tuple)
           mkdir -p crates/notebook/binaries
           if [[ "$RUNNER_OS" == "Windows" ]]; then
@@ -481,7 +481,7 @@ jobs:
         if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
         shell: bash
         run: |
-          cargo build --release -p runtimed -p runt-cli -p nteract-mcp
+          cargo build --release -p runtimed -p runt -p nteract-mcp
           TARGET=$(rustc --print host-tuple)
           mkdir -p crates/notebook/binaries
           if [[ "$RUNNER_OS" == "Windows" ]]; then

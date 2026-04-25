@@ -167,7 +167,7 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          cargo build --release -p runtimed -p runt-cli -p nteract-mcp
+          cargo build --release -p runtimed -p runt -p nteract-mcp
           TARGET=$(rustc --print host-tuple)
 
           mkdir -p crates/notebook/binaries target/release/binaries
@@ -183,7 +183,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          cargo build --release -p runtimed -p runt-cli -p nteract-mcp
+          cargo build --release -p runtimed -p runt -p nteract-mcp
           $target = (rustc --print host-tuple).Trim()
 
           New-Item -ItemType Directory -Force crates/notebook/binaries | Out-Null

@@ -119,7 +119,7 @@ Schema changes don't require a protocol bump — wire format for sync frames sta
 
 Python wheels always built (macOS arm64, Linux x64, Windows x64) and published. `continue-on-error: true` on PyPI step handles duplicate version conflicts.
 
-Desktop version: `{runt-cli version}-{suffix}.{timestamp}` stamped into `tauri.conf.json` and `Cargo.toml` at build time (not committed).
+Desktop version: `{runt version}-{suffix}.{timestamp}` stamped into `tauri.conf.json` and `Cargo.toml` at build time (not committed).
 
 ### Trusted Publishing
 

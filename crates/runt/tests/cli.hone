@@ -14,7 +14,7 @@ ASSERT stdout contains "Usage: runt [COMMAND]"
 TEST "version flag displays version"
 RUN runt --version
 ASSERT exit_code == 0
-ASSERT stdout matches /runt-cli \d+\.\d+\.\d+/
+ASSERT stdout matches /runt \d+\.\d+\.\d+/
 
 TEST "invalid command fails"
 RUN runt invalid_command

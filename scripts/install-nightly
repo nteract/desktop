@@ -31,9 +31,9 @@ SERVICE_UNIT="$SERVICE_NAME.service"
 
 echo "=== install-nightly ==="
 
-echo "Building runtimed, runt-cli, nteract-mcp (release, channel=nightly)..."
+echo "Building runtimed, runt, nteract-mcp (release, channel=nightly)..."
 RUNT_BUILD_CHANNEL=nightly cargo build --release \
-  -p runtimed -p runt-cli -p nteract-mcp
+  -p runtimed -p runt -p nteract-mcp
 
 mkdir -p "$INSTALL_DIR" "$SERVICE_DIR"
 

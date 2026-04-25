@@ -9,9 +9,9 @@ The runtime daemon manages prewarmed Python environments, notebook document sync
 | Install nightly from source (Linux/headless) | `cargo xtask install-nightly` |
 | Run daemon | `cargo run -p runtimed` |
 | Run with debug logs | `RUST_LOG=debug cargo run -p runtimed` |
-| Check status | `cargo run -p runt-cli -- daemon status` |
-| Ping daemon | `cargo run -p runt-cli -- daemon ping` |
-| View logs | `cargo run -p runt-cli -- daemon logs -f` |
+| Check status | `cargo run -p runt -- daemon status` |
+| Ping daemon | `cargo run -p runt -- daemon ping` |
+| View logs | `cargo run -p runt -- daemon logs -f` |
 | Run tests | `cargo test -p runtimed` |
 
 ## Why It Exists
@@ -107,7 +107,7 @@ It refuses by default on macOS (the desktop app manages its own daemon via SMApp
 Verify the running version with:
 
 ```bash
-cargo run -p runt-cli -- daemon status --json | jq -r '.daemon_info.version'
+cargo run -p runt -- daemon status --json | jq -r '.daemon_info.version'
 ```
 
 For per-worktree daemon development (no system install involved), use `cargo xtask dev-daemon` instead — it runs the daemon out of the worktree with per-worktree socket isolation and no service files.
@@ -293,25 +293,25 @@ The `runt` CLI has daemon subcommands for testing and service management:
 
 ```bash
 # Service management
-cargo run -p runt-cli -- daemon status        # Show service + pool statistics
-cargo run -p runt-cli -- daemon status --json # JSON output
-cargo run -p runt-cli -- daemon start         # Start the daemon service
-cargo run -p runt-cli -- daemon stop          # Stop the daemon service
-cargo run -p runt-cli -- daemon restart       # Restart the daemon service
-cargo run -p runt-cli -- daemon logs -f       # Tail daemon logs
-cargo run -p runt-cli -- daemon flush         # Flush pool and rebuild environments
+cargo run -p runt -- daemon status        # Show service + pool statistics
+cargo run -p runt -- daemon status --json # JSON output
+cargo run -p runt -- daemon start         # Start the daemon service
+cargo run -p runt -- daemon stop          # Stop the daemon service
+cargo run -p runt -- daemon restart       # Restart the daemon service
+cargo run -p runt -- daemon logs -f       # Tail daemon logs
+cargo run -p runt -- daemon flush         # Flush pool and rebuild environments
 
 # Debug/health checks
-cargo run -p runt-cli -- daemon ping          # Check daemon is responding
-cargo run -p runt-cli -- daemon shutdown      # Shutdown daemon via IPC
+cargo run -p runt -- daemon ping          # Check daemon is responding
+cargo run -p runt -- daemon shutdown      # Shutdown daemon via IPC
 ```
 
-**Note:** In Conductor workspaces, use `./target/debug/runt` instead of `cargo run -p runt-cli --` for faster iteration. The debug binary connects to the worktree daemon automatically.
+**Note:** In Conductor workspaces, use `./target/debug/runt` instead of `cargo run -p runt --` for faster iteration. The debug binary connects to the worktree daemon automatically.
 
 ```bash
 # Kernel and notebook inspection
-cargo run -p runt-cli -- ps                   # List all kernels (connection-file + daemon)
-cargo run -p runt-cli -- notebooks            # List open notebooks with kernel info
+cargo run -p runt -- ps                   # List all kernels (connection-file + daemon)
+cargo run -p runt -- notebooks            # List open notebooks with kernel info
 ```
 
 ## Python Bindings (runtimed-py)

@@ -102,7 +102,7 @@ strip = "debuginfo"
 lto = true
 codegen-units = 1
 # Keep unwinding so catch_unwind guards work in release — both runtimed
-# (spawn_supervised task recovery) and runt-cli (automerge sync panic
+# (spawn_supervised task recovery) and runt (automerge sync panic
 # recovery, automerge/automerge#1187). The binary size cost is ~2-5%
 # but prevents silent process death on shared notebooks.
 panic = "unwind"

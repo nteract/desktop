@@ -147,7 +147,7 @@
             export TAURI_ENV_DEBUG=false
 
             # Build sidecar binaries (Tauri checks for these during notebook compilation)
-            cargo build --release -p runtimed -p runt-cli
+            cargo build --release -p runtimed -p runt
 
             TARGET=$(rustc --print host-tuple)
             mkdir -p crates/notebook/binaries

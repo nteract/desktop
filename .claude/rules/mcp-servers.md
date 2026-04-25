@@ -35,7 +35,7 @@ Two verbs plus three read-only tools, layered on top of the proxied `runt mcp` t
 
 ## MCP Server
 
-`nteract-dev` proxies `runt mcp` (Rust-native, direct Automerge access, no Python overhead). It auto-builds `runt-cli` on startup and watches `crates/runt-mcp/src/` for hot reload. For the installed app, `runt mcp` ships as a sidecar binary — no Python or uv required.
+`nteract-dev` proxies `runt mcp` (Rust-native, direct Automerge access, no Python overhead). It auto-builds `runt` on startup and watches `crates/runt-mcp/src/` for hot reload. For the installed app, `runt mcp` ships as a sidecar binary — no Python or uv required.
 
 ## System daemon CLI (`runt` / `runt-nightly`)
 

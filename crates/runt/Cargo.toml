@@ -1,5 +1,5 @@
 [package]
-name = "runt-cli"
+name = "runt"
 version = "2.3.2"
 edition.workspace = true
 description = "CLI for Jupyter Runtimes — bundled with nteract"
@@ -9,10 +9,6 @@ publish = false
 
 [lints]
 workspace = true
-
-[[bin]]
-name = "runt"
-path = "src/main.rs"
 
 [dependencies]
 anyhow = { workspace = true }
