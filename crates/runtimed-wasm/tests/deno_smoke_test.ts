@@ -132,6 +132,17 @@ Deno.test("RuntimeState: committed WASM emits the shape TS consumers expect", ()
   assertExists(state.trust, "state.trust missing");
   assertExists(state.executions, "state.executions missing");
 
+  // project_context was added in #2216. If the committed WASM is stale,
+  // the TS `RuntimeState` interface will claim the field but consumers
+  // get `undefined` and any `state.project_context.state === "Detected"`
+  // switch throws. Fail the bundle check here instead.
+  assertExists(state.project_context, "state.project_context missing");
+  assertEquals(
+    state.project_context.state,
+    "Pending",
+    "default project_context state must be Pending on a fresh doc",
+  );
+
   handle.free();
 });
 

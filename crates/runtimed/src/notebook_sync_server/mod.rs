@@ -56,6 +56,7 @@ mod nbformat_convert;
 mod path_index;
 mod peer;
 mod persist;
+mod project_context;
 mod room;
 mod runtime_bridge;
 #[cfg(test)]
