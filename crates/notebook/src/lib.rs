@@ -43,8 +43,6 @@ struct WindowNotebookContext {
     path: Arc<Mutex<Option<PathBuf>>>,
     /// Working directory for untitled notebooks (project file detection).
     working_dir: Option<PathBuf>,
-    /// Dirty flag — tracks unsaved changes (authoritative source).
-    dirty: Arc<AtomicBool>,
     /// Notebook ID for daemon sync — derived from path (saved) or env_id (untitled).
     /// Updated on save_notebook_as when path changes.
     notebook_id: Arc<Mutex<String>>,
@@ -346,7 +344,6 @@ struct UpgradeNotebookStatus {
     notebook_id: String,
     display_name: String,
     kernel_status: Option<String>,
-    is_dirty: bool,
 }
 
 /// Progress events emitted during upgrade.
@@ -387,13 +384,6 @@ fn working_dir_for_window(
     registry: &WindowNotebookRegistry,
 ) -> Result<Option<PathBuf>, String> {
     Ok(registry.get(window.label())?.working_dir.clone())
-}
-
-fn dirty_for_window(
-    window: &tauri::Window,
-    registry: &WindowNotebookRegistry,
-) -> Result<Arc<AtomicBool>, String> {
-    Ok(registry.get(window.label())?.dirty.clone())
 }
 
 fn notebook_id_for_window(
@@ -1242,7 +1232,7 @@ async fn begin_upgrade(
 
 /// Get the status of all open notebooks for the upgrade screen.
 ///
-/// Returns a list of notebooks with their kernel status, dirty state, and display name.
+/// Returns a list of notebooks with their kernel status and display name.
 #[tauri::command]
 async fn get_upgrade_notebook_status(
     app: tauri::AppHandle,
@@ -1250,7 +1240,7 @@ async fn get_upgrade_notebook_status(
 ) -> Result<Vec<UpgradeNotebookStatus>, String> {
     registry.prune_stale_entries(&app);
     // Extract data from registry without holding lock across await
-    let notebook_data: Vec<(String, String, String, bool, SharedNotebookSync)> = {
+    let notebook_data: Vec<(String, String, String, SharedNotebookSync)> = {
         let contexts = registry.contexts.lock().map_err(|e| e.to_string())?;
         contexts
             .iter()
@@ -1258,7 +1248,6 @@ async fn get_upgrade_notebook_status(
             .filter_map(|(label, context)| {
                 let path = context.path.lock().ok()?;
                 let notebook_id = context.notebook_id.lock().ok()?.clone();
-                let is_dirty = context.dirty.load(Ordering::SeqCst);
                 let display_name = path
                     .as_ref()
                     .and_then(|p| p.file_name())
@@ -1268,7 +1257,6 @@ async fn get_upgrade_notebook_status(
                     label.clone(),
                     notebook_id,
                     display_name,
-                    is_dirty,
                     context.notebook_sync.clone(),
                 ))
             })
@@ -1277,7 +1265,7 @@ async fn get_upgrade_notebook_status(
 
     // Now do async operations without holding the std::sync::Mutex
     let mut statuses = Vec::new();
-    for (window_label, notebook_id, display_name, is_dirty, notebook_sync) in notebook_data {
+    for (window_label, notebook_id, display_name, notebook_sync) in notebook_data {
         let kernel_status = {
             let guard = notebook_sync.lock().await;
             if let Some(handle) = guard.as_ref() {
@@ -1295,7 +1283,6 @@ async fn get_upgrade_notebook_status(
             notebook_id,
             display_name,
             kernel_status,
-            is_dirty,
         });
     }
 
@@ -1336,7 +1323,9 @@ async fn abort_kernel_for_upgrade(
 /// Execute the full upgrade sequence.
 ///
 /// Steps:
-/// 1. Save all dirty notebooks
+/// 1. Emit `SavingNotebooks` for UI continuity. The daemon's autosave
+///    debouncer (2s quiet, 10s max) is already keeping `.ipynb` files
+///    current; an upgrade-time force-save isn't part of this flow.
 /// 2. Shutdown all kernels
 /// 3. Close all notebook windows
 /// 4. Upgrade the daemon
@@ -1358,54 +1347,10 @@ async fn run_upgrade(
         // Non-fatal — begin_upgrade() already saved a session
     }
 
-    // Step 1: Save all dirty notebooks
+    // Step 1: notify the UI. Disk persistence is owned by daemon
+    // autosave; nothing to do here.
     app.emit("upgrade:progress", UpgradeProgress::SavingNotebooks)
         .map_err(|e| e.to_string())?;
-
-    // Extract notebooks to save (those that are dirty and have a path)
-    let notebooks_to_save: Vec<(String, SharedNotebookSync, Arc<AtomicBool>)> = {
-        let contexts = registry.contexts.lock().map_err(|e| e.to_string())?;
-        contexts
-            .iter()
-            .filter(|(label, _)| *label != "onboarding" && *label != "upgrade")
-            .filter_map(|(label, context)| {
-                let is_dirty = context.dirty.load(Ordering::SeqCst);
-                let has_path = context.path.lock().map(|p| p.is_some()).unwrap_or(false);
-                if is_dirty && has_path {
-                    Some((
-                        label.clone(),
-                        context.notebook_sync.clone(),
-                        context.dirty.clone(),
-                    ))
-                } else {
-                    None
-                }
-            })
-            .collect()
-    };
-
-    // Save each notebook
-    for (label, notebook_sync, dirty) in notebooks_to_save {
-        let guard = notebook_sync.lock().await;
-        if let Some(handle) = guard.as_ref() {
-            match handle
-                .send_request(NotebookRequest::SaveNotebook {
-                    format_cells: false,
-                    path: None,
-                })
-                .await
-            {
-                Ok(NotebookResponse::NotebookSaved { path, .. }) => {
-                    log::info!("[upgrade] Saved notebook: {}", path);
-                    dirty.store(false, Ordering::SeqCst);
-                }
-                Ok(NotebookResponse::Error { error }) => {
-                    log::warn!("[upgrade] Failed to save notebook {}: {}", label, error);
-                }
-                _ => {}
-            }
-        }
-    }
 
     // Step 2: Shutdown all runtimes
     app.emit("upgrade:progress", UpgradeProgress::StoppingRuntimes)
@@ -2007,18 +1952,6 @@ async fn has_notebook_path(
     Ok(path.is_some())
 }
 
-/// Clear the Tauri-side dirty flag. Called by the frontend when the daemon
-/// autosaves the notebook, so the flag stays in sync without a full save round-trip.
-#[tauri::command]
-fn mark_notebook_clean(
-    window: tauri::Window,
-    registry: tauri::State<'_, WindowNotebookRegistry>,
-) -> Result<(), String> {
-    let dirty = dirty_for_window(&window, registry.inner())?;
-    dirty.store(false, Ordering::SeqCst);
-    Ok(())
-}
-
 /// Sync the Tauri window's local path state and title with a `PathChanged`
 /// broadcast from the daemon. Called by the frontend when another peer (an
 /// MCP agent, a sibling window) saves or renames the notebook — without this,
@@ -2057,10 +1990,10 @@ fn apply_path_changed(
     sync_ready.update_cached_path(window.label(), path.as_deref());
 
     // Note: the window title is owned by the frontend (computed from
-    // `titleBase` + `dirty` / `ephemeral` state). We intentionally do NOT
+    // `titleBase` + `ephemeral` state). We intentionally do NOT
     // touch `window.set_title(...)` here — a Rust-side write would race
     // against the frontend's concurrent title update from the same
-    // `path_changed` broadcast and could clobber the dirty asterisk.
+    // `path_changed` broadcast.
 
     Ok(())
 }
@@ -2083,7 +2016,6 @@ async fn save_notebook(
     );
     let path = path_for_window(&window, registry.inner())?;
     let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
-    let dirty = dirty_for_window(&window, registry.inner())?;
 
     // Verify we have a path - daemon will use the room's notebook_path
     {
@@ -2122,8 +2054,6 @@ async fn save_notebook(
         }
     }
 
-    // Mark as clean
-    dirty.store(false, Ordering::SeqCst);
     Ok(())
 }
 
@@ -2162,7 +2092,6 @@ async fn save_notebook_as(
     );
     let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
     let context_path = path_for_window(&window, registry.inner())?;
-    let dirty = dirty_for_window(&window, registry.inner())?;
 
     let sync_handle = notebook_sync.lock().await.clone();
     let handle = sync_handle.ok_or("Not connected to daemon")?;
@@ -2196,7 +2125,7 @@ async fn save_notebook_as(
     // Note: the window title is owned by the frontend — see the
     // `apply_path_changed` command for the rationale. The frontend's
     // `path_changed` broadcast subscriber updates `titleBase` and the
-    // title-render effect writes the correct dirty-adjusted title.
+    // title-render effect writes the title.
     if let Ok(mut p) = context_path.lock() {
         info!(
             "[save-as] context.path mutation: {:?} -> {:?} (window={})",
@@ -2211,7 +2140,6 @@ async fn save_notebook_as(
     // via `get_daemon_ready_info` instead of replaying the old untitled
     // payload. Mirrors the same update in `apply_path_changed`.
     sync_ready.update_cached_path(window.label(), Some(&saved_path.to_string_lossy()));
-    dirty.store(false, Ordering::SeqCst);
 
     // Promote the new path onto the Open Recent list so Save As destinations
     // behave like any other opened notebook.
@@ -3831,7 +3759,6 @@ fn create_window_context_for_daemon(
         sync_generation: Arc::new(AtomicU64::new(0)),
         path: Arc::new(Mutex::new(path)),
         working_dir,
-        dirty: Arc::new(AtomicBool::new(false)),
         notebook_id: Arc::new(Mutex::new(placeholder_notebook_id)),
         runtime,
     }
@@ -4347,7 +4274,6 @@ pub fn run(
         .invoke_handler(tauri::generate_handler![
             // Notebook file operations
             has_notebook_path,
-            mark_notebook_clean,
             apply_path_changed,
             save_notebook,
             save_notebook_as,

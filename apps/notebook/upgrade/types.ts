@@ -3,7 +3,6 @@ export interface NotebookStatus {
   notebook_id: string;
   display_name: string;
   kernel_status: "idle" | "busy" | "starting" | "error" | "not_started" | null;
-  is_dirty: boolean;
 }
 
 export type UpgradeStep =

@@ -256,7 +256,7 @@ mod tests {
     use crate::Runtime;
     use crate::WindowNotebookContext;
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicBool, AtomicU64};
+    use std::sync::atomic::AtomicU64;
     use std::sync::{Arc, Mutex};
 
     fn test_context(path: Option<PathBuf>, notebook_id: &str) -> WindowNotebookContext {
@@ -265,7 +265,6 @@ mod tests {
             sync_generation: Arc::new(AtomicU64::new(0)),
             path: Arc::new(Mutex::new(path)),
             working_dir: None,
-            dirty: Arc::new(AtomicBool::new(false)),
             notebook_id: Arc::new(Mutex::new(notebook_id.to_string())),
             runtime: Runtime::Python,
         }

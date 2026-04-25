@@ -41,9 +41,6 @@ function NotebookRow({
         <Notebook className="h-4 w-4 text-muted-foreground" />
         <div className="flex flex-col">
           <span className="text-sm font-medium">{notebook.display_name}</span>
-          {notebook.is_dirty && (
-            <span className="text-xs text-muted-foreground">Unsaved changes</span>
-          )}
         </div>
       </div>
       <div className="flex items-center gap-3">
